@@ -3233,6 +3233,224 @@ mod tests {
         follower.check_replay_data().await.unwrap();
     }
 
+    // ---------------------------------------------------------------
+    // H-29-3 lift, slice 2 (2026-08-26).  fs_remove_dir Consensus
+    // support — non-recursive emits one RemoveDir entry; recursive
+    // emits a granular sorted-post-order manifest of RemoveFile /
+    // RemoveDir entries and packs the deletion manifest into the
+    // reply so a rig-based follower can journal symmetrically on
+    // `is_replay` without a live filesystem walk.
+    // ---------------------------------------------------------------
+
+    /// Non-recursive Consensus removeDir emits a single RemoveDir
+    /// entry (fully derivable from args).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn remove_dir_non_recursive_on_consensus_appends_wal_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("empty")).unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ret in {{
+              fsRemoveDir!("{root}", "empty", false, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].op, WalOp::RemoveDir);
+        assert!(snap[0].path.to_string_lossy().ends_with("empty"));
+        assert!(!dir.path().join("empty").exists());
+    }
+
+    /// Recursive Consensus removeDir emits granular RemoveFile /
+    /// RemoveDir entries in sorted post-order against a three-level
+    /// tree:
+    ///
+    ///     top/
+    ///       a.txt
+    ///       nested/
+    ///         b.txt
+    ///
+    /// Sorted per-directory + post-order (children before parents)
+    /// yields: RemoveFile(top/a.txt), RemoveFile(top/nested/b.txt),
+    /// RemoveDir(top/nested), RemoveDir(top).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn remove_dir_recursive_on_consensus_emits_granular_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("top")).unwrap();
+        std::fs::write(dir.path().join("top/a.txt"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("top/nested")).unwrap();
+        std::fs::write(dir.path().join("top/nested/b.txt"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ret in {{
+              fsRemoveDir!("{root}", "top", true, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        let snap = runtime.fs_handles.wal.snapshot();
+        assert_eq!(snap.len(), 4, "expected 4 granular entries, got {snap:#?}");
+        assert_eq!(snap[0].op, WalOp::RemoveFile);
+        assert!(snap[0].path.to_string_lossy().ends_with("top/a.txt"));
+        assert_eq!(snap[1].op, WalOp::RemoveFile);
+        assert!(snap[1].path.to_string_lossy().ends_with("top/nested/b.txt"));
+        assert_eq!(snap[2].op, WalOp::RemoveDir);
+        assert!(snap[2].path.to_string_lossy().ends_with("top/nested"));
+        assert_eq!(snap[3].op, WalOp::RemoveDir);
+        assert!(snap[3].path.to_string_lossy().ends_with("top"));
+        assert!(!dir.path().join("top").exists());
+    }
+
+    /// Oracular recursive removeDir does NOT journal.  Reply shape
+    /// unchanged (`[true]`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn remove_dir_recursive_on_oracular_does_not_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("top")).unwrap();
+        std::fs::write(dir.path().join("top/a.txt"), b"").unwrap();
+        let runtime = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ret in {{
+              fsRemoveDir!("{root}", "top", true, "oracular", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        runtime
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        assert!(runtime.fs_handles.wal.is_empty());
+        assert!(!dir.path().join("top").exists());
+    }
+
+    /// Fresh-tree applier can reconstruct the tree state from a
+    /// granular removeDir manifest.  Closes the file-state-identity
+    /// loop for the recursive case (sibling files outside the
+    /// removed subtree must survive).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pb_m_14_file_state_identity_recursive_remove_dir() {
+        let leader_dir = tempfile::tempdir().unwrap();
+        let follower_dir = tempfile::tempdir().unwrap();
+        for base in [leader_dir.path(), follower_dir.path()] {
+            std::fs::create_dir(base.join("top")).unwrap();
+            std::fs::write(base.join("top/a.txt"), b"aa").unwrap();
+            std::fs::create_dir(base.join("top/nested")).unwrap();
+            std::fs::write(base.join("top/nested/b.txt"), b"bb").unwrap();
+            std::fs::write(base.join("survivor.bin"), b"keep").unwrap();
+        }
+        let leader = create_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ret in {{
+              fsRemoveDir!("{root}", "top", true, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+            root = leader_dir.path().display(),
+        );
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                Blake2b512Random::create_from_bytes(&[77u8; 32]),
+            )
+            .await
+            .unwrap();
+        let wal = leader.fs_handles.wal.snapshot();
+        apply_wal_to_fresh_tree(
+            &wal,
+            &std::collections::HashMap::new(),
+            leader_dir.path(),
+            follower_dir.path(),
+        );
+        assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
+    }
+
+    /// Leader/follower WAL byte-identity for recursive Consensus
+    /// removeDir.  Follower's is_replay branch reads the reply
+    /// manifest and re-journals the same granular entries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn recursive_remove_dir_wal_is_byte_identical_on_leader_and_follower() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("top")).unwrap();
+        std::fs::write(dir.path().join("top/a.txt"), b"a").unwrap();
+        std::fs::create_dir(dir.path().join("top/nested")).unwrap();
+        std::fs::write(dir.path().join("top/nested/b.txt"), b"b").unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ret in {{
+              fsRemoveDir!("{root}", "top", true, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[55u8; 32]);
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .unwrap();
+        let l = leader.fs_handles.wal.snapshot();
+        assert_eq!(l.len(), 4, "leader produced 4 granular entries");
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.unwrap();
+        follower.rig(checkpoint.log).await.unwrap();
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .unwrap();
+        let f = follower.fs_handles.wal.snapshot();
+        assert_eq!(
+            l, f,
+            "leader/follower recursive-removeDir WAL byte-identity via reply manifest"
+        );
+        follower.check_replay_data().await.unwrap();
+    }
+
     /// H-29-3 slice 1 — a failed Consensus mutation appends a
     /// Failure-outcome entry (H-6 pattern).  Uses fs_remove_file on
     /// a nonexistent path so the syscall reliably fails with ENOENT.

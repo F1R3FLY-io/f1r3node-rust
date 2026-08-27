@@ -455,19 +455,17 @@ fn with_libs(test_snippet: &str) -> String {
           }} |
 
           // fs_removeDir — records (root, rel, recursive, cmode).
-          // H-29-3 stopgap partially lifted (2026-08-26 slice 1);
-          // removeDir recursive remains under design in slice 2 so
-          // this mock keeps the consensus-rejection branch until
-          // slice 2 lands.
+          // H-29-3 lift complete post-2026-08-26 slice 2: consensus
+          // succeeds.  The real handler's recursive Consensus path
+          // returns [true, [[path, kind], ...]] carrying a deletion
+          // manifest; this mock keeps the reply shape simple and
+          // returns [true] uniformly.  Manifest-shape observation is
+          // covered in fs_wal_spec.rs against the real handler.
           rmDirLog!([]) |
           contract fsRemoveDir(@root, @rel, @recursive, @cmode, ret) = {{
             for (@log <- rmDirLog) {{
               rmDirLog!(log ++ [(root, rel, recursive, cmode)]) |
-              match cmode {{
-                "consensus" => ret!([false, "FSERR_UNSUPPORTED",
-                  "removeDir unavailable in consensus mode"])
-                _ => ret!([true])
-              }}
+              ret!([true])
             }}
           }} |
 
@@ -15812,60 +15810,21 @@ async fn fs_open_file_close_twice_on_same_cap_stable() {
 }
 
 // ----------------------------------------------------------------------
-// H-29-3 stopgap remnants (partial lift 2026-08-26 slice 1; slice 2
-// covers removeDir).
+// H-29-3 stopgap fully lifted (2026-08-26 slices 1 + 2).
 //
 // The original H-29-3 review-fix block asserted that ALL path-based
 // mutations on Consensus caps return FSERR_UNSUPPORTED at the
 // Rholang-agent boundary, because the WAL only journaled fd-based
-// Write/WriteAt/Truncate.  Slice-1 of the 2026-08-26 stopgap lift
-// wires WAL journaling into `fs_chmod`, `fs_chown`, `fs_rename`,
-// `fs_copy_file`, and `fs_remove_file` — those tests were deleted
-// in this commit and replaced by real-handler pins in
-// `fs_wal_spec.rs`.  Only the two `removeDir` pins remain, because
-// `fs_remove_dir` (recursive) waits on the granular reply-manifest
-// design in slice 2.
+// Write/WriteAt/Truncate.  Slice 1 wired WAL journaling into
+// `fs_chmod` / `fs_chown` / `fs_rename` / `fs_copy_file` /
+// `fs_remove_file`; slice 2 wired `fs_remove_dir` (non-recursive
+// via a single RemoveDir entry; recursive via granular sorted-post-
+// order walk with the manifest packed into the reply so a follower
+// can journal symmetrically on `is_replay`).
+//
+// All H-29-3 pins deleted; replacement real-handler coverage lives
+// in `fs_wal_spec.rs`.
 // ----------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_remove_dir_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@d <- Dir!?("/root", "", "rw", "consensus", *File)) {
-          for (@r <- @d!?("removeDir", "subdir", true)) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(
-        !ok,
-        "Dir.removeDir on consensus cap must fail (H-29-3 slice 1 remnant)"
-    );
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_fs_remove_dir_consensus_returns_unsupported() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        new ret in {
-          fsRemoveDir!("/root", "d", true, "consensus", *ret) |
-          for (@r <- ret) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_UNSUPPORTED");
-}
 
 // ---------------------------------------------------------------------
 // Phase 8 slice 8a step-4 review smoke-check — File.lockRange + LockToken.

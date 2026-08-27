@@ -80,6 +80,208 @@ fn ack_channel_hash(ack: &Par) -> [u8; 32] {
     out
 }
 
+/// H-29-3 lift slice 2 (2026-08-26): derive a unique per-entry ack
+/// hash for a recursive-removeDir manifest entry.  Rholang callers
+/// see one ack channel for the whole `fsRemoveDir!(...)` call, but
+/// the leader and follower each append MANY WAL entries (one per
+/// tree leaf).  To keep the WAL's `ack_hashes` sidecar meaningful
+/// (log-order drain, per-entry outcome finalize), each entry needs
+/// its own sidecar key.  Both sides derive the same key from the
+/// shared ack channel + entry's canonical path:
+///
+///     Blake2b256(ack_channel_hash(ack) || 0xFE || path_bytes)
+///
+/// The `0xFE` separator prevents accidental collision with the
+/// standard `ack_channel_hash(ack)` used for single-entry ops
+/// (which never sees a path-suffix domain byte).  Determinism is
+/// symmetric: leader and follower see the same ack Par (via rig
+/// replay) and the same canonical path (via the reply-manifest
+/// lookup + `canonicalize_lexical`).
+fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] {
+    let base = ack_channel_hash(ack);
+    let path_bytes = path.as_os_str().as_encoded_bytes();
+    let mut buf = Vec::with_capacity(base.len() + 1 + path_bytes.len());
+    buf.extend_from_slice(&base);
+    buf.push(0xFE);
+    buf.extend_from_slice(path_bytes);
+    let h = crypto::rust::hash::blake2b256::Blake2b256::hash(buf);
+    assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h);
+    out
+}
+
+/// H-29-3 lift slice 2: unlink a single leaf.  `is_dir=true` uses
+/// `AT_REMOVEDIR`; else plain `unlinkat`.
+///
+/// # Safety
+/// Uses libc directly.  The caller is responsible for supplying a
+/// path already-verified via `safe_descend_verified` (the recursive
+/// walker builds paths beneath a verified parent).
+unsafe fn libc_unlink(path: &std::path::Path, is_dir: bool) -> std::io::Result<()> {
+    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul in path"))?;
+    let flags = if is_dir { libc::AT_REMOVEDIR } else { 0 };
+    let rc = libc::unlinkat(libc::AT_FDCWD, cpath.as_ptr(), flags);
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// H-29-3 lift slice 2: parse the recursive-removeDir reply
+/// manifest into `(PathBuf, RemoveKind)` tuples.
+///
+/// Reply shapes:
+///   * `[true, [[path, kind], ...]]` — success with N deleted.
+///   * `[false, code, msg, [[path, kind], ...]]` — partial success
+///     followed by failure; the inner list contains only what was
+///     successfully deleted before the failing entry.
+///
+/// Returns an empty Vec for any other shape (bare `[true]` from
+/// non-recursive Consensus, Oracular replies, error replies with
+/// no manifest, or malformed input).  The caller uses an empty
+/// Vec to mean "no per-entry journaling needed".
+fn extract_removedir_manifest(previous: &[Par]) -> Vec<(std::path::PathBuf, RemoveKind)> {
+    let head = match previous.first() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    let expr = match head.exprs.first() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let outer = match &expr.expr_instance {
+        Some(models::rhoapi::expr::ExprInstance::EListBody(l)) => l,
+        _ => return Vec::new(),
+    };
+    // Manifest lives at index 1 (success) or 3 (failure).  Detect
+    // via the head bool.
+    let ok_par = match outer.ps.first() {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let manifest_par = match RhoBoolean::unapply(ok_par) {
+        Some(true) => match outer.ps.get(1) {
+            Some(p) => p,
+            None => return Vec::new(),
+        },
+        Some(false) => match outer.ps.get(3) {
+            Some(p) => p,
+            None => return Vec::new(),
+        },
+        None => return Vec::new(),
+    };
+    let manifest_expr = match manifest_par.exprs.first() {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    let manifest_list = match &manifest_expr.expr_instance {
+        Some(models::rhoapi::expr::ExprInstance::EListBody(l)) => l,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(manifest_list.ps.len());
+    for entry_par in &manifest_list.ps {
+        let entry_expr = match entry_par.exprs.first() {
+            Some(e) => e,
+            None => continue,
+        };
+        let entry_list = match &entry_expr.expr_instance {
+            Some(models::rhoapi::expr::ExprInstance::EListBody(l)) => l,
+            _ => continue,
+        };
+        let path_par = match entry_list.ps.first() {
+            Some(p) => p,
+            None => continue,
+        };
+        let kind_par = match entry_list.ps.get(1) {
+            Some(p) => p,
+            None => continue,
+        };
+        let path = match RhoString::unapply(path_par) {
+            Some(s) => std::path::PathBuf::from(s),
+            None => continue,
+        };
+        let kind = match RhoString::unapply(kind_par).as_deref() {
+            Some("file") => RemoveKind::File,
+            Some("dir") => RemoveKind::Dir,
+            _ => continue,
+        };
+        out.push((path, kind));
+    }
+    out
+}
+
+/// H-29-3 lift slice 2: build the `[true, [[path, kind], ...]]`
+/// success reply for a recursive removeDir on a Consensus cap.
+fn ok_recursive_manifest(deleted: &[(std::path::PathBuf, RemoveKind)]) -> Par {
+    let inner: Vec<Par> = deleted
+        .iter()
+        .map(|(path, kind)| {
+            let path_s = path.to_string_lossy().into_owned();
+            list_par_2(
+                RhoString::create_par(path_s),
+                RhoString::create_par(kind.as_wire().to_string()),
+            )
+        })
+        .collect();
+    list_par_2(bool_par_true(), list_par_from(inner))
+}
+
+/// H-29-3 lift slice 2: build the
+/// `[false, code, msg, [[path, kind], ...]]` failure reply carrying
+/// the partial-success manifest for a recursive Consensus removeDir.
+fn err_with_manifest(
+    code: &str,
+    msg: impl Into<String>,
+    deleted: &[(std::path::PathBuf, RemoveKind)],
+) -> Par {
+    let inner: Vec<Par> = deleted
+        .iter()
+        .map(|(path, kind)| {
+            let path_s = path.to_string_lossy().into_owned();
+            list_par_2(
+                RhoString::create_par(path_s),
+                RhoString::create_par(kind.as_wire().to_string()),
+            )
+        })
+        .collect();
+    let items = vec![
+        bool_par_false(),
+        RhoString::create_par(code.to_string()),
+        RhoString::create_par(msg.into()),
+        list_par_from(inner),
+    ];
+    list_par_from(items)
+}
+
+/// Small internal helper: `Par::default()` with a single `EList`
+/// expression carrying `items`.
+fn list_par_from(items: Vec<Par>) -> Par {
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EList, Expr};
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: items,
+            locally_free: shared::rust::BitSet::default(),
+            connective_used: false,
+            remainder: None,
+        })),
+    }])
+}
+
+fn list_par_2(a: Par, b: Par) -> Par { list_par_from(vec![a, b]) }
+
+fn bool_par_true() -> Par { Par::default().with_exprs(vec![RhoBoolean::create_expr(true)]) }
+
+fn bool_par_false() -> Par { Par::default().with_exprs(vec![RhoBoolean::create_expr(false)]) }
+
+/// Compose `io_err_code(e) → fserr_to_code(...)` for the WAL
+/// `WalOutcome::Failure { code }` slot.  Consumed by handlers that
+/// need the numeric FSERR code without a string round-trip.
+fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e)) }
+
 /// Cap on `fs_entries` output size — prevents a malicious caller pointing
 /// the native at a million-entry directory and OOMing the node.
 pub const MAX_ENTRIES: usize = 65_536;
@@ -2362,22 +2564,24 @@ impl FsProcesses {
     }
 
     // -------------------------------------------------------------------
-    // removeDir — (rootCanon, rel, recursive: Bool) -> [true]
-    // Non-recursive: unlinkat(AT_REMOVEDIR).
-    // Recursive: descend into the target and unlinkat every entry (safe).
+    // removeDir — (rootCanon, rel, recursive: Bool, cmode) ->
+    //   Non-recursive: [true] / [false, code, msg]
+    //   Recursive Oracular: [true] / [false, code, msg]
+    //   Recursive Consensus: [true, [[path, kind], ...]] / [false, code, msg,
+    //     [[path, kind], ...]]  (manifest of deleted entries in unlink order)
+    //
+    // H-29-3 lift slice 2 (2026-08-26): Consensus recursive removeDir
+    // walks the tree in sorted post-order, emits one WAL entry per
+    // unlinked leaf (RemoveFile) or directory (RemoveDir), and packs
+    // the manifest into the reply so the follower can journal
+    // byte-identical entries on the is_replay branch.  Non-recursive
+    // Consensus emits a single RemoveDir entry.  Oracular semantics
+    // are unchanged.
     // -------------------------------------------------------------------
     pub async fn fs_remove_dir(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
-        // Phase 9 slice 9b-iv: charge fs_remove_dir SETUP cost only.
-        // Weight = 200 (the base term).  Per-entry cost
-        // (FS_ENTRIES_PER_ENTRY * n_entries) is deferred to a
-        // follow-up slice because it requires post-syscall counting
-        // on the leader branch and matching entry extraction from
-        // `previous` on the replay branch — a two-branch charge
-        // pattern rather than the single entry-point charge used
-        // by the other length-parameterized handlers.
         self.metering
             .reserve_primitive(costs::fs_remove_dir_cost(0))?;
         let Some((produce, is_replay, previous, args)) =
@@ -2385,14 +2589,9 @@ impl FsProcesses {
         else {
             return Err(illegal_argument_error("fs_remove_dir"));
         };
-        // C-R2 review fix: `(root, rel, recursive, cmode, ack)`.
         let [root_par, rel_par, recursive_par, cmode_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_remove_dir"));
         };
-        if is_replay {
-            produce(&previous, ack).await?;
-            return Ok(previous);
-        }
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
@@ -2404,25 +2603,83 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
-        // Phase 8 slice 8a step 6 (2026-08-13): mode-differentiated
-        // unlink gate.  See fs_remove_file above for the design
-        // rationale.  For fs_remove_dir, `is_locked` queries the
-        // DIRECTORY inode's lock state.  This does NOT recursively
-        // check locks on directory contents — spec §Mode-
-        // differentiated invariants gates on "any lock held on
-        // (dev, inode)" of the target only.  A recursive removeDir
-        // that clears content-file locks along the way is a
-        // separate consideration; MVP treats content locks as the
-        // caller's responsibility.
-        let reply = match (
+        let parsed = match (
             RhoString::unapply(root_par),
             RhoString::unapply(rel_par),
             RhoBoolean::unapply(recursive_par),
         ) {
-            (Some(root), Some(rel), Some(recursive)) => {
+            (Some(root), Some(rel), Some(recursive)) => Some((root, rel, recursive)),
+            _ => None,
+        };
+        if is_replay {
+            // H-29-3 lift slice 2: follower journals from the leader's
+            // cached reply.  Non-recursive → single RemoveDir entry
+            // (fully derivable from args).  Recursive Consensus →
+            // walk the reply's manifest and journal each entry;
+            // Oracular has no manifest, so no journal.
+            if let Some((root, rel, recursive)) = &parsed {
+                if !recursive {
+                    // Non-recursive: journal single RemoveDir entry
+                    // (matches the leader path below) if Consensus.
+                    let canon_path = canonicalize_lexical(root, rel);
+                    let _ = self
+                        .journal_path_mutation_single(
+                            cmode,
+                            WalOp::RemoveDir,
+                            canon_path,
+                            None,
+                            None,
+                            None,
+                            ack,
+                        )
+                        .await;
+                    if let Some(code_str) = extract_err_code(&previous) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                } else if cmode == ConsensusMode::Consensus {
+                    // Recursive Consensus: walk the reply-manifest.
+                    // Each entry produces a fresh WAL append; each
+                    // append gets a UNIQUE ack_hash derived from the
+                    // ack channel + entry path so per-entry finalize
+                    // (if we ever need it) can uniquely address the
+                    // entry.  For now we don't emit per-entry
+                    // Failure — the leader only manifests SUCCESSFUL
+                    // unlinks, so every replayed entry is Success.
+                    for (canon_path, kind) in extract_removedir_manifest(&previous) {
+                        let op = match kind {
+                            RemoveKind::File => WalOp::RemoveFile,
+                            RemoveKind::Dir => WalOp::RemoveDir,
+                        };
+                        let per_entry_ack = per_entry_ack_seed(ack, &canon_path);
+                        let _ = self.handles.wal.append_with_ack(
+                            WalEntry {
+                                op,
+                                path: canon_path,
+                                extra_path: None,
+                                offset: None,
+                                length: None,
+                                payload_ref: None,
+                                mode_bits: None,
+                                owner: None,
+                                group: None,
+                                outcome: WalOutcome::Success,
+                            },
+                            per_entry_ack,
+                        );
+                    }
+                }
+            }
+            produce(&previous, ack).await?;
+            return Ok(previous);
+        }
+        // Leader path.
+        let reply = match parsed {
+            Some((root, rel, recursive)) => {
                 let root_pb = PathBuf::from(root);
                 let expected_root_id = self.handles.root_registry.get(&root_pb);
                 let lock_registry = self.handles.lock_registry.clone();
+                let ack_clone = ack.clone();
+                let wal = self.handles.wal.clone();
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
@@ -2435,63 +2692,157 @@ impl FsProcesses {
                     let target_is_locked = target_dev_inode
                         .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
                         .unwrap_or(false);
-                    match cmode {
-                        ConsensusMode::Consensus => {
-                            if target_is_locked {
-                                return err(
-                                    FSERR_BUSY,
-                                    "cannot remove: lock held on target (dev, inode)",
+                    // Consensus + locked → FSERR_BUSY (unchanged from
+                    // slice 1 removeFile pattern).  Oracular + locked
+                    // proceeds with a log-warn.
+                    if cmode == ConsensusMode::Consensus && target_is_locked {
+                        return err(
+                            FSERR_BUSY,
+                            "cannot remove: lock held on target (dev, inode)",
+                        );
+                    }
+                    if cmode == ConsensusMode::Oracular && target_is_locked {
+                        if let Some((dev, ino)) = target_dev_inode {
+                            let n_holders = lock_registry.count_locks((dev, ino));
+                            tracing::warn!(
+                                target: "f1r3fly.fs.oracular",
+                                dev = dev,
+                                ino = ino,
+                                n_holders = n_holders,
+                                "oracular removeDir of locked directory (dev={}, ino={}) \
+                                 — {} holder(s) will observe subsequent errors on \
+                                 path-based calls; fd-based calls remain valid until close",
+                                dev,
+                                ino,
+                                n_holders
+                            );
+                        }
+                    }
+                    let canon_target = canonicalize_lexical(&root_pb.to_string_lossy(), &rel);
+                    if !recursive {
+                        // Non-recursive: single unlinkat(AT_REMOVEDIR).
+                        if cmode == ConsensusMode::Consensus {
+                            let e = wal.append_with_ack(
+                                WalEntry {
+                                    op: WalOp::RemoveDir,
+                                    path: canon_target.clone(),
+                                    extra_path: None,
+                                    offset: None,
+                                    length: None,
+                                    payload_ref: None,
+                                    mode_bits: None,
+                                    owner: None,
+                                    group: None,
+                                    outcome: WalOutcome::Success,
+                                },
+                                ack_channel_hash(&ack_clone),
+                            );
+                            if e.is_err() {
+                                return err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded");
+                            }
+                        }
+                        let rc = unsafe {
+                            libc::unlinkat(
+                                parent.as_raw_fd(),
+                                parent.leaf_ptr(),
+                                libc::AT_REMOVEDIR,
+                            )
+                        };
+                        if rc == 0 {
+                            return ok_bare();
+                        }
+                        let e = std::io::Error::last_os_error();
+                        if cmode == ConsensusMode::Consensus {
+                            let _ = wal.update_outcome_by_ack_hash(
+                                ack_channel_hash(&ack_clone),
+                                WalOutcome::Failure {
+                                    code: io_err_code_u32(&e),
+                                },
+                            );
+                        }
+                        return err(io_err_code(&e), io_msg_scrub(&e));
+                    }
+                    // Recursive path.
+                    if cmode == ConsensusMode::Oracular {
+                        // Oracular: existing readdir-loop unlinker, no
+                        // WAL, reply-shape unchanged.
+                        match remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr()) {
+                            Ok(()) => ok_bare(),
+                            Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
+                        }
+                    } else {
+                        // Consensus + recursive: sorted-post-order walk,
+                        // per-entry journal + unlink, reply carries
+                        // manifest of successfully-deleted entries.
+                        let manifest = match collect_recursive_manifest(&canon_target) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                return err(io_err_code(&e), io_msg_scrub(&e));
+                            }
+                        };
+                        let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
+                        for (path, kind) in manifest {
+                            // Journal (unique ack_hash per entry so
+                            // symmetric append on follower via
+                            // per_entry_ack_seed).
+                            let op = match kind {
+                                RemoveKind::File => WalOp::RemoveFile,
+                                RemoveKind::Dir => WalOp::RemoveDir,
+                            };
+                            let per_entry_ack = per_entry_ack_seed(&ack_clone, &path);
+                            if wal
+                                .append_with_ack(
+                                    WalEntry {
+                                        op,
+                                        path: path.clone(),
+                                        extra_path: None,
+                                        offset: None,
+                                        length: None,
+                                        payload_ref: None,
+                                        mode_bits: None,
+                                        owner: None,
+                                        group: None,
+                                        outcome: WalOutcome::Success,
+                                    },
+                                    per_entry_ack,
+                                )
+                                .is_err()
+                            {
+                                return err_with_manifest(
+                                    FSERR_QUOTA_EXCEEDED,
+                                    "WAL cap exceeded during recursive removeDir",
+                                    &deleted,
                                 );
                             }
-                            err(FSERR_UNSUPPORTED, "removeDir unavailable in consensus mode")
-                        }
-                        ConsensusMode::Oracular => {
-                            if target_is_locked {
-                                if let Some((dev, ino)) = target_dev_inode {
-                                    let n_holders = lock_registry.count_locks((dev, ino));
-                                    tracing::warn!(
-                                        target: "f1r3fly.fs.oracular",
-                                        dev = dev,
-                                        ino = ino,
-                                        n_holders = n_holders,
-                                        "oracular removeDir of locked directory (dev={}, ino={}) \
-                                         — {} holder(s) will observe subsequent errors on \
-                                         path-based calls; fd-based calls remain valid until close",
-                                        dev,
-                                        ino,
-                                        n_holders
+                            let unlink_rc = match kind {
+                                RemoveKind::File => unsafe { libc_unlink(&path, false) },
+                                RemoveKind::Dir => unsafe { libc_unlink(&path, true) },
+                            };
+                            match unlink_rc {
+                                Ok(()) => {
+                                    deleted.push((path, kind));
+                                }
+                                Err(e) => {
+                                    let code_u32 = io_err_code_u32(&e);
+                                    let _ = wal.update_outcome_by_ack_hash(
+                                        per_entry_ack,
+                                        WalOutcome::Failure { code: code_u32 },
+                                    );
+                                    return err_with_manifest(
+                                        io_err_code(&e),
+                                        io_msg_scrub(&e),
+                                        &deleted,
                                     );
                                 }
                             }
-                            if recursive {
-                                if let Err(e) =
-                                    remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr())
-                                {
-                                    return err(io_err_code(&e), io_msg_scrub(&e));
-                                }
-                                ok_bare()
-                            } else {
-                                let rc = unsafe {
-                                    libc::unlinkat(
-                                        parent.as_raw_fd(),
-                                        parent.leaf_ptr(),
-                                        libc::AT_REMOVEDIR,
-                                    )
-                                };
-                                if rc == 0 {
-                                    ok_bare()
-                                } else {
-                                    let e = std::io::Error::last_os_error();
-                                    err(io_err_code(&e), io_msg_scrub(&e))
-                                }
-                            }
                         }
+                        ok_recursive_manifest(&deleted)
                     }
                 })
                 .await
                 .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
-            _ => err(FSERR_BAD_ARG, "expected (String, String, Bool, String)"),
+            None => err(FSERR_BAD_ARG, "expected (String, String, Bool, String)"),
         };
         let out = vec![reply];
         produce(&out, ack).await?;
@@ -3906,6 +4257,74 @@ fn read_dir_capped(
         libc::closedir(dir);
         Ok((names, hit_cap))
     }
+}
+
+/// Kind marker for a `RecursiveRemoveManifest` entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoveKind {
+    File,
+    Dir,
+}
+
+impl RemoveKind {
+    fn as_wire(&self) -> &'static str {
+        match self {
+            RemoveKind::File => "file",
+            RemoveKind::Dir => "dir",
+        }
+    }
+}
+
+/// H-29-3 lift slice 2 (2026-08-26): sorted post-order walk that
+/// collects (canon_path, kind) tuples for a recursive Consensus
+/// removeDir.  The manifest drives both leader-side WAL journaling
+/// AND follower-side re-journaling (via the reply-manifest passed
+/// through `previous`).  Both leader and follower observe an
+/// identical filesystem walk order (sorted lexicographically per
+/// directory), so the manifest and its resulting WAL entries are
+/// byte-identical across the leader/follower split.
+///
+/// Uses `std::fs::read_dir` because consensus trees reject symlinks
+/// at boot; the lexical-sort requirement makes std::fs the ergonomic
+/// choice over raw readdir.  If a symlink or non-file/non-dir entry
+/// is encountered here, returns Unsupported — same failure mode as
+/// boot-time validation.
+///
+/// Ordering: children first, then the containing directory itself
+/// (post-order).  Sibling entries are sorted by `file_name()`.
+/// `target_root` is included as the final entry (a `Dir`) so the
+/// applier's last unlink removes the top-level.
+fn collect_recursive_manifest(
+    target_root: &std::path::Path,
+) -> std::io::Result<Vec<(std::path::PathBuf, RemoveKind)>> {
+    fn walk(
+        dir: &std::path::Path,
+        out: &mut Vec<(std::path::PathBuf, RemoveKind)>,
+    ) -> std::io::Result<()> {
+        let mut entries: Vec<(std::ffi::OsString, std::path::PathBuf, std::fs::FileType)> =
+            std::fs::read_dir(dir)?
+                .map(|r| r.and_then(|e| e.file_type().map(|ft| (e.file_name(), e.path(), ft))))
+                .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_name, path, ft) in entries {
+            if ft.is_dir() {
+                walk(&path, out)?;
+                out.push((path, RemoveKind::Dir));
+            } else if ft.is_file() {
+                out.push((path, RemoveKind::File));
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    format!("unexpected filesystem entry kind at {path:?}"),
+                ));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(target_root, &mut out)?;
+    out.push((target_root.to_path_buf(), RemoveKind::Dir));
+    Ok(out)
 }
 
 /// Recursive symlink-safe rmdir.  Descends from `parent` into `leaf`

@@ -1383,14 +1383,16 @@ mod tests {
         // on `ell > cap`, and the 4 File.rho callers now pass
         // `67108864` = MAX_WRITE_BYTES.
         //
-        // Anchor roll 2026-08-26 (H-29-3 lift slice 1): Dir.rho methods
-        // removeFile / rename / copyFile / chmod and File.rho::chmod
-        // drop their Consensus-cap fail-closed guards; File.rho::chown
-        // docstring updated to reflect post-lift semantics.  Consensus-
-        // cap path-based mutations now dispatch to the native handlers,
-        // which journal WAL entries + perform the syscall.  See the
-        // "H-29-3 lift" plan-doc entry for full description.
+        // Anchor roll 2026-08-26 (H-29-3 lift slice 2): Dir.rho
+        // removeDir method drops its Consensus-cap fail-closed guard.
+        // Consensus-cap removeDir now dispatches to the native which
+        // journals a granular sorted-post-order manifest of WAL
+        // entries (recursive) or a single RemoveDir entry (non-
+        // recursive), then performs the unlinks + returns a
+        // manifest-carrying reply for symmetric follower replay.
+        // See the "H-29-3 lift" plan-doc entry for full description.
         //
+        // Prior anchor: 91adaac8 (H-29-3 lift slice 1, 2026-08-26).
         // Prior anchor: 1f3e8878 (Phase 8 review cursor-relative TOCTOU docstring, 2026-08-26).
         // Prior anchor: 5efce8f4 (streaming-slice Step 5 Fixup A close-on-malformed, 2026-08-26).
         // Prior anchor: 60035818 (streaming-slice Step 5 initial Dir.rho swap, 2026-08-25).
@@ -1402,7 +1404,7 @@ mod tests {
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
         // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
-        const EXPECTED: &str = "91adaac8bac6c784bce71e0a37bb97073fb233a8145e00c546e2f00e8241a736";
+        const EXPECTED: &str = "e172310924b99c112af1c9c8d332a6d4a325e514d67eb65c26c1dcebb7749ac7";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

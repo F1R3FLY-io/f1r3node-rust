@@ -378,33 +378,39 @@ new Dir, rootP, cmodeP in {
         r /\ String => {
           match recursive {
             b /\ Bool => {
-              // H-29-3: fail-closed on Consensus cap.
+              // H-29-3 lift slice 2 (2026-08-26): Consensus caps now
+              // supported.  Non-recursive Consensus emits a single
+              // RemoveDir WAL entry; recursive Consensus emits one
+              // WAL entry per subtree entry (RemoveFile / RemoveDir)
+              // in sorted post-order and packs the manifest into
+              // the reply so a follower on `is_replay` can journal
+              // symmetrically without a live filesystem walk.  Reply
+              // shape for recursive Consensus success:
+              //   [true, [[path1, "file"], [path2, "dir"], ...]]
+              // Recursive Consensus failure:
+              //   [false, code, msg, [[...manifest of successful]]]
+              // Non-recursive and Oracular replies unchanged
+              // ([true] / [false, code, msg]).
               for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match cmode {
-                  "consensus" => return!([false, "FSERR_UNSUPPORTED",
-                    "removeDir not supported on consensus caps (slice 29 WAL covers only fd-based write/truncate)"])
-                  _ => {
-                    match params {
-                      (canonRoot, subPath, dirMode, _fileCtor) => {
-                        match dirMode {
-                          "rw" => {
-                            new joinedCh in {
-                              joinRel!(subPath, r, *joinedCh) |
-                              for (@joined <- joinedCh) {
-                                new retCh in {
-                                  fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
-                                  for (@reply <- retCh) { return!(reply) }
-                                }
-                              }
+                match params {
+                  (canonRoot, subPath, dirMode, _fileCtor) => {
+                    match dirMode {
+                      "rw" => {
+                        new joinedCh in {
+                          joinRel!(subPath, r, *joinedCh) |
+                          for (@joined <- joinedCh) {
+                            new retCh in {
+                              fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
+                              for (@reply <- retCh) { return!(reply) }
                             }
                           }
-                          _ => return!([false, "FSERR_UNSUPPORTED",
-                            "removeDir requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_IO", "root params malformed"])
+                      _ => return!([false, "FSERR_UNSUPPORTED",
+                        "removeDir requires \"rw\" Dir mode"])
                     }
                   }
+                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
