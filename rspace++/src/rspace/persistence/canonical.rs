@@ -236,6 +236,13 @@ pub enum CanonicalFormatError {
         previous: u64,
         current: u64,
     },
+    RetentionStateBytes {
+        generation: u64,
+        minimum: u64,
+        actual: u64,
+    },
+    RetentionContainsCurrent,
+    RetainedStatesNotStrict,
     MissingObject(ObjectDigest),
     DigestMismatch {
         expected: ObjectDigest,
@@ -359,6 +366,20 @@ impl Display for CanonicalFormatError {
                 formatter,
                 "accelerator artifact kinds are not strictly increasing: {previous} then {current}"
             ),
+            Self::RetentionStateBytes {
+                generation,
+                minimum,
+                actual,
+            } => write!(
+                formatter,
+                "retained state generation {generation} declares {actual} canonical bytes, below \
+                 its manifest length {minimum}"
+            ),
+            Self::RetentionContainsCurrent => {
+                formatter.write_str("retention history repeats the current state")
+            }
+            Self::RetainedStatesNotStrict => formatter
+                .write_str("retained historical states are not in strict canonical identity order"),
             Self::MissingObject(digest) => write!(formatter, "missing canonical object {digest}"),
             Self::DigestMismatch { expected, actual } => {
                 write!(formatter, "object digest mismatch: expected {expected}, got {actual}")

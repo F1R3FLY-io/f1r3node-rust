@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::rspace::persistence::{
     CanonicalDagNode, CanonicalEncode, CanonicalFormatError, CanonicalObjectStore, DagChild,
-    EndpointValue, ImmutableObjectStore, ObjectAdmission, ObjectDigest, ObjectRefV1,
-    SemanticProfile, SemanticProfileId, SemanticRoots, SemanticStateManifestV1,
+    EndpointValue, ImmutableObjectStore, MutableObjectStore, ObjectAdmission, ObjectDigest,
+    ObjectRefV1, SemanticProfile, SemanticProfileId, SemanticRoots, SemanticStateManifestV1,
     semantic_profile_seal,
 };
 
@@ -60,7 +60,9 @@ impl ImmutableObjectStore for TracingStore {
         drop(reads);
         self.inner.get_bounded(digest, max_encoded_len)
     }
+}
 
+impl MutableObjectStore for TracingStore {
     fn put_if_absent_or_equal(
         &self,
         reference: ObjectRefV1,

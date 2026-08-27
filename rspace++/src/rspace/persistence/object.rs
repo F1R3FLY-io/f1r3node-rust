@@ -9,6 +9,7 @@ use super::manifest::{
     ACCELERATOR_MANIFEST_DOMAIN, AcceleratorManifestView, SEMANTIC_MANIFEST_DOMAIN,
     SemanticStateManifestView,
 };
+use super::retention::{RETENTION_MANIFEST_DOMAIN, RetentionManifestView};
 
 pub(crate) const DAG_NODE_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Node\0\0";
 pub(crate) const DAG_BLOB_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Blob\0\0";
@@ -727,6 +728,7 @@ pub enum CanonicalObjectKind {
     Blob,
     SemanticManifest,
     AcceleratorManifest,
+    RetentionManifest,
 }
 
 impl CanonicalObjectKind {
@@ -736,6 +738,7 @@ impl CanonicalObjectKind {
             Self::Blob => "blob",
             Self::SemanticManifest => "semantic-manifest",
             Self::AcceleratorManifest => "accelerator-manifest",
+            Self::RetentionManifest => "retention-manifest",
         }
     }
 }
@@ -746,6 +749,7 @@ pub enum CanonicalObjectView<'a> {
     Blob(CanonicalBlobView<'a>),
     SemanticManifest(SemanticStateManifestView),
     AcceleratorManifest(AcceleratorManifestView<'a>),
+    RetentionManifest(RetentionManifestView<'a>),
 }
 
 impl<'a> CanonicalObjectView<'a> {
@@ -765,6 +769,8 @@ impl<'a> CanonicalObjectView<'a> {
             Ok(Self::SemanticManifest(SemanticStateManifestView::parse(bytes)?))
         } else if domain == ACCELERATOR_MANIFEST_DOMAIN {
             Ok(Self::AcceleratorManifest(AcceleratorManifestView::parse(bytes)?))
+        } else if domain == RETENTION_MANIFEST_DOMAIN {
+            Ok(Self::RetentionManifest(RetentionManifestView::parse(bytes)?))
         } else {
             Err(CanonicalFormatError::UnknownObjectDomain)
         }
@@ -776,6 +782,7 @@ impl<'a> CanonicalObjectView<'a> {
             Self::Blob(_) => CanonicalObjectKind::Blob,
             Self::SemanticManifest(_) => CanonicalObjectKind::SemanticManifest,
             Self::AcceleratorManifest(_) => CanonicalObjectKind::AcceleratorManifest,
+            Self::RetentionManifest(_) => CanonicalObjectKind::RetentionManifest,
         }
     }
 }

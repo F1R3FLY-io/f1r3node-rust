@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::support::encode;
 use crate::rspace::persistence::{
-    CanonicalDagNode, DagChild, EndpointValue, ImmutableObjectStore, ObjectAdmission, ObjectRefV1,
+    CanonicalDagNode, DagChild, EndpointValue, MutableObjectStore, ObjectAdmission, ObjectRefV1,
 };
 
 pub(super) type Entries = BTreeMap<Vec<u8>, EndpointValue>;
@@ -31,7 +31,7 @@ enum RebuildWork {
 /// deep-path test never replaces production recursion with test recursion.
 pub(super) fn rebuild<S>(store: &S, entries: &Entries) -> ObjectRefV1
 where
-    S: ImmutableObjectStore,
+    S: MutableObjectStore,
     S::Error: Debug,
 {
     if entries.is_empty() {
@@ -124,7 +124,7 @@ where
 
 pub(super) fn admit_node<S>(store: &S, node: &CanonicalDagNode) -> ObjectRefV1
 where
-    S: ImmutableObjectStore,
+    S: MutableObjectStore,
     S::Error: Debug,
 {
     let bytes: Arc<[u8]> = encode(node).into();

@@ -1,0 +1,428 @@
+use std::convert::Infallible;
+
+use super::support::{TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, synthetic_ref};
+use super::transaction_sealing::{base_state, data_batch, seal_data};
+use crate::rspace::persistence::{
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalObjectStore, CatalogPackStateV1,
+    CatalogSelectionV1, CatalogSlotV1, CommittedObjectComparison, CommittedObjectLookup,
+    DurableFormatError, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
+    LogPackObjectPlanV1, LogPackSequence, ObjectRefV1, PhysicalDigest,
+    PreparedLogPackTransactionV1, SemanticProfileId, StateVersionV1, StoreId,
+    TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
+};
+
+struct MissingLookup;
+
+impl CommittedObjectLookup for MissingLookup {
+    type Error = Infallible;
+
+    fn compare_committed_object(
+        &self,
+        _reference: ObjectRefV1,
+        _sealed_canonical_bytes: &[u8],
+    ) -> Result<CommittedObjectComparison, Self::Error> {
+        Ok(CommittedObjectComparison::Missing)
+    }
+}
+
+fn pack(epoch: u64) -> CatalogPackStateV1 {
+    CatalogPackStateV1::new(
+        5,
+        7,
+        4096 + epoch * 512 + TRANSACTION_COMMIT_RECORD_LEN_V1,
+        3,
+        64 + epoch * 72,
+        synthetic_ref(0xf0),
+        epoch * 2048,
+        epoch * 4096,
+    )
+    .unwrap()
+}
+
+fn slot(epoch: u64, generation: u64) -> CatalogSlotV1 {
+    CatalogSlotV1::new(
+        StoreId::from_array([0x44; 16]),
+        epoch,
+        StateVersionV1::new(generation, synthetic_ref(generation as u8 + 1)),
+        TEST_SEMANTIC_PROFILE_ID,
+        PhysicalDigest::of_bytes(&epoch.to_le_bytes()),
+        LogPackSequence::new(epoch).unwrap(),
+        LogPackAddress::new(7, 4096 + epoch * 512, TRANSACTION_COMMIT_RECORD_LEN_V1).unwrap(),
+        pack(epoch),
+    )
+    .unwrap()
+}
+
+fn image(first: Option<CatalogSlotV1>, second: Option<CatalogSlotV1>) -> [u8; CATALOG_IMAGE_LEN] {
+    let mut image = [0u8; CATALOG_IMAGE_LEN];
+    if let Some(first) = first {
+        image[..CATALOG_SLOT_LEN].copy_from_slice(&first.encode());
+    }
+    if let Some(second) = second {
+        image[CATALOG_SLOT_LEN..].copy_from_slice(&second.encode());
+    }
+    image
+}
+
+fn bound_commit_and_slot() -> (CatalogSlotV1, TransactionCommitViewV1) {
+    let object_store = CanonicalObjectStore::new();
+    let base = base_state(&object_store, 80, None);
+    let mutation = data_batch(base, "catalog-terminal-commit");
+    let sealed = seal_data(&object_store, &mutation);
+    let receipt = sealed.receipt();
+    let store_id = StoreId::from_array([0x66; 16]);
+    let sequence = LogPackSequence::new(17).unwrap();
+    let prepared = PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
+        &sealed,
+        LogPackObjectPlanV1::classify(&sealed, &MissingLookup).unwrap(),
+        store_id,
+        sequence,
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let mut prepare_bytes = Vec::new();
+    let prepare = prepared.write_to(&mut prepare_bytes).unwrap();
+    let prepare_address = LogPackAddress::new(11, 128, prepare.record_len()).unwrap();
+    let commit_address =
+        LogPackAddress::new(11, prepare_address.end(), TRANSACTION_COMMIT_RECORD_LEN_V1).unwrap();
+    let pack = CatalogPackStateV1::new(
+        9,
+        11,
+        commit_address.end(),
+        4,
+        64 + 3 * 72,
+        synthetic_ref(0xd0),
+        4096,
+        8192,
+    )
+    .unwrap();
+    let commit = TransactionCommitRecordV1::new(
+        receipt,
+        store_id,
+        PhysicalDigest::of_bytes(b"previous terminal commit"),
+        prepare_address,
+        prepare,
+        pack.commit_publication(),
+    )
+    .unwrap();
+    let slot = CatalogSlotV1::new(
+        store_id,
+        21,
+        receipt.target(),
+        receipt.profile_id(),
+        commit.digest(),
+        sequence,
+        commit_address,
+        pack,
+    )
+    .unwrap();
+    (slot, TransactionCommitViewV1::parse(commit.canonical_bytes()).unwrap())
+}
+
+#[test]
+fn slot_round_trip_and_adjacent_epoch_selection_are_exact() {
+    let first = slot(11, 20);
+    let second = slot(12, 21);
+    assert_eq!(CatalogSlotV1::parse(&first.encode()).unwrap(), Some(first));
+    let selected = CatalogSelectionV1::select(&image(Some(first), Some(second)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.slot_index(), 1);
+    assert_eq!(selected.inactive_slot_index(), 0);
+    assert_eq!(selected.slot(), second);
+    assert_eq!(selected.ignored_corrupt_slot(), None);
+}
+
+#[test]
+fn every_observably_torn_inactive_slot_preserves_the_previous_authority() {
+    let current = slot(30, 70);
+    let next = slot(31, 71).encode();
+    for prefix in 1..CATALOG_SLOT_LEN {
+        let mut torn = [0u8; CATALOG_IMAGE_LEN];
+        torn[..CATALOG_SLOT_LEN].copy_from_slice(&current.encode());
+        torn[CATALOG_SLOT_LEN..CATALOG_SLOT_LEN + prefix].copy_from_slice(&next[..prefix]);
+        let selected = CatalogSelectionV1::select(&torn).unwrap().unwrap();
+        if prefix < CATALOG_SLOT_LEN - 4 {
+            assert_eq!(selected.slot(), current, "torn prefix {prefix}");
+            assert_eq!(selected.ignored_corrupt_slot(), Some(1));
+        } else {
+            // The checksum is CRC32C encoded in a checked u64. Once its low
+            // four bytes have been written, the remaining high bytes already
+            // have their required zero value in the empty inactive slot; the
+            // image is byte-for-byte the complete successor.
+            assert_eq!(selected.slot(), slot(31, 71), "complete prefix {prefix}");
+            assert_eq!(selected.ignored_corrupt_slot(), None);
+        }
+    }
+}
+
+#[test]
+fn slot_disagreement_epoch_gaps_and_corrupt_only_images_fail_closed() {
+    let lower = slot(7, 7);
+    let mut different_store = slot(8, 8).encode();
+    different_store[24] ^= 1;
+    let auth_len = CATALOG_SLOT_LEN - 8;
+    let crc = crate::rspace::persistence::checksum::crc32c(&different_store[..auth_len]);
+    different_store[auth_len..]
+        .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(crc));
+    let different_store = CatalogSlotV1::parse(&different_store).unwrap().unwrap();
+    assert!(matches!(
+        CatalogSelectionV1::select(&image(Some(lower), Some(different_store))),
+        Err(DurableFormatError::CatalogStoreMismatch { .. })
+    ));
+
+    assert!(matches!(
+        CatalogSelectionV1::select(&image(Some(lower), Some(slot(10, 10)))),
+        Err(DurableFormatError::CatalogEpochGap { .. })
+    ));
+
+    let mut corrupt = [0x55u8; CATALOG_IMAGE_LEN];
+    corrupt[100] ^= 1;
+    assert!(matches!(
+        CatalogSelectionV1::select(&corrupt),
+        Err(DurableFormatError::NoValidCatalog { .. })
+    ));
+}
+
+#[test]
+fn catalog_successor_is_an_exact_state_cas_and_epoch_never_wraps() {
+    let current = slot(4, 9);
+    let target = StateVersionV1::new(10, synthetic_ref(99));
+    let next = current
+        .successor(
+            current.state(),
+            target,
+            PhysicalDigest::of_bytes(b"next"),
+            LogPackSequence::new(5).unwrap(),
+            LogPackAddress::new(7, 9000, TRANSACTION_COMMIT_RECORD_LEN_V1).unwrap(),
+            CatalogPackStateV1::new(
+                5,
+                7,
+                9000 + TRANSACTION_COMMIT_RECORD_LEN_V1,
+                4,
+                496,
+                synthetic_ref(0xf1),
+                8192,
+                12288,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(next.epoch(), 5);
+    assert_eq!(next.state(), target);
+    assert!(matches!(
+        current.successor(
+            StateVersionV1::new(current.state().generation(), synthetic_ref(98)),
+            target,
+            PhysicalDigest::ZERO,
+            LogPackSequence::new(5).unwrap(),
+            LogPackAddress::new(7, 9000, TRANSACTION_COMMIT_RECORD_LEN_V1).unwrap(),
+            CatalogPackStateV1::new(
+                5,
+                7,
+                9000 + TRANSACTION_COMMIT_RECORD_LEN_V1,
+                4,
+                496,
+                synthetic_ref(0xf1),
+                8192,
+                12288,
+            )
+            .unwrap(),
+        ),
+        Err(DurableFormatError::CatalogCompareAndSwap { .. })
+    ));
+
+    let exhausted = CatalogSlotV1::new(
+        current.store_id(),
+        u64::MAX,
+        current.state(),
+        current.profile_id(),
+        current.commit_digest(),
+        current.commit_sequence(),
+        current.commit_address(),
+        current.pack(),
+    )
+    .unwrap();
+    assert!(matches!(
+        exhausted.successor(
+            exhausted.state(),
+            target,
+            PhysicalDigest::ZERO,
+            LogPackSequence::new(5).unwrap(),
+            LogPackAddress::new(7, 9000, TRANSACTION_COMMIT_RECORD_LEN_V1).unwrap(),
+            CatalogPackStateV1::new(
+                5,
+                7,
+                9000 + TRANSACTION_COMMIT_RECORD_LEN_V1,
+                4,
+                496,
+                synthetic_ref(0xf1),
+                8192,
+                12288,
+            )
+            .unwrap(),
+        ),
+        Err(DurableFormatError::CatalogEpochOverflow(u64::MAX))
+    ));
+}
+
+#[test]
+fn catalog_rejects_wide_checksums_reserved_gaps_misaligned_indexes_and_inexact_tails() {
+    let current = slot(6, 12);
+    let mut wide_checksum = current.encode();
+    *wide_checksum.last_mut().unwrap() = 1;
+    assert!(matches!(
+        CatalogSlotV1::parse(&wide_checksum),
+        Err(DurableFormatError::CatalogChecksumOutOfRange(_))
+    ));
+
+    let mut reserved_gap = current.encode();
+    reserved_gap[256] = 1;
+    let auth_len = CATALOG_SLOT_LEN - 8;
+    let crc = crate::rspace::persistence::checksum::crc32c(&reserved_gap[..auth_len]);
+    reserved_gap[auth_len..]
+        .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(crc));
+    assert_eq!(
+        CatalogSlotV1::parse(&reserved_gap),
+        Err(DurableFormatError::NonzeroCatalogReserved)
+    );
+
+    assert!(matches!(
+        CatalogPackStateV1::new(1, 1, 4096, 1, 65, synthetic_ref(1), 128, 128),
+        Err(DurableFormatError::CatalogIndexTail(65))
+    ));
+    assert!(matches!(
+        crate::rspace::persistence::CommitPublicationV1::new(1, 1, 65, synthetic_ref(1), 128, 128,),
+        Err(LogPackFormatError::IndexTailUnaligned(65))
+    ));
+
+    let exact_end = current.commit_address().end();
+    let inexact_pack = CatalogPackStateV1::new(
+        current.pack().first_live_pack(),
+        current.active_pack(),
+        exact_end + 1,
+        current.pack().index_generation(),
+        current.pack().durable_index_tail(),
+        current.pack().retention_manifest(),
+        current.pack().current_state_canonical_bytes(),
+        current.pack().retained_canonical_bytes(),
+    )
+    .unwrap();
+    assert!(matches!(
+        CatalogSlotV1::new(
+            current.store_id(),
+            current.epoch(),
+            current.state(),
+            current.profile_id(),
+            current.commit_digest(),
+            current.commit_sequence(),
+            current.commit_address(),
+            inexact_pack,
+        ),
+        Err(DurableFormatError::CatalogPackTail { .. })
+    ));
+}
+
+#[test]
+fn selected_catalog_authority_is_bound_to_every_terminal_commit_field() {
+    let (slot, commit) = bound_commit_and_slot();
+    slot.verify_commit(commit).unwrap();
+
+    let rebuild = |store_id, state, profile_id, commit_digest, commit_sequence, pack| {
+        CatalogSlotV1::new(
+            store_id,
+            slot.epoch(),
+            state,
+            profile_id,
+            commit_digest,
+            commit_sequence,
+            slot.commit_address(),
+            pack,
+        )
+        .unwrap()
+    };
+
+    assert!(matches!(
+        rebuild(
+            StoreId::from_array([0x67; 16]),
+            slot.state(),
+            slot.profile_id(),
+            slot.commit_digest(),
+            slot.commit_sequence(),
+            slot.pack(),
+        )
+        .verify_commit(commit),
+        Err(DurableFormatError::CatalogCommitStore { .. })
+    ));
+    assert!(matches!(
+        rebuild(
+            slot.store_id(),
+            slot.state(),
+            slot.profile_id(),
+            slot.commit_digest(),
+            LogPackSequence::new(slot.commit_sequence().get() + 1).unwrap(),
+            slot.pack(),
+        )
+        .verify_commit(commit),
+        Err(DurableFormatError::CatalogCommitSequence { .. })
+    ));
+    assert!(matches!(
+        rebuild(
+            slot.store_id(),
+            slot.state(),
+            slot.profile_id(),
+            PhysicalDigest::of_bytes(b"not the selected terminal commit"),
+            slot.commit_sequence(),
+            slot.pack(),
+        )
+        .verify_commit(commit),
+        Err(DurableFormatError::CatalogCommitDigest { .. })
+    ));
+    assert!(matches!(
+        rebuild(
+            slot.store_id(),
+            StateVersionV1::new(slot.state().generation() + 1, slot.state().manifest()),
+            slot.profile_id(),
+            slot.commit_digest(),
+            slot.commit_sequence(),
+            slot.pack(),
+        )
+        .verify_commit(commit),
+        Err(DurableFormatError::CatalogCommitState { .. })
+    ));
+    assert!(matches!(
+        rebuild(
+            slot.store_id(),
+            slot.state(),
+            SemanticProfileId::from_array(*b"Other.Profile.V1"),
+            slot.commit_digest(),
+            slot.commit_sequence(),
+            slot.pack(),
+        )
+        .verify_commit(commit),
+        Err(DurableFormatError::CatalogCommitProfile { .. })
+    ));
+    let different_pack = CatalogPackStateV1::new(
+        slot.pack().first_live_pack(),
+        slot.active_pack(),
+        slot.durable_pack_tail(),
+        slot.pack().index_generation(),
+        slot.pack().durable_index_tail(),
+        slot.pack().retention_manifest(),
+        slot.pack().current_state_canonical_bytes(),
+        slot.pack().retained_canonical_bytes() + 1,
+    )
+    .unwrap();
+    assert!(matches!(
+        rebuild(
+            slot.store_id(),
+            slot.state(),
+            slot.profile_id(),
+            slot.commit_digest(),
+            slot.commit_sequence(),
+            different_pack,
+        )
+        .verify_commit(commit),
+        Err(DurableFormatError::CatalogCommitPublication { .. })
+    ));
+}

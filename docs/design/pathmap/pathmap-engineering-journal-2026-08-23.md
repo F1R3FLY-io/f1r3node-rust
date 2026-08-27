@@ -2768,14 +2768,20 @@ accessors directly.
 fixed 232-byte authenticated header contains a 16-byte domain, fixed little-endian `u64` format
 fields, nonzero sequence, 16-byte store identifier, exact base and target versions, semantic
 profile, mutation digest, mutation length, object count, and total canonical-object bytes. A header
-CRC32C is validated before any variable length is trusted. The payload is the borrowed mutation
-bytes followed by each `(digest, encoded length, canonical bytes)` object record in the order
-already supplied by `SealedDagTransaction`; no second sort is performed. A final CRC32C covers the
-complete header and payload, and BLAKE2b-256 binds the same image as the prepare identity.
+CRC32C, stored as a checked little-endian `u64`, is validated before any variable length is trusted.
+The payload is the borrowed mutation followed by one digest-ordered object record. A data record is
+`kind:u64 || ObjectRefV1 || canonical bytes`; a reuse record is
+`kind:u64 || ObjectRefV1`. Reuse is selected before the first append only after a committed-index
+lookup and complete length-and-byte equality. It carries no physical address, so compaction may
+relocate the named content without rewriting historical WAL. The authenticated `object_bytes`
+field remains the sum of all logically sealed bodies, including reuse, and is therefore independent
+of warm/cold store state. No object body is copied into the plan and no second sort is performed.
 
-The terminal 308-byte commit record binds the store, transaction sequence, previous commit digest,
-exact prepare segment/offset/length, prepare digest, complete sealed receipt, and durable index
-frontier. It is fixed-size so it can be decoded without trusting an input-controlled allocation.
+The terminal **384-byte** commit binds the store, transaction sequence, previous commit digest,
+exact prepare segment/offset/length, prepare digest, complete sealed receipt, durable index tail,
+first-live pack, index generation, retention-manifest reference, current-state canonical bytes, and
+retained-union canonical bytes. It is fixed-size so it can be decoded without trusting an
+input-controlled allocation.
 CRC32C is represented by the iSCSI/Castagnoli polynomial and pinned against the standard
 `123456789` check value `0xe3069283`. CRC32C only rejects torn/corrupt physical records; canonical
 object references and record-chain identities continue to use BLAKE2b-256.
@@ -2790,25 +2796,28 @@ for object in existing digest order:
     require strict order
     parse canonical framing
     require digest and encoded length = declared reference
-    checked-add count, reference bytes, and canonical bytes
+    compare any committed same-digest body completely
+    classify as DATA if missing, REUSE if equal, reject if unequal
+    checked-add logical bytes and DATA-only physical bytes
 require every total within caller budgets
 
 write fixed authenticated header
-write header CRC32C
+write header CRC32C as a checked u64
 write borrowed mutation bytes
-for object in existing digest order:
-    write reference
-write borrowed canonical bytes
-write record CRC32C
+for (object, disposition) in existing digest order:
+    write disposition and reference
+    if disposition = DATA: write borrowed canonical bytes
+write record CRC32C as a checked u64
 return prepare identity only if every sink write succeeded and emitted length = preflight length
 ```
 
 The borrowed decoder reverses that procedure without reconstructing producer PathMaps or an object
 collection. It checks the fixed header checksum and declared total, checks the complete record
 checksum, enforces total record/mutation/object/key/entry budgets, parses the mutation in place,
-and validates object references while advancing one cursor. Its object iterator later replays the
-already validated byte ranges. All format integers are fixed-width little-endian `u64` except the
-four-byte CRC32C; no `usize`, native-endian field, timestamp, protobuf, bincode, `Vec<Par>`, semantic
+and validates object references while advancing one cursor. Its object iterator later lends an
+inline body's validated byte range or reports an address-free reuse reference. Every physical
+checksum occupies a fixed-width little-endian `u64`; because CRC32C is intrinsically 32 bits, a
+reader rejects any nonzero high half. No `usize`, native-endian field, timestamp, protobuf, bincode, `Vec<Par>`, semantic
 entry projection, or semantic sorting enters the format.
 
 This borrowed view is deliberately named a **prepare-record view**, not a verified state. It proves
@@ -2819,26 +2828,26 @@ properties before publication. Likewise, prepare emission returns a typed sink-o
 a writer/preflight length disagreement omits the terminal CRC and returns no identity even in a
 release build, leaving only an uncommitted tail.
 
-For mutation bytes $`m`$, canonical object bytes $`o`$, and object count $`n`$, preflight, writing,
-and validation each take $`O(m+o+n)`$ time. Emission uses $`O(1)`$ auxiliary memory beyond the
-already sealed transaction and the destination's own buffering. Validation retains borrowed ranges
+For mutation bytes $`m`$, logical canonical-object bytes $`o`$, inline bytes $`i`$, and object count
+$`n`$, classification/preflight takes $`O(m+o+n)`$ time and retains exactly $`O(n)`$ dispositions
+without body copies. Emission takes $`O(m+i+n)`$ time and $`O(1)`$ additional state beyond that
+plan, the sealed transaction, and the destination's own buffering. Validation retains borrowed ranges
 and uses $`O(1)`$ auxiliary memory beyond nested canonical-object parsers; native stack is $`O(1)`$
 in RhoPath and trie depth. Resource ceilings bound total work and bytes, never traversal depth.
 
-**EVIDENCE.** Eleven focused cases cover exact prepare/commit round trips, direct borrowed object
+**EVIDENCE.** Thirteen focused cases cover exact prepare/commit round trips, direct borrowed object
 iteration, sink-failure nonpublication, every prepare and commit truncation, independent header and
 payload bit corruption, pre-parse resource refusal, fixed commit length/corruption, unrelated
 receipt and invalid/overflowing extent refusal, valid-CRC negative rebinding of store, sequence,
 prepare length, prepare digest and receipt fields, and a transition with a 100,000-byte identity
-written and validated on a 256 KiB native stack. A frozen V1 fixture pins the exact 232-byte prepare
-header, complete-prepare length/CRC/BLAKE2b-256 identity, and all 308 commit bytes independently of
-the paired parser. The complete persistence matrix is **108/108** after this hardening. The CRC
-implementation also independently pins the Castagnoli check vector. The complete `rspace_plus_plus`
-library then passes **260/260** in **54.30 s** under the 6 GiB/zero-swap cap; transcript
-`target/scratch/rspace-lib-log-pack-checkpoint.log`, SHA-256
-`7e68b37b285ea53e13f6e77463731239c0721941e34cf8bfa0c1ad5aa403fa5b`. These are correctness
-and resource-shape results; latency, allocation, write-amplification, recovery-time, and
-disk-footprint comparisons against LMDB are not yet made.
+written and validated on a 256 KiB native stack. The matrix additionally compares cold DATA with
+warm REUSE, proves that only the equal body length disappears, refuses a forced collision before
+writer construction, and rejects nonzero high checksum bits. A frozen V1 fixture pins the exact
+232-byte authenticated prepare header, **1,123-byte** cold prepare length/CRC/BLAKE2b-256 identity,
+and all **384 commit bytes** independently of the paired parser. Captured capped evidence is
+`target/scratch/wal-codec-v1-final-2026-08-27.log`; **13/13** pass. These are correctness and
+resource-shape results; latency, allocation, write-amplification, recovery-time, and disk-footprint
+comparisons against LMDB are not yet made.
 
 **PATHMAP LEARNING.** The value of PathMap's persistent representation is not preserved by merely
 choosing a trie in memory; the physical boundary must also avoid turning its canonical DAG delta
@@ -2852,6 +2861,91 @@ single-writer lease, compare-and-swap a catalog slot, recover a torn tail, compa
 or replace LMDB. A prepare identity proves complete sink emission, not durability. The next
 checkpoint must implement the affine durable I/O state machine and failpoint recovery; only that
 state machine may acknowledge publication.
+
+### J-039 — 2026-08-27: authenticate retained roots and storage inventories before catalog CAS
+
+**TERMS.** A **retention manifest** is a canonical Merkle object naming the current state and a
+strictly ordered set of historical states that physical policy must preserve. A **logical byte
+inventory** counts the unique canonical object closure of a semantic state. A **physical byte
+inventory** counts local implementation bytes such as log-pack framing, indexes, catalogs, dead
+tails, and temporarily retained generations.
+
+**DECISION.** `RetentionManifestV1` encodes one `(StateVersionV1, canonical_bytes)` current record
+followed by strictly ordered historical records. Its borrowed view and iterative iterator require
+no state vector. The current count is at least the semantic-manifest length; publication and
+recovery must later prove the exact closure count rather than infer it from staged bytes.
+
+The catalog is two fixed **336-byte** slots. Each slot binds store, nonzero epoch, exact current
+state/profile/commit identity, the 384-byte commit address, live pack range, exact durable pack
+tail, nonzero index generation, aligned durable index tail, retention-manifest reference, and both
+byte inventories. Bytes 256–263 and 288–327 are named reserved-zero ranges; bytes 328–335 contain
+zero-extended CRC32C. The valid higher adjacent epoch wins. One valid slot survives a corrupt
+inactive peer; two incompatible valid slots fail closed. The durable pack tail must equal the end
+of the terminal commit, so bytes after it remain a non-authoritative candidate tail.
+
+The terminal commit authenticates every catalog field that derives from transaction publication:
+first-live pack, index generation/tail, retention reference, and the two inventories. Active pack
+and durable pack tail derive from the commit address; catalog epoch remains the external two-slot
+compare-and-swap coordinate. Recovery can therefore compare catalog and commit exactly rather than
+trusting independently mutable metadata. `CatalogSlotV1::verify_commit` performs that comparison
+over store ID, transaction sequence, commit digest, target state, semantic profile, and the complete
+publication tuple before a selected slot can be accepted by recovery. The typed terminal-commit
+constructor itself rejects an index tail that is not exactly `64 + 72n` bytes, so an unaligned
+frontier cannot survive between commit parsing and catalog validation.
+
+For current closure $`C`$, retained-root union $`R`$, mutation $`M`$, physical prepare $`P`$, index
+$`I`$, terminal commit $`K`$, and catalog overwrite $`G`$, consensus storage metering uses the
+deterministic logical transition $`\Delta C`$. Local durability profiling reports
+$`P+I+K+G`$ and the retained physical generations separately. It must never substitute $`R`$ or
+WAL growth for $`C`$. This boundary anticipates restored storage charges without importing local
+filesystem policy into consensus.
+
+**EVIDENCE.** The catalog suite passes **6/6** and covers adjacent selection, every observably torn
+inactive prefix, the safe checked-u64 zero-suffix case, incompatible stores/epoch gaps, corrupt-only
+images, exact state CAS, epoch overflow, nonzero checksum high bits, the previously unnamed
+reserved gap, commit- and catalog-side index-tail misalignment, inexact pack tails, and negative
+catalog-to-terminal-commit substitutions for every authenticated field family. The retention suite
+passes **4/4** and covers owned/borrowed equality, canonical object dispatch, strict
+order/current-duplicate refusal, every truncation, and a frozen empty-history image. Captured logs
+are `target/scratch/durable-catalog-terminal-binding-2026-08-27.log` and
+`target/scratch/retention-manifest-v1-2026-08-27.log`. The aggregate persistence module passes
+**119/119** in **1.76 s** under a 4 GiB memory ceiling, zero swap, and a four-core quota; its
+transcript is `target/scratch/persistence-formats-checkpoint-2026-08-27.log`.
+
+**BOUNDARY.** These are dormant canonical/authentication formats. They do not yet position-write or
+synchronize a slot, acquire the writer lease, scan/rebuild an index, recover a candidate commit,
+delete a generation, change LMDB, or alter Rholang observations.
+
+### J-040 — 2026-08-27: measure atom interning only after native trie sharing
+
+**OBSERVATION.** libdictenstein's vocabulary trie assigns dense insertion-order `u64` identifiers
+to terms and rebuilds a reverse ID-to-term map. This is effective for information retrieval because
+postings repeat vocabulary identifiers. PathMap's currently implemented sharing mechanisms are
+different: persistent CoW nodes share unchanged structure, `merkleize` factors identical subtries,
+and ACT construction reuses identical compressed line data. PathMap's symbol-encoding chapter is a
+design placeholder rather than a stable symbol-interning API.
+
+The current RSpace integration already places channel identity in a shared `RhoPath` prefix, uses
+canonical PathMap Merkle objects for durable deduplication, and can derive ACT line reuse. Replacing
+authoritative keys with insertion-order IDs would add term-to-ID and ID-to-term lookups, make
+parallel insertion order consensus-sensitive, reduce structural selectivity when semantic bytes
+move behind opaque IDs, and cause canonical vocabulary rebuilds to renumber paths and amplify WAL
+churn.
+
+**DECISION.** Do not silently change the authoritative codec. pgmcp work item
+`rspace-pathmap-selective-atom-interning-experiment`, reachable from epic 4131, and preregistered
+experiment **317** compare a derived non-authoritative vocabulary for repeated canonical string and
+byte atoms against native prefix compression, CoW, Merkle-DAG factoring, and ACT line reuse. The
+primary metric is physical persisted bytes per logical canonical byte; exact state/match identity
+and a 5% p95 matching-latency ceiling are hard gates. The locked protocol requires three warmups,
+at least 51 samples per arm, a one-sided Welch criterion with diagnostic Mann–Whitney/Cliff
+statistics, single-CCD affinity, fixed seeds, and recorded host state. Logical vocabulary/path
+bytes and physical index/WAL bytes must be reported separately.
+
+**PATHMAP LEARNING.** Vocabulary interning and trie compression are complementary only when the
+interned boundary preserves useful prefixes and its extra dictionary lookups amortize. PathMap's
+existing structural sharing raises the break-even point; the experiment, not analogy to postings,
+must decide whether another dictionary earns its authority, memory, and churn costs.
 
 ## Upstream PathMap integration request register
 
@@ -2892,6 +2986,7 @@ contract rather than merely describing local inconvenience.
 | H-013 | Maintaining a second PathMap keyed by complete datum identity can remove DATA egress descriptor sorting without costing more across mutation, CoW cloning, checkpointing, and retained space. | Frozen J-023 arena-plus-sort control; exact leaf/root differential; insertion/removal/rollback and clone-family maintenance; checkpoint-frequency matrix; retained bytes/root sharing; allocations, RSS, instructions/cache, and headless Heaptrack. | **Rejected at `8fd6dde61` / experiment 314**; one-pass egress wins every cell, but retained space is 1.672–2.094× and violates the frozen 1.10 ceiling |
 | H-014 | Reordering the single primary RSpace Bag key to a prefix-free channel frame followed by complete canonical datum identity can obtain identity-order zipper egress without retaining a second trie. | Exact channel-prefix and point-operation algebra; matcher/candidate and multiplicity equivalence; play/replay/checkpoint/reset/export/import bytes and roots; mixed-channel/adversarial-prefix corpus; mutation/CoW/egress/rebuild time and allocation matrix; retained/root-sharing, RSS, instructions/cache, and headless Heaptrack against J-023. | Open; no production or shadow primary-layout change exists |
 | H-015 | A frame-local exact owner census plus certified range replay removes repeated ParBag zipper walks without imposing more than 5% singleton latency. | Exact generated/prost bytes; empty/singleton/skewed/dense owner shapes; 101-pair balanced timing; traversal/allocation counters; profile-only headless Heaptrack and hardware counters; malformed/fault rollback; typed transcript and owner-memo mutants. | **Accepted by J-028**; singleton 99% upper bound 1.024510, reuse-16 median ratio 0.174705, 16-to-1 PathMap traversals, and complete focused/formal gates pass |
+| H-016 | A derived non-authoritative vocabulary for repeated canonical string/byte atoms reduces persisted RSpace bytes enough to amortize two-stage lookup beyond native PathMap prefix/CoW/Merkle and ACT line sharing. | pgmcp experiment 317: exact state/match/multiplicity/hash/charge equivalence; high/low reuse and selectivity corpus; ≥51 samples/arm after 3 warmups; persisted/logical byte ratio, p95 matching, candidates, allocations/RSS/cache, WAL churn, compaction and state-sync evidence; 5% p95 latency ceiling. | Open; no authoritative codec or production index change |
 
 ## Threats to validity
 

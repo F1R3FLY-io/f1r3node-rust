@@ -52,6 +52,10 @@ pub enum LogPackFormatError {
         expected: u32,
         actual: u32,
     },
+    ChecksumOutOfRange {
+        field: &'static str,
+        encoded: u64,
+    },
     RecordDigest {
         expected: PhysicalDigest,
         actual: PhysicalDigest,
@@ -73,6 +77,18 @@ pub enum LogPackFormatError {
         offset: u64,
         length: u64,
     },
+    ZeroFirstLivePack,
+    ZeroIndexGeneration,
+    IndexTailBeforeHeader(u64),
+    IndexTailUnaligned(u64),
+    ByteInventory {
+        current_state: u64,
+        retained: u64,
+    },
+    CurrentStateBytes {
+        minimum: u64,
+        actual: u64,
+    },
     MutationDigest {
         expected: ObjectDigest,
         actual: ObjectDigest,
@@ -86,6 +102,12 @@ pub enum LogPackFormatError {
         previous: ObjectDigest,
         current: ObjectDigest,
     },
+    ObjectPlanCount {
+        expected: u64,
+        actual: u64,
+    },
+    ObjectPlanInventory,
+    UnsupportedObjectDisposition(u64),
     ObjectReference {
         declared: ObjectRefV1,
         actual: ObjectRefV1,
@@ -129,6 +151,10 @@ impl Display for LogPackFormatError {
                 formatter,
                 "log-pack record CRC32C mismatch: expected {expected:#010x}, got {actual:#010x}"
             ),
+            Self::ChecksumOutOfRange { field, encoded } => write!(
+                formatter,
+                "log-pack {field} checksum {encoded:#018x} is not a zero-extended CRC32C"
+            ),
             Self::RecordDigest { expected, actual } => {
                 write!(formatter, "log-pack digest mismatch: expected {expected}, got {actual}")
             }
@@ -149,6 +175,32 @@ impl Display for LogPackFormatError {
                 formatter,
                 "log-pack address offset {offset} plus length {length} overflows u64"
             ),
+            Self::ZeroFirstLivePack => {
+                formatter.write_str("log-pack first-live pack zero is reserved")
+            }
+            Self::ZeroIndexGeneration => {
+                formatter.write_str("log-pack index generation zero is reserved")
+            }
+            Self::IndexTailBeforeHeader(tail) => {
+                write!(formatter, "log-pack durable index tail {tail} precedes its header")
+            }
+            Self::IndexTailUnaligned(tail) => write!(
+                formatter,
+                "log-pack durable index tail {tail} is not aligned to a complete index record"
+            ),
+            Self::ByteInventory {
+                current_state,
+                retained,
+            } => write!(
+                formatter,
+                "log-pack current-state canonical bytes {current_state} exceed retained canonical \
+                 bytes {retained}"
+            ),
+            Self::CurrentStateBytes { minimum, actual } => write!(
+                formatter,
+                "log-pack current-state canonical bytes {actual} are below target manifest length \
+                 {minimum}"
+            ),
             Self::MutationDigest { expected, actual } => {
                 write!(formatter, "mutation digest mismatch: expected {expected}, got {actual}")
             }
@@ -163,6 +215,15 @@ impl Display for LogPackFormatError {
                 formatter,
                 "log-pack objects are not strictly digest ordered: {previous} then {current}"
             ),
+            Self::ObjectPlanCount { expected, actual } => write!(
+                formatter,
+                "log-pack object plan has {actual} records for {expected} sealed objects"
+            ),
+            Self::ObjectPlanInventory => formatter
+                .write_str("log-pack object plan inventories do not match the sealed transaction"),
+            Self::UnsupportedObjectDisposition(kind) => {
+                write!(formatter, "unsupported log-pack object disposition {kind}")
+            }
             Self::ObjectReference { declared, actual } => write!(
                 formatter,
                 "canonical object does not match declared reference {declared:?}; actual \

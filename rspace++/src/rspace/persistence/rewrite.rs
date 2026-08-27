@@ -21,7 +21,10 @@ use super::mutation::MutationBatchViewV1;
 use super::object::{
     CanonicalDagNode, CanonicalObjectKind, CanonicalObjectView, DagChild, EndpointValue,
 };
-use super::store::{ImmutableObjectStore, ObjectAdmission, StagingObjectStore, StagingStoreError};
+use super::store::{
+    ImmutableObjectStore, MutableObjectStore, ObjectAdmission, StagingObjectStore,
+    StagingStoreError,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RewriteError<E> {
@@ -461,7 +464,7 @@ pub fn rewrite_semantic_roots_with_limits<'a, S: ImmutableObjectStore>(
     })
 }
 
-pub(crate) fn rewrite_semantic_roots_in_store<S: ImmutableObjectStore>(
+pub(crate) fn rewrite_semantic_roots_in_store<S: MutableObjectStore>(
     store: &S,
     mutation: MutationBatchViewV1<'_>,
     limits: DagRewriteLimits,
@@ -590,7 +593,7 @@ fn rewrite_root<'a, S, I>(
     provenance: &mut RewriteProvenance,
 ) -> Result<(ObjectRefV1, DagRewriteReport), RewriteError<S::Error>>
 where
-    S: ImmutableObjectStore,
+    S: MutableObjectStore,
     I: IntoIterator<Item = (&'a [u8], EndpointValue, EndpointValue)>,
 {
     let mut mutations = mutations.into_iter();
@@ -668,7 +671,7 @@ struct CursorStep {
     node_path: ExactPath,
 }
 
-struct RadixEditor<'store, 'mutation, 'provenance, S: ImmutableObjectStore> {
+struct RadixEditor<'store, 'mutation, 'provenance, S: MutableObjectStore> {
     store: &'store S,
     namespace: SemanticNamespace,
     nodes: Vec<EditNode>,
@@ -680,7 +683,7 @@ struct RadixEditor<'store, 'mutation, 'provenance, S: ImmutableObjectStore> {
     provenance: &'provenance mut RewriteProvenance,
 }
 
-impl<'store, 'mutation, 'provenance, S: ImmutableObjectStore>
+impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
     RadixEditor<'store, 'mutation, 'provenance, S>
 {
     fn new(

@@ -6,12 +6,18 @@
 //! share one physical stream without a second copy of the transaction delta.
 
 mod codec;
+mod disposition;
 mod error;
 mod types;
 
 pub use codec::{
     LogPackObjectIter, LogPackObjectView, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
-    TransactionCommitRecordV1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
+    TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
+    TransactionPrepareRecordViewV1,
+};
+pub use disposition::{
+    CommittedObjectComparison, CommittedObjectLookup, LogPackObjectDispositionV1,
+    LogPackObjectPlanError, LogPackObjectPlanV1,
 };
 pub use error::{LogPackFormatError, LogPackWriteError};
-pub use types::{LogPackAddress, LogPackDecodeLimits, LogPackSequence};
+pub use types::{CommitPublicationV1, LogPackAddress, LogPackDecodeLimits, LogPackSequence};

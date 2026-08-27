@@ -324,7 +324,8 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C22** | this checkpoint; pgmcp #6099 | f1r3node | normalized three-namespace mutation journal $`\rightarrow`$ immutable CoW PathMap compare-and-swap (CAS) tries with zipper preflight/replay and a zero-copy borrowed recovery view | native stack $`O(1)`$ in path depth; **100,000-byte** key on **256 KiB**; no entry vector, semantic sort, or arithmetic replay | **yes for dormant mutation bytes**; 14/14 mutation and 43/43 combined persistence cases | [5.49](#549-normalized-pathmap-mutation-journal-cursor-ss-c22) |
 | **SS-C23** | this checkpoint; pgmcp #6099 | f1r3node | whole-state rebuild/direct admission $`\rightarrow`$ transaction-private affected-frontier radix editor with adjacent-key cursor, CoW child reuse, and enter/exit finalization PDA | native stack $`O(1)`$; **20,000** endpoint-bearing nodes on **256 KiB**; cost follows changed key bytes and opened/emitted frontier, not total state | **yes for dormant canonical rewrite**; 22/22 rewrite, 4/4 staging, and 69/69 combined persistence cases | [5.50](#550-iterative-affected-frontier-radix-dag-rewrite-ss-c23) |
 | **SS-C24** | this checkpoint; pgmcp #6190 | f1r3node | unsealed private rewrite $`\rightarrow`$ profile-typed `verified -> open -> content-ready -> rewritten -> manifested -> validated -> sealed` transaction with path-exact inherited-boundary proof | native stack $`O(1)`$; **100,000-byte** seal and independent rebuild oracle on **256 KiB**; one update reads at most **8 objects** through base cardinality 4,096; exact-path/provenance/staging budgets aggregate | **yes for dormant transaction sealing**; 96/96 persistence cases including authority, portability, determinism, semantic coherence, hostile budgets, exact-path failure atomicity, and 20,000-level gates | [5.51](#551-profile-typed-differential-transaction-sealing-ss-c24) |
-| **SS-C25** | this checkpoint; pgmcp #5688 | f1r3node | sealed in-memory delta $`\rightarrow`$ single-copy streaming prepare record plus fixed authenticated commit record and zero-copy bounded recovery view | native stack $`O(1)`$ in path/object depth; **100,000-byte** transition on **256 KiB**; $`O(1)`$ emission auxiliary space; no frame-sized buffer, entry projection, or semantic sort | **yes for dormant log-pack codecs**; 11/11 focused and 108/108 persistence cases, including every prepare/commit truncation, independent header/payload corruption, sink/invariant nonpublication, frozen V1 bytes, and negative commit-field binding | [5.52](#552-single-copy-transactional-log-pack-codecs-ss-c25) |
+| **SS-C25** | this checkpoint; pgmcp #6189 | f1r3node | sealed in-memory delta $`\rightarrow`$ preflighted DATA/REUSE plan, single-copy streaming prepare, fixed authenticated commit, and zero-copy bounded recovery view | native stack $`O(1)`$ in path/object depth; **100,000-byte** transition on **256 KiB**; $`O(n)`$ one-disposition plan and $`O(1)`$ writer state for $`n`$ sealed objects; no body copy, frame buffer, entry projection, or semantic sort | **yes for dormant log-pack codecs**; 13/13 focused cases, including warm reuse/full-byte collision refusal, checked-u64 checksums, every prepare/commit truncation, sink/invariant nonpublication, frozen V1 bytes, and negative commit-field binding | [5.52](#552-single-copy-transactional-log-pack-codecs-ss-c25) |
+| **SS-C26** | this checkpoint; pgmcp #6189 | f1r3node | retained-root vector/catalog ambiguity $`\rightarrow`$ canonical borrowed retention iterator plus exact two-slot catalog/commit authority | native stack $`O(1)`$; iterator retains one current 56-byte state record; fixed 336-byte catalog slots and 384-byte commit; total retained roots/bytes are checked `u64` work budgets, never depth caps | **yes for dormant formats**; catalog 6/6 and retention 4/4, including every truncation/observable tear, strict root order, reserved/checksum/index/tail mutants, and exact terminal-commit binding | [5.53](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -553,6 +554,13 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.44 Final persisted-value egress and borrowed admission [SS-C17]](#544-final-persisted-value-egress-and-borrowed-admission-ss-c17)
   - [5.45 Certified ParBag protobuf egress and atomic replay [SS-C18]](#545-certified-parbag-protobuf-egress-and-atomic-replay-ss-c18)
   - [5.46 Authenticated RSpace egress and affine import lifecycle [SS-C19]](#546-authenticated-rspace-egress-and-affine-import-lifecycle-ss-c19)
+  - [5.47 Continuation/join PathMap authority and rejected retained order indexes [SS-C20]](#547-continuationjoin-pathmap-authority-and-rejected-retained-order-indexes-ss-c20)
+  - [5.48 Canonical PathMap-DAG structural and semantic admission PDAs [SS-C21]](#548-canonical-pathmap-dag-structural-and-semantic-admission-pdas-ss-c21)
+  - [5.49 Normalized PathMap mutation-journal cursor [SS-C22]](#549-normalized-pathmap-mutation-journal-cursor-ss-c22)
+  - [5.50 Iterative affected-frontier radix-DAG rewrite [SS-C23]](#550-iterative-affected-frontier-radix-dag-rewrite-ss-c23)
+  - [5.51 Profile-typed differential transaction sealing [SS-C24]](#551-profile-typed-differential-transaction-sealing-ss-c24)
+  - [5.52 Single-copy transactional log-pack codecs [SS-C25]](#552-single-copy-transactional-log-pack-codecs-ss-c25)
+  - [5.53 Retained-root manifest and exact catalog authority [SS-C26]](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -10965,10 +10973,14 @@ not synonyms.
 SS-C25 converts the sealed transaction's first physical traversal into a streaming, cursor-driven
 codec before filesystem publication is activated. A fixed prepare header is preflighted from the
 profile-typed receipt, borrowed normalized mutation bytes, and digest-ordered sealed objects. The
-writer then emits that header, its CRC32C, the mutation slice, and each object reference plus
-canonical object slice directly to a fallible non-seeking sink. It retains only fixed hash/checksum
-state and counters; it cannot return a prepare identity after any sink error. New object bytes are
-therefore written once rather than buffered or copied into a separate WAL representation.
+publisher first performs one digest-ordered committed-object pass. Missing objects become DATA;
+equal objects become address-free REUSE only after complete length-and-byte comparison; unequal
+same-digest objects refuse the plan before the first write. The fallibly allocated plan retains one
+disposition per sealed object and no body copy. The writer then emits the header, checked-u64
+CRC32C, mutation slice, and each disposition/reference plus only DATA bodies directly to a fallible
+non-seeking sink. It retains only fixed hash/checksum state and counters; it cannot return a prepare
+identity after any sink error. New object bytes are therefore written once rather than buffered or
+copied into a separate WAL representation, while a warm store does not rewrite equal bodies.
 The release writer also compares its counted output with the preflighted length before emitting the
 terminal CRC; disagreement returns a typed invariant error and no identity.
 
@@ -10977,38 +10989,84 @@ record checksum, applies checked `u64` total-resource ceilings, parses the mutat
 view, and walks object records with one cursor. Canonical object framing, digest, declared length,
 and strict digest order are revalidated. A later iterator yields the already validated borrowed
 ranges. It does not rebuild producer PathMaps, recurse through keys, project entries, or sort them.
-The separately fixed 308-byte commit record binds the store identifier, nonzero sequence, prior
+The separately fixed **384-byte** commit record binds the store identifier, nonzero sequence, prior
 commit digest, exact prepare address and digest, sealed base/target/profile/mutation receipt, and
-durable index frontier.
+durable index frontier. It also authenticates first-live pack, index generation,
+retention-manifest reference, current-state canonical bytes, and retained-union canonical bytes so
+the later catalog cannot mutate them independently.
 
 The record view proves physical and canonical framing only. It is not a verified durable state:
 same-digest collision equality against the object store, target-manifest closure, and semantic
 profile admission remain mandatory recovery phases before catalog authority may advance.
 
-For $`m`$ mutation bytes, $`o`$ canonical-object bytes, and $`n`$ object records, preflight,
-streaming, and validation are each $`O(m+o+n)`$ time. Writer auxiliary space is $`O(1)`$; the
-borrowed decoder adds $`O(1)`$ state outside the canonical payload parsers. Both are $`O(1)`$ in
+For $`m`$ mutation bytes, $`o`$ logical canonical-object bytes, $`i`$ inline bytes, and $`n`$
+object records, classification/preflight is $`O(m+o+n)`$ time with $`O(n)`$ one-disposition space;
+streaming is $`O(m+i+n)`$ time with $`O(1)`$ additional writer state. The borrowed decoder adds
+$`O(1)`$ state outside the canonical payload parsers. All are $`O(1)`$ in
 native stack with respect to RhoPath, trie, and transaction depth. Total record, mutation, object,
 entry, and key-byte limits bound hostile work without imposing a traversal-depth limit.
 
-The focused matrix passes **11/11** and the complete persistence matrix **108/108**. It checks every
+The focused matrix passes **13/13**. It checks every
 prepare and commit truncation; independent authenticated-header and payload corruption; resource
 refusal before payload parsing; exact prepare/commit round trips; fixed commit size; valid-record
 negative rebinding of store, sequence, address length, prepare digest, and receipt; prior-commit and
 address digest sensitivity; unrelated-receipt and invalid-extent construction refusal; borrowed
-object order; and a destination failure that cannot produce a prepare identity. A frozen V1 fixture
-pins the exact prepare header, full-prepare length/checksum/digest, and complete 308-byte commit
-image. A transition containing a 100,000-byte identity seals, streams, and validates on a 256 KiB
-native stack. The independent CRC test pins Castagnoli/iSCSI CRC32C of `123456789` to `0xe3069283`.
-The complete `rspace_plus_plus` library passes **260/260** in **54.30 s** under a 6 GiB memory
-ceiling and zero swap; transcript `target/scratch/rspace-lib-log-pack-checkpoint.log`, SHA-256
-`7e68b37b285ea53e13f6e77463731239c0721941e34cf8bfa0c1ad5aa403fa5b`.
+object order; a destination failure that cannot produce a prepare identity; cold DATA versus warm
+REUSE; collision refusal before writer construction; and nonzero checksum high-bit refusal. A
+frozen V1 fixture pins the exact prepare header, 1,123-byte cold-prepare length/checksum/digest, and
+complete 384-byte commit image. A transition containing a 100,000-byte identity seals, streams,
+and validates on a 256 KiB native stack. The independent CRC test pins Castagnoli/iSCSI CRC32C of
+`123456789` to `0xe3069283`. Captured transcript:
+`target/scratch/wal-codec-v1-final-2026-08-27.log`.
 
 This is a codec/resource class result, not yet a crash-durability result. No file is opened and no
 data-sync, commit-sync, catalog-slot, directory-sync, recovery, index rebuild, compaction, garbage
 collection, LMDB cutover, or performance comparison is claimed. J-038 in the PathMap engineering
 journal records why the WAL and object pack share one physical stream. The next obligation is an
 affine durable-I/O phase machine with injected failure at every write and synchronization boundary.
+
+### 5.53 Retained-root manifest and exact catalog authority [SS-C26]
+
+SS-C26 represents retained state without a recursive collection or a production-side vector. A
+canonical retention manifest names one current `StateVersionV1` and a strictly ordered sequence of
+historical versions, each paired with its checked canonical-closure byte inventory. The borrowed
+view verifies domain, version, count, order, current exclusion, exact consumption, and lower byte
+bounds once; `RetainedStateIter` then advances one fixed record at a time. Its native stack and
+cursor state are constant in history length.
+
+Two fixed 336-byte catalog slots appoint dormant physical authority. Selection validates checked-
+`u64` CRC32C, all reserved bytes, store/profile agreement, equal-or-adjacent epochs, exact 384-byte
+commit address, live-pack range, commit-end-equals-durable-tail, nonzero/aligned index generation
+and tail, retention reference, and logical/retained byte inventories. An observably incomplete
+inactive prefix preserves the prior slot. Once the low CRC32C half is present, the remaining four
+high bytes already have their required zero value in an empty slot; such a prefix is byte-identical
+to the completed successor and is correctly accepted.
+
+Recovery additionally binds a selected slot to the commit loaded at its exact address. Store ID,
+sequence, commit digest, target state, semantic profile, and the full publication tuple must all be
+equal. The commit-side publication constructor enforces the same `64 + 72n` index frontier as the
+catalog, eliminating a transient state in which an unaligned authenticated commit could parse but
+only fail later at catalog construction.
+
+This separation is required for restored storage metering. Current-state canonical closure bytes
+are deterministic logical input. Retention policy, WAL/index/catalog framing, dead tails, and old
+pack generations are physical metrics. The implementation records both, but physical local-policy
+overhead cannot change consensus charges.
+
+Catalog tests pass **6/6**; retention tests pass **4/4**. They cover every retention truncation,
+frozen zero-history bytes, strict-order and current-duplicate refusal, adjacent selection, every
+observable inactive-slot tear, incompatible slots, corrupt-only images, exact CAS/epoch overflow,
+nonzero checksum high bits, reserved-gap corruption, commit/catalog index misalignment, inexact pack
+tails, and every catalog-to-terminal-commit field family. Logs:
+`target/scratch/durable-catalog-terminal-binding-2026-08-27.log` and
+`target/scratch/retention-manifest-v1-2026-08-27.log`. The aggregate persistence gate passes
+**119/119** in **1.76 s** under 4 GiB, zero swap, and a four-core quota, including the 100,000-byte
+and 20,000-level native-stack gates; transcript:
+`target/scratch/persistence-formats-checkpoint-2026-08-27.log`.
+
+SS-C26 remains a dormant format result. Positional writes, data/catalog/directory synchronization,
+index rebuild, recovery roll-forward, retained-root tracing, generation leases, compaction, and LMDB
+cutover remain unclaimed.
 
 ---
 

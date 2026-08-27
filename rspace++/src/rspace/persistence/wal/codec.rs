@@ -6,13 +6,18 @@ use std::marker::PhantomData;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 
+use super::disposition::{
+    LogPackObjectDispositionV1, LogPackObjectPlanV1, OBJECT_DATA_KIND_V1, OBJECT_REUSE_KIND_V1,
+};
 use super::error::{LogPackFormatError, LogPackWriteError};
-use super::types::{LogPackAddress, LogPackDecodeLimits, LogPackSequence};
+use super::types::{CommitPublicationV1, LogPackAddress, LogPackDecodeLimits, LogPackSequence};
 use crate::rspace::persistence::canonical::{
     CanonicalFormatError, CanonicalSink, OBJECT_DIGEST_LEN, OBJECT_DOMAIN_LEN, ObjectRefV1,
     ReadCursor, checked_len, checked_sum, write_u64,
 };
-use crate::rspace::persistence::checksum::{Crc32c, crc32c};
+use crate::rspace::persistence::checksum::{
+    CHECKSUM_FIELD_LEN, Crc32c, crc32c, decode_crc32c, encode_crc32c,
+};
 use crate::rspace::persistence::manifest::{SEMANTIC_PROFILE_ID_LEN, SemanticProfileId};
 use crate::rspace::persistence::mutation::{
     MutationBatchViewV1, MutationDecodeLimits, StateVersionV1,
@@ -30,11 +35,13 @@ const LOG_PACK_VERSION_V1: u64 = 1;
 const PREPARE_KIND: u64 = 1;
 const COMMIT_KIND: u64 = 2;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
+const OBJECT_RECORD_HEADER_LEN: u64 = 8 + OBJECT_REF_LEN;
 const PREPARE_AUTH_HEADER_LEN: usize = 232;
-const PREPARE_HEADER_LEN: u64 = PREPARE_AUTH_HEADER_LEN as u64 + 4;
-const PREPARE_TRAILER_LEN: u64 = 4;
-const COMMIT_AUTH_LEN: usize = 304;
-const COMMIT_RECORD_LEN: usize = COMMIT_AUTH_LEN + 4;
+const PREPARE_HEADER_LEN: u64 = PREPARE_AUTH_HEADER_LEN as u64 + CHECKSUM_FIELD_LEN as u64;
+const PREPARE_TRAILER_LEN: u64 = CHECKSUM_FIELD_LEN as u64;
+const COMMIT_AUTH_LEN: usize = 376;
+pub const TRANSACTION_COMMIT_RECORD_LEN_V1: u64 = (COMMIT_AUTH_LEN + CHECKSUM_FIELD_LEN) as u64;
+const COMMIT_RECORD_LEN: usize = TRANSACTION_COMMIT_RECORD_LEN_V1 as usize;
 
 /// Identity returned only after every prepare byte has reached the sink.
 /// Physical durability is established later by the publisher's sync phase.
@@ -85,6 +92,7 @@ pub struct PreparedLogPackTransactionV1<'transaction, 'mutation, P: SemanticProf
     mutation_len: u64,
     object_count: u64,
     object_bytes: u64,
+    object_plan: LogPackObjectPlanV1,
     _profile: PhantomData<fn() -> P>,
 }
 
@@ -93,6 +101,7 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 {
     pub fn new(
         transaction: &'transaction SealedDagTransaction<'mutation, P>,
+        object_plan: LogPackObjectPlanV1,
         store_id: StoreId,
         sequence: LogPackSequence,
         limits: LogPackDecodeLimits,
@@ -120,9 +129,18 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 
         let object_count = checked_len(transaction.objects().len(), "WAL objects")?;
         require_limit("objects", limits.max_objects, object_count)?;
+        let plan_count = checked_len(object_plan.len(), "WAL object disposition plan")?;
+        if plan_count != object_count {
+            return Err(LogPackFormatError::ObjectPlanCount {
+                expected: object_count,
+                actual: plan_count,
+            });
+        }
         let mut object_bytes = 0u64;
+        let mut inline_object_bytes = 0u64;
+        let mut inline_count = 0u64;
         let mut previous = None;
-        for object in transaction.objects() {
+        for (object, disposition) in transaction.objects().iter().zip(object_plan.dispositions()) {
             let reference = object.reference();
             if let Some(previous) = previous {
                 if previous >= reference.digest() {
@@ -135,16 +153,35 @@ impl<'transaction, 'mutation, P: SemanticProfile>
             validate_object(reference, object.canonical_bytes())?;
             object_bytes =
                 checked_sum(object_bytes, reference.encoded_len(), "WAL canonical object bytes")?;
+            if *disposition == LogPackObjectDispositionV1::Data {
+                inline_count =
+                    inline_count
+                        .checked_add(1)
+                        .ok_or(CanonicalFormatError::LengthOverflow {
+                            field: "WAL inline object count",
+                        })?;
+                inline_object_bytes = checked_sum(
+                    inline_object_bytes,
+                    reference.encoded_len(),
+                    "WAL inline canonical object bytes",
+                )?;
+            }
             previous = Some(reference.digest());
+        }
+        if object_plan.logical_object_bytes() != object_bytes ||
+            object_plan.inline_object_bytes() != inline_object_bytes ||
+            object_plan.inline_count() != inline_count
+        {
+            return Err(LogPackFormatError::ObjectPlanInventory);
         }
         require_limit("canonical object bytes", limits.max_object_bytes, object_bytes)?;
         let object_record_bytes = checked_sum(
-            object_count.checked_mul(OBJECT_REF_LEN).ok_or(
+            object_count.checked_mul(OBJECT_RECORD_HEADER_LEN).ok_or(
                 CanonicalFormatError::LengthOverflow {
-                    field: "WAL object references",
+                    field: "WAL object record headers",
                 },
             )?,
-            object_bytes,
+            inline_object_bytes,
             "WAL object records",
         )?;
         let record_len = checked_sum(
@@ -161,6 +198,7 @@ impl<'transaction, 'mutation, P: SemanticProfile>
             mutation_len,
             object_count,
             object_bytes,
+            object_plan,
             _profile: PhantomData,
         })
     }
@@ -193,16 +231,24 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         let mut record = AuthenticatedSink::new(sink);
         record.write_all(&header).map_err(LogPackWriteError::Sink)?;
         record
-            .write_all(&header_crc.to_le_bytes())
+            .write_all(&encode_crc32c(header_crc))
             .map_err(LogPackWriteError::Sink)?;
         record
             .write_all(mutation)
             .map_err(LogPackWriteError::Sink)?;
-        for object in self.transaction.objects() {
+        for (object, disposition) in self
+            .transaction
+            .objects()
+            .iter()
+            .zip(self.object_plan.dispositions())
+        {
+            write_u64(&mut record, disposition.kind()).map_err(LogPackWriteError::Sink)?;
             write_reference(&mut record, object.reference()).map_err(LogPackWriteError::Sink)?;
-            record
-                .write_all(object.canonical_bytes())
-                .map_err(LogPackWriteError::Sink)?;
+            if *disposition == LogPackObjectDispositionV1::Data {
+                record
+                    .write_all(object.canonical_bytes())
+                    .map_err(LogPackWriteError::Sink)?;
+            }
         }
         let (record_crc, digest, written) = record.finish();
         let actual_record_len = written.checked_add(PREPARE_TRAILER_LEN).ok_or_else(|| {
@@ -219,7 +265,7 @@ impl<'transaction, 'mutation, P: SemanticProfile>
                 actual: actual_record_len,
             }));
         }
-        sink.write_all(&record_crc.to_le_bytes())
+        sink.write_all(&encode_crc32c(record_crc))
             .map_err(LogPackWriteError::Sink)?;
         Ok(PrepareRecordIdentityV1 {
             sequence: self.sequence,
@@ -235,19 +281,32 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 /// A validated borrowed canonical-object record within a prepare image.
 #[derive(Clone, Copy, Debug)]
 pub struct LogPackObjectView<'a> {
+    disposition: LogPackObjectDispositionV1,
     reference: ObjectRefV1,
-    canonical_bytes: &'a [u8],
+    canonical_bytes: Option<&'a [u8]>,
+    record_offset: u64,
+    canonical_offset: Option<u64>,
 }
 
 impl<'a> LogPackObjectView<'a> {
+    pub const fn disposition(self) -> LogPackObjectDispositionV1 { self.disposition }
+
     pub const fn reference(self) -> ObjectRefV1 { self.reference }
 
-    pub const fn canonical_bytes(self) -> &'a [u8] { self.canonical_bytes }
+    pub const fn canonical_bytes(self) -> Option<&'a [u8]> { self.canonical_bytes }
+
+    /// Offset of the object's disposition field from the prepare start.
+    pub const fn record_offset(self) -> u64 { self.record_offset }
+
+    /// Offset of an inline canonical body from the prepare start. Reuse
+    /// records deliberately contain no body or physical address.
+    pub const fn canonical_offset(self) -> Option<u64> { self.canonical_offset }
 }
 
 pub struct LogPackObjectIter<'a> {
     cursor: ReadCursor<'a>,
     remaining: u64,
+    base_record_offset: u64,
 }
 
 impl<'a> Iterator for LogPackObjectIter<'a> {
@@ -259,17 +318,36 @@ impl<'a> Iterator for LogPackObjectIter<'a> {
             return None;
         }
         self.remaining -= 1;
+        let record_offset = self
+            .base_record_offset
+            .checked_add(self.cursor.offset() as u64)
+            .expect("validated prepare record offsets fit u64");
+        let disposition = read_object_disposition(&mut self.cursor)
+            .expect("the prepare view validated each object disposition");
         let reference = ObjectRefV1::parse(&mut self.cursor)
             .expect("the prepare view validated each object reference");
-        let len = usize::try_from(reference.encoded_len())
-            .expect("the prepare view bounded each object length by its byte slice");
-        let canonical_bytes = self
-            .cursor
-            .read_exact(len)
-            .expect("the prepare view validated each object extent");
+        let (canonical_offset, canonical_bytes) = match disposition {
+            LogPackObjectDispositionV1::Data => {
+                let canonical_offset = self
+                    .base_record_offset
+                    .checked_add(self.cursor.offset() as u64)
+                    .expect("validated prepare record offsets fit u64");
+                let len = usize::try_from(reference.encoded_len())
+                    .expect("the prepare view bounded each object length by its byte slice");
+                let canonical_bytes = self
+                    .cursor
+                    .read_exact(len)
+                    .expect("the prepare view validated each object extent");
+                (Some(canonical_offset), Some(canonical_bytes))
+            }
+            LogPackObjectDispositionV1::Reuse => (None, None),
+        };
         Some(LogPackObjectView {
+            disposition,
             reference,
             canonical_bytes,
+            record_offset,
+            canonical_offset,
         })
     }
 
@@ -294,6 +372,7 @@ pub struct TransactionPrepareRecordViewV1<'a> {
     receipt: SealedTransitionV1,
     mutation: MutationBatchViewV1<'a>,
     objects: &'a [u8],
+    objects_offset: u64,
     object_count: u64,
     digest: PhysicalDigest,
     crc32c: u32,
@@ -315,11 +394,15 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
             .into());
         }
         let header = &bytes[..PREPARE_AUTH_HEADER_LEN];
-        let declared_header_crc = u32::from_le_bytes(
-            bytes[PREPARE_AUTH_HEADER_LEN..PREPARE_AUTH_HEADER_LEN + 4]
+        let declared_header_crc = decode_crc32c(
+            bytes[PREPARE_AUTH_HEADER_LEN..PREPARE_AUTH_HEADER_LEN + CHECKSUM_FIELD_LEN]
                 .try_into()
                 .expect("fixed header CRC extent"),
-        );
+        )
+        .map_err(|encoded| LogPackFormatError::ChecksumOutOfRange {
+            field: "prepare header",
+            encoded,
+        })?;
         let actual_header_crc = crc32c(header);
         if declared_header_crc != actual_header_crc {
             return Err(LogPackFormatError::HeaderChecksum {
@@ -339,11 +422,15 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
             });
         }
         let payload_end = bytes.len() - PREPARE_TRAILER_LEN as usize;
-        let declared_crc = u32::from_le_bytes(
+        let declared_crc = decode_crc32c(
             bytes[payload_end..]
                 .try_into()
                 .expect("fixed prepare CRC extent"),
-        );
+        )
+        .map_err(|encoded| LogPackFormatError::ChecksumOutOfRange {
+            field: "prepare record",
+            encoded,
+        })?;
         let actual_crc = crc32c(&bytes[..payload_end]);
         if declared_crc != actual_crc {
             return Err(LogPackFormatError::RecordChecksum {
@@ -384,17 +471,16 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
         validate_mutation_receipt(mutation, receipt)?;
 
         let objects_start = payload_cursor.offset();
+        let objects_offset = PREPARE_HEADER_LEN.checked_add(objects_start as u64).ok_or(
+            CanonicalFormatError::LengthOverflow {
+                field: "WAL object record offset",
+            },
+        )?;
         let mut observed_object_bytes = 0u64;
         let mut previous = None;
         for _ in 0..object_count {
+            let disposition = read_object_disposition(&mut payload_cursor)?;
             let reference = ObjectRefV1::parse(&mut payload_cursor)?;
-            let object_len = usize::try_from(reference.encoded_len()).map_err(|_| {
-                CanonicalFormatError::LengthOutOfRange {
-                    field: "WAL canonical object",
-                    value: reference.encoded_len(),
-                }
-            })?;
-            let canonical_bytes = payload_cursor.read_exact(object_len)?;
             if let Some(previous) = previous {
                 if previous >= reference.digest() {
                     return Err(LogPackFormatError::ObjectsNotStrict {
@@ -403,7 +489,16 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
                     });
                 }
             }
-            validate_object(reference, canonical_bytes)?;
+            if disposition == LogPackObjectDispositionV1::Data {
+                let object_len = usize::try_from(reference.encoded_len()).map_err(|_| {
+                    CanonicalFormatError::LengthOutOfRange {
+                        field: "WAL canonical object",
+                        value: reference.encoded_len(),
+                    }
+                })?;
+                let canonical_bytes = payload_cursor.read_exact(object_len)?;
+                validate_object(reference, canonical_bytes)?;
+            }
             observed_object_bytes = checked_sum(
                 observed_object_bytes,
                 reference.encoded_len(),
@@ -425,6 +520,7 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
             receipt,
             mutation,
             objects,
+            objects_offset,
             object_count,
             digest,
             crc32c: declared_crc,
@@ -444,8 +540,11 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
         LogPackObjectIter {
             cursor: ReadCursor::new(self.objects),
             remaining: self.object_count,
+            base_record_offset: self.objects_offset,
         }
     }
+
+    pub const fn objects_offset(self) -> u64 { self.objects_offset }
 
     pub const fn digest(self) -> PhysicalDigest { self.digest }
 
@@ -477,7 +576,7 @@ impl TransactionCommitRecordV1 {
         previous_commit: PhysicalDigest,
         prepare_address: LogPackAddress,
         prepare: PrepareRecordIdentityV1,
-        durable_index_tail: u64,
+        publication: CommitPublicationV1,
     ) -> Result<Self, LogPackFormatError> {
         if prepare.store_id() != store_id {
             return Err(LogPackFormatError::Store {
@@ -492,6 +591,12 @@ impl TransactionCommitRecordV1 {
             return Err(LogPackFormatError::AddressLength {
                 address: prepare_address,
                 declared: prepare.record_len(),
+            });
+        }
+        if publication.current_state_canonical_bytes() < receipt.target().manifest().encoded_len() {
+            return Err(LogPackFormatError::CurrentStateBytes {
+                minimum: receipt.target().manifest().encoded_len(),
+                actual: publication.current_state_canonical_bytes(),
             });
         }
         let mut bytes = [0u8; COMMIT_RECORD_LEN];
@@ -516,11 +621,19 @@ impl TransactionCommitRecordV1 {
                 .expect("fixed profile ID");
             sink.write_all(receipt.mutation_digest().as_bytes())
                 .expect("fixed mutation digest");
-            write_u64(&mut sink, durable_index_tail).expect("fixed index tail");
+            write_u64(&mut sink, publication.durable_index_tail()).expect("fixed index tail");
+            write_u64(&mut sink, publication.first_live_pack()).expect("fixed first-live pack");
+            write_u64(&mut sink, publication.index_generation()).expect("fixed index generation");
+            write_reference(&mut sink, publication.retention_manifest())
+                .expect("fixed retention manifest");
+            write_u64(&mut sink, publication.current_state_canonical_bytes())
+                .expect("fixed current-state byte inventory");
+            write_u64(&mut sink, publication.retained_canonical_bytes())
+                .expect("fixed retained byte inventory");
             debug_assert_eq!(sink.written(), COMMIT_AUTH_LEN);
         }
         let crc = crc32c(&bytes[..COMMIT_AUTH_LEN]);
-        bytes[COMMIT_AUTH_LEN..].copy_from_slice(&crc.to_le_bytes());
+        bytes[COMMIT_AUTH_LEN..].copy_from_slice(&encode_crc32c(crc));
         let digest = PhysicalDigest::of_bytes(&bytes[..COMMIT_AUTH_LEN]);
         Ok(Self { bytes, digest })
     }
@@ -542,7 +655,7 @@ pub struct TransactionCommitViewV1 {
     prepare_address: LogPackAddress,
     prepare_digest: PhysicalDigest,
     receipt: SealedTransitionV1,
-    durable_index_tail: u64,
+    publication: CommitPublicationV1,
     digest: PhysicalDigest,
 }
 
@@ -555,11 +668,15 @@ impl TransactionCommitViewV1 {
                 actual,
             });
         }
-        let declared_crc = u32::from_le_bytes(
+        let declared_crc = decode_crc32c(
             bytes[COMMIT_AUTH_LEN..]
                 .try_into()
                 .expect("fixed commit CRC extent"),
-        );
+        )
+        .map_err(|encoded| LogPackFormatError::ChecksumOutOfRange {
+            field: "commit record",
+            encoded,
+        })?;
         let actual_crc = crc32c(&bytes[..COMMIT_AUTH_LEN]);
         if declared_crc != actual_crc {
             return Err(LogPackFormatError::RecordChecksum {
@@ -588,7 +705,26 @@ impl TransactionCommitViewV1 {
         let profile_id = read_profile_id(&mut cursor)?;
         let mutation_digest = cursor.read_digest()?;
         let durable_index_tail = cursor.read_u64()?;
+        let first_live_pack = cursor.read_u64()?;
+        let index_generation = cursor.read_u64()?;
+        let retention_manifest = ObjectRefV1::parse(&mut cursor)?;
+        let current_state_canonical_bytes = cursor.read_u64()?;
+        let retained_canonical_bytes = cursor.read_u64()?;
         cursor.finish()?;
+        let publication = CommitPublicationV1::new(
+            first_live_pack,
+            index_generation,
+            durable_index_tail,
+            retention_manifest,
+            current_state_canonical_bytes,
+            retained_canonical_bytes,
+        )?;
+        if publication.current_state_canonical_bytes() < target.manifest().encoded_len() {
+            return Err(LogPackFormatError::CurrentStateBytes {
+                minimum: target.manifest().encoded_len(),
+                actual: publication.current_state_canonical_bytes(),
+            });
+        }
         Ok(Self {
             sequence,
             store_id,
@@ -601,7 +737,7 @@ impl TransactionCommitViewV1 {
                 mutation_digest,
                 profile_id,
             ),
-            durable_index_tail,
+            publication,
             digest: PhysicalDigest::of_bytes(&bytes[..COMMIT_AUTH_LEN]),
         })
     }
@@ -618,7 +754,9 @@ impl TransactionCommitViewV1 {
 
     pub const fn receipt(self) -> SealedTransitionV1 { self.receipt }
 
-    pub const fn durable_index_tail(self) -> u64 { self.durable_index_tail }
+    pub const fn publication(self) -> CommitPublicationV1 { self.publication }
+
+    pub const fn durable_index_tail(self) -> u64 { self.publication.durable_index_tail() }
 
     pub const fn digest(self) -> PhysicalDigest { self.digest }
 
@@ -692,11 +830,22 @@ fn validate_object(
         CanonicalObjectView::Blob(blob) => blob.object_ref(),
         CanonicalObjectView::SemanticManifest(manifest) => manifest.object_ref(),
         CanonicalObjectView::AcceleratorManifest(manifest) => manifest.object_ref(),
+        CanonicalObjectView::RetentionManifest(manifest) => manifest.object_ref(),
     };
     if actual != declared {
         return Err(LogPackFormatError::ObjectReference { declared, actual });
     }
     Ok(())
+}
+
+fn read_object_disposition(
+    cursor: &mut ReadCursor<'_>,
+) -> Result<LogPackObjectDispositionV1, LogPackFormatError> {
+    match cursor.read_u64()? {
+        OBJECT_DATA_KIND_V1 => Ok(LogPackObjectDispositionV1::Data),
+        OBJECT_REUSE_KIND_V1 => Ok(LogPackObjectDispositionV1::Reuse),
+        kind => Err(LogPackFormatError::UnsupportedObjectDisposition(kind)),
+    }
 }
 
 fn require_limit(

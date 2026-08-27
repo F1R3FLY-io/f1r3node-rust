@@ -5773,11 +5773,15 @@ production cutover.
 **CBR-053 living continuation (2026-08-27, single-copy authenticated log-pack codecs).** The first
 physical representation now consumes only a profile-typed `SealedDagTransaction`. One preflighted
 prepare record streams the exact normalized mutation bytes followed by each sealed canonical object
-reference and body in the digest order already established by private staging. A fixed header binds
+record in the digest order already established by private staging. A pre-append plan emits DATA
+with its borrowed body when absent and address-free REUSE when a committed object has complete
+length-and-byte equality; same-digest unequal bytes refuse publication. A fixed header binds
 store, sequence, exact base and target, semantic profile, mutation identity and physical totals; a
 separately fixed commit record binds that prepare image, the previous commit, complete sealed
-receipt, exact physical address, and durable index frontier. All integers are explicit fixed-width
-little-endian fields. No native `usize`, timestamp, protobuf, bincode, PathMap entry projection,
+receipt, exact physical address, durable index frontier, first-live pack, index generation,
+retention-manifest reference, current-state canonical bytes, and retained-union canonical bytes.
+CRC32C occupies a checked little-endian `u64` whose high half must be zero. No native `usize`,
+timestamp, protobuf, bincode, PathMap entry projection,
 `Vec<Par>`, or semantic sort is introduced.
 
 CRC32C detects torn or accidentally damaged physical records; BLAKE2b-256 remains the canonical
@@ -5795,14 +5799,42 @@ This checkpoint remains `NO_PRODUCTION_CHANGE_DERIVED`. The codec is dormant and
 neither prepare emission nor a complete sink write appoints durable authority. No existing LMDB
 root, checkpoint, replay route, startup path, matcher, COMM, network message, metering calculation,
 REPL result, protobuf/bincode byte, history hash, or accepted Rholang program changes. The focused
-codec matrix passes **11/11** and the complete persistence module **108/108**, including every
+codec matrix passes **13/13**, including every
 prepare/commit truncation, header/payload corruption, sink refusal, invalid receipt/extent
-construction, valid-CRC commit-field rebinding mutants, frozen V1 bytes, resource preflight, and a
-100,000-byte transition on a 256 KiB stack; the complete `rspace_plus_plus` library passes
-**260/260** under the same 6 GiB/zero-swap execution policy. Data/commit/catalog/directory
+construction, valid-CRC commit-field rebinding mutants, cold/warm reuse, forced collision refusal,
+checked-u64 checksum mutants, frozen V1 bytes, resource preflight, and a 100,000-byte transition on
+a 256 KiB stack. Data/commit/catalog/directory
 synchronization, exact catalog CAS, restart recovery, index rebuilding, retained-root compaction,
 migration, and measured LMDB comparison remain mandatory before this entry can authorize
 production cutover.
+
+**CBR-053 living continuation (2026-08-27, retained-root and exact catalog formats).** A canonical
+retention manifest now names one current state plus a strictly ordered historical state sequence,
+with a checked canonical-closure byte inventory for each. Its borrowed iterator is stack-constant
+and does not reconstruct a state vector. Two fixed 336-byte catalog slots bind store/profile,
+current state, exact 384-byte terminal commit identity/address, live pack range/tail, index
+generation/tail, retention reference, current-state canonical bytes, and retained-union canonical
+bytes. Checked-u64 CRC32C, named reserved-zero regions, adjacent-epoch selection, exact commit end,
+and index alignment fail closed. The terminal commit authenticates every transaction-derived
+catalog field; catalog epoch alone remains the external compare-and-swap coordinate. Recovery must
+also compare the selected slot with the terminal commit at its named address: store ID, sequence,
+commit digest, target state, semantic profile, and the complete publication tuple are exact. The
+commit-side publication constructor and catalog both require an index frontier of `64 + 72n`, so an
+unaligned authenticated commit is refused before it can become a candidate authority.
+
+Current-state canonical closure bytes are reserved as the deterministic input to restored consensus
+storage metering. Retained histories, WAL/index/catalog framing, dead tails, and obsolete pack
+generations are separately reported physical costs and cannot be substituted into a charge. This
+format separation does not itself restore or change any charge.
+
+This continuation is `NO_PRODUCTION_CHANGE_DERIVED`. No positional write, sync, recovery, current-
+root caller, matcher, COMM, replay, metering route, network message, or LMDB cutover consumes these
+formats. Catalog **6/6** and retention **4/4** focused cases pass, including truncation/tear,
+ordering, checksum-width, reserved-gap, commit/catalog index-alignment, exact-tail,
+catalog-to-terminal-commit substitution, incompatible-slot, and frozen-image gates. Publisher
+synchronization, restart recovery, index rebuilding, compaction/GC, migration, and comparative LMDB
+evidence remain mandatory before production activation. The aggregate dormant persistence gate is
+**119/119** under a 4 GiB memory ceiling and zero swap.
 
 ### B.2 The original commit-level exemptions
 

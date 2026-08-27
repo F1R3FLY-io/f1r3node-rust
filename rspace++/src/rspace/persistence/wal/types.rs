@@ -1,4 +1,7 @@
 use super::error::LogPackFormatError;
+use crate::rspace::persistence::canonical::ObjectRefV1;
+
+const INDEX_HEADER_LEN: u64 = 64;
 
 /// A nonzero transaction sequence in one store's authenticated log chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -57,6 +60,72 @@ impl LogPackAddress {
             .checked_add(self.length)
             .expect("validated log-pack address cannot overflow")
     }
+}
+
+/// Catalog-governing state authenticated by a terminal commit.
+///
+/// The active pack and durable pack tail are already determined by the
+/// commit record's own address and extent. The catalog epoch is the two-slot
+/// compare-and-swap coordinate and therefore is intentionally not part of the
+/// transaction's semantic publication identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitPublicationV1 {
+    first_live_pack: u64,
+    index_generation: u64,
+    durable_index_tail: u64,
+    retention_manifest: ObjectRefV1,
+    current_state_canonical_bytes: u64,
+    retained_canonical_bytes: u64,
+}
+
+impl CommitPublicationV1 {
+    pub fn new(
+        first_live_pack: u64,
+        index_generation: u64,
+        durable_index_tail: u64,
+        retention_manifest: ObjectRefV1,
+        current_state_canonical_bytes: u64,
+        retained_canonical_bytes: u64,
+    ) -> Result<Self, LogPackFormatError> {
+        if first_live_pack == 0 {
+            return Err(LogPackFormatError::ZeroFirstLivePack);
+        }
+        if index_generation == 0 {
+            return Err(LogPackFormatError::ZeroIndexGeneration);
+        }
+        if durable_index_tail < INDEX_HEADER_LEN {
+            return Err(LogPackFormatError::IndexTailBeforeHeader(durable_index_tail));
+        }
+        if (durable_index_tail - INDEX_HEADER_LEN) % 72 != 0 {
+            return Err(LogPackFormatError::IndexTailUnaligned(durable_index_tail));
+        }
+        if current_state_canonical_bytes > retained_canonical_bytes {
+            return Err(LogPackFormatError::ByteInventory {
+                current_state: current_state_canonical_bytes,
+                retained: retained_canonical_bytes,
+            });
+        }
+        Ok(Self {
+            first_live_pack,
+            index_generation,
+            durable_index_tail,
+            retention_manifest,
+            current_state_canonical_bytes,
+            retained_canonical_bytes,
+        })
+    }
+
+    pub const fn first_live_pack(self) -> u64 { self.first_live_pack }
+
+    pub const fn index_generation(self) -> u64 { self.index_generation }
+
+    pub const fn durable_index_tail(self) -> u64 { self.durable_index_tail }
+
+    pub const fn retention_manifest(self) -> ObjectRefV1 { self.retention_manifest }
+
+    pub const fn current_state_canonical_bytes(self) -> u64 { self.current_state_canonical_bytes }
+
+    pub const fn retained_canonical_bytes(self) -> u64 { self.retained_canonical_bytes }
 }
 
 /// Total work/retention limits. No limit is a traversal- or term-depth cap.

@@ -11,10 +11,10 @@ use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore,
     CanonicalObjectView, ClosureError, DagTransactionError, DagTransactionLimits, EndpointValue,
     ImmutableObjectStore, IncrementalClosureLimits, IncrementalSemanticLimits, LegacyHistoryRoot,
-    MutationBatchViewV1, ObjectAdmission, ObjectDigest, ObjectRefV1, OpenDagTransaction,
-    RSpaceMutationBatchV1, RewriteError, SemanticRoots, SemanticStateManifestV1,
-    SemanticValidationLimits, StagingStoreError, StagingStoreLimits, StateVersionV1,
-    StructuralValidationLimits, VerifiedDagState,
+    MutableObjectStore, MutationBatchViewV1, ObjectAdmission, ObjectDigest, ObjectRefV1,
+    OpenDagTransaction, RSpaceMutationBatchV1, RewriteError, SemanticRoots,
+    SemanticStateManifestV1, SemanticValidationLimits, StagingStoreError, StagingStoreLimits,
+    StateVersionV1, StructuralValidationLimits, VerifiedDagState,
 };
 use crate::rspace::rho_path::RhoPathV1;
 use crate::rspace::serializers::serializers::{

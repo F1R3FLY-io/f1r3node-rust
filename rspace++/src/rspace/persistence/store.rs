@@ -66,7 +66,12 @@ pub trait ImmutableObjectStore: Send + Sync {
     fn get(&self, digest: &ObjectDigest) -> Result<Option<Self::Object>, Self::Error> {
         self.get_bounded(digest, u64::MAX)
     }
+}
 
+/// Private/in-memory admission capability. Durable object readers deliberately
+/// implement only [`ImmutableObjectStore`]; publication is the sole path that
+/// may append canonical objects and advance authority.
+pub trait MutableObjectStore: ImmutableObjectStore {
     fn put_if_absent_or_equal(
         &self,
         reference: ObjectRefV1,
@@ -312,7 +317,9 @@ impl<S: ImmutableObjectStore> ImmutableObjectStore for StagingObjectStore<'_, S>
             .map(|object| object.map(LayeredObject::Base))
             .map_err(StagingStoreError::Base)
     }
+}
 
+impl<S: ImmutableObjectStore> MutableObjectStore for StagingObjectStore<'_, S> {
     fn put_if_absent_or_equal(
         &self,
         reference: ObjectRefV1,
@@ -429,7 +436,9 @@ impl ImmutableObjectStore for CanonicalObjectStore {
         }
         Ok(Some(Arc::clone(object)))
     }
+}
 
+impl MutableObjectStore for CanonicalObjectStore {
     fn put_if_absent_or_equal(
         &self,
         reference: ObjectRefV1,
