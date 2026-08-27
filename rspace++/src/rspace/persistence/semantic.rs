@@ -17,8 +17,9 @@ use serde::Serialize;
 
 use super::canonical::{CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len};
 use super::closure::{
-    ClosureError, StructuralClosureReport, StructuralValidationLimits,
-    verify_structural_closure_with_limits,
+    ClosureError, RetainedUnionClosureLimitsV1, StructuralClosureLedgerV1, StructuralClosureReport,
+    StructuralValidationLimits, StructurallyAdmittedStateV1,
+    verify_structural_closure_in_ledger_with_limits,
 };
 use super::manifest::{SemanticNamespace, SemanticProfileId, SemanticRoots};
 use super::mutation::MutationBatchViewV1;
@@ -105,6 +106,21 @@ pub struct SemanticValidationReport {
     pub join_lookup_steps: u64,
     pub maximum_logical_path_bytes: u64,
     pub maximum_worklist: u64,
+}
+
+/// Non-forgeable completion token for one exact manifest.  The report remains
+/// available for diagnostics, while transaction authority can be constructed
+/// only from this token rather than from caller-filled counters.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SemanticallyAdmittedStateV1 {
+    manifest: ObjectRefV1,
+    report: SemanticValidationReport,
+}
+
+impl SemanticallyAdmittedStateV1 {
+    pub(crate) const fn manifest(self) -> ObjectRefV1 { self.manifest }
+
+    pub(crate) const fn report(self) -> SemanticValidationReport { self.report }
 }
 
 /// Work ceilings for one locally produced, verified-base transition.
@@ -309,28 +325,40 @@ where
     P: SemanticProfile,
     S: ImmutableObjectStore,
 {
-    let manifest_bytes = load_reference(store, manifest_ref)?;
-    let manifest =
-        match CanonicalObjectView::parse(manifest_bytes.as_ref()).map_err(format_error)? {
-            CanonicalObjectView::SemanticManifest(manifest) => manifest,
-            object => {
-                return Err(format_error(CanonicalFormatError::UnexpectedObjectKind {
-                    digest: manifest_ref.digest(),
-                    expected: CanonicalObjectKind::SemanticManifest.name(),
-                    actual: object.kind().name(),
-                }));
-            }
-        };
-    if manifest.profile_id() != P::ID {
+    let mut ledger = StructuralClosureLedgerV1::new();
+    let structural = verify_structural_closure_in_ledger_with_limits(
+        store,
+        manifest_ref,
+        limits.structural,
+        &mut ledger,
+        RetainedUnionClosureLimitsV1::UNBOUNDED,
+    )?;
+    verify_rspace_semantics_after_structural::<P, S>(store, structural, limits)
+        .map(SemanticallyAdmittedStateV1::report)
+}
+
+/// Complete semantic admission from the exact structural token produced by
+/// the shared closure PDA. Durable recovery uses this transition so retained
+/// inventory derivation and current-state semantics never repeat the
+/// structural graph walk.
+pub(crate) fn verify_rspace_semantics_after_structural<P, S>(
+    store: &S,
+    structural: StructurallyAdmittedStateV1,
+    limits: SemanticValidationLimits,
+) -> Result<SemanticallyAdmittedStateV1, ClosureError<S::Error>>
+where
+    P: SemanticProfile,
+    S: ImmutableObjectStore,
+{
+    if structural.profile_id() != P::ID {
         return Err(format_error(CanonicalFormatError::SemanticProfileMismatch {
             expected: *P::ID.as_bytes(),
-            actual: *manifest.profile_id().as_bytes(),
+            actual: *structural.profile_id().as_bytes(),
         }));
     }
-    let structural = verify_structural_closure_with_limits(store, manifest_ref, limits.structural)?;
-    let roots = manifest.roots();
+    let roots = structural.roots();
     let mut report = SemanticValidationReport {
-        structural,
+        structural: structural.report(),
         ..SemanticValidationReport::default()
     };
 
@@ -356,7 +384,10 @@ where
         increment(&mut report.continuation_entries, 1, "continuation entries")
     })?;
 
-    Ok(report)
+    Ok(SemanticallyAdmittedStateV1 {
+        manifest: structural.manifest(),
+        report,
+    })
 }
 
 #[derive(Clone, Copy, Debug)]

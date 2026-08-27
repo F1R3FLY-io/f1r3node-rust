@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 
+use pathmap::PathMap;
+
 use super::canonical::{CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len};
-use super::manifest::{SemanticNamespace, SemanticStateManifestView};
+use super::manifest::{
+    SemanticNamespace, SemanticProfileId, SemanticRoots, SemanticStateManifestView,
+};
 use super::object::{
     CanonicalBlobKind, CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView,
     EndpointValue,
@@ -115,6 +119,46 @@ enum Expectation {
     },
 }
 
+impl Expectation {
+    /// Compact, exact memo key for the finite structural-expectation grammar.
+    /// Keeping this in the digest ledger removes one allocation per verified
+    /// expectation without conflating namespace, endpoint policy, or root
+    /// normalization.
+    const fn bit(self) -> u32 {
+        let index = match self {
+            Self::Manifest => 0,
+            Self::Node {
+                namespace,
+                policy,
+                root,
+            } => {
+                let namespace = match namespace {
+                    SemanticNamespace::DataBag => 0,
+                    SemanticNamespace::ContinuationMap => 1,
+                    SemanticNamespace::JoinBag => 2,
+                };
+                let policy = match policy {
+                    EndpointPolicy::Multiplicity => 0,
+                    EndpointPolicy::Content(CanonicalBlobKind::ContinuationSourceV1) => 1,
+                };
+                1 + namespace * 4 + policy * 2 + root as usize
+            }
+            Self::Blob {
+                namespace,
+                kind: CanonicalBlobKind::ContinuationSourceV1,
+            } => {
+                let namespace = match namespace {
+                    SemanticNamespace::DataBag => 0,
+                    SemanticNamespace::ContinuationMap => 1,
+                    SemanticNamespace::JoinBag => 2,
+                };
+                13 + namespace
+            }
+        };
+        1u32 << index
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Work {
     Enter(ObjectRefV1, Expectation),
@@ -134,11 +178,93 @@ enum IncrementalWork {
     Exit(IncrementalVisitKey),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 struct DigestState {
     declared_len: u64,
-    active: bool,
-    verified: Vec<Expectation>,
+    visit_epoch: u64,
+    active_epoch: u64,
+    verified_expectations: u32,
+    retained_union_member: bool,
+}
+
+/// One digest-keyed ledger shared by every state named by a retention
+/// manifest.  Epochs deduplicate one state's closure while the membership bit
+/// deduplicates the union across states.  The ledger is itself a PathMap, so no
+/// flattened object list, sort, or surrogate identifier is introduced.
+pub(crate) struct StructuralClosureLedgerV1 {
+    states: PathMap<DigestState>,
+    next_epoch: u64,
+    retained_union_objects: u64,
+    retained_union_canonical_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RetainedUnionClosureReportV1 {
+    pub(crate) distinct_objects: u64,
+    pub(crate) canonical_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RetainedUnionClosureLimitsV1 {
+    pub(crate) max_distinct_objects: u64,
+    pub(crate) max_canonical_bytes: u64,
+}
+
+impl RetainedUnionClosureLimitsV1 {
+    pub(crate) const UNBOUNDED: Self = Self {
+        max_distinct_objects: u64::MAX,
+        max_canonical_bytes: u64::MAX,
+    };
+}
+
+/// Non-forgeable evidence that one exact state manifest has completed the
+/// structural closure PDA under the supplied immutable store.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StructurallyAdmittedStateV1 {
+    manifest: ObjectRefV1,
+    profile_id: SemanticProfileId,
+    roots: SemanticRoots,
+    report: StructuralClosureReport,
+}
+
+impl StructurallyAdmittedStateV1 {
+    pub(crate) const fn manifest(self) -> ObjectRefV1 { self.manifest }
+
+    pub(crate) const fn profile_id(self) -> SemanticProfileId { self.profile_id }
+
+    pub(crate) const fn roots(self) -> SemanticRoots { self.roots }
+
+    pub(crate) const fn report(self) -> StructuralClosureReport { self.report }
+}
+
+impl StructuralClosureLedgerV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            states: PathMap::new(),
+            next_epoch: 1,
+            retained_union_objects: 0,
+            retained_union_canonical_bytes: 0,
+        }
+    }
+
+    pub(crate) const fn retained_union_report(&self) -> RetainedUnionClosureReportV1 {
+        RetainedUnionClosureReportV1 {
+            distinct_objects: self.retained_union_objects,
+            canonical_bytes: self.retained_union_canonical_bytes,
+        }
+    }
+
+    fn begin_epoch<E>(&mut self) -> Result<u64, ClosureError<E>> {
+        let epoch = self.next_epoch;
+        self.next_epoch = self.next_epoch.checked_add(1).ok_or_else(|| {
+            format_error(CanonicalFormatError::CounterOverflow("structural closure epochs"))
+        })?;
+        Ok(epoch)
+    }
+}
+
+impl Default for StructuralClosureLedgerV1 {
+    fn default() -> Self { Self::new() }
 }
 
 /// Verify canonical framing, identities, graph closure, branch normalization,
@@ -167,46 +293,53 @@ pub fn verify_structural_closure_with_limits<S>(
 where
     S: ImmutableObjectStore,
 {
-    verify_structural_closure_report_with_limits(store, manifest, limits)
+    let mut ledger = StructuralClosureLedgerV1::new();
+    verify_structural_closure_in_ledger_with_limits(
+        store,
+        manifest,
+        limits,
+        &mut ledger,
+        RetainedUnionClosureLimitsV1::UNBOUNDED,
+    )
+    .map(StructurallyAdmittedStateV1::report)
 }
 
-fn verify_structural_closure_report_with_limits<S>(
+pub(crate) fn verify_structural_closure_in_ledger_with_limits<S>(
     store: &S,
     manifest: ObjectRefV1,
     limits: StructuralValidationLimits,
-) -> Result<StructuralClosureReport, ClosureError<S::Error>>
+    ledger: &mut StructuralClosureLedgerV1,
+    union_limits: RetainedUnionClosureLimitsV1,
+) -> Result<StructurallyAdmittedStateV1, ClosureError<S::Error>>
 where
     S: ImmutableObjectStore,
 {
+    let epoch = ledger.begin_epoch()?;
     let mut report = StructuralClosureReport::default();
+    let mut active_objects = 0u64;
+    let mut admitted_manifest = None;
     let mut work = Vec::new();
     push_work(&mut work, Work::Enter(manifest, Expectation::Manifest), limits, &mut report)?;
-    let mut states = HashMap::<ObjectDigest, DigestState>::new();
 
     while let Some(next) = work.pop() {
         match next {
             Work::Exit(digest, expectation) => {
-                let state = states
-                    .get_mut(&digest)
+                let mut state = ledger
+                    .states
+                    .get_val_at(digest.as_bytes())
+                    .copied()
                     .expect("an exit follows an entered object");
-                state.active = false;
-                let attempted_len = state.verified.len().checked_add(1).ok_or_else(|| {
-                    format_error(CanonicalFormatError::CounterOverflow(
-                        "verified object expectations",
-                    ))
-                })?;
-                let attempted = checked_len(attempted_len, "verified object expectations")
-                    .map_err(format_error)?;
-                state.verified.try_reserve(1).map_err(|_| {
-                    format_error(CanonicalFormatError::AllocationFailure {
-                        requested: attempted,
-                    })
-                })?;
-                state.verified.push(expectation);
+                debug_assert_eq!(state.active_epoch, epoch);
+                state.active_epoch = 0;
+                state.verified_expectations |= expectation.bit();
+                let replaced = ledger.states.insert(digest.as_bytes(), state);
+                debug_assert!(replaced.is_some());
+                active_objects -= 1;
             }
             Work::Enter(reference, expectation) => {
                 let digest = reference.digest();
-                let first_visit = !states.contains_key(&digest);
+                let existing = ledger.states.get_val_at(digest.as_bytes()).copied();
+                let first_visit = existing.is_none_or(|state| state.visit_epoch != epoch);
                 let admitted_distinct_objects = if first_visit {
                     let attempted = report.distinct_objects.checked_add(1).ok_or_else(|| {
                         format_error(CanonicalFormatError::CounterOverflow("distinct objects"))
@@ -228,37 +361,73 @@ where
                 } else {
                     None
                 };
-                if first_visit {
-                    states.try_reserve(1).map_err(|_| {
-                        format_error(CanonicalFormatError::AllocationFailure {
-                            requested: admitted_distinct_objects
-                                .expect("first visits preflight distinct objects"),
-                        })
-                    })?;
-                    states.insert(digest, DigestState {
-                        declared_len: reference.encoded_len(),
-                        active: false,
-                        verified: Vec::new(),
-                    });
-                }
-                let state = states
-                    .get_mut(&digest)
-                    .expect("a digest state is present after first-visit admission");
+                let mut state = existing.unwrap_or(DigestState {
+                    declared_len: reference.encoded_len(),
+                    visit_epoch: 0,
+                    active_epoch: 0,
+                    verified_expectations: 0,
+                    retained_union_member: false,
+                });
                 if state.declared_len != reference.encoded_len() {
                     return Err(format_error(CanonicalFormatError::ObjectLengthMismatch {
                         expected: state.declared_len,
                         actual: reference.encoded_len(),
                     }));
                 }
-                if state.verified.contains(&expectation) {
+                if first_visit {
+                    state.visit_epoch = epoch;
+                    state.active_epoch = 0;
+                    state.verified_expectations = 0;
+                }
+                let expectation_bit = expectation.bit();
+                if state.verified_expectations & expectation_bit != 0 {
                     continue;
                 }
-                if state.active {
+                if state.active_epoch == epoch {
                     return Err(format_error(CanonicalFormatError::ObjectCycle(
                         reference.digest(),
                     )));
                 }
-                state.active = true;
+                state.active_epoch = epoch;
+
+                let admitted_union = if first_visit && !state.retained_union_member {
+                    let objects =
+                        ledger
+                            .retained_union_objects
+                            .checked_add(1)
+                            .ok_or_else(|| {
+                                format_error(CanonicalFormatError::CounterOverflow(
+                                    "retained union objects",
+                                ))
+                            })?;
+                    check_limit(
+                        "retained union objects",
+                        union_limits.max_distinct_objects,
+                        objects,
+                    )?;
+                    let bytes = ledger
+                        .retained_union_canonical_bytes
+                        .checked_add(reference.encoded_len())
+                        .ok_or_else(|| {
+                            format_error(CanonicalFormatError::CounterOverflow(
+                                "retained union canonical bytes",
+                            ))
+                        })?;
+                    check_limit(
+                        "retained union canonical bytes",
+                        union_limits.max_canonical_bytes,
+                        bytes,
+                    )?;
+                    Some((objects, bytes))
+                } else {
+                    None
+                };
+
+                let replaced = ledger.states.insert(digest.as_bytes(), state);
+                debug_assert_eq!(replaced.is_some(), existing.is_some());
+                active_objects = active_objects.checked_add(1).ok_or_else(|| {
+                    format_error(CanonicalFormatError::CounterOverflow("active closure objects"))
+                })?;
                 let bytes = load_reference(store, reference)?;
                 let bytes = bytes.as_ref();
                 if first_visit {
@@ -266,6 +435,15 @@ where
                         admitted_distinct_objects.expect("first visits preflight distinct objects");
                     report.canonical_bytes =
                         admitted_canonical_bytes.expect("first visits preflight canonical bytes");
+                }
+                if let Some((objects, canonical_bytes)) = admitted_union {
+                    let state = ledger
+                        .states
+                        .get_val_mut_at(digest.as_bytes())
+                        .expect("entered digest remains in the closure ledger");
+                    state.retained_union_member = true;
+                    ledger.retained_union_objects = objects;
+                    ledger.retained_union_canonical_bytes = canonical_bytes;
                 }
                 let object = CanonicalObjectView::parse(bytes).map_err(format_error)?;
                 push_work(
@@ -283,6 +461,7 @@ where
                                 object.kind(),
                             )));
                         };
+                        admitted_manifest = Some((manifest.profile_id(), manifest.roots()));
                         schedule_manifest_roots(manifest, &mut work, limits, &mut report)?;
                     }
                     Expectation::Node {
@@ -364,8 +543,14 @@ where
             }
         }
     }
-    debug_assert!(states.values().all(|state| !state.active));
-    Ok(report)
+    debug_assert_eq!(active_objects, 0);
+    let (profile_id, roots) = admitted_manifest.expect("manifest expectation admits one manifest");
+    Ok(StructurallyAdmittedStateV1 {
+        manifest,
+        profile_id,
+        roots,
+        report,
+    })
 }
 
 /// Verify the complete logical transaction delta while stopping only at

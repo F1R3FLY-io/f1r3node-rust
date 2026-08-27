@@ -1,5 +1,6 @@
 mod canonical_rebuild_oracle;
 mod closure_validation;
+mod closure_union_inventory;
 mod durable_catalog;
 mod durable_index_recovery;
 mod durable_recovery;

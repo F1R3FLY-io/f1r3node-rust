@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use super::support::{
     TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, admit, empty_roots, manifest, nonzero,
@@ -7,8 +8,11 @@ use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore,
-    ClosureError, DagChild, EndpointValue, SemanticProfileId, SemanticRoots,
-    SemanticStateManifestV1, SemanticValidationLimits, verify_rspace_semantics,
+    ClosureError, DagChild, EndpointValue, ImmutableObjectStore, ObjectDigest,
+    RetainedUnionClosureLimitsV1, SemanticProfileId, SemanticRoots, SemanticStateManifestV1,
+    SemanticValidationLimits, StructuralClosureLedgerV1, StructuralValidationLimits,
+    verify_rspace_semantics, verify_rspace_semantics_after_structural,
+    verify_structural_closure_in_ledger_with_limits,
 };
 use crate::rspace::rho_path::RhoPathV1;
 use crate::rspace::serializers::serializers::{
@@ -18,6 +22,45 @@ use crate::rspace::serializers::serializers::{
 struct StateImage {
     store: CanonicalObjectStore,
     manifest: crate::rspace::persistence::ObjectRefV1,
+}
+
+struct CountingStore<'store> {
+    inner: &'store CanonicalObjectStore,
+    reads: Mutex<Vec<ObjectDigest>>,
+}
+
+impl<'store> CountingStore<'store> {
+    fn new(inner: &'store CanonicalObjectStore) -> Self {
+        Self {
+            inner,
+            reads: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn clear(&self) { self.reads.lock().unwrap().clear(); }
+
+    fn read_count(&self, digest: ObjectDigest) -> usize {
+        self.reads
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|observed| **observed == digest)
+            .count()
+    }
+}
+
+impl ImmutableObjectStore for CountingStore<'_> {
+    type Error = CanonicalFormatError;
+    type Object = Arc<[u8]>;
+
+    fn get_bounded(
+        &self,
+        digest: &ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Self::Object>, Self::Error> {
+        self.reads.lock().unwrap().push(*digest);
+        self.inner.get_bounded(digest, max_encoded_len)
+    }
 }
 
 fn valid_image() -> StateImage { image_with_options(false, false, false, false) }
@@ -141,6 +184,32 @@ fn exact_three_root_image_validates_without_flattening_the_tries() {
     assert_eq!(report.join_lookups, 1);
     assert_eq!(report.join_lookup_steps, 1);
     assert!(report.source_payload_bytes > 0);
+}
+
+#[test]
+fn semantic_completion_consumes_structural_evidence_without_rewalking_the_manifest() {
+    let image = valid_image();
+    let store = CountingStore::new(&image.store);
+    let mut ledger = StructuralClosureLedgerV1::new();
+    let structural = verify_structural_closure_in_ledger_with_limits(
+        &store,
+        image.manifest,
+        StructuralValidationLimits::unbounded(),
+        &mut ledger,
+        RetainedUnionClosureLimitsV1::UNBOUNDED,
+    )
+    .expect("structural admission succeeds");
+    assert_eq!(store.read_count(image.manifest.digest()), 1);
+
+    store.clear();
+    let completed = verify_rspace_semantics_after_structural::<TestSemanticProfile, _>(
+        &store,
+        structural,
+        SemanticValidationLimits::unbounded(),
+    )
+    .expect("semantic completion accepts the structural token");
+    assert_eq!(store.read_count(image.manifest.digest()), 0);
+    assert_eq!(completed.report(), verify(&image).expect("the wrapper produces the same report"));
 }
 
 #[test]

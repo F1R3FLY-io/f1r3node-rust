@@ -24,8 +24,8 @@ use super::rewrite::{
 };
 use super::semantic::{
     IncrementalSemanticLimits, IncrementalSemanticReport, PreparedSemanticDelta, SemanticProfile,
-    SemanticValidationLimits, SemanticValidationReport, complete_semantic_delta,
-    prepare_semantic_delta, verify_rspace_semantics,
+    SemanticValidationLimits, SemanticValidationReport, SemanticallyAdmittedStateV1,
+    complete_semantic_delta, prepare_semantic_delta, verify_rspace_semantics,
 };
 use super::store::{
     ImmutableObjectStore, ObjectAdmission, StagingObjectStore, StagingStoreError,
@@ -130,6 +130,29 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
             store,
             version,
             admission,
+            profile: PhantomData,
+        })
+    }
+
+    /// Construct transaction authority from a completed trust-boundary
+    /// admission without repeating the whole-state walk. The semantic token's
+    /// constructor is private to the verifier, and the exact manifest binding
+    /// is checked again here before authority is exposed.
+    pub(crate) fn from_completed_admission(
+        store: &'store S,
+        version: StateVersionV1,
+        admission: SemanticallyAdmittedStateV1,
+    ) -> Result<Self, CanonicalFormatError> {
+        if admission.manifest() != version.manifest() {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "semantic admission token does not name the requested state manifest"
+                    .to_owned(),
+            });
+        }
+        Ok(Self {
+            store,
+            version,
+            admission: admission.report(),
             profile: PhantomData,
         })
     }

@@ -120,6 +120,12 @@ impl<I> CatalogVerifiedRecoveryV1<I> {
 
 impl CatalogVerifiedRecoveryV1<CommittedObjectIndexV1> {
     pub(crate) fn object_index(&self) -> &CommittedObjectIndexV1 { &self.scan.index }
+
+    pub(super) fn into_authority_and_index(
+        self,
+    ) -> (CatalogAuthorityTokenV1, CommittedObjectIndexV1) {
+        (self.authority, self.scan.index)
+    }
 }
 
 #[derive(Debug)]

@@ -138,6 +138,18 @@ impl IndexBoundPhysicalRecoveryV1 {
     pub(crate) const fn disposition(&self) -> IndexBindingDispositionV1 { self.disposition }
 
     pub(crate) const fn startup_work(&self) -> DurableStartupWorkV1 { self.work }
+
+    pub(super) fn into_admission_parts(
+        self,
+    ) -> (
+        CatalogAuthorityTokenV1,
+        CommittedObjectIndexV1,
+        IndexBindingDispositionV1,
+        DurableStartupWorkV1,
+    ) {
+        let (authority, index) = self.recovery.into_authority_and_index();
+        (authority, index, self.disposition, self.work)
+    }
 }
 
 /// A recovered writer retains the process-wide writer lease for as long as
@@ -148,13 +160,14 @@ pub(crate) struct PhysicallyRecoveredDurableWriterV1 {
 }
 
 impl PhysicallyRecoveredDurableWriterV1 {
+    #[cfg(test)]
     pub(crate) const fn recovered(&self) -> &IndexBoundPhysicalRecoveryV1 { &self.recovered }
 
-    /// Deliberately consume the recovered authority before handing its writer
-    /// lease to a mutation state machine.  Exposing `&mut` access to the raw
-    /// lease beside `recovered()` would let callers publish new bytes while
-    /// continuing to observe a stale catalog token and index-bound snapshot.
-    pub(crate) fn into_unrecovered_lease(self) -> DurableWriterLeaseV1 { self.lease }
+    pub(super) fn into_admission_parts(
+        self,
+    ) -> (DurableWriterLeaseV1, IndexBoundPhysicalRecoveryV1) {
+        (self.lease, self.recovered)
+    }
 }
 
 #[derive(Debug)]
@@ -223,9 +236,8 @@ impl From<DurableLimitError> for DurableStartupErrorV1 {
 }
 
 impl DurableDirectoryV1 {
-    /// Consume the directory capability, acquire the exclusive writer lease,
-    /// and return only after mandatory index binding succeeds.
-    pub(crate) fn recover_writer_v1(
+    /// Internal physical phase of profile-typed durable admission.
+    pub(super) fn recover_physical_writer_v1(
         self,
         limits: DurableLimits,
         wal_limits: LogPackDecodeLimits,
@@ -234,6 +246,17 @@ impl DurableDirectoryV1 {
         let reader = lease.directory().try_clone_reader()?;
         let recovered = recover_index_bound_v1(&reader, &mut lease, limits, wal_limits)?;
         Ok(PhysicallyRecoveredDurableWriterV1 { lease, recovered })
+    }
+
+    /// Focused physical-recovery tests exercise this phase independently.
+    /// Production code cannot name it and must use `recover_and_admit_v1`.
+    #[cfg(test)]
+    pub(crate) fn recover_writer_v1(
+        self,
+        limits: DurableLimits,
+        wal_limits: LogPackDecodeLimits,
+    ) -> Result<PhysicallyRecoveredDurableWriterV1, DurableStartupErrorV1> {
+        self.recover_physical_writer_v1(limits, wal_limits)
     }
 }
 
@@ -395,7 +418,7 @@ impl RecoverySummaryV1 {
     }
 }
 
-fn read_catalog_token(
+pub(super) fn read_catalog_token(
     directory: &DurableDirectoryV1,
 ) -> Result<CatalogAuthorityTokenV1, DurableStartupErrorV1> {
     let image = directory.open_catalog()?.read_catalog_image()?;

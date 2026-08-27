@@ -25,11 +25,13 @@ const CATALOG_RESERVED_LEN: usize = CATALOG_AUTH_LEN - CATALOG_RESERVED_OFFSET;
 /// Durable locations and byte inventories governed by one catalog authority.
 ///
 /// `current_state_canonical_bytes` is the deterministic, deduplicated size of
-/// the canonical object closure reachable from `CatalogSlotV1::state`. It is a
-/// logical consensus-metering input. `retained_canonical_bytes` is the unique
-/// canonical payload retained for the current root plus explicit historical
-/// roots; it is a physical compaction inventory and is never substituted for
-/// the logical storage charge.
+/// the canonical object closure reachable from `CatalogSlotV1::state`.
+/// `retained_canonical_bytes` is the unique canonical payload retained for the
+/// current root plus explicit historical roots. Both are authenticated logical
+/// inventories used to validate admission and compaction; neither is silently
+/// substituted for the active consensus tariff's introduction, delivery, or
+/// trace-byte ledgers. A future state-rent rule would require its own versioned
+/// consensus definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CatalogPackStateV1 {
     first_live_pack: u64,

@@ -23,11 +23,14 @@ mod wal;
 pub use canonical::{
     CanonicalEncode, CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1,
 };
-#[cfg(test)]
-pub(crate) use closure::verify_incremental_closure;
 pub use closure::{
     ClosureError, IncrementalClosureLimits, StructuralClosureReport, StructuralValidationLimits,
     verify_structural_closure, verify_structural_closure_with_limits,
+};
+#[cfg(test)]
+pub(crate) use closure::{
+    RetainedUnionClosureLimitsV1, StructuralClosureLedgerV1, verify_incremental_closure,
+    verify_structural_closure_in_ledger_with_limits,
 };
 pub use durable::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
@@ -67,6 +70,8 @@ pub(crate) use rewrite::{
 #[cfg(test)]
 pub(crate) use rewrite::{preflight_sensitive_copy_bytes, reset_preflight_sensitive_copy_bytes};
 pub(crate) use semantic::semantic_profile_seal;
+#[cfg(test)]
+pub(crate) use semantic::verify_rspace_semantics_after_structural;
 pub use semantic::{
     IncrementalSemanticLimits, IncrementalSemanticReport, SemanticProfile,
     SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics,

@@ -4,6 +4,7 @@
 //! identify which verified root is current and where its immutable objects are
 //! stored; they never redefine RSpace semantics.
 
+mod admission;
 mod catalog;
 mod error;
 mod index;
@@ -14,6 +15,11 @@ mod pack;
 mod recovery;
 mod startup;
 
+pub(crate) use admission::{
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAdmissionReportV1,
+    DurableIndexedObjectStoreV1, DurableObjectReadErrorV1, InventoryMismatchKindV1,
+    SemanticallyAdmittedDurableWriterV1,
+};
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
     CatalogSelectionV1, CatalogSlotV1,
@@ -43,6 +49,7 @@ pub(crate) use recovery::{
     CatalogPackProviderV1, DurableReadAt, RecoveryError, replay_catalog_authorized_pack_chain,
     scan_catalog_authorized_pack_chain,
 };
+#[cfg(test)]
 pub(crate) use startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
     IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1,
