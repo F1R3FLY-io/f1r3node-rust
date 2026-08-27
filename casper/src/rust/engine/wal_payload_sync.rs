@@ -411,45 +411,96 @@ fn slice_to_hash(slice: &[u8]) -> Option<[u8; 32]> {
 // setup path calls these once at boot.
 // -------------------------------------------------------------------
 
+/// Result of a boot-time enumeration pass.  Split into two
+/// counters so telemetry can distinguish "reducer worked, no wire
+/// traffic needed" from "we're depending on peers to serve every
+/// byte."
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EnumerateStats {
+    /// Payload hashes handed to the retriever with reproduced
+    /// bytes (via `mark_resolved`).  Fetch protocol will NOT
+    /// contact peers for these.
+    pub resolved_locally: usize,
+    /// Payload hashes enqueued for peer fetch (via
+    /// `enqueue_payload`) — either because the reducer returned
+    /// None or because its reproduced bytes failed the hash check.
+    pub enqueued_for_fetch: usize,
+}
+
 /// Enumerate WAL entries in a captured WAL slice, extract the
-/// unique `payload_ref: Hash(...)` values, and enqueue any that
-/// the joiner cannot reproduce locally via the write-payload-
-/// determinism reducer.
+/// unique `payload_ref: Hash(...)` values, and either:
+///   * hand the reducer's reproduced bytes to the retriever
+///     (`mark_resolved`) if the reducer returned `Some`, OR
+///   * enqueue the hash for peer fetch (`enqueue_payload`) if
+///     the reducer returned `None` OR its bytes failed the
+///     defense-in-depth hash check.
 ///
-/// The `is_reproducible` predicate is passed by the caller — it
-/// answers "can we reconstruct these bytes locally by replaying
-/// deploy data + deterministic Rholang?"  For the initial slice,
-/// callers can pass `|_| false` (fetch everything); a follow-up
-/// slice will wire the actual reducer.
+/// DD-7b-2 (a) committed 2026-08-27: reducer signature is
+/// `FnMut(&WalEntry) -> Option<Vec<u8>>`.  The reducer gets the
+/// full `WalEntry` (op, path, offset, mode_bits, owner, group,
+/// payload_ref, outcome) so it can attempt reconstruction from
+/// on-chain sources — e.g., a `Write` whose bytes came from a
+/// deploy argument the joiner already has in block storage.  If
+/// the reducer can produce bytes, no peer traffic is needed for
+/// that payload.
 ///
-/// Returns the number of payload hashes newly enqueued.
+/// **Interior hash check.**  A reducer bug that returns bytes not
+/// matching `payload_hash` is caught by `mark_resolved`'s rehash
+/// pass; the enumerator falls back to a peer fetch (log at info).
+/// This avoids the applier reconstructing corrupt file state.
+///
+/// For test / early-integration paths, callers can pass
+/// `|_| None` (fetch everything).
 pub async fn enumerate_and_enqueue_payloads<F>(
     driver: &WalPayloadSyncDriver,
     wal_slice: &[rholang::rust::interpreter::io::wal::WalEntry],
-    is_reproducible: F,
-) -> usize
+    mut reducer: F,
+) -> EnumerateStats
 where
-    F: Fn(&[u8; 32]) -> bool,
+    F: FnMut(&rholang::rust::interpreter::io::wal::WalEntry) -> Option<Vec<u8>>,
 {
     use rholang::rust::interpreter::io::wal::PayloadRef;
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
-    let mut enqueued = 0;
+    let mut stats = EnumerateStats::default();
     for entry in wal_slice {
-        if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
-            if seen.insert(h) && !is_reproducible(&h) {
+        let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
+            continue;
+        };
+        if !seen.insert(h) {
+            continue;
+        }
+        match reducer(entry) {
+            Some(bytes) => {
+                if driver.retriever.mark_resolved(h, bytes).await {
+                    stats.resolved_locally += 1;
+                } else {
+                    // Reducer produced bytes that don't hash to h.
+                    // Fall back to peer fetch; log at info so
+                    // operators can spot a reducer regression.
+                    info!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        hash = hex::encode(h),
+                        "reducer output failed hash check; falling back to peer fetch"
+                    );
+                    driver.enqueue_payload(h).await;
+                    stats.enqueued_for_fetch += 1;
+                }
+            }
+            None => {
                 driver.enqueue_payload(h).await;
-                enqueued += 1;
+                stats.enqueued_for_fetch += 1;
             }
         }
     }
-    if enqueued > 0 {
+    if stats.enqueued_for_fetch > 0 || stats.resolved_locally > 0 {
         info!(
             target: "f1r3fly.casper.wal_payload_sync",
-            enqueued,
-            "boot-time enumerator enqueued payloads for fetch"
+            enqueued_for_fetch = stats.enqueued_for_fetch,
+            resolved_locally = stats.resolved_locally,
+            "boot-time enumerator pass complete"
         );
     }
-    enqueued
+    stats
 }
 
 /// Default tick period between outbound-request rounds.  Matches
@@ -658,11 +709,142 @@ mod tests {
                 outcome: WalOutcome::Success,
             })
             .collect();
-        // Mark "b" as reproducible; others should be enqueued.
+        // Reducer reproduces bytes for "b" only; others fall
+        // through to fetch.  New signature (DD-7b-2 (a)):
+        // FnMut(&WalEntry) -> Option<Vec<u8>>.
         let hash_b = hash_of(b"b");
-        let enqueued = enumerate_and_enqueue_payloads(&driver, &entries, |h| *h == hash_b).await;
-        assert_eq!(enqueued, 2);
+        let stats = enumerate_and_enqueue_payloads(&driver, &entries, |entry| {
+            match entry.payload_ref {
+                Some(PayloadRef::Hash(h)) if h == hash_b => Some(b"b".to_vec()),
+                _ => None,
+            }
+        })
+        .await;
+        assert_eq!(stats.enqueued_for_fetch, 2);
+        assert_eq!(stats.resolved_locally, 1);
         assert_eq!(driver.pending_count().await, 2);
+        // "b" is resolved locally, not pending — its bytes are
+        // available via `take_bytes` for the applier.
+        assert_eq!(driver.take_bytes(&hash_b).await, Some(b"b".to_vec()));
+    }
+
+    /// DD-7b-2 (a) pin (2026-08-27): a reducer that returns `None`
+    /// for every entry (the "fetch everything" configuration)
+    /// enqueues every unique hash for peer fetch and resolves
+    /// nothing locally.  Same behavior as the pre-DD-7b-2 code's
+    /// `|_| false` predicate.
+    #[tokio::test]
+    async fn enumerate_and_enqueue_fetch_everything_reducer() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let entries: Vec<WalEntry> = ["x", "y", "z"]
+            .iter()
+            .map(|tag| WalEntry {
+                op: WalOp::Write,
+                path: std::path::PathBuf::from(format!("/{tag}")),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(tag.len() as u64),
+                payload_ref: Some(PayloadRef::hash(tag.as_bytes())),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            })
+            .collect();
+        let stats = enumerate_and_enqueue_payloads(&driver, &entries, |_| None).await;
+        assert_eq!(stats.enqueued_for_fetch, 3);
+        assert_eq!(stats.resolved_locally, 0);
+        assert_eq!(driver.pending_count().await, 3);
+    }
+
+    /// DD-7b-2 (a) pin (2026-08-27): a reducer that reproduces
+    /// EVERY entry's bytes locally results in zero peer fetches
+    /// and a fully-complete retriever — the joiner can proceed
+    /// straight to the applier.  This is the ideal steady state
+    /// for a reducer with full write-payload-determinism coverage.
+    #[tokio::test]
+    async fn enumerate_and_enqueue_full_reducer_coverage_needs_no_fetch() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let payloads: Vec<&[u8]> = vec![b"one", b"two", b"three"];
+        let entries: Vec<WalEntry> = payloads
+            .iter()
+            .map(|p| WalEntry {
+                op: WalOp::Write,
+                path: std::path::PathBuf::from("/anywhere"),
+                extra_path: None,
+                offset: Some(0),
+                length: Some(p.len() as u64),
+                payload_ref: Some(PayloadRef::hash(p)),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            })
+            .collect();
+        // Reducer looks up bytes from a captured map keyed by the
+        // entry's payload_ref hash.
+        let table: std::collections::HashMap<[u8; 32], Vec<u8>> = payloads
+            .iter()
+            .map(|p| (hash_of(p), p.to_vec()))
+            .collect();
+        let stats = enumerate_and_enqueue_payloads(&driver, &entries, |entry| {
+            if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
+                table.get(&h).cloned()
+            } else {
+                None
+            }
+        })
+        .await;
+        assert_eq!(stats.resolved_locally, 3);
+        assert_eq!(stats.enqueued_for_fetch, 0);
+        // Zero pending → applier can immediately begin.
+        assert!(driver.is_complete().await);
+        for p in &payloads {
+            assert_eq!(driver.take_bytes(&hash_of(p)).await.as_deref(), Some(*p));
+        }
+    }
+
+    /// DD-7b-2 (a) safety pin: a buggy reducer that returns bytes
+    /// which don't hash to the entry's `payload_ref` MUST fall
+    /// back to peer fetch — otherwise the applier would
+    /// reconstruct corrupt file state and downstream state hashes
+    /// would diverge from peers.  The `mark_resolved`
+    /// defense-in-depth rehash check catches this.
+    ///
+    /// Uses release-build behavior (return false, log at info)
+    /// via the retriever's `mark_resolved` returning false; a
+    /// debug build would `debug_assert!` panic.  We compile-guard
+    /// the assertion so both build profiles pass.
+    #[cfg(not(debug_assertions))]
+    #[tokio::test]
+    async fn enumerate_and_enqueue_reducer_returning_wrong_bytes_falls_back_to_fetch() {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+        let driver = WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new()));
+        let real_payload = b"pristine".to_vec();
+        let h = hash_of(&real_payload);
+        let entry = WalEntry {
+            op: WalOp::Write,
+            path: std::path::PathBuf::from("/f"),
+            extra_path: None,
+            offset: Some(0),
+            length: Some(real_payload.len() as u64),
+            payload_ref: Some(PayloadRef::Hash(h)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        // Reducer bug: returns garbage instead of the real bytes.
+        let stats =
+            enumerate_and_enqueue_payloads(&driver, std::slice::from_ref(&entry), |_| {
+                Some(b"garbage bytes".to_vec())
+            })
+            .await;
+        assert_eq!(stats.enqueued_for_fetch, 1);
+        assert_eq!(stats.resolved_locally, 0);
+        assert_eq!(driver.pending_count().await, 1);
     }
 
     /// Placeholder: exercise InMemoryPayloadStore integration for

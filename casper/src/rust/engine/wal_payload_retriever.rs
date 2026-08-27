@@ -137,6 +137,58 @@ impl WalPayloadRetriever {
         });
     }
 
+    /// Phase 7b-2 (2026-08-27) — DD-7b-2 (a) reducer path.
+    /// Register a payload_hash as ALREADY RESOLVED with the given
+    /// bytes, bypassing the fetch machinery entirely.  Used by the
+    /// write-payload-determinism reducer: when the joiner can
+    /// locally reproduce the bytes for a WAL entry (e.g., they
+    /// come from a deploy argument the joiner already has), the
+    /// boot enumerator hands the reproduced bytes here instead of
+    /// enqueueing a fetch.
+    ///
+    /// **Safety check:** rehashes the bytes and refuses to store
+    /// them if they don't match `payload_hash`.  The reducer is
+    /// trusted code (part of the joiner binary) so a mismatch
+    /// indicates a bug in the reducer, not adversary input; we
+    /// panic in debug builds and return `false` in release.
+    /// Callers that see `false` should treat it as "reducer failed
+    /// to reproduce, please fetch from peers" and call `enqueue`.
+    ///
+    /// Idempotent: if the hash is already resolved (bytes: Some),
+    /// this is a no-op returning `true`.
+    pub async fn mark_resolved(&self, payload_hash: [u8; 32], bytes: Vec<u8>) -> bool {
+        let actual = hash_bytes(&bytes);
+        if actual != payload_hash {
+            debug_assert!(
+                false,
+                "reducer produced bytes that don't hash to the requested payload_hash \
+                 (requested={} actual={}); this is a reducer bug",
+                hex::encode(payload_hash),
+                hex::encode(actual),
+            );
+            debug!(
+                target: "f1r3fly.casper.wal_payload_retriever",
+                requested = hex::encode(payload_hash),
+                actual = hex::encode(actual),
+                "mark_resolved rejected reducer output: hash mismatch",
+            );
+            return false;
+        }
+        let mut g = self.payloads.write().await;
+        let entry = g.entry(payload_hash).or_insert(PayloadRequestState {
+            payload_hash,
+            last_request_ms: 0,
+            initial_request_ms: 0,
+            peers_tried: Vec::new(),
+            retry_count: 0,
+            bytes: None,
+        });
+        if entry.bytes.is_none() {
+            entry.bytes = Some(bytes);
+        }
+        true
+    }
+
     /// Number of payloads still pending (unverified).
     pub async fn pending_count(&self) -> usize {
         let g = self.payloads.read().await;
@@ -591,6 +643,76 @@ mod tests {
             AdmitOutcome::PayloadAccepted,
             "duplicate on an accepted slot short-circuits BEFORE the \
              hash check would fire (F-5 review-fix pin)",
+        );
+    }
+
+    /// DD-7b-2 (a) pin (2026-08-27): `mark_resolved` with correct
+    /// bytes stashes them AND marks the entry complete, matching
+    /// the shape a successful `admit_response` would produce.  The
+    /// applier can then reach the bytes via `get_bytes`.
+    #[tokio::test]
+    async fn mark_resolved_accepts_valid_reducer_output() {
+        let payload = b"reproduced-locally".to_vec();
+        let h = hash_bytes(&payload);
+        let retriever = WalPayloadRetriever::new();
+        assert!(retriever.mark_resolved(h, payload.clone()).await);
+        assert!(retriever.is_complete().await);
+        assert_eq!(retriever.get_bytes(&h).await, Some(payload));
+    }
+
+    /// DD-7b-2 (a) pin: `mark_resolved` on an already-resolved
+    /// hash is idempotent — repeat calls with the same bytes are
+    /// silent no-ops that leave the resolved entry intact.
+    #[tokio::test]
+    async fn mark_resolved_is_idempotent_on_already_resolved() {
+        let payload = b"once".to_vec();
+        let h = hash_bytes(&payload);
+        let retriever = WalPayloadRetriever::new();
+        assert!(retriever.mark_resolved(h, payload.clone()).await);
+        // Second call also succeeds; state is unchanged.
+        assert!(retriever.mark_resolved(h, payload.clone()).await);
+        assert_eq!(retriever.get_bytes(&h).await, Some(payload));
+    }
+
+    /// DD-7b-2 (a) safety pin: `mark_resolved` with bytes that
+    /// don't hash to `payload_hash` returns `false` and does NOT
+    /// stash the bytes.  Only compiled in release builds — a debug
+    /// build hits the `debug_assert!` and panics (also safe: the
+    /// applier should never receive corrupt bytes).
+    #[cfg(not(debug_assertions))]
+    #[tokio::test]
+    async fn mark_resolved_rejects_mismatched_bytes() {
+        let real_payload = b"pristine".to_vec();
+        let h = hash_bytes(&real_payload);
+        let retriever = WalPayloadRetriever::new();
+        assert!(!retriever.mark_resolved(h, b"different bytes".to_vec()).await);
+        // The entry was created (side-effect of the write) but has
+        // no bytes → still pending.
+        assert!(!retriever.is_complete().await);
+        assert_eq!(retriever.get_bytes(&h).await, None);
+    }
+
+    /// DD-7b-2 (a) safety pin: the debug-build `debug_assert!`
+    /// fires when a reducer bug produces wrong-hash bytes.  We
+    /// verify it aborts by catching the panic — same shape as the
+    /// existing `debug_assert!` pins in the codebase.
+    #[cfg(debug_assertions)]
+    #[tokio::test]
+    async fn mark_resolved_debug_asserts_on_mismatched_bytes() {
+        let real_payload = b"pristine".to_vec();
+        let h = hash_bytes(&real_payload);
+        let retriever = WalPayloadRetriever::new();
+        let result = std::panic::AssertUnwindSafe(async move {
+            retriever.mark_resolved(h, b"different bytes".to_vec()).await
+        });
+        // `catch_unwind` around an async block requires poll-based
+        // catching — easier to catch on the join.  Run in a
+        // spawned task and expect a panic.
+        let handle = tokio::spawn(async move { result.await });
+        let outcome = handle.await;
+        assert!(
+            outcome.is_err(),
+            "debug_assert! must panic on wrong-hash bytes in debug builds"
         );
     }
 }
