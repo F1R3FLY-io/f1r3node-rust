@@ -15,3 +15,5 @@ pub mod multi_parent_casper;
 pub mod running;
 pub mod snapshot_chunk_retriever;
 pub mod snapshot_chunk_server;
+pub mod snapshot_chunk_sync;
+pub mod snapshot_chunk_wire;

@@ -1,0 +1,603 @@
+// Phase 7b-1 snapshot chunk-fetch joiner sync-driver (2026-08-27).
+//
+// Orchestrates the client side of the snapshot chunk-fetch
+// protocol from a joining validator's perspective.  On boot the
+// joiner enumerates finalized blocks whose snapshots it lacks
+// locally, and for each one it:
+//
+//   1. Broadcasts a HasSnapshotRequest to discover peers with the
+//      snapshot.
+//   2. On each HasSnapshot reply, pins the merkle_root + chunk_count
+//      target (if we haven't already), records the peer as a source,
+//      and starts issuing GetSnapshotChunkRequests round-robin
+//      across known sources.
+//   3. On each SnapshotChunkResponse, hands the response to the
+//      matching SnapshotChunkRetriever; on ChunkAccepted, moves
+//      on to the next pending index.
+//   4. When the retriever completes (`is_complete`), assembles the
+//      bytes and writes them to the local snapshot dir; the joiner's
+//      main sync loop can then hand them to the Phase-7-WAL replay
+//      path.
+//
+// Also handles:
+//   * Timeout-driven retries (`retry_tick`): scans for chunks whose
+//     last request has aged past REQUEST_TIMEOUT_MS and re-queues
+//     them to alternative peers.
+//   * Peer rotation: on a byzantine/malformed response, marks the
+//     sending peer as failed for this snapshot and rotates to
+//     the next known source.
+//   * Stale-eviction: a retriever whose initial request is older
+//     than STALE_EVICTION_MS is dropped (joiner should re-broadcast
+//     HasSnapshotRequest to refresh source list).
+//
+// Not covered here (production shim work):
+//   * TransportLayer wiring — this module is transport-agnostic;
+//     the caller passes a T: TransportLayer to `tick`.
+//   * Peer discovery beyond HasSnapshot broadcast responses.
+//   * Cryptographic peer authentication of chunk responses (the
+//     retriever's Merkle-proof check is the load-bearing check;
+//     peer identity is a spam-defense layer for a follow-up slice).
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::rp_conf::RPConf;
+use comm::rust::transport::transport_layer::TransportLayer;
+use models::rust::casper::protocol::casper_message::{HasSnapshot, SnapshotChunkResponse};
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
+
+use crate::rust::engine::snapshot_chunk_retriever::{
+    AdmitOutcome, SnapshotChunkRetriever, SnapshotTarget, MAX_RETRIES,
+};
+use crate::rust::engine::snapshot_chunk_wire::{
+    broadcast_has_snapshot_request, send_get_snapshot_chunk_request,
+};
+
+/// Per-snapshot sync state: retriever + known peers + round-robin
+/// cursor for peer rotation.
+#[derive(Debug)]
+pub struct SnapshotSyncState {
+    pub retriever: Arc<SnapshotChunkRetriever>,
+    /// Peers known to have this snapshot (from HasSnapshot replies).
+    /// FIFO for round-robin selection.
+    pub sources: VecDeque<PeerNode>,
+    /// Peers that produced malformed responses for this snapshot;
+    /// skipped on rotation.
+    pub blacklisted_sources: HashSet<PeerNode>,
+    /// Whether we've already broadcast the initial
+    /// HasSnapshotRequest.  Avoids duplicate broadcasts on repeat
+    /// ticks before we've seen any HasSnapshot replies.
+    pub broadcasted_has_request: bool,
+}
+
+impl SnapshotSyncState {
+    /// Pick the next non-blacklisted source, rotating the FIFO so
+    /// consecutive picks land on different peers.  Returns None if
+    /// no source is available.
+    pub fn next_source(&mut self) -> Option<PeerNode> {
+        let n = self.sources.len();
+        for _ in 0..n {
+            let peer = self.sources.pop_front()?;
+            self.sources.push_back(peer.clone());
+            if !self.blacklisted_sources.contains(&peer) {
+                return Some(peer);
+            }
+        }
+        None
+    }
+}
+
+/// The joiner-side driver.  Owns a per-snapshot sync-state map
+/// keyed by block hash.
+#[derive(Debug, Clone)]
+pub struct SnapshotChunkSyncDriver {
+    snapshots: Arc<RwLock<HashMap<Vec<u8>, SnapshotSyncState>>>,
+    /// Local snapshot cache directory — where assembled bytes get
+    /// written.
+    snapshot_dir: PathBuf,
+}
+
+impl SnapshotChunkSyncDriver {
+    pub fn new(snapshot_dir: PathBuf) -> Self {
+        Self {
+            snapshots: Arc::new(RwLock::new(HashMap::new())),
+            snapshot_dir,
+        }
+    }
+
+    /// Register a snapshot to fetch.  Idempotent: re-registering
+    /// an existing snapshot is a no-op (the existing retriever's
+    /// state is preserved).
+    pub async fn enqueue_snapshot(&self, block_hash: Vec<u8>) {
+        let mut g = self.snapshots.write().await;
+        if g.contains_key(&block_hash) {
+            return;
+        }
+        // Retriever is created with a placeholder target — the
+        // actual merkle_root + chunk_count arrive via HasSnapshot
+        // reply.  Setting chunk_count = 0 marks it as "unresolved"
+        // so `ready_to_fetch` skips it until we learn the target.
+        let placeholder_target = SnapshotTarget {
+            block_hash: block_hash.clone(),
+            merkle_root: [0u8; 32],
+            chunk_count: 0,
+        };
+        let state = SnapshotSyncState {
+            retriever: Arc::new(SnapshotChunkRetriever::new(placeholder_target)),
+            sources: VecDeque::new(),
+            blacklisted_sources: HashSet::new(),
+            broadcasted_has_request: false,
+        };
+        g.insert(block_hash.clone(), state);
+        info!(
+            target: "f1r3fly.casper.snapshot_chunk_sync",
+            block_hash = ?block_hash,
+            "enqueued snapshot for fetch"
+        );
+    }
+
+    /// Called when a HasSnapshot reply arrives.  If we've already
+    /// pinned a target (from an earlier reply), verify consistency;
+    /// otherwise, install this reply's target and start issuing
+    /// chunk requests on subsequent ticks.
+    ///
+    /// Also records `sender` as a source for this snapshot.
+    pub async fn on_has_snapshot(&self, sender: PeerNode, announcement: &HasSnapshot) {
+        let block_hash: Vec<u8> = announcement.block_hash.to_vec();
+        let mut g = self.snapshots.write().await;
+        let state = match g.get_mut(&block_hash) {
+            Some(s) => s,
+            None => {
+                debug!(
+                    target: "f1r3fly.casper.snapshot_chunk_sync",
+                    "HasSnapshot for un-enqueued snapshot; ignoring"
+                );
+                return;
+            }
+        };
+        // Convert wire merkle_root to fixed-size array.
+        let mut new_merkle = [0u8; 32];
+        if announcement.merkle_root.len() != 32 {
+            warn!(
+                target: "f1r3fly.casper.snapshot_chunk_sync",
+                len = announcement.merkle_root.len(),
+                "HasSnapshot merkle_root has wrong length; blacklisting sender"
+            );
+            state.blacklisted_sources.insert(sender);
+            return;
+        }
+        new_merkle.copy_from_slice(announcement.merkle_root.as_ref());
+
+        // First reply: install the target.
+        if state.retriever.target.chunk_count == 0 {
+            let target = SnapshotTarget {
+                block_hash: block_hash.clone(),
+                merkle_root: new_merkle,
+                chunk_count: announcement.chunk_count,
+            };
+            state.retriever = Arc::new(SnapshotChunkRetriever::new(target));
+            state.sources.push_back(sender);
+            info!(
+                target: "f1r3fly.casper.snapshot_chunk_sync",
+                block_hash = ?block_hash,
+                chunk_count = announcement.chunk_count,
+                "installed snapshot target from first HasSnapshot reply"
+            );
+        } else {
+            // Subsequent replies must agree with the pinned target.
+            if state.retriever.target.merkle_root != new_merkle
+                || state.retriever.target.chunk_count != announcement.chunk_count
+            {
+                warn!(
+                    target: "f1r3fly.casper.snapshot_chunk_sync",
+                    "HasSnapshot disagrees with pinned target; blacklisting sender"
+                );
+                state.blacklisted_sources.insert(sender);
+                return;
+            }
+            // Consistent reply — add sender as another source if
+            // we don't already know them.
+            if !state.sources.iter().any(|p| p == &sender)
+                && !state.blacklisted_sources.contains(&sender)
+            {
+                state.sources.push_back(sender);
+            }
+        }
+    }
+
+    /// Dispatch an incoming SnapshotChunkResponse to its matching
+    /// retriever.  On MerkleProofInvalid / ChunkHashMismatch /
+    /// MerkleRootMismatch outcomes, blacklists the sender for
+    /// this snapshot so we stop picking them.
+    ///
+    /// Returns true if the snapshot is now complete + written to
+    /// disk.
+    pub async fn on_chunk_response(
+        &self,
+        sender: PeerNode,
+        response: &SnapshotChunkResponse,
+    ) -> bool {
+        let block_hash: Vec<u8> = response.block_hash.to_vec();
+        let (retriever, outcome) = {
+            let mut g = self.snapshots.write().await;
+            let state = match g.get_mut(&block_hash) {
+                Some(s) => s,
+                None => {
+                    debug!(
+                        target: "f1r3fly.casper.snapshot_chunk_sync",
+                        "chunk response for un-enqueued snapshot; ignoring"
+                    );
+                    return false;
+                }
+            };
+            let retriever = Arc::clone(&state.retriever);
+            let outcome = retriever.admit_response(response).await;
+            match outcome {
+                AdmitOutcome::MerkleProofInvalid
+                | AdmitOutcome::ChunkHashMismatch
+                | AdmitOutcome::MerkleRootMismatch => {
+                    warn!(
+                        target: "f1r3fly.casper.snapshot_chunk_sync",
+                        outcome = ?outcome,
+                        "byzantine response; blacklisting sender"
+                    );
+                    state.blacklisted_sources.insert(sender);
+                }
+                _ => {}
+            }
+            (retriever, outcome)
+        };
+        if outcome != AdmitOutcome::ChunkAccepted {
+            return false;
+        }
+        if !retriever.is_complete().await {
+            return false;
+        }
+        // Complete — assemble + write to disk.
+        let assembled = match retriever.assemble().await {
+            Some(b) => b,
+            None => return false,
+        };
+        // Content-address filename.
+        let atomic_root = {
+            use crypto::rust::hash::blake2b256::Blake2b256;
+            let h = Blake2b256::hash(assembled.clone());
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&h);
+            out
+        };
+        let path = rholang::rust::interpreter::io::snapshot::snapshot_path(
+            &self.snapshot_dir,
+            &atomic_root,
+        );
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, &assembled) {
+            warn!(
+                target: "f1r3fly.casper.snapshot_chunk_sync",
+                error = %e,
+                "failed to write assembled snapshot"
+            );
+            return false;
+        }
+        info!(
+            target: "f1r3fly.casper.snapshot_chunk_sync",
+            block_hash = ?block_hash,
+            path = %path.display(),
+            "wrote assembled snapshot"
+        );
+        // Remove from active snapshots (done).
+        self.snapshots.write().await.remove(&block_hash);
+        true
+    }
+
+    /// Send an outbound tick: for each active snapshot, either
+    /// broadcast a HasSnapshotRequest (if we haven't yet), or send
+    /// GetSnapshotChunkRequest for the next pending chunk to the
+    /// next available source.  Also handles timeout-driven retries
+    /// via `retriever.timed_out_indices`.
+    pub async fn tick<T: TransportLayer + Send + Sync>(
+        &self,
+        transport: &T,
+        conf: &RPConf,
+        connections_cell: &comm::rust::rp::connect::ConnectionsCell,
+    ) {
+        let block_hashes: Vec<Vec<u8>> = self.snapshots.read().await.keys().cloned().collect();
+        for block_hash in block_hashes {
+            // Take a snapshot of state so we can call transport
+            // methods without holding the map lock.
+            let (need_broadcast, source_opt, timed_out, retriever) = {
+                let mut g = self.snapshots.write().await;
+                let state = match g.get_mut(&block_hash) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                let need_broadcast = !state.broadcasted_has_request;
+                if need_broadcast {
+                    state.broadcasted_has_request = true;
+                }
+                let retriever = Arc::clone(&state.retriever);
+                // If target still unresolved (chunk_count == 0),
+                // don't try to request chunks yet.
+                let source_opt = if retriever.target.chunk_count > 0 {
+                    state.next_source()
+                } else {
+                    None
+                };
+                let timed_out = retriever.timed_out_indices().await;
+                (need_broadcast, source_opt, timed_out, retriever)
+            };
+
+            if need_broadcast {
+                if let Err(e) =
+                    broadcast_has_snapshot_request(transport, connections_cell, conf, &block_hash)
+                        .await
+                {
+                    warn!(
+                        target: "f1r3fly.casper.snapshot_chunk_sync",
+                        error = %e,
+                        "broadcast_has_snapshot_request failed"
+                    );
+                }
+            }
+
+            let source = match source_opt {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Re-request timed-out chunks first.
+            for idx in &timed_out {
+                if let Err(e) =
+                    send_get_snapshot_chunk_request(transport, conf, &source, &block_hash, *idx)
+                        .await
+                {
+                    warn!(
+                        target: "f1r3fly.casper.snapshot_chunk_sync",
+                        error = %e,
+                        "send_get_snapshot_chunk_request failed for retry"
+                    );
+                    continue;
+                }
+                retriever
+                    .record_request_sent(*idx, source.id.key.as_ref())
+                    .await;
+                retriever.record_retry(*idx).await;
+            }
+
+            // Then issue fresh requests for pending indices we haven't
+            // yet asked for (last_request_ms == 0).
+            let pending = retriever.pending_indices().await;
+            for idx in pending {
+                let already_in_flight = {
+                    let chunks = retriever.chunks.read().await;
+                    chunks
+                        .get(&idx)
+                        .map(|s| s.last_request_ms > 0 && s.retry_count < MAX_RETRIES)
+                        .unwrap_or(true)
+                };
+                if already_in_flight {
+                    continue;
+                }
+                if let Err(e) =
+                    send_get_snapshot_chunk_request(transport, conf, &source, &block_hash, idx)
+                        .await
+                {
+                    warn!(
+                        target: "f1r3fly.casper.snapshot_chunk_sync",
+                        error = %e,
+                        "send_get_snapshot_chunk_request failed"
+                    );
+                    continue;
+                }
+                retriever
+                    .record_request_sent(idx, source.id.key.as_ref())
+                    .await;
+            }
+        }
+    }
+
+    /// Query: how many snapshots are currently being fetched.
+    pub async fn active_count(&self) -> usize { self.snapshots.read().await.len() }
+
+    /// Query: is a specific snapshot done (assembled + written)?
+    /// Returns true when the map entry has been removed.
+    pub async fn is_done(&self, block_hash: &[u8]) -> bool {
+        !self.snapshots.read().await.contains_key(block_hash)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+    use rholang::rust::interpreter::io::snapshot::write_snapshot;
+    use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+
+    use super::*;
+    use crate::rust::engine::snapshot_chunk_server::serve_chunk;
+
+    fn mk_entry(tag: &str) -> WalEntry {
+        WalEntry {
+            op: WalOp::Write,
+            path: std::path::PathBuf::from(format!("/{tag}")),
+            extra_path: None,
+            offset: Some(0),
+            length: Some(tag.len() as u64),
+            payload_ref: Some(PayloadRef::hash(tag.as_bytes())),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }
+    }
+
+    fn mk_peer(name: &str) -> PeerNode {
+        use comm::rust::peer_node::{Endpoint, NodeIdentifier};
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::copy_from_slice(name.as_bytes()),
+            },
+            endpoint: Endpoint {
+                host: format!("{name}.local"),
+                tcp_port: 40400,
+                udp_port: 40404,
+            },
+        }
+    }
+
+    /// Boot: enqueue a snapshot; before any HasSnapshot arrives,
+    /// active_count is 1 + retriever has a placeholder target
+    /// (chunk_count = 0 means "unresolved").
+    #[tokio::test]
+    async fn enqueue_creates_placeholder_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dir.path().to_path_buf());
+        let block_hash = vec![0xAB; 32];
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        assert_eq!(driver.active_count().await, 1);
+        let g = driver.snapshots.read().await;
+        assert_eq!(g[&block_hash].retriever.target.chunk_count, 0);
+    }
+
+    /// enqueue_snapshot is idempotent.
+    #[tokio::test]
+    async fn enqueue_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dir.path().to_path_buf());
+        let block_hash = vec![0xCD; 32];
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        assert_eq!(driver.active_count().await, 1);
+    }
+
+    /// HasSnapshot reply installs the target.
+    #[tokio::test]
+    async fn has_snapshot_reply_installs_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dir.path().to_path_buf());
+        let block_hash = vec![0x11; 32];
+        driver.enqueue_snapshot(block_hash.clone()).await;
+
+        let peer = mk_peer("alice");
+        let merkle = [0x99u8; 32];
+        let announcement = HasSnapshot {
+            block_hash: Bytes::copy_from_slice(&block_hash),
+            merkle_root: Bytes::copy_from_slice(&merkle),
+            chunk_count: 3,
+        };
+        driver.on_has_snapshot(peer.clone(), &announcement).await;
+
+        let g = driver.snapshots.read().await;
+        let state = &g[&block_hash];
+        assert_eq!(state.retriever.target.chunk_count, 3);
+        assert_eq!(state.retriever.target.merkle_root, merkle);
+        assert_eq!(state.sources.len(), 1);
+    }
+
+    /// Byzantine HasSnapshot (disagreeing merkle_root) blacklists
+    /// the source rather than mutating the pinned target.
+    #[tokio::test]
+    async fn conflicting_has_snapshot_blacklists_sender() {
+        let dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dir.path().to_path_buf());
+        let block_hash = vec![0x22; 32];
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let alice = mk_peer("alice");
+        let bob = mk_peer("bob");
+
+        driver
+            .on_has_snapshot(alice.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::from_static(&[0xAA; 32]),
+                chunk_count: 4,
+            })
+            .await;
+        driver
+            .on_has_snapshot(bob.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::from_static(&[0xBB; 32]),
+                chunk_count: 4,
+            })
+            .await;
+
+        let g = driver.snapshots.read().await;
+        let state = &g[&block_hash];
+        // Pinned target is Alice's; Bob is blacklisted.
+        assert_eq!(state.retriever.target.merkle_root, [0xAA; 32]);
+        assert!(state.blacklisted_sources.contains(&bob));
+    }
+
+    /// End-to-end: enqueue, on_has_snapshot, feed all chunks via
+    /// on_chunk_response, assert on-disk write.
+    #[tokio::test]
+    async fn full_fetch_writes_assembled_snapshot() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let entries = vec![mk_entry("a"), mk_entry("b"), mk_entry("c")];
+        let (_p, atomic_root, merkle_root) = write_snapshot(src_dir.path(), &entries).unwrap();
+        let block_hash = vec![0xDD; 32];
+
+        let dest_dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dest_dir.path().to_path_buf());
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let peer = mk_peer("charlie");
+        driver
+            .on_has_snapshot(peer.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle_root),
+                chunk_count: 1,
+            })
+            .await;
+
+        // Server produces the single chunk.
+        let response =
+            serve_chunk(&block_hash, 0, (atomic_root, merkle_root), src_dir.path()).unwrap();
+        let done = driver.on_chunk_response(peer, &response).await;
+        assert!(done, "single-chunk snapshot completes in one response");
+        assert!(driver.is_done(&block_hash).await);
+
+        // File exists at content-address in dest_dir.
+        let path =
+            rholang::rust::interpreter::io::snapshot::snapshot_path(dest_dir.path(), &atomic_root);
+        assert!(path.exists(), "assembled snapshot must exist on disk");
+    }
+
+    /// A byzantine chunk response blacklists the sender.
+    #[tokio::test]
+    async fn byzantine_chunk_blacklists_sender() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let entries = vec![mk_entry("x")];
+        let (_p, _atomic, merkle_root) = write_snapshot(src_dir.path(), &entries).unwrap();
+        let block_hash = vec![0xEE; 32];
+
+        let driver = SnapshotChunkSyncDriver::new(src_dir.path().to_path_buf());
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let mallory = mk_peer("mallory");
+        driver
+            .on_has_snapshot(mallory.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle_root),
+                chunk_count: 1,
+            })
+            .await;
+
+        // Malformed response: wrong chunk_bytes (hash mismatch).
+        let bogus = SnapshotChunkResponse {
+            block_hash: Bytes::copy_from_slice(&block_hash),
+            chunk_index: 0,
+            chunk_bytes: Bytes::from_static(&[0xFF; 16]),
+            chunk_hash: Bytes::from_static(&[0x00; 32]),
+            merkle_root: Bytes::copy_from_slice(&merkle_root),
+            chunk_count: 1,
+            merkle_proof: vec![],
+        };
+        let done = driver.on_chunk_response(mallory.clone(), &bogus).await;
+        assert!(!done);
+        assert!(!driver.is_done(&block_hash).await);
+        let g = driver.snapshots.read().await;
+        assert!(g[&block_hash].blacklisted_sources.contains(&mallory));
+    }
+}
