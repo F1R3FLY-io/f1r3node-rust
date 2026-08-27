@@ -283,6 +283,13 @@ impl RhoRuntimeImpl {
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
+
+    pub async fn set_report_phase(
+        &self,
+        phase: rspace_plus_plus::rspace::reporting_rspace::ReportPhase,
+    ) {
+        self.reducer.space.set_report_phase(phase).await
+    }
 }
 
 impl RhoRuntime for RhoRuntimeImpl {
