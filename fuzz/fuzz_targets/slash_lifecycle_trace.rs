@@ -93,7 +93,9 @@ fuzz_target!(|input: Input| {
     // harness — the lifecycle test wants snapshots where at least the
     // proposer-side path succeeded. `slash_authorization_paths` covers
     // the candidate-side rejection rules directly.
-    let Ok(candidates) = authorized_slash_candidates(&snapshot) else {
+    let Ok(candidates) =
+        authorized_slash_candidates(&snapshot)
+    else {
         return;
     };
 
@@ -111,7 +113,8 @@ fuzz_target!(|input: Input| {
     let block =
         support::block_with_system_deploys(input.proposer, proposer.clone(), block_number, deploys);
 
-    assert!(validate_received_slash_deploys(&block, &snapshot).is_ok());
+    assert!(validate_received_slash_deploys(&block, &snapshot)
+    .is_ok());
 
     if let Some(candidate) = candidates.first() {
         let duplicate_block = support::block_with_system_deploys(
@@ -131,6 +134,7 @@ fuzz_target!(|input: Input| {
                 ),
             ],
         );
-        assert!(validate_received_slash_deploys(&duplicate_block, &snapshot).is_err());
+        assert!(validate_received_slash_deploys(&duplicate_block, &snapshot)
+        .is_err());
     }
 });
