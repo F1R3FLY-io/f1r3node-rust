@@ -6,14 +6,17 @@
 //! process-local caches, or swizzled pointers.
 
 mod canonical;
+mod checksum;
 mod closure;
 mod manifest;
 mod mutation;
 mod object;
+mod physical;
 mod rewrite;
 mod semantic;
 mod store;
 mod transaction;
+mod wal;
 
 pub use canonical::{
     CanonicalEncode, CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1,
@@ -39,6 +42,7 @@ pub use object::{
     CanonicalDagNodeView, CanonicalObjectKind, CanonicalObjectView, DagChild, DagChildrenIter,
     DagChildrenView, EndpointValue,
 };
+pub use physical::{PhysicalDigest, StoreId};
 pub use rewrite::{
     CompareAndSwapFailure, DagRewriteLimits, DagRewriteReport, PreparedDagRewrite, RewriteError,
     rewrite_semantic_roots, rewrite_semantic_roots_with_limits,
@@ -61,6 +65,11 @@ pub use store::{
 pub use transaction::{
     DagTransactionDiagnostics, DagTransactionError, DagTransactionLimits, OpenDagTransaction,
     SealedDagTransaction, SealedObject, SealedTransitionV1, VerifiedDagState,
+};
+pub use wal::{
+    LogPackAddress, LogPackDecodeLimits, LogPackFormatError, LogPackObjectIter, LogPackObjectView,
+    LogPackSequence, LogPackWriteError, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
+    TransactionCommitRecordV1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
 };
 
 #[cfg(test)]

@@ -420,6 +420,20 @@ pub struct SealedTransitionV1 {
 }
 
 impl SealedTransitionV1 {
+    pub(crate) const fn new_for_persistence(
+        base: StateVersionV1,
+        target: StateVersionV1,
+        mutation_digest: ObjectDigest,
+        profile_id: SemanticProfileId,
+    ) -> Self {
+        Self {
+            base,
+            target,
+            mutation_digest,
+            profile_id,
+        }
+    }
+
     pub const fn base(self) -> StateVersionV1 { self.base }
 
     pub const fn target(self) -> StateVersionV1 { self.target }

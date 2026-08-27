@@ -60,6 +60,8 @@ closure and SS-C14 records the dormant canonical `ParBag` successor in this repo
 | **EPM** | *EPathMap format* — the family prefix used for EPM1-specific processing |
 | **BLAKE2** | the BLAKE2 cryptographic hash family standardized by RFC 7693 |
 | **WAL** | *write-ahead log* — the durable transaction journal used by the planned PathMap-DAG persistence backend |
+| **CRC** | *cyclic redundancy check* — a physical corruption detector, not a cryptographic identity |
+| **CRC32C** | the 32-bit cyclic redundancy check using the Castagnoli polynomial |
 | **NUL** | *null byte* |
 | **AVL** | *Adelson-Velsky–Landis* tree balancing |
 | **URI** | *uniform resource identifier* |
@@ -322,6 +324,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C22** | this checkpoint; pgmcp #6099 | f1r3node | normalized three-namespace mutation journal $`\rightarrow`$ immutable CoW PathMap compare-and-swap (CAS) tries with zipper preflight/replay and a zero-copy borrowed recovery view | native stack $`O(1)`$ in path depth; **100,000-byte** key on **256 KiB**; no entry vector, semantic sort, or arithmetic replay | **yes for dormant mutation bytes**; 14/14 mutation and 43/43 combined persistence cases | [5.49](#549-normalized-pathmap-mutation-journal-cursor-ss-c22) |
 | **SS-C23** | this checkpoint; pgmcp #6099 | f1r3node | whole-state rebuild/direct admission $`\rightarrow`$ transaction-private affected-frontier radix editor with adjacent-key cursor, CoW child reuse, and enter/exit finalization PDA | native stack $`O(1)`$; **20,000** endpoint-bearing nodes on **256 KiB**; cost follows changed key bytes and opened/emitted frontier, not total state | **yes for dormant canonical rewrite**; 22/22 rewrite, 4/4 staging, and 69/69 combined persistence cases | [5.50](#550-iterative-affected-frontier-radix-dag-rewrite-ss-c23) |
 | **SS-C24** | this checkpoint; pgmcp #6190 | f1r3node | unsealed private rewrite $`\rightarrow`$ profile-typed `verified -> open -> content-ready -> rewritten -> manifested -> validated -> sealed` transaction with path-exact inherited-boundary proof | native stack $`O(1)`$; **100,000-byte** seal and independent rebuild oracle on **256 KiB**; one update reads at most **8 objects** through base cardinality 4,096; exact-path/provenance/staging budgets aggregate | **yes for dormant transaction sealing**; 96/96 persistence cases including authority, portability, determinism, semantic coherence, hostile budgets, exact-path failure atomicity, and 20,000-level gates | [5.51](#551-profile-typed-differential-transaction-sealing-ss-c24) |
+| **SS-C25** | this checkpoint; pgmcp #5688 | f1r3node | sealed in-memory delta $`\rightarrow`$ single-copy streaming prepare record plus fixed authenticated commit record and zero-copy bounded recovery view | native stack $`O(1)`$ in path/object depth; **100,000-byte** transition on **256 KiB**; $`O(1)`$ emission auxiliary space; no frame-sized buffer, entry projection, or semantic sort | **yes for dormant log-pack codecs**; 11/11 focused and 108/108 persistence cases, including every prepare/commit truncation, independent header/payload corruption, sink/invariant nonpublication, frozen V1 bytes, and negative commit-field binding | [5.52](#552-single-copy-transactional-log-pack-codecs-ss-c25) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -10956,6 +10959,56 @@ REPL integration, and comparative measurements remain separate implementation an
 obligations. Merkleization supplies immutable object identity and sharing; later compaction traces
 those references from retained roots and reclaims obsolete physical records. The two operations are
 not synonyms.
+
+### 5.52 Single-copy transactional log-pack codecs [SS-C25]
+
+SS-C25 converts the sealed transaction's first physical traversal into a streaming, cursor-driven
+codec before filesystem publication is activated. A fixed prepare header is preflighted from the
+profile-typed receipt, borrowed normalized mutation bytes, and digest-ordered sealed objects. The
+writer then emits that header, its CRC32C, the mutation slice, and each object reference plus
+canonical object slice directly to a fallible non-seeking sink. It retains only fixed hash/checksum
+state and counters; it cannot return a prepare identity after any sink error. New object bytes are
+therefore written once rather than buffered or copied into a separate WAL representation.
+The release writer also compares its counted output with the preflighted length before emitting the
+terminal CRC; disagreement returns a typed invariant error and no identity.
+
+The decoder validates the fixed header checksum before trusting variable lengths, checks the whole
+record checksum, applies checked `u64` total-resource ceilings, parses the mutation as a borrowed
+view, and walks object records with one cursor. Canonical object framing, digest, declared length,
+and strict digest order are revalidated. A later iterator yields the already validated borrowed
+ranges. It does not rebuild producer PathMaps, recurse through keys, project entries, or sort them.
+The separately fixed 308-byte commit record binds the store identifier, nonzero sequence, prior
+commit digest, exact prepare address and digest, sealed base/target/profile/mutation receipt, and
+durable index frontier.
+
+The record view proves physical and canonical framing only. It is not a verified durable state:
+same-digest collision equality against the object store, target-manifest closure, and semantic
+profile admission remain mandatory recovery phases before catalog authority may advance.
+
+For $`m`$ mutation bytes, $`o`$ canonical-object bytes, and $`n`$ object records, preflight,
+streaming, and validation are each $`O(m+o+n)`$ time. Writer auxiliary space is $`O(1)`$; the
+borrowed decoder adds $`O(1)`$ state outside the canonical payload parsers. Both are $`O(1)`$ in
+native stack with respect to RhoPath, trie, and transaction depth. Total record, mutation, object,
+entry, and key-byte limits bound hostile work without imposing a traversal-depth limit.
+
+The focused matrix passes **11/11** and the complete persistence matrix **108/108**. It checks every
+prepare and commit truncation; independent authenticated-header and payload corruption; resource
+refusal before payload parsing; exact prepare/commit round trips; fixed commit size; valid-record
+negative rebinding of store, sequence, address length, prepare digest, and receipt; prior-commit and
+address digest sensitivity; unrelated-receipt and invalid-extent construction refusal; borrowed
+object order; and a destination failure that cannot produce a prepare identity. A frozen V1 fixture
+pins the exact prepare header, full-prepare length/checksum/digest, and complete 308-byte commit
+image. A transition containing a 100,000-byte identity seals, streams, and validates on a 256 KiB
+native stack. The independent CRC test pins Castagnoli/iSCSI CRC32C of `123456789` to `0xe3069283`.
+The complete `rspace_plus_plus` library passes **260/260** in **54.30 s** under a 6 GiB memory
+ceiling and zero swap; transcript `target/scratch/rspace-lib-log-pack-checkpoint.log`, SHA-256
+`7e68b37b285ea53e13f6e77463731239c0721941e34cf8bfa0c1ad5aa403fa5b`.
+
+This is a codec/resource class result, not yet a crash-durability result. No file is opened and no
+data-sync, commit-sync, catalog-slot, directory-sync, recovery, index rebuild, compaction, garbage
+collection, LMDB cutover, or performance comparison is claimed. J-038 in the PathMap engineering
+journal records why the WAL and object pack share one physical stream. The next obligation is an
+affine durable-I/O phase machine with injected failure at every write and synchronization boundary.
 
 ---
 

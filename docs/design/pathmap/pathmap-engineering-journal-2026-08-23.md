@@ -68,6 +68,8 @@ The journal complements, rather than duplicates, three living reports:
 | RSS | Resident set size: the process memory currently resident in physical memory. |
 | CBR | Consensus-Breaking Register: the historical stable identifier prefix retained by the living consensus-change register. |
 | WAL | Write-ahead log: the durable transaction journal that commits a parent root, new root, and mutation digest before catalog publication. |
+| CRC | Cyclic redundancy check: a physical corruption detector, not a cryptographic identity. |
+| CRC32C | The 32-bit cyclic redundancy check using the Castagnoli polynomial. |
 | SCC | Strongly connected component: a maximal dependency-graph region whose members are mutually reachable. |
 | LFS | Last Finalized State: the state-transfer protocol named by the tuple-space request streams. |
 | FFI | Foreign function interface: the typed boundary through which process code calls the RSpace importer. |
@@ -2745,6 +2747,111 @@ write WAL frames, synchronize object/commit records, perform catalog CAS, recove
 objects, compact retained roots, migrate current RSpace, or change REPL output. J-038 must define
 and verify binary WAL/catalog recovery before any sealed object becomes durable authority. Pack
 compaction/garbage collection follows that protocol and is distinct from Merkleization.
+
+### J-038 — 2026-08-27: stream each sealed delta once into an authenticated log-pack
+
+**TERMS.** A **log-pack** is one append-only physical stream that supplies both recovery order and
+canonical-object storage. A **prepare record** carries the exact normalized mutation and the new
+canonical objects of one sealed transaction. A separately written **commit record** authenticates
+that prepare record after the publisher has made it durable. A **tear checksum** detects accidental
+partial or damaged writes; it is not a semantic identity or a defense against an adversary who can
+rewrite the store coherently.
+
+**PROBLEM.** A conventional separate WAL and object pack would write every new canonical object
+twice: once so recovery can replay it and again so object lookup can address it. Buffering a whole
+transaction before either write would add another payload-sized allocation. Neither duplication is
+required by the ordering law. The sealed transaction already owns immutable, digest-ordered object
+bytes and borrows the exact normalized mutation image; the physical layer should consume those
+accessors directly.
+
+**DECISION.** One variable-length prepare record is the initial append-only log-pack record. Its
+fixed 232-byte authenticated header contains a 16-byte domain, fixed little-endian `u64` format
+fields, nonzero sequence, 16-byte store identifier, exact base and target versions, semantic
+profile, mutation digest, mutation length, object count, and total canonical-object bytes. A header
+CRC32C is validated before any variable length is trusted. The payload is the borrowed mutation
+bytes followed by each `(digest, encoded length, canonical bytes)` object record in the order
+already supplied by `SealedDagTransaction`; no second sort is performed. A final CRC32C covers the
+complete header and payload, and BLAKE2b-256 binds the same image as the prepare identity.
+
+The terminal 308-byte commit record binds the store, transaction sequence, previous commit digest,
+exact prepare segment/offset/length, prepare digest, complete sealed receipt, and durable index
+frontier. It is fixed-size so it can be decoded without trusting an input-controlled allocation.
+CRC32C is represented by the iSCSI/Castagnoli polynomial and pinned against the standard
+`123456789` check value `0xe3069283`. CRC32C only rejects torn/corrupt physical records; canonical
+object references and record-chain identities continue to use BLAKE2b-256.
+
+**Algorithm 4 (Single-copy prepare emission).** Preflight completes before the first sink call.
+
+```pseudocode
+require transaction.profile = writer.profile
+parse borrowed mutation under total work limits
+require mutation identity, exact base, and target generation = sealed receipt
+for object in existing digest order:
+    require strict order
+    parse canonical framing
+    require digest and encoded length = declared reference
+    checked-add count, reference bytes, and canonical bytes
+require every total within caller budgets
+
+write fixed authenticated header
+write header CRC32C
+write borrowed mutation bytes
+for object in existing digest order:
+    write reference
+write borrowed canonical bytes
+write record CRC32C
+return prepare identity only if every sink write succeeded and emitted length = preflight length
+```
+
+The borrowed decoder reverses that procedure without reconstructing producer PathMaps or an object
+collection. It checks the fixed header checksum and declared total, checks the complete record
+checksum, enforces total record/mutation/object/key/entry budgets, parses the mutation in place,
+and validates object references while advancing one cursor. Its object iterator later replays the
+already validated byte ranges. All format integers are fixed-width little-endian `u64` except the
+four-byte CRC32C; no `usize`, native-endian field, timestamp, protobuf, bincode, `Vec<Par>`, semantic
+entry projection, or semantic sorting enters the format.
+
+This borrowed view is deliberately named a **prepare-record view**, not a verified state. It proves
+physical framing and checksums, exact mutation receipt fields, and the framing/digest/length of each
+canonical object. It does not prove equality against an existing same-digest durable object,
+target-manifest closure, or semantic-profile validity. Recovery must establish those three
+properties before publication. Likewise, prepare emission returns a typed sink-or-invariant error:
+a writer/preflight length disagreement omits the terminal CRC and returns no identity even in a
+release build, leaving only an uncommitted tail.
+
+For mutation bytes $`m`$, canonical object bytes $`o`$, and object count $`n`$, preflight, writing,
+and validation each take $`O(m+o+n)`$ time. Emission uses $`O(1)`$ auxiliary memory beyond the
+already sealed transaction and the destination's own buffering. Validation retains borrowed ranges
+and uses $`O(1)`$ auxiliary memory beyond nested canonical-object parsers; native stack is $`O(1)`$
+in RhoPath and trie depth. Resource ceilings bound total work and bytes, never traversal depth.
+
+**EVIDENCE.** Eleven focused cases cover exact prepare/commit round trips, direct borrowed object
+iteration, sink-failure nonpublication, every prepare and commit truncation, independent header and
+payload bit corruption, pre-parse resource refusal, fixed commit length/corruption, unrelated
+receipt and invalid/overflowing extent refusal, valid-CRC negative rebinding of store, sequence,
+prepare length, prepare digest and receipt fields, and a transition with a 100,000-byte identity
+written and validated on a 256 KiB native stack. A frozen V1 fixture pins the exact 232-byte prepare
+header, complete-prepare length/CRC/BLAKE2b-256 identity, and all 308 commit bytes independently of
+the paired parser. The complete persistence matrix is **108/108** after this hardening. The CRC
+implementation also independently pins the Castagnoli check vector. The complete `rspace_plus_plus`
+library then passes **260/260** in **54.30 s** under the 6 GiB/zero-swap cap; transcript
+`target/scratch/rspace-lib-log-pack-checkpoint.log`, SHA-256
+`7e68b37b285ea53e13f6e77463731239c0721941e34cf8bfa0c1ad5aa403fa5b`. These are correctness
+and resource-shape results; latency, allocation, write-amplification, recovery-time, and
+disk-footprint comparisons against LMDB are not yet made.
+
+**PATHMAP LEARNING.** The value of PathMap's persistent representation is not preserved by merely
+choosing a trie in memory; the physical boundary must also avoid turning its canonical DAG delta
+into an entry list. A WAL need not duplicate an object pack. When the recovery journal's object
+records are themselves addressable immutable records, one append-only stream provides both roles,
+while a rebuildable index remains an accelerator rather than authority.
+
+**BOUNDARY.** This checkpoint defines and tests portable record images but does not yet open files,
+synchronize data/commit/catalog/directory phases, build or rebuild the object index, acquire the
+single-writer lease, compare-and-swap a catalog slot, recover a torn tail, compact retained roots,
+or replace LMDB. A prepare identity proves complete sink emission, not durability. The next
+checkpoint must implement the affine durable I/O state machine and failpoint recovery; only that
+state machine may acknowledge publication.
 
 ## Upstream PathMap integration request register
 

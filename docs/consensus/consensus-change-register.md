@@ -42,6 +42,8 @@ in [§2](#2-background-and-definitions), which every axis table refers back to.
 | **RCI2** | *Rholang Channel Image, version 2* — the shadow logical channel-identity format. | **CBR-053** |
 | **CLI** | *command-line interface* — the noninteractive user observation surface paired with the REPL. | retired **CBR-023** evidence |
 | **WAL** | *write-ahead log* — the transaction journal planned for differential PathMap-DAG persistence. | consensus-neutral RSpace history continuations |
+| **CRC** | *cyclic redundancy check* — a physical corruption detector, not a cryptographic identity. | CBR-053 persistence continuations |
+| **CRC32C** | the 32-bit cyclic redundancy check using the Castagnoli polynomial. | CBR-053 persistence continuations |
 | **CAS** | *compare-and-swap* — conditional publication that advances authority only from the exact expected base. | CBR-053 persistence continuations |
 | **TRIE** | not an acronym — typographic emphasis for the prefix-compressed trie that is the EPathMap representation. | **CBR-041** |
 | **D3 / DR-9 / OD-1 / OD-3** | the token cost model's design-record identifiers (`docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`). | [§2.2](#22-language-and-runtime-vocabulary), [§3.3](#33-how-each-axis-value-was-established) |
@@ -5766,6 +5768,40 @@ failure-atomic exact-path accounting, cross-namespace provenance-union accountin
 seal and independent rebuild oracle on a 256 KiB stack, and one-update physical-read bounds through
 cardinality 4,096. Binary WAL framing, sync ordering, catalog CAS, restart recovery, retained-root
 pack compaction, migration, and LMDB-control performance/storage evidence remain mandatory before
+production cutover.
+
+**CBR-053 living continuation (2026-08-27, single-copy authenticated log-pack codecs).** The first
+physical representation now consumes only a profile-typed `SealedDagTransaction`. One preflighted
+prepare record streams the exact normalized mutation bytes followed by each sealed canonical object
+reference and body in the digest order already established by private staging. A fixed header binds
+store, sequence, exact base and target, semantic profile, mutation identity and physical totals; a
+separately fixed commit record binds that prepare image, the previous commit, complete sealed
+receipt, exact physical address, and durable index frontier. All integers are explicit fixed-width
+little-endian fields. No native `usize`, timestamp, protobuf, bincode, PathMap entry projection,
+`Vec<Par>`, or semantic sort is introduced.
+
+CRC32C detects torn or accidentally damaged physical records; BLAKE2b-256 remains the canonical
+object and authenticated record-chain identity. The reader validates the fixed header before
+trusting a variable length, enforces total work/byte budgets, parses the mutation in place, and
+validates each borrowed canonical object range. The log and object pack are one stream, so new
+canonical bytes are not duplicated merely to support replay.
+
+That borrowed view proves physical and canonical framing, not durable semantic authority. Recovery
+must still establish complete-byte equality for an existing same-digest object, target-manifest
+closure, and semantic-profile admission. A typed sink-or-invariant result also prevents a release
+writer from returning an identity if its counted output ever diverges from the preflighted length.
+
+This checkpoint remains `NO_PRODUCTION_CHANGE_DERIVED`. The codec is dormant and opens no file;
+neither prepare emission nor a complete sink write appoints durable authority. No existing LMDB
+root, checkpoint, replay route, startup path, matcher, COMM, network message, metering calculation,
+REPL result, protobuf/bincode byte, history hash, or accepted Rholang program changes. The focused
+codec matrix passes **11/11** and the complete persistence module **108/108**, including every
+prepare/commit truncation, header/payload corruption, sink refusal, invalid receipt/extent
+construction, valid-CRC commit-field rebinding mutants, frozen V1 bytes, resource preflight, and a
+100,000-byte transition on a 256 KiB stack; the complete `rspace_plus_plus` library passes
+**260/260** under the same 6 GiB/zero-swap execution policy. Data/commit/catalog/directory
+synchronization, exact catalog CAS, restart recovery, index rebuilding, retained-root compaction,
+migration, and measured LMDB comparison remain mandatory before this entry can authorize
 production cutover.
 
 ### B.2 The original commit-level exemptions

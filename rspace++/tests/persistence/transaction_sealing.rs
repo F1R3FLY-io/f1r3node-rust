@@ -21,7 +21,7 @@ use crate::rspace::serializers::serializers::{
     encode_continuation_identity, encode_continuation_source_into, encode_join_record,
 };
 
-fn base_state(
+pub(super) fn base_state(
     store: &CanonicalObjectStore,
     generation: u64,
     legacy: Option<LegacyHistoryRoot>,
@@ -33,7 +33,7 @@ fn base_state(
     StateVersionV1::new(generation, admit(store, &manifest))
 }
 
-fn data_batch(base: StateVersionV1, identity: &str) -> Vec<u8> {
+pub(super) fn data_batch(base: StateVersionV1, identity: &str) -> Vec<u8> {
     let channel = "channel".to_owned();
     let datum = Datum::create(&channel, identity.to_owned(), false);
     let path = RSpaceDataIndex::datum_path(&channel, &datum);
@@ -97,7 +97,7 @@ fn traced_single_update_reads(cardinality: usize) -> u64 {
     store.total_reads()
 }
 
-fn seal_data<'a>(
+pub(super) fn seal_data<'a>(
     store: &CanonicalObjectStore,
     bytes: &'a [u8],
 ) -> crate::rspace::persistence::SealedDagTransaction<'a, TestSemanticProfile> {
