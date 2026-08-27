@@ -366,14 +366,21 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     block_retriever: BlockRetriever<T>,
     recovery_context: Option<RunningRecoveryContext>,
     /// Phase 7b-1 (2026-08-27): snapshot chunk-fetch dispatch
-    /// context.  None on nodes without an fs_snapshot_writer or
-    /// on transitional engines that never observe finalized
-    /// blocks.  When Some, incoming
+    /// context.  Uninitialized on nodes without an
+    /// fs_snapshot_writer or on transitional engines that never
+    /// observe finalized blocks.  When set, incoming
     /// GetSnapshotChunkRequest / HasSnapshotRequest are served
     /// from `snapshot_dir` + `snapshot_merkle_roots`; incoming
     /// SnapshotChunkResponse / HasSnapshot are routed to
     /// `sync_driver`.
-    snapshot_chunk_ctx: std::sync::Mutex<Option<SnapshotChunkContext>>,
+    ///
+    /// `OnceLock` semantics: install-once at boot, lock-free reads
+    /// on every subsequent packet.  Read path is a single
+    /// acquire-load (no mutex, no clone, no PathBuf allocation).
+    /// Second `install_snapshot_chunk_context` call is a silent
+    /// no-op — nothing in the codebase currently re-installs, so
+    /// idempotence-with-overwrite was never load-bearing.
+    snapshot_chunk_ctx: std::sync::OnceLock<SnapshotChunkContext>,
 }
 
 #[derive(Clone)]
@@ -431,29 +438,24 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             recovery_context,
-            snapshot_chunk_ctx: std::sync::Mutex::new(None),
+            snapshot_chunk_ctx: std::sync::OnceLock::new(),
         }
     }
 
     /// Phase 7b-1 boot hook: attach the snapshot chunk-fetch
     /// context AFTER construction.  Callers (typically the
     /// casper-launch driver) invoke this once the RuntimeManager +
-    /// SnapshotChunkSyncDriver are ready.  Idempotent: replacing an
-    /// existing context is intentional (allows tests to swap
-    /// mocks).
+    /// SnapshotChunkSyncDriver are ready.  Install-once — a second
+    /// call is a silent no-op (returns the passed-in ctx as an
+    /// `Err`, which we discard).  If a future test path needs
+    /// mock-swap semantics, we'll revisit.
     pub fn install_snapshot_chunk_context(&self, ctx: SnapshotChunkContext) {
-        *self
-            .snapshot_chunk_ctx
-            .lock()
-            .expect("snapshot_chunk_ctx mutex poisoned") = Some(ctx);
+        let _ = self.snapshot_chunk_ctx.set(ctx);
     }
 
-    fn snapshot_chunk_ctx(&self) -> Option<SnapshotChunkContext> {
-        self.snapshot_chunk_ctx
-            .lock()
-            .expect("snapshot_chunk_ctx mutex poisoned")
-            .clone()
-    }
+    /// Lock-free read of the snapshot chunk-fetch context.  Single
+    /// acquire-load of the `OnceLock`; no mutex, no clone.
+    fn snapshot_chunk_ctx(&self) -> Option<&SnapshotChunkContext> { self.snapshot_chunk_ctx.get() }
 
     fn ignore_casper_message(&self, hash: BlockHash) -> Result<bool, CasperError> {
         let blocks_in_processing = self.blocks_in_processing.contains(&hash);
