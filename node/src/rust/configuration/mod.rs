@@ -189,6 +189,34 @@ pub mod builder {
             ));
         }
 
+        // The play budget exists to keep a proposed block citable: a build
+        // longer than max-parent-depth heights of heartbeat cadence is born
+        // below the parent-depth horizon and its deploys can only expire.
+        // Warn above a third of that window (the derived default sits at a
+        // fifth); a disabled depth check has no horizon to violate.
+        let play_budget = node_conf.casper.deploy_play_budget;
+        let max_parent_depth = node_conf.casper.max_parent_depth;
+        if !play_budget.is_zero() && max_parent_depth != i32::MAX && max_parent_depth > 0 {
+            let citability_window = node_conf
+                .casper
+                .heartbeat_conf
+                .check_interval
+                .saturating_mul(max_parent_depth as u32);
+            if play_budget > citability_window / 3 {
+                warnings.push(format!(
+                    "casper.deploy-play-budget ({:?}) exceeds a third of the citability \
+                    window (max-parent-depth {} x heartbeat.check-interval {:?} = {:?}): \
+                    a carrier built for that long risks being born below the parent-depth \
+                    horizon, where its deploys can only expire. Lower the budget or raise \
+                    max-parent-depth.",
+                    play_budget,
+                    max_parent_depth,
+                    node_conf.casper.heartbeat_conf.check_interval,
+                    citability_window,
+                ));
+            }
+        }
+
         Ok(warnings)
     }
 
@@ -443,6 +471,54 @@ mod embedded_defaults_tests {
                 .iter()
                 .any(|w| w.contains("fault-tolerance-threshold")),
             "non-negative ftt must not warn, got {warnings:?}"
+        );
+    }
+
+    /// The play budget exists to keep a proposed block citable: a build longer
+    /// than `max-parent-depth` heights of heartbeat cadence is born below the
+    /// parent-depth horizon and its deploys can only expire. An operator
+    /// override above a third of that window defeats the knob's purpose —
+    /// startup surfaces it; the derived default and sane overrides stay silent.
+    #[test]
+    fn an_oversized_deploy_play_budget_warns_at_startup() {
+        let mut cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        // Shipped geometry: mpd 15 x check-interval 5s = 75s window; a 60s
+        // budget leaves no citability margin at all.
+        cfg.casper.deploy_play_budget = Duration::from_secs(60);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("deploy-play-budget") && w.contains("max-parent-depth")),
+            "a budget above a third of the citability window must warn, got {warnings:?}"
+        );
+
+        cfg.casper.deploy_play_budget = Duration::from_secs(10);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("deploy-play-budget")),
+            "a budget inside the citability margin must not warn, got {warnings:?}"
+        );
+
+        cfg.casper.deploy_play_budget = Duration::ZERO;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("deploy-play-budget")),
+            "the derived sentinel must not warn, got {warnings:?}"
+        );
+
+        // Disabled depth checks mean no citability horizon to violate.
+        cfg.casper.deploy_play_budget = Duration::from_secs(3600);
+        cfg.casper.max_parent_depth = i32::MAX;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("deploy-play-budget")),
+            "a disabled parent-depth check must not warn on any budget, got {warnings:?}"
         );
     }
 
