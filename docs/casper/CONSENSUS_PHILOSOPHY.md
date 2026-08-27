@@ -1,6 +1,6 @@
 # Casper Consensus Philosophy
 
-**Status:** Draft — pending maintainer ratification
+**Status:** Phase-1 policy ratified. The later remedy ladder remains evidence-gated.
 **Started:** 2026-08-20, from the issue [#294](https://github.com/F1R3FLY-io/f1r3node-rust/issues/294) remediation analysis
 **Related:** [Consensus Protocol](./CONSENSUS_PROTOCOL.md), [Fork-Choice dossier](./theory/fork-choice/fork-choice-specification.md), [Glossary](../Glossary.md)
 
@@ -39,6 +39,38 @@ Four facts about the implementation shape every remedy. Function names are the s
 2. **Deploy packaging is discretionary.** No validation rule constrains which deploys a proposer packages. `PrematureDeployRetry` is only a lower bound on retry timing. A proposer can always defer a deploy without risk of peer rejection.
 3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the state of the main parent does not hold the settled content of the floor, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the recorded justifications of the block.
 4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. The mechanism runs only on the proposer side. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
+
+### 4.1 Adversarial surface of the phase-1 mechanism
+
+Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the history that produces those losses. Principle P4 is unchanged because fork choice does not read the count. The count reaches only the three merge adjudication sites.
+
+**Cost of a manufactured loss.** A rejection record needs a conflicting winner on the same key. The rejected deploy does not pay execution cost. An attacker can also acquire rejection history against honest hot-key traffic. PR #216 does not yet define a price for this strategy.
+
+**Delay evidence.** The test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` shows that a fixed lead is consumed one round at a time. The test does not bound continued lead farming or all valid schedules.
+
+**Window bound.** A merge counts only kept records from the scope and base-lineage window. Records older than `deploy_lifespan` do not count.
+
+**Conflict scope.** Each deploy signature owns its prior-rejection count. A dependency chain uses the maximum count among its members. This rule prevents chain length from multiplying priority.
+
+**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. A missing required block returns `BlockNotHeld` instead of an empty history. The test `scope_counts_fail_on_missing_visible_block` provides refusal evidence.
+
+**Ratified ordering.** Prior-rejection count strictly outranks cost. Cost and the deterministic content order decide equal-count cases. A fixed cap is not part of phase 1 because saturation can restore deterministic starvation.
+
+**Residual exposure and escalation.** Continued loss farming remains a known risk. Phase 1 does not guarantee termination for all valid schedules. Soak evidence controls later escalation.
+
+### 4.2 User Contract Concurrency waiver
+
+PR #299 waives User Contract Concurrency as a merge gate. The job is disabled, and the suite does not fail on starvation. The neutral-base integration test supplies the phase-1 system evidence.
+
+A follow-up change must enable the job and fail when contention expires a valid deploy. The acceptance gate must pass three consecutive runs.
+
+### 4.3 Rejection-history scan budget
+
+The scan must stay `O(B + R)`. `B` is the unique block count, and `R` is the rejection-record count. The implementation must load each unique block body no more than once.
+
+The benchmark uses a floor distance of 256 blocks and a visible scope of 512 blocks. The p95 latency and peak memory must stay within 10 percent of `dev`.
+
+The benchmark is a release gate. Node-local timing must never control block validity or consensus admission.
 
 ## 5. The remedy ladder for base-bias starvation
 
@@ -123,6 +155,19 @@ The principles below generalize from this case. Later consensus decisions must c
 
 The principles in Section 6 are not new inventions. They extend the correct-by-construction (CBC) Casper tradition that this implementation inherits. The table below maps each aspect of that tradition to this philosophy. The divergences are extensions for deploy-level fairness, not contradictions of the CBC core.
 
+### 7.1 Correct by Construction scope for phase 1
+
+The ratified mandatory Correct by Construction scope contains these production artifacts:
+
+- `casper/src/rust/merging/conflict_set_merger.rs`
+- `casper/src/rust/merging/dag_merger.rs`
+- `casper/src/rust/merging/deploy_chain_index.rs`
+- `casper/src/rust/util/rholang/interpreter_util.rs`
+
+The required claims cover deterministic count derivation, unavailable-history refusal, total ordering, non-identity priority, and equal chain stamping.
+
+`interpreter_util.rs` already has the mandatory attribute. PR #299 defers the remaining attributes and formal discharge to PR #311. This deferral does not claim that tests prove Rust conformance.
+
 ### Historical position: the F1R3FLY specialization
 
 CBC Casper is abstract. The same safety theorem applies to binary consensus, to a linear chain, and to a high-dimensional DAG. The Ethereum-oriented instantiation — Casper the Friendly GHOST (CTFG) — chose a chain of blocks with LMD-GHOST as the estimator. A block names one parent. Extra references thicken the message DAG for fork-choice scoring, in the manner of uncles or attestations. They are not concurrent state merges.
@@ -157,11 +202,15 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 
 | Date | Decision | Status |
 |---|---|---|
-| 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order (commit `f6a00549d`) | Shipped, unit-proven |
-| 2026-08-20 | Phase 2 direction (A/B/C ladder above) | Pending maintainer decision |
+| 2026-08-20 | Phase 1: loss-aware adjudication at keep-one, rejection-option selection, and the unavailable-split claim order | Implemented in PR #299 with unit-test and integration evidence. |
+| 2026-08-20 | Phase 2: B1 merged-frontier packaging with rotating-proposer evidence | Implemented in PR #312. Liveness guarantee pending ratification. |
+| 2026-08-22 | Prior rejection strictly outranks cost, and cost decides equal-count cases | Ratified for phase 1. |
+| 2026-08-22 | Each signature owns its count, and dependency-chain priority uses the maximum member count | Ratified for phase 1. |
+| 2026-08-22 | Rejection-option selection ranks options by their highest member count first, then by the count total, then by cost. A coalition of low-count chains cannot outweigh one chain with a higher count. | Implemented in PR #299 after multi-agent review. Pending ratification. |
+| 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
+| 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
+| 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
 
 The phase-2 working record lives in the TDD plan
-[`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md)
-(blocked behavior B4). The end-to-end racing-shape test
-`casper/tests/batch2/loss_priority_spec.rs` stays `#[ignore]`d until the
-phase-2 decision lands.
+[`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).
+The fixed-proposer test in `casper/tests/batch2/loss_priority_spec.rs` remains an ignored expected-RED sentinel.

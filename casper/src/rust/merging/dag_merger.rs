@@ -86,6 +86,17 @@ fn dependency_ordered_branch_items<'a>(
     let mut pending: Vec<&DeployChainIndex> = branch.0.iter().collect();
     let mut ordered = Vec::with_capacity(pending.len());
 
+    // Earlier position claims base availability first (the walk in
+    // `split_unavailable_branch_consumes` is first-come-first-served), so
+    // prior on-DAG losses outrank the content ordering here for the same
+    // reason as in the other adjudication sites (issue #294): the chain a
+    // deterministic tie keeps rejecting must gain ground with every loss.
+    let priority_cmp = |a: &DeployChainIndex, b: &DeployChainIndex| {
+        b.prior_rejections
+            .cmp(&a.prior_rejections)
+            .then_with(|| a.cmp(b))
+    };
+
     while !pending.is_empty() {
         let selected_idx = (0..pending.len())
             .filter(|candidate_idx| {
@@ -94,10 +105,12 @@ fn dependency_ordered_branch_items<'a>(
                         && depends(pending[*candidate_idx], pending[source_idx])
                 })
             })
-            .min_by(|left_idx, right_idx| pending[*left_idx].cmp(pending[*right_idx]))
+            .min_by(|left_idx, right_idx| priority_cmp(pending[*left_idx], pending[*right_idx]))
             .unwrap_or_else(|| {
                 (0..pending.len())
-                    .min_by(|left_idx, right_idx| pending[*left_idx].cmp(pending[*right_idx]))
+                    .min_by(|left_idx, right_idx| {
+                        priority_cmp(pending[*left_idx], pending[*right_idx])
+                    })
                     .expect("pending is non-empty")
             });
         ordered.push(pending.remove(selected_idx));
@@ -483,14 +496,21 @@ fn split_overfilled_single_value_cells(
                 // provenance — so it can drop the writer whose effect the MAIN
                 // PARENT already committed, leaving this block's state missing
                 // content its own spine ancestor holds. Order pinned producers
-                // first. `sort_by_key` is stable, so this only moves pinned
-                // chains ahead of unpinned ones and leaves the existing
-                // deterministic order intact within each group. It is a
+                // first. `DeployChainIndex` ordering breaks all remaining
+                // ties after pinning and rejection history. It is a
                 // preference inside an existing keep-one, never a veto: if
                 // every producer is pinned, one still loses and the merge
                 // stays live.
                 let mut ordered: Vec<&DeployChainIndex> = prod.iter().collect();
-                ordered.sort_by_key(|chain| !pinned.contains(*chain));
+                // Pinned first, then the chain with the most prior on-DAG
+                // rejections (issue #294: a chain the content ordering keeps
+                // losing must gain priority with each loss, or it starves to
+                // expiry). The chain's total order breaks remaining ties.
+                ordered.sort_by(|a, b| {
+                    (!pinned.contains(*a), std::cmp::Reverse(a.prior_rejections))
+                        .cmp(&(!pinned.contains(*b), std::cmp::Reverse(b.prior_rejections)))
+                        .then_with(|| a.cmp(b))
+                });
                 for loser in ordered.iter().skip(1) {
                     rejected_seed.insert((*loser).clone());
                 }
@@ -525,6 +545,70 @@ fn split_overfilled_single_value_cells(
         }
     }
     Ok(rejected)
+}
+
+/// Per-sig prior-rejection counts derived from the rejection records the
+/// merge scope holds (issue #294). On-DAG data: every validator sees the
+/// same records for the same scope, so the derived priority is
+/// consensus-deterministic.
+pub fn prior_rejection_counts<'a>(
+    records: impl IntoIterator<Item = &'a RejectedDeploy>,
+) -> HashMap<Bytes, u64> {
+    let mut counts: HashMap<Bytes, u64> = HashMap::new();
+    count_kept_records(&mut counts, records.into_iter().cloned());
+    counts
+}
+
+fn count_kept_records(
+    counts: &mut HashMap<Bytes, u64>,
+    records: impl IntoIterator<Item = RejectedDeploy>,
+) {
+    for record in records {
+        if !record.duplicate {
+            *counts.entry(record.sig).or_insert(0) += 1;
+        }
+    }
+}
+
+/// Derive the per-sig prior-rejection counts a merge may use: the kept
+/// (non-duplicate) records of every block the merge can see. The caller
+/// assembles the visible block set — the merge scope plus the base-lineage
+/// window the scope builds on. The base-lineage half is load-bearing: the
+/// retry gate opens only after a rejection settles below the floor, so at
+/// retry time the record lives on the base's lineage, not in the scope.
+///
+/// Records are counted as each block's records load, so the whole window's
+/// record set is never held at once. A block the caller cannot supply is an
+/// error, never an empty history: the counts feed the rejection set that
+/// peers validate (`InvalidRejectedDeploy`), so every validator must derive
+/// them from the identical block set or refuse to derive them at all.
+pub fn scope_prior_rejection_counts(
+    visible_blocks: impl IntoIterator<Item = BlockHash>,
+    records_of: impl Fn(&BlockHash) -> Result<Vec<RejectedDeploy>, CasperError>,
+) -> Result<HashMap<Bytes, u64>, CasperError> {
+    let mut counts: HashMap<Bytes, u64> = HashMap::new();
+    let mut seen = HashSet::new();
+    for block in visible_blocks {
+        if seen.insert(block.clone()) {
+            count_kept_records(&mut counts, records_of(&block)?);
+        }
+    }
+    Ok(counts)
+}
+
+/// Stamp each chain with the maximum prior-rejection count of its deploys.
+/// Chains whose deploys carry no records keep the default of zero, so
+/// adjudication is unchanged where no losses are on record.
+pub fn stamp_prior_rejections(chains: &mut [DeployChainIndex], counts: &HashMap<Bytes, u64>) {
+    for chain in chains.iter_mut() {
+        chain.prior_rejections = chain
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| counts.get(&d.deploy_id).copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+    }
 }
 
 /// Attribute a merge failure to the chains that could have caused it, and log
@@ -764,6 +848,14 @@ pub fn merge(
     // branch divergence, not by finality lag. Empty for a single-parent block,
     // which has nothing to merge against.
     base_lineage_blocks: &HashSet<BlockHash>,
+    // Per-sig prior-rejection counts derived from the records every block in
+    // the merge's view carries (issue #294). The caller assembles them from
+    // on-DAG data (see `scope_prior_rejection_counts`), so proposer and
+    // validators derive identical counts and adjudication stays
+    // consensus-deterministic. Losses outrank content ordering in both
+    // adjudication sites, so a repeatedly rejected deploy gains priority
+    // instead of starving to expiry.
+    prior_rejection_counts: &HashMap<Bytes, u64>,
 ) -> Result<
     (
         Blake2b256Hash,
@@ -893,6 +985,13 @@ pub fn merge(
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.indices_loaded",
             n_actual_chains = actual_set_vec.len(), n_late_chains = late_set_vec.len());
     }
+
+    // Both sets are stamped: `resolve_conflicts` rejects every late chain
+    // outright today, but it receives both sequences and ranks on
+    // `prior_rejections`, so a late chain must never reach a loss-aware
+    // comparison carrying the constructor's zero instead of its record.
+    stamp_prior_rejections(&mut actual_set_vec, prior_rejection_counts);
+    stamp_prior_rejections(&mut late_set_vec, prior_rejection_counts);
 
     // Accumulator for deploys that lose their chain via dedup but have no
     // fresher copy elsewhere. These are treated the same as conflict-rejected
@@ -1699,6 +1798,7 @@ pub fn merge(
             late_seq,
             &depends_fn,
             &rejection_cost_f,
+            &|chain: &DeployChainIndex| chain.prior_rejections,
             &mergeable_channels_fn,
             &get_data_fn,
             &compute_branches_fn,
@@ -2460,6 +2560,427 @@ mod tests {
         assert_eq!(resolved.to_merge[0].0.len(), 1);
     }
 
+    /// Issue #294 (B1): a chain that already lost prior merges — its deploys
+    /// carry kept rejection records in the scope — must win keep-one against
+    /// an otherwise-equal contender. Without loss-aware adjudication the
+    /// content ordering alone decides, the same chain loses every merge, and
+    /// recovery re-proposes it into the same loss until its window closes.
+    #[test]
+    fn overfilled_splitter_prefers_previously_rejected_contender() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x18; 32]);
+        let added_fresh = encoded_number(&channel, 0);
+        let added_veteran = encoded_number(&channel, 0);
+        // Equal cost; the fresh contender's deploy id is lex-smaller, so the
+        // content ordering alone keeps it. The veteran carries one prior loss.
+        let fresh = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_fresh]),
+        );
+        let mut veteran = chain(
+            2,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_veteran]),
+        );
+        veteran.prior_rejections = 1;
+        let mut resolved = conflict_set_merger::ResolvedConflicts {
+            to_merge: vec![
+                HashableSet(HashSet::from([fresh.clone()])),
+                HashableSet(HashSet::from([veteran.clone()])),
+            ],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: 2,
+            branches_count: 2,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: std::time::Duration::ZERO,
+            conflicts_map_time: std::time::Duration::ZERO,
+            rejection_options_time: std::time::Duration::ZERO,
+        };
+
+        let rejected = split_overfilled_single_value_cells(
+            &mut resolved,
+            &|_, _| false,
+            &|_| BTreeMap::new(),
+            &|_| Ok(Vec::new()),
+            &|_| Ok(Vec::new()),
+            &HashSet::new(),
+        )
+        .expect("split overfilled cells");
+
+        assert!(
+            rejected.0.contains(&fresh),
+            "the contender with no prior losses must be the one rejected"
+        );
+        assert_eq!(resolved.to_merge.len(), 1);
+        assert!(
+            resolved.to_merge[0].0.contains(&veteran),
+            "the previously rejected chain must survive keep-one"
+        );
+    }
+
+    /// Issue #294 (B2): equal prior-rejection counts must leave adjudication
+    /// exactly where the content ordering puts it — loss-awareness is a
+    /// tie-breaker on losses, never a perturbation of the deterministic
+    /// baseline every validator must reproduce.
+    #[test]
+    fn overfilled_splitter_equal_prior_losses_keep_content_order() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x19; 32]);
+        let added_a = encoded_number(&channel, 0);
+        let added_b = encoded_number(&channel, 0);
+        let mut first = chain(
+            1,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_a]),
+        );
+        let mut second = chain(
+            2,
+            10,
+            1,
+            datum_change(channel.clone(), Vec::new(), vec![added_b]),
+        );
+        first.prior_rejections = 1;
+        second.prior_rejections = 1;
+        let mut resolved = conflict_set_merger::ResolvedConflicts {
+            to_merge: vec![
+                HashableSet(HashSet::from([first.clone()])),
+                HashableSet(HashSet::from([second.clone()])),
+            ],
+            rejected: HashableSet(HashSet::new()),
+            late_set_size: 0,
+            actual_set_size: 2,
+            branches_count: 2,
+            rejected_as_dependents_count: 0,
+            optimal_rejection_count: 0,
+            conflict_map_conflicts_count: 0,
+            rejection_options_count: 0,
+            branches_time: std::time::Duration::ZERO,
+            conflicts_map_time: std::time::Duration::ZERO,
+            rejection_options_time: std::time::Duration::ZERO,
+        };
+
+        let rejected = split_overfilled_single_value_cells(
+            &mut resolved,
+            &|_, _| false,
+            &|_| BTreeMap::new(),
+            &|_| Ok(Vec::new()),
+            &|_| Ok(Vec::new()),
+            &HashSet::new(),
+        )
+        .expect("split overfilled cells");
+
+        assert!(
+            rejected.0.contains(&second),
+            "with equal prior losses the content ordering must still decide"
+        );
+        assert_eq!(resolved.to_merge.len(), 1);
+        assert!(
+            resolved.to_merge[0].0.contains(&first),
+            "the content-order winner must survive when losses are equal"
+        );
+    }
+
+    /// Issue #294 (B3): the losing-every-merge composition. One deploy meets
+    /// a FRESH equal-cost contender on the same key every round; each round's
+    /// loser leaves a rejection record in the scope, exactly as the merge
+    /// records rejections in block bodies. A deploy the content ordering
+    /// always ranks last must still land before `deploy_lifespan` rounds
+    /// close its validity window — otherwise it terminates Expired with no
+    /// error surfaced, which is the defect.
+    #[test]
+    fn sustained_same_key_contention_lands_before_window_closes() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x1a; 32]);
+        // Lex-largest deploy id: the content ordering alone rejects it in
+        // every round's tie.
+        let starved_id: u8 = 0xff;
+        let lifespan_rounds: u8 = 50;
+        let mut scope_records: Vec<RejectedDeploy> = Vec::new();
+        let mut landed_round: Option<u8> = None;
+
+        for round in 1..=lifespan_rounds {
+            let added_fresh = encoded_number(&channel, 0);
+            let added_starved = encoded_number(&channel, 0);
+            let mut contenders = [
+                chain(
+                    round,
+                    10,
+                    1,
+                    datum_change(channel.clone(), Vec::new(), vec![added_fresh]),
+                ),
+                chain(
+                    starved_id,
+                    10,
+                    1,
+                    datum_change(channel.clone(), Vec::new(), vec![added_starved]),
+                ),
+            ];
+            let counts = prior_rejection_counts(scope_records.iter());
+            stamp_prior_rejections(&mut contenders, &counts);
+            let [fresh, starved] = contenders;
+
+            let mut resolved = conflict_set_merger::ResolvedConflicts {
+                to_merge: vec![
+                    HashableSet(HashSet::from([fresh.clone()])),
+                    HashableSet(HashSet::from([starved.clone()])),
+                ],
+                rejected: HashableSet(HashSet::new()),
+                late_set_size: 0,
+                actual_set_size: 2,
+                branches_count: 2,
+                rejected_as_dependents_count: 0,
+                optimal_rejection_count: 0,
+                conflict_map_conflicts_count: 0,
+                rejection_options_count: 0,
+                branches_time: std::time::Duration::ZERO,
+                conflicts_map_time: std::time::Duration::ZERO,
+                rejection_options_time: std::time::Duration::ZERO,
+            };
+            let rejected = split_overfilled_single_value_cells(
+                &mut resolved,
+                &|_, _| false,
+                &|_| BTreeMap::new(),
+                &|_| Ok(Vec::new()),
+                &|_| Ok(Vec::new()),
+                &HashSet::new(),
+            )
+            .expect("split overfilled cells");
+
+            if !rejected.0.contains(&starved) {
+                landed_round = Some(round);
+                break;
+            }
+            scope_records.push(RejectedDeploy {
+                sig: Bytes::from(vec![starved_id]),
+                duplicate: false,
+                carrier: Bytes::from(vec![round; 32]),
+            });
+        }
+
+        assert!(
+            landed_round.is_some(),
+            "starved deploy lost every merge for {} rounds and expired",
+            lifespan_rounds
+        );
+    }
+
+    /// Issue #294 (B5): a merge's counts come from the records of every block
+    /// it can see — scope blocks AND the base-lineage window (the retry gate
+    /// settles a rejection below the floor before the retry, so the record
+    /// that must raise priority is on the base's lineage). Duplicate-flagged
+    /// records do not dispute a standing win and must not count.
+    #[test]
+    fn scope_counts_aggregate_kept_records_across_visible_blocks() {
+        let sig = Bytes::from(vec![0x2a]);
+        let scope_block: BlockHash = Bytes::from(vec![1u8; 32]);
+        let lineage_block: BlockHash = Bytes::from(vec![2u8; 32]);
+        let records_of = |hash: &BlockHash| -> Result<Vec<RejectedDeploy>, CasperError> {
+            if *hash == scope_block {
+                Ok(vec![RejectedDeploy {
+                    sig: sig.clone(),
+                    duplicate: false,
+                    carrier: Bytes::from(vec![3u8; 32]),
+                }])
+            } else {
+                Ok(vec![
+                    RejectedDeploy {
+                        sig: sig.clone(),
+                        duplicate: false,
+                        carrier: Bytes::from(vec![4u8; 32]),
+                    },
+                    RejectedDeploy {
+                        sig: sig.clone(),
+                        duplicate: true,
+                        carrier: Bytes::from(vec![5u8; 32]),
+                    },
+                ])
+            }
+        };
+
+        let counts = scope_prior_rejection_counts(
+            vec![scope_block.clone(), lineage_block.clone()],
+            records_of,
+        )
+        .expect("derive scope counts");
+
+        assert_eq!(
+            counts.get(&sig).copied(),
+            Some(2),
+            "one kept record per visible block must count; the duplicate must not"
+        );
+    }
+
+    /// Issue #294 (B6): a visible block this node cannot supply must fail
+    /// the derivation, not count as an empty history. The counts shape the
+    /// rejection set peers validate, so a node that silently derived them
+    /// from fewer blocks would propose (or reject) a different rejection
+    /// set than every peer holding the full window.
+    #[test]
+    fn scope_counts_deduplicate_block_identifiers() {
+        let sig = Bytes::from(vec![0x2a]);
+        let block: BlockHash = Bytes::from(vec![1u8; 32]);
+        let counts = scope_prior_rejection_counts(vec![block.clone(), block], |_hash| {
+            Ok(vec![RejectedDeploy {
+                sig: sig.clone(),
+                duplicate: false,
+                carrier: Bytes::from(vec![2u8; 32]),
+            }])
+        })
+        .expect("derive scope counts");
+
+        assert_eq!(counts.get(&sig).copied(), Some(1));
+    }
+
+    #[test]
+    fn chain_priority_uses_maximum_member_loss() {
+        let first = Bytes::from(vec![1u8]);
+        let second = Bytes::from(vec![2u8]);
+        let mut contender = chain(1, 1, 1, StateChange::empty());
+        contender.deploys_with_cost.0.insert(DeployIdWithCost {
+            deploy_id: second.clone(),
+            cost: 1,
+        });
+        let counts = HashMap::from([(first, 3), (second, 5)]);
+
+        stamp_prior_rejections(std::slice::from_mut(&mut contender), &counts);
+
+        assert_eq!(contender.prior_rejections, 5);
+    }
+
+    #[test]
+    fn scope_counts_fail_on_missing_visible_block() {
+        let held: BlockHash = Bytes::from(vec![1u8; 32]);
+        let missing: BlockHash = Bytes::from(vec![2u8; 32]);
+        let records_of = |hash: &BlockHash| -> Result<Vec<RejectedDeploy>, CasperError> {
+            if *hash == held {
+                Ok(Vec::new())
+            } else {
+                Err(CasperError::BlockNotHeld(hash.clone()))
+            }
+        };
+
+        let result = scope_prior_rejection_counts(vec![held.clone(), missing.clone()], records_of);
+
+        match result {
+            Err(CasperError::BlockNotHeld(hash)) => assert_eq!(hash, missing),
+            other => panic!(
+                "a missing visible block must surface as BlockNotHeld, got {:?}",
+                other.map(|c| c.len())
+            ),
+        }
+    }
+
+    /// Issue #294 (B7): the adversarial bound of phase 1. A contender that
+    /// arrives with a manufactured lead of N prior losses outranks a fresh
+    /// victim on the same key — but only for N rounds. Every round the
+    /// victim loses it gains one loss of its own, so the lead is consumed
+    /// one merge at a time. With the content ordering also against the
+    /// victim (the worst case, and the one round a lead-less rival already
+    /// costs it), the victim lands at round N + 2: the lead buys exactly N
+    /// extra merges of delay. The attacker cannot extend the delay without
+    /// manufacturing fresh losses, each of which costs a charged winner on
+    /// the same key.
+    #[test]
+    fn manufactured_loss_lead_delays_victim_by_exactly_lead_rounds() {
+        let channel = Blake2b256Hash::from_bytes(vec![0x1b; 32]);
+        // Lex-smaller id: the content ordering favors the attacker in a tie.
+        let attacker_id: u8 = 0x01;
+        let victim_id: u8 = 0x02;
+        let lead: u64 = 3;
+        let mut scope_records: Vec<RejectedDeploy> = (0..lead)
+            .map(|i| RejectedDeploy {
+                sig: Bytes::from(vec![attacker_id]),
+                duplicate: false,
+                carrier: Bytes::from(vec![0x80 + i as u8; 32]),
+            })
+            .collect();
+        let mut victim_landed_round: Option<u64> = None;
+
+        for round in 1..=(lead + 2) {
+            let mut contenders = [
+                chain(
+                    attacker_id,
+                    10,
+                    1,
+                    datum_change(channel.clone(), Vec::new(), vec![encoded_number(
+                        &channel, 0,
+                    )]),
+                ),
+                chain(
+                    victim_id,
+                    10,
+                    1,
+                    datum_change(channel.clone(), Vec::new(), vec![encoded_number(
+                        &channel, 0,
+                    )]),
+                ),
+            ];
+            let counts = prior_rejection_counts(scope_records.iter());
+            stamp_prior_rejections(&mut contenders, &counts);
+            let [attacker, victim] = contenders;
+
+            let mut resolved = conflict_set_merger::ResolvedConflicts {
+                to_merge: vec![
+                    HashableSet(HashSet::from([attacker.clone()])),
+                    HashableSet(HashSet::from([victim.clone()])),
+                ],
+                rejected: HashableSet(HashSet::new()),
+                late_set_size: 0,
+                actual_set_size: 2,
+                branches_count: 2,
+                rejected_as_dependents_count: 0,
+                optimal_rejection_count: 0,
+                conflict_map_conflicts_count: 0,
+                rejection_options_count: 0,
+                branches_time: std::time::Duration::ZERO,
+                conflicts_map_time: std::time::Duration::ZERO,
+                rejection_options_time: std::time::Duration::ZERO,
+            };
+            let rejected = split_overfilled_single_value_cells(
+                &mut resolved,
+                &|_, _| false,
+                &|_| BTreeMap::new(),
+                &|_| Ok(Vec::new()),
+                &|_| Ok(Vec::new()),
+                &HashSet::new(),
+            )
+            .expect("split overfilled cells");
+
+            if !rejected.0.contains(&victim) {
+                victim_landed_round = Some(round);
+                break;
+            }
+            assert!(
+                round <= lead + 1,
+                "the victim must lose no more than {} rounds against a lead of {}",
+                lead + 1,
+                lead
+            );
+            // The attacker's win is charged and lands; only the victim's loss
+            // is recorded. The attacker re-enters the next round with its
+            // original lead (a fresh deploy on the same key, same sig
+            // history).
+            scope_records.push(RejectedDeploy {
+                sig: Bytes::from(vec![victim_id]),
+                duplicate: false,
+                carrier: Bytes::from(vec![round as u8; 32]),
+            });
+        }
+
+        assert_eq!(
+            victim_landed_round,
+            Some(lead + 2),
+            "a lead of {} must buy exactly {} extra merges of delay over the one tie round",
+            lead,
+            lead
+        );
+    }
+
     #[test]
     fn unavailable_split_rejects_untagged_touch_to_folded_number_channel() {
         let channel = Blake2b256Hash::from_bytes(vec![0x16; 32]);
@@ -2710,6 +3231,7 @@ mod tests {
             Vec::new(),
             &|_, _| false,
             &cost_optimal_rejection_alg(),
+            &|chain: &DeployChainIndex| chain.prior_rejections,
             &|_| BTreeMap::new(),
             &|_| Ok(Vec::new()),
             &compute_branches,
@@ -2798,6 +3320,7 @@ mod tests {
             Vec::new(),
             &|_, _| false,
             &cost_optimal_rejection_alg(),
+            &|chain: &DeployChainIndex| chain.prior_rejections,
             &|_| BTreeMap::new(),
             &|_| Ok(Vec::new()),
             &compute_branches,
@@ -2945,6 +3468,7 @@ mod tests {
                 late_seq,
                 &|_, _| false,
                 &cost_optimal_rejection_alg(),
+                &|chain: &DeployChainIndex| chain.prior_rejections,
                 &|_| BTreeMap::new(),
                 &|_| Ok(Vec::new()),
                 &compute_branches,
@@ -3099,6 +3623,7 @@ mod tests {
                     late_seq,
                     &depends_fn,
                     &cost_optimal_rejection_alg(),
+                    &|chain: &DeployChainIndex| chain.prior_rejections,
                     &mergeable_fn,
                     &|_| Ok(Vec::new()),
                     &compute_branches,
@@ -3255,6 +3780,7 @@ mod tests {
                 Vec::new(),
                 &|_: &DeployChainIndex, _: &DeployChainIndex| false,
                 &cost_optimal_rejection_alg(),
+                &|chain: &DeployChainIndex| chain.prior_rejections,
                 &no_mergeable,
                 &|_| Ok(Vec::new()),
                 &one_branch,
@@ -3378,6 +3904,7 @@ mod tests {
                 late_seq,
                 &depends,
                 &cost_optimal_rejection_alg(),
+                &|chain: &DeployChainIndex| chain.prior_rejections,
                 &|_| BTreeMap::new(),
                 &|_| Ok(Vec::new()),
                 &compute_branches,

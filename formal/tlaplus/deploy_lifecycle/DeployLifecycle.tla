@@ -1,8 +1,7 @@
 ------------------------- MODULE DeployLifecycle -------------------------
 (***************************************************************************)
-(* Faithful model of the F1R3FLY deploy lifecycle across block admission   *)
-(* and finalization, written to DISCOVER (not assume) the re-proposal      *)
-(* regression that the casper_engine split once introduced.                *)
+(* Model of the F1R3FLY deploy lifecycle across block admission and       *)
+(* finalization.                                                            *)
 (*                                                                         *)
 (* Models:                                                                  *)
 (*   casper/src/rust/engine/multi_parent_casper/block_admission.rs         *)
@@ -13,27 +12,16 @@
 (*       an accepted-but-orphaned deploy can be re-proposed via the          *)
 (*       canonical-won record before it is lost (:103-117).                  *)
 (*   casper/src/rust/engine/multi_parent_casper/finalization_runner.rs      *)
-(*     process_finalized (:204-256)  on finalization of a block there are    *)
-(*       TWO purges:                                                         *)
-(*         (1) deploy_storage.remove(block.body.deploys)          (:226)     *)
-(*         (2) rejected_deploy_buffer purge of every finalized deploy sig    *)
-(*             AND every block.body.rejected_deploys sig          (:250-255) *)
+(*     process_finalized removes finalized deploys from deploy_storage but  *)
+(*     deliberately retains the rejected buffer until admission can decide  *)
+(*     the exact occurrence disposition.                                    *)
+(*   casper/src/rust/util/rholang/interpreter_util.rs                       *)
+(*     canonical_won_sigs filters canonically landed deploys at admission.   *)
 (*                                                                         *)
-(* THE REGRESSION (documented at finalization_runner.rs:234-241): the       *)
-(* casper_engine split DROPPED purge (2) when extracting the runner.        *)
-(* Without it, record-driven recovery re-proposes an already-finalized       *)
-(* deploy out of the buffer, double-applying it (a second write to a         *)
-(* single-value cell -> IntegerAdd invariant violation under the             *)
-(* convergence green-gate). It has been restored; this module keeps the      *)
-(* regression reproducible and gates the fix.                               *)
-(*                                                                         *)
-(* The `PurgeRejectedBuf` constant is the knob that distinguishes the fix    *)
-(* from the regression it replaced:                                          *)
-(*   PurgeRejectedBuf = TRUE   -> the FIX: finalization purges the finalized  *)
-(*     deploy sigs AND that block's rejected_deploys sigs from the buffer.   *)
-(*   PurgeRejectedBuf = FALSE  -> the REGRESSION: purge (2) is gone, so a     *)
-(*     finalized deploy that was recovered into the buffer LINGERS and stays  *)
-(*     re-proposable (Inv_NoFinalizedReproposable is violated).              *)
+(* `AdmissionFiltersFinalized` distinguishes the current admission filter   *)
+(* from the regression in which every rejected-buffer member was treated as  *)
+(* re-proposable even after canonical finalization. Retaining buffer records  *)
+(* is required for keep-one recovery and is not itself re-proposal.          *)
 (*                                                                         *)
 (* The `QuarantineBothStores` constant gates the PROPOSER-SIDE quarantine of  *)
 (* a refund-failing re-proposed deploy (a "toxic" deploy):                    *)
@@ -56,7 +44,7 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS
     MaxDeploys,          \* number of distinct deploy signatures (scaled, e.g. 3)
     MaxBlocks,           \* bound on block-formation events (scaled, e.g. 3)
-    PurgeRejectedBuf,    \* TRUE = the fix; FALSE = the dropped-purge regression
+    AdmissionFiltersFinalized,
     QuarantineBothStores \* TRUE = quarantine purges pending AND rejectedBuf (the
                          \* proposer-side fix); FALSE = the pre-fix that leaves the
                          \* toxic deploy re-proposable (Inv_NoToxicReproposable viol.)
@@ -125,8 +113,8 @@ AcceptIntoBlock ==
 \* deploy is re-injected into rejected_deploy_buffer so it can be re-proposed
 \* before it is lost. Enabled only while the deploy is still `accepted` (its
 \* live orphan record); once finalized it leaves `accepted`, so the buffer can
-\* only be repopulated for it BEFORE finalization -- exactly the window the
-\* finalize purge must clean up.
+\* only be repopulated for it before finalization. Admission filters any
+\* retained record after the canonical win.
 RecoverFromRecord ==
     \E d \in accepted :
         /\ d \notin rejectedBuf
@@ -134,11 +122,9 @@ RecoverFromRecord ==
         /\ rejectedBuf' = rejectedBuf \union {d}
         /\ UNCHANGED <<pending, accepted, finalized, rejectedInBlock, blocksUsed, toxic>>
 
-\* process_finalized: a chosen block's deploys become finalized. Purge (1)
-\* always removes them from deploy_storage (pending). Purge (2) -- GATED BY
-\* PurgeRejectedBuf -- removes the finalized sigs AND that block's
-\* rejected_deploys sigs from the rejected_deploy_buffer. FALSE models the
-\* casper_engine split that dropped purge (2).
+\* process_finalized removes finalized deploys from deploy_storage. Rejected
+\* buffer entries remain available for occurrence-aware recovery; admission
+\* decides whether an entry is actually re-proposable.
 Finalize ==
     \E D \in (SUBSET accepted) \ {{}} :
       \E R \in SUBSET rejectedInBlock :
@@ -146,9 +132,7 @@ Finalize ==
         /\ accepted' = accepted \ D
         /\ pending' = pending \ D
         /\ rejectedInBlock' = rejectedInBlock \ R
-        /\ rejectedBuf' = IF PurgeRejectedBuf
-                            THEN rejectedBuf \ (D \union R)
-                            ELSE rejectedBuf
+        /\ rejectedBuf' = rejectedBuf
         /\ UNCHANGED <<blocksUsed, toxic>>
 
 \* Proposer-side quarantine of a refund-failing re-proposed deploy. A deploy that
@@ -188,13 +172,16 @@ TypeOK ==
     /\ blocksUsed \in 0..MaxBlocks
     /\ toxic \subseteq Deploys
 
-\* THE PROMISE the regression violated: a finalized deploy is never present in
-\* any proposable buffer (deploy_storage or the rejected_deploy_buffer), so it
-\* can never be re-proposed and double-applied. Holds for all reachable states
-\* on the fix (PurgeRejectedBuf = TRUE); on the regression (FALSE) TLC discovers
-\* a finalized deploy lingering in rejectedBuf via the recovery path.
+RejectedProposable ==
+    IF AdmissionFiltersFinalized
+    THEN rejectedBuf \ finalized
+    ELSE rejectedBuf
+
+\* A finalized deploy is absent from every proposable source. The rejected
+\* buffer may retain its historical record; the admission projection excludes
+\* it after canonical finalization.
 Inv_NoFinalizedReproposable ==
-    \A d \in finalized : d \notin pending /\ d \notin rejectedBuf
+    \A d \in finalized : d \notin pending /\ d \notin RejectedProposable
 
 \* Retention / no-loss: an accepted, not-yet-finalized deploy is never lost --
 \* it remains in deploy_storage OR in the recovery buffer. Guards the DUAL,
