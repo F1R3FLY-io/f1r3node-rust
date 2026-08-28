@@ -2172,6 +2172,39 @@ mod tests {
         );
     }
 
+    /// 2026-08-28 hardening: op tag 0 is not a valid variant (tags
+    /// start at 1).  Explicit boundary pin — the general
+    /// `unknown_op_tag` test used 0xFF; this locks in the low end
+    /// so a future refactor that starts numbering at 0 breaks
+    /// HERE rather than in production.
+    #[test]
+    fn decode_wal_slice_rejects_op_tag_zero() {
+        let mut bytes = encode_wal_slice(&[mk_write_entry(b"x", "/a")]);
+        bytes[5] = 0;
+        let err = decode_wal_slice(&bytes);
+        assert!(
+            matches!(err, Err(SnapshotError::MalformedBlob { .. })),
+            "op tag 0 must be MalformedBlob, got {err:?}"
+        );
+    }
+
+    /// Boundary companion: op tag 16 is one past the last valid
+    /// variant (EntriesStreamNext = 15).  If a future slice adds a
+    /// tag, this pin flips and the new-variant maintainer must add
+    /// coverage for it.
+    #[test]
+    fn decode_wal_slice_rejects_op_tag_sixteen() {
+        let mut bytes = encode_wal_slice(&[mk_write_entry(b"x", "/a")]);
+        bytes[5] = 16;
+        let err = decode_wal_slice(&bytes);
+        assert!(
+            matches!(err, Err(SnapshotError::MalformedBlob { .. })),
+            "op tag 16 must be MalformedBlob (guards the tail of \
+             the reserved range); if you added a variant, bump this \
+             pin to the next unassigned tag: got {err:?}"
+        );
+    }
+
     /// Round-trip via disk: write, read back, decode.  Composes
     /// `write_snapshot` + `read_snapshot_bytes` + `decode_wal_slice`
     /// — the full joiner-side pipeline for reconstructing a WAL

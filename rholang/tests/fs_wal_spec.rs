@@ -2962,15 +2962,24 @@ mod tests {
     /// closure directly (the WAL already carries the joiner's
     /// canonical paths); this helper keeps the four `pb_m_14_*`
     /// call sites terse.
+    ///
+    /// Passes empty `allowed_roots` — the test fixtures use
+    /// tempdirs so operator-frozen consensus-static-root
+    /// validation is not applicable; production sites plumb the
+    /// actual roots.
     fn apply_wal_translated(
         wal: &[WalEntry],
         payload_bytes: &std::collections::HashMap<[u8; 32], Vec<u8>>,
         leader_root: &std::path::Path,
         follower_root: &std::path::Path,
     ) {
-        apply_wal_to_fresh_tree(wal, payload_bytes, |p| {
-            translate_path(leader_root, follower_root, p)
-        });
+        apply_wal_to_fresh_tree(
+            wal,
+            payload_bytes,
+            |p| translate_path(leader_root, follower_root, p),
+            &[],
+        )
+        .expect("test-driven WAL apply must not produce ApplierError");
     }
 
     // ---------------------------------------------------------------

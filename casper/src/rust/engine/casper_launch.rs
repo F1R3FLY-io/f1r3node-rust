@@ -508,10 +508,19 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
             >();
             snap_ctx.sync_driver.install_completion_sink(tx);
+            // TODO(fileio): plumb the consensus-static roots from
+            // the operator's provisioning config into `allowed_roots`
+            // as defense-in-depth against a leader-canonicalize bug
+            // or forged snapshot writing outside the joiner's
+            // managed tree.  Empty vector = validation skipped;
+            // the trust anchor is Blake2b256 preimage resistance
+            // via the Merkle root check upstream.
+            let allowed_roots: Vec<std::path::PathBuf> = Vec::new();
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),
                 snap_ctx.snapshot_dir.clone(),
+                allowed_roots,
             );
         }
 

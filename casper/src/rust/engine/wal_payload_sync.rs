@@ -523,11 +523,9 @@ pub struct BootApplyReport {
     pub wal_entries: usize,
 }
 
-/// Reasons `apply_wal_slice_after_fetch` can fail before it runs
-/// the applier.  If the returned error is `PayloadFetchTimeout`,
-/// the caller should log + retry later or fall back to a full
-/// snapshot re-fetch; either way, the sidecar has holes and the
-/// applier would panic on missing bytes.
+/// Reasons `apply_wal_slice_after_fetch` can fail.  Callers
+/// pattern-match to distinguish "byzantine input, log + skip"
+/// from "genuine peer/network shortfall, retry later".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootApplyError {
     /// `driver.is_complete()` did not return true within `timeout`.
@@ -541,6 +539,19 @@ pub enum BootApplyError {
     /// sidecar build (stale-eviction races with the poll loop, or
     /// a `driver.stop()` called mid-collect).
     MissingResolvedHash { hash_hex: String },
+    /// The applier returned an `ApplierError` variant (missing
+    /// sidecar / unsupported PayloadRef / out-of-allowed-roots
+    /// path / NSS failure / IO error / etc).  Byzantine or
+    /// misconfigured input; the subscriber logs + continues to
+    /// the next snapshot.
+    ApplierFailed { message: String },
+    /// The `spawn_blocking` task carrying the applier panicked.
+    /// Post-2026-08-28 hardening the applier is Result-based
+    /// with no panic paths of its own, but this variant catches
+    /// defensive-in-depth: a future refactor that reintroduces
+    /// a panic won't kill the subscriber loop — it will surface
+    /// as this variant instead.
+    ApplierPanic { message: String },
 }
 
 /// Boot-time compose: enumerate the WAL slice's payload hashes,
@@ -580,6 +591,7 @@ pub async fn apply_wal_slice_after_fetch<F>(
     driver: Arc<WalPayloadSyncDriver>,
     wal: Vec<rholang::rust::interpreter::io::wal::WalEntry>,
     path_map: F,
+    allowed_roots: Vec<std::path::PathBuf>,
     timeout: std::time::Duration,
     poll_interval: std::time::Duration,
 ) -> Result<BootApplyReport, BootApplyError>
@@ -627,13 +639,31 @@ where
     let wal_entries = wal.len();
 
     // Step 4 — apply via spawn_blocking (applier is sync + blocking).
-    tokio::task::spawn_blocking(move || {
+    // The applier is Result-based post-hardening; JoinError on
+    // panic surfaces as ApplierPanic so a future refactor that
+    // reintroduces a panic path can't take down the subscriber.
+    let join_result = tokio::task::spawn_blocking(move || {
         rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree(
-            &wal, &sidecar, path_map,
-        );
+            &wal,
+            &sidecar,
+            path_map,
+            &allowed_roots,
+        )
     })
-    .await
-    .expect("apply-blocking join");
+    .await;
+    match join_result {
+        Ok(Ok(())) => {}
+        Ok(Err(applier_err)) => {
+            return Err(BootApplyError::ApplierFailed {
+                message: applier_err.to_string(),
+            });
+        }
+        Err(join_err) => {
+            return Err(BootApplyError::ApplierPanic {
+                message: format!("{join_err}"),
+            });
+        }
+    }
 
     info!(
         target: "f1r3fly.casper.wal_payload_sync",
@@ -1285,6 +1315,7 @@ mod tests {
             Arc::clone(&driver),
             wal,
             move |p| p.to_path_buf(),
+            Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
         )
@@ -1324,6 +1355,7 @@ mod tests {
             Arc::clone(&driver),
             wal,
             |p| p.to_path_buf(),
+            Vec::new(),
             std::time::Duration::from_millis(120),
             std::time::Duration::from_millis(20),
         )
@@ -1366,6 +1398,7 @@ mod tests {
             Arc::clone(&driver),
             wal,
             |p| p.to_path_buf(),
+            Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
         )
@@ -1379,6 +1412,164 @@ mod tests {
         assert_eq!(&got[0..8], payload.as_slice());
         assert_eq!(&got[8..16], payload.as_slice());
         assert_eq!(&got[16..24], payload.as_slice());
+    }
+
+    // -----------------------------------------------------------
+    // 2026-08-28 hardening pins.  Verify the applier's Result-
+    // based errors propagate as `ApplierFailed`, path validation
+    // fires as `ApplierFailed` too, and (defense-in-depth) a
+    // panicking blocking closure becomes `ApplierPanic` rather
+    // than killing the subscriber.
+    // -----------------------------------------------------------
+
+    /// A WAL entry pointing outside `allowed_roots` bubbles up as
+    /// `BootApplyError::ApplierFailed` — the file is not written,
+    /// the applier surfaces the specific reason via its Display
+    /// impl, and the async task returns cleanly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_rejects_out_of_root_paths() {
+        let allowed = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_target = outside.path().join("bad.bin");
+        std::fs::write(&outside_target, vec![0u8; 8]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let payload = b"blocked".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        let wal = vec![write_entry(outside_target.to_str().unwrap(), 0, &payload)];
+        let err = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            vec![allowed.path().to_path_buf()],
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect_err("out-of-root path must Err");
+        assert!(
+            matches!(err, BootApplyError::ApplierFailed { .. }),
+            "got {err:?}"
+        );
+        // Outside file untouched.
+        assert_eq!(std::fs::read(&outside_target).unwrap(), vec![0u8; 8]);
+    }
+
+    /// A synthetic ApplierError (via a missing sidecar entry —
+    /// reached by NOT calling mark_resolved but manually
+    /// pre-populating an already-resolved marker via
+    /// `enqueue_payload` + the driver's internal state) surfaces
+    /// as `BootApplyError::ApplierFailed`.  Verifies the error
+    /// pipeline, not just the happy path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_surfaces_applier_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.bin");
+        std::fs::write(&target, vec![0u8; 8]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        // Craft a WAL entry whose payload_ref is DeployRef — the
+        // applier reports UnsupportedPayloadRef.  No sidecar entry
+        // needed; the applier reaches the DeployRef branch before
+        // any hash lookup.
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+        let wal = vec![WalEntry {
+            op: WalOp::WriteAt,
+            path: target.clone(),
+            extra_path: None,
+            offset: Some(0),
+            length: Some(0),
+            payload_ref: Some(PayloadRef::DeployRef {
+                block_hash: [0; 32],
+                deploy_index: 0,
+                arg_index: 0,
+            }),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }];
+        // No enumerator work needed — DeployRef doesn't populate
+        // a Hash for the enumerator to enqueue.  Retriever stays
+        // empty; is_complete is true immediately.
+        let err = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect_err("DeployRef must Err");
+        assert!(
+            matches!(err, BootApplyError::ApplierFailed { .. }),
+            "got {err:?}"
+        );
+        // Target untouched.
+        assert_eq!(std::fs::read(&target).unwrap(), vec![0u8; 8]);
+    }
+
+    /// Post-timeout resilience: a run that times out leaves the
+    /// retriever in a state where the same payload can be resolved
+    /// later; a subsequent apply run on a WAL slice sharing the
+    /// hash succeeds after the resolution.  Verifies that a
+    /// timed-out flow doesn't corrupt driver state.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_post_timeout_retry_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("t.bin");
+        std::fs::write(&target, vec![0u8; 16]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let payload = b"eventually".to_vec();
+        let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
+
+        // First call: no bytes stashed → timeout.
+        let err = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal.clone(),
+            |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_millis(80),
+            std::time::Duration::from_millis(20),
+        )
+        .await
+        .expect_err("first call must time out");
+        assert!(matches!(err, BootApplyError::PayloadFetchTimeout { .. }));
+
+        // Now the byte arrives (e.g., peer eventually served it).
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+
+        // Second call on the same WAL slice: enumerator sees hash
+        // already-enqueued; is_complete is true; applier runs.
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect("post-timeout retry must succeed");
+        assert_eq!(report.sidecar_populated, 1);
+
+        // Payload landed.
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[..payload.len()], payload.as_slice());
     }
 
     /// DD-7b-3 (a) pin (2026-08-28): `WalPayloadTickStop::stop()`
@@ -1498,6 +1689,7 @@ mod tests {
                 let rel = p.strip_prefix(&src).unwrap();
                 dst.join(rel)
             },
+            Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
         )

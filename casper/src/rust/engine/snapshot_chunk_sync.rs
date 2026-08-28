@@ -831,6 +831,50 @@ mod tests {
         assert!(driver.on_chunk_response(peer, &response).await);
     }
 
+    /// 2026-08-28 hardening pin: a second `install_completion_sink`
+    /// call replaces the first sender.  Documented behavior — the
+    /// current boot pipeline only installs one sink, but a caller
+    /// that re-installs must know the old receiver stops getting
+    /// notifications.  Regression pin against future accidental
+    /// multi-subscribe assumptions.
+    #[tokio::test]
+    async fn second_install_completion_sink_replaces_first() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let entries = vec![mk_entry("a")];
+        let (_p, atomic_root, merkle_root) = write_snapshot(src_dir.path(), &entries).unwrap();
+        let block_hash = vec![0xEB; 32];
+
+        let dest_dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dest_dir.path().to_path_buf());
+
+        // Install first sink.  Its receiver is `rx1`.
+        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel::<SnapshotCompletion>();
+        driver.install_completion_sink(tx1);
+        // Install second sink.  Its receiver is `rx2`.  The first
+        // sender is dropped when the RwLock overwrites it.
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<SnapshotCompletion>();
+        driver.install_completion_sink(tx2);
+
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let peer = mk_peer("frank");
+        driver
+            .on_has_snapshot(peer.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle_root),
+                chunk_count: 1,
+            })
+            .await;
+        let response =
+            serve_chunk(&block_hash, 0, (atomic_root, merkle_root), src_dir.path()).unwrap();
+        assert!(driver.on_chunk_response(peer, &response).await);
+
+        // rx1 receives nothing (it was orphaned).
+        assert!(rx1.try_recv().is_err(), "first sink must not receive after replace");
+        // rx2 receives the notification.
+        let msg = rx2.try_recv().expect("second sink must receive");
+        assert_eq!(msg.atomic_root, atomic_root);
+    }
+
     /// A dropped receiver does not break the driver.  The next
     /// on_chunk_response continues to write bytes to disk; the
     /// notification failure is silent.
