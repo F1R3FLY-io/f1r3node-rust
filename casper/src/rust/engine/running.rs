@@ -479,10 +479,17 @@ pub struct SnapshotChunkContext {
 ///   Trait-object so operators can plug in an in-memory,
 ///   directory-backed, or hybrid impl without touching the
 ///   dispatch path.
+/// * `tick_stop` — DD-7b-3 (a) (2026-08-27, wired 2026-08-28):
+///   optional handle raised by the block-processing catch-up path
+///   when the joiner has consumed the head block; causes the
+///   `spawn_periodic_tick` task to exit cleanly at its next
+///   select boundary.  `None` on nodes that never installed a
+///   tick loop (observer nodes, tests that skip recovery_context).
 #[derive(Clone)]
 pub struct WalPayloadContext {
     pub sync_driver: Arc<WalPayloadSyncDriver>,
     pub payload_lookup: Arc<dyn PayloadLookup>,
+    pub tick_stop: Option<crate::rust::engine::wal_payload_sync::WalPayloadTickStop>,
 }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {

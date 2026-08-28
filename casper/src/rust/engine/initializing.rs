@@ -1179,8 +1179,33 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Some(WalPayloadContext {
                 sync_driver,
                 payload_lookup: lookup,
+                // DD-7b-3 (a) tick-stop handle is installed later
+                // inside `transition_to_running` after `spawn_
+                // periodic_tick` runs; None here means "no live
+                // tick loop yet" (default for the pre-transition
+                // ctx).
+                tick_stop: None,
             })
         };
+
+        // Phase 7b-2 item (c) (2026-08-28): boot wire-in for the
+        // apply-to-follower flow.  Mirrors `casper_launch`'s hook:
+        // install a completion sink on the snapshot chunk driver
+        // + spawn the subscriber that decodes each completed
+        // snapshot and drives the WAL payload fetch + applier.
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                rx,
+                std::sync::Arc::clone(&wal_ctx.sync_driver),
+                snap_ctx.snapshot_dir.clone(),
+            );
+        }
 
         transition_to_running(
             self.block_processing_queue_tx.clone(),

@@ -24,6 +24,7 @@ pub mod snapshot;
 pub mod snapshot_chunk;
 pub mod stat;
 pub mod wal;
+pub mod wal_applier;
 
 /// Consensus vs. oracular execution mode.
 ///

@@ -503,36 +503,258 @@ where
     stats
 }
 
+// -------------------------------------------------------------------
+// Phase 7b-2 item (c) (2026-08-28): boot apply-to-follower flow.
+// Composes the enumerator, the fetch driver, and the fresh-tree
+// applier so a joiner can go from "assembled snapshot bytes on
+// disk" to "WAL slice applied to the local tree" in one call.
+// -------------------------------------------------------------------
+
+/// Report from `apply_wal_slice_after_fetch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootApplyReport {
+    pub enumerated: EnumerateStats,
+    /// Number of unique payload hashes populated in the sidecar
+    /// (equal to `enumerated.resolved_locally + enumerated.enqueued_for_fetch`
+    /// on the happy path; less if peers failed to serve some).
+    pub sidecar_populated: usize,
+    /// Number of WAL entries in the applied slice (informational —
+    /// includes observation-only variants the applier skips).
+    pub wal_entries: usize,
+}
+
+/// Reasons `apply_wal_slice_after_fetch` can fail before it runs
+/// the applier.  If the returned error is `PayloadFetchTimeout`,
+/// the caller should log + retry later or fall back to a full
+/// snapshot re-fetch; either way, the sidecar has holes and the
+/// applier would panic on missing bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BootApplyError {
+    /// `driver.is_complete()` did not return true within `timeout`.
+    /// `pending_count` is the number of hashes still outstanding
+    /// when the timeout fired.  Callers may re-issue the flow
+    /// after peer conditions improve.
+    PayloadFetchTimeout { pending_count: usize },
+    /// A hash the enumerator populated is missing from the driver
+    /// by the time we tried to `take_bytes` — indicates the driver
+    /// dropped a resolved entry between `is_complete()` and the
+    /// sidecar build (stale-eviction races with the poll loop, or
+    /// a `driver.stop()` called mid-collect).
+    MissingResolvedHash { hash_hex: String },
+}
+
+/// Boot-time compose: enumerate the WAL slice's payload hashes,
+/// wait for the fetch driver to resolve every one, build a
+/// hash → bytes sidecar, and apply the WAL to the target tree via
+/// the fresh-tree applier.
+///
+/// # Reducer
+///
+/// Phase 7b-2 (2026-08-28) uses `|_| None` — fetch every payload
+/// from peers.  Deferred per DD-7b-2 (a) committed 2026-08-27:
+/// the write-payload-determinism reducer will land when a specific
+/// caller needs it (e.g., deploy-arg reproduction from block
+/// storage).
+///
+/// # Poll loop
+///
+/// The function polls `driver.is_complete()` every `poll_interval`
+/// with a `timeout` ceiling.  On timeout, returns
+/// `BootApplyError::PayloadFetchTimeout` with the outstanding
+/// count.  The applier is NOT invoked in this branch — a partial
+/// sidecar would panic on missing hashes.
+///
+/// # `path_map`
+///
+/// Production joiners pass `|p| p.to_path_buf()` (identity —
+/// WAL's `canon_path` is the target).  Test callers pass a
+/// translation closure.
+///
+/// # Blocking IO
+///
+/// The applier is sync + blocking (open/seek/write/truncate/etc).
+/// This function runs it via `tokio::task::spawn_blocking` so the
+/// async runtime keeps making progress on other tasks (peer
+/// dispatch, tick loop) during a long apply.
+pub async fn apply_wal_slice_after_fetch<F>(
+    driver: Arc<WalPayloadSyncDriver>,
+    wal: Vec<rholang::rust::interpreter::io::wal::WalEntry>,
+    path_map: F,
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+) -> Result<BootApplyReport, BootApplyError>
+where
+    F: Fn(&std::path::Path) -> std::path::PathBuf + Send + Sync + 'static,
+{
+    use rholang::rust::interpreter::io::wal::PayloadRef;
+
+    // Step 1 — enumerate.
+    let enumerated = enumerate_and_enqueue_payloads(&driver, &wal, |_| None).await;
+
+    // Step 2 — poll for completion under a timeout ceiling.
+    let deadline = std::time::Instant::now() + timeout;
+    while !driver.is_complete().await {
+        if std::time::Instant::now() >= deadline {
+            return Err(BootApplyError::PayloadFetchTimeout {
+                pending_count: driver.pending_count().await,
+            });
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    // Step 3 — build sidecar from unique payload hashes.
+    let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    for entry in &wal {
+        let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
+            continue;
+        };
+        if !seen.insert(h) {
+            continue;
+        }
+        match driver.take_bytes(&h).await {
+            Some(bytes) => {
+                sidecar.insert(h, bytes);
+            }
+            None => {
+                return Err(BootApplyError::MissingResolvedHash {
+                    hash_hex: hex::encode(h),
+                });
+            }
+        }
+    }
+    let sidecar_populated = sidecar.len();
+    let wal_entries = wal.len();
+
+    // Step 4 — apply via spawn_blocking (applier is sync + blocking).
+    tokio::task::spawn_blocking(move || {
+        rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree(
+            &wal, &sidecar, path_map,
+        );
+    })
+    .await
+    .expect("apply-blocking join");
+
+    info!(
+        target: "f1r3fly.casper.wal_payload_sync",
+        wal_entries,
+        sidecar_populated,
+        resolved_locally = enumerated.resolved_locally,
+        enqueued_for_fetch = enumerated.enqueued_for_fetch,
+        "boot apply-to-follower flow complete"
+    );
+    Ok(BootApplyReport {
+        enumerated,
+        sidecar_populated,
+        wal_entries,
+    })
+}
+
 /// Default tick period between outbound-request rounds.  Matches
 /// snapshot_chunk_sync's TICK_PERIOD_MS so operators have one knob.
 pub const TICK_PERIOD_MS: u64 = 5_000;
 
+/// Phase 7b-2 item (c) / DD-7b-3 (a) (2026-08-28): explicit stop
+/// signal for the periodic tick loop.  Cloneable so multiple call
+/// sites can raise it (e.g., a shutdown hook AND a
+/// block-processing catch-up detector); `notify_one()` semantics
+/// mean the first raise wins and subsequent raises are no-ops.
+///
+/// DD-7b-3 (a) diverged from the earlier lean of drain-by-
+/// stale-eviction — user opted for explicit shutdown plumbing so
+/// the runtime shape stays observable ("is the retriever alive?")
+/// and idle timer traffic goes to zero on catch-up.
+#[derive(Clone)]
+pub struct WalPayloadTickStop {
+    signal: Arc<tokio::sync::Notify>,
+}
+
+impl WalPayloadTickStop {
+    /// Raise the stop signal.  The tick loop selecting on this
+    /// signal will exit at its next select boundary (immediately
+    /// if idle, or after the current in-flight `driver.tick(...)`
+    /// completes).  Idempotent — subsequent calls are no-ops
+    /// because tokio's `Notify` collapses multiple pending
+    /// notifications into one permit.
+    pub fn stop(&self) { self.signal.notify_one(); }
+}
+
+impl std::fmt::Debug for WalPayloadTickStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Notify has no useful Debug on its own; expose the shape
+        // for structured logging in the calling sites.
+        f.debug_struct("WalPayloadTickStop")
+            .field("signal", &"tokio::sync::Notify")
+            .finish()
+    }
+}
+
+/// Returned by `spawn_periodic_tick`.  Carries both the tick
+/// task's `JoinHandle` (so the caller can `abort()` on shutdown)
+/// and a `WalPayloadTickStop` handle (so the block-processing
+/// catch-up path can raise the graceful-stop signal per
+/// DD-7b-3 (a)).
+pub struct WalPayloadTickHandle {
+    pub join_handle: tokio::task::JoinHandle<()>,
+    pub stop: WalPayloadTickStop,
+}
+
 /// Spawn a periodic tick task that calls `WalPayloadSyncDriver::tick`
-/// every `TICK_PERIOD_MS`.  Returns the JoinHandle so the caller
-/// can abort on shutdown.
+/// every `TICK_PERIOD_MS`.  Returns a `WalPayloadTickHandle` with:
+///
+///   * `join_handle` — the tokio JoinHandle for hard-abort at
+///     shutdown.
+///   * `stop` — a cloneable `WalPayloadTickStop` handle whose
+///     `stop()` method raises a `tokio::sync::Notify` the loop
+///     selects on; the tick task exits cleanly at the next select
+///     boundary.
+///
+/// The graceful stop path (DD-7b-3 (a)) is preferred over aborting
+/// the JoinHandle because:
+///   * it lets the current `driver.tick(...)` finish (evictions +
+///     any in-flight send finish rather than being cancelled mid-
+///     await),
+///   * it flips the loop's exit intent into a debug trace rather
+///     than a task-panic in the runtime.
 pub fn spawn_periodic_tick<T>(
     driver: Arc<WalPayloadSyncDriver>,
     transport: Arc<T>,
     conf: RPConf,
     connections_cell: comm::rust::rp::connect::ConnectionsCell,
-) -> tokio::task::JoinHandle<()>
+) -> WalPayloadTickHandle
 where
     T: TransportLayer + Send + Sync + 'static,
 {
-    tokio::spawn(async move {
+    let signal = Arc::new(tokio::sync::Notify::new());
+    let signal_for_task = Arc::clone(&signal);
+    let join_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(TICK_PERIOD_MS));
         // Skip the immediate first tick — give the boot enumerator
         // a chance to populate the driver before we start beating.
         interval.tick().await;
         loop {
-            interval.tick().await;
-            // Always tick, even when the pending set is empty:
-            // eviction of expired blacklist entries + stale
-            // retriever entries needs to run regardless of
-            // outbound work.
-            driver.tick(&*transport, &conf, &connections_cell).await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    // Always tick, even when the pending set is empty:
+                    // eviction of expired blacklist entries + stale
+                    // retriever entries needs to run regardless of
+                    // outbound work.
+                    driver.tick(&*transport, &conf, &connections_cell).await;
+                }
+                _ = signal_for_task.notified() => {
+                    info!(
+                        target: "f1r3fly.casper.wal_payload_sync",
+                        "stop signal received; wal_payload_sync tick loop exiting"
+                    );
+                    break;
+                }
+            }
         }
-    })
+    });
+    WalPayloadTickHandle {
+        join_handle,
+        stop: WalPayloadTickStop { signal },
+    }
 }
 
 #[cfg(test)]
@@ -1009,5 +1231,283 @@ mod tests {
         // directly — the equivalent code path the tick loop runs.
         driver.evict_expired_blacklist().await;
         assert!(!driver.blacklisted.read().await.contains_key(&stale));
+    }
+
+    // -----------------------------------------------------------
+    // Phase 7b-2 item (c) (2026-08-28): apply_wal_slice_after_fetch
+    // pins.  Composes enumerate → fetch → sidecar → applier.
+    // -----------------------------------------------------------
+
+    fn write_entry(path: &str, off: u64, payload: &[u8]) -> rholang::rust::interpreter::io::wal::WalEntry {
+        use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+        WalEntry {
+            op: WalOp::WriteAt,
+            path: std::path::PathBuf::from(path),
+            extra_path: None,
+            offset: Some(off),
+            length: Some(payload.len() as u64),
+            payload_ref: Some(PayloadRef::hash(payload)),
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        }
+    }
+
+    /// Happy path: an already-resolved retriever + a two-entry WAL
+    /// slice applies to a fresh tree in one shot.  We pre-populate
+    /// the retriever via `mark_resolved` so the poll loop does not
+    /// have to wait for fetch traffic.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_happy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.bin");
+        std::fs::write(&target, vec![0u8; 32]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let payload_a = b"AAAA".to_vec();
+        let payload_b = b"BBBB".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload_a), payload_a.clone())
+            .await;
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload_b), payload_b.clone())
+            .await;
+
+        let target_path = target.clone();
+        let wal = vec![
+            write_entry(target_path.to_str().unwrap(), 0, &payload_a),
+            write_entry(target_path.to_str().unwrap(), 8, &payload_b),
+        ];
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            move |p| p.to_path_buf(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect("apply happy path");
+
+        assert_eq!(report.wal_entries, 2);
+        assert_eq!(report.sidecar_populated, 2);
+        // Reducer is `|_| None` — enumerator counts these as
+        // "enqueued for fetch" regardless of whether the retriever
+        // has bytes stashed already (mark_resolved was called
+        // outside the enumerator flow).  The `is_complete()` poll
+        // short-circuits because those bytes ARE stashed.
+        assert_eq!(report.enumerated.resolved_locally, 0);
+        assert_eq!(report.enumerated.enqueued_for_fetch, 2);
+
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[..4], payload_a.as_slice());
+        assert_eq!(&got[8..12], payload_b.as_slice());
+    }
+
+    /// Timeout path: unresolved payloads + short timeout returns
+    /// `PayloadFetchTimeout` without invoking the applier.  The
+    /// target file must be untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("untouched.bin");
+        std::fs::write(&target, vec![0u8; 16]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        // Do NOT mark_resolved — the payload will stay pending.
+        let payload = b"never-arrives".to_vec();
+        let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
+
+        let err = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            std::time::Duration::from_millis(120),
+            std::time::Duration::from_millis(20),
+        )
+        .await
+        .expect_err("expect timeout");
+
+        assert!(
+            matches!(err, BootApplyError::PayloadFetchTimeout { pending_count: 1 }),
+            "got {err:?}"
+        );
+        // Target unchanged.
+        assert_eq!(std::fs::read(&target).unwrap(), vec![0u8; 16]);
+    }
+
+    /// Repeated hashes across a WAL slice must be applied once via
+    /// the applier's normal iteration order but the sidecar build
+    /// is dedup'd — no duplicate `take_bytes` calls.  This pin
+    /// exercises the `seen` set inside the collector.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_deduplicates_sidecar_lookups() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dedup.bin");
+        std::fs::write(&target, vec![0u8; 32]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let payload = b"REPEATED".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+
+        // Three WriteAt entries all referencing the same payload
+        // hash at different offsets.
+        let wal = vec![
+            write_entry(target.to_str().unwrap(), 0, &payload),
+            write_entry(target.to_str().unwrap(), 8, &payload),
+            write_entry(target.to_str().unwrap(), 16, &payload),
+        ];
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect("apply with dedup");
+
+        assert_eq!(report.wal_entries, 3);
+        assert_eq!(report.sidecar_populated, 1, "one unique hash → one sidecar entry");
+        // All three writes landed.
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[0..8], payload.as_slice());
+        assert_eq!(&got[8..16], payload.as_slice());
+        assert_eq!(&got[16..24], payload.as_slice());
+    }
+
+    /// DD-7b-3 (a) pin (2026-08-28): `WalPayloadTickStop::stop()`
+    /// cleanly exits the tick loop.  Verifies the graceful-stop
+    /// path added in c-3 — the block-processing catch-up path
+    /// raises the stop signal instead of aborting the JoinHandle,
+    /// letting the last `driver.tick(...)` run complete + timers
+    /// go quiet.
+    ///
+    /// Uses `TransportLayerStub` — the tick loop never issues a
+    /// wire send in an empty-pending scenario, so any stub
+    /// transport is inert.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_periodic_tick_stop_signal_exits_loop() {
+        use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+        let local = {
+            use comm::rust::peer_node::{Endpoint, NodeIdentifier};
+            use prost::bytes::Bytes;
+            PeerNode {
+                id: NodeIdentifier {
+                    key: Bytes::from_static(b"stopper"),
+                },
+                endpoint: Endpoint {
+                    host: "host".into(),
+                    tcp_port: 40400,
+                    udp_port: 40400,
+                },
+            }
+        };
+        let rp_conf = create_rp_conf_ask(local.clone(), None, None);
+        let connections_cell = comm::rust::rp::connect::ConnectionsCell {
+            peers: Arc::new(std::sync::Mutex::new(
+                comm::rust::rp::connect::Connections::from_vec(vec![local]),
+            )),
+        };
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let transport = Arc::new(TransportLayerStub::new());
+
+        let tick =
+            spawn_periodic_tick(Arc::clone(&driver), transport, rp_conf, connections_cell);
+        // Immediately raise stop; loop should exit at the next
+        // select boundary (the initial `interval.tick().await`
+        // yields, then the select! polls the notified() branch
+        // which resolves because notify_one was already called).
+        tick.stop.stop();
+        // Give the runtime a moment; then join with a strict
+        // timeout to catch a wedged tick loop.
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), tick.join_handle).await;
+        assert!(result.is_ok(), "tick loop must exit within timeout after stop");
+    }
+
+    /// Cloning the `WalPayloadTickStop` and raising the clone
+    /// stops the loop just as well — the two handles share the
+    /// same `Notify`.  Verifies the "multiple call sites can
+    /// raise it" property documented on the struct.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_periodic_tick_stop_signal_is_cloneable() {
+        use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+        let local = {
+            use comm::rust::peer_node::{Endpoint, NodeIdentifier};
+            use prost::bytes::Bytes;
+            PeerNode {
+                id: NodeIdentifier {
+                    key: Bytes::from_static(b"clone"),
+                },
+                endpoint: Endpoint {
+                    host: "host".into(),
+                    tcp_port: 40400,
+                    udp_port: 40400,
+                },
+            }
+        };
+        let rp_conf = create_rp_conf_ask(local.clone(), None, None);
+        let connections_cell = comm::rust::rp::connect::ConnectionsCell {
+            peers: Arc::new(std::sync::Mutex::new(
+                comm::rust::rp::connect::Connections::from_vec(vec![local]),
+            )),
+        };
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let transport = Arc::new(TransportLayerStub::new());
+
+        let tick =
+            spawn_periodic_tick(Arc::clone(&driver), transport, rp_conf, connections_cell);
+        let stop_clone = tick.stop.clone();
+        stop_clone.stop();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), tick.join_handle).await;
+        assert!(result.is_ok(), "cloned stop handle must exit the tick loop");
+    }
+
+    /// Applier path_map is honored — a closure that redirects
+    /// writes into a separate root leaves the original target
+    /// untouched.  Mirrors the wal_applier unit `path_map_closure_
+    /// redirects_writes` at the boot-flow level.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_wal_slice_after_fetch_honors_path_map() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let dst_dir = tempfile::tempdir().unwrap();
+        std::fs::write(src_dir.path().join("f.bin"), vec![0u8; 8]).unwrap();
+        std::fs::write(dst_dir.path().join("f.bin"), vec![0u8; 8]).unwrap();
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let payload = b"redir".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+
+        let src_path = src_dir.path().join("f.bin");
+        let wal = vec![write_entry(src_path.to_str().unwrap(), 0, &payload)];
+
+        let src = src_dir.path().to_path_buf();
+        let dst = dst_dir.path().to_path_buf();
+        apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            move |p| {
+                let rel = p.strip_prefix(&src).unwrap();
+                dst.join(rel)
+            },
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+        )
+        .await
+        .expect("apply with path_map");
+
+        // src untouched.
+        assert_eq!(std::fs::read(src_dir.path().join("f.bin")).unwrap(), vec![0u8; 8]);
+        // dst reflects the write.
+        let got = std::fs::read(dst_dir.path().join("f.bin")).unwrap();
+        assert_eq!(&got[..payload.len()], payload.as_slice());
     }
 }

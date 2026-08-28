@@ -108,6 +108,21 @@ impl SnapshotSyncState {
     }
 }
 
+/// Phase 7b-2 item (c) (2026-08-28): notification emitted when a
+/// snapshot has been fully assembled + written to disk.  Consumers
+/// wire this into the WAL apply-to-follower flow via a channel:
+/// `casper_launch` / `initializing` install an unbounded mpsc
+/// sink at boot; the sync driver fires one message per completed
+/// snapshot; a spawned reader decodes the snapshot bytes and
+/// invokes `apply_wal_slice_after_fetch` against the WAL payload
+/// driver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotCompletion {
+    pub block_hash: Vec<u8>,
+    pub atomic_root: [u8; 32],
+    pub path: PathBuf,
+}
+
 /// The joiner-side driver.  Owns a per-snapshot sync-state map
 /// keyed by block hash.
 #[derive(Debug, Clone)]
@@ -116,6 +131,12 @@ pub struct SnapshotChunkSyncDriver {
     /// Local snapshot cache directory — where assembled bytes get
     /// written.
     snapshot_dir: PathBuf,
+    /// Optional mpsc sink for per-completion notifications
+    /// (Phase 7b-2 item (c), 2026-08-28).  Install-once at boot
+    /// via `install_completion_sink`.  If Some, `on_chunk_response`
+    /// sends a `SnapshotCompletion` after each snapshot is
+    /// assembled + written to disk.
+    completion_sink: Arc<std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<SnapshotCompletion>>>>,
 }
 
 impl SnapshotChunkSyncDriver {
@@ -123,7 +144,22 @@ impl SnapshotChunkSyncDriver {
         Self {
             snapshots: Arc::new(RwLock::new(HashMap::new())),
             snapshot_dir,
+            completion_sink: Arc::new(std::sync::RwLock::new(None)),
         }
+    }
+
+    /// Phase 7b-2 item (c) (2026-08-28): install an mpsc sink that
+    /// receives `SnapshotCompletion` messages each time
+    /// `on_chunk_response` finishes writing an assembled snapshot
+    /// to disk.  Install-once at boot; a second call overwrites
+    /// (documented; no current caller re-installs).
+    ///
+    /// The driver holds a `sync` RwLock (not tokio) so
+    /// `on_chunk_response` can take a snapshot of the sender
+    /// without an await-point in the middle of the receive path.
+    pub fn install_completion_sink(&self, tx: tokio::sync::mpsc::UnboundedSender<SnapshotCompletion>) {
+        let mut g = self.completion_sink.write().expect("completion_sink poisoned");
+        *g = Some(tx);
     }
 
     /// Register a snapshot to fetch.  Idempotent: re-registering
@@ -312,6 +348,30 @@ impl SnapshotChunkSyncDriver {
         );
         // Remove from active snapshots (done).
         self.snapshots.write().await.remove(&block_hash);
+        // Phase 7b-2 item (c) (2026-08-28): notify any registered
+        // completion sink.  The mpsc send is best-effort — if the
+        // receiver dropped, the notification is silently discarded.
+        // Reader tasks that exit (e.g., on driver.stop) will cause
+        // any subsequent notification to fail here; the fetch
+        // driver stays functional.
+        let sink_snap = self
+            .completion_sink
+            .read()
+            .expect("completion_sink poisoned")
+            .clone();
+        if let Some(tx) = sink_snap {
+            let completion = SnapshotCompletion {
+                block_hash: block_hash.clone(),
+                atomic_root,
+                path: path.clone(),
+            };
+            if tx.send(completion).is_err() {
+                debug!(
+                    target: "f1r3fly.casper.snapshot_chunk_sync",
+                    "completion sink receiver dropped; ignoring notification"
+                );
+            }
+        }
         true
     }
 
@@ -708,6 +768,100 @@ mod tests {
         let path =
             rholang::rust::interpreter::io::snapshot::snapshot_path(dest_dir.path(), &atomic_root);
         assert!(path.exists(), "assembled snapshot must exist on disk");
+    }
+
+    /// Phase 7b-2 item (c) (2026-08-28): an installed completion
+    /// sink receives a `SnapshotCompletion` message per assembled
+    /// snapshot.  Wire-in test for the joiner-side apply-to-follower
+    /// pipeline.
+    #[tokio::test]
+    async fn completion_sink_receives_notification_on_full_fetch() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let entries = vec![mk_entry("a")];
+        let (_p, atomic_root, merkle_root) = write_snapshot(src_dir.path(), &entries).unwrap();
+        let block_hash = vec![0xEEu8; 32];
+
+        let dest_dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dest_dir.path().to_path_buf());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SnapshotCompletion>();
+        driver.install_completion_sink(tx);
+
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let peer = mk_peer("charlie");
+        driver
+            .on_has_snapshot(peer.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle_root),
+                chunk_count: 1,
+            })
+            .await;
+        let response =
+            serve_chunk(&block_hash, 0, (atomic_root, merkle_root), src_dir.path()).unwrap();
+        assert!(driver.on_chunk_response(peer, &response).await);
+
+        let msg = rx.try_recv().expect("completion sink must receive");
+        assert_eq!(msg.block_hash, block_hash);
+        assert_eq!(msg.atomic_root, atomic_root);
+        assert!(msg.path.exists());
+    }
+
+    /// If no sink is installed, `on_chunk_response` still succeeds
+    /// (the notification is a no-op).  Pre-Phase-7b-2-item-(c)
+    /// call sites that don't wire the apply flow stay functional.
+    #[tokio::test]
+    async fn on_chunk_response_no_sink_installed_is_ok() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let entries = vec![mk_entry("a")];
+        let (_p, atomic_root, merkle_root) = write_snapshot(src_dir.path(), &entries).unwrap();
+        let block_hash = vec![0xEFu8; 32];
+        let dest_dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dest_dir.path().to_path_buf());
+        // Do NOT install a sink.
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let peer = mk_peer("dave");
+        driver
+            .on_has_snapshot(peer.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle_root),
+                chunk_count: 1,
+            })
+            .await;
+        let response =
+            serve_chunk(&block_hash, 0, (atomic_root, merkle_root), src_dir.path()).unwrap();
+        assert!(driver.on_chunk_response(peer, &response).await);
+    }
+
+    /// A dropped receiver does not break the driver.  The next
+    /// on_chunk_response continues to write bytes to disk; the
+    /// notification failure is silent.
+    #[tokio::test]
+    async fn dropped_completion_receiver_is_silently_tolerated() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let entries = vec![mk_entry("a")];
+        let (_p, atomic_root, merkle_root) = write_snapshot(src_dir.path(), &entries).unwrap();
+        let block_hash = vec![0xEA; 32];
+
+        let dest_dir = tempfile::tempdir().unwrap();
+        let driver = SnapshotChunkSyncDriver::new(dest_dir.path().to_path_buf());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SnapshotCompletion>();
+        driver.install_completion_sink(tx);
+        // Drop the receiver end.  A send should now fail.
+        drop(rx);
+
+        driver.enqueue_snapshot(block_hash.clone()).await;
+        let peer = mk_peer("eve");
+        driver
+            .on_has_snapshot(peer.clone(), &HasSnapshot {
+                block_hash: Bytes::copy_from_slice(&block_hash),
+                merkle_root: Bytes::copy_from_slice(&merkle_root),
+                chunk_count: 1,
+            })
+            .await;
+        let response =
+            serve_chunk(&block_hash, 0, (atomic_root, merkle_root), src_dir.path()).unwrap();
+        // Should still return true — the write happened, only the
+        // notification silently failed.
+        assert!(driver.on_chunk_response(peer, &response).await);
     }
 
     /// Boot enumerator: enqueue only anchors whose on-disk file is

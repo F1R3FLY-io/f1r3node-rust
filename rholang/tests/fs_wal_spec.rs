@@ -32,6 +32,7 @@ mod tests {
     use rholang::rust::interpreter::accounting::costs::Cost;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
+    use rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree;
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{
         create_replay_rho_runtime, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
@@ -121,7 +122,8 @@ mod tests {
         // in journal_write.  Pre-position-follow-up this was None;
         // the change unblocks the fresh-tree WAL applier from
         // reconstructing sequential-write file state (see
-        // `apply_wal_to_fresh_tree` in this file).
+        // `apply_wal_to_fresh_tree` in
+        // `rholang::interpreter::io::wal_applier`).
         assert_eq!(e.offset, Some(0));
         assert_eq!(e.length, Some(payload.len() as u64));
         // Payload hash must match Blake2b256 of the actual bytes.
@@ -2954,221 +2956,21 @@ mod tests {
         follower_root.join(rel)
     }
 
-    /// Apply a captured WAL slice to a fresh follower tree.
-    /// `payload_bytes` maps `PayloadRef::Hash(h) → bytes` for every
-    /// `Write` / `WriteAt` entry the WAL references; a missing hash
-    /// is a hard error (a real Phase 7b joiner would
-    /// `get_wal_payload` for it — in a test, missing means the
-    /// driver mis-populated the sidecar).
-    ///
-    /// **Supported ops (WAL is self-sufficient):**
-    ///   * `Write` — sequential write; carries the fd's pre-write
-    ///     shadow position in `offset` (position-tracking follow-up
-    ///     2026-08-26 to PB-M-14 file-state-identity).
-    ///   * `WriteAt` — positional write; `offset` from the caller.
-    ///   * `Truncate` — carries the new file length in `offset`.
-    ///   * Failure-outcome entries — skipped per H-6 (the leader
-    ///     never mutated disk on Failure, so the follower must not).
-    ///   * Observation-only variants (`Read`, `ReadAt`, `Stat`,
-    ///     `Entries`, `Size`, `EntriesStreamNext`) — skipped; they
-    ///     don't change disk state.
-    ///
-    /// The applier does NOT distinguish Write from WriteAt: both
-    /// carry an absolute `offset` and are replayed by seek-then-
-    /// write.  Determinism relies on the FileHandle shadow-position
-    /// tracking on both leader and follower (see
-    /// `FileHandle::position` docstring); the applier just reads
-    /// what the WAL says.
-    ///
-    /// Path-based mutation variants (`Chmod`, `Chown`, `RemoveFile`,
-    /// `RemoveDir`, `Rename`, `CopyFile`) are not yet wired into the
-    /// production handler set for the WAL append side; this applier
-    /// panics on them so a future slice that adds the handler wiring
-    /// will surface the applier-side gap loudly rather than silently
-    /// diverge on replay.
-    fn apply_wal_to_fresh_tree(
+    /// Test-only wrapper for `apply_wal_to_fresh_tree` that
+    /// translates leader-tree WAL paths onto a follower tree via
+    /// `translate_path`.  Production joiners pass an identity
+    /// closure directly (the WAL already carries the joiner's
+    /// canonical paths); this helper keeps the four `pb_m_14_*`
+    /// call sites terse.
+    fn apply_wal_translated(
         wal: &[WalEntry],
         payload_bytes: &std::collections::HashMap<[u8; 32], Vec<u8>>,
         leader_root: &std::path::Path,
         follower_root: &std::path::Path,
     ) {
-        use std::io::{Seek, SeekFrom, Write};
-        for (i, entry) in wal.iter().enumerate() {
-            if matches!(entry.outcome, WalOutcome::Failure { .. }) {
-                continue; // H-6: leader never mutated disk on Failure
-            }
-            match entry.op {
-                WalOp::Write | WalOp::WriteAt => {
-                    let dst = translate_path(leader_root, follower_root, &entry.path);
-                    let hash = match entry.payload_ref {
-                        Some(PayloadRef::Hash(h)) => h,
-                        Some(PayloadRef::DeployRef { .. }) => panic!(
-                            "WAL entry {i}: DeployRef payload_ref not yet supported \
-                             by the fresh-tree applier — needs on-chain deploy \
-                             data lookup (Phase 7b-2 reducer)"
-                        ),
-                        None => panic!(
-                            "WAL entry {i}: {:?} without payload_ref — invariant \
-                             violation in the write handler",
-                            entry.op,
-                        ),
-                    };
-                    let bytes = payload_bytes.get(&hash).unwrap_or_else(|| {
-                        panic!(
-                            "WAL entry {i}: hash {} missing from payload sidecar; \
-                             a real Phase 7b joiner would `get_wal_payload` for it, \
-                             but the test driver mis-populated the sidecar",
-                            hex::encode(hash),
-                        )
-                    });
-                    // Both Write and WriteAt carry absolute offset
-                    // post-position-follow-up (2026-08-26).
-                    let off = entry.offset.unwrap_or_else(|| {
-                        panic!(
-                            "WAL entry {i}: {:?} without offset — position-follow-up \
-                             regression? journal_write should populate offset from \
-                             FileHandle.position (sequential Write) or the caller-\
-                             supplied offset (WriteAt)",
-                            entry.op,
-                        )
-                    });
-                    let mut f = std::fs::OpenOptions::new()
-                        .create(true)
-                        .write(true)
-                        .truncate(false)
-                        .open(&dst)
-                        .unwrap_or_else(|e| panic!("open {dst:?}: {e}"));
-                    f.seek(SeekFrom::Start(off))
-                        .unwrap_or_else(|e| panic!("seek {dst:?}: {e}"));
-                    f.write_all(bytes)
-                        .unwrap_or_else(|e| panic!("write {dst:?}: {e}"));
-                }
-                WalOp::Truncate => {
-                    let dst = translate_path(leader_root, follower_root, &entry.path);
-                    let n = entry.offset.expect("Truncate must carry offset");
-                    let f = std::fs::OpenOptions::new()
-                        .write(true)
-                        .open(&dst)
-                        .unwrap_or_else(|e| panic!("open-for-truncate {dst:?}: {e}"));
-                    f.set_len(n)
-                        .unwrap_or_else(|e| panic!("set_len {dst:?}: {e}"));
-                }
-                // Observation-only — nothing to reconstruct on disk.
-                WalOp::Read
-                | WalOp::ReadAt
-                | WalOp::Stat
-                | WalOp::Entries
-                | WalOp::Size
-                | WalOp::EntriesStreamNext => {}
-                // Path-based mutations (H-29-3 lift, 2026-08-26).
-                // Each entry is fully derivable from args, so replay
-                // is a straight syscall.  Failure entries are already
-                // filtered above by the outcome check.
-                WalOp::Chmod => {
-                    let dst = translate_path(leader_root, follower_root, &entry.path);
-                    let bits = entry
-                        .mode_bits
-                        .unwrap_or_else(|| panic!("WAL entry {i}: Chmod without mode_bits"));
-                    // Use set_permissions for portability; symlink
-                    // safety is a boot-time concern (consensus
-                    // trees reject symlinks).
-                    use std::os::unix::fs::PermissionsExt;
-                    let perms = std::fs::Permissions::from_mode(bits);
-                    std::fs::set_permissions(&dst, perms)
-                        .unwrap_or_else(|e| panic!("chmod {dst:?}: {e}"));
-                }
-                WalOp::Chown => {
-                    let dst = translate_path(leader_root, follower_root, &entry.path);
-                    // Owner/group are String; NSS resolution on the
-                    // follower host must match the leader's (documented
-                    // as an operator responsibility in WalEntry::owner).
-                    // Test harnesses on shared hosts resolve identically.
-                    // Rely on the test not using cross-host owner names.
-                    // For simplicity in the test applier we shell out to
-                    // chown, or call libc directly via nix — but the
-                    // simplest cross-platform path is std::os::unix +
-                    // libc::chown, mirroring chown_impl's approach.
-                    let owner = entry
-                        .owner
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("WAL entry {i}: Chown without owner"));
-                    let group = entry.group.as_deref();
-                    let uid = if owner.is_empty() {
-                        u32::MAX
-                    } else {
-                        // Best-effort NSS lookup in the test applier.
-                        // Failure to resolve → panic (test setup error;
-                        // production has different error handling).
-                        use std::ffi::CString;
-                        let cname = CString::new(owner.as_str()).unwrap();
-                        let pw = unsafe { libc::getpwnam(cname.as_ptr()) };
-                        if pw.is_null() {
-                            panic!(
-                                "WAL entry {i}: applier can't resolve owner {owner:?} \
-                                 on this host — NSS-mismatch scenario"
-                            );
-                        }
-                        unsafe { (*pw).pw_uid }
-                    };
-                    let gid = match group {
-                        None | Some("") => u32::MAX,
-                        Some(g) => {
-                            use std::ffi::CString;
-                            let cname = CString::new(g).unwrap();
-                            let gr = unsafe { libc::getgrnam(cname.as_ptr()) };
-                            if gr.is_null() {
-                                panic!("WAL entry {i}: applier can't resolve group {g:?}");
-                            }
-                            unsafe { (*gr).gr_gid }
-                        }
-                    };
-                    let cpath = std::ffi::CString::new(dst.as_os_str().as_encoded_bytes()).unwrap();
-                    let rc = unsafe { libc::chown(cpath.as_ptr(), uid, gid) };
-                    if rc != 0 {
-                        // In tests we typically don't have privileges
-                        // to chown to arbitrary owners.  We accept
-                        // EPERM as a no-op success — the applier
-                        // couldn't apply, and tests should use
-                        // current-user names to avoid this.  A
-                        // hard-fail would defeat CI on unprivileged
-                        // hosts.
-                        let e = std::io::Error::last_os_error();
-                        if e.raw_os_error() != Some(libc::EPERM) {
-                            panic!("chown {dst:?}: {e}");
-                        }
-                    }
-                }
-                WalOp::RemoveFile => {
-                    let dst = translate_path(leader_root, follower_root, &entry.path);
-                    std::fs::remove_file(&dst)
-                        .unwrap_or_else(|e| panic!("remove_file {dst:?}: {e}"));
-                }
-                WalOp::RemoveDir => {
-                    let dst = translate_path(leader_root, follower_root, &entry.path);
-                    std::fs::remove_dir(&dst).unwrap_or_else(|e| panic!("remove_dir {dst:?}: {e}"));
-                }
-                WalOp::Rename => {
-                    let from = translate_path(leader_root, follower_root, &entry.path);
-                    let to = entry
-                        .extra_path
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("WAL entry {i}: Rename without extra_path"));
-                    let to = translate_path(leader_root, follower_root, to);
-                    std::fs::rename(&from, &to)
-                        .unwrap_or_else(|e| panic!("rename {from:?} → {to:?}: {e}"));
-                }
-                WalOp::CopyFile => {
-                    let from = translate_path(leader_root, follower_root, &entry.path);
-                    let to = entry
-                        .extra_path
-                        .as_ref()
-                        .unwrap_or_else(|| panic!("WAL entry {i}: CopyFile without extra_path"));
-                    let to = translate_path(leader_root, follower_root, to);
-                    std::fs::copy(&from, &to)
-                        .unwrap_or_else(|e| panic!("copy {from:?} → {to:?}: {e}"));
-                }
-            }
-        }
+        apply_wal_to_fresh_tree(wal, payload_bytes, |p| {
+            translate_path(leader_root, follower_root, p)
+        });
     }
 
     // ---------------------------------------------------------------
@@ -3668,7 +3470,7 @@ mod tests {
             .await
             .unwrap();
         let wal = leader.fs_handles.wal.snapshot();
-        apply_wal_to_fresh_tree(
+        apply_wal_translated(
             &wal,
             &std::collections::HashMap::new(),
             leader_dir.path(),
@@ -3952,7 +3754,7 @@ mod tests {
             }
         }
 
-        apply_wal_to_fresh_tree(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+        apply_wal_translated(&wal, &sidecar, leader_dir.path(), follower_dir.path());
 
         assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
     }
@@ -4019,7 +3821,7 @@ mod tests {
             },
         ];
 
-        apply_wal_to_fresh_tree(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+        apply_wal_translated(&wal, &sidecar, leader_dir.path(), follower_dir.path());
 
         // Emulate the leader's successful syscall on leader_dir so
         // the tree-identity check has a reference.  (In the real
@@ -4174,7 +3976,7 @@ mod tests {
             }
         }
 
-        apply_wal_to_fresh_tree(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+        apply_wal_translated(&wal, &sidecar, leader_dir.path(), follower_dir.path());
         assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
     }
 

@@ -429,6 +429,280 @@ fn encode_payload_ref(r: &Option<PayloadRef>, buf: &mut Vec<u8>) {
     }
 }
 
+/// Decode canonical WAL bytes back to a `Vec<WalEntry>`.  Symmetric
+/// inverse of `encode_wal_slice`; used by joiners applying a
+/// snapshot to a fresh tree via the Phase 7b-2 payload-fetch flow.
+///
+/// # Version handling
+///
+/// Only accepts `SNAPSHOT_FORMAT_VERSION`.  A newer version byte
+/// returns `SnapshotError::UnsupportedVersion` (same shape as
+/// `read_snapshot_bytes`) so a lagging validator refuses to
+/// mis-decode a hard-forked network's snapshots.
+///
+/// # Errors
+///
+/// - `Truncated` — insufficient bytes to satisfy the declared
+///   entry count / a field's declared length.
+/// - `UnsupportedVersion` — the leading version byte doesn't match
+///   this validator's `SNAPSHOT_FORMAT_VERSION`.
+/// - `MalformedBlob` — an op tag, PayloadRef variant tag, or
+///   outcome tag outside the allowed set, or a `RemoveDir` /
+///   `Rename` / `CopyFile` etc. missing its documented field.
+pub fn decode_wal_slice(bytes: &[u8]) -> Result<Vec<WalEntry>, SnapshotError> {
+    if bytes.is_empty() {
+        return Err(SnapshotError::Truncated { got: 0, need: 1 });
+    }
+    let version = bytes[0];
+    if version != SNAPSHOT_FORMAT_VERSION {
+        return Err(SnapshotError::UnsupportedVersion {
+            got: version,
+            supported: SNAPSHOT_FORMAT_VERSION,
+        });
+    }
+    if bytes.len() < 5 {
+        return Err(SnapshotError::Truncated {
+            got: bytes.len(),
+            need: 5,
+        });
+    }
+    let count = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+    let mut cursor = 5usize;
+    let mut entries = Vec::with_capacity(count);
+    for _ in 0..count {
+        let entry = decode_entry(bytes, &mut cursor)?;
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+fn decode_entry(bytes: &[u8], cursor: &mut usize) -> Result<WalEntry, SnapshotError> {
+    let op = decode_op_tag(bytes, cursor)?;
+    let path_bytes = decode_str_bytes(bytes, cursor)?;
+    let path = os_str_bytes_to_pathbuf(path_bytes);
+    let extra_path = match decode_u8(bytes, cursor)? {
+        0 => None,
+        1 => Some(os_str_bytes_to_pathbuf(decode_str_bytes(bytes, cursor)?)),
+        tag => {
+            return Err(SnapshotError::MalformedBlob {
+                offset: *cursor - 1,
+                message: format!("extra_path presence tag must be 0 or 1, got {tag}"),
+            })
+        }
+    };
+    let offset = decode_opt_u64(bytes, cursor)?;
+    let length = decode_opt_u64(bytes, cursor)?;
+    let payload_ref = decode_payload_ref(bytes, cursor)?;
+    let mode_bits = decode_opt_u32(bytes, cursor)?;
+    let owner = decode_opt_str(bytes, cursor)?;
+    let group = decode_opt_str(bytes, cursor)?;
+    let outcome = decode_outcome(bytes, cursor)?;
+    Ok(WalEntry {
+        op,
+        path,
+        extra_path,
+        offset,
+        length,
+        payload_ref,
+        mode_bits,
+        owner,
+        group,
+        outcome,
+    })
+}
+
+fn decode_op_tag(bytes: &[u8], cursor: &mut usize) -> Result<WalOp, SnapshotError> {
+    let tag = decode_u8(bytes, cursor)?;
+    match tag {
+        1 => Ok(WalOp::Write),
+        2 => Ok(WalOp::WriteAt),
+        3 => Ok(WalOp::Truncate),
+        4 => Ok(WalOp::Chmod),
+        5 => Ok(WalOp::Chown),
+        6 => Ok(WalOp::RemoveFile),
+        7 => Ok(WalOp::RemoveDir),
+        8 => Ok(WalOp::Rename),
+        9 => Ok(WalOp::CopyFile),
+        10 => Ok(WalOp::Read),
+        11 => Ok(WalOp::ReadAt),
+        12 => Ok(WalOp::Stat),
+        13 => Ok(WalOp::Entries),
+        14 => Ok(WalOp::Size),
+        15 => Ok(WalOp::EntriesStreamNext),
+        _ => Err(SnapshotError::MalformedBlob {
+            offset: *cursor - 1,
+            message: format!("unknown op tag {tag}"),
+        }),
+    }
+}
+
+fn decode_str_bytes<'a>(bytes: &'a [u8], cursor: &mut usize) -> Result<&'a [u8], SnapshotError> {
+    let n = decode_u32(bytes, cursor)? as usize;
+    let end = cursor
+        .checked_add(n)
+        .ok_or_else(|| SnapshotError::MalformedBlob {
+            offset: *cursor,
+            message: "string length overflow".into(),
+        })?;
+    if end > bytes.len() {
+        return Err(SnapshotError::Truncated {
+            got: bytes.len(),
+            need: end,
+        });
+    }
+    let slice = &bytes[*cursor..end];
+    *cursor = end;
+    Ok(slice)
+}
+
+fn decode_opt_str(bytes: &[u8], cursor: &mut usize) -> Result<Option<String>, SnapshotError> {
+    match decode_u8(bytes, cursor)? {
+        0 => Ok(None),
+        1 => {
+            let s_bytes = decode_str_bytes(bytes, cursor)?;
+            let s = std::str::from_utf8(s_bytes)
+                .map_err(|_| SnapshotError::MalformedBlob {
+                    offset: *cursor - s_bytes.len(),
+                    message: "opt-str field is not valid UTF-8".into(),
+                })?
+                .to_string();
+            Ok(Some(s))
+        }
+        tag => Err(SnapshotError::MalformedBlob {
+            offset: *cursor - 1,
+            message: format!("opt-str presence tag must be 0 or 1, got {tag}"),
+        }),
+    }
+}
+
+fn decode_opt_u64(bytes: &[u8], cursor: &mut usize) -> Result<Option<u64>, SnapshotError> {
+    match decode_u8(bytes, cursor)? {
+        0 => Ok(None),
+        1 => Ok(Some(decode_u64(bytes, cursor)?)),
+        tag => Err(SnapshotError::MalformedBlob {
+            offset: *cursor - 1,
+            message: format!("opt-u64 presence tag must be 0 or 1, got {tag}"),
+        }),
+    }
+}
+
+fn decode_opt_u32(bytes: &[u8], cursor: &mut usize) -> Result<Option<u32>, SnapshotError> {
+    match decode_u8(bytes, cursor)? {
+        0 => Ok(None),
+        1 => Ok(Some(decode_u32(bytes, cursor)?)),
+        tag => Err(SnapshotError::MalformedBlob {
+            offset: *cursor - 1,
+            message: format!("opt-u32 presence tag must be 0 or 1, got {tag}"),
+        }),
+    }
+}
+
+fn decode_payload_ref(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<Option<PayloadRef>, SnapshotError> {
+    match decode_u8(bytes, cursor)? {
+        0 => Ok(None),
+        1 => {
+            let h = decode_fixed_32(bytes, cursor)?;
+            Ok(Some(PayloadRef::Hash(h)))
+        }
+        2 => {
+            let block_hash = decode_fixed_32(bytes, cursor)?;
+            let deploy_index = decode_u32(bytes, cursor)?;
+            let arg_index = decode_u32(bytes, cursor)?;
+            Ok(Some(PayloadRef::DeployRef {
+                block_hash,
+                deploy_index,
+                arg_index,
+            }))
+        }
+        tag => Err(SnapshotError::MalformedBlob {
+            offset: *cursor - 1,
+            message: format!("payload_ref variant tag must be 0/1/2, got {tag}"),
+        }),
+    }
+}
+
+fn decode_outcome(bytes: &[u8], cursor: &mut usize) -> Result<WalOutcome, SnapshotError> {
+    match decode_u8(bytes, cursor)? {
+        0 => Ok(WalOutcome::Success),
+        1 => {
+            let code = decode_u32(bytes, cursor)?;
+            Ok(WalOutcome::Failure { code })
+        }
+        tag => Err(SnapshotError::MalformedBlob {
+            offset: *cursor - 1,
+            message: format!("outcome tag must be 0 or 1, got {tag}"),
+        }),
+    }
+}
+
+fn decode_u8(bytes: &[u8], cursor: &mut usize) -> Result<u8, SnapshotError> {
+    if *cursor >= bytes.len() {
+        return Err(SnapshotError::Truncated {
+            got: bytes.len(),
+            need: *cursor + 1,
+        });
+    }
+    let v = bytes[*cursor];
+    *cursor += 1;
+    Ok(v)
+}
+
+fn decode_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, SnapshotError> {
+    let end = *cursor + 4;
+    if end > bytes.len() {
+        return Err(SnapshotError::Truncated {
+            got: bytes.len(),
+            need: end,
+        });
+    }
+    let v = u32::from_be_bytes([
+        bytes[*cursor],
+        bytes[*cursor + 1],
+        bytes[*cursor + 2],
+        bytes[*cursor + 3],
+    ]);
+    *cursor = end;
+    Ok(v)
+}
+
+fn decode_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, SnapshotError> {
+    let end = *cursor + 8;
+    if end > bytes.len() {
+        return Err(SnapshotError::Truncated {
+            got: bytes.len(),
+            need: end,
+        });
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&bytes[*cursor..end]);
+    *cursor = end;
+    Ok(u64::from_be_bytes(buf))
+}
+
+fn decode_fixed_32(bytes: &[u8], cursor: &mut usize) -> Result<[u8; 32], SnapshotError> {
+    let end = *cursor + 32;
+    if end > bytes.len() {
+        return Err(SnapshotError::Truncated {
+            got: bytes.len(),
+            need: end,
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes[*cursor..end]);
+    *cursor = end;
+    Ok(out)
+}
+
+#[cfg(unix)]
+fn os_str_bytes_to_pathbuf(bytes: &[u8]) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(OsStr::from_bytes(bytes))
+}
+
 /// I/O errors from snapshot read/write.
 #[derive(Debug)]
 pub enum SnapshotError {
@@ -451,6 +725,17 @@ pub enum SnapshotError {
         got: usize,
         need: usize,
     },
+    /// Slice 34+ (Phase 7b-2 item (c), 2026-08-28):
+    /// `decode_wal_slice` encountered a byte pattern that doesn't
+    /// match any valid encoding.  Includes an unknown op tag, an
+    /// unknown PayloadRef variant tag, an unknown outcome tag, or
+    /// truncated data mid-entry.  A joiner surfacing this error
+    /// should treat the assembled snapshot as byzantine and
+    /// re-fetch from a different peer set.
+    MalformedBlob {
+        offset: usize,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -471,6 +756,10 @@ impl std::fmt::Display for SnapshotError {
             SnapshotError::Truncated { got, need } => write!(
                 f,
                 "snapshot blob truncated: {got} bytes, need at least {need}"
+            ),
+            SnapshotError::MalformedBlob { offset, message } => write!(
+                f,
+                "snapshot blob malformed at offset {offset}: {message}"
             ),
         }
     }
@@ -1730,6 +2019,174 @@ mod tests {
         let bytes = read_snapshot_bytes(dir.path(), &root).unwrap();
         assert_eq!(hash_of(&bytes), root, "round-tripped bytes match root");
         assert_eq!(bytes, encode_wal_slice(&entries));
+    }
+
+    /// Phase 7b-2 item (c) (2026-08-28): `decode_wal_slice` inverts
+    /// `encode_wal_slice` byte-for-byte across every op tag and
+    /// PayloadRef variant.  A regression here would mean joiners
+    /// apply corrupt WAL slices on fresh trees → downstream state
+    /// hashes diverge.
+    #[test]
+    fn decode_wal_slice_round_trips_all_variants() {
+        let entries = vec![
+            mk_write_entry(b"data", "/root/w.bin"),
+            WalEntry {
+                op: WalOp::WriteAt,
+                path: PathBuf::from("/root/wa.bin"),
+                extra_path: None,
+                offset: Some(42),
+                length: Some(4),
+                payload_ref: Some(PayloadRef::hash(b"payload-at")),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::Truncate,
+                path: PathBuf::from("/root/w.bin"),
+                extra_path: None,
+                offset: Some(128),
+                length: None,
+                payload_ref: None,
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::Chmod,
+                path: PathBuf::from("/root/cm.bin"),
+                extra_path: None,
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: Some(0o644),
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::Chown,
+                path: PathBuf::from("/root/co.bin"),
+                extra_path: None,
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: None,
+                owner: Some("nobody".to_string()),
+                group: Some("nogroup".to_string()),
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::Rename,
+                path: PathBuf::from("/root/rn/from"),
+                extra_path: Some(PathBuf::from("/root/rn/to")),
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            WalEntry {
+                op: WalOp::CopyFile,
+                path: PathBuf::from("/root/cp/from"),
+                extra_path: Some(PathBuf::from("/root/cp/to")),
+                offset: None,
+                length: None,
+                payload_ref: None,
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Failure {
+                    code: super::super::errors::FSERR_CODE_PERM,
+                },
+            },
+            WalEntry {
+                op: WalOp::EntriesStreamNext,
+                path: PathBuf::from("/root/dir"),
+                extra_path: None,
+                offset: None,
+                length: Some(1),
+                payload_ref: Some(PayloadRef::hash(b"stream-reply")),
+                mode_bits: None,
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+        ];
+        let bytes = encode_wal_slice(&entries);
+        let decoded = decode_wal_slice(&bytes).expect("decode round-trip");
+        assert_eq!(decoded, entries);
+    }
+
+    /// Empty WAL slice is a legit encoding (version byte + four
+    /// zeros); decoder returns an empty Vec cleanly.
+    #[test]
+    fn decode_wal_slice_empty() {
+        let bytes = encode_wal_slice(&[]);
+        let decoded = decode_wal_slice(&bytes).expect("decode empty");
+        assert!(decoded.is_empty());
+    }
+
+    /// Byte stream shorter than the version + count prefix surfaces
+    /// as `Truncated` instead of panicking or returning nonsense.
+    #[test]
+    fn decode_wal_slice_truncated_prefix() {
+        let bytes = vec![SNAPSHOT_FORMAT_VERSION, 0, 0]; // 3 bytes < 5
+        let err = decode_wal_slice(&bytes);
+        assert!(
+            matches!(err, Err(SnapshotError::Truncated { .. })),
+            "expected Truncated on short prefix, got {err:?}"
+        );
+    }
+
+    /// Version byte in the future → `UnsupportedVersion`, not a
+    /// silent mis-decode.  Same shape as `read_snapshot_bytes`
+    /// rejecting a hard-forked network's snapshots.
+    #[test]
+    fn decode_wal_slice_rejects_future_version() {
+        let mut bytes = encode_wal_slice(&[]);
+        bytes[0] = SNAPSHOT_FORMAT_VERSION + 1;
+        let err = decode_wal_slice(&bytes);
+        assert!(
+            matches!(err, Err(SnapshotError::UnsupportedVersion { .. })),
+            "expected UnsupportedVersion, got {err:?}"
+        );
+    }
+
+    /// A byzantine peer that returns bytes claiming a well-formed
+    /// prefix but with an unknown op tag mid-entry surfaces as
+    /// `MalformedBlob`, not a panic.
+    #[test]
+    fn decode_wal_slice_rejects_unknown_op_tag() {
+        let mut bytes = encode_wal_slice(&[mk_write_entry(b"x", "/a")]);
+        // Overwrite the op tag byte (right after version + count).
+        bytes[5] = 0xFF;
+        let err = decode_wal_slice(&bytes);
+        assert!(
+            matches!(err, Err(SnapshotError::MalformedBlob { .. })),
+            "expected MalformedBlob on bad op tag, got {err:?}"
+        );
+    }
+
+    /// Round-trip via disk: write, read back, decode.  Composes
+    /// `write_snapshot` + `read_snapshot_bytes` + `decode_wal_slice`
+    /// — the full joiner-side pipeline for reconstructing a WAL
+    /// slice from an assembled snapshot.
+    #[test]
+    fn decode_via_disk_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries = vec![
+            mk_write_entry(b"aa", "/root/x"),
+            mk_write_entry(b"bb", "/root/y"),
+        ];
+        let (_path, root, _merkle_root) = write_snapshot(dir.path(), &entries).unwrap();
+        let bytes = read_snapshot_bytes(dir.path(), &root).unwrap();
+        let decoded = decode_wal_slice(&bytes).unwrap();
+        assert_eq!(decoded, entries);
     }
 
     #[test]

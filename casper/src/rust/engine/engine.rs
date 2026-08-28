@@ -286,16 +286,25 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 
     // Phase 7b-2 (2026-08-27): install WAL payload-fetch context
     // + tick loop.  Same install-before-publish shape as 7b-1.
-    if let Some(ctx) = wal_payload_ctx {
-        running.install_wal_payload_context(ctx.clone());
+    // DD-7b-3 (a) (2026-08-27, wired 2026-08-28): the tick task
+    // carries a `WalPayloadTickStop` handle so a future block-
+    // processing catch-up detector can raise a graceful shutdown
+    // signal; store it on the context so downstream code can
+    // reach it via `Running::wal_payload_ctx`.
+    if let Some(mut ctx) = wal_payload_ctx {
         if let Some(rec) = recovery_context.as_ref() {
-            let _tick_handle = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
                 Arc::clone(&ctx.sync_driver),
                 transport.clone(),
                 conf.clone(),
                 rec.connections_cell.clone(),
             );
+            ctx.tick_stop = Some(tick.stop);
+            // JoinHandle is intentionally dropped — task lives
+            // until process shutdown OR `tick_stop.stop()` fires.
+            drop(tick.join_handle);
         }
+        running.install_wal_payload_context(ctx);
     }
 
     engine_cell.set(Arc::new(running)).await;

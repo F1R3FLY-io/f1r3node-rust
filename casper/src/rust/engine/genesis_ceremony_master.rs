@@ -185,6 +185,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     Some(WalPayloadContext {
                         sync_driver,
                         payload_lookup: lookup,
+                        // DD-7b-3 (a) tick-stop handle is installed
+                        // inside `transition_to_running` after the
+                        // tick loop starts.  None here.
+                        tick_stop: None,
                     })
                 };
 

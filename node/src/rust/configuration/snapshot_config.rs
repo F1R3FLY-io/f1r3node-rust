@@ -652,6 +652,44 @@ mod tests {
     /// validators to fetch.  A regression that removes the boot
     /// call silently reverts production to un-persisted mode
     /// (every joiner request → UnknownPayload) and this pin
+    /// Phase 7b-2 item (c) (2026-08-28): the joiner boot pipeline
+    /// must install the WAL apply-to-follower subscriber in BOTH
+    /// direct-to-running (`casper_launch`) AND initializing paths.
+    /// If a future refactor drops the wire-in, this source-scan
+    /// pin catches it before joiner sync silently stops working.
+    /// The runtime-side unit tests cover the flow's mechanics —
+    /// this pin only ensures the boot sites keep calling
+    /// `spawn_boot_apply_subscriber`.
+    #[test]
+    fn boot_pipeline_installs_wal_apply_subscriber() {
+        for (name, rel) in [
+            ("casper_launch", "casper/src/rust/engine/casper_launch.rs"),
+            ("initializing", "casper/src/rust/engine/initializing.rs"),
+        ] {
+            let path = format!(
+                "{}/../{}",
+                env!("CARGO_MANIFEST_DIR"),
+                rel,
+            );
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!("read {rel}: {e}")
+            });
+            assert!(
+                src.contains("spawn_boot_apply_subscriber"),
+                "{name} ({rel}) must call spawn_boot_apply_subscriber \
+                 to wire the joiner-side apply-to-follower flow \
+                 (Phase 7b-2 item (c)).  If you refactored, update \
+                 this pin's needle."
+            );
+            assert!(
+                src.contains("install_completion_sink"),
+                "{name} ({rel}) must install a completion sink on \
+                 the snapshot chunk sync driver so the subscriber \
+                 receives per-snapshot notifications."
+            );
+        }
+    }
+
     /// catches it.
     #[test]
     fn boot_pipeline_installs_payload_store() {
