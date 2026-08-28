@@ -388,12 +388,9 @@ pub struct CasperShardConf {
     // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
     // Required to enable protection from re-submitting duplicate deploys
     pub deploy_lifespan: i64,
-    /// Wall-clock ceiling on user-deploy execution per proposed block, in
-    /// milliseconds; 0 disables the bound. Node-local packaging policy, not a
-    /// validity rule: the block carries exactly the deploys that executed
-    /// within the budget, so peers replay the same bounded prefix. Bounding
-    /// the build also bounds every peer's replay of the block — an unbounded
-    /// carrier stalls the whole shard for its full execution time, twice.
+    /// Wall-clock ceiling on user-deploy execution per proposed block
+    /// (milliseconds; 0 = unbounded). Packaging policy, not a validity
+    /// rule: the block carries exactly the deploys that executed in budget.
     pub deploy_play_budget_millis: i64,
     pub casper_version: i64,
     pub config_version: i64,

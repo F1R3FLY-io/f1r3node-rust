@@ -169,10 +169,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
             deploy_lifespan: 50,
-            // Zero (the conf default) derives the budget from the citability
-            // window: max-parent-depth heights at heartbeat cadence, with a
-            // 5x margin. A disabled depth check (i32::MAX) derives an
-            // effectively unbounded budget, which is the matching semantics.
+            // Zero derives the budget from the citability window
+            // (max-parent-depth heights of cadence) with a 5x margin.
             deploy_play_budget_millis: if conf.deploy_play_budget.is_zero() {
                 (conf.max_parent_depth as i64).max(1)
                     * (conf.heartbeat_conf.check_interval.as_millis() as i64)

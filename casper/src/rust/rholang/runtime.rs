@@ -308,12 +308,9 @@ impl RuntimeOps {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_reset", rss_kb);
         }
 
-        // The budget is checked AFTER each deploy, so one deploy always plays
-        // regardless of the budget — a spent budget defers work to the next
-        // proposal, it never produces an empty carrier. The checkpoint below
-        // covers exactly the played prefix, so a truncated block is as
-        // consistent as a full one; the deferred deploys stay in deploy
-        // storage and are re-offered at the next packaging pass.
+        // Checked after each deploy, so one always plays and a spent budget
+        // defers the rest to the next proposal; the block carries exactly
+        // the played prefix.
         let budget_started = std::time::Instant::now();
         let total_terms = terms.len();
         let mut res = Vec::with_capacity(total_terms);

@@ -189,11 +189,9 @@ pub mod builder {
             ));
         }
 
-        // The play budget exists to keep a proposed block citable: a build
-        // longer than max-parent-depth heights of heartbeat cadence is born
-        // below the parent-depth horizon and its deploys can only expire.
-        // Warn above a third of that window (the derived default sits at a
-        // fifth); a disabled depth check has no horizon to violate.
+        // A build longer than the citability window is born below the
+        // parent-depth horizon; warn above a third of it (the derived
+        // default sits at a fifth).
         let play_budget = node_conf.casper.deploy_play_budget;
         let max_parent_depth = node_conf.casper.max_parent_depth;
         if !play_budget.is_zero() && max_parent_depth != i32::MAX && max_parent_depth > 0 {
