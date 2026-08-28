@@ -17,6 +17,15 @@
 // to bench_par_branches, so the two can be compared directly at the same
 // branch/op counts.
 //
+// Produce-only, like bench_par_branches: nothing consumes, so HotStore::
+// put_datum's per-channel Vec accumulates unboundedly. At large
+// ops_per_branch (e.g. 32x50_000) that Vec::insert(0, ...) O(n) cost starts
+// to dominate and speedup drops sharply — that's this benchmark's own
+// artifact, not the real contract's behavior (its persistent `contract
+// loop(@n)` consumes every produce immediately, so stored data stays near-
+// zero). The issue #50 headline comparison uses 32x5_000 (this file's
+// default), where it doesn't yet dominate.
+//
 // Run with CPU flame graph:
 //   cargo flamegraph --bin bench_par_branches_channel_reuse
 
@@ -59,12 +68,22 @@ async fn main() {
     let ops_per_branch: usize = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(500);
+        .unwrap_or(5000);
+
+    if branches == 0 || ops_per_branch == 0 {
+        eprintln!(
+            "branches and ops_per_branch must both be positive (got {branches} {ops_per_branch})"
+        );
+        std::process::exit(1);
+    }
+    let total_ops = branches.checked_mul(ops_per_branch).unwrap_or_else(|| {
+        eprintln!("branches * ops_per_branch overflows usize ({branches} * {ops_per_branch})");
+        std::process::exit(1);
+    });
 
     println!(
         "bench_par_branches_channel_reuse: branches={branches}  ops_per_branch={ops_per_branch}  \
-         total_ops={}",
-        branches * ops_per_branch
+         total_ops={total_ops}"
     );
 
     // Baseline: sequential, one branch at a time. Each branch has its own
@@ -81,7 +100,8 @@ async fn main() {
                 .unwrap();
         }
     }
-    let seq_ms = t_seq.elapsed().as_millis();
+    let seq_elapsed = t_seq.elapsed();
+    let seq_ms = seq_elapsed.as_millis();
 
     // Concurrent: all branches in parallel tokio tasks, each on its own
     // reused channel.
@@ -103,9 +123,14 @@ async fn main() {
     for h in handles {
         h.await.unwrap();
     }
-    let par_ms = t_par.elapsed().as_millis();
+    let par_elapsed = t_par.elapsed();
+    let par_ms = par_elapsed.as_millis();
 
-    let speedup = seq_ms as f64 / par_ms as f64;
+    let speedup = if par_elapsed.as_secs_f64() > 0.0 {
+        seq_elapsed.as_secs_f64() / par_elapsed.as_secs_f64()
+    } else {
+        f64::INFINITY
+    };
 
     println!("sequential:  {seq_ms} ms");
     println!("concurrent:  {par_ms} ms");
