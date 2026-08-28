@@ -947,8 +947,11 @@ jobs:
     concurrency:
       # Grouped by series (not raw duration — a restart's remainder is
       # arbitrary) so the next night's launch still cancels a lingering
-      # previous run of the same series, restarts included.
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
+      # previous run of the same series, restarts included. A preflight-only
+      # run is NOT a series run: it gets a per-run group so the nightly slot
+      # cannot cancel it (run 33130708285 lost 1h45m of preflight to the
+      # 02:31Z daily launch this way) and it cannot cancel the nightly.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Clone trusted runner launcher
@@ -1358,7 +1361,10 @@ jobs:
     # restarted weekend with >24h left must still get the weekend ceiling.
     timeout-minutes: ${{ needs.schedule_gate.outputs.preflight_only == 'true' && 190 || (needs.schedule_gate.outputs.kind == 'weekend' && 3840 || 1440) }}
     concurrency:
-      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.kind }}
+      # Same preflight-only carve-out as the launch job: a per-run group so
+      # a diagnostic preflight and the scheduled series never cancel each
+      # other.
+      group: merge-recovery-soak-${{ needs.schedule_gate.outputs.preflight_only == 'true' && format('preflight-only-{0}', github.run_id) || needs.schedule_gate.outputs.kind }}
       cancel-in-progress: true
     steps:
       - name: Record soak job start
@@ -1641,6 +1647,16 @@ jobs:
 
       - name: Dispatch integration preflight success status
         if: always() && needs.schedule_gate.outputs.canary != 'true' && steps.integration_preflight.outputs.result == 'passed'
+        # continue-on-error: the early status publication is a convenience —
+        # `preflight_finalize` publishes the terminal status from
+        # `outputs.preflight` at run end regardless — and a publication
+        # hiccup must never fail a soak whose preflight just PASSED. Run
+        # 33136185540 (the first green preflight on an OCI runner) failed
+        # here with `gh: command not found`: the ephemeral VM image does not
+        # carry the gh CLI that GitHub-hosted runners preinstall, so the
+        # dispatch uses curl against the REST endpoint instead — the runner
+        # cannot function without curl-compatible HTTP.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ needs.schedule_gate.outputs.target_sha }}
@@ -1648,10 +1664,13 @@ jobs:
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
-          gh workflow run soak-preflight-status.yml \
-            --ref "$WORKFLOW_REF" \
-            -f target_sha="$TARGET_SHA" \
-            -f source_run_url="$RUN_URL"
+          payload="$(printf '{"ref":"%s","inputs":{"target_sha":"%s","source_run_url":"%s"}}' \
+            "$WORKFLOW_REF" "$TARGET_SHA" "$RUN_URL")"
+          curl -sf --retry 4 --retry-connrefused -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/soak-preflight-status.yml/dispatches" \
+            -d "$payload"
 
       - name: Reset integration telemetry after preflight
         id: reset_telemetry
