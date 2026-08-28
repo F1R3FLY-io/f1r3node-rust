@@ -332,14 +332,18 @@ Record validation_state : Type := ValidationState {
   chain_bound : bool;
   source_replay_validated : bool;
   replay_validated : bool;
-  source_stable : bool
+  source_stable : bool;
+  catalog_verified : bool
 }.
 
-Definition validation_accepted (state : validation_state) : bool :=
+Definition private_candidate_ready (state : validation_state) : bool :=
   extent_complete state && crc_validated state &&
   semantics_validated state && commit_bound state &&
   chain_bound state && source_replay_validated state &&
   replay_validated state && source_stable state.
+
+Definition validation_accepted (state : validation_state) : bool :=
+  private_candidate_ready state && catalog_verified state.
 
 Definition recovered_authority (state : validation_state) : option nat :=
   if validation_accepted state then Some 1 else None.
@@ -354,21 +358,25 @@ Theorem authority_exists_iff_every_validation_gate_passes :
     chain_bound state = true /\
     source_replay_validated state = true /\
     replay_validated state = true /\
-    source_stable state = true.
+    source_stable state = true /\
+    catalog_verified state = true.
 Proof.
   intro state; unfold recovered_authority.
   destruct (validation_accepted state) eqn:accepted.
   - split.
     + intro accepted_authority. unfold validation_accepted in accepted.
-      repeat rewrite andb_true_iff in accepted.
-      destruct accepted as [[[[[[[extent crc] semantic] commit] chain] source_replay]
+      apply andb_true_iff in accepted as [candidate catalog].
+      unfold private_candidate_ready in candidate.
+      repeat rewrite andb_true_iff in candidate.
+      destruct candidate as [[[[[[[extent crc] semantic] commit] chain] source_replay]
         replay] stable]. repeat split; assumption.
     + intro gates. reflexivity.
   - split.
     + discriminate.
-    + intros [extent [crc [semantic [commit [chain [source_replay [replay stable]]]]]]].
-      unfold validation_accepted in accepted.
-      rewrite extent, crc, semantic, commit, chain, source_replay, replay, stable in accepted.
+    + intros [extent [crc [semantic [commit [chain [source_replay [replay [stable catalog]]]]]]]].
+      unfold validation_accepted, private_candidate_ready in accepted.
+      rewrite extent, crc, semantic, commit, chain, source_replay, replay, stable, catalog
+        in accepted.
       discriminate.
 Qed.
 
@@ -382,6 +390,36 @@ Qed.
 Definition private_index_visible (state : validation_state) : bool :=
   validation_accepted state.
 
+Definition observer_visible (state : validation_state) : bool :=
+  validation_accepted state.
+
+Theorem catalog_mismatch_exposes_no_authority_index_or_observer :
+  forall state,
+    catalog_verified state = false ->
+    recovered_authority state = None /\
+    private_index_visible state = false /\
+    observer_visible state = false.
+Proof.
+  intros state catalog_mismatch.
+  unfold recovered_authority, private_index_visible, observer_visible,
+    validation_accepted.
+  rewrite catalog_mismatch, andb_false_r. repeat split; reflexivity.
+Qed.
+
+Theorem replay_complete_candidate_remains_private_until_catalog_verification :
+  forall state,
+    private_candidate_ready state = true ->
+    catalog_verified state = false ->
+    recovered_authority state = None /\
+    private_index_visible state = false /\
+    observer_visible state = false.
+Proof.
+  intros state candidate_ready catalog_pending.
+  unfold recovered_authority, private_index_visible, observer_visible,
+    validation_accepted.
+  rewrite candidate_ready, catalog_pending. repeat split; reflexivity.
+Qed.
+
 Theorem index_is_not_visible_before_full_authentication :
   forall state,
     private_index_visible state = true ->
@@ -391,7 +429,8 @@ Theorem index_is_not_visible_before_full_authentication :
     chain_bound state = true /\
     source_replay_validated state = true /\
     replay_validated state = true /\
-    source_stable state = true.
+    source_stable state = true /\
+    catalog_verified state = true.
 Proof.
   intros state visible.
   pose proof (proj1 (authority_exists_iff_every_validation_gate_passes state))
@@ -415,3 +454,5 @@ Print Assumptions retained_memory_is_independent_of_record_extent.
 Print Assumptions authority_exists_iff_every_validation_gate_passes.
 Print Assumptions any_failed_gate_exposes_no_authority.
 Print Assumptions index_is_not_visible_before_full_authentication.
+Print Assumptions catalog_mismatch_exposes_no_authority_index_or_observer.
+Print Assumptions replay_complete_candidate_remains_private_until_catalog_verification.

@@ -54,8 +54,8 @@ incremental_prepare_streaming_closed_capstones="$({
   printf '%s\n' "$incremental_prepare_streaming_rocq_output" | \
     grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$incremental_prepare_streaming_closed_capstones" != "13" ]]; then
-  echo "stack-safe-pda: expected all thirteen incremental-PREPARE Rocq capstones to be closed; got $incremental_prepare_streaming_closed_capstones" >&2
+if [[ "$incremental_prepare_streaming_closed_capstones" != "15" ]]; then
+  echo "stack-safe-pda: expected all fifteen incremental-PREPARE Rocq capstones to be closed; got $incremental_prepare_streaming_closed_capstones" >&2
   exit 1
 fi
 streaming_codec_rocq_output="$(
@@ -385,7 +385,10 @@ for incremental_prepare_mutant in \
   "swap-replay-layouts:RSpaceIncrementalPrepareStreamingSwapReplayLayoutsMutant.cfg:ReplayTranscriptMatchesFirstPass" \
   "skip-replay-transcript:RSpaceIncrementalPrepareStreamingSkipReplayTranscriptMutant.cfg:ReplayTranscriptMatchesFirstPass" \
   "accept-unstable-source:RSpaceIncrementalPrepareStreamingAcceptUnstableSourceMutant.cfg:StableSourceRequiredForSuccess" \
-  "early-index-exposure:RSpaceIncrementalPrepareStreamingEarlyIndexExposureMutant.cfg:NoIndexExposureBeforeAuthentication"
+  "early-index-exposure:RSpaceIncrementalPrepareStreamingEarlyIndexExposureMutant.cfg:NoPublicStateBeforeCatalogVerification" \
+  "publish-before-catalog:RSpaceIncrementalPrepareStreamingPublishBeforeCatalogMutant.cfg:NoPublicStateBeforeCatalogVerification" \
+  "accept-catalog-mismatch:RSpaceIncrementalPrepareStreamingAcceptCatalogMismatchMutant.cfg:CatalogVerificationIsExact" \
+  "publish-rejected-catalog:RSpaceIncrementalPrepareStreamingPublishRejectedCatalogMutant.cfg:NoRejectedCandidatePublishes"
 do
   incremental_prepare_label="${incremental_prepare_mutant%%:*}"
   incremental_prepare_tail="${incremental_prepare_mutant#*:}"
@@ -418,7 +421,9 @@ for incremental_prepare_witness in \
   "object-rejection:RSpaceIncrementalPrepareStreamingNeverObjectRejection.cfg:NeverObjectRejection" \
   "commit-rejection:RSpaceIncrementalPrepareStreamingNeverCommitRejection.cfg:NeverCommitRejection" \
   "chain-rejection:RSpaceIncrementalPrepareStreamingNeverChainRejection.cfg:NeverChainRejection" \
-  "source-rejection:RSpaceIncrementalPrepareStreamingNeverSourceRejection.cfg:NeverSourceRejection"
+  "source-rejection:RSpaceIncrementalPrepareStreamingNeverSourceRejection.cfg:NeverSourceRejection" \
+  "catalog-rejection:RSpaceIncrementalPrepareStreamingNeverCatalogRejection.cfg:NeverCatalogRejection" \
+  "private-candidate-awaiting-catalog:RSpaceIncrementalPrepareStreamingNeverPrivateCandidateAwaitingCatalog.cfg:NeverPrivateCandidateAwaitingCatalog"
 do
   incremental_prepare_label="${incremental_prepare_witness%%:*}"
   incremental_prepare_tail="${incremental_prepare_witness#*:}"

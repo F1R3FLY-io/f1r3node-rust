@@ -266,9 +266,52 @@ pub proof fn auxiliary_memory_has_zero_input_slope(
 {
 }
 
-/// The stream accepts only after all seven independent gates pass.  Keeping
-/// this Boolean kernel explicit makes early authority/index exposure a direct
-/// executable refinement obligation.
+pub open spec fn private_candidate_ready_spec(
+    extent_complete: bool,
+    crc_valid: bool,
+    semantics_valid: bool,
+    commit_bound: bool,
+    chain_bound: bool,
+    source_replay_exact: bool,
+    replay_exact: bool,
+    source_stable: bool,
+) -> bool {
+    extent_complete
+        && crc_valid
+        && semantics_valid
+        && commit_bound
+        && chain_bound
+        && source_replay_exact
+        && replay_exact
+        && source_stable
+}
+
+pub open spec fn validation_accepted_spec(
+    extent_complete: bool,
+    crc_valid: bool,
+    semantics_valid: bool,
+    commit_bound: bool,
+    chain_bound: bool,
+    source_replay_exact: bool,
+    replay_exact: bool,
+    source_stable: bool,
+    catalog_verified: bool,
+) -> bool {
+    private_candidate_ready_spec(
+        extent_complete,
+        crc_valid,
+        semantics_valid,
+        commit_bound,
+        chain_bound,
+        source_replay_exact,
+        replay_exact,
+        source_stable,
+    ) && catalog_verified
+}
+
+/// The stream publishes authority only after all nine independent gates pass.
+/// Keeping this Boolean kernel explicit makes early authority, index, or
+/// observer exposure a direct executable refinement obligation.
 pub fn validation_accepted(
     extent_complete: bool,
     crc_valid: bool,
@@ -278,17 +321,19 @@ pub fn validation_accepted(
     source_replay_exact: bool,
     replay_exact: bool,
     source_stable: bool,
+    catalog_verified: bool,
 ) -> (accepted: bool)
     ensures
-        accepted == (
-            extent_complete
-            && crc_valid
-            && semantics_valid
-            && commit_bound
-            && chain_bound
-            && source_replay_exact
-            && replay_exact
-            && source_stable
+        accepted == validation_accepted_spec(
+            extent_complete,
+            crc_valid,
+            semantics_valid,
+            commit_bound,
+            chain_bound,
+            source_replay_exact,
+            replay_exact,
+            source_stable,
+            catalog_verified,
         ),
 {
     extent_complete
@@ -299,6 +344,72 @@ pub fn validation_accepted(
         && source_replay_exact
         && replay_exact
         && source_stable
+        && catalog_verified
+}
+
+pub proof fn catalog_mismatch_exposes_no_public_state(
+    extent_complete: bool,
+    crc_valid: bool,
+    semantics_valid: bool,
+    commit_bound: bool,
+    chain_bound: bool,
+    source_replay_exact: bool,
+    replay_exact: bool,
+    source_stable: bool,
+    catalog_verified: bool,
+)
+    requires !catalog_verified,
+    ensures
+        !validation_accepted_spec(
+            extent_complete,
+            crc_valid,
+            semantics_valid,
+            commit_bound,
+            chain_bound,
+            source_replay_exact,
+            replay_exact,
+            source_stable,
+            catalog_verified,
+        ),
+{
+}
+
+pub proof fn replay_complete_candidate_remains_private_until_catalog_verification(
+    extent_complete: bool,
+    crc_valid: bool,
+    semantics_valid: bool,
+    commit_bound: bool,
+    chain_bound: bool,
+    source_replay_exact: bool,
+    replay_exact: bool,
+    source_stable: bool,
+    catalog_verified: bool,
+)
+    requires
+        private_candidate_ready_spec(
+            extent_complete,
+            crc_valid,
+            semantics_valid,
+            commit_bound,
+            chain_bound,
+            source_replay_exact,
+            replay_exact,
+            source_stable,
+        ),
+        !catalog_verified,
+    ensures
+        !validation_accepted_spec(
+            extent_complete,
+            crc_valid,
+            semantics_valid,
+            commit_bound,
+            chain_bound,
+            source_replay_exact,
+            replay_exact,
+            source_stable,
+            catalog_verified,
+        ),
+{
 }
 
 } // verus!

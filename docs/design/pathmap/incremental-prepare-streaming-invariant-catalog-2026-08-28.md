@@ -79,7 +79,7 @@ The formal models abstract cryptographic collision resistance, the concrete cano
 - I/O failure precedes record CRC; record CRC precedes a deferred semantic error. The first semantic error is retained while the remaining authenticated extent is drained.
 - COMMIT identity and the complete outer chain/publication authority are checked before private index replay. This deliberately removes pre-chain-validation callback/index effects. Any change in multiply-malformed diagnostic order is consensus-reviewed separately; single-fault behavior remains oracle-equivalent.
 - After chain binding, a source-authentication replay rereads the complete PREPARE CRC domain, including the fixed prefix, mutation bytes, every object header, and every DATA body. No private index state may be created until that replay is byte-identical to the primary authenticated transcript. A subsequent bounded layout-application pass rereads only object headers needed to derive the private index and requires the exact first-pass structural transcript, count, order, offsets, and final extent.
-- A candidate index remains private until every validation gate passes; recovery authority remains absent until catalog verification.
+- A candidate index may be constructed privately only after chain binding and complete source replay, but the candidate, recovery authority, and observer effects remain unobservable until exact catalog verification.
 - Authorized logical pack extent and actual physical reread work are separate quantities. Neither is a semantic COMM charge.
 - Cryptographic primitives and the production read-only file lifetime are trusted boundaries with executable byte and source-stability tests, not hidden formal axioms.
 
@@ -94,13 +94,13 @@ The formal models abstract cryptographic collision resistance, the concrete cano
 - Integrated gate: `scripts/check-stack-safe-pda-proofs.sh`
 - Ignored raw evidence: `scratch/k1-formal/` and `scratch/kind1-streaming-tlc-base-final.log`
 
-The protocol TLA+ model completes without an invariant failure, kills 16 independent mutants by their named invariant, and reaches 11 named terminal witnesses. The byte-level codec TLA+ refinement explores 122 distinct states to depth 6 without an invariant failure, kills 19 independent mutants, and reaches 17 named codec and rejection witnesses. Rocq closes 13 protocol capstones and 20 byte-level refinement capstones under the global context. Verus verifies 13 protocol obligations and 16 byte-level arithmetic/state obligations with `--no-cheating`.
+The protocol TLA+ model explores 131 distinct states to depth 17 without an invariant failure, kills 19 independent mutants by their named invariant, reaches 12 named terminal witnesses, and reaches the private-candidate-awaiting-catalog intermediate boundary. The byte-level codec TLA+ refinement explores 122 distinct states to depth 6 without an invariant failure, kills 19 independent mutants, and reaches 17 named codec and rejection witnesses. Rocq closes 15 protocol capstones and 20 byte-level refinement capstones under the global context. Verus verifies 15 protocol obligations and 16 byte-level arithmetic/state obligations with `--no-cheating`.
 
 ### Byte-level formal invariant extraction
 
 The detailed codec model closes the abstraction gap for RhoPath framing, mutation-key ordering and positional reread, canonical-object dispatch, error precedence, and bounded retained memory. The following map is exhaustive over the base TLA+ invariants, Rocq capstones, and Verus executable/proof obligations in the three byte-level artifacts.
 
-The protocol-level Verus refinement contributes `checked_extent_advance`, `next_stream_read_width`, `resource_admitted`, `exact_resource_boundary_is_accepted`, `required_minus_one_is_rejected`, `checked_layout_advance`, `checked_add_physical_work`, `full_source_replay_exact`, `admitted_stream_read_width`, `auxiliary_memory_has_zero_input_slope`, and `validation_accepted`. These bind K1-CUR-01..04, K1-ARITH-01, K1-PF-01..02, K1-LIM-01..08, K1-ACC-01..02, K1-TR-01..03, K1-SRC-01, K1-AUTH-01..02, and K1-MEM-01. The executable refinement must exercise the concrete Rust call sites rather than treating these arithmetic helpers as sufficient evidence by themselves.
+The protocol-level Verus refinement contributes `checked_extent_advance`, `next_stream_read_width`, `resource_admitted`, `exact_resource_boundary_is_accepted`, `required_minus_one_is_rejected`, `checked_layout_advance`, `checked_add_physical_work`, `full_source_replay_exact`, `admitted_stream_read_width`, `auxiliary_memory_has_zero_input_slope`, `validation_accepted`, `catalog_mismatch_exposes_no_public_state`, and `replay_complete_candidate_remains_private_until_catalog_verification`. These bind K1-CUR-01..04, K1-ARITH-01, K1-PF-01..02, K1-LIM-01..08, K1-ACC-01..02, K1-TR-01..03, K1-SRC-01, K1-AUTH-01..02, and K1-MEM-01. The executable refinement must exercise the concrete Rust call sites rather than treating these arithmetic helpers as sufficient evidence by themselves.
 
 | Formal obligation(s) | Extracted executable invariant IDs |
 |---|---|
@@ -110,6 +110,7 @@ The protocol-level Verus refinement contributes `checked_extent_advance`, `next_
 | TLA+ `OrderingFollowsKeyValidation` | K1-MUT-07..10, K1-EQV-03 |
 | TLA+ `RereadStabilityPrecedesOrderAuthority` | K1-MUT-08..09, K1-SRC-01 |
 | TLA+ `FullSourceReplayPrecedesPrivateIndex`, `StableSourceRequiredForSuccess` | K1-SRC-01, K1-AUTH-01..02 |
+| TLA+ `CatalogVerificationIsExact`, `NoPublicStateBeforeCatalogVerification`, `NoRejectedCandidatePublishes`, `SuccessPublishesExactCandidate` | K1-AUTH-01..02 |
 | TLA+ `AggregatePrecedesFieldValidation` | K1-MUT-04..07, K1-OBJ-09, K1-OBJ-12..13, K1-EQV-03 |
 | TLA+ `EveryObjectKindIsDispatched` | K1-OBJ-08..13 |
 | TLA+ `OutcomeRefinesCodecOracle` | K1-MUT-01..15, K1-OBJ-08..14, K1-EQV-01..03 |
@@ -118,6 +119,7 @@ The protocol-level Verus refinement contributes `checked_extent_advance`, `next_
 | Rocq `equal_keys_are_rejected_by_strict_order`, `proper_prefix_is_lexicographically_smaller` | K1-MUT-08, K1-EQV-03 |
 | Rocq `unstable_reread_cannot_authorize_key_order`, `stable_chunk_reassembly_uses_exact_byte_order` | K1-MUT-08..09, K1-SRC-01 |
 | Rocq `exact_source_replay_accepts_iff_identical` | K1-SRC-01, K1-TR-02..03, K1-AUTH-01..02 |
+| Rocq `catalog_mismatch_exposes_no_authority_index_or_observer`, `replay_complete_candidate_remains_private_until_catalog_verification` | K1-AUTH-01..02 |
 | Rocq `malformed_key_precedes_order_and_transition_errors`, `key_order_precedes_noop_transition`, `trailing_bytes_precede_empty_batch` | K1-MUT-07..13, K1-EQV-03 |
 | Rocq `aggregate_resource_admission_precedes_variable_grammar` | K1-PF-01..02, K1-LIM-02, K1-LIM-06..07 |
 | Rocq `all_five_canonical_object_kinds_are_dispatched_exactly` | K1-OBJ-08..13 |
@@ -129,6 +131,7 @@ The protocol-level Verus refinement contributes `checked_extent_advance`, `next_
 | Verus `datum_suffix_may_be_empty`, `empty_continuation_group_is_rejected`, `empty_join_suffix_is_rejected` | K1-MUT-07, K1-EQV-01..03 |
 | Verus `unstable_reread_has_no_order_authority` | K1-MUT-09, K1-SRC-01 |
 | Verus `full_source_replay_exact` | K1-SRC-01, K1-TR-02..03, K1-AUTH-01..02 |
+| Verus `catalog_mismatch_exposes_no_public_state`, `replay_complete_candidate_remains_private_until_catalog_verification` | K1-AUTH-01..02 |
 | Verus `mutation_error_precedence_is_fixed` | K1-MUT-07..13, K1-EQV-03 |
 | Verus `exactly_five_canonical_object_kinds_are_dispatched` | K1-OBJ-08..13 |
 | Verus `envelope_extent_precedes_body_fields` | K1-MUT-01, K1-MUT-13, K1-OBJ-06, K1-OBJ-08..13, K1-EQV-03 |
@@ -161,8 +164,8 @@ The intended Rust property target is `rspace++/tests/persistence/incremental_pre
 | K1-LIM-06 | `max_mutation_entries` has the same exact boundary. | Generate the three section counts coherently. |
 | K1-LIM-07 | `max_mutation_key_bytes` has the same exact boundary. | Generate escaped RhoPath keys around the boundary. |
 | K1-LIM-08 | Durable transaction/object/index/scan limits precede their corresponding work. | One typed resource refusal at a time with read/callback trace. |
-| K1-ACC-01 | Authorized pack extent and actual physical bytes read are reported separately. | Counting reader with and without layout/prior-key rereads. |
-| K1-ACC-02 | Prior-key and layout rereads are admitted and counted before issuance. | Exact and underprovisioned physical-read budgets. |
+| K1-ACC-01 | Authorized pack extent, primary authenticated reads, prior-key rereads, complete authenticated-source replay, header-only layout-application replay, and their physical sum are reported separately and exactly. | Counting reader over a DATA-bearing PREPARE; independently derive the full PREPARE CRC domain and the object-header-only replay extent. |
+| K1-ACC-02 | Prior-key, authenticated-source, and layout-application rereads are admitted and counted before issuance. The source replay includes the fixed prefix, mutations, object headers, and every DATA body; the later layout replay includes object headers only. | Exact and underprovisioned physical-read budgets for each replay class. |
 | K1-ACC-03 | Recovery physical accounting never changes semantic COMM accounting. | Seed nonzero runtime accounting and compare the complete before/after snapshot. |
 
 ### CRC and physical digest
@@ -246,8 +249,8 @@ The intended Rust property target is `rspace++/tests/persistence/incremental_pre
 | K1-TR-02 | Replay count, order, offsets, and final extent equal the first pass. | Arbitrary DATA/REUSE layouts and chunk schedules. |
 | K1-TR-03 | Substitution, omission, duplication, reordering, or offset shift rejects. | Typed `ReplayMutation` enumeration. |
 | K1-SRC-01 | Source instability during the reader lifetime is excluded by the production contract and detected before private index construction. The authenticated replay covers the entire PREPARE CRC domain, including DATA bodies, rather than only structural headers. | Deterministic prefix-, mutation-, object-header-, and DATA-body-only mutations between primary fold, binding, source replay, and layout application. |
-| K1-AUTH-01 | Recovery authority is absent until exact catalog verification. | Instrument every validation failure and the catalog boundary. |
-| K1-AUTH-02 | No rejected candidate can durably publish its derived index. | Seed authoritative evidence and fail every gate. |
+| K1-AUTH-01 | Recovery authority, public index state, and observer effects are absent until exact catalog verification. | Instrument every validation failure, the private-candidate boundary, and the catalog boundary. |
+| K1-AUTH-02 | No rejected candidate can publish its derived index or observer effects; a catalog mismatch leaves all public state absent. | Seed authoritative evidence and fail every gate, including exact catalog-image and terminal binding. |
 | K1-EQV-01 | Streaming accepts if and only if the contiguous oracle accepts. | Proptest over canonical and single-/multi-malformed records and arbitrary chunk schedules. |
 | K1-EQV-02 | On success, identity, receipt, object observations, private index, and terminal summary equal the oracle. | Complete structured result differential. |
 | K1-EQV-03 | Every single-fault error class and its ordering equal the oracle except the explicitly reviewed chain-before-index side-effect refinement. | Typed fault matrix, never an unstructured random byte alone. |
@@ -273,10 +276,10 @@ Classification: **D** is directly proved at the model abstraction; **P** has a p
 | K1-COM-01..02 | `NoPrivateIndexBeforeCommitBinding`, `OutcomeRefinesContiguousOracle` | P | Concrete COMMIT bytes, CRC, and adjacency are executable. |
 | K1-BIND-01..06 | `CommitBindsExactIdentity`, `AcceptedIdentityIsExact`; Rocq `commit_binding_accepts_exactly_the_prepare_identity` | D/P | Concrete field extraction is executable. |
 | K1-CHAIN-01..09 | `NoPrivateIndexBeforeChainBinding`, `OutcomeRefinesContiguousOracle`; Rocq authority conjunction | P | Nine concrete outer bindings are executable. |
-| K1-IDX-01..03 | `NoIndexExposureBeforeAuthentication`, `NoPrivateIndexBeforeCommitBinding`, `NoPrivateIndexBeforeChainBinding`, `FullSourceReplayPrecedesPrivateIndex`, `ReplayTranscriptMatchesFirstPass` | P | PathMap index operations and REUSE lookup are executable. |
+| K1-IDX-01..03 | `NoPrivateIndexBeforeCommitBinding`, `NoPrivateIndexBeforeChainBinding`, `FullSourceReplayPrecedesPrivateIndex`, `ReplayTranscriptMatchesFirstPass`, `NoPublicStateBeforeCatalogVerification` | P | PathMap index operations and REUSE lookup are executable. |
 | K1-TR-01..03 | `AuthenticationTranscriptIsExact`, `ReplayTranscriptMatchesFirstPass`; Rocq `exact_layout_replay_accepts_iff_identical`, `exact_source_replay_accepts_iff_identical`; Verus `checked_layout_advance`, `full_source_replay_exact` | P | Concrete domain-separated source and layout transcript hashes are executable. |
 | K1-SRC-01 | `FullSourceReplayPrecedesPrivateIndex`, `StableSourceRequiredForSuccess`; Rocq `exact_source_replay_accepts_iff_identical` and authority conjunction; Verus `full_source_replay_exact` | P | Complete CRC-domain replay, file-lifetime contract, and prefix/mutation/header/DATA-body unstable-reader rejection are executable. |
-| K1-AUTH-01..02 | `NoIndexExposureBeforeAuthentication`; Rocq `authority_exists_iff_every_validation_gate_passes`, `any_failed_gate_exposes_no_authority`, `index_is_not_visible_before_full_authentication` | D/P | Catalog verification and durable publication are executable. |
+| K1-AUTH-01..02 | `CatalogVerificationIsExact`, `NoPublicStateBeforeCatalogVerification`, `NoRejectedCandidatePublishes`, `SuccessPublishesExactCandidate`; Rocq `authority_exists_iff_every_validation_gate_passes`, `any_failed_gate_exposes_no_authority`, `index_is_not_visible_before_full_authentication`, `catalog_mismatch_exposes_no_authority_index_or_observer`, `replay_complete_candidate_remains_private_until_catalog_verification`; Verus `catalog_mismatch_exposes_no_public_state`, `replay_complete_candidate_remains_private_until_catalog_verification` | D/P | Exact catalog verification, private-candidate isolation, observer silence, and durable publication are executable. |
 | K1-EQV-01..03 | `OutcomeRefinesContiguousOracle`; Rocq chunk/error/replay/binding capstones | P | Full structured differential supplies concrete semantics. |
 | K1-MEM-01..02 | `ScratchIsBounded`, `NoWholeRecordBuffer`; Rocq `retained_memory_is_independent_of_record_extent`; Verus `auxiliary_memory_has_zero_input_slope` | P/E | Allocation, RSS, and native stack are measured executable obligations. |
 
@@ -301,7 +304,9 @@ Every formal mutant is independently required to fail by the named invariant. Ru
 | Swap replay layouts | `ReplayTranscriptMatchesFirstPass` | K1-TR-02..03 |
 | Skip replay transcript item | `ReplayTranscriptMatchesFirstPass` | K1-TR-02..03 |
 | Accept unstable source or construct a private index before complete source replay | `FullSourceReplayPrecedesPrivateIndex`, `StableSourceRequiredForSuccess` | K1-SRC-01, K1-AUTH-01..02 |
-| Expose index during primary scan | `NoIndexExposureBeforeAuthentication` | K1-AUTH-01..02 |
+| Expose index or observer effects before catalog verification | `NoPublicStateBeforeCatalogVerification` | K1-AUTH-01..02 |
+| Accept a catalog mismatch | `CatalogVerificationIsExact` | K1-AUTH-01..02 |
+| Publish a catalog-rejected candidate | `NoRejectedCandidatePublishes` | K1-AUTH-01..02 |
 | Existing buffered recovery on a large valid record | Deliberate executable red control | K1-MEM-01; must observe a prepare-sized allocation/read before correction. |
 | Header-only replay against a reader whose DATA body changes | Deliberate executable red control | K1-SRC-01, K1-TR-03. |
 | DATA-only object-byte sum | Deliberate executable red control | K1-OBJ-15. |
@@ -309,7 +314,7 @@ Every formal mutant is independently required to fail by the named invariant. Ru
 
 ## Non-vacuity witnesses
 
-The TLA+ gate reaches success plus each modeled rejection: header, resource, pair, read, CRC, mutation, object, COMMIT, chain, and unstable source. Executable properties additionally require witnesses for every streaming phase, every mutation namespace, every content-presence combination, all five canonical object kinds, every DAG branch/end-point class, DATA-only, REUSE-only, mixed layouts, exact/minus-one limits, and lengths `0`, `1`, `scratch−1`, `scratch`, `scratch+1`, and multiple scratch chunks.
+The TLA+ gate reaches success plus each modeled rejection: header, resource, pair, read, CRC, mutation, object, COMMIT, chain, unstable source, and catalog mismatch. It separately reaches a fully replayed private candidate awaiting catalog verification with no public authority, index, or observer state. Executable properties additionally require witnesses for every streaming phase, every mutation namespace, every content-presence combination, all five canonical object kinds, every DAG branch/end-point class, DATA-only, REUSE-only, mixed layouts, exact/minus-one limits, and lengths `0`, `1`, `scratch−1`, `scratch`, `scratch+1`, and multiple scratch chunks.
 
 ## Completion rule
 

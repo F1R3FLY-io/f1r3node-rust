@@ -22,16 +22,17 @@ ASSUME ObjectCount \in Nat \ {0}
 NoError == "none"
 Errors == {
   NoError, "header", "resource", "pair", "read", "crc", "mutation",
-  "object", "commit", "chain", "source", "transcript"
+  "object", "commit", "chain", "source", "transcript", "catalog"
 }
 Outcomes == (Errors \ {NoError}) \cup {"success"}
 Phases == {
   "Discriminator", "Header", "Preflight", "Pair", "Scan", "Trailer",
-  "Commit", "Chain", "ReplayBytes", "ReplayLayout", "Done"
+  "Commit", "Chain", "ReplayBytes", "ReplayLayout", "Catalog", "Done"
 }
 
 Scenario(name, headerValid, resourceCase, pairValid, readFault,
-         crcValid, semanticFault, commitValid, chainValid, sourceStable) ==
+         crcValid, semanticFault, commitValid, chainValid, sourceStable,
+         catalogValid) ==
   [name |-> name,
    headerValid |-> headerValid,
    resourceCase |-> resourceCase,
@@ -41,7 +42,8 @@ Scenario(name, headerValid, resourceCase, pairValid, readFault,
    semanticFault |-> semanticFault,
    commitValid |-> commitValid,
    chainValid |-> chainValid,
-   sourceStable |-> sourceStable]
+   sourceStable |-> sourceStable,
+   catalogValid |-> catalogValid]
 
 (***************************************************************************)
 (* Single-fault scenarios establish independent rejection behavior. The two *)
@@ -49,19 +51,20 @@ Scenario(name, headerValid, resourceCase, pairValid, readFault,
 (* dominates CRC and CRC dominates semantic parsing.                        *)
 (***************************************************************************)
 Scenarios == {
-  Scenario("success", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE),
-  Scenario("header", FALSE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE),
-  Scenario("resource", TRUE, "minus-one", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE),
-  Scenario("pair", TRUE, "exact", FALSE, 0, TRUE, NoError, TRUE, TRUE, TRUE),
-  Scenario("read", TRUE, "exact", TRUE, 2, TRUE, NoError, TRUE, TRUE, TRUE),
-  Scenario("crc", TRUE, "exact", TRUE, 0, FALSE, NoError, TRUE, TRUE, TRUE),
-  Scenario("mutation", TRUE, "exact", TRUE, 0, TRUE, "mutation", TRUE, TRUE, TRUE),
-  Scenario("object", TRUE, "exact", TRUE, 0, TRUE, "object", TRUE, TRUE, TRUE),
-  Scenario("commit", TRUE, "exact", TRUE, 0, TRUE, NoError, FALSE, TRUE, TRUE),
-  Scenario("chain", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, FALSE, TRUE),
-  Scenario("source", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, FALSE),
-  Scenario("read-over-crc", TRUE, "exact", TRUE, 2, FALSE, NoError, TRUE, TRUE, TRUE),
-  Scenario("crc-over-mutation", TRUE, "exact", TRUE, 0, FALSE, "mutation", TRUE, TRUE, TRUE)
+  Scenario("success", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("header", FALSE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("resource", TRUE, "minus-one", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("pair", TRUE, "exact", FALSE, 0, TRUE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("read", TRUE, "exact", TRUE, 2, TRUE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("crc", TRUE, "exact", TRUE, 0, FALSE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("mutation", TRUE, "exact", TRUE, 0, TRUE, "mutation", TRUE, TRUE, TRUE, TRUE),
+  Scenario("object", TRUE, "exact", TRUE, 0, TRUE, "object", TRUE, TRUE, TRUE, TRUE),
+  Scenario("commit", TRUE, "exact", TRUE, 0, TRUE, NoError, FALSE, TRUE, TRUE, TRUE),
+  Scenario("chain", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, FALSE, TRUE, TRUE),
+  Scenario("source", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, FALSE, TRUE),
+  Scenario("catalog", TRUE, "exact", TRUE, 0, TRUE, NoError, TRUE, TRUE, TRUE, FALSE),
+  Scenario("read-over-crc", TRUE, "exact", TRUE, 2, FALSE, NoError, TRUE, TRUE, TRUE, TRUE),
+  Scenario("crc-over-mutation", TRUE, "exact", TRUE, 0, FALSE, "mutation", TRUE, TRUE, TRUE, TRUE)
 }
 
 ExpectedTranscript == [i \in 1..ChunkCount |-> i]
@@ -78,6 +81,7 @@ OracleOutcome(s) ==
   ELSE IF ~s.commitValid THEN "commit"
   ELSE IF ~s.chainValid THEN "chain"
   ELSE IF ~s.sourceStable THEN "source"
+  ELSE IF ~s.catalogValid THEN "catalog"
   ELSE "success"
 
 Min2(a, b) == IF a <= b THEN a ELSE b
@@ -88,12 +92,14 @@ PrefixOf(prefix, whole) ==
 VARIABLES scenario, phase, cursor, authenticated, semantic, deferred,
           scratchUsed, recordBuffer, variableReads, identity, validated,
           commitBound, chainBound, firstTranscript, replayCursor,
-          replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome
+          replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome,
+          catalogVerified, recoveryAuthority, observerPublished
 
 vars == <<scenario, phase, cursor, authenticated, semantic, deferred,
           scratchUsed, recordBuffer, variableReads, identity, validated,
           commitBound, chainBound, firstTranscript, replayCursor,
-          replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome>>
+          replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome,
+          catalogVerified, recoveryAuthority, observerPublished>>
 
 Init ==
   /\ scenario \in Scenarios
@@ -116,6 +122,9 @@ Init ==
   /\ privateLayouts = <<>>
   /\ publicLayouts = <<>>
   /\ outcome = NoError
+  /\ catalogVerified = FALSE
+  /\ recoveryAuthority = FALSE
+  /\ observerPublished = FALSE
 
 ReadDiscriminator ==
   /\ phase = "Discriminator"
@@ -123,7 +132,8 @@ ReadDiscriminator ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity,
                   validated, commitBound, chainBound, firstTranscript, replayCursor,
-                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome>>
+                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome,
+                  catalogVerified, recoveryAuthority, observerPublished>>
 
 AuthenticateHeader ==
   /\ phase = "Header"
@@ -135,7 +145,8 @@ AuthenticateHeader ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity,
                   validated, commitBound, chainBound, firstTranscript, replayCursor,
-                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts>>
+                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts,
+                  catalogVerified, recoveryAuthority, observerPublished>>
 
 ResourceAdmitted ==
   IF Mutation = "AcceptMinusOne" THEN TRUE
@@ -155,7 +166,7 @@ Preflight ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, identity, validated, commitBound, chainBound,
                   firstTranscript, replayCursor, replayAuthenticated, replayTranscript, privateLayouts,
-                  publicLayouts>>
+                  publicLayouts, catalogVerified, recoveryAuthority, observerPublished>>
 
 CheckPair ==
   /\ phase = "Pair"
@@ -167,7 +178,8 @@ CheckPair ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity,
                   validated, commitBound, chainBound, firstTranscript, replayCursor,
-                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts>>
+                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts,
+                  catalogVerified, recoveryAuthority, observerPublished>>
 
 SemanticFaultAt(next) ==
   IF scenario.semanticFault = "mutation" /\ next = 1 THEN "mutation"
@@ -184,7 +196,8 @@ ScanChunk ==
             /\ UNCHANGED <<cursor, authenticated, semantic, deferred,
                             scratchUsed, identity, validated, commitBound, chainBound,
                             firstTranscript, replayCursor, replayAuthenticated, replayTranscript, privateLayouts,
-                            publicLayouts>>
+                            publicLayouts, catalogVerified, recoveryAuthority,
+                            observerPublished>>
        ELSE /\ cursor' = IF Mutation = "CursorOffByOne" THEN cursor + 2 ELSE next
             /\ authenticated' =
                  IF Mutation = "AcceptIncompleteTranscript" /\ next = ChunkCount
@@ -202,7 +215,8 @@ ScanChunk ==
                  IF Mutation = "EarlyIndexExposure" /\ next = 1
                  THEN <<1>> ELSE publicLayouts
             /\ UNCHANGED <<identity, validated, commitBound, chainBound, firstTranscript,
-                            replayCursor, replayAuthenticated, replayTranscript, privateLayouts>>
+                            replayCursor, replayAuthenticated, replayTranscript, privateLayouts,
+                            catalogVerified, recoveryAuthority, observerPublished>>
   /\ variableReads' = variableReads + 1
   /\ UNCHANGED <<scenario, recordBuffer>>
 
@@ -235,7 +249,8 @@ FinishTrailer ==
              /\ validated' = TRUE
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, commitBound, chainBound,
-                  replayCursor, replayAuthenticated, replayTranscript, privateLayouts, publicLayouts>>
+                  replayCursor, replayAuthenticated, replayTranscript, privateLayouts, publicLayouts,
+                  catalogVerified, recoveryAuthority, observerPublished>>
 
 BindCommit ==
   /\ phase = "Commit"
@@ -249,7 +264,8 @@ BindCommit ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity, validated,
                   chainBound, firstTranscript, replayCursor, replayAuthenticated,
-                  replayTranscript, privateLayouts, publicLayouts>>
+                  replayTranscript, privateLayouts, publicLayouts, catalogVerified,
+                  recoveryAuthority, observerPublished>>
 
 BindChain ==
   /\ phase = "Chain"
@@ -263,7 +279,8 @@ BindChain ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity, validated,
                   commitBound, firstTranscript, replayCursor, replayAuthenticated, replayTranscript,
-                  privateLayouts, publicLayouts>>
+                  privateLayouts, publicLayouts, catalogVerified, recoveryAuthority,
+                  observerPublished>>
 
 ReplaySourceChunk ==
   /\ phase = "ReplayBytes"
@@ -283,7 +300,7 @@ ReplaySourceChunk ==
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, identity, validated, commitBound,
                   chainBound, firstTranscript, replayTranscript, privateLayouts,
-                  publicLayouts>>
+                  publicLayouts, catalogVerified, recoveryAuthority, observerPublished>>
 
 ReplayLayout ==
   /\ phase = "ReplayLayout"
@@ -297,16 +314,49 @@ ReplayLayout ==
             THEN replayTranscript ELSE Append(replayTranscript, next)
        /\ IF next = ObjectCount
              THEN IF scenario.sourceStable \/ Mutation = "AcceptUnstableSource"
-                  THEN /\ phase' = "Done"
-                       /\ outcome' = "success"
+                  THEN /\ phase' = "Catalog"
+                       /\ outcome' = outcome
+                       /\ publicLayouts' =
+                            IF Mutation = "PublishBeforeCatalogVerification"
+                            THEN privateLayouts' ELSE publicLayouts
+                       /\ recoveryAuthority' =
+                            IF Mutation = "PublishBeforeCatalogVerification"
+                            THEN TRUE ELSE recoveryAuthority
+                       /\ observerPublished' =
+                            IF Mutation = "PublishBeforeCatalogVerification"
+                            THEN TRUE ELSE observerPublished
                   ELSE /\ phase' = "Done"
                        /\ outcome' = "source"
+                       /\ UNCHANGED <<publicLayouts, recoveryAuthority, observerPublished>>
              ELSE /\ phase' = "ReplayLayout"
                   /\ outcome' = outcome
+                  /\ UNCHANGED <<publicLayouts, recoveryAuthority, observerPublished>>
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity, validated,
                   commitBound, chainBound, firstTranscript, replayCursor,
-                  replayAuthenticated, publicLayouts>>
+                  replayAuthenticated, catalogVerified>>
+
+VerifyCatalog ==
+  /\ phase = "Catalog"
+  /\ IF scenario.catalogValid \/ Mutation = "AcceptCatalogMismatch"
+        THEN /\ phase' = "Done"
+             /\ outcome' = "success"
+             /\ catalogVerified' = TRUE
+             /\ recoveryAuthority' = TRUE
+             /\ publicLayouts' = privateLayouts
+             /\ observerPublished' = TRUE
+        ELSE /\ phase' = "Done"
+             /\ outcome' = "catalog"
+             /\ catalogVerified' = FALSE
+             /\ recoveryAuthority' = (Mutation = "PublishRejectedCatalogCandidate")
+             /\ publicLayouts' =
+                  IF Mutation = "PublishRejectedCatalogCandidate"
+                  THEN privateLayouts ELSE publicLayouts
+             /\ observerPublished' = (Mutation = "PublishRejectedCatalogCandidate")
+  /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
+                  scratchUsed, recordBuffer, variableReads, identity, validated,
+                  commitBound, chainBound, firstTranscript, replayCursor,
+                  replayAuthenticated, replayTranscript, privateLayouts>>
 
 Done ==
   /\ phase = "Done"
@@ -314,7 +364,7 @@ Done ==
 
 Next == ReadDiscriminator \/ AuthenticateHeader \/ Preflight \/ CheckPair \/
         ScanChunk \/ FinishTrailer \/ BindCommit \/ BindChain \/ ReplaySourceChunk \/
-        ReplayLayout \/ Done
+        ReplayLayout \/ VerifyCatalog \/ Done
 
 Spec == Init /\ [][Next]_vars
 
@@ -339,6 +389,9 @@ TypeInvariant ==
   /\ privateLayouts \in Seq(1..ObjectCount)
   /\ publicLayouts \in Seq(1..ObjectCount)
   /\ outcome \in Errors \cup {"success"}
+  /\ catalogVerified \in BOOLEAN
+  /\ recoveryAuthority \in BOOLEAN
+  /\ observerPublished \in BOOLEAN
 
 CursorProgressIsExact == cursor <= ChunkCount
 ScratchIsBounded == scratchUsed <= ScratchCapacity
@@ -352,20 +405,31 @@ CrcDominatesSemanticError ==
   phase = "Done" /\ ~scenario.crcValid /\ scenario.readFault = 0 /\
   scenario.headerValid /\ ResourceAdmitted /\ scenario.pairValid
     => outcome = "crc"
-NoIndexExposureBeforeAuthentication == publicLayouts = <<>>
+CatalogVerificationIsExact == catalogVerified => scenario.catalogValid
+NoPublicStateBeforeCatalogVerification ==
+  ~catalogVerified =>
+    ~recoveryAuthority /\ publicLayouts = <<>> /\ ~observerPublished
+NoRejectedCandidatePublishes ==
+  phase = "Done" /\ outcome # "success" =>
+    ~recoveryAuthority /\ publicLayouts = <<>> /\ ~observerPublished
+SuccessPublishesExactCandidate ==
+  outcome = "success" =>
+    catalogVerified /\ recoveryAuthority /\ publicLayouts = privateLayouts /\
+    observerPublished
 NoPrivateIndexBeforeCommitBinding == Len(privateLayouts) > 0 => validated /\ commitBound
 NoPrivateIndexBeforeChainBinding == Len(privateLayouts) > 0 => chainBound
 CommitBindsExactIdentity == commitBound => identity = "exact"
 ReplayTranscriptMatchesFirstPass ==
   outcome = "success" =>
     replayAuthenticated = firstTranscript /\ replayTranscript = ExpectedLayouts /\
-    privateLayouts = ExpectedLayouts
+    privateLayouts = ExpectedLayouts /\ publicLayouts = ExpectedLayouts
 FullSourceReplayPrecedesPrivateIndex ==
   Len(privateLayouts) > 0 =>
     replayCursor = ChunkCount /\ replayAuthenticated = firstTranscript
 StableSourceRequiredForSuccess == outcome = "success" => scenario.sourceStable
 AcceptedIdentityIsExact ==
-  outcome = "success" => identity = "exact" /\ commitBound /\ chainBound
+  outcome = "success" =>
+    identity = "exact" /\ commitBound /\ chainBound /\ catalogVerified /\ recoveryAuthority
 OutcomeRefinesContiguousOracle == phase = "Done" => outcome = OracleOutcome(scenario)
 MinusOneIsRejectedBeforeVariableRead ==
   scenario.resourceCase = "minus-one" /\ phase = "Done"
@@ -384,5 +448,9 @@ NeverObjectRejection == outcome # "object"
 NeverCommitRejection == outcome # "commit"
 NeverChainRejection == outcome # "chain"
 NeverSourceRejection == outcome # "source"
+NeverCatalogRejection == outcome # "catalog"
+NeverPrivateCandidateAwaitingCatalog ==
+  ~(phase = "Catalog" /\ privateLayouts = ExpectedLayouts /\ ~catalogVerified /\
+    ~recoveryAuthority /\ publicLayouts = <<>> /\ ~observerPublished)
 
 =============================================================================
