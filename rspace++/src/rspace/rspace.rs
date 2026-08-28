@@ -109,12 +109,7 @@ where
         striped_locks::consume_lock(&self.phase_a_locks, &self.phase_b_locks, channel_hashes).await
     }
 
-    // Split into three timed sub-phases (rather than the one combined
-    // rspace.produce.lock_acquire_ns wrapping the whole function, measured by
-    // the produce() caller) because phase_a wait, get_joins() work, and
-    // phase_b wait are different costs that need to be told apart: the first
-    // two are contention on the striped mutexes, the middle one is a
-    // HotStore/history-repository read. See issue #50 follow-up.
+    // Sub-phase timing
     async fn produce_lock(&self, channel: &C) -> (ChannelLockGuard, ChannelLockGuard) {
         let phase_a_start = Instant::now();
         let channel_hash = striped_locks::channel_hash(channel);
