@@ -11,7 +11,8 @@ It deliberately distinguishes:
 * R: the exact retained-root union;
 * D: R plus the retention-manifest singleton, in strict digest order;
 * physical pack/index/catalog/dead bytes; and
-* the semantic introduction/delivery/trace (I/D/T) tariff.
+* the complete RuntimeBudget accounting snapshot used by this branch's
+  consensus COMM cost model and diagnostic reconciliation trace.
 
 Object references are (digest, declared canonical length) records. Sequences,
 not sets, make omission, duplication, substitution, conflicting length, and
@@ -147,7 +148,256 @@ Outcomes == {
   "published-error", "success"
 }
 
-InitialState(initialDescriptor) == [
+AccountingSnapshot(seed) == [
+  totalCost |-> seed,
+  remaining |-> 1 - seed,
+  traceDigest |-> IF seed = 0 THEN "trace-empty" ELSE "trace-seeded",
+  traceEventCount |-> seed,
+  lastOopEvent |-> IF seed = 0 THEN "none" ELSE "seeded-oop",
+  perLaneDemand |-> <<seed, seed + 1>>
+]
+AccountingSnapshots == {AccountingSnapshot(0), AccountingSnapshot(1)}
+
+(***************************************************************************
+The exact checkpoint receipt binds authority facts rather than trusting a
+Boolean supplied by the implementation.  Digests and semantic authorities
+remain opaque finite tokens here; concrete cryptographic authentication is an
+executable refinement obligation.
+***************************************************************************)
+ExactDescriptorAuthority == [
+  profile |-> "profile-rspace-v1",
+  state |-> "state-1",
+  retention |-> RetentionManifest,
+  inventory |-> ExactDescriptor
+]
+ExactPrepareIdentity == [
+  sequence |-> 1,
+  store |-> "store-0",
+  contentDigest |-> "prepare-digest-0",
+  recordLength |-> ExpectedPrepareLen,
+  descriptorAuthority |-> ExactDescriptorAuthority
+]
+ExactPrepareAddress == [
+  pack |-> 1,
+  offset |-> PackHeaderLen,
+  length |-> ExpectedPrepareLen
+]
+ExactIndexAuthority == [
+  firstLivePack |-> 1,
+  generation |-> 1,
+  durableTail |-> ExpectedIndexTail,
+  objectCount |-> DataObjects,
+  membershipDigest |-> ExactOrderedInventory,
+  retentionAuthority |-> RetentionManifest,
+  currentBytes |-> CurrentBytes,
+  retainedBytes |-> RetainedBytes
+]
+ExactPriorTerminal == "prior-terminal-0"
+ExactCommitReceipt == [
+  sequence |-> ExactPrepareIdentity.sequence,
+  store |-> ExactPrepareIdentity.store,
+  previousTerminal |-> ExactPriorTerminal,
+  prepareAddress |-> ExactPrepareAddress,
+  prepareDigest |-> ExactPrepareIdentity.contentDigest,
+  descriptorAuthority |-> ExactPrepareIdentity.descriptorAuthority,
+  indexPublication |-> ExactIndexAuthority
+]
+ExactBindingState == [
+  present |-> TRUE,
+  prepareIdentity |-> ExactPrepareIdentity,
+  prepareAddress |-> ExactPrepareAddress,
+  indexAuthority |-> ExactIndexAuthority,
+  previousTerminal |-> ExactPriorTerminal,
+  commitReceipt |-> ExactCommitReceipt
+]
+EmptyBindingState == [ExactBindingState EXCEPT !.present = FALSE]
+
+ReceiptBindsPrepare(binding) ==
+  /\ binding.commitReceipt.sequence = binding.prepareIdentity.sequence
+  /\ binding.commitReceipt.store = binding.prepareIdentity.store
+  /\ binding.commitReceipt.prepareDigest = binding.prepareIdentity.contentDigest
+  /\ binding.commitReceipt.descriptorAuthority =
+       binding.prepareIdentity.descriptorAuthority
+  /\ binding.commitReceipt.prepareAddress = binding.prepareAddress
+  /\ binding.prepareAddress.length = binding.prepareIdentity.recordLength
+
+ReceiptBindsIndex(binding) ==
+  /\ binding.commitReceipt.indexPublication.firstLivePack =
+       binding.indexAuthority.firstLivePack
+  /\ binding.commitReceipt.indexPublication.generation =
+       binding.indexAuthority.generation
+  /\ binding.commitReceipt.indexPublication.durableTail =
+       binding.indexAuthority.durableTail
+  /\ binding.commitReceipt.indexPublication.objectCount =
+       binding.indexAuthority.objectCount
+  /\ binding.commitReceipt.indexPublication.membershipDigest =
+       binding.indexAuthority.membershipDigest
+  /\ binding.commitReceipt.indexPublication.retentionAuthority =
+       binding.indexAuthority.retentionAuthority
+  /\ binding.commitReceipt.indexPublication.currentBytes =
+       binding.indexAuthority.currentBytes
+  /\ binding.commitReceipt.indexPublication.retainedBytes =
+       binding.indexAuthority.retainedBytes
+
+ReceiptBindsPrior(binding) ==
+  binding.commitReceipt.previousTerminal = binding.previousTerminal
+
+ReceiptValid(binding) ==
+  binding.present /\
+  ReceiptBindsPrepare(binding) /\
+  ReceiptBindsIndex(binding) /\
+  ReceiptBindsPrior(binding)
+
+ArtifactsExact(binding) ==
+  /\ binding.prepareIdentity = ExactPrepareIdentity
+  /\ binding.prepareAddress = ExactPrepareAddress
+  /\ binding.indexAuthority = ExactIndexAuthority
+  /\ binding.previousTerminal = ExactPriorTerminal
+
+BindingFacts == {
+  "sequence", "store", "previous-terminal",
+  "prepare-pack", "prepare-offset", "prepare-length", "prepare-digest",
+  "descriptor", "index-first-live", "index-generation", "index-tail",
+  "index-count", "index-digest", "index-retention",
+  "index-current-bytes", "index-retained-bytes"
+}
+
+MutateBinding(binding, fact) ==
+  CASE fact = "sequence" ->
+         [binding EXCEPT !.commitReceipt.sequence = 2]
+    [] fact = "store" ->
+         [binding EXCEPT !.commitReceipt.store = "store-mutant"]
+    [] fact = "previous-terminal" ->
+         [binding EXCEPT !.commitReceipt.previousTerminal = "prior-mutant"]
+    [] fact = "prepare-pack" ->
+         [binding EXCEPT !.commitReceipt.prepareAddress.pack = 2]
+    [] fact = "prepare-offset" ->
+         [binding EXCEPT !.commitReceipt.prepareAddress.offset = PackHeaderLen + 1]
+    [] fact = "prepare-length" ->
+         [binding EXCEPT !.commitReceipt.prepareAddress.length = ExpectedPrepareLen + 1]
+    [] fact = "prepare-digest" ->
+         [binding EXCEPT !.commitReceipt.prepareDigest = "prepare-digest-mutant"]
+    [] fact = "descriptor" ->
+         [binding EXCEPT
+            !.commitReceipt.descriptorAuthority.profile = "profile-mutant"]
+    [] fact = "index-first-live" ->
+         [binding EXCEPT !.commitReceipt.indexPublication.firstLivePack = 2]
+    [] fact = "index-generation" ->
+         [binding EXCEPT !.commitReceipt.indexPublication.generation = 2]
+    [] fact = "index-tail" ->
+         [binding EXCEPT
+            !.commitReceipt.indexPublication.durableTail = ExpectedIndexTail + 1]
+    [] fact = "index-count" ->
+         [binding EXCEPT !.indexAuthority.objectCount = DataObjects + 1]
+    [] fact = "index-digest" ->
+         [binding EXCEPT
+            !.indexAuthority.membershipDigest = [
+              domain |-> "mutant", version |-> 1, objects |-> DataObjects,
+              canonicalBytes |-> DataBytes, transcript |-> ExpectedMembers
+            ]]
+    [] fact = "index-retention" ->
+         [binding EXCEPT !.indexAuthority.retentionAuthority = X]
+    [] fact = "index-current-bytes" ->
+         [binding EXCEPT !.indexAuthority.currentBytes = CurrentBytes + 1]
+    [] fact = "index-retained-bytes" ->
+         [binding EXCEPT !.indexAuthority.retainedBytes = RetainedBytes + 1]
+
+BindingStates ==
+  {ExactBindingState} \union
+  {MutateBinding(ExactBindingState, fact) : fact \in BindingFacts}
+
+(***************************************************************************
+Resource preflight selects one exact boundary or required-minus-one witness;
+all other resources remain at their exact boundary.  This keeps TLC finite
+while quantifying over every positive-demand durable, checkpoint-WAL, and
+semantic-admission resource family.
+***************************************************************************)
+DurableResourceKinds == {
+  "durable-live-packs", "durable-pack-bytes", "durable-scan-bytes",
+  "durable-object-records", "durable-index-records", "durable-index-bytes"
+}
+WalResourceKinds == {
+  "wal-objects", "wal-object-bytes", "wal-largest-object", "wal-record-bytes"
+}
+AdmissionResourceKinds == {
+  "admission-retained-states", "admission-union-objects",
+  "admission-union-bytes", "admission-root-visits",
+  "admission-references", "admission-object-reads",
+  "admission-object-read-bytes", "admission-per-state-objects",
+  "admission-per-state-bytes", "admission-per-state-references",
+  "admission-per-state-worklist", "admission-logical-nodes",
+  "admission-endpoints", "admission-path-bytes", "admission-payload-bytes",
+  "admission-join-lookups", "admission-join-steps",
+  "admission-semantic-worklist"
+}
+ResourceKinds ==
+  DurableResourceKinds \union WalResourceKinds \union AdmissionResourceKinds
+ResourceModes == {"exact", "minus-one"}
+
+ResourceFamily(resource) ==
+  IF resource \in DurableResourceKinds THEN "durable"
+  ELSE IF resource \in WalResourceKinds THEN "wal"
+  ELSE "admission"
+
+RequiredResource(resource) ==
+  CASE resource = "durable-live-packs" -> 1
+    [] resource \in {"durable-pack-bytes", "durable-scan-bytes"} ->
+         ExpectedPackTail
+    [] resource \in {"durable-object-records", "durable-index-records"} ->
+         DataObjects
+    [] resource = "durable-index-bytes" -> ExpectedIndexTail
+    [] resource = "wal-objects" -> DataObjects
+    [] resource = "wal-object-bytes" -> DataBytes
+    [] resource = "wal-largest-object" -> 17
+    [] resource = "wal-record-bytes" -> ExpectedPrepareLen
+    [] resource = "admission-retained-states" -> 2
+    [] resource \in {
+         "admission-union-objects", "admission-per-state-objects",
+         "admission-logical-nodes", "admission-endpoints"
+       } -> DataObjects
+    [] resource \in {
+         "admission-union-bytes", "admission-object-read-bytes",
+         "admission-per-state-bytes", "admission-path-bytes",
+         "admission-payload-bytes"
+       } -> DataBytes
+    [] resource \in {
+         "admission-root-visits", "admission-references",
+         "admission-object-reads", "admission-per-state-references",
+         "admission-per-state-worklist", "admission-join-lookups",
+         "admission-join-steps", "admission-semantic-worklist"
+       } -> 3
+    [] OTHER -> 0
+
+MinimumResource(resource) ==
+  IF resource \in DurableResourceKinds THEN 1 ELSE 0
+
+ExactBoundary(resource) ==
+  IF RequiredResource(resource) < MinimumResource(resource)
+  THEN MinimumResource(resource)
+  ELSE RequiredResource(resource)
+
+SelectedLimit(resource, mode) ==
+  IF mode = "exact"
+  THEN ExactBoundary(resource)
+  ELSE ExactBoundary(resource) - 1
+
+ResourceWithinLimit(resource, limit) ==
+  /\ MinimumResource(resource) <= limit
+  /\ RequiredResource(resource) <= limit
+
+ZeroDemandDurableKinds == {
+  "durable-transactions", "durable-full-comparison-bytes",
+  "durable-aggregate-comparison-bytes"
+}
+ZeroDemandWalKinds == {
+  "wal-mutation-bytes", "wal-mutation-entries", "wal-key-bytes"
+}
+ZeroDemandRequired(resource) == 0
+ZeroDemandMinimum(resource) ==
+  IF resource \in ZeroDemandDurableKinds THEN 1 ELSE 0
+ZeroDemandExactBoundary(resource) == ZeroDemandMinimum(resource)
+
+InitialState(initialDescriptor, initialAccounting, selectedResource, resourceMode) == [
   phase |-> "OldAdmitted",
   owners |-> <<"old-writer-0">>,
   descriptor |-> initialDescriptor,
@@ -163,8 +413,15 @@ InitialState(initialDescriptor) == [
   indexDurable |-> FALSE,
   commitWritten |-> FALSE,
   commitDurable |-> FALSE,
-  commitBindsPrepare |-> FALSE,
-  commitBindsIndex |-> FALSE,
+  bindingState |-> EmptyBindingState,
+  selectedResource |-> selectedResource,
+  selectedResourceFamily |-> ResourceFamily(selectedResource),
+  resourceMode |-> resourceMode,
+  resourceRequired |-> RequiredResource(selectedResource),
+  resourceMinimum |-> MinimumResource(selectedResource),
+  resourceLimit |-> SelectedLimit(selectedResource, resourceMode),
+  resourceDecision |-> "unchecked",
+  refusedResource |-> "none",
   artifactDirectoryDurable |-> FALSE,
   catalogImage |-> "old-672",
   casObservedImage |-> "none",
@@ -175,6 +432,8 @@ InitialState(initialDescriptor) == [
   uncertaintyStarted |-> FALSE,
   catalogFileDurable |-> FALSE,
   catalogDirectoryDurable |-> FALSE,
+  authoritativeGenerationIntact |-> FALSE,
+  physicalIndexArtifact |-> "absent",
   selectedAuthority |-> "old",
   physicalRecovery |-> "none",
   semanticReadmitted |-> FALSE,
@@ -187,9 +446,8 @@ InitialState(initialDescriptor) == [
   indexTail |-> 0,
   commitAddress |-> 0,
   packTail |-> 0,
-  introductionCharge |-> 0,
-  deliveryCharge |-> 0,
-  traceCharge |-> 0,
+  accountingBefore |-> initialAccounting,
+  accountingAfter |-> initialAccounting,
   physicalPackBytes |-> 0,
   physicalIndexBytes |-> 0,
   physicalCatalogBytes |-> 672,
@@ -199,7 +457,12 @@ InitialState(initialDescriptor) == [
 
 VARIABLE state
 vars == <<state>>
-Init == state = InitialState(EmptyDescriptor)
+Init ==
+  \E initialAccounting \in AccountingSnapshots:
+  \E selectedResource \in ResourceKinds:
+  \E resourceMode \in ResourceModes:
+    state = InitialState(
+      EmptyDescriptor, initialAccounting, selectedResource, resourceMode)
 
 RestartGrade(s) ==
   /\ s.prepareWritten
@@ -208,8 +471,9 @@ RestartGrade(s) ==
   /\ s.indexDurable
   /\ s.commitWritten
   /\ s.commitDurable
-  /\ s.commitBindsPrepare
-  /\ s.commitBindsIndex
+  /\ s.bindingState \in BindingStates
+  /\ ReceiptValid(s.bindingState)
+  /\ ArtifactsExact(s.bindingState)
   /\ s.artifactDirectoryDurable
   /\ s.prepareMembers = ExpectedMembers
   /\ s.indexMembers = ExpectedMembers
@@ -219,18 +483,46 @@ RestartGrade(s) ==
   /\ s.commitAddress = ExpectedCommitAddress
   /\ s.packTail = ExpectedPackTail
 
-Preflight ==
+AcceptResourcePreflight ==
   /\ state.phase = "OldAdmitted"
   /\ state.owners = <<"old-writer-0">>
+  /\ ResourceWithinLimit(state.selectedResource, state.resourceLimit)
   /\ state' = [state EXCEPT
        !.phase = "Preflighted",
        !.owners = <<"publisher-0">>,
        !.descriptor = ExactDescriptor,
-       !.preflighted = TRUE]
+       !.preflighted = TRUE,
+       !.resourceDecision = "accepted"]
+
+RefuseResourcePreflight ==
+  /\ state.phase = "OldAdmitted"
+  /\ state.owners = <<"old-writer-0">>
+  /\ state.resourceMinimum <= state.resourceLimit
+  /\ state.resourceLimit < state.resourceRequired
+  /\ state' = [state EXCEPT
+       !.phase = "Failed",
+       !.owners = <<>>,
+       !.resourceDecision = "refused",
+       !.refusedResource = state.selectedResource,
+       !.outcome = "definitely-not-published",
+       !.crashFrom = "ResourcePreflight"]
+
+RejectResourceConfiguration ==
+  /\ state.phase = "OldAdmitted"
+  /\ state.owners = <<"old-writer-0">>
+  /\ state.resourceLimit < state.resourceMinimum
+  /\ state' = [state EXCEPT
+       !.phase = "Failed",
+       !.owners = <<>>,
+       !.resourceDecision = "configuration-refused",
+       !.refusedResource = state.selectedResource,
+       !.outcome = "definitely-not-published",
+       !.crashFrom = "ResourceConfiguration"]
 
 CleanupExactSuccessor ==
   /\ state.phase = "Preflighted"
   /\ state.preflighted
+  /\ state.resourceDecision = "accepted"
   /\ ~state.uncertaintyStarted
   /\ state.owners = <<"publisher-0">>
   /\ state' = [state EXCEPT
@@ -265,6 +557,7 @@ WriteIndex ==
        !.indexMembers = state.prepareMembers,
        !.indexWritten = TRUE,
        !.indexTail = ExpectedIndexTail,
+       !.physicalIndexArtifact = "valid",
        !.physicalIndexBytes = ExpectedIndexTail]
 
 SynchronizeIndex ==
@@ -280,8 +573,8 @@ WriteCommit ==
   /\ state' = [state EXCEPT
        !.phase = "CommitWritten",
        !.commitWritten = TRUE,
-       !.commitBindsPrepare = TRUE,
-       !.commitBindsIndex = TRUE,
+       !.bindingState = ExactBindingState,
+       !.authoritativeGenerationIntact = TRUE,
        !.commitAddress = ExpectedCommitAddress,
        !.packTail = ExpectedPackTail,
        !.physicalPackBytes = ExpectedPackTail]
@@ -289,8 +582,9 @@ WriteCommit ==
 SynchronizeCommit ==
   /\ state.phase = "CommitWritten"
   /\ state.commitWritten
-  /\ state.commitBindsPrepare
-  /\ state.commitBindsIndex
+  /\ state.bindingState \in BindingStates
+  /\ ReceiptValid(state.bindingState)
+  /\ ArtifactsExact(state.bindingState)
   /\ state' = [state EXCEPT
        !.phase = "CommitDurable",
        !.commitDurable = TRUE]
@@ -367,9 +661,15 @@ RecoverNewWithHeldLease ==
   /\ state.catalogDirectoryDurable
   /\ state.selectedAuthority = "new"
   /\ RestartGrade(state)
+  /\ state.authoritativeGenerationIntact
+  /\ state.physicalIndexArtifact \in {"valid", "repairable", "repaired"}
   /\ state' = [state EXCEPT
        !.phase = "PhysicalRecovered",
-       !.physicalRecovery = "new"]
+       !.physicalRecovery = "new",
+       !.physicalIndexArtifact =
+          IF state.physicalIndexArtifact = "repairable"
+          THEN "repaired"
+          ELSE @]
 
 ReadmitSemantics ==
   /\ state.phase = "PhysicalRecovered"
@@ -442,6 +742,30 @@ FailAfterCatalogFileSync ==
        !.outcome = "published-error",
        !.crashFrom = state.phase]
 
+(** Authoritative damage is fatal.  A missing or structurally corrupt derived
+    index is repairable from the authenticated WAL inventory; an unsafe index
+    identity conflict is rejected and never causes fallback to old. *)
+DamageSelectedAuthoritativeGeneration ==
+  /\ state.phase = "CatalogDirectoryDurable"
+  /\ state.authoritativeGenerationIntact
+  /\ state' = [state EXCEPT !.authoritativeGenerationIntact = FALSE]
+
+DamageSelectedIndexRepairably ==
+  /\ state.phase = "CatalogDirectoryDurable"
+  /\ state.physicalIndexArtifact = "valid"
+  /\ state' = [state EXCEPT !.physicalIndexArtifact = "repairable"]
+
+DamageSelectedIndexUnsafely ==
+  /\ state.phase = "CatalogDirectoryDurable"
+  /\ state.physicalIndexArtifact = "valid"
+  /\ state' = [state EXCEPT !.physicalIndexArtifact = "unsafe"]
+
+RepairSelectedAuthoritativeGeneration ==
+  /\ state.phase = "Failed"
+  /\ state.durableSlot = "valid-new"
+  /\ ~state.authoritativeGenerationIntact
+  /\ state' = [state EXCEPT !.authoritativeGenerationIntact = TRUE]
+
 RestartSelectOld ==
   /\ state.phase = "Failed"
   /\ state.durableSlot \in {"old-image", "torn"}
@@ -455,16 +779,24 @@ RestartSelectNew ==
   /\ state.phase = "Failed"
   /\ state.durableSlot = "valid-new"
   /\ RestartGrade(state)
+  /\ state.authoritativeGenerationIntact
+  /\ state.physicalIndexArtifact \in {"valid", "repairable", "repaired"}
   /\ state' = [state EXCEPT
        !.phase = "RestartPhysicalRecovered",
        !.owners = <<"restart-publisher-0">>,
        !.selectedAuthority = "new",
-       !.physicalRecovery = "new"]
+       !.physicalRecovery = "new",
+       !.physicalIndexArtifact =
+          IF state.physicalIndexArtifact = "repairable"
+          THEN "repaired"
+          ELSE @]
 
 RestartRejectDamagedNew ==
   /\ state.phase = "Failed"
   /\ state.durableSlot = "valid-new"
-  /\ ~RestartGrade(state)
+  /\ (~RestartGrade(state) \/
+      ~state.authoritativeGenerationIntact \/
+      state.physicalIndexArtifact = "unsafe")
   /\ state' = [state EXCEPT
        !.phase = "RestartRejected",
        !.owners = <<>>,
@@ -499,14 +831,19 @@ AddDeadPhysicalByte ==
   /\ state' = [state EXCEPT !.physicalDeadBytes = 1]
 
 Next ==
-  Preflight \/ CleanupExactSuccessor \/ WritePrepare \/ SynchronizePrepare \/
+  AcceptResourcePreflight \/ RefuseResourcePreflight \/
+  RejectResourceConfiguration \/ CleanupExactSuccessor \/
+  WritePrepare \/ SynchronizePrepare \/
   WriteIndex \/ SynchronizeIndex \/ WriteCommit \/ SynchronizeCommit \/
   SynchronizeArtifactDirectory \/ VerifyExactCatalogCas \/
   ExternalCatalogChange \/ RejectStaleCatalogCas \/ BeginCatalogSlotWrite \/
   FinishCatalogSlotWrite \/ SynchronizeCatalogFile \/
   SynchronizeCatalogDirectory \/ RecoverNewWithHeldLease \/
   ReadmitSemantics \/ Acknowledge \/ FailBeforeUncertainty \/
-  FailAnyUncertainWrite \/ FailAfterCatalogFileSync \/ RestartSelectOld \/
+  FailAnyUncertainWrite \/ FailAfterCatalogFileSync \/
+  DamageSelectedAuthoritativeGeneration \/ DamageSelectedIndexRepairably \/
+  DamageSelectedIndexUnsafely \/ RepairSelectedAuthoritativeGeneration \/
+  RestartSelectOld \/
   RestartSelectNew \/ RestartRejectDamagedNew \/ ReadmitRestart \/
   CompleteRestart \/ AddDeadPhysicalByte
 
@@ -526,8 +863,24 @@ TypeInvariant ==
   /\ state.volatileSlot \in SlotImages
   /\ state.durableSlot \in SlotImages
   /\ state.selectedAuthority \in Authorities
-  /\ state.physicalRecovery \in Authorities
+  /\ state.physicalRecovery \in Authorities \union {"reject"}
   /\ state.outcome \in Outcomes
+  /\ state.bindingState \in {EmptyBindingState} \union BindingStates
+  /\ state.selectedResource \in ResourceKinds
+  /\ state.selectedResourceFamily \in {"durable", "wal", "admission"}
+  /\ state.selectedResourceFamily = ResourceFamily(state.selectedResource)
+  /\ state.resourceMode \in ResourceModes
+  /\ state.resourceRequired = RequiredResource(state.selectedResource)
+  /\ state.resourceMinimum = MinimumResource(state.selectedResource)
+  /\ state.resourceLimit = SelectedLimit(state.selectedResource, state.resourceMode)
+  /\ state.resourceDecision \in {
+       "unchecked", "accepted", "refused", "configuration-refused"
+     }
+  /\ state.refusedResource \in ResourceKinds \union {"none"}
+  /\ state.authoritativeGenerationIntact \in BOOLEAN
+  /\ state.physicalIndexArtifact \in {
+       "absent", "valid", "repairable", "unsafe", "repaired"
+     }
   /\ state.prepareLen \in Nat
   /\ state.indexTail \in Nat
   /\ state.commitAddress \in Nat
@@ -536,6 +889,8 @@ TypeInvariant ==
   /\ state.physicalIndexBytes \in Nat
   /\ state.physicalCatalogBytes \in Nat
   /\ state.physicalDeadBytes \in 0..1
+  /\ state.accountingBefore \in AccountingSnapshots
+  /\ state.accountingAfter \in AccountingSnapshots
 
 DescriptorInventoriesAreExact ==
   state.preflighted =>
@@ -597,6 +952,44 @@ PreflightAndCleanupPrecedeMutation ==
   /\ state.prepareWritten => state.cleanupComplete /\ state.cleanupExact
   /\ ~state.cleanupAfterUncertainty
 
+PreflightRequiresExactResourceAdmission ==
+  state.preflighted =>
+    /\ state.resourceDecision = "accepted"
+    /\ ResourceWithinLimit(state.selectedResource, state.resourceLimit)
+
+ResourceRefusalPrecedesAllMutation ==
+  state.resourceDecision \in {"refused", "configuration-refused"} =>
+    /\ state.refusedResource = state.selectedResource
+    /\ ~state.preflighted
+    /\ ~state.cleanupComplete
+    /\ ~state.prepareWritten
+    /\ ~state.indexWritten
+    /\ ~state.commitWritten
+    /\ ~state.slotWriteStarted
+    /\ ~state.uncertaintyStarted
+    /\ state.catalogImage = "old-672"
+    /\ state.durableSlot = "old-image"
+    /\ state.selectedAuthority = "old"
+    /\ state.physicalRecovery \in {"none", "old"}
+    /\ state.outcome = "definitely-not-published"
+
+UnderprovisionedResourceCannotReachCleanup ==
+  state.resourceLimit < state.resourceRequired => ~state.cleanupComplete
+
+ExactResourceBoundaryIsAccepted ==
+  state.resourceMode = "exact" =>
+    state.resourceDecision \notin {"refused", "configuration-refused"}
+
+ZeroDemandResourceBoundariesAreExact ==
+  /\ \A resource \in ZeroDemandDurableKinds:
+       /\ ZeroDemandRequired(resource) = 0
+       /\ ZeroDemandMinimum(resource) = 1
+       /\ ZeroDemandExactBoundary(resource) = 1
+  /\ \A resource \in ZeroDemandWalKinds:
+       /\ ZeroDemandRequired(resource) = 0
+       /\ ZeroDemandMinimum(resource) = 0
+       /\ ZeroDemandExactBoundary(resource) = 0
+
 CatalogWriteUsesExactOldImage ==
   state.slotWriteStarted =>
     /\ state.casVerified
@@ -613,17 +1006,47 @@ CheckpointAndIndexExactlyAdmitted ==
   /\ state.commitDurable =>
        /\ state.prepareMembers = ExpectedMembers
        /\ state.indexMembers = ExpectedMembers
-       /\ state.commitBindsPrepare
-       /\ state.commitBindsIndex
+       /\ state.bindingState \in BindingStates
+       /\ ReceiptValid(state.bindingState)
+       /\ ArtifactsExact(state.bindingState)
+
+ReceiptBindingsAreExact ==
+  state.commitWritten =>
+    /\ state.bindingState \in BindingStates
+    /\ ReceiptValid(state.bindingState)
+    /\ ArtifactsExact(state.bindingState)
+
+EverySingleBindingMutationIsRejected ==
+  \A fact \in BindingFacts:
+    ~ReceiptValid(MutateBinding(ExactBindingState, fact)) \/
+    ~ArtifactsExact(MutateBinding(ExactBindingState, fact))
 
 CrashRecoverySelectsOnlyValidAuthority ==
   /\ state.physicalRecovery = "old" =>
        state.durableSlot \in {"old-image", "torn"}
   /\ state.physicalRecovery = "new" =>
-       state.durableSlot = "valid-new" /\ RestartGrade(state)
+       /\ state.durableSlot = "valid-new"
+       /\ RestartGrade(state)
+       /\ state.authoritativeGenerationIntact
+       /\ state.physicalIndexArtifact \in {"valid", "repaired"}
   /\ state.physicalRecovery = "reject" =>
-       state.durableSlot = "valid-new" /\ ~RestartGrade(state)
+       /\ state.durableSlot = "valid-new"
+       /\ (~RestartGrade(state) \/
+           ~state.authoritativeGenerationIntact \/
+           state.physicalIndexArtifact = "unsafe")
   /\ state.physicalRecovery # "third"
+
+RepairableIndexRecoveryPreservesSuccessorAuthority ==
+  state.physicalIndexArtifact = "repaired" =>
+    /\ state.selectedAuthority = "new"
+    /\ state.physicalRecovery = "new"
+    /\ state.authoritativeGenerationIntact
+    /\ RestartGrade(state)
+
+CatalogSelectionRequiresDurableCompleteSlot ==
+  state.selectedAuthority = "new" =>
+    /\ state.durableSlot = "valid-new"
+    /\ (state.catalogFileDurable \/ state.physicalRecovery = "new")
 
 PhysicalRecoveryRequiresCatalogDirectory ==
   state.phase \in {"PhysicalRecovered", "SemanticReadmitted", "Acknowledged"} =>
@@ -654,10 +1077,13 @@ RestartCompletionPreservesOriginalOutcome ==
     /\ state.outcome # "success"
     /\ state.owners \in {<<"old-writer-0">>, <<"new-writer-0">>}
 
-CheckpointHasZeroSemanticCharge ==
-  /\ state.introductionCharge = 0
-  /\ state.deliveryCharge = 0
-  /\ state.traceCharge = 0
+CheckpointPreservesSemanticAccounting ==
+  state.accountingAfter = state.accountingBefore
+
+PhysicalAccountingIsSeparated ==
+  (state.physicalPackBytes + state.physicalIndexBytes +
+   state.physicalCatalogBytes + state.physicalDeadBytes > 0) =>
+    state.accountingAfter = state.accountingBefore
 
 SemanticStateIsPreserved ==
   state.semanticReadmitted => state.semanticAfter = state.semanticBefore
@@ -670,6 +1096,27 @@ NeverRecoveredOld == ~(state.phase = "RestartCompleted" /\ state.physicalRecover
 NeverRecoveredNew == ~(state.phase = "RestartCompleted" /\ state.physicalRecovery = "new")
 NeverPublishedFailure == state.outcome # "published-error"
 NeverIndeterminate == state.outcome # "indeterminate"
+NeverDurableResourceRefusal ==
+  ~(state.resourceDecision = "refused" /\
+    state.selectedResourceFamily = "durable")
+NeverInvalidResourceConfiguration ==
+  state.resourceDecision # "configuration-refused"
+NeverWalResourceRefusal ==
+  ~(state.resourceDecision = "refused" /\ state.selectedResourceFamily = "wal")
+NeverAdmissionResourceRefusal ==
+  ~(state.resourceDecision = "refused" /\
+    state.selectedResourceFamily = "admission")
+NeverDurableExactCleanup ==
+  ~(state.cleanupComplete /\ state.resourceMode = "exact" /\
+    state.selectedResourceFamily = "durable")
+NeverWalExactCleanup ==
+  ~(state.cleanupComplete /\ state.resourceMode = "exact" /\
+    state.selectedResourceFamily = "wal")
+NeverAdmissionExactCleanup ==
+  ~(state.cleanupComplete /\ state.resourceMode = "exact" /\
+    state.selectedResourceFamily = "admission")
+NeverRepairableIndexRecovery == state.physicalIndexArtifact # "repaired"
+NeverRejectedDamagedSuccessor == state.phase # "RestartRejected"
 
 (***************************************************************************
 Negative controls. Each mutant is independently enabled by one configuration
@@ -822,15 +1269,112 @@ WireLayoutMutant ==
        !.prepareLen = ExpectedPrepareLen + 1]
 WireLayoutMutantSpec == Init /\ [][Next \/ WireLayoutMutant]_vars
 
+BindingMutationMutant ==
+  \E fact \in BindingFacts:
+    /\ state.phase = "CommitWritten"
+    /\ state.bindingState = ExactBindingState
+    /\ state' = [state EXCEPT !.bindingState = MutateBinding(@, fact)]
+BindingMutationMutantSpec == Init /\ [][Next \/ BindingMutationMutant]_vars
+
+MinusOneAcceptedMutant ==
+  /\ state.phase = "OldAdmitted"
+  /\ state.resourceMode = "minus-one"
+  /\ state.resourceMinimum <= state.resourceLimit
+  /\ state.resourceLimit < state.resourceRequired
+  /\ state' = [state EXCEPT
+       !.phase = "Preflighted",
+       !.owners = <<"publisher-0">>,
+       !.descriptor = ExactDescriptor,
+       !.preflighted = TRUE,
+       !.resourceDecision = "accepted"]
+MinusOneAcceptedMutantSpec == Init /\ [][Next \/ MinusOneAcceptedMutant]_vars
+
+ExactBoundaryRejectedMutant ==
+  /\ state.phase = "OldAdmitted"
+  /\ state.resourceMode = "exact"
+  /\ state' = [state EXCEPT
+       !.phase = "Failed",
+       !.owners = <<>>,
+       !.resourceDecision = "refused",
+       !.refusedResource = state.selectedResource,
+       !.outcome = "definitely-not-published"]
+ExactBoundaryRejectedMutantSpec ==
+  Init /\ [][Next \/ ExactBoundaryRejectedMutant]_vars
+
+LateAdmissionRefusalMutant ==
+  /\ state.phase = "CleanupComplete"
+  /\ state.selectedResourceFamily = "admission"
+  /\ state' = [state EXCEPT
+       !.phase = "Failed",
+       !.owners = <<>>,
+       !.resourceDecision = "refused",
+       !.refusedResource = state.selectedResource,
+       !.outcome = "definitely-not-published"]
+LateAdmissionRefusalMutantSpec ==
+  Init /\ [][Next \/ LateAdmissionRefusalMutant]_vars
+
+RefusalMutatesAuthorityMutant ==
+  /\ state.phase = "OldAdmitted"
+  /\ state.resourceMode = "minus-one"
+  /\ state' = [state EXCEPT
+       !.phase = "Failed",
+       !.owners = <<>>,
+       !.resourceDecision = "refused",
+       !.refusedResource = state.selectedResource,
+       !.selectedAuthority = "new",
+       !.catalogImage = "new-672",
+       !.outcome = "definitely-not-published"]
+RefusalMutatesAuthorityMutantSpec ==
+  Init /\ [][Next \/ RefusalMutatesAuthorityMutant]_vars
+
+OmittedResourceFamilyMutant(family) ==
+  /\ state.phase = "OldAdmitted"
+  /\ state.resourceMode = "minus-one"
+  /\ state.selectedResourceFamily = family
+  /\ state.resourceMinimum <= state.resourceLimit
+  /\ state.resourceLimit < state.resourceRequired
+  /\ state' = [state EXCEPT
+       !.phase = "Preflighted",
+       !.owners = <<"publisher-0">>,
+       !.descriptor = ExactDescriptor,
+       !.preflighted = TRUE,
+       !.resourceDecision = "accepted"]
+OmittedDurableResourceMutantSpec ==
+  Init /\ [][Next \/ OmittedResourceFamilyMutant("durable")]_vars
+OmittedWalResourceMutantSpec ==
+  Init /\ [][Next \/ OmittedResourceFamilyMutant("wal")]_vars
+OmittedAdmissionResourceMutantSpec ==
+  Init /\ [][Next \/ OmittedResourceFamilyMutant("admission")]_vars
+
+FallbackDamagedSuccessorToOldMutant ==
+  /\ state.phase = "Failed"
+  /\ state.durableSlot = "valid-new"
+  /\ (~state.authoritativeGenerationIntact \/
+      state.physicalIndexArtifact = "unsafe")
+  /\ state' = [state EXCEPT
+       !.phase = "RestartPhysicalRecovered",
+       !.owners = <<"restart-publisher-0">>,
+       !.selectedAuthority = "old",
+       !.physicalRecovery = "old"]
+FallbackDamagedSuccessorToOldMutantSpec ==
+  Init /\ [][Next \/ FallbackDamagedSuccessorToOldMutant]_vars
+
 ChargePollutionMutant ==
   /\ state.phase = "PrepareWritten"
-  /\ state' = [state EXCEPT !.introductionCharge = 1]
+  /\ state' = [state EXCEPT !.accountingAfter.totalCost = @ + 1]
 ChargePollutionMutantSpec == Init /\ [][Next \/ ChargePollutionMutant]_vars
+
+DiagnosticTracePollutionMutant ==
+  /\ state.phase = "PrepareWritten"
+  /\ state' = [state EXCEPT !.accountingAfter.traceEventCount = @ + 1]
+DiagnosticTracePollutionMutantSpec ==
+  Init /\ [][Next \/ DiagnosticTracePollutionMutant]_vars
 
 PhysicalMeteringMutant ==
   /\ state.phase = "PrepareWritten"
   /\ state.physicalPackBytes > 0
-  /\ state' = [state EXCEPT !.traceCharge = state.physicalPackBytes]
+  /\ state' = [state EXCEPT
+       !.accountingAfter.totalCost = @ + state.physicalPackBytes]
 PhysicalMeteringMutantSpec == Init /\ [][Next \/ PhysicalMeteringMutant]_vars
 
 =============================================================================

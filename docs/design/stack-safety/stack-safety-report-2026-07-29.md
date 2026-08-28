@@ -12,7 +12,7 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-26
+**Report date** 2026-07-29, revised through 2026-08-28
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** this checkpoint, based on `f1r3node-rust-mettail@3061b2501`
 (certified frame-local ParBag protobuf egress with typed atomic replay following final
@@ -328,6 +328,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C26** | this checkpoint; pgmcp #6189 | f1r3node | retained-root vector/catalog ambiguity $`\rightarrow`$ canonical borrowed retention iterator plus exact two-slot catalog/commit authority | native stack $`O(1)`$; iterator retains one current 56-byte state record; fixed 336-byte catalog slots and 384-byte commit; total retained roots/bytes are checked `u64` work budgets, never depth caps | **yes for dormant formats**; catalog 6/6 and retention 4/4, including every truncation/observable tear, strict root order, reserved/checksum/index/tail mutants, and exact terminal-commit binding | [5.53](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26) |
 | **SS-C27** | this checkpoint; pgmcp #6189 | f1r3node | duplicated pack/index offset arithmetic $`\rightarrow`$ one prepared WAL object-layout iterator plus fixed portable pack and rebuildable index codecs | native stack $`O(1)`$; exact 128-byte pack header, 64-byte index header, and 72-byte index records; index append is one lazy pass with no body copy, record reparse, entry projection, or sort | **yes for dormant physical layouts**; aggregate persistence 134/134 after authenticated 240-byte prefix preflight, exact 672-byte catalog CAS token, explicit aggregate work limits, and CoW PathMap recovery-index duplicate refusal | [5.54](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27) |
 | **SS-C28** | this checkpoint; pgmcp #6189/#6100 | f1r3node | unbound filesystem recovery $`\rightarrow`$ pinned-directory affine lease plus mandatory exact index verification or synchronized atomic rebuild | native stack $`O(1)`$; ordinary startup one WAL pass, repair three pre-admitted passes; exactly one $`O(d)`$ PathMap for $`d`$ DATA records and $`O(1)`$ replay state | **yes for dormant Unix physical recovery**; I/O 11/11, startup/failpoints 7/7, persistence 153/153; semantic/inventory admission, Windows handles, compaction, LMDB cutover, and comparative performance remain open | [5.55](#555-affine-durable-startup-and-single-pathmap-index-repair-ss-c28) |
+| **SS-C29** | this checkpoint; campaign-root-4131 | f1r3node | partially specified generation checkpoint $`\rightarrow`$ formally verified affine publisher with exact inventory receipts, proof-derived pre-mutation resource admission, restart-path readmission, and deterministic derived-index repair | native stack $`O(1)`$ in trie depth, key length, retained-state depth, and object count; inventories and WAL/index emission remain streaming; one $`O(d)`$ recovery PathMap; every retained work slope has an explicit total-resource certificate | **yes for dormant checkpoint publication**; 74/74 invariant bindings, 17 Rocq capstones, 7,896 TLA+ states, 28 rejected mutants, 14 reached witnesses, 392/392 library and 817/817 package tests | [5.56](#556-formally-verified-generation-checkpoint-publication-ss-c29) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -565,6 +566,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.53 Retained-root manifest and exact catalog authority [SS-C26]](#553-retained-root-manifest-and-exact-catalog-authority-ss-c26)
   - [5.54 Portable log-pack and rebuildable object-index layouts [SS-C27]](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27)
   - [5.55 Affine durable startup and single-PathMap index repair [SS-C28]](#555-affine-durable-startup-and-single-pathmap-index-repair-ss-c28)
+  - [5.56 Formally verified generation checkpoint publication [SS-C29]](#556-formally-verified-generation-checkpoint-publication-ss-c29)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -11200,6 +11202,67 @@ semantic and retention-inventory admission, bounded generation compaction, reade
 collection, LMDB migration, REPL activation, and comparative latency/allocation/disk evidence remain
 unclaimed. The active I/D/T consensus tariff is unchanged; closure-size inventories are only
 deterministic metadata until separately admitted and versioned.
+
+### 5.56 Formally verified generation checkpoint publication [SS-C29]
+
+SS-C29 completes the dormant generation-checkpoint publication protocol from a verified abstract
+state machine rather than inferring a protocol from filesystem code after implementation. The TLA+
+model makes the writer authority affine, separates `DefinitelyNotPublished`, `Indeterminate`, and
+`Published` at the first catalog-slot byte, distinguishes restart selection from the following
+catalog-directory durability barrier, treats the canonical object index as a repairable derived
+accelerator, and rejects authoritative successor damage without old-generation fallback. The Rocq
+refinement proves exact inventory merge, receipt binding, phase certificates, resource boundaries,
+semantic/accounting preservation, and restart-path acknowledgement. The integrated gate closes 17
+Rocq capstones, explores 7,896 distinct base-model states, rejects 28 named mutants through their
+intended invariants, reaches 14 non-vacuity witnesses, and passes the companion Verus, Z3, and
+mCRL2 obligations.
+
+Formal verification preceded implementation. The formal obligations were extracted into 74 stable
+IDs in `docs/design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md`. Its executable
+traceability property requires exact equality among the catalog, derivation matrix, and Rust
+binding registry; resolves every TLA+ and Rocq symbol; requires every base invariant and capstone to
+be cited; and proves every witness configuration is part of the integrated gate. The production
+refinement began only after that check was green. The resource property was deliberately observed
+red first: semantic-admission `required-1` reached `Published`. The resulting opaque admitted-source
+certificate now preflights all nine durable, seven checkpoint-WAL, and 18 applicable semantic-
+admission axes before successor cleanup. Exact limits succeed, positive `required-1` limits return
+typed refusal with no phase trace or mutation, and per-state structural limits use the
+componentwise maximum over current and every retained historical state.
+
+A fresh checkpoint streams the exact digest-ordered retained-union closure plus its disjoint
+retention manifest directly into PREPARE and the fresh index. Every object is DATA even when an
+older generation contains equal bytes; no semantic entry vector, `Vec<Par>`, element sort, or second
+canonical-object body exists. The exact descriptor carries current, retained-union, and checkpoint
+DATA object counts and canonical bytes. Its frozen length is 216 bytes; checked formulas derive the
+PREPARE extent, fresh index tail, COMMIT address, and pack tail from that one admitted inventory.
+COMMIT relationally binds the PREPARE receipt, descriptor, index authority, predecessor terminal,
+store, sequence, and physical addresses. Successful publication synchronizes PREPARE, index,
+COMMIT, artifact directory, catalog file, and catalog directory in the verified order, then returns
+authority only after ordinary restart-grade physical recovery and profile-typed semantic
+readmission reproduce the same state and inventory.
+
+All traversal remains iterative and streaming. Native stack is constant in trie depth, logical path
+length, retained-state depth, and object count. Ordinary recovery retains one
+`PathMap<ObjectIndexRecordV1>` for distinct DATA objects and constant replay state; index repair
+pre-admits its three WAL passes and constructs no second trie. Resource retention is proportional
+only to authenticated inventories and explicitly bounded work certificates, never to an artificial
+traversal-depth ceiling.
+
+The parallel gate exposed a lifecycle refinement that isolated tests had hidden. A process spawn may
+briefly duplicate the writer-lock open file description before close-on-exec. Closing only the
+Rust lease descriptor therefore allowed the duplicate to retain the OS lock beyond the affine
+lifetime. A deterministic duplicated-descriptor control was red before the repair.
+`DurableWriterLeaseV1::drop` now explicitly unlocks the shared open file description before closing
+its own descriptor, making the formal no-gap/no-clone authority invariant executable even across
+that spawn window. The control is green and the formerly intermittent publication tests pass in the
+full parallel suite.
+
+The final `rspace_plus_plus` library gate passes **392/392** in **52.20 s**. The complete package
+gate passes **817/817** in **4 min 36.055 s**, with **5.4 GiB** peak resident memory inside a 10 GiB
+hard cap, zero swap, and a ten-core quota. These results establish the stack, resource, publication,
+and recovery refinement of the dormant backend. They do not activate it beneath production RSpace,
+replace LMDB, finish compaction/reader-safe garbage collection, provide Windows-native authority
+handles, or constitute the required LMDB-versus-PathMap throughput and storage comparison.
 
 ---
 

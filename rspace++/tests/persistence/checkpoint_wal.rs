@@ -1,11 +1,15 @@
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 
-use super::support::TestSemanticProfile;
+use super::support::{TestSemanticProfile, nonzero};
+use crate::rspace::data_index::RSpaceDataIndex;
+use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::checkpoint::{
     CheckpointObjectInventoryV1, CheckpointReferenceVisitErrorV1, GenerationCheckpointDescriptorV1,
-    GenerationCheckpointErrorV1, OrderedObjectInventoryBuilderV1,
+    GenerationCheckpointDescriptorViewV1, GenerationCheckpointErrorV1,
+    OrderedObjectInventoryBuilderV1,
 };
-use crate::rspace::persistence::closure::RetainedUnionClosureReportV1;
+use crate::rspace::persistence::closure::{RetainedUnionClosureReportV1, StructuralClosureReport};
 use crate::rspace::persistence::durable::{
     INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexGenerationV1, ObjectIndexHeaderV1,
     PACK_HEADER_LEN_V1, PreparedGenerationCheckpointIndexV1,
@@ -20,12 +24,17 @@ use crate::rspace::persistence::wal::{
     preflight_generation_checkpoint_prepare_v1,
 };
 use crate::rspace::persistence::{
-    COMMIT_DISCRIMINATOR_LEN_V1, CanonicalDagNode, CanonicalEncode, CanonicalSink,
-    CommitPublicationV1, CommitRecordKindV1, LogPackAddress, LogPackDecodeLimits,
+    COMMIT_DISCRIMINATOR_LEN_V1, CanonicalBlob, CanonicalBlobKind, CanonicalDagNode,
+    CanonicalEncode, CanonicalFormatError, CanonicalSink, CommitPublicationV1, CommitRecordKindV1,
+    DagChild, EndpointValue, LegacyHistoryRoot, LogPackAddress, LogPackDecodeLimits,
     LogPackFormatError, LogPackSequence, ObjectDigest, ObjectRefV1, PREPARE_DISCRIMINATOR_LEN_V1,
     PhysicalDigest, PrepareRecordKindV1, RetainedStateV1, RetentionManifestV1, SemanticProfileId,
     SemanticRoots, SemanticStateManifestV1, StateVersionV1, StoreId, decode_commit_kind_v1,
     decode_prepare_kind_v1,
+};
+use crate::rspace::rho_path::RhoPathV1;
+use crate::rspace::serializers::serializers::{
+    encode_continuation_identity, encode_continuation_source_into, encode_join_record,
 };
 
 const PROFILE: SemanticProfileId = SemanticProfileId::from_array(*b"RSpace.Test.V1\0\0");
@@ -84,12 +93,364 @@ pub(super) fn fixture() -> SyntheticCheckpointSource {
     fixture_with_root(encoded(&CanonicalDagNode::empty()))
 }
 
+/// A checkpoint whose current state exercises every positive semantic-
+/// admission resource axis used by generation-publication preflight.
+pub(super) fn semantic_fixture() -> SyntheticCheckpointSource {
+    let channel = "checkpoint-resource-channel".to_owned();
+    let datum = Datum::create(&channel, "checkpoint-resource-datum".to_owned(), true);
+    let data = encoded(
+        &CanonicalDagNode::new(
+            RSpaceDataIndex::datum_path(&channel, &datum),
+            EndpointValue::Multiplicity(nonzero(3)),
+            Box::default(),
+        )
+        .unwrap(),
+    );
+
+    let channels = vec![channel.clone()];
+    let patterns = vec!["checkpoint-resource-pattern".to_owned()];
+    let waiting = WaitingContinuation::create(
+        &channels,
+        &patterns,
+        &"checkpoint-resource-continuation".to_owned(),
+        false,
+        BTreeSet::from([0]),
+    );
+    let mut source_payload = Vec::new();
+    encode_continuation_source_into(&waiting, &mut source_payload);
+    let source = encoded(
+        &CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source_payload).unwrap(),
+    );
+    let continuation_prefix = RhoPathV1::continuation_prefix(&channels);
+    let continuation = encoded(
+        &CanonicalDagNode::new(
+            RhoPathV1::collection_record_path(
+                &continuation_prefix,
+                &encode_continuation_identity(&waiting),
+            ),
+            EndpointValue::Content(source.0),
+            Box::default(),
+        )
+        .unwrap(),
+    );
+    let mut join_path = RhoPathV1::join_prefix(&channel);
+    join_path.extend_from_slice(&encode_join_record(&channels));
+    let join = encoded(
+        &CanonicalDagNode::new(join_path, EndpointValue::Multiplicity(nonzero(2)), Box::default())
+            .unwrap(),
+    );
+    let roots = SemanticRoots {
+        data_bag: data.0,
+        continuation_map: continuation.0,
+        join_bag: join.0,
+    };
+    let state_manifest = encoded(&SemanticStateManifestV1::new(1, PROFILE, roots, None).unwrap());
+    let state = StateVersionV1::new(7, state_manifest.0);
+    let current = vec![data, source, continuation, join, state_manifest];
+    let current_bytes = current
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum::<u64>();
+    let retention_manifest = encoded(
+        &RetentionManifestV1::new(RetainedStateV1::new(state, current_bytes).unwrap(), Vec::new())
+            .unwrap(),
+    );
+
+    let mut objects = current;
+    objects.push(retention_manifest);
+    objects.sort_unstable_by_key(|(reference, _)| reference.digest());
+    let data_bytes = objects
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum();
+    let mut ordered = OrderedObjectInventoryBuilderV1::new(objects.len() as u64, data_bytes);
+    for (reference, _) in &objects {
+        ordered.push(*reference).unwrap();
+    }
+    let retention_reference = objects
+        .iter()
+        .find_map(|(reference, bytes)| {
+            bytes
+                .starts_with(b"RSpaceDAG.Retn\0\0")
+                .then_some(*reference)
+        })
+        .unwrap();
+    let inventory = CheckpointObjectInventoryV1::from_test_ordered(
+        RetainedUnionClosureReportV1 {
+            distinct_objects: 5,
+            canonical_bytes: current_bytes,
+        },
+        retention_reference,
+        ordered.finish().unwrap(),
+    )
+    .unwrap();
+    let descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
+        PROFILE,
+        state,
+        retention_reference,
+        5,
+        current_bytes,
+        inventory,
+    )
+    .unwrap();
+    SyntheticCheckpointSource {
+        descriptor,
+        objects,
+    }
+}
+
+/// The current state is the two-object empty state while the retained history
+/// contains the five-object semantic fixture. This catches replay certificates
+/// that accidentally record only current-state structural demand.
+pub(super) fn historically_larger_semantic_fixture()
+-> (SyntheticCheckpointSource, StructuralClosureReport) {
+    let mut historical_closure = Vec::new();
+    let mut children = Vec::new();
+    for edge in 0_u8..8 {
+        let leaf = encoded(
+            &CanonicalDagNode::new(
+                vec![edge],
+                EndpointValue::Multiplicity(nonzero(1)),
+                Box::<[DagChild]>::default(),
+            )
+            .unwrap(),
+        );
+        children.push(DagChild {
+            edge,
+            target: leaf.0,
+        });
+        historical_closure.push(leaf);
+    }
+    let wide_root = encoded(
+        &CanonicalDagNode::new(Vec::new(), EndpointValue::Absent, children)
+            .expect("the historical structural root has eight ordered branches"),
+    );
+    historical_closure.push(wide_root.clone());
+    let historical_empty = encoded(&CanonicalDagNode::empty());
+    historical_closure.push(historical_empty.clone());
+    let historical_manifest = encoded(
+        &SemanticStateManifestV1::new(
+            1,
+            PROFILE,
+            SemanticRoots {
+                data_bag: wide_root.0,
+                continuation_map: historical_empty.0,
+                join_bag: historical_empty.0,
+            },
+            None,
+        )
+        .unwrap(),
+    );
+    let historical_state = StateVersionV1::new(7, historical_manifest.0);
+    historical_closure.push(historical_manifest);
+    let historical_bytes = historical_closure
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum::<u64>();
+    let historical_report = StructuralClosureReport {
+        distinct_objects: 11,
+        node_objects: 10,
+        payload_objects: 0,
+        canonical_bytes: historical_bytes,
+        references: 11,
+        // The three manifest-root expectations are still live when the
+        // eight-way data branch is expanded, and the empty shared root adds
+        // one more pending expectation.
+        maximum_worklist: 12,
+    };
+    let mut retained_union = historical_closure;
+
+    let empty = encoded(&CanonicalDagNode::empty());
+    let current_manifest = encoded(
+        &SemanticStateManifestV1::new(
+            1,
+            PROFILE,
+            SemanticRoots {
+                data_bag: empty.0,
+                continuation_map: empty.0,
+                join_bag: empty.0,
+            },
+            None,
+        )
+        .unwrap(),
+    );
+    let current_state = StateVersionV1::new(historical_state.generation() + 1, current_manifest.0);
+    let current_bytes = empty.0.encoded_len() + current_manifest.0.encoded_len();
+    retained_union.push(empty);
+    retained_union.push(current_manifest);
+    retained_union.sort_unstable_by_key(|(reference, _)| reference.digest());
+    retained_union.dedup_by(|left, right| {
+        if left.0.digest() != right.0.digest() {
+            return false;
+        }
+        assert_eq!(left, right, "equal canonical digests have byte-identical objects");
+        true
+    });
+
+    let retention_manifest = encoded(
+        &RetentionManifestV1::new(
+            RetainedStateV1::new(current_state, current_bytes).unwrap(),
+            vec![RetainedStateV1::new(historical_state, historical_bytes).unwrap()],
+        )
+        .unwrap(),
+    );
+    let retained_bytes = retained_union
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum::<u64>();
+    let retained_objects = retained_union.len() as u64;
+    let mut objects = retained_union;
+    objects.push(retention_manifest);
+    objects.sort_unstable_by_key(|(reference, _)| reference.digest());
+    let data_bytes = objects
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum();
+    let mut ordered = OrderedObjectInventoryBuilderV1::new(objects.len() as u64, data_bytes);
+    for (reference, _) in &objects {
+        ordered.push(*reference).unwrap();
+    }
+    let retention_reference = objects
+        .iter()
+        .find_map(|(reference, bytes)| {
+            bytes
+                .starts_with(b"RSpaceDAG.Retn\0\0")
+                .then_some(*reference)
+        })
+        .unwrap();
+    let inventory = CheckpointObjectInventoryV1::from_test_ordered(
+        RetainedUnionClosureReportV1 {
+            distinct_objects: retained_objects,
+            canonical_bytes: retained_bytes,
+        },
+        retention_reference,
+        ordered.finish().unwrap(),
+    )
+    .unwrap();
+    let descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
+        PROFILE,
+        current_state,
+        retention_reference,
+        2,
+        current_bytes,
+        inventory,
+    )
+    .unwrap();
+    (
+        SyntheticCheckpointSource {
+            descriptor,
+            objects,
+        },
+        historical_report,
+    )
+}
+
 pub(super) fn malformed_interior_fixture() -> SyntheticCheckpointSource {
     let mut bytes = b"RSpaceDAG.Node\0\0".to_vec();
     bytes.resize(32, 0);
     let reference =
         ObjectRefV1::new(ObjectDigest::of_canonical_bytes(&bytes), bytes.len() as u64).unwrap();
     fixture_with_root((reference, bytes))
+}
+
+pub(super) fn fixture_with_retained_union_cardinality(
+    retained_union_objects: usize,
+) -> SyntheticCheckpointSource {
+    assert!(
+        (2..=256).contains(&retained_union_objects),
+        "a valid state closure needs its manifest plus a root, and the fixture has 255 unique \
+         histories",
+    );
+    let root = encoded(&CanonicalDagNode::empty());
+    let roots = SemanticRoots {
+        data_bag: root.0,
+        continuation_map: root.0,
+        join_bag: root.0,
+    };
+    let current_manifest = encoded(&SemanticStateManifestV1::new(1, PROFILE, roots, None).unwrap());
+    let current_state = StateVersionV1::new(10_000, current_manifest.0);
+    let current_bytes = root.0.encoded_len() + current_manifest.0.encoded_len();
+
+    let historical_count = retained_union_objects - 2;
+    let mut historical = Vec::with_capacity(historical_count);
+    let mut manifest_objects = Vec::with_capacity(historical_count + 1);
+    manifest_objects.push(current_manifest);
+    for index in 0..historical_count {
+        let tag = u8::try_from(index + 1).expect("at most 254 historical states");
+        let manifest = encoded(
+            &SemanticStateManifestV1::new(
+                1,
+                PROFILE,
+                roots,
+                Some(LegacyHistoryRoot::from_array([tag; 32])),
+            )
+            .unwrap(),
+        );
+        historical.push(
+            RetainedStateV1::new(
+                StateVersionV1::new(index as u64 + 1, manifest.0),
+                root.0.encoded_len() + manifest.0.encoded_len(),
+            )
+            .unwrap(),
+        );
+        manifest_objects.push(manifest);
+    }
+    let retention_manifest = encoded(
+        &RetentionManifestV1::new(
+            RetainedStateV1::new(current_state, current_bytes).unwrap(),
+            historical,
+        )
+        .unwrap(),
+    );
+
+    let retained_bytes = root.0.encoded_len() +
+        manifest_objects
+            .iter()
+            .map(|(reference, _)| reference.encoded_len())
+            .sum::<u64>();
+    let mut objects = Vec::with_capacity(retained_union_objects + 1);
+    objects.push(root);
+    objects.extend(manifest_objects);
+    objects.push(retention_manifest);
+    objects.sort_unstable_by_key(|(reference, _)| reference.digest());
+    let data_bytes = objects
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum();
+    let mut ordered = OrderedObjectInventoryBuilderV1::new(objects.len() as u64, data_bytes);
+    for (reference, _) in &objects {
+        ordered.push(*reference).unwrap();
+    }
+    let retention_reference = objects
+        .iter()
+        .find_map(|(reference, bytes)| {
+            bytes
+                .starts_with(b"RSpaceDAG.Retn\0\0")
+                .then_some(*reference)
+        })
+        .unwrap();
+    let inventory = CheckpointObjectInventoryV1::from_test_ordered(
+        RetainedUnionClosureReportV1 {
+            distinct_objects: retained_union_objects as u64,
+            canonical_bytes: retained_bytes,
+        },
+        retention_reference,
+        ordered.finish().unwrap(),
+    )
+    .unwrap();
+    let descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
+        PROFILE,
+        current_state,
+        retention_reference,
+        2,
+        current_bytes,
+        inventory,
+    )
+    .unwrap();
+    SyntheticCheckpointSource {
+        descriptor,
+        objects,
+    }
 }
 
 fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
@@ -136,6 +497,7 @@ fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource 
         PROFILE,
         state,
         retention_reference,
+        2,
         current_bytes,
         inventory,
     )
@@ -167,6 +529,42 @@ fn encode_checkpoint_with_identity(
     assert_eq!(identity.store_id(), StoreId::from_array([0x91; 16]));
     assert_eq!(identity.descriptor(), source.descriptor);
     (bytes, identity)
+}
+
+#[test]
+fn target_checkpoint_wire_extents_follow_the_formal_length_equations() {
+    let source = fixture();
+    let prepared = PreparedGenerationCheckpointV1::<TestSemanticProfile, _>::new(
+        &source,
+        StoreId::from_array([0x91; 16]),
+        LogPackSequence::new(19).unwrap(),
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let inventory = source.descriptor.inventory();
+    let data_objects = inventory.data_objects();
+    let data_bytes = inventory.data_canonical_bytes().get();
+
+    assert_eq!(GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1, 288);
+    assert_eq!(prepared.record_len(), 288 + 40 * data_objects + data_bytes + 8,);
+
+    let prepare_address =
+        LogPackAddress::new(29, PACK_HEADER_LEN_V1, prepared.record_len()).unwrap();
+    let index = PreparedGenerationCheckpointIndexV1::new(
+        ObjectIndexHeaderV1::new(StoreId::from_array([0x91; 16]), IndexGenerationV1::FIRST),
+        prepare_address,
+        &prepared,
+    )
+    .unwrap();
+    assert_eq!(index.exact_tail(), 64 + 72 * data_objects);
+
+    let commit_address =
+        LogPackAddress::new(29, prepare_address.end(), GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1)
+            .unwrap();
+    assert_eq!(prepare_address.offset(), 128);
+    assert_eq!(commit_address.offset(), 128 + prepared.record_len());
+    assert_eq!(GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, 400);
+    assert_eq!(commit_address.end(), 128 + prepared.record_len() + 400,);
 }
 
 fn checkpoint_commit_fixture(
@@ -206,6 +604,40 @@ fn rewrite_commit_crc(bytes: &mut [u8]) {
     let checksum = crate::rspace::persistence::checksum::crc32c(&bytes[..auth_len]);
     bytes[auth_len..]
         .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(checksum));
+}
+
+fn rewrite_prepare_header_crc(bytes: &mut [u8]) {
+    let authenticated_header_len = GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize - 8;
+    let checksum = crate::rspace::persistence::checksum::crc32c(&bytes[..authenticated_header_len]);
+    bytes[authenticated_header_len..GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize]
+        .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(checksum));
+}
+
+fn rewrite_prepare_record_crc(bytes: &mut [u8]) {
+    let authenticated_record_len = bytes.len() - 8;
+    let checksum = crate::rspace::persistence::checksum::crc32c(&bytes[..authenticated_record_len]);
+    bytes[authenticated_record_len..]
+        .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(checksum));
+}
+
+fn reseal_prepare(bytes: &mut [u8]) {
+    rewrite_prepare_header_crc(bytes);
+    rewrite_prepare_record_crc(bytes);
+}
+
+fn replace_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn assert_length_overflow(error: LogPackFormatError, expected_field: &'static str) {
+    assert!(
+        matches!(
+            error,
+            LogPackFormatError::Canonical(CanonicalFormatError::LengthOverflow { field })
+                if field == expected_field
+        ),
+        "expected {expected_field:?} overflow, got {error:?}",
+    );
 }
 
 #[test]
@@ -275,7 +707,7 @@ fn canonical_v1_checkpoint_prepare_image_is_frozen() {
     );
     assert_eq!(
         frozen,
-        "len=763;header=52537061636557414c2e50726570000001000000000000000300000000000000fb020000000000001300000000000000919191919191919191919191919191915253706163654441472e43686b7074000100000000000000b0000000000000005253706163652e546573742e56310000070000000000000008a2bad5d01cd13ce6c39000aa50c93509172aebb94fed4f47858b8414404bcfd10000000000000039f726adc51675b622380f86cd0388fe825d30d66d5eaaa2f2ba1da32e404916600000000000000003010000000000000301000000000000020000000000000003000000000000006301000000000000bbb31f85f5194118002f2c656ad3790578f13c11efa309593ee28e4da308651bc0f3675600000000;digest=9b646d05f070db6922cf0dcee759a28c1c3c205629ad48a8a7d6b17fd61bff34;crc=7708862c"
+        "len=771;header=52537061636557414c2e5072657000000100000000000000030000000000000003030000000000001300000000000000919191919191919191919191919191915253706163654441472e43686b7074000100000000000000b8000000000000005253706163652e546573742e56310000070000000000000008a2bad5d01cd13ce6c39000aa50c93509172aebb94fed4f47858b8414404bcfd10000000000000039f726adc51675b622380f86cd0388fe825d30d66d5eaaa2f2ba1da32e4049166000000000000000020000000000000003010000000000000301000000000000020000000000000003000000000000006301000000000000bbb31f85f5194118002f2c656ad3790578f13c11efa309593ee28e4da308651b083ae2c600000000;digest=67f6edcb75a1c61a9946c219eeaae0295c14c205949accf5aa2c5c7db23c1c7f;crc=7708862c"
     );
 }
 
@@ -292,6 +724,41 @@ fn checkpoint_prepare_rejects_truncation_corruption_and_resource_excess() {
             .is_err(),
             "checkpoint truncation at {length} must fail",
         );
+    }
+    let mut extended = bytes.clone();
+    extended.push(0);
+    assert!(matches!(
+        GenerationCheckpointPrepareRecordViewV1::parse(
+            &extended,
+            LogPackDecodeLimits::UNBOUNDED,
+        ),
+        Err(LogPackFormatError::LengthMismatch { declared, actual })
+            if declared == bytes.len() as u64 && actual == extended.len() as u64
+    ));
+
+    let mut wrong_kind = bytes.clone();
+    wrong_kind[24..32].copy_from_slice(&2_u64.to_le_bytes());
+    reseal_prepare(&mut wrong_kind);
+    assert!(matches!(
+        GenerationCheckpointPrepareRecordViewV1::parse(&wrong_kind, LogPackDecodeLimits::UNBOUNDED,),
+        Err(LogPackFormatError::UnexpectedRecordKind {
+            expected: 3,
+            actual: 2
+        })
+    ));
+
+    for declared in [bytes.len() as u64 - 1, bytes.len() as u64 + 1] {
+        let mut wrong_length = bytes.clone();
+        wrong_length[32..40].copy_from_slice(&declared.to_le_bytes());
+        reseal_prepare(&mut wrong_length);
+        assert!(matches!(
+            GenerationCheckpointPrepareRecordViewV1::parse(
+                &wrong_length,
+                LogPackDecodeLimits::UNBOUNDED,
+            ),
+            Err(LogPackFormatError::LengthMismatch { declared: observed, actual })
+                if observed == declared && actual == bytes.len() as u64
+        ));
     }
     let mut header = bytes.clone();
     header[64] ^= 1;
@@ -331,6 +798,359 @@ fn checkpoint_prepare_rejects_truncation_corruption_and_resource_excess() {
 }
 
 #[test]
+fn checkpoint_discriminators_checksums_and_authenticated_lengths_fail_closed() {
+    fn changed_u64(prefix: &[u8], offset: usize, value: u64) -> Vec<u8> {
+        let mut changed = prefix.to_vec();
+        replace_u64(&mut changed, offset, value);
+        changed
+    }
+
+    let source = fixture();
+    let prepare = encode_checkpoint(&source);
+    let prepare_discriminator = &prepare[..PREPARE_DISCRIMINATOR_LEN_V1 as usize];
+    for length in [31_usize, 33] {
+        let mut candidate = prepare_discriminator.to_vec();
+        candidate.resize(length, 0);
+        assert!(matches!(
+            decode_prepare_kind_v1(&candidate),
+            Err(LogPackFormatError::LengthMismatch { declared: 32, actual })
+                if actual == length as u64
+        ));
+    }
+    let mut invalid_prepare_domain = prepare_discriminator.to_vec();
+    invalid_prepare_domain[0] ^= 1;
+    assert!(matches!(
+        decode_prepare_kind_v1(&invalid_prepare_domain),
+        Err(LogPackFormatError::InvalidDomain)
+    ));
+    assert!(matches!(
+        decode_prepare_kind_v1(&changed_u64(prepare_discriminator, 16, 2)),
+        Err(LogPackFormatError::UnsupportedVersion(2))
+    ));
+    assert_eq!(
+        decode_prepare_kind_v1(&changed_u64(prepare_discriminator, 24, 1)).unwrap(),
+        PrepareRecordKindV1::Incremental,
+    );
+    assert_eq!(
+        decode_prepare_kind_v1(&changed_u64(prepare_discriminator, 24, 3)).unwrap(),
+        PrepareRecordKindV1::GenerationCheckpoint,
+    );
+    assert!(matches!(
+        decode_prepare_kind_v1(&changed_u64(prepare_discriminator, 24, 99)),
+        Err(LogPackFormatError::UnsupportedPrepareKind(99))
+    ));
+
+    let (commit, _, _, _) = checkpoint_commit_fixture(&source);
+    let commit_discriminator = &commit[..COMMIT_DISCRIMINATOR_LEN_V1 as usize];
+    for length in [31_usize, 33] {
+        let mut candidate = commit_discriminator.to_vec();
+        candidate.resize(length, 0);
+        assert!(matches!(
+            decode_commit_kind_v1(&candidate),
+            Err(LogPackFormatError::LengthMismatch { declared: 32, actual })
+                if actual == length as u64
+        ));
+    }
+    let mut invalid_commit_domain = commit_discriminator.to_vec();
+    invalid_commit_domain[0] ^= 1;
+    assert!(matches!(
+        decode_commit_kind_v1(&invalid_commit_domain),
+        Err(LogPackFormatError::InvalidDomain)
+    ));
+    assert!(matches!(
+        decode_commit_kind_v1(&changed_u64(commit_discriminator, 16, 2)),
+        Err(LogPackFormatError::UnsupportedVersion(2))
+    ));
+    assert_eq!(
+        decode_commit_kind_v1(&changed_u64(commit_discriminator, 24, 2)).unwrap(),
+        CommitRecordKindV1::Incremental,
+    );
+    assert_eq!(
+        decode_commit_kind_v1(&changed_u64(commit_discriminator, 24, 4)).unwrap(),
+        CommitRecordKindV1::GenerationCheckpoint,
+    );
+    assert!(matches!(
+        decode_commit_kind_v1(&changed_u64(commit_discriminator, 24, 99)),
+        Err(LogPackFormatError::UnsupportedCommitKind(99))
+    ));
+
+    for (offset, expected) in [(0_usize, "domain"), (16, "version"), (24, "kind")] {
+        let mut changed = prepare.clone();
+        changed[offset] ^= 1;
+        reseal_prepare(&mut changed);
+        let error = GenerationCheckpointPrepareRecordViewV1::parse(
+            &changed,
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap_err();
+        match expected {
+            "domain" => assert!(matches!(error, LogPackFormatError::InvalidDomain)),
+            "version" => assert!(matches!(error, LogPackFormatError::UnsupportedVersion(_))),
+            "kind" => assert!(matches!(error, LogPackFormatError::UnexpectedRecordKind { .. })),
+            _ => unreachable!(),
+        }
+    }
+
+    let mut header_checksum = prepare.clone();
+    header_checksum[280] ^= 1;
+    assert!(matches!(
+        GenerationCheckpointPrepareRecordViewV1::parse(
+            &header_checksum,
+            LogPackDecodeLimits::UNBOUNDED,
+        ),
+        Err(LogPackFormatError::HeaderChecksum { .. })
+    ));
+    let mut wide_header_checksum = prepare.clone();
+    wide_header_checksum[284] ^= 1;
+    assert!(matches!(
+        GenerationCheckpointPrepareRecordViewV1::parse(
+            &wide_header_checksum,
+            LogPackDecodeLimits::UNBOUNDED,
+        ),
+        Err(LogPackFormatError::ChecksumOutOfRange {
+            field: "checkpoint prepare header",
+            ..
+        })
+    ));
+    let prepare_trailer = prepare.len() - 8;
+    let mut record_checksum = prepare.clone();
+    record_checksum[prepare_trailer] ^= 1;
+    assert!(matches!(
+        GenerationCheckpointPrepareRecordViewV1::parse(
+            &record_checksum,
+            LogPackDecodeLimits::UNBOUNDED,
+        ),
+        Err(LogPackFormatError::RecordChecksum { .. })
+    ));
+    let mut wide_record_checksum = prepare.clone();
+    wide_record_checksum[prepare_trailer + 4] ^= 1;
+    assert!(matches!(
+        GenerationCheckpointPrepareRecordViewV1::parse(
+            &wide_record_checksum,
+            LogPackDecodeLimits::UNBOUNDED,
+        ),
+        Err(LogPackFormatError::ChecksumOutOfRange {
+            field: "checkpoint prepare record",
+            ..
+        })
+    ));
+    let mut commit_checksum = commit.clone();
+    commit_checksum[392] ^= 1;
+    assert!(matches!(
+        GenerationCheckpointCommitViewV1::parse(&commit_checksum),
+        Err(LogPackFormatError::RecordChecksum { .. })
+    ));
+    let mut wide_commit_checksum = commit.clone();
+    wide_commit_checksum[396] ^= 1;
+    assert!(matches!(
+        GenerationCheckpointCommitViewV1::parse(&wide_commit_checksum),
+        Err(LogPackFormatError::ChecksumOutOfRange {
+            field: "checkpoint COMMIT record",
+            ..
+        })
+    ));
+
+    for delta in [-1_i64, 1] {
+        let mut changed = prepare.clone();
+        let body_len = 184_u64.checked_add_signed(delta).unwrap();
+        replace_u64(&mut changed, 88, body_len);
+        reseal_prepare(&mut changed);
+        let error = GenerationCheckpointPrepareRecordViewV1::parse(
+            &changed,
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            (delta, error),
+            (
+                -1,
+                LogPackFormatError::Checkpoint(GenerationCheckpointErrorV1::Canonical(
+                    CanonicalFormatError::TrailingBytes { .. }
+                ))
+            ) | (
+                1,
+                LogPackFormatError::Checkpoint(GenerationCheckpointErrorV1::Canonical(
+                    CanonicalFormatError::Truncated { .. }
+                ))
+            )
+        ));
+
+        let mut changed = commit.clone();
+        replace_u64(&mut changed, 176, body_len);
+        rewrite_commit_crc(&mut changed);
+        let error = GenerationCheckpointCommitViewV1::parse(&changed).unwrap_err();
+        assert!(matches!(
+            (delta, error),
+            (
+                -1,
+                LogPackFormatError::Checkpoint(GenerationCheckpointErrorV1::Canonical(
+                    CanonicalFormatError::TrailingBytes { .. }
+                ))
+            ) | (
+                1,
+                LogPackFormatError::Checkpoint(GenerationCheckpointErrorV1::Canonical(
+                    CanonicalFormatError::Truncated { .. }
+                ))
+            )
+        ));
+
+        let mut changed = prepare.clone();
+        let first_object_len = u64::from_le_bytes(changed[320..328].try_into().unwrap());
+        replace_u64(&mut changed, 320, first_object_len.checked_add_signed(delta).unwrap());
+        rewrite_prepare_record_crc(&mut changed);
+        let error = GenerationCheckpointPrepareRecordViewV1::parse(
+            &changed,
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            (delta, error),
+            (-1, LogPackFormatError::Canonical(CanonicalFormatError::Truncated { .. })) |
+                (1, LogPackFormatError::Canonical(CanonicalFormatError::TrailingBytes { .. }))
+        ));
+
+        let mut changed = prepare.clone();
+        let first_body_len = u64::from_le_bytes(changed[352..360].try_into().unwrap());
+        replace_u64(&mut changed, 352, first_body_len.checked_add_signed(delta).unwrap());
+        rewrite_prepare_record_crc(&mut changed);
+        let error = GenerationCheckpointPrepareRecordViewV1::parse(
+            &changed,
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            (delta, error),
+            (-1, LogPackFormatError::Canonical(CanonicalFormatError::TrailingBytes { .. })) |
+                (1, LogPackFormatError::Canonical(CanonicalFormatError::Truncated { .. }))
+        ));
+    }
+}
+
+#[test]
+fn checkpoint_wire_arithmetic_fails_closed_at_every_prepare_and_index_boundary() {
+    const PREPARE_DESCRIPTOR_OFFSET: usize = 64;
+    const COMMIT_DESCRIPTOR_OFFSET: usize = 152;
+    const RETAINED_BYTES_OFFSET: usize = 152;
+    const RETAINED_OBJECTS_OFFSET: usize = 160;
+    const DATA_OBJECTS_OFFSET: usize = 168;
+    const DATA_BYTES_OFFSET: usize = 176;
+    let source = fixture();
+    let prepare = encode_checkpoint(&source);
+    let retention_manifest_len = source.descriptor.retention_manifest().encoded_len();
+    let descriptor = &prepare[PREPARE_DESCRIPTOR_OFFSET..PREPARE_DESCRIPTOR_OFFSET + 216];
+
+    let mut retained_count_overflow = descriptor.to_vec();
+    replace_u64(&mut retained_count_overflow, RETAINED_OBJECTS_OFFSET, u64::MAX);
+    assert!(matches!(
+        GenerationCheckpointDescriptorViewV1::parse(&retained_count_overflow),
+        Err(GenerationCheckpointErrorV1::CounterOverflow("checkpoint DATA objects"))
+    ));
+
+    let mut retained_bytes_overflow = descriptor.to_vec();
+    replace_u64(&mut retained_bytes_overflow, RETAINED_BYTES_OFFSET, u64::MAX);
+    assert!(matches!(
+        GenerationCheckpointDescriptorViewV1::parse(&retained_bytes_overflow),
+        Err(GenerationCheckpointErrorV1::Canonical(CanonicalFormatError::LengthOverflow {
+            field: "checkpoint DATA canonical bytes"
+        }))
+    ));
+
+    let mut object_header_overflow = prepare.clone();
+    let overflowing_objects = u64::MAX / 40 + 1;
+    replace_u64(
+        &mut object_header_overflow,
+        PREPARE_DESCRIPTOR_OFFSET + RETAINED_OBJECTS_OFFSET,
+        overflowing_objects - 1,
+    );
+    replace_u64(
+        &mut object_header_overflow,
+        PREPARE_DESCRIPTOR_OFFSET + DATA_OBJECTS_OFFSET,
+        overflowing_objects,
+    );
+    rewrite_prepare_header_crc(&mut object_header_overflow);
+    assert_length_overflow(
+        preflight_generation_checkpoint_prepare_v1(
+            &object_header_overflow[..GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize],
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap_err(),
+        "checkpoint object headers",
+    );
+
+    for (data_bytes, expected_field) in [
+        (u64::MAX, "checkpoint object records"),
+        (u64::MAX - 120, "checkpoint prepare record"),
+        (u64::MAX - 128, "checkpoint prepare record"),
+    ] {
+        let mut extent_overflow = prepare.clone();
+        replace_u64(
+            &mut extent_overflow,
+            PREPARE_DESCRIPTOR_OFFSET + RETAINED_BYTES_OFFSET,
+            data_bytes - retention_manifest_len,
+        );
+        replace_u64(
+            &mut extent_overflow,
+            PREPARE_DESCRIPTOR_OFFSET + DATA_BYTES_OFFSET,
+            data_bytes,
+        );
+        rewrite_prepare_header_crc(&mut extent_overflow);
+        assert_length_overflow(
+            preflight_generation_checkpoint_prepare_v1(
+                &extent_overflow[..GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize],
+                LogPackDecodeLimits::UNBOUNDED,
+            )
+            .unwrap_err(),
+            expected_field,
+        );
+    }
+
+    let (commit, _, _, _) = checkpoint_commit_fixture(&source);
+    for (objects, expected_field) in [
+        (u64::MAX / INDEX_RECORD_LEN_V1 + 1, "checkpoint index records"),
+        (u64::MAX / INDEX_RECORD_LEN_V1, "checkpoint exact index tail"),
+    ] {
+        let mut index_overflow = commit.clone();
+        replace_u64(
+            &mut index_overflow,
+            COMMIT_DESCRIPTOR_OFFSET + RETAINED_OBJECTS_OFFSET,
+            objects - 1,
+        );
+        replace_u64(&mut index_overflow, COMMIT_DESCRIPTOR_OFFSET + DATA_OBJECTS_OFFSET, objects);
+        rewrite_commit_crc(&mut index_overflow);
+        assert_length_overflow(
+            GenerationCheckpointCommitViewV1::parse(&index_overflow).unwrap_err(),
+            expected_field,
+        );
+    }
+
+    let maximal_prepare =
+        LogPackAddress::new(29, PACK_HEADER_LEN_V1, u64::MAX - PACK_HEADER_LEN_V1).unwrap();
+    assert_eq!(maximal_prepare.end(), u64::MAX);
+    assert!(matches!(
+        LogPackAddress::new(29, PACK_HEADER_LEN_V1, u64::MAX - PACK_HEADER_LEN_V1 + 1),
+        Err(LogPackFormatError::AddressOverflow { offset, length })
+            if offset == PACK_HEADER_LEN_V1 && length == u64::MAX - PACK_HEADER_LEN_V1 + 1
+    ));
+    let maximal_commit = LogPackAddress::new(
+        29,
+        u64::MAX - GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+        GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+    )
+    .unwrap();
+    assert_eq!(maximal_commit.end(), u64::MAX);
+    assert!(matches!(
+        LogPackAddress::new(
+            29,
+            u64::MAX - GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1 + 1,
+            GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+        ),
+        Err(LogPackFormatError::AddressOverflow { offset, length })
+            if offset == u64::MAX - GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1 + 1
+                && length == GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1
+    ));
+}
+
+#[test]
 fn checkpoint_parser_requires_the_designated_manifest_objects_and_kinds() {
     let valid = fixture();
     let current_bytes = valid.descriptor.current_state_canonical_bytes().get();
@@ -346,6 +1166,7 @@ fn checkpoint_parser_requires_the_designated_manifest_objects_and_kinds() {
         PROFILE,
         StateVersionV1::new(7, missing_reference),
         valid.descriptor.retention_manifest(),
+        valid.descriptor.current_state_objects(),
         current_bytes,
         inventory,
     )
@@ -371,6 +1192,7 @@ fn checkpoint_parser_requires_the_designated_manifest_objects_and_kinds() {
         PROFILE,
         StateVersionV1::new(7, wrong_kind),
         valid.descriptor.retention_manifest(),
+        valid.descriptor.current_state_objects(),
         current_bytes,
         inventory,
     )
@@ -429,6 +1251,20 @@ fn checkpoint_commit_and_fresh_index_share_one_preflighted_layout() {
             Ok::<(), Infallible>(())
         })
         .unwrap();
+    let parsed_prepare = GenerationCheckpointPrepareRecordViewV1::parse(
+        &prepare_bytes,
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let prepare_references = parsed_prepare
+        .objects()
+        .map(|object| object.reference())
+        .collect::<Vec<_>>();
+    let index_references = records
+        .iter()
+        .map(|record| record.reference())
+        .collect::<Vec<_>>();
+    assert_eq!(prepare_references, index_references);
     assert_eq!(records.len(), expected_layouts.len());
     for (record, layout) in records.iter().zip(expected_layouts) {
         assert_eq!(record.reference(), layout.reference());
@@ -487,7 +1323,7 @@ fn canonical_v1_checkpoint_commit_image_is_frozen() {
         format!("len={};bytes={};digest={}", bytes.len(), hex::encode(&bytes), view.digest(),);
     assert_eq!(
         frozen,
-        "len=392;bytes=52537061636557414c2e436f6d6d00000100000000000000040000000000000088010000000000001300000000000000919191919191919191919191919191917a6782fd8b272fc8a88eb7f987fa2aac6676db0a8c71f7e85ecc7bf45a488b5f1d000000000000008000000000000000fb020000000000009b646d05f070db6922cf0dcee759a28c1c3c205629ad48a8a7d6b17fd61bff345253706163654441472e43686b7074000100000000000000b0000000000000005253706163652e546573742e56310000070000000000000008a2bad5d01cd13ce6c39000aa50c93509172aebb94fed4f47858b8414404bcfd10000000000000039f726adc51675b622380f86cd0388fe825d30d66d5eaaa2f2ba1da32e404916600000000000000003010000000000000301000000000000020000000000000003000000000000006301000000000000bbb31f85f5194118002f2c656ad3790578f13c11efa309593ee28e4da308651b18010000000000001d000000000000000b00000000000000320cdf5300000000;digest=6594d48d9387f05e22699da3787bdb56725599eb8550bb3c4cc4d4db4f9ece9b"
+        "len=400;bytes=52537061636557414c2e436f6d6d00000100000000000000040000000000000090010000000000001300000000000000919191919191919191919191919191917a6782fd8b272fc8a88eb7f987fa2aac6676db0a8c71f7e85ecc7bf45a488b5f1d000000000000008000000000000000030300000000000067f6edcb75a1c61a9946c219eeaae0295c14c205949accf5aa2c5c7db23c1c7f5253706163654441472e43686b7074000100000000000000b8000000000000005253706163652e546573742e56310000070000000000000008a2bad5d01cd13ce6c39000aa50c93509172aebb94fed4f47858b8414404bcfd10000000000000039f726adc51675b622380f86cd0388fe825d30d66d5eaaa2f2ba1da32e4049166000000000000000020000000000000003010000000000000301000000000000020000000000000003000000000000006301000000000000bbb31f85f5194118002f2c656ad3790578f13c11efa309593ee28e4da308651b18010000000000001d000000000000000b000000000000003be4e21100000000;digest=89afde7663a6fdad7ce6eba27e8b5ea77cae896f3a9d22fc462a96acc0d8266a"
     );
 }
 
@@ -502,12 +1338,32 @@ fn checkpoint_commit_rejects_truncation_corruption_and_rebinding() {
         );
     }
 
+    let mut extended = bytes.clone();
+    extended.push(0);
+    assert!(matches!(
+        GenerationCheckpointCommitViewV1::parse(&extended),
+        Err(LogPackFormatError::LengthMismatch { declared, actual })
+            if declared == GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1
+                && actual == extended.len() as u64
+    ));
+
     let mut corrupt = bytes.clone();
     corrupt[120] ^= 1;
     assert!(matches!(
         GenerationCheckpointCommitViewV1::parse(&corrupt),
         Err(LogPackFormatError::RecordChecksum { .. })
     ));
+
+    let descriptor_offset = 16 + 4 * 8 + 16 + 32 + 3 * 8 + 32;
+    let inventory_scalar_offsets = [136, 144, 152, 160, 168, 176];
+    for scalar_offset in inventory_scalar_offsets {
+        let mut changed = bytes.clone();
+        changed[descriptor_offset + scalar_offset] ^= 1;
+        assert!(matches!(
+            GenerationCheckpointCommitViewV1::parse(&changed),
+            Err(LogPackFormatError::RecordChecksum { .. })
+        ));
+    }
 
     for (offset, expected) in [(0, "domain"), (16, "version"), (24, "kind"), (32, "length")] {
         let mut changed = bytes.clone();

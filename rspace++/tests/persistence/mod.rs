@@ -16,6 +16,8 @@ mod object_codec;
 mod object_store_collision;
 mod pack_codec;
 mod path_provenance;
+mod property_support;
+mod generation_checkpoint_properties;
 mod retention_manifest;
 mod rewrite_differential;
 mod semantic_validation;

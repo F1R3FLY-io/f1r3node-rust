@@ -136,6 +136,8 @@ impl<I> CatalogVerifiedRecoveryV1<I> {
 
     pub(crate) const fn scanned_bytes(&self) -> u64 { self.scan.scanned_bytes }
 
+    pub(crate) const fn terminal_commit(&self) -> TerminalCommitViewV1 { self.scan.terminal_commit }
+
     pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { &self.authority }
 }
 

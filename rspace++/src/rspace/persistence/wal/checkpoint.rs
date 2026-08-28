@@ -877,5 +877,5 @@ fn expected_record_len(
     )?)
 }
 
-const _: () = assert!(CHECKPOINT_AUTH_HEADER_LEN == 272);
-const _: () = assert!(GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 == 280);
+const _: () = assert!(CHECKPOINT_AUTH_HEADER_LEN == 280);
+const _: () = assert!(GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 == 288);

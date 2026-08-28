@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-08-27
+Last updated: 2026-08-28
 
 ## Purpose
 
@@ -3153,6 +3153,108 @@ fails closed pending the native Windows handle/ACL implementation. Physical reco
 admit the current semantic closure, validate the retained-root union, compact generations, collect
 garbage, replace LMDB, or claim comparative throughput or disk-space gains. Those are later gates,
 not implicit consequences of this checkpoint.
+
+### J-044 — 2026-08-28: formally verify exact generation publication before refining PathMap persistence
+
+**QUESTION.** Can a fresh PathMap-DAG generation be published transactionally without flattening
+tries, silently falling back after selected-authority damage, applying resource limits after
+mutation, or allowing physical filesystem details to leak into consensus accounting?
+
+**HYPOTHESIS.** One affine protocol can stream the admitted retained-union inventory through a
+fresh DATA-only pack and exact derived index, publish it with a two-slot catalog CAS, and recover
+through the ordinary restart path. PathMap should remain the in-memory prefix-compressed authority
+and recovery accelerator; durable semantic identity should remain the canonical content-addressed
+DAG rather than an arena address, entry vector, sorted projection, or filesystem layout.
+
+**METHOD.** The protocol was specified before the Rust refinement. TLA+ models exact phase
+predecessors, the uncertainty boundary, restart selection, repairable index state, authoritative
+damage, resource families, semantic/accounting preservation, and affine authority. Rocq proves the
+ordered inventory merge, exact six-scalar descriptor, receipt relations, resource boundaries, and
+restart/readmission acknowledgement. Twenty-eight single-defect model configurations serve as
+negative controls and 14 expected reachability counterexamples prevent vacuous implications.
+After those checks passed, every obligation was extracted into the 74-ID invariant catalog and
+bound to named executable targets. The traceability test resolves every formal symbol and requires
+all base invariants, capstones, controls, and witnesses to remain reachable from the integrated
+gate. The Rust resource property was then run against the old sequence before changing production
+code.
+
+**OBSERVATION 1 — the pre-refinement resource order was wrong.** Semantic admission
+`required-1` returned `Published`: admission limits were evaluated after catalog mutation. This
+was not a harmless diagnostic-order difference. It violated the model's no-mutation refusal
+contract and made retry behavior dependent on a resource failure that should have been known from
+the already admitted source.
+
+**DECISION 1 — admitted sources carry an opaque requirements certificate.** Full semantic
+admission now derives current and retained structural reports, their componentwise historical
+maximum, the current semantic report, retained-state count, union inventories, aggregate
+root/reference visits, and object-read/byte totals. Publication compares all 18 applicable
+semantic axes alongside nine durable and seven checkpoint-WAL axes before successor cleanup.
+The certificate is not caller-constructible and does not retain an entry vector or a second trie.
+Exact limits succeed; every positive `required-1` case returns a typed
+`DefinitelyNotPublished` error with an empty phase trace and byte-identical old catalog, pack,
+index, and seeded successor artifacts.
+
+**OBSERVATION 2 — one canonical inventory is sufficient.** The current closure is a subset of the
+retained-union closure. A fresh checkpoint's DATA inventory is exactly that digest-ordered retained
+union plus the disjoint retention-manifest object. The checkpoint PREPARE and fresh index consume
+the same streaming layout; a 216-byte descriptor authenticates current, retained-union, and DATA
+object counts and canonical bytes plus the ordered inventory digest. Reusing an old-generation
+body as a REUSE record would make the new generation depend on a predecessor that compaction may
+remove, so checkpoint records are DATA even when older bytes compare equal.
+
+**DECISION 2 — do not serialize a semantic `Vec` or arena layout.** Production performs no
+`Vec<Par>` reconstruction, entry sort, semantic-key decode, or duplicate canonical-body buffer.
+PathMap zipper order supplies deterministic in-memory traversal where a live trie is present;
+structural closure ledgers supply exact digest order where the canonical DAG is authoritative.
+ACT remains a useful compact PathMap transport/accelerator format, not the semantic identity of a
+durable RSpace state. This preserves CoW and prefix-sharing in memory while allowing pack
+compaction, index rebuild, and future physical encodings to change without rewriting state
+identity.
+
+**OBSERVATION 3 — derived acceleration must not become fallback authority.** A missing, truncated,
+extended, reordered, or checksummed physical index can be reconstructed byte-exactly from the
+selected pack while retaining that exact catalog successor. Pack, terminal, descriptor, receipt,
+or unsafe file-identity damage rejects the selected successor; recovery does not choose the older
+slot merely because it is intact. That distinction is necessary for both safety and operability:
+the index is replaceable performance state, while the authenticated pack/receipt/catalog chain is
+authority.
+
+**OBSERVATION 4 — affine Rust ownership needs an explicit OS unlock.** The parallel package gate
+intermittently found a writer lock still held after a publication result had consumed its writer.
+A deterministic control duplicated the lock's open file description. Before the repair, dropping
+the lease closed only one descriptor and the duplicate retained the lock; this models the brief
+inheritance window of a concurrent process spawn before close-on-exec. The control was red.
+`DurableWriterLeaseV1::drop` now explicitly unlocks the shared open file description before its
+descriptor closes. The same control is green, and the full parallel publication matrix no longer
+fails.
+
+**COMPLEXITY.** Inventory, WAL, index, and recovery traversal remain stack-constant in trie depth,
+key length, retained-state depth, and object count. Publication performs linear work in admitted
+canonical bytes and distinct objects, with constant streaming writer state beyond authenticated
+source/closure evidence. Ordinary recovery retains one `O(d)`
+`PathMap<ObjectIndexRecordV1>` for `d` distinct DATA records and constant replay state. Repair
+performs three pre-admitted WAL passes but still constructs exactly one PathMap. All other retained
+work is named by total-resource certificates rather than a traversal-depth ceiling.
+
+**EVIDENCE.** The integrated proof gate passes Rocq, Verus, Z3, TLC, and mCRL2. Rocq closes 17
+capstones; the TLA+ base explores 7,896 distinct states; 28 mutants are rejected and all 14
+witnesses are reached. The exact 74-ID traceability property, 34-axis resource boundary property,
+and selected-successor repair/reject property pass. The library gate passes **392/392** in
+**52.20 s**. The package gate passes **817/817** in **4 min 36.055 s**, peaking at **5.4 GiB**
+inside a 10 GiB hard limit with zero swap and a ten-core quota. The duplicated-description
+regression is preserved as a separate red-to-green control.
+
+**ACCOUNTING.** Checkpoint publication has no dependency on Rholang's accounting layer and
+preserves an arbitrary complete runtime-budget snapshot in the formal model. Canonical logical
+inventories are authenticated metadata that a separately versioned future storage rule may choose
+to consume. Pack/index/catalog widths, DATA density, repair work, filesystem blocks, dead tails,
+retained history, orphan cleanup, and compaction cadence remain physical diagnostics and cannot be
+substituted into COMM or storage charges by this layer.
+
+**BOUNDARY.** This is a dormant publication and restart refinement, not the production LMDB
+cutover. Bounded compaction, reader-safe garbage collection, Windows-native authority handles,
+migration/version activation, REPL/startup wiring, and the preregistered LMDB time/space control
+remain separate work. No PathMap fork or upstream modification was required.
 
 ## Upstream PathMap integration request register
 

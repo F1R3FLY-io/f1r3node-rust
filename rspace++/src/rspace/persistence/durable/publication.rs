@@ -12,8 +12,8 @@ use std::path::Path;
 
 use super::admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
-    DurableAdmissionLimitsV1, DurableObjectReadErrorV1, SemanticallyAdmittedDurableWriterV1,
-    admit_physical_writer,
+    DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1, DurableObjectReadErrorV1,
+    SemanticallyAdmittedDurableWriterV1, admit_physical_writer,
 };
 use super::catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1,
@@ -43,13 +43,24 @@ use crate::rspace::persistence::wal::{
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GenerationCheckpointPublicationHookPointV1 {
+    AfterPreflightBeforeCleanup,
+    AfterCleanup,
+    AfterPrepareWrite,
     BeforeCatalogCompareAndSwap,
     AfterPrepareSync,
+    AfterIndexWrite,
     AfterIndexSync,
+    AfterCommitWrite,
     AfterCommitSync,
     AfterArtifactDirectorySync,
+    AfterCatalogCasVerifiedBeforeSlotWrite,
     AfterCatalogSlotWrite,
+    AfterCatalogFileSyncBeforeDirectorySync,
+    AfterCatalogDirectorySync,
     AfterCatalogSyncBeforeRecovery,
+    AfterPhysicalRecovery,
+    BeforeSemanticAdmission,
+    AfterSemanticAdmission,
 }
 
 #[cfg(test)]
@@ -71,6 +82,32 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static GENERATION_CHECKPOINT_PUBLICATION_TRACE: std::cell::RefCell<
+        Option<Vec<GenerationCheckpointPublicationHookPointV1>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn start_generation_checkpoint_publication_trace() {
+    GENERATION_CHECKPOINT_PUBLICATION_TRACE.with(|trace| {
+        let previous = trace.borrow_mut().replace(Vec::new());
+        assert!(previous.is_none(), "generation-checkpoint publication trace already active");
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn take_generation_checkpoint_publication_trace()
+-> Vec<GenerationCheckpointPublicationHookPointV1> {
+    GENERATION_CHECKPOINT_PUBLICATION_TRACE.with(|trace| {
+        trace
+            .borrow_mut()
+            .take()
+            .expect("generation-checkpoint publication trace is active")
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn arm_generation_checkpoint_publication_hook(
     point: GenerationCheckpointPublicationHookPointV1,
     hook: impl FnOnce() + 'static,
@@ -85,16 +122,6 @@ pub(crate) fn arm_generation_checkpoint_publication_hook(
 pub(crate) fn arm_generation_checkpoint_publication_failpoint(
     point: GenerationCheckpointPublicationHookPointV1,
 ) {
-    assert!(
-        matches!(
-            point,
-            GenerationCheckpointPublicationHookPointV1::AfterPrepareSync |
-                GenerationCheckpointPublicationHookPointV1::AfterIndexSync |
-                GenerationCheckpointPublicationHookPointV1::AfterCommitSync |
-                GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync
-        ),
-        "only definitely-unpublished phases accept the typed publication failpoint"
-    );
     GENERATION_CHECKPOINT_PUBLICATION_FAILPOINT.with(|armed| {
         assert!(armed.replace(Some(point)).is_none(), "publication failpoint already armed");
     });
@@ -110,18 +137,60 @@ fn trip_generation_checkpoint_publication_failpoint(
             return Ok(());
         }
         armed.set(None);
-        Err(GenerationCheckpointPublicationErrorV1::Io(DurableIoError::Io {
+        let io = DurableIoError::Io {
             operation: DurableIoOperation::SyncFile,
             path: path.to_path_buf(),
             source: std::io::Error::other(format!(
                 "injected generation-checkpoint publication failure at {point:?}"
             )),
-        }))
+        };
+        let error = match point {
+            GenerationCheckpointPublicationHookPointV1::AfterPreflightBeforeCleanup |
+            GenerationCheckpointPublicationHookPointV1::AfterCleanup |
+            GenerationCheckpointPublicationHookPointV1::AfterPrepareWrite |
+            GenerationCheckpointPublicationHookPointV1::AfterPrepareSync |
+            GenerationCheckpointPublicationHookPointV1::AfterIndexWrite |
+            GenerationCheckpointPublicationHookPointV1::AfterIndexSync |
+            GenerationCheckpointPublicationHookPointV1::AfterCommitWrite |
+            GenerationCheckpointPublicationHookPointV1::AfterCommitSync |
+            GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync |
+            GenerationCheckpointPublicationHookPointV1::BeforeCatalogCompareAndSwap |
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogCasVerifiedBeforeSlotWrite => {
+                GenerationCheckpointPublicationErrorV1::Io(io)
+            }
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogSlotWrite => {
+                GenerationCheckpointPublicationErrorV1::CatalogCommitIndeterminate(io)
+            }
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogFileSyncBeforeDirectorySync => {
+                GenerationCheckpointPublicationErrorV1::PublishedCatalogDirectory(io)
+            }
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogDirectorySync |
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery => {
+                GenerationCheckpointPublicationErrorV1::PublishedRecovery(Box::new(
+                    DurableStartupErrorV1::Io(io),
+                ))
+            }
+            GenerationCheckpointPublicationHookPointV1::AfterPhysicalRecovery |
+            GenerationCheckpointPublicationHookPointV1::BeforeSemanticAdmission |
+            GenerationCheckpointPublicationHookPointV1::AfterSemanticAdmission => {
+                GenerationCheckpointPublicationErrorV1::PublishedAdmission(Box::new(
+                    DurableAdmissionErrorV1::InjectedFailure(
+                        "generation-checkpoint publication phase",
+                    ),
+                ))
+            }
+        };
+        Err(error)
     })
 }
 
 #[cfg(test)]
 fn run_generation_checkpoint_publication_hook(point: GenerationCheckpointPublicationHookPointV1) {
+    GENERATION_CHECKPOINT_PUBLICATION_TRACE.with(|trace| {
+        if let Some(trace) = trace.borrow_mut().as_mut() {
+            trace.push(point);
+        }
+    });
     GENERATION_CHECKPOINT_PUBLICATION_HOOK.with(|armed| {
         let should_run = armed
             .borrow()
@@ -142,6 +211,7 @@ pub(crate) enum GenerationCheckpointPublicationErrorV1 {
     Index(Box<IndexFormatError>),
     Durable(Box<super::DurableFormatError>),
     Limit(DurableLimitError),
+    AdmissionPreflight(DurableAdmissionPreflightErrorV1),
     CheckpointWrite(
         Box<GenerationCheckpointPrepareWriteErrorV1<DurableObjectReadErrorV1, DurableIoError>>,
     ),
@@ -156,6 +226,7 @@ pub(crate) enum GenerationCheckpointPublicationErrorV1 {
     },
     CatalogCompareAndSwap,
     CatalogCommitIndeterminate(DurableIoError),
+    PublishedCatalogDirectory(DurableIoError),
     PublishedRecovery(Box<DurableStartupErrorV1>),
     PublishedAdmission(Box<DurableAdmissionErrorV1>),
 }
@@ -175,15 +246,16 @@ impl GenerationCheckpointPublicationErrorV1 {
             Self::CatalogCommitIndeterminate(_) => {
                 GenerationCheckpointPublicationOutcomeV1::Indeterminate
             }
-            Self::PublishedRecovery(_) | Self::PublishedAdmission(_) => {
-                GenerationCheckpointPublicationOutcomeV1::Published
-            }
+            Self::PublishedCatalogDirectory(_) |
+            Self::PublishedRecovery(_) |
+            Self::PublishedAdmission(_) => GenerationCheckpointPublicationOutcomeV1::Published,
             Self::Io(_) |
             Self::LogPack(_) |
             Self::Pack(_) |
             Self::Index(_) |
             Self::Durable(_) |
             Self::Limit(_) |
+            Self::AdmissionPreflight(_) |
             Self::CheckpointWrite(_) |
             Self::CheckpointIndex(_) |
             Self::SuccessorIdentityMismatch { .. } |
@@ -203,6 +275,7 @@ impl Display for GenerationCheckpointPublicationErrorV1 {
             Self::Index(error) => Display::fmt(error, formatter),
             Self::Durable(error) => Display::fmt(error, formatter),
             Self::Limit(error) => Display::fmt(error, formatter),
+            Self::AdmissionPreflight(error) => Display::fmt(error, formatter),
             Self::CheckpointWrite(error) => Display::fmt(error, formatter),
             Self::CheckpointIndex(error) => Display::fmt(error, formatter),
             Self::SuccessorIdentityMismatch {
@@ -227,6 +300,11 @@ impl Display for GenerationCheckpointPublicationErrorV1 {
                 formatter,
                 "durable catalog publication may have selected either generation: {error}"
             ),
+            Self::PublishedCatalogDirectory(error) => write!(
+                formatter,
+                "published generation failed the post-catalog directory durability barrier: \
+                 {error}"
+            ),
             Self::PublishedRecovery(error) => write!(
                 formatter,
                 "published generation failed restart-grade physical recovery: {error}"
@@ -248,9 +326,11 @@ impl std::error::Error for GenerationCheckpointPublicationErrorV1 {
             Self::Index(error) => Some(error.as_ref()),
             Self::Durable(error) => Some(error.as_ref()),
             Self::Limit(error) => Some(error),
+            Self::AdmissionPreflight(error) => Some(error),
             Self::CheckpointWrite(error) => Some(error.as_ref()),
             Self::CheckpointIndex(error) => Some(error.as_ref()),
             Self::CatalogCommitIndeterminate(error) => Some(error),
+            Self::PublishedCatalogDirectory(error) => Some(error),
             Self::PublishedRecovery(error) => Some(error.as_ref()),
             Self::PublishedAdmission(error) => Some(error.as_ref()),
             Self::SuccessorIdentityMismatch { .. } | Self::CatalogCompareAndSwap => None,
@@ -358,6 +438,7 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
                 &authority,
                 recovery_limits,
                 wal_limits,
+                admission_limits,
             )?;
             // The admitted old-generation store and all plans borrowing it
             // leave scope here. Only the lease, exact old catalog token, and
@@ -383,22 +464,84 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
         run_generation_checkpoint_publication_hook(
             GenerationCheckpointPublicationHookPointV1::BeforeCatalogCompareAndSwap,
         );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::BeforeCatalogCompareAndSwap,
+            lease.directory().path(),
+        )?;
 
         publish_catalog_compare_and_swap(&mut lease, &authority, &durable)?;
 
         #[cfg(test)]
         run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogFileSyncBeforeDirectorySync,
+        );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogFileSyncBeforeDirectorySync,
+            lease.directory().path(),
+        )?;
+
+        lease
+            .sync_catalog_directory()
+            .map_err(GenerationCheckpointPublicationErrorV1::PublishedCatalogDirectory)?;
+
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogDirectorySync,
+        );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogDirectorySync,
+            lease.directory().path(),
+        )?;
+
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
             GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
         );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
+            lease.directory().path(),
+        )?;
 
         // The only authority returned to the caller is reconstructed by the
         // same path used after an operating-system process restart.
         let physical = recover_physical_with_lease_v1(lease, recovery_limits, wal_limits).map_err(
             |error| GenerationCheckpointPublicationErrorV1::PublishedRecovery(Box::new(error)),
         )?;
-        admit_physical_writer::<P>(physical, admission_limits).map_err(|error| {
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::AfterPhysicalRecovery,
+        );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::AfterPhysicalRecovery,
+            Path::new("generation-checkpoint-publication"),
+        )?;
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::BeforeSemanticAdmission,
+        );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::BeforeSemanticAdmission,
+            Path::new("generation-checkpoint-publication"),
+        )?;
+        let admitted = admit_physical_writer::<P>(physical, admission_limits).map_err(|error| {
             GenerationCheckpointPublicationErrorV1::PublishedAdmission(Box::new(error))
-        })
+        })?;
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::AfterSemanticAdmission,
+        );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::AfterSemanticAdmission,
+            Path::new("generation-checkpoint-publication"),
+        )?;
+        Ok(admitted)
     }
 }
 
@@ -408,6 +551,7 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
     authority: &CatalogAuthorityTokenV1,
     recovery_limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
+    admission_limits: DurableAdmissionLimitsV1,
 ) -> Result<GenerationFilesDurableV1, GenerationCheckpointPublicationErrorV1> {
     let current = authority.slot();
     let current_pack = PackId::new(current.pack().active_pack())?;
@@ -444,8 +588,30 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
         index_plan.record_count(),
         index_plan.exact_tail(),
     )?;
+    source
+        .preflight_checkpoint_admission(admission_limits)
+        .map_err(GenerationCheckpointPublicationErrorV1::AdmissionPreflight)?;
+
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterPreflightBeforeCleanup,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterPreflightBeforeCleanup,
+        lease.directory().path(),
+    )?;
 
     let artifacts = lease.prepare_unpublished_successor_artifacts(authority)?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCleanup,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterCleanup,
+        lease.directory().path(),
+    )?;
     if artifacts.pack() != pack_header.pack_id() || artifacts.index() != index_generation {
         return Err(GenerationCheckpointPublicationErrorV1::SuccessorIdentityMismatch {
             planned_pack: pack_header.pack_id(),
@@ -502,6 +668,15 @@ fn write_and_sync_prepare<P: SemanticProfile>(
         GenerationCheckpointPublicationErrorV1::CheckpointWrite(Box::new(error))
     })?;
     sink.finish()?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterPrepareWrite,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterPrepareWrite,
+        pack.path(),
+    )?;
     pack.sync_all()?;
     #[cfg(test)]
     run_generation_checkpoint_publication_hook(
@@ -541,6 +716,15 @@ fn write_and_sync_index<P: SemanticProfile>(
     .map_err(|error| GenerationCheckpointPublicationErrorV1::CheckpointIndex(Box::new(error)))?;
     stream.verify_appointed_tail(plan.exact_tail())?;
     sink.finish()?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterIndexWrite,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterIndexWrite,
+        index.path(),
+    )?;
     index.sync_all()?;
     #[cfg(test)]
     run_generation_checkpoint_publication_hook(
@@ -575,6 +759,15 @@ fn append_and_sync_commit(
     pack.require_length(FileLengthExpectation::Exact(address.offset()))?;
     pack.write_all_at(address.offset(), commit.canonical_bytes())?;
     pack.require_length(FileLengthExpectation::Exact(address.end()))?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCommitWrite,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterCommitWrite,
+        pack.path(),
+    )?;
     pack.sync_all()?;
     #[cfg(test)]
     run_generation_checkpoint_publication_hook(
@@ -639,6 +832,16 @@ fn publish_catalog_compare_and_swap(
         return Err(GenerationCheckpointPublicationErrorV1::CatalogCompareAndSwap);
     }
 
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCatalogCasVerifiedBeforeSlotWrite,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterCatalogCasVerifiedBeforeSlotWrite,
+        catalog.path(),
+    )?;
+
     let inactive = match authority.selection().inactive_slot_index() {
         0 => CatalogSlotIndexV1::First,
         1 => CatalogSlotIndexV1::Second,
@@ -662,6 +865,11 @@ fn publish_catalog_compare_and_swap(
     run_generation_checkpoint_publication_hook(
         GenerationCheckpointPublicationHookPointV1::AfterCatalogSlotWrite,
     );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterCatalogSlotWrite,
+        catalog.path(),
+    )?;
     catalog
         .sync_catalog_all()
         .map_err(GenerationCheckpointPublicationErrorV1::CatalogCommitIndeterminate)

@@ -41,8 +41,8 @@ generation_checkpoint_closed_capstones="$({
   printf '%s\n' "$generation_checkpoint_rocq_output" | \
     grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$generation_checkpoint_closed_capstones" != "13" ]]; then
-  echo "stack-safe-pda: expected all thirteen generation-checkpoint Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
+if [[ "$generation_checkpoint_closed_capstones" != "17" ]]; then
+  echo "stack-safe-pda: expected all seventeen generation-checkpoint Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
   exit 1
 fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
@@ -266,8 +266,18 @@ for generation_checkpoint_mutant in \
   "skip-catalog-directory:RSpaceGenerationCheckpointPublicationSkipCatalogDirectoryMutant.cfg:PhysicalRecoveryRequiresCatalogDirectory" \
   "cleanup-after-uncertainty:RSpaceGenerationCheckpointPublicationCleanupAfterUncertaintyMutant.cfg:PreflightAndCleanupPrecedeMutation" \
   "wire-layout:RSpaceGenerationCheckpointPublicationWireLayoutMutant.cfg:WireLayoutIsExact" \
-  "charge-pollution:RSpaceGenerationCheckpointPublicationChargePollutionMutant.cfg:CheckpointHasZeroSemanticCharge" \
-  "physical-metering:RSpaceGenerationCheckpointPublicationPhysicalMeteringMutant.cfg:CheckpointHasZeroSemanticCharge"
+  "receipt-binding:RSpaceGenerationCheckpointPublicationBindingMutationMutant.cfg:ReceiptBindingsAreExact" \
+  "minus-one-accepted:RSpaceGenerationCheckpointPublicationMinusOneAcceptedMutant.cfg:PreflightRequiresExactResourceAdmission" \
+  "exact-boundary-rejected:RSpaceGenerationCheckpointPublicationExactBoundaryRejectedMutant.cfg:ExactResourceBoundaryIsAccepted" \
+  "late-admission-refusal:RSpaceGenerationCheckpointPublicationLateAdmissionRefusalMutant.cfg:ResourceRefusalPrecedesAllMutation" \
+  "refusal-mutates-authority:RSpaceGenerationCheckpointPublicationRefusalMutatesAuthorityMutant.cfg:ResourceRefusalPrecedesAllMutation" \
+  "omitted-durable-resource:RSpaceGenerationCheckpointPublicationOmittedDurableResourceMutant.cfg:PreflightRequiresExactResourceAdmission" \
+  "omitted-wal-resource:RSpaceGenerationCheckpointPublicationOmittedWalResourceMutant.cfg:PreflightRequiresExactResourceAdmission" \
+  "omitted-admission-resource:RSpaceGenerationCheckpointPublicationOmittedAdmissionResourceMutant.cfg:PreflightRequiresExactResourceAdmission" \
+  "fallback-damaged-successor:RSpaceGenerationCheckpointPublicationFallbackDamagedSuccessorMutant.cfg:CrashRecoverySelectsOnlyValidAuthority" \
+  "charge-pollution:RSpaceGenerationCheckpointPublicationChargePollutionMutant.cfg:CheckpointPreservesSemanticAccounting" \
+  "diagnostic-trace-pollution:RSpaceGenerationCheckpointPublicationDiagnosticTracePollutionMutant.cfg:CheckpointPreservesSemanticAccounting" \
+  "physical-metering:RSpaceGenerationCheckpointPublicationPhysicalMeteringMutant.cfg:PhysicalAccountingIsSeparated"
 do
   generation_checkpoint_label="${generation_checkpoint_mutant%%:*}"
   generation_checkpoint_tail="${generation_checkpoint_mutant#*:}"
@@ -289,12 +299,22 @@ do
     exit 1
   fi
 done
+"$repo_root/scripts/check-generation-checkpoint-accounting-boundary.sh"
 for generation_checkpoint_witness in \
   "acknowledged:RSpaceGenerationCheckpointPublicationNeverAcknowledged.cfg:NeverAcknowledged" \
   "recovered-old:RSpaceGenerationCheckpointPublicationNeverRecoveredOld.cfg:NeverRecoveredOld" \
   "recovered-new:RSpaceGenerationCheckpointPublicationNeverRecoveredNew.cfg:NeverRecoveredNew" \
   "published-failure:RSpaceGenerationCheckpointPublicationNeverPublishedFailure.cfg:NeverPublishedFailure" \
-  "indeterminate:RSpaceGenerationCheckpointPublicationNeverIndeterminate.cfg:NeverIndeterminate"
+  "indeterminate:RSpaceGenerationCheckpointPublicationNeverIndeterminate.cfg:NeverIndeterminate" \
+  "durable-resource-refusal:RSpaceGenerationCheckpointPublicationNeverDurableResourceRefusal.cfg:NeverDurableResourceRefusal" \
+  "invalid-resource-configuration:RSpaceGenerationCheckpointPublicationNeverInvalidResourceConfiguration.cfg:NeverInvalidResourceConfiguration" \
+  "wal-resource-refusal:RSpaceGenerationCheckpointPublicationNeverWalResourceRefusal.cfg:NeverWalResourceRefusal" \
+  "admission-resource-refusal:RSpaceGenerationCheckpointPublicationNeverAdmissionResourceRefusal.cfg:NeverAdmissionResourceRefusal" \
+  "durable-exact-cleanup:RSpaceGenerationCheckpointPublicationNeverDurableExactCleanup.cfg:NeverDurableExactCleanup" \
+  "wal-exact-cleanup:RSpaceGenerationCheckpointPublicationNeverWalExactCleanup.cfg:NeverWalExactCleanup" \
+  "admission-exact-cleanup:RSpaceGenerationCheckpointPublicationNeverAdmissionExactCleanup.cfg:NeverAdmissionExactCleanup" \
+  "repairable-index-recovery:RSpaceGenerationCheckpointPublicationNeverRepairableIndexRecovery.cfg:NeverRepairableIndexRecovery" \
+  "rejected-damaged-successor:RSpaceGenerationCheckpointPublicationNeverRejectedDamagedSuccessor.cfg:NeverRejectedDamagedSuccessor"
 do
   generation_checkpoint_label="${generation_checkpoint_witness%%:*}"
   generation_checkpoint_tail="${generation_checkpoint_witness#*:}"

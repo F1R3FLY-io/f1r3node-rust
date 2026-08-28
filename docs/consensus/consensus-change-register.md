@@ -10,7 +10,7 @@
 | **Companion surface** | `mettail-rust`, branch `feature/rho-native-set-automata`. |
 | **Companion reports** | the [stack-safety report](../design/stack-safety/stack-safety-report-2026-07-29.md) and the [PathMap report](../design/pathmap/pathmap-report-2026-08-03.md), which carry the equivalence evidence this register's retirements cite. |
 | **Audience** | F1r3node consensus reviewers deciding whether to accept the fork risk of a coordinated protocol-version bump. |
-| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-26 |
+| **Date** | 2026-07-29, re-scoped to the final criterion 2026-08-03, revised through 2026-08-28 |
 | **Maintenance** | [§7](#7-maintenance). Adding an entry is filling the form in [Appendix A](#appendix-a--the-entry-template). |
 
 ---
@@ -5932,6 +5932,54 @@ native handles/ACLs, semantic and inventory admission, compaction/GC, LMDB migra
 activation, and comparative performance/storage evidence remain mandatory. No production file,
 root, matcher, COMM, replay/startup result, history hash, protobuf/bincode byte, network message,
 accepted program, compute charge, or storage charge changes at this checkpoint.
+
+**CBR-053 living continuation (2026-08-28, formally verified generation checkpoint
+publication).** The dormant backend now has a complete affine publication protocol for one fresh
+PathMap-DAG generation. Its abstract TLA+ and Rocq contracts were verified before the Rust
+refinement. Seventy-four stable invariant IDs bind the formal state, receipt, recovery, resource,
+wire, and non-vacuity obligations to executable properties; the integrated gate closes 17 Rocq
+capstones, explores 7,896 distinct TLA+ states, rejects 28 named mutants through their intended
+invariants, reaches 14 required witnesses, and passes Verus, Z3, and mCRL2.
+
+The dormant checkpoint wire adds an exact 216-byte descriptor carrying current, retained-union, and
+checkpoint-DATA counts and canonical bytes. PREPARE and the fresh index stream the identical
+digest-ordered retained union plus its disjoint retention manifest; every generation-checkpoint
+object is DATA. COMMIT authenticates the complete PREPARE receipt, descriptor authority, index
+authority, predecessor terminal, store, sequence, addresses, and durability frontier. Publication
+synchronizes generation files and their directory before an exact 672-byte catalog compare-and-swap,
+synchronizes catalog file and directory, then reconstructs authority only through ordinary physical
+recovery and mandatory profile-typed semantic readmission. Authoritative selected-successor damage
+rejects without falling back to old; safely repairable derived-index damage rebuilds the exact
+index while retaining the selected successor.
+
+All nine durable, seven checkpoint-WAL, and 18 applicable semantic-admission resource axes are
+derived from the admitted source and exact physical plans and decided before cleanup or mutation.
+Exact limits succeed; every positive `required-1` limit returns typed
+`DefinitelyNotPublished` refusal with byte-identical old authority and seeded successor artifacts.
+Per-state structural limits use the componentwise maximum across current and every retained
+historical state. These are admission and liveness protections, not traversal-depth limits and not
+consensus charges.
+
+The consensus accounting boundary remains explicit. Checkpoint publication preserves an arbitrary
+complete runtime-budget snapshot and has no dependency on the Rholang accounting layer. Pack,
+index, catalog, repair, orphan, dead-tail, retention, and compaction bytes remain physical
+diagnostics. The separately maintained storage-tariff branch may later select deterministic logical
+inventories through its own versioned rule; this dormant publisher neither activates nor chooses
+that rule.
+
+A parallel-test failure exposed that closing one lock descriptor was insufficient when a concurrent
+process spawn briefly duplicated its open file description. The affine writer's `Drop` now issues
+an explicit unlock before descriptor destruction. A deterministic duplicated-description control
+was red before the fix and green after it; the complete package passes **817/817** in **4 min
+36.055 s**, with **5.4 GiB** peak resident memory inside a 10 GiB cap and zero swap.
+
+This continuation is `NO_PRODUCTION_CHANGE_DERIVED`. No active RSpace startup, checkpoint, history,
+matcher, COMM, play/replay, post-state, network, REPL, protobuf, bincode, metering, or LMDB route
+calls the generation publisher. Its new bytes therefore have no current consensus observer.
+Production activation still requires an explicit version/migration decision, bounded compaction and
+reader-safe garbage collection, Windows authority handling if Windows remains supported, and the
+scientific LMDB control comparison. Activation must re-enter this register; this dormant refinement
+does not silently authorize it.
 
 ### B.2 The original commit-level exemptions
 

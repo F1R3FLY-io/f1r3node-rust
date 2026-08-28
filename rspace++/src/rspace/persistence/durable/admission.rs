@@ -28,7 +28,7 @@ use crate::rspace::persistence::checkpoint::{
 };
 use crate::rspace::persistence::closure::{
     ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
-    StructuralClosureLedgerV1, StructuralValidationLimits,
+    StructuralClosureLedgerV1, StructuralClosureReport, StructuralValidationLimits,
     verify_structural_closure_in_ledger_with_limits,
 };
 use crate::rspace::persistence::retention::RetentionManifestView;
@@ -37,6 +37,7 @@ use crate::rspace::persistence::semantic::{
     SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
 };
 use crate::rspace::persistence::store::ImmutableObjectStore;
+use crate::rspace::persistence::wal::TerminalCommitViewV1;
 use crate::rspace::persistence::{
     CatalogAuthorityTokenV1, DurableLimits, LogPackDecodeLimits, ObjectIndexRecordV1, PackId,
     SemanticProfileId, StateVersionV1, VerifiedDagState,
@@ -74,9 +75,227 @@ impl Default for DurableAdmissionLimitsV1 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DurableAdmissionLimitKindV1 {
+    PerStateDistinctObjects,
+    PerStateCanonicalBytes,
+    PerStateReferences,
+    PerStateWorklist,
+    RetainedStates,
+    UnionObjects,
+    UnionCanonicalBytes,
+    AggregateRootVisits,
+    AggregateReferences,
+    ObjectReads,
+    ObjectReadBytes,
+    LogicalNodes,
+    Endpoints,
+    LogicalPathBytes,
+    PayloadBytes,
+    JoinLookups,
+    JoinLookupSteps,
+    SemanticWorklist,
+}
+
+impl DurableAdmissionLimitKindV1 {
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::PerStateDistinctObjects => "per-state distinct objects",
+            Self::PerStateCanonicalBytes => "per-state canonical bytes",
+            Self::PerStateReferences => "per-state references",
+            Self::PerStateWorklist => "per-state structural worklist",
+            Self::RetainedStates => "retained states",
+            Self::UnionObjects => "retained-union objects",
+            Self::UnionCanonicalBytes => "retained-union canonical bytes",
+            Self::AggregateRootVisits => "aggregate retained-root visits",
+            Self::AggregateReferences => "aggregate retained references",
+            Self::ObjectReads => "durable object reads",
+            Self::ObjectReadBytes => "durable object read bytes",
+            Self::LogicalNodes => "semantic logical nodes",
+            Self::Endpoints => "semantic endpoints",
+            Self::LogicalPathBytes => "semantic logical path bytes",
+            Self::PayloadBytes => "semantic source payload bytes",
+            Self::JoinLookups => "semantic join lookups",
+            Self::JoinLookupSteps => "semantic join lookup steps",
+            Self::SemanticWorklist => "semantic worklist",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DurableAdmissionPreflightErrorV1 {
+    pub(crate) resource: DurableAdmissionLimitKindV1,
+    pub(crate) limit: u64,
+    pub(crate) attempted: u64,
+}
+
+impl Display for DurableAdmissionPreflightErrorV1 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} limit exceeded before generation publication: limit {}, required {}",
+            self.resource.name(),
+            self.limit,
+            self.attempted,
+        )
+    }
+}
+
+impl std::error::Error for DurableAdmissionPreflightErrorV1 {}
+
+/// Exact, nonserialized replay demand derived by successful admission.
+///
+/// This certificate is kept inside affine writer authority. Callers can
+/// choose ceilings but cannot forge the work required to re-admit the exact
+/// checkpoint state after publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DurableAdmissionRequirementsV1 {
+    per_state_structural: StructuralClosureReport,
+    current_semantics: SemanticValidationReport,
+    retained_states: u64,
+    union_objects: u64,
+    union_canonical_bytes: u64,
+    aggregate_root_visits: u64,
+    aggregate_references: u64,
+    object_reads: u64,
+    object_read_bytes: u64,
+}
+
+impl DurableAdmissionRequirementsV1 {
+    fn require(
+        resource: DurableAdmissionLimitKindV1,
+        limit: u64,
+        attempted: u64,
+    ) -> Result<(), DurableAdmissionPreflightErrorV1> {
+        if attempted > limit {
+            return Err(DurableAdmissionPreflightErrorV1 {
+                resource,
+                limit,
+                attempted,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preflight(
+        self,
+        limits: DurableAdmissionLimitsV1,
+    ) -> Result<(), DurableAdmissionPreflightErrorV1> {
+        let structural = self.per_state_structural;
+        Self::require(
+            DurableAdmissionLimitKindV1::PerStateDistinctObjects,
+            limits.per_state_structural.max_distinct_objects,
+            structural.distinct_objects,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::PerStateCanonicalBytes,
+            limits.per_state_structural.max_canonical_bytes,
+            structural.canonical_bytes,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::PerStateReferences,
+            limits.per_state_structural.max_references,
+            structural.references,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::PerStateWorklist,
+            limits.per_state_structural.max_worklist,
+            structural.maximum_worklist,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::RetainedStates,
+            limits.max_retained_states,
+            self.retained_states,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::UnionObjects,
+            limits.max_union_objects,
+            self.union_objects,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::UnionCanonicalBytes,
+            limits.max_union_canonical_bytes,
+            self.union_canonical_bytes,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::AggregateRootVisits,
+            limits.max_aggregate_root_visits,
+            self.aggregate_root_visits,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::AggregateReferences,
+            limits.max_aggregate_references,
+            self.aggregate_references,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::ObjectReads,
+            limits.max_object_reads,
+            self.object_reads,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::ObjectReadBytes,
+            limits.max_object_read_bytes,
+            self.object_read_bytes,
+        )?;
+
+        // Semantic completion consumes an already verified structural token;
+        // its nested structural limits are deliberately inapplicable here.
+        let semantic = self.current_semantics;
+        Self::require(
+            DurableAdmissionLimitKindV1::LogicalNodes,
+            limits.current_semantics.max_logical_nodes,
+            semantic.logical_nodes,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::Endpoints,
+            limits.current_semantics.max_endpoints,
+            semantic.endpoints,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::LogicalPathBytes,
+            limits.current_semantics.max_logical_path_bytes,
+            semantic.maximum_logical_path_bytes,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::PayloadBytes,
+            limits.current_semantics.max_payload_bytes,
+            semantic.source_payload_bytes,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::JoinLookups,
+            limits.current_semantics.max_join_lookups,
+            semantic.join_lookups,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::JoinLookupSteps,
+            limits.current_semantics.max_join_lookup_steps,
+            semantic.join_lookup_steps,
+        )?;
+        Self::require(
+            DurableAdmissionLimitKindV1::SemanticWorklist,
+            limits.current_semantics.max_worklist,
+            semantic.maximum_worklist,
+        )
+    }
+}
+
+fn componentwise_max_structural(
+    maximum: &mut StructuralClosureReport,
+    observed: StructuralClosureReport,
+) {
+    maximum.distinct_objects = maximum.distinct_objects.max(observed.distinct_objects);
+    maximum.node_objects = maximum.node_objects.max(observed.node_objects);
+    maximum.payload_objects = maximum.payload_objects.max(observed.payload_objects);
+    maximum.canonical_bytes = maximum.canonical_bytes.max(observed.canonical_bytes);
+    maximum.references = maximum.references.max(observed.references);
+    maximum.maximum_worklist = maximum.maximum_worklist.max(observed.maximum_worklist);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InventoryMismatchKindV1 {
     CurrentState,
+    CheckpointCurrentStateObjects,
     RetainedUnion,
+    CheckpointRetainedUnionObjects,
     RetainedState { generation: u64 },
 }
 
@@ -261,6 +480,8 @@ pub(crate) enum DurableAdmissionErrorV1 {
         declared: u64,
         computed: u64,
     },
+    #[cfg(test)]
+    InjectedFailure(&'static str),
     AuthorityChanged,
     PackTail {
         pack: PackId,
@@ -300,9 +521,13 @@ impl Display for DurableAdmissionErrorV1 {
                 computed,
             } => write!(
                 formatter,
-                "authenticated {kind:?} inventory declares {declared} canonical bytes but \
-                 admission computed {computed}"
+                "authenticated {kind:?} inventory declares {declared}, but admission computed \
+                 {computed}"
             ),
+            #[cfg(test)]
+            Self::InjectedFailure(point) => {
+                write!(formatter, "injected durable semantic-admission failure at {point}")
+            }
             Self::AuthorityChanged => {
                 formatter.write_str("durable catalog authority changed during semantic admission")
             }
@@ -758,6 +983,7 @@ impl ImmutableObjectStore for BoundedAdmissionStoreV1<'_> {
 pub(crate) struct DurableAdmissionReportV1 {
     pub(crate) startup_disposition: IndexBindingDispositionV1,
     pub(crate) startup_work: DurableStartupWorkV1,
+    pub(crate) current_structural: StructuralClosureReport,
     pub(crate) current_semantics: SemanticValidationReport,
     pub(crate) retained_states: u64,
     pub(crate) aggregate_root_visits: u64,
@@ -782,6 +1008,7 @@ pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
     semantic: SemanticallyAdmittedStateV1,
     retained_closure: StructuralClosureLedgerV1,
     report: DurableAdmissionReportV1,
+    admission_requirements: DurableAdmissionRequirementsV1,
     profile: PhantomData<fn() -> P>,
 }
 
@@ -792,6 +1019,13 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
     }
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.report }
+
+    pub(crate) fn preflight_checkpoint_admission(
+        &self,
+        limits: DurableAdmissionLimitsV1,
+    ) -> Result<(), DurableAdmissionPreflightErrorV1> {
+        self.admission_requirements.preflight(limits)
+    }
 
     pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { &self.authority }
 
@@ -812,6 +1046,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
             P::ID,
             self.version,
             retention_manifest,
+            self.report.current_structural.distinct_objects,
             pack.current_state_canonical_bytes(),
             &self.retained_closure,
         )
@@ -902,7 +1137,8 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
     limits: DurableAdmissionLimitsV1,
 ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, DurableAdmissionErrorV1> {
     let (lease, recovered) = physical.into_admission_parts();
-    let (authority, index, startup_disposition, startup_work) = recovered.into_admission_parts();
+    let (authority, index, terminal_commit, startup_disposition, startup_work) =
+        recovered.into_admission_parts();
     let catalog = authority.slot();
     if catalog.profile_id() != P::ID {
         return Err(DurableAdmissionErrorV1::ProfileMismatch {
@@ -943,6 +1179,7 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
         &mut ledger,
         union_limits,
     )?;
+    let mut maximum_per_state_structural = current_structural.report();
     compare_inventory(
         InventoryMismatchKindV1::CurrentState,
         retained_current.canonical_bytes(),
@@ -953,6 +1190,13 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
         catalog.pack().current_state_canonical_bytes(),
         current_structural.report().canonical_bytes,
     )?;
+    if let TerminalCommitViewV1::GenerationCheckpoint(commit) = terminal_commit {
+        compare_inventory(
+            InventoryMismatchKindV1::CheckpointCurrentStateObjects,
+            commit.descriptor().current_state_objects(),
+            current_structural.report().distinct_objects,
+        )?;
+    }
 
     let mut aggregate_root_visits = current_structural.report().distinct_objects;
     let mut aggregate_references = current_structural.report().references;
@@ -982,6 +1226,7 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
             &mut ledger,
             union_limits,
         )?;
+        componentwise_max_structural(&mut maximum_per_state_structural, admitted.report());
         compare_inventory(
             InventoryMismatchKindV1::RetainedState {
                 generation: retained.state().generation(),
@@ -1008,6 +1253,13 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
     }
 
     let retained_union = ledger.retained_union_report();
+    if let TerminalCommitViewV1::GenerationCheckpoint(commit) = terminal_commit {
+        compare_inventory(
+            InventoryMismatchKindV1::CheckpointRetainedUnionObjects,
+            commit.descriptor().retained_union_objects(),
+            retained_union.distinct_objects,
+        )?;
+    }
     compare_inventory(
         InventoryMismatchKindV1::RetainedUnion,
         catalog.pack().retained_canonical_bytes(),
@@ -1023,6 +1275,7 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
     let report = DurableAdmissionReportV1 {
         startup_disposition,
         startup_work,
+        current_structural: current_structural.report(),
         current_semantics: semantic.report(),
         retained_states,
         aggregate_root_visits,
@@ -1031,6 +1284,17 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
         retention_manifest_canonical_bytes: retention_ref.encoded_len(),
         object_reads: bounded.budget.reads(),
         object_read_bytes: bounded.budget.bytes(),
+    };
+    let admission_requirements = DurableAdmissionRequirementsV1 {
+        per_state_structural: maximum_per_state_structural,
+        current_semantics: report.current_semantics,
+        retained_states: report.retained_states,
+        union_objects: report.retained_union.distinct_objects,
+        union_canonical_bytes: report.retained_union.canonical_bytes,
+        aggregate_root_visits: report.aggregate_root_visits,
+        aggregate_references: report.aggregate_references,
+        object_reads: report.object_reads,
+        object_read_bytes: report.object_read_bytes,
     };
     drop(bounded);
     Ok(SemanticallyAdmittedDurableWriterV1 {
@@ -1043,6 +1307,7 @@ pub(super) fn admit_physical_writer<P: SemanticProfile>(
             semantic,
             retained_closure: ledger,
             report,
+            admission_requirements,
             profile: PhantomData,
         },
     })

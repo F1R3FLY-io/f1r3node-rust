@@ -24,7 +24,7 @@ pub(crate) const GENERATION_CHECKPOINT_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpa
 const ORDERED_INVENTORY_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceInv.RefV1\0";
 const OBJECT_REF_LEN: u64 = 32 + 8;
 const CHECKPOINT_BODY_LEN: u64 =
-    SEMANTIC_PROFILE_ID_LEN as u64 + 8 + OBJECT_REF_LEN + OBJECT_REF_LEN + 5 * 8 + 32;
+    SEMANTIC_PROFILE_ID_LEN as u64 + 8 + OBJECT_REF_LEN + OBJECT_REF_LEN + 6 * 8 + 32;
 pub(crate) const GENERATION_CHECKPOINT_CANONICAL_LEN: u64 =
     OBJECT_ENVELOPE_HEADER_LEN + CHECKPOINT_BODY_LEN;
 
@@ -344,6 +344,7 @@ pub(crate) struct GenerationCheckpointDescriptorV1 {
     profile_id: SemanticProfileId,
     state: StateVersionV1,
     retention_manifest: ObjectRefV1,
+    current_state_objects: u64,
     current_state_canonical_bytes: CurrentClosureCanonicalBytesV1,
     inventory: CheckpointObjectInventoryV1,
 }
@@ -353,6 +354,7 @@ impl GenerationCheckpointDescriptorV1 {
         profile_id: SemanticProfileId,
         state: StateVersionV1,
         retention_manifest: ObjectRefV1,
+        current_state_objects: u64,
         current_state_canonical_bytes: u64,
         ledger: &StructuralClosureLedgerV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
@@ -362,6 +364,7 @@ impl GenerationCheckpointDescriptorV1 {
             profile_id,
             state,
             retention_manifest,
+            current_state_objects,
             current_state_canonical_bytes,
             inventory,
         )
@@ -371,9 +374,15 @@ impl GenerationCheckpointDescriptorV1 {
         profile_id: SemanticProfileId,
         state: StateVersionV1,
         retention_manifest: ObjectRefV1,
+        current_state_objects: u64,
         current_state_canonical_bytes: u64,
         inventory: CheckpointObjectInventoryV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
+        if current_state_objects == 0 {
+            return Err(GenerationCheckpointErrorV1::CurrentObjectsBelowManifest {
+                actual: current_state_objects,
+            });
+        }
         if current_state_canonical_bytes < state.manifest().encoded_len() {
             return Err(GenerationCheckpointErrorV1::CurrentBelowManifest {
                 minimum: state.manifest().encoded_len(),
@@ -382,6 +391,12 @@ impl GenerationCheckpointDescriptorV1 {
         }
         if inventory.retained_union_objects() == 0 {
             return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
+        if current_state_objects > inventory.retained_union_objects() {
+            return Err(GenerationCheckpointErrorV1::CurrentObjectsExceedRetained {
+                current: current_state_objects,
+                retained: inventory.retained_union_objects(),
+            });
         }
         if current_state_canonical_bytes > inventory.retained_union_canonical_bytes().get() {
             return Err(GenerationCheckpointErrorV1::CurrentExceedsRetained {
@@ -393,6 +408,7 @@ impl GenerationCheckpointDescriptorV1 {
             profile_id,
             state,
             retention_manifest,
+            current_state_objects,
             current_state_canonical_bytes: CurrentClosureCanonicalBytesV1::new(
                 current_state_canonical_bytes,
             ),
@@ -405,6 +421,7 @@ impl GenerationCheckpointDescriptorV1 {
         profile_id: SemanticProfileId,
         state: StateVersionV1,
         retention_manifest: ObjectRefV1,
+        current_state_objects: u64,
         current_state_canonical_bytes: u64,
         inventory: CheckpointObjectInventoryV1,
     ) -> Result<Self, GenerationCheckpointErrorV1> {
@@ -412,6 +429,7 @@ impl GenerationCheckpointDescriptorV1 {
             profile_id,
             state,
             retention_manifest,
+            current_state_objects,
             current_state_canonical_bytes,
             inventory,
         )
@@ -422,6 +440,8 @@ impl GenerationCheckpointDescriptorV1 {
     pub(crate) const fn state(self) -> StateVersionV1 { self.state }
 
     pub(crate) const fn retention_manifest(self) -> ObjectRefV1 { self.retention_manifest }
+
+    pub(crate) const fn current_state_objects(self) -> u64 { self.current_state_objects }
 
     pub(crate) const fn current_state_canonical_bytes(self) -> CurrentClosureCanonicalBytesV1 {
         self.current_state_canonical_bytes
@@ -434,6 +454,7 @@ impl GenerationCheckpointDescriptorV1 {
             profile_id: self.profile_id,
             state: self.state,
             retention_manifest: self.retention_manifest,
+            current_state_objects: self.current_state_objects,
             current_state_canonical_bytes: self.current_state_canonical_bytes,
             retained_union_canonical_bytes: self.inventory.retained_union_canonical_bytes,
             retained_union_objects: self.inventory.retained_union_objects,
@@ -448,6 +469,7 @@ impl GenerationCheckpointDescriptorV1 {
             profile_id: view.profile_id,
             state: view.state,
             retention_manifest: view.retention_manifest,
+            current_state_objects: view.current_state_objects,
             current_state_canonical_bytes: view.current_state_canonical_bytes,
             inventory: CheckpointObjectInventoryV1 {
                 retained_union_objects: view.retained_union_objects,
@@ -469,6 +491,7 @@ impl CanonicalEncode for GenerationCheckpointDescriptorV1 {
         write_u64(sink, self.state.generation())?;
         self.state.manifest().write(sink)?;
         self.retention_manifest.write(sink)?;
+        write_u64(sink, self.current_state_objects)?;
         write_u64(sink, self.current_state_canonical_bytes.get())?;
         write_u64(sink, self.inventory.retained_union_canonical_bytes().get())?;
         write_u64(sink, self.inventory.retained_union_objects())?;
@@ -483,6 +506,7 @@ pub(crate) struct GenerationCheckpointDescriptorViewV1 {
     profile_id: SemanticProfileId,
     state: StateVersionV1,
     retention_manifest: ObjectRefV1,
+    current_state_objects: u64,
     current_state_canonical_bytes: CurrentClosureCanonicalBytesV1,
     retained_union_canonical_bytes: RetainedUnionCanonicalBytesV1,
     retained_union_objects: u64,
@@ -504,6 +528,7 @@ impl GenerationCheckpointDescriptorViewV1 {
         );
         let state = StateVersionV1::new(cursor.read_u64()?, ObjectRefV1::parse(&mut cursor)?);
         let retention_manifest = ObjectRefV1::parse(&mut cursor)?;
+        let current_state_objects = cursor.read_u64()?;
         let current_state_canonical_bytes = cursor.read_u64()?;
         let retained_union_canonical_bytes = cursor.read_u64()?;
         let retained_union_objects = cursor.read_u64()?;
@@ -529,6 +554,11 @@ impl GenerationCheckpointDescriptorViewV1 {
                 actual_bytes: data_canonical_bytes,
             });
         }
+        if current_state_objects == 0 {
+            return Err(GenerationCheckpointErrorV1::CurrentObjectsBelowManifest {
+                actual: current_state_objects,
+            });
+        }
         if current_state_canonical_bytes < state.manifest().encoded_len() {
             return Err(GenerationCheckpointErrorV1::CurrentBelowManifest {
                 minimum: state.manifest().encoded_len(),
@@ -537,6 +567,12 @@ impl GenerationCheckpointDescriptorViewV1 {
         }
         if retained_union_objects == 0 {
             return Err(GenerationCheckpointErrorV1::EmptyRetainedUnion);
+        }
+        if current_state_objects > retained_union_objects {
+            return Err(GenerationCheckpointErrorV1::CurrentObjectsExceedRetained {
+                current: current_state_objects,
+                retained: retained_union_objects,
+            });
         }
         if current_state_canonical_bytes > retained_union_canonical_bytes {
             return Err(GenerationCheckpointErrorV1::CurrentExceedsRetained {
@@ -548,6 +584,7 @@ impl GenerationCheckpointDescriptorViewV1 {
             profile_id,
             state,
             retention_manifest,
+            current_state_objects,
             current_state_canonical_bytes: CurrentClosureCanonicalBytesV1::new(
                 current_state_canonical_bytes,
             ),
@@ -566,6 +603,8 @@ impl GenerationCheckpointDescriptorViewV1 {
     pub(crate) const fn state(self) -> StateVersionV1 { self.state }
 
     pub(crate) const fn retention_manifest(self) -> ObjectRefV1 { self.retention_manifest }
+
+    pub(crate) const fn current_state_objects(self) -> u64 { self.current_state_objects }
 
     pub(crate) const fn current_state_canonical_bytes(self) -> CurrentClosureCanonicalBytesV1 {
         self.current_state_canonical_bytes
@@ -607,6 +646,13 @@ pub enum GenerationCheckpointErrorV1 {
         expected_bytes: u64,
         actual_bytes: u64,
     },
+    CurrentObjectsExceedRetained {
+        current: u64,
+        retained: u64,
+    },
+    CurrentObjectsBelowManifest {
+        actual: u64,
+    },
     CurrentExceedsRetained {
         current: u64,
         retained: u64,
@@ -646,6 +692,16 @@ impl Display for GenerationCheckpointErrorV1 {
                 "checkpoint inventory expected {expected_objects} objects/{expected_bytes} bytes, \
                  got {actual_objects} objects/{actual_bytes} bytes"
             ),
+            Self::CurrentObjectsExceedRetained { current, retained } => write!(
+                formatter,
+                "checkpoint current-state inventory has {current} objects, exceeding the retained \
+                 inventory's {retained} objects"
+            ),
+            Self::CurrentObjectsBelowManifest { actual } => write!(
+                formatter,
+                "checkpoint current-state inventory has {actual} objects but must contain its \
+                 manifest"
+            ),
             Self::CurrentExceedsRetained { current, retained } => write!(
                 formatter,
                 "checkpoint current-state inventory {current} exceeds retained inventory \
@@ -675,5 +731,5 @@ impl From<CanonicalFormatError> for GenerationCheckpointErrorV1 {
     fn from(error: CanonicalFormatError) -> Self { Self::Canonical(error) }
 }
 
-const _: () = assert!(CHECKPOINT_BODY_LEN == 176);
-const _: () = assert!(GENERATION_CHECKPOINT_CANONICAL_LEN == 208);
+const _: () = assert!(CHECKPOINT_BODY_LEN == 184);
+const _: () = assert!(GENERATION_CHECKPOINT_CANONICAL_LEN == 216);

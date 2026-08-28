@@ -255,6 +255,40 @@ impl StructuralClosureLedgerV1 {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_test_retained_union(references: &[ObjectRefV1]) -> Self {
+        let mut ledger = Self::new();
+        let mut previous = None;
+        for reference in references {
+            if let Some(previous) = previous {
+                assert!(
+                    previous < reference.digest(),
+                    "test retained-union references must be strictly digest ordered"
+                );
+            }
+            let replaced = ledger
+                .states
+                .insert(reference.digest().as_bytes(), DigestState {
+                    declared_len: reference.encoded_len(),
+                    visit_epoch: 0,
+                    active_epoch: 0,
+                    verified_expectations: 0,
+                    retained_union_member: true,
+                });
+            assert!(replaced.is_none(), "strict test references cannot replace a digest");
+            ledger.retained_union_objects = ledger
+                .retained_union_objects
+                .checked_add(1)
+                .expect("bounded property fixture object count");
+            ledger.retained_union_canonical_bytes = ledger
+                .retained_union_canonical_bytes
+                .checked_add(reference.encoded_len())
+                .expect("bounded property fixture canonical bytes");
+            previous = Some(reference.digest());
+        }
+        ledger
+    }
+
     /// Visit the retained closure directly in the digest order maintained by
     /// the PathMap.  The callback receives exact content references rebuilt
     /// from the trie key and its admitted declared length; no flattened list,

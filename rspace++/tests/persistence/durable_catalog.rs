@@ -143,7 +143,7 @@ fn catalog_accepts_only_the_two_typed_terminal_commit_lengths() {
         Some(checkpoint.catalog),
     );
 
-    for rejected in [383, 385, 391, 393] {
+    for rejected in [383, 385, 399, 401] {
         let address = LogPackAddress::new(
             checkpoint.catalog.active_pack(),
             checkpoint.catalog.commit_address().offset(),
@@ -202,6 +202,25 @@ fn authority_token_compares_the_full_image_and_only_replaces_the_inactive_slot()
             actual: 13
         })
     ));
+}
+
+#[test]
+fn authority_token_rejects_every_catalog_image_byte_mutation() {
+    let current = slot(11, 20);
+    let successor = slot(12, 21);
+    let current_image = image(Some(current), Some(successor));
+    let token = CatalogAuthorityTokenV1::select(current_image)
+        .unwrap()
+        .unwrap();
+
+    for offset in 0..CATALOG_IMAGE_LEN {
+        let mut changed = current_image;
+        changed[offset] ^= 0x80;
+        assert!(
+            !token.matches_exactly(&changed),
+            "catalog byte {offset} escaped exact-image compare-and-swap authority",
+        );
+    }
 }
 
 #[test]

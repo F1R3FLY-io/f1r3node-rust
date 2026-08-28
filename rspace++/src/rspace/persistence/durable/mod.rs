@@ -20,9 +20,10 @@ mod startup;
 pub(crate) use admission::copy_verified_canonical_with_scratch;
 pub(crate) use admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
-    DurableAdmissionLimitsV1, DurableAdmissionReportV1, DurableIndexedObjectStoreV1,
-    DurableObjectCopyErrorV1, DurableObjectReadErrorV1, InventoryMismatchKindV1,
-    SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
+    DurableAdmissionLimitKindV1, DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1,
+    DurableAdmissionReportV1, DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1,
+    DurableObjectReadErrorV1, InventoryMismatchKindV1, SemanticallyAdmittedDurableWriterV1,
+    copy_verified_canonical_with,
 };
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
@@ -46,7 +47,9 @@ pub(crate) use io::{
     index_file_name, pack_file_name,
 };
 #[cfg(test)]
-pub(crate) use io::{DurableIoFailpointV1, arm_durable_io_failpoint};
+pub(crate) use io::{
+    DurableIoFailpointV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
+};
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
@@ -56,7 +59,8 @@ pub(crate) use publication::{
 #[cfg(test)]
 pub(crate) use publication::{
     GenerationCheckpointPublicationHookPointV1, arm_generation_checkpoint_publication_failpoint,
-    arm_generation_checkpoint_publication_hook,
+    arm_generation_checkpoint_publication_hook, start_generation_checkpoint_publication_trace,
+    take_generation_checkpoint_publication_trace,
 };
 pub(crate) use recovery::{
     CatalogPackProviderV1, DurableReadAt, RecoveryError, replay_catalog_authorized_pack_chain,

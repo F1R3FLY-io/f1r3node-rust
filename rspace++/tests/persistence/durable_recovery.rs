@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use super::checkpoint_wal::{
     SyntheticCheckpointSource, fixture as checkpoint_source_fixture,
+    fixture_with_retained_union_cardinality,
     malformed_interior_fixture as malformed_checkpoint_source_fixture,
 };
 use super::support::{TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, synthetic_ref};
@@ -219,7 +220,9 @@ pub(super) fn malformed_checkpoint_image() -> CheckpointPackImage {
     checkpoint_image_from_source(malformed_checkpoint_source_fixture())
 }
 
-fn checkpoint_image_from_source(source: SyntheticCheckpointSource) -> CheckpointPackImage {
+pub(super) fn checkpoint_image_from_source(
+    source: SyntheticCheckpointSource,
+) -> CheckpointPackImage {
     let store_id = StoreId::from_array([0x91; 16]);
     let sequence = LogPackSequence::FIRST;
     let prepared = PreparedGenerationCheckpointV1::<TestSemanticProfile, _>::new(
@@ -783,6 +786,115 @@ fn checkpoint_pack_streams_once_and_rebuilds_the_exact_fresh_index() {
         cursor = cursor.checked_add(length as u64).unwrap();
     }
     assert_eq!(cursor, image.pack.len() as u64);
+}
+
+fn linux_peak_rss_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kibibytes = status.lines().find_map(|line| {
+        line.strip_prefix("VmHWM:")?
+            .split_whitespace()
+            .next()?
+            .parse::<u64>()
+            .ok()
+    })?;
+    kibibytes.checked_mul(1024)
+}
+
+fn linux_open_descriptor_count() -> Option<usize> {
+    Some(
+        std::fs::read_dir("/proc/self/fd")
+            .ok()?
+            .filter_map(Result::ok)
+            .count(),
+    )
+}
+
+fn run_checkpoint_cardinality_recovery_case(retained_union_objects: usize) {
+    let image = checkpoint_image_from_source(fixture_with_retained_union_cardinality(
+        retained_union_objects,
+    ));
+    let expected_records = retained_union_objects as u64 + 1;
+    let descriptors_before = linux_open_descriptor_count();
+    std::thread::Builder::new()
+        .name(format!("checkpoint-recovery-cardinality-{retained_union_objects}"))
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
+            let reads = Arc::clone(&provider.reader.reads);
+            let token = token_with_slot(image.catalog, false);
+            let mut observed = 0_u64;
+            let scanned = scan_catalog_authorized_pack_chain(
+                &mut provider,
+                &token,
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                |_| {
+                    observed += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let recovered = scanned.verify_catalog(token).unwrap();
+            assert_eq!(provider.opens, 1);
+            assert_eq!(observed, expected_records);
+            assert_eq!(recovered.object_records(), expected_records);
+            assert_eq!(recovered.object_index().record_count(), expected_records);
+            assert!(
+                reads
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|(_, length)| *length <= 64 * 1024),
+                "checkpoint recovery exceeded its fixed read scratch",
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    if let (Some(before), Some(after)) = (descriptors_before, linux_open_descriptor_count()) {
+        assert!(after <= before + 1, "checkpoint recovery leaked descriptors: {before} -> {after}");
+    }
+    if let Some(peak_rss) = linux_peak_rss_bytes() {
+        assert!(
+            peak_rss <= 256 * 1024 * 1024,
+            "checkpoint recovery peak RSS {peak_rss} exceeded the 256 MiB test-process ceiling",
+        );
+        eprintln!(
+            "checkpoint recovery cardinality {retained_union_objects}: peak RSS {peak_rss} bytes"
+        );
+    }
+}
+
+#[test]
+fn checkpoint_cardinality_stack_rss_gate() {
+    const CHILD_ENV: &str = "RSPACE_CHECKPOINT_CARDINALITY_CHILD";
+    if let Some(cardinality) = std::env::var_os(CHILD_ENV) {
+        let cardinality = cardinality
+            .to_str()
+            .and_then(|value| value.parse::<usize>().ok())
+            .expect("checkpoint cardinality child value is a usize");
+        run_checkpoint_cardinality_recovery_case(cardinality);
+        return;
+    }
+
+    for cardinality in [2_usize, 16, 256] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(
+                "rspace::persistence::tests::durable_recovery::checkpoint_cardinality_stack_rss_gate",
+            )
+            .arg("--nocapture")
+            .env(CHILD_ENV, cardinality.to_string())
+            .output()
+            .expect("checkpoint cardinality child process starts");
+        assert!(
+            output.status.success(),
+            "checkpoint cardinality {cardinality} child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    }
 }
 
 #[test]

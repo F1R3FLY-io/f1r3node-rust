@@ -1,0 +1,247 @@
+use std::collections::BTreeMap;
+
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+use proptest::collection::btree_map;
+use proptest::prelude::*;
+
+use crate::rspace::persistence::checkpoint::OrderedObjectInventoryDigestV1;
+use crate::rspace::persistence::{ObjectDigest, ObjectRefV1};
+
+#[derive(Clone, Debug)]
+pub(super) struct InventoryCase {
+    pub(super) retained: Vec<ObjectRefV1>,
+    pub(super) current: Vec<ObjectRefV1>,
+    pub(super) manifest: ObjectRefV1,
+    pub(super) current_objects: u64,
+    pub(super) current_bytes: u64,
+}
+
+fn tagged_digest(tag: u8, suffix: [u8; 31]) -> ObjectDigest {
+    let mut bytes = [0_u8; 32];
+    bytes[0] = tag;
+    bytes[1..].copy_from_slice(&suffix);
+    ObjectDigest::from_array(bytes)
+}
+
+pub(super) fn inventory_case() -> impl Strategy<Value = InventoryCase> {
+    (btree_map((any::<bool>(), any::<[u8; 31]>()), 32_u64..1_048_576, 1..16), 32_u64..1_048_576)
+        .prop_flat_map(|(entries, manifest_len)| {
+            let retained = entries
+                .into_iter()
+                .map(|((upper_half, suffix), encoded_len)| {
+                    ObjectRefV1::new(
+                        tagged_digest(if upper_half { 2 } else { 0 }, suffix),
+                        encoded_len,
+                    )
+                    .expect("positive generated canonical length")
+                })
+                .collect::<Vec<_>>();
+            let count = retained.len();
+            (Just(retained), Just(manifest_len), proptest::collection::vec(any::<bool>(), count))
+        })
+        .prop_map(|(retained, manifest_len, mut current_membership)| {
+            let manifest = ObjectRefV1::new(
+                ObjectDigest::from_array([
+                    1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0,
+                ]),
+                manifest_len,
+            )
+            .expect("positive generated manifest length");
+            // A semantic-state closure is nonempty and contains its manifest.
+            // Pinning the first retained reference keeps the dependent subset
+            // valid without filtering generated cases.
+            current_membership[0] = true;
+            let current = retained
+                .iter()
+                .zip(current_membership)
+                .filter_map(|(reference, member)| member.then_some(*reference))
+                .collect::<Vec<_>>();
+            let current_bytes = current
+                .iter()
+                .map(|reference| reference.encoded_len())
+                .sum();
+            InventoryCase {
+                retained,
+                current_objects: current.len() as u64,
+                current,
+                manifest,
+                current_bytes,
+            }
+        })
+}
+
+pub(super) fn mathematical_checkpoint_union(case: &InventoryCase) -> Vec<ObjectRefV1> {
+    let mut expected = case.retained.clone();
+    let insertion = expected
+        .binary_search_by_key(&case.manifest.digest(), |reference| reference.digest())
+        .expect_err("the generated manifest digest is disjoint");
+    expected.insert(insertion, case.manifest);
+    expected
+}
+
+pub(super) fn independent_inventory_digest(
+    references: &[ObjectRefV1],
+) -> OrderedObjectInventoryDigestV1 {
+    let objects = references.len() as u64;
+    let bytes = references
+        .iter()
+        .map(|reference| reference.encoded_len())
+        .sum::<u64>();
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(b"RSpaceInv.RefV1\0");
+    hasher.update(1_u64.to_le_bytes());
+    hasher.update(objects.to_le_bytes());
+    hasher.update(bytes.to_le_bytes());
+    for reference in references {
+        hasher.update(reference.digest().as_bytes());
+        hasher.update(reference.encoded_len().to_le_bytes());
+    }
+    let mut digest = [0_u8; 32];
+    digest.copy_from_slice(&hasher.finalize());
+    OrderedObjectInventoryDigestV1::from_array(digest)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum InventoryMutation {
+    Omit,
+    Insert,
+    Duplicate,
+    Reorder,
+    SubstituteDigest,
+    SubstituteDeclaredLength,
+}
+
+impl InventoryMutation {
+    pub(super) const ALL: [Self; 6] = [
+        Self::Omit,
+        Self::Insert,
+        Self::Duplicate,
+        Self::Reorder,
+        Self::SubstituteDigest,
+        Self::SubstituteDeclaredLength,
+    ];
+}
+
+pub(super) fn apply_inventory_mutation(
+    baseline: &[ObjectRefV1],
+    mutation: InventoryMutation,
+) -> Vec<ObjectRefV1> {
+    let mut mutated = baseline.to_vec();
+    let middle = mutated.len() / 2;
+    match mutation {
+        InventoryMutation::Omit => {
+            mutated.remove(middle);
+        }
+        InventoryMutation::Insert => {
+            mutated.push(
+                ObjectRefV1::new(ObjectDigest::from_array([3; 32]), 32)
+                    .expect("fixed inserted reference has positive length"),
+            );
+        }
+        InventoryMutation::Duplicate => {
+            mutated.insert(middle, mutated[middle]);
+        }
+        InventoryMutation::Reorder => {
+            mutated.swap(0, 1);
+        }
+        InventoryMutation::SubstituteDigest => {
+            let encoded_len = mutated[middle].encoded_len();
+            mutated[middle] = ObjectRefV1::new(ObjectDigest::from_array([4; 32]), encoded_len)
+                .expect("fixed substituted reference has positive length");
+        }
+        InventoryMutation::SubstituteDeclaredLength => {
+            let original = mutated[middle];
+            let changed = if original.encoded_len() == u64::MAX {
+                original.encoded_len() - 1
+            } else {
+                original.encoded_len() + 1
+            };
+            mutated[middle] = ObjectRefV1::new(original.digest(), changed)
+                .expect("substituted reference remains nonempty");
+        }
+    }
+    mutated
+}
+
+pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
+    ("INV-01", "checkpoint_union_is_exact_disjoint_ordered_merge"),
+    ("INV-02", "checkpoint_union_is_exact_disjoint_ordered_merge"),
+    ("INV-03", "checkpoint_union_is_exact_disjoint_ordered_merge"),
+    ("INV-04", "checkpoint_union_is_exact_disjoint_ordered_merge"),
+    ("INV-05", "checkpoint_union_is_exact_disjoint_ordered_merge"),
+    ("INV-06", "checkpoint_union_is_exact_disjoint_ordered_merge"),
+    ("INV-07", "manifest_digest_alias_reports_both_declared_lengths"),
+    ("INV-08", "current_closure_is_a_native_subset_of_retained_union"),
+    ("DES-01", "descriptor_roundtrip_preserves_all_six_inventory_scalars"),
+    ("DES-02", "descriptor_roundtrip_preserves_all_six_inventory_scalars"),
+    ("DES-03", "checkpoint_commit_rejects_truncation_corruption_and_rebinding"),
+    ("DES-04", "descriptor_roundtrip_preserves_all_six_inventory_scalars"),
+    ("DES-05", "parser_rejects_current_inventory_outside_the_retained_union"),
+    ("DES-06", "ordered_inventory_digest_matches_independent_fold"),
+    ("DES-07", "every_inventory_mutation_changes_or_rejects_authority"),
+    ("DES-08", "descriptor_arithmetic_overflow_fails_closed"),
+    ("WIR-01", "descriptor_roundtrip_preserves_all_six_inventory_scalars"),
+    ("WIR-02", "generated_checkpoint_wire_extents_follow_the_formal_length_equations"),
+    ("WIR-03", "generated_checkpoint_wire_extents_follow_the_formal_length_equations"),
+    ("WIR-04", "generated_checkpoint_wire_extents_follow_the_formal_length_equations"),
+    ("WIR-05", "generated_checkpoint_wire_extents_follow_the_formal_length_equations"),
+    ("WIR-06", "canonical_v1_prepare_and_commit_images_are_frozen"),
+    ("WAL-01", "checkpoint_commit_and_fresh_index_share_one_preflighted_layout"),
+    ("WAL-02", "checkpoint_commit_and_fresh_index_share_one_preflighted_layout"),
+    ("WAL-03", "checkpoint_commit_rejects_truncation_corruption_and_rebinding"),
+    ("WAL-04", "generation_checkpoint_reuse_and_short_physical_pack_fail_closed"),
+    ("WAL-05", "arbitrary_checkpoint_wire_bytes_are_total"),
+    ("CAT-01", "every_observably_torn_inactive_slot_preserves_the_previous_authority"),
+    ("CAT-02", "catalog_uncertainty_classifies_both_old_and_new_observable_outcomes"),
+    ("CAT-03", "selected_successor_damage_never_falls_back_and_repairs_safe_index"),
+    ("CAT-04", "authority_token_rejects_every_catalog_image_byte_mutation"),
+    ("CAT-05", "every_injected_torn_catalog_prefix_recovers_only_old_or_exact_new_authority"),
+    ("CAT-06", "successful_publication_executes_the_exact_formal_phase_order"),
+    ("PUB-00", "checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease"),
+    ("PUB-01", "catalog_sync_to_recovery_has_no_writer_lock_gap"),
+    ("PUB-02", "successful_publication_executes_the_exact_formal_phase_order"),
+    ("PUB-03", "successful_publication_executes_the_exact_formal_phase_order"),
+    ("PUB-04", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("PUB-05", "every_pre_catalog_crash_shape_recovers_old_authority_and_retries_exactly"),
+    ("PUB-06", "exact_catalog_change_before_cas_causes_no_publisher_slot_write"),
+    ("PUB-07", "every_pre_catalog_crash_shape_recovers_old_authority_and_retries_exactly"),
+    ("PUB-08", "every_pre_catalog_crash_shape_recovers_old_authority_and_retries_exactly"),
+    ("PUB-09", "every_injected_torn_catalog_prefix_recovers_only_old_or_exact_new_authority"),
+    ("PUB-10", "catalog_uncertainty_classifies_both_old_and_new_observable_outcomes"),
+    ("PUB-11", "successful_publication_executes_the_exact_formal_phase_order"),
+    ("PUB-12", "post_catalog_directory_failure_is_published_and_restart_selects_new"),
+    ("PUB-13", "checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease"),
+    ("PUB-14", "published_but_recovery_failure_is_typed_and_restartable"),
+    ("PUB-15", "published_but_semantic_admission_failure_is_typed_and_restartable"),
+    ("PUB-16", "publication_outcomes_are_total_and_mutually_exclusive"),
+    ("PUB-17", "exact_catalog_change_before_cas_causes_no_publisher_slot_write"),
+    ("PUB-18", "checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease"),
+    ("PUB-19", "catalog_uncertainty_classifies_both_old_and_new_observable_outcomes"),
+    ("PUB-20", "catalog_uncertainty_classifies_both_old_and_new_observable_outcomes"),
+    ("SEM-01", "dormant_checkpoint_publisher_has_no_runtime_accounting_capability"),
+    ("SEM-02", "physical_layout_variation_preserves_semantics_and_exact_successor"),
+    ("SEM-03", "checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease"),
+    ("RES-01", "arbitrary_checkpoint_wire_bytes_are_total"),
+    ("RES-02", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("RES-03", "checkpoint_cardinality_stack_rss_gate"),
+    ("NV-01", "checkpoint_publication_is_byte_exact_restart_equivalent_and_keeps_one_lease"),
+    ("NV-02", "every_injected_torn_catalog_prefix_recovers_only_old_or_exact_new_authority"),
+    ("NV-03", "every_injected_torn_catalog_prefix_recovers_only_old_or_exact_new_authority"),
+    ("NV-04", "published_but_recovery_failure_is_typed_and_restartable"),
+    ("NV-05", "catalog_uncertainty_classifies_both_old_and_new_observable_outcomes"),
+    ("NV-06", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-07", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-08", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-09", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-10", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-11", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-12", "every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly"),
+    ("NV-13", "selected_successor_damage_never_falls_back_and_repairs_safe_index"),
+    ("NV-14", "selected_successor_damage_never_falls_back_and_repairs_safe_index"),
+];
+
+pub(super) fn binding_map() -> BTreeMap<&'static str, &'static str> {
+    PROPERTY_BINDINGS.iter().copied().collect()
+}

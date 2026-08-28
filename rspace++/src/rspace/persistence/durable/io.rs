@@ -28,6 +28,7 @@ pub(crate) enum DurableIoFailpointV1 {
     DirectorySync,
     CatalogSlotWrite,
     CatalogSync,
+    CatalogDirectorySync,
 }
 
 #[cfg(test)]
@@ -37,9 +38,29 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static CATALOG_SLOT_WRITE_PREFIX: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
 pub(crate) fn arm_durable_io_failpoint(failpoint: DurableIoFailpointV1) {
     DURABLE_IO_FAILPOINT.with(|armed| {
         assert!(armed.replace(Some(failpoint)).is_none(), "durable I/O failpoint already armed");
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn arm_catalog_slot_write_prefix(prefix_len: usize) {
+    assert!(
+        prefix_len < CATALOG_SLOT_LEN,
+        "a torn catalog-slot prefix must be shorter than one complete slot"
+    );
+    CATALOG_SLOT_WRITE_PREFIX.with(|armed| {
+        assert!(
+            armed.replace(Some(prefix_len)).is_none(),
+            "catalog prefix failpoint already armed"
+        );
     });
 }
 
@@ -548,6 +569,19 @@ impl DurableWritableFileV1<'_> {
             self.file.path(),
         )?;
         self.require_length(FileLengthExpectation::Exact(CATALOG_IMAGE_LEN as u64))?;
+        #[cfg(test)]
+        if let Some(prefix_len) = CATALOG_SLOT_WRITE_PREFIX.with(|armed| armed.take()) {
+            if prefix_len != 0 {
+                self.write_all_at(slot.offset(), &bytes[..prefix_len])?;
+            }
+            return Err(DurableIoError::Io {
+                operation: DurableIoOperation::PositionalWrite,
+                path: self.file.path().to_path_buf(),
+                source: io::Error::other(format!(
+                    "injected torn catalog-slot write after {prefix_len} bytes"
+                )),
+            });
+        }
         self.write_all_at(slot.offset(), bytes)
     }
 
@@ -865,6 +899,18 @@ impl DurableDirectoryV1 {
 pub(crate) struct DurableWriterLeaseV1 {
     directory: DurableDirectoryV1,
     _lock: DurableFileV1,
+}
+
+impl Drop for DurableWriterLeaseV1 {
+    fn drop(&mut self) {
+        // `File` closes on drop, but a concurrently spawned process or an
+        // explicit descriptor duplicate can retain the same open file
+        // description past this affine Rust lifetime.  Unlock the shared open
+        // description first so no duplicate can extend mutation authority.
+        // Closing this descriptor remains the fail-safe if the OS reports an
+        // unlock error during an infallible destructor.
+        let _ = self._lock.file.unlock();
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1219,6 +1265,16 @@ impl DurableWriterLeaseV1 {
                 path: self.directory.path.clone(),
                 source,
             })
+    }
+
+    pub(crate) fn sync_catalog_directory(&mut self) -> Result<(), DurableIoError> {
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::CatalogDirectorySync,
+            DurableIoOperation::SyncDirectory,
+            self.directory.path(),
+        )?;
+        self.sync_directory()
     }
 }
 
@@ -1840,6 +1896,28 @@ mod tests {
             .unwrap()
             .try_acquire_writer()
             .unwrap();
+    }
+
+    /// A process spawn may briefly duplicate every open file description
+    /// before close-on-exec takes effect.  Releasing the affine Rust lease
+    /// must therefore issue an explicit unlock; merely closing its descriptor
+    /// would leave the duplicate holding the writer lock until it also closes.
+    #[test]
+    fn dropping_writer_lease_unlocks_a_duplicated_open_description() {
+        let scratch = test_scratch::acquire("rspace-durable-io-duplicated-lock-");
+        let lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let duplicated_description = lease._lock.file.try_clone().unwrap();
+
+        drop(lease);
+        let reacquired = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer();
+        drop(duplicated_description);
+
+        reacquired.expect("dropping the affine lease must explicitly release its OS lock");
     }
 
     #[test]

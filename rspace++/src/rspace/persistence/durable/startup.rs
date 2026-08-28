@@ -19,6 +19,7 @@ use super::{
     DurableLimitKind, DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError,
     IndexGenerationV1, ObjectIndexHeaderV1, ObjectIndexRecordV1,
 };
+use crate::rspace::persistence::wal::TerminalCommitViewV1;
 use crate::rspace::persistence::{
     CatalogAuthorityTokenV1, LogPackAddress, LogPackDecodeLimits, PackId, PackTerminalIdentityV1,
     SemanticProfileId, StateVersionV1, StoreId,
@@ -146,11 +147,13 @@ impl IndexBoundPhysicalRecoveryV1 {
     ) -> (
         CatalogAuthorityTokenV1,
         CommittedObjectIndexV1,
+        TerminalCommitViewV1,
         IndexBindingDispositionV1,
         DurableStartupWorkV1,
     ) {
+        let terminal_commit = self.recovery.terminal_commit();
         let (authority, index) = self.recovery.into_authority_and_index();
-        (authority, index, self.disposition, self.work)
+        (authority, index, terminal_commit, self.disposition, self.work)
     }
 }
 

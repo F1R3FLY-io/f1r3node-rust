@@ -28,7 +28,7 @@ use crate::rspace::persistence::durable::{
 };
 use crate::rspace::persistence::physical::{PhysicalDigest, StoreId};
 
-const CHECKPOINT_COMMIT_AUTH_LEN: usize = 384;
+const CHECKPOINT_COMMIT_AUTH_LEN: usize = 392;
 pub(crate) const GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1: u64 =
     (CHECKPOINT_COMMIT_AUTH_LEN + CHECKSUM_FIELD_LEN) as u64;
 const CHECKPOINT_COMMIT_RECORD_LEN: usize = GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1 as usize;

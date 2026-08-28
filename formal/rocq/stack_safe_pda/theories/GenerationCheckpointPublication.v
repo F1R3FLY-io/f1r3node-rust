@@ -292,6 +292,470 @@ Qed.
 
 End OrderedCheckpointInventory.
 
+(**
+  Receipt authority is modeled independently from its concrete byte offsets
+  and cryptographic algorithm.  Each natural is an opaque authority token at
+  this layer.  The executable refinement binds these facts to the typed V1
+  PREPARE identity, index authority, and terminal COMMIT receipt.
+*)
+Section CheckpointReceiptBinding.
+
+Inductive checkpoint_binding_fact : Type :=
+| BindingSequence
+| BindingStore
+| BindingPreviousTerminal
+| BindingPreparePack
+| BindingPrepareOffset
+| BindingPrepareLength
+| BindingPrepareDigest
+| BindingDescriptor
+| BindingIndexFirstLive
+| BindingIndexGeneration
+| BindingIndexTail
+| BindingIndexCount
+| BindingIndexDigest
+| BindingIndexRetention
+| BindingIndexCurrentBytes
+| BindingIndexRetainedBytes.
+
+Record checkpoint_binding_state : Type := CheckpointBindingState {
+  binding_sequence : nat;
+  binding_store : nat;
+  binding_previous_terminal : nat;
+  binding_prepare_pack : nat;
+  binding_prepare_offset : nat;
+  binding_prepare_length : nat;
+  binding_prepare_digest : nat;
+  binding_descriptor : nat;
+  binding_index_first_live : nat;
+  binding_index_generation : nat;
+  binding_index_tail : nat;
+  binding_index_count : nat;
+  binding_index_digest : nat;
+  binding_index_retention : nat;
+  binding_index_current_bytes : nat;
+  binding_index_retained_bytes : nat
+}.
+
+Definition receipt_binding_is_exact
+    (expected observed : checkpoint_binding_state) : Prop :=
+  binding_sequence observed = binding_sequence expected /\
+  binding_store observed = binding_store expected /\
+  binding_previous_terminal observed = binding_previous_terminal expected /\
+  binding_prepare_pack observed = binding_prepare_pack expected /\
+  binding_prepare_offset observed = binding_prepare_offset expected /\
+  binding_prepare_length observed = binding_prepare_length expected /\
+  binding_prepare_digest observed = binding_prepare_digest expected /\
+  binding_descriptor observed = binding_descriptor expected /\
+  binding_index_first_live observed = binding_index_first_live expected /\
+  binding_index_generation observed = binding_index_generation expected /\
+  binding_index_tail observed = binding_index_tail expected /\
+  binding_index_count observed = binding_index_count expected /\
+  binding_index_digest observed = binding_index_digest expected /\
+  binding_index_retention observed = binding_index_retention expected /\
+  binding_index_current_bytes observed = binding_index_current_bytes expected /\
+  binding_index_retained_bytes observed = binding_index_retained_bytes expected.
+
+Definition mutate_checkpoint_binding
+    (fact : checkpoint_binding_fact)
+    (binding : checkpoint_binding_state) : checkpoint_binding_state :=
+  match fact with
+  | BindingSequence =>
+      {| binding_sequence := S (binding_sequence binding);
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingStore =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := S (binding_store binding);
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingPreviousTerminal =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := S (binding_previous_terminal binding);
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingPreparePack =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := S (binding_prepare_pack binding);
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingPrepareOffset =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := S (binding_prepare_offset binding);
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingPrepareLength =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := S (binding_prepare_length binding);
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingPrepareDigest =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := S (binding_prepare_digest binding);
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingDescriptor =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := S (binding_descriptor binding);
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexFirstLive =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := S (binding_index_first_live binding);
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexGeneration =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := S (binding_index_generation binding);
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexTail =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := S (binding_index_tail binding);
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexCount =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := S (binding_index_count binding);
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexDigest =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := S (binding_index_digest binding);
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexRetention =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := S (binding_index_retention binding);
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexCurrentBytes =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := S (binding_index_current_bytes binding);
+         binding_index_retained_bytes := binding_index_retained_bytes binding |}
+  | BindingIndexRetainedBytes =>
+      {| binding_sequence := binding_sequence binding;
+         binding_store := binding_store binding;
+         binding_previous_terminal := binding_previous_terminal binding;
+         binding_prepare_pack := binding_prepare_pack binding;
+         binding_prepare_offset := binding_prepare_offset binding;
+         binding_prepare_length := binding_prepare_length binding;
+         binding_prepare_digest := binding_prepare_digest binding;
+         binding_descriptor := binding_descriptor binding;
+         binding_index_first_live := binding_index_first_live binding;
+         binding_index_generation := binding_index_generation binding;
+         binding_index_tail := binding_index_tail binding;
+         binding_index_count := binding_index_count binding;
+         binding_index_digest := binding_index_digest binding;
+         binding_index_retention := binding_index_retention binding;
+         binding_index_current_bytes := binding_index_current_bytes binding;
+         binding_index_retained_bytes := S (binding_index_retained_bytes binding) |}
+  end.
+
+Theorem every_single_binding_mutation_is_rejected :
+  forall expected fact,
+    ~receipt_binding_is_exact expected
+      (mutate_checkpoint_binding fact expected).
+Proof.
+  intros expected fact exact; destruct fact;
+    unfold receipt_binding_is_exact in exact; simpl in exact; lia.
+Qed.
+
+End CheckpointReceiptBinding.
+
+(** Exact, pre-mutation resource admission over a generic resource universe. *)
+Section CheckpointResourcePreflight.
+
+Inductive checkpoint_resource_family : Type :=
+| DurableResource
+| WalResource
+| SemanticAdmissionResource.
+
+Inductive resource_preflight_decision : Type :=
+| ResourceAccepted
+| ResourceRefused
+| ResourceConfigurationRefused.
+
+Record checkpoint_resource_case : Type := CheckpointResourceCase {
+  resource_family : checkpoint_resource_family;
+  resource_required : nat;
+  resource_minimum : nat;
+  resource_limit : nat
+}.
+
+Definition exact_resource_boundary (resource : checkpoint_resource_case) : nat :=
+  Nat.max (resource_required resource) (resource_minimum resource).
+
+Definition decide_resource_preflight
+    (resource : checkpoint_resource_case) : resource_preflight_decision :=
+  if resource_minimum resource <=? resource_limit resource then
+    if resource_required resource <=? resource_limit resource
+    then ResourceAccepted
+    else ResourceRefused
+  else ResourceConfigurationRefused.
+
+Definition with_resource_limit
+    (resource : checkpoint_resource_case)
+    (limit : nat) : checkpoint_resource_case :=
+  CheckpointResourceCase
+    (resource_family resource)
+    (resource_required resource)
+    (resource_minimum resource)
+    limit.
+
+Theorem exact_resource_boundary_is_accepted :
+  forall resource,
+    decide_resource_preflight
+      (with_resource_limit resource (exact_resource_boundary resource)) =
+      ResourceAccepted.
+Proof.
+  intros resource.
+  unfold decide_resource_preflight, with_resource_limit,
+    exact_resource_boundary; simpl.
+  assert (minimum_ok :
+    (resource_minimum resource <=?
+      Nat.max (resource_required resource) (resource_minimum resource)) = true).
+  { apply Nat.leb_le. apply Nat.le_max_r. }
+  assert (required_ok :
+    (resource_required resource <=?
+      Nat.max (resource_required resource) (resource_minimum resource)) = true).
+  { apply Nat.leb_le. apply Nat.le_max_l. }
+  rewrite minimum_ok, required_ok.
+  reflexivity.
+Qed.
+
+Theorem required_minus_one_is_refused :
+  forall resource,
+    0 < exact_resource_boundary resource ->
+    decide_resource_preflight
+      (with_resource_limit resource (Nat.pred (exact_resource_boundary resource))) <>
+      ResourceAccepted.
+Proof.
+  intros resource positive.
+  unfold decide_resource_preflight, with_resource_limit; simpl.
+  destruct (resource_minimum resource <=?
+    Nat.pred (exact_resource_boundary resource)) eqn:minimum_ok;
+    try discriminate.
+  destruct (resource_required resource <=?
+    Nat.pred (exact_resource_boundary resource)) eqn:required_ok;
+    try discriminate.
+  apply Nat.leb_le in minimum_ok.
+  apply Nat.leb_le in required_ok.
+  unfold exact_resource_boundary in positive.
+  assert (boundary_le :
+    Nat.max (resource_required resource) (resource_minimum resource) <=
+    Nat.pred (Nat.max (resource_required resource) (resource_minimum resource))).
+  { apply Nat.max_lub; assumption. }
+  lia.
+Qed.
+
+Record resource_refusal_evidence : Type := ResourceRefusalEvidence {
+  refusal_cleanup_started : bool;
+  refusal_prepare_written : bool;
+  refusal_index_written : bool;
+  refusal_commit_written : bool;
+  refusal_catalog_write_started : bool;
+  refusal_uncertainty_started : bool;
+  refusal_selected_new_authority : bool
+}.
+
+Definition refuse_resource_before_mutation : resource_refusal_evidence :=
+  ResourceRefusalEvidence false false false false false false false.
+
+Theorem refused_resource_preflight_has_no_mutation_or_new_authority :
+  refusal_cleanup_started refuse_resource_before_mutation = false /\
+  refusal_prepare_written refuse_resource_before_mutation = false /\
+  refusal_index_written refuse_resource_before_mutation = false /\
+  refusal_commit_written refuse_resource_before_mutation = false /\
+  refusal_catalog_write_started refuse_resource_before_mutation = false /\
+  refusal_uncertainty_started refuse_resource_before_mutation = false /\
+  refusal_selected_new_authority refuse_resource_before_mutation = false.
+Proof. repeat split; reflexivity. Qed.
+
+End CheckpointResourcePreflight.
+
 Section CrashSelection.
 
 Inductive durable_slot_image : Type :=
@@ -381,6 +845,33 @@ Inductive barrier_certificate : Type :=
 
 Inductive authority : Type := OldAuthority | NewAuthority.
 
+(**
+  Abstracts the complete executable RuntimeBudget reconciliation snapshot.
+  The fields correspond to consensus COMM cost, remaining budget, the full
+  diagnostic trace digest and event count, the last out-of-phlogiston event,
+  and per-lane demand.  Publication is required to preserve an arbitrary
+  seeded value, not merely a zero-initialized counter.
+*)
+Record runtime_budget_snapshot : Type := RuntimeBudgetSnapshot {
+  snapshot_total_cost : nat;
+  snapshot_remaining : nat;
+  snapshot_trace_digest : nat;
+  snapshot_trace_event_count : nat;
+  snapshot_last_oop_event : option nat;
+  snapshot_per_lane_demand : list nat
+}.
+
+Record physical_diagnostic_snapshot : Type := PhysicalDiagnosticSnapshot {
+  diagnostic_pack_bytes : nat;
+  diagnostic_index_bytes : nat;
+  diagnostic_catalog_bytes : nat;
+  diagnostic_dead_bytes : nat;
+  diagnostic_work_units : nat
+}.
+
+Variable initial_accounting : runtime_budget_snapshot.
+Variable initial_physical_diagnostics : physical_diagnostic_snapshot.
+
 Record publication_state : Type := PublicationState {
   state_phase : publication_phase;
   mutable_owners : list owner_token;
@@ -393,14 +884,15 @@ Record publication_state : Type := PublicationState {
   semantic_after : option SemanticState;
   semantics_are_readmitted : bool;
   result_is_acknowledged : bool;
-  introduction_charge : nat;
-  delivery_charge : nat;
-  trace_charge : nat
+  accounting_before : runtime_budget_snapshot;
+  accounting_after : runtime_budget_snapshot;
+  physical_diagnostics : physical_diagnostic_snapshot
 }.
 
 Definition initial_publication_state (semantic : SemanticState) : publication_state :=
   PublicationState OldAdmitted [OldWriter] [] [] [] OldAuthority None
-    semantic None false false 0 0 0.
+    semantic None false false initial_accounting initial_accounting
+    initial_physical_diagnostics.
 
 Definition advance
     (next_phase : publication_phase)
@@ -412,7 +904,8 @@ Definition advance
     (selected_authority state) (physical_authority state)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition transfer_and_advance
     (next_phase : publication_phase)
@@ -424,7 +917,8 @@ Definition transfer_and_advance
     (selected_authority state) (physical_authority state)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition write_prepare
     (expected : list Object)
@@ -435,7 +929,8 @@ Definition write_prepare
     (selected_authority state) (physical_authority state)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition write_index
     (state : publication_state) : publication_state :=
@@ -445,7 +940,8 @@ Definition write_index
     (selected_authority state) (physical_authority state)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition select_new_catalog (state : publication_state) : publication_state :=
   PublicationState CatalogFileDurable (mutable_owners state)
@@ -454,7 +950,8 @@ Definition select_new_catalog (state : publication_state) : publication_state :=
     NewAuthority (physical_authority state)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition recover_new (state : publication_state) : publication_state :=
   PublicationState PhysicalRecovered (mutable_owners state)
@@ -463,7 +960,8 @@ Definition recover_new (state : publication_state) : publication_state :=
     (selected_authority state) (Some NewAuthority)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition readmit (state : publication_state) : publication_state :=
   PublicationState SemanticReadmitted (mutable_owners state)
@@ -472,7 +970,8 @@ Definition readmit (state : publication_state) : publication_state :=
     (selected_authority state) (physical_authority state)
     (semantic_before state) (Some (semantic_before state))
     true (result_is_acknowledged state)
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Definition acknowledge (state : publication_state) : publication_state :=
   PublicationState Acknowledged [NewWriter] (certificates state)
@@ -480,7 +979,8 @@ Definition acknowledge (state : publication_state) : publication_state :=
     (selected_authority state) (physical_authority state)
     (semantic_before state) (semantic_after state)
     (semantics_are_readmitted state) true
-    (introduction_charge state) (delivery_charge state) (trace_charge state).
+    (accounting_before state) (accounting_after state)
+    (physical_diagnostics state).
 
 Inductive publication_step
     (expected : list Object) : publication_state -> publication_state -> Prop :=
@@ -924,15 +1424,14 @@ Proof.
   - exact (acknowledged_has_acknowledged_phase path acknowledged).
 Qed.
 
-Theorem checkpoint_publication_preserves_zero_semantic_charges :
+Theorem checkpoint_publication_preserves_seeded_runtime_budget :
   forall expected semantic state,
     reachable expected semantic state ->
-    introduction_charge state = 0 /\
-    delivery_charge state = 0 /\
-    trace_charge state = 0.
+    accounting_before state = initial_accounting /\
+    accounting_after state = initial_accounting.
 Proof.
   intros expected semantic state path; induction path.
-  - repeat split; reflexivity.
+  - split; reflexivity.
   - inversion H; subst; unfold transfer_and_advance, advance, write_prepare,
       write_index, select_new_catalog, recover_new, readmit, acknowledge;
       simpl; assumption.
@@ -947,9 +1446,13 @@ Print Assumptions successful_merge_preserves_strict_digest_order.
 Print Assumptions existing_digest_is_rejected.
 Print Assumptions refined_descriptor_carries_exact_six_inventories.
 Print Assumptions refined_descriptor_has_exact_wire_layout.
+Print Assumptions every_single_binding_mutation_is_rejected.
+Print Assumptions exact_resource_boundary_is_accepted.
+Print Assumptions required_minus_one_is_refused.
+Print Assumptions refused_resource_preflight_has_no_mutation_or_new_authority.
 Print Assumptions raw_slot_recovery_selects_old_complete_new_or_rejects.
 Print Assumptions reachable_authority_is_affine_and_continuous.
 Print Assumptions selected_new_has_exact_members_and_all_durable_barriers.
 Print Assumptions physical_recovery_requires_post_catalog_directory_barrier.
 Print Assumptions acknowledgement_requires_recovery_readmission_and_same_semantics.
-Print Assumptions checkpoint_publication_preserves_zero_semantic_charges.
+Print Assumptions checkpoint_publication_preserves_seeded_runtime_budget.
