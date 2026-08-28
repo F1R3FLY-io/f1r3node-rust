@@ -87,6 +87,7 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
 From FinalizedFloor Require Import MainTheorem.
 From FinalizedFloor Require Import GuardBridge.
 From FinalizedFloor Require Import CliqueOracle.
+From FinalizedFloor Require Import SettledEffectProbe.
 Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_selection_correct.
 Print Assumptions finalized_floor_arithmetic_correct.
@@ -101,14 +102,27 @@ Print Assumptions Finalized_ft_refines_Finalized.
 Print Assumptions snap_extends_snap_advances.
 Print Assumptions Finalized_ft_hg_refines_Finalized.
 Print Assumptions guard_constant_committee_transparent_ft.
+Print Assumptions walk_collect_equiv.
+Print Assumptions walk_segment_composition.
+Print Assumptions walk_memo_false_stable.
+Print Assumptions walk_true_stable.
 EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
+    # The expected count derives from the assertion list itself, so adding
+    # a theorem above cannot silently desynchronize a hardcoded number.
+    n_expected=$(grep -c '^Print Assumptions' "$chk")
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "14" ]]; then
-      pass "all 14 headline results axiom-free (6 capstones incl. A9 ftexact + G2 ftprovenance [θ_ppm on-chain provenance + widened [-den,den] overflow envelope] + guard⇒AdjDC bridge, upgo_finalized, chain_adj_AdjDC + C1/C5: thetaexact_advance capstone, Finalized_ft_refines_Finalized, snap_extends_snap_advances + C1' θ≤0 hard-gate: Finalized_ft_hg_refines_Finalized + BridgeFt θ-exact cache transparency guard_constant_committee_transparent_ft)"
+    if [[ "$n_closed" == "$n_expected" ]]; then
+      pass "all $n_expected headline results axiom-free:"
+      printf '         - %s\n' \
+        "6 capstones: merge, selection, arithmetic, phase7, A9 ftexact, G2 ftprovenance (θ_ppm on-chain provenance + widened [-den,den] overflow envelope)" \
+        "guard⇒AdjDC bridge: guard_constant_committee_transparent, upgo_finalized, chain_adj_AdjDC" \
+        "C1/C5 sweep: finalized_floor_thetaexact_advance_correct, Finalized_ft_refines_Finalized, snap_extends_snap_advances" \
+        "C1' θ≤0 hard-gate: Finalized_ft_hg_refines_Finalized; BridgeFt θ-exact cache transparency: guard_constant_committee_transparent_ft" \
+        "CLAIM-FINALITY-001 settled-effect probe algebra: walk_collect_equiv, walk_segment_composition, walk_memo_false_stable, walk_true_stable"
     else
-      fail "headline results NOT all axiom-free ($n_closed/14 Closed):"; echo "$out" | sed 's/^/      /'
+      fail "headline results NOT all axiom-free ($n_closed/$n_expected Closed):"; echo "$out" | sed 's/^/      /'
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
