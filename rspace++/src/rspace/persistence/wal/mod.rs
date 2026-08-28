@@ -6,14 +6,26 @@
 //! share one physical stream without a second copy of the transaction delta.
 
 mod codec;
+mod checkpoint;
 mod disposition;
 mod error;
 mod types;
 
+#[cfg(test)]
+pub(crate) use checkpoint::GenerationCheckpointSourceTestSealV1;
+pub(crate) use checkpoint::{
+    GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1, GenerationCheckpointLayoutVisitErrorV1,
+    GenerationCheckpointObjectLayoutV1, GenerationCheckpointPrepareIdentityV1,
+    GenerationCheckpointPreparePreflightV1, GenerationCheckpointPrepareRecordViewV1,
+    GenerationCheckpointPrepareWriteErrorV1, GenerationCheckpointSourceCopyErrorV1,
+    GenerationCheckpointSourceV1, PreparedGenerationCheckpointV1,
+    preflight_generation_checkpoint_prepare_v1,
+};
 pub use codec::{
-    LogPackObjectIter, LogPackObjectView, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
-    TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
-    TransactionCommitViewV1, TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1,
+    LogPackObjectIter, LogPackObjectView, PREPARE_DISCRIMINATOR_LEN_V1, PrepareRecordIdentityV1,
+    PrepareRecordKindV1, PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
+    TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
+    TransactionPrepareRecordViewV1, decode_prepare_kind_v1, preflight_prepare_record_len_v1,
     preflight_prepare_record_v1,
 };
 pub(crate) use codec::{PrepareRecordPreflightV1, PreparedObjectLayoutV1};

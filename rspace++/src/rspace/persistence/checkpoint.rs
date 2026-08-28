@@ -204,29 +204,13 @@ impl CheckpointObjectInventoryV1 {
                 "checkpoint DATA canonical bytes",
             ))?;
         let mut builder = OrderedObjectInventoryBuilderV1::new(data_objects, data_canonical_bytes);
-        let mut retention_pending = true;
-        ledger.try_visit_retained_union(|reference| {
-            if retention_pending {
-                match retention_manifest.digest().cmp(&reference.digest()) {
-                    Ordering::Less => {
-                        builder.push(retention_manifest)?;
-                        retention_pending = false;
-                    }
-                    Ordering::Equal => {
-                        return Err(GenerationCheckpointErrorV1::DuplicateInventoryDigest {
-                            digest: reference.digest(),
-                            first_len: retention_manifest.encoded_len(),
-                            second_len: reference.encoded_len(),
-                        });
-                    }
-                    Ordering::Greater => {}
-                }
-            }
+        try_visit_checkpoint_references(ledger, retention_manifest, |reference| {
             builder.push(reference)
+        })
+        .map_err(|error| match error {
+            CheckpointReferenceVisitErrorV1::Checkpoint(error) |
+            CheckpointReferenceVisitErrorV1::Visitor(error) => error,
         })?;
-        if retention_pending {
-            builder.push(retention_manifest)?;
-        }
         Self::from_ordered(report, retention_manifest, builder.finish()?)
     }
 
@@ -291,6 +275,68 @@ impl CheckpointObjectInventoryV1 {
     pub(crate) const fn ordered_digest(self) -> OrderedObjectInventoryDigestV1 {
         self.ordered_digest
     }
+}
+
+#[derive(Debug)]
+pub(crate) enum CheckpointReferenceVisitErrorV1<E> {
+    Checkpoint(GenerationCheckpointErrorV1),
+    Visitor(E),
+}
+
+impl<E: Display> Display for CheckpointReferenceVisitErrorV1<E> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Checkpoint(error) => Display::fmt(error, formatter),
+            Self::Visitor(error) => {
+                write!(formatter, "checkpoint reference visitor failed: {error}")
+            }
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for CheckpointReferenceVisitErrorV1<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Checkpoint(error) => Some(error),
+            Self::Visitor(error) => Some(error),
+        }
+    }
+}
+
+/// Merge the digest-ordered retained closure with the retention-manifest
+/// singleton without materializing or sorting either input.
+pub(crate) fn try_visit_checkpoint_references<E>(
+    ledger: &StructuralClosureLedgerV1,
+    retention_manifest: ObjectRefV1,
+    mut visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
+) -> Result<(), CheckpointReferenceVisitErrorV1<E>> {
+    let mut retention_pending = true;
+    ledger.try_visit_retained_union(|reference| {
+        if retention_pending {
+            match retention_manifest.digest().cmp(&reference.digest()) {
+                Ordering::Less => {
+                    visitor(retention_manifest)
+                        .map_err(CheckpointReferenceVisitErrorV1::Visitor)?;
+                    retention_pending = false;
+                }
+                Ordering::Equal => {
+                    return Err(CheckpointReferenceVisitErrorV1::Checkpoint(
+                        GenerationCheckpointErrorV1::DuplicateInventoryDigest {
+                            digest: reference.digest(),
+                            first_len: retention_manifest.encoded_len(),
+                            second_len: reference.encoded_len(),
+                        },
+                    ));
+                }
+                Ordering::Greater => {}
+            }
+        }
+        visitor(reference).map_err(CheckpointReferenceVisitErrorV1::Visitor)
+    })?;
+    if retention_pending {
+        visitor(retention_manifest).map_err(CheckpointReferenceVisitErrorV1::Visitor)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,7 +559,7 @@ impl GenerationCheckpointDescriptorViewV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum GenerationCheckpointErrorV1 {
+pub enum GenerationCheckpointErrorV1 {
     Canonical(CanonicalFormatError),
     CounterOverflow(&'static str),
     DuplicateInventoryDigest {

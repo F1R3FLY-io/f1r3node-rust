@@ -594,10 +594,10 @@ fn zero_distinct_object_budget_prevents_the_structural_object_read() {
     ));
     assert_eq!(
         store.total_reads(),
-        1,
-        "only the semantic-profile authority read may precede structural preflight"
+        0,
+        "the structural distinct-object preflight must reject before any store read"
     );
-    assert_eq!(store.read_count(base.manifest().digest()), 1);
+    assert_eq!(store.read_count(base.manifest().digest()), 0);
 }
 
 #[test]

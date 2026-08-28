@@ -6,9 +6,10 @@ use crate::rspace::persistence::{
     CanonicalObjectStore, CanonicalSink, CommitPublicationV1, CommittedObjectComparison,
     CommittedObjectLookup, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
     LogPackObjectPlanV1, LogPackSequence, LogPackWriteError, ObjectRefV1, PACK_HEADER_LEN_V1,
-    PhysicalDigest, PreparedLogPackTransactionV1, StoreId, TRANSACTION_PREPARE_HEADER_LEN_V1,
+    PREPARE_DISCRIMINATOR_LEN_V1, PhysicalDigest, PrepareRecordKindV1,
+    PreparedLogPackTransactionV1, StoreId, TRANSACTION_PREPARE_HEADER_LEN_V1,
     TransactionCommitRecordV1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
-    preflight_prepare_record_len_v1,
+    decode_prepare_kind_v1, preflight_prepare_record_len_v1,
 };
 
 struct MissingLookup;
@@ -150,6 +151,55 @@ fn prepare_prefix_is_authenticated_and_bounded_before_variable_size_reads() {
 }
 
 #[test]
+fn prepare_discriminator_routes_only_exact_known_fixed_headers() {
+    let (bytes, _, _) = encoded_prepare();
+    let discriminator_len = PREPARE_DISCRIMINATOR_LEN_V1 as usize;
+    let discriminator = &bytes[..discriminator_len];
+    let incremental = decode_prepare_kind_v1(discriminator).unwrap();
+    assert_eq!(incremental, PrepareRecordKindV1::Incremental);
+    assert_eq!(incremental.fixed_header_len(), TRANSACTION_PREPARE_HEADER_LEN_V1);
+
+    let mut checkpoint = discriminator.to_vec();
+    checkpoint[24..32].copy_from_slice(&3_u64.to_le_bytes());
+    let checkpoint = decode_prepare_kind_v1(&checkpoint).unwrap();
+    assert_eq!(checkpoint, PrepareRecordKindV1::GenerationCheckpoint);
+    assert!(checkpoint.fixed_header_len() > TRANSACTION_PREPARE_HEADER_LEN_V1);
+
+    let mut unsupported = discriminator.to_vec();
+    unsupported[24..32].copy_from_slice(&99_u64.to_le_bytes());
+    assert!(matches!(
+        decode_prepare_kind_v1(&unsupported),
+        Err(LogPackFormatError::UnsupportedPrepareKind(99))
+    ));
+    assert!(matches!(
+        decode_prepare_kind_v1(&discriminator[..discriminator_len - 1]),
+        Err(LogPackFormatError::LengthMismatch { .. })
+    ));
+    let mut extended = discriminator.to_vec();
+    extended.push(0);
+    assert!(matches!(
+        decode_prepare_kind_v1(&extended),
+        Err(LogPackFormatError::LengthMismatch { .. })
+    ));
+}
+
+#[test]
+fn incremental_parser_reports_checkpoint_kind_without_trusting_its_extents() {
+    let (mut bytes, _, _) = encoded_prepare();
+    bytes[24..32].copy_from_slice(&3_u64.to_le_bytes());
+    let header_crc = crate::rspace::persistence::checksum::crc32c(&bytes[..232]);
+    bytes[232..240]
+        .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(header_crc));
+    assert!(matches!(
+        TransactionPrepareRecordViewV1::parse(&bytes, LogPackDecodeLimits::UNBOUNDED),
+        Err(LogPackFormatError::UnexpectedRecordKind {
+            expected: 1,
+            actual: 3,
+        })
+    ));
+}
+
+#[test]
 fn prepared_layouts_are_the_single_source_for_parsed_object_offsets() {
     let store = CanonicalObjectStore::new();
     let base = base_state(&store, 56, None);
@@ -227,6 +277,73 @@ fn warm_store_reuse_omits_only_the_equal_body_and_collision_prevents_preflight()
         LogPackObjectPlanV1::classify(&sealed, &CollisionLookup),
         Err(crate::rspace::persistence::LogPackObjectPlanError::Collision(reference))
             if reference == sealed.objects()[0].reference()
+    ));
+}
+
+#[test]
+fn single_object_limit_applies_to_reuse_references_as_well_as_inline_data() {
+    let store = CanonicalObjectStore::new();
+    let base = base_state(&store, 55, None);
+    let mutation = data_batch(base, &"r".repeat(32_000));
+    let sealed = seal_data(&store, &mutation);
+    let largest = sealed
+        .objects()
+        .iter()
+        .max_by_key(|object| object.reference().encoded_len())
+        .unwrap()
+        .reference();
+    assert!(
+        sealed
+            .objects()
+            .iter()
+            .filter(|object| object.reference() != largest)
+            .all(|object| object.reference().encoded_len() < largest.encoded_len()),
+        "the fixture must isolate one oversized REUSE reference",
+    );
+    let plan = LogPackObjectPlanV1::classify(&sealed, &EqualOnly(largest)).unwrap();
+    let limit = largest.encoded_len() - 1;
+    let limits = LogPackDecodeLimits {
+        max_single_object_bytes: limit,
+        ..LogPackDecodeLimits::UNBOUNDED
+    };
+    assert!(matches!(
+        PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
+            &sealed,
+            plan.clone(),
+            StoreId::from_array([0x63; 16]),
+            LogPackSequence::new(11).unwrap(),
+            limits,
+        ),
+        Err(LogPackFormatError::ResourceLimit {
+            resource: "single referenced object bytes",
+            limit: observed_limit,
+            attempted,
+        }) if observed_limit == limit && attempted == largest.encoded_len()
+    ));
+
+    let prepared = PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
+        &sealed,
+        plan,
+        StoreId::from_array([0x63; 16]),
+        LogPackSequence::new(11).unwrap(),
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    prepared.write_to(&mut bytes).unwrap();
+    let reused = TransactionPrepareRecordViewV1::parse(&bytes, LogPackDecodeLimits::UNBOUNDED)
+        .unwrap()
+        .objects()
+        .find(|object| object.reference() == largest)
+        .unwrap();
+    assert_eq!(reused.disposition(), crate::rspace::persistence::LogPackObjectDispositionV1::Reuse,);
+    assert!(matches!(
+        TransactionPrepareRecordViewV1::parse(&bytes, limits),
+        Err(LogPackFormatError::ResourceLimit {
+            resource: "single referenced object bytes",
+            limit: observed_limit,
+            attempted,
+        }) if observed_limit == limit && attempted == largest.encoded_len()
     ));
 }
 

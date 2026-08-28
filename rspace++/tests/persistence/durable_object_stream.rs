@@ -1,6 +1,7 @@
 use crate::rspace::persistence::canonical::CanonicalSink;
 use crate::rspace::persistence::durable::{
     DurableObjectCopyErrorV1, DurableObjectReadErrorV1, copy_verified_canonical_with,
+    copy_verified_canonical_with_scratch,
 };
 use crate::rspace::persistence::{ObjectDigest, ObjectRefV1};
 
@@ -29,6 +30,49 @@ fn large_objects_stream_through_fixed_heap_scratch_on_a_small_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn caller_owned_copy_scratch_reuses_one_bounded_allocation_across_objects() {
+    let first = source_bytes(131_101);
+    let second = source_bytes(98_321);
+    let mut scratch = Vec::new();
+    let mut output = Vec::new();
+
+    let first_reference = reference(&first);
+    copy_verified_canonical_with_scratch(
+        first_reference,
+        &mut output,
+        &mut scratch,
+        |offset, destination| {
+            let start = offset as usize;
+            destination.copy_from_slice(&first[start..start + destination.len()]);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(output, first);
+    let allocation = scratch.as_ptr();
+    let capacity = scratch.capacity();
+    assert_eq!(scratch.len(), 64 * 1024);
+
+    output.clear();
+    let second_reference = reference(&second);
+    copy_verified_canonical_with_scratch(
+        second_reference,
+        &mut output,
+        &mut scratch,
+        |offset, destination| {
+            let start = offset as usize;
+            destination.copy_from_slice(&second[start..start + destination.len()]);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(output, second);
+    assert_eq!(scratch.as_ptr(), allocation);
+    assert_eq!(scratch.capacity(), capacity);
+    assert_eq!(scratch.len(), 64 * 1024);
 }
 
 #[test]

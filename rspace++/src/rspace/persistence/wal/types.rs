@@ -175,6 +175,7 @@ pub struct LogPackDecodeLimits {
     pub max_mutation_bytes: u64,
     pub max_objects: u64,
     pub max_object_bytes: u64,
+    pub max_single_object_bytes: u64,
     pub max_mutation_entries: u64,
     pub max_mutation_key_bytes: u64,
 }
@@ -185,6 +186,7 @@ impl LogPackDecodeLimits {
         max_mutation_bytes: u64::MAX,
         max_objects: u64::MAX,
         max_object_bytes: u64::MAX,
+        max_single_object_bytes: u64::MAX,
         max_mutation_entries: u64::MAX,
         max_mutation_key_bytes: u64::MAX,
     };

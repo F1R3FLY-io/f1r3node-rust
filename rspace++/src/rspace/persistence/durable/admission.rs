@@ -23,7 +23,8 @@ use crate::rspace::persistence::canonical::{
     CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1, checked_len,
 };
 use crate::rspace::persistence::checkpoint::{
-    GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1,
+    CheckpointReferenceVisitErrorV1, GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1,
+    try_visit_checkpoint_references,
 };
 use crate::rspace::persistence::closure::{
     ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
@@ -547,10 +548,11 @@ impl DurableIndexedObjectStoreV1 {
         Ok(bytes.into_boxed_slice())
     }
 
-    pub(crate) fn copy_verified_canonical<S: CanonicalSink>(
+    pub(crate) fn copy_verified_canonical_with_scratch<S: CanonicalSink>(
         &self,
         reference: ObjectRefV1,
         sink: &mut S,
+        scratch: &mut Vec<u8>,
     ) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
         let record = self
             .lookup_exact(reference)
@@ -561,7 +563,7 @@ impl DurableIndexedObjectStoreV1 {
         let (pinned, offset) = self
             .locate_record(record)
             .map_err(DurableObjectCopyErrorV1::Object)?;
-        copy_verified_canonical_with(reference, sink, |relative, destination| {
+        copy_verified_canonical_with_scratch(reference, sink, scratch, |relative, destination| {
             let absolute = offset.checked_add(relative).ok_or(
                 DurableObjectReadErrorV1::ObjectExtentOverflow {
                     digest: reference.digest(),
@@ -580,17 +582,28 @@ const DURABLE_COPY_BUFFER_LEN: usize = 64 * 1024;
 pub(crate) fn copy_verified_canonical_with<S: CanonicalSink>(
     reference: ObjectRefV1,
     sink: &mut S,
+    read: impl FnMut(u64, &mut [u8]) -> Result<(), DurableObjectReadErrorV1>,
+) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
+    copy_verified_canonical_with_scratch(reference, sink, &mut Vec::new(), read)
+}
+
+pub(crate) fn copy_verified_canonical_with_scratch<S: CanonicalSink>(
+    reference: ObjectRefV1,
+    sink: &mut S,
+    scratch: &mut Vec<u8>,
     mut read: impl FnMut(u64, &mut [u8]) -> Result<(), DurableObjectReadErrorV1>,
 ) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
     let capacity = usize::try_from(reference.encoded_len().min(DURABLE_COPY_BUFFER_LEN as u64))
         .expect("bounded durable copy scratch fits usize");
-    let mut scratch = Vec::new();
-    scratch.try_reserve_exact(capacity).map_err(|_| {
-        DurableObjectCopyErrorV1::Object(DurableObjectReadErrorV1::MaterializationAllocation {
-            digest: reference.digest(),
-            attempted: capacity as u64,
-        })
-    })?;
+    if scratch.capacity() < capacity {
+        let additional = capacity.saturating_sub(scratch.len());
+        scratch.try_reserve_exact(additional).map_err(|_| {
+            DurableObjectCopyErrorV1::Object(DurableObjectReadErrorV1::MaterializationAllocation {
+                digest: reference.digest(),
+                attempted: capacity as u64,
+            })
+        })?;
+    }
     scratch.resize(capacity, 0);
     let mut hasher = Blake2b::<U32>::new();
     let mut copied = 0u64;
@@ -797,6 +810,27 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
             pack.current_state_canonical_bytes(),
             &self.retained_closure,
         )
+    }
+
+    pub(crate) fn try_visit_checkpoint_references<E>(
+        &self,
+        visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
+    ) -> Result<(), CheckpointReferenceVisitErrorV1<E>> {
+        try_visit_checkpoint_references(
+            &self.retained_closure,
+            self.authority.slot().pack().retention_manifest(),
+            visitor,
+        )
+    }
+
+    pub(crate) fn copy_checkpoint_object<S: CanonicalSink>(
+        &self,
+        reference: ObjectRefV1,
+        sink: &mut S,
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
+        self.store
+            .copy_verified_canonical_with_scratch(reference, sink, scratch)
     }
 
     /// Publication is an affine transition: later durable mutation code must

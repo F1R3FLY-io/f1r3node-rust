@@ -24,6 +24,7 @@ mod wal;
 pub use canonical::{
     CanonicalEncode, CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1,
 };
+pub use checkpoint::GenerationCheckpointErrorV1;
 pub use closure::{
     ClosureError, IncrementalClosureLimits, StructuralClosureReport, StructuralValidationLimits,
     verify_structural_closure, verify_structural_closure_with_limits,
@@ -89,9 +90,10 @@ pub use wal::{
     CommitPublicationV1, CommittedObjectComparison, CommittedObjectLookup, LogPackAddress,
     LogPackDecodeLimits, LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectIter,
     LogPackObjectPlanError, LogPackObjectPlanV1, LogPackObjectView, LogPackSequence,
-    LogPackWriteError, PackId, PrepareRecordIdentityV1, PreparedLogPackTransactionV1,
-    TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
-    TransactionCommitViewV1, TransactionPrepareRecordViewV1, preflight_prepare_record_len_v1,
+    LogPackWriteError, PREPARE_DISCRIMINATOR_LEN_V1, PackId, PrepareRecordIdentityV1,
+    PrepareRecordKindV1, PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
+    TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
+    TransactionPrepareRecordViewV1, decode_prepare_kind_v1, preflight_prepare_record_len_v1,
     preflight_prepare_record_v1,
 };
 

@@ -23,7 +23,7 @@ use crate::rspace::persistence::manifest::{SEMANTIC_PROFILE_ID_LEN, SemanticProf
 use crate::rspace::persistence::mutation::{
     MutationBatchViewV1, MutationDecodeLimits, StateVersionV1,
 };
-use crate::rspace::persistence::object::CanonicalObjectView;
+use crate::rspace::persistence::object::{CanonicalObjectKind, CanonicalObjectView};
 use crate::rspace::persistence::physical::{
     PHYSICAL_DIGEST_LEN, PhysicalDigest, STORE_ID_LEN, StoreId,
 };
@@ -32,11 +32,13 @@ use crate::rspace::persistence::transaction::{
     SealedDagTransaction, SealedObject, SealedTransitionV1,
 };
 
-const PREPARE_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Prep\0\0";
+pub(super) const PREPARE_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Prep\0\0";
 const COMMIT_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Comm\0\0";
-const LOG_PACK_VERSION_V1: u64 = 1;
-const PREPARE_KIND: u64 = 1;
+pub(super) const LOG_PACK_VERSION_V1: u64 = 1;
+pub(super) const TRANSACTION_PREPARE_KIND_V1: u64 = 1;
+pub(super) const GENERATION_CHECKPOINT_PREPARE_KIND_V1: u64 = 3;
 const COMMIT_KIND: u64 = 2;
+pub const PREPARE_DISCRIMINATOR_LEN_V1: u64 = (OBJECT_DOMAIN_LEN + 8 + 8) as u64;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
 const OBJECT_RECORD_HEADER_LEN: u64 = 8 + OBJECT_REF_LEN;
 const PREPARE_AUTH_HEADER_LEN: usize = 232;
@@ -47,6 +49,56 @@ const PREPARE_TRAILER_LEN: u64 = CHECKSUM_FIELD_LEN as u64;
 const COMMIT_AUTH_LEN: usize = 376;
 pub const TRANSACTION_COMMIT_RECORD_LEN_V1: u64 = (COMMIT_AUTH_LEN + CHECKSUM_FIELD_LEN) as u64;
 const COMMIT_RECORD_LEN: usize = TRANSACTION_COMMIT_RECORD_LEN_V1 as usize;
+
+/// An unauthenticated prepare-record discriminator.
+///
+/// This value is permitted to select only one of the two small, fixed header
+/// widths. The selected header must then pass its kind-specific checksum and
+/// resource preflight before any declared variable extent is trusted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrepareRecordKindV1 {
+    Incremental,
+    GenerationCheckpoint,
+}
+
+impl PrepareRecordKindV1 {
+    pub const fn fixed_header_len(self) -> u64 {
+        match self {
+            Self::Incremental => TRANSACTION_PREPARE_HEADER_LEN_V1,
+            Self::GenerationCheckpoint => {
+                super::checkpoint::GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1
+            }
+        }
+    }
+}
+
+/// Decode the fixed domain/version/kind discriminator used to choose an
+/// authenticated prepare-header parser.
+///
+/// The result is not record authentication and carries no authority over a
+/// record length, object count, or semantic field.
+pub fn decode_prepare_kind_v1(prefix: &[u8]) -> Result<PrepareRecordKindV1, LogPackFormatError> {
+    let actual = checked_len(prefix.len(), "WAL prepare discriminator")?;
+    if actual != PREPARE_DISCRIMINATOR_LEN_V1 {
+        return Err(LogPackFormatError::LengthMismatch {
+            declared: PREPARE_DISCRIMINATOR_LEN_V1,
+            actual,
+        });
+    }
+    let mut cursor = ReadCursor::new(prefix);
+    require_domain(&mut cursor, PREPARE_DOMAIN)?;
+    let version = cursor.read_u64()?;
+    if version != LOG_PACK_VERSION_V1 {
+        return Err(LogPackFormatError::UnsupportedVersion(version));
+    }
+    let kind = cursor.read_u64()?;
+    cursor.finish()?;
+    match kind {
+        TRANSACTION_PREPARE_KIND_V1 => Ok(PrepareRecordKindV1::Incremental),
+        GENERATION_CHECKPOINT_PREPARE_KIND_V1 => Ok(PrepareRecordKindV1::GenerationCheckpoint),
+        _ => Err(LogPackFormatError::UnsupportedPrepareKind(kind)),
+    }
+}
 
 /// Identity returned only after every prepare byte has reached the sink.
 /// Physical durability is established later by the publisher's sync phase.
@@ -223,6 +275,11 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         let mut previous = None;
         for (object, disposition) in transaction.objects().iter().zip(object_plan.dispositions()) {
             let reference = object.reference();
+            require_limit(
+                "single referenced object bytes",
+                limits.max_single_object_bytes,
+                reference.encoded_len(),
+            )?;
             if let Some(previous) = previous {
                 if previous >= reference.digest() {
                     return Err(LogPackFormatError::ObjectsNotStrict {
@@ -580,7 +637,7 @@ fn parse_prepare_header_v1(
 
     let mut cursor = ReadCursor::new(header);
     require_domain(&mut cursor, PREPARE_DOMAIN)?;
-    require_version_and_kind(&mut cursor, PREPARE_KIND)?;
+    require_version_and_kind(&mut cursor, TRANSACTION_PREPARE_KIND_V1)?;
     let declared_len = cursor.read_u64()?;
     let minimum = PREPARE_HEADER_LEN.checked_add(PREPARE_TRAILER_LEN).ok_or(
         CanonicalFormatError::LengthOverflow {
@@ -701,6 +758,11 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
                     });
                 }
             }
+            require_limit(
+                "single referenced object bytes",
+                limits.max_single_object_bytes,
+                reference.encoded_len(),
+            )?;
             if disposition == LogPackObjectDispositionV1::Data {
                 let object_len = usize::try_from(reference.encoded_len()).map_err(|_| {
                     CanonicalFormatError::LengthOutOfRange {
@@ -1048,11 +1110,12 @@ fn validate_mutation_receipt(
     Ok(())
 }
 
-fn validate_object(
+pub(super) fn validate_object(
     declared: ObjectRefV1,
     canonical_bytes: &[u8],
-) -> Result<(), LogPackFormatError> {
+) -> Result<CanonicalObjectKind, LogPackFormatError> {
     let object = CanonicalObjectView::parse(canonical_bytes)?;
+    let kind = object.kind();
     let actual = match object {
         CanonicalObjectView::DagNode(node) => node.object_ref(),
         CanonicalObjectView::Blob(blob) => blob.object_ref(),
@@ -1063,7 +1126,7 @@ fn validate_object(
     if actual != declared {
         return Err(LogPackFormatError::ObjectReference { declared, actual });
     }
-    Ok(())
+    Ok(kind)
 }
 
 fn read_object_disposition(
@@ -1076,7 +1139,7 @@ fn read_object_disposition(
     }
 }
 
-fn require_limit(
+pub(super) fn require_limit(
     resource: &'static str,
     limit: u64,
     attempted: u64,
@@ -1103,7 +1166,7 @@ fn write_prepare_header<S: CanonicalSink>(
 ) -> Result<(), S::Error> {
     sink.write_all(PREPARE_DOMAIN)?;
     write_u64(sink, LOG_PACK_VERSION_V1)?;
-    write_u64(sink, PREPARE_KIND)?;
+    write_u64(sink, TRANSACTION_PREPARE_KIND_V1)?;
     write_u64(sink, record_len)?;
     write_u64(sink, sequence.get())?;
     sink.write_all(store_id.as_bytes())?;
@@ -1121,7 +1184,10 @@ fn write_state<S: CanonicalSink>(sink: &mut S, state: StateVersionV1) -> Result<
     write_reference(sink, state.manifest())
 }
 
-fn write_reference<S: CanonicalSink>(sink: &mut S, reference: ObjectRefV1) -> Result<(), S::Error> {
+pub(super) fn write_reference<S: CanonicalSink>(
+    sink: &mut S,
+    reference: ObjectRefV1,
+) -> Result<(), S::Error> {
     sink.write_all(reference.digest().as_bytes())?;
     write_u64(sink, reference.encoded_len())
 }
@@ -1176,12 +1242,15 @@ fn require_version_and_kind(
     }
     let kind = cursor.read_u64()?;
     if kind != expected_kind {
-        return Err(LogPackFormatError::InvalidDomain);
+        return Err(LogPackFormatError::UnexpectedRecordKind {
+            expected: expected_kind,
+            actual: kind,
+        });
     }
     Ok(())
 }
 
-struct AuthenticatedSink<'sink, S: CanonicalSink> {
+pub(super) struct AuthenticatedSink<'sink, S: CanonicalSink> {
     sink: &'sink mut S,
     crc: Crc32c,
     hasher: Blake2b<U32>,
@@ -1189,7 +1258,7 @@ struct AuthenticatedSink<'sink, S: CanonicalSink> {
 }
 
 impl<'sink, S: CanonicalSink> AuthenticatedSink<'sink, S> {
-    fn new(sink: &'sink mut S) -> Self {
+    pub(super) fn new(sink: &'sink mut S) -> Self {
         Self {
             sink,
             crc: Crc32c::new(),
@@ -1198,7 +1267,7 @@ impl<'sink, S: CanonicalSink> AuthenticatedSink<'sink, S> {
         }
     }
 
-    fn finish(self) -> (u32, PhysicalDigest, u64) {
+    pub(super) fn finish(self) -> (u32, PhysicalDigest, u64) {
         let hash = self.hasher.finalize();
         let mut digest = [0; PHYSICAL_DIGEST_LEN];
         digest.copy_from_slice(&hash);
@@ -1221,15 +1290,15 @@ impl<S: CanonicalSink> CanonicalSink for AuthenticatedSink<'_, S> {
     }
 }
 
-struct ArraySink<'a> {
+pub(super) struct ArraySink<'a> {
     bytes: &'a mut [u8],
     offset: usize,
 }
 
 impl<'a> ArraySink<'a> {
-    fn new(bytes: &'a mut [u8]) -> Self { Self { bytes, offset: 0 } }
+    pub(super) fn new(bytes: &'a mut [u8]) -> Self { Self { bytes, offset: 0 } }
 
-    const fn written(&self) -> usize { self.offset }
+    pub(super) const fn written(&self) -> usize { self.offset }
 }
 
 impl CanonicalSink for ArraySink<'_> {

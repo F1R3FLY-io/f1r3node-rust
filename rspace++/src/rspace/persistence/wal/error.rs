@@ -1,6 +1,7 @@
 use std::fmt::{Display, Formatter};
 
 use super::types::LogPackAddress;
+use crate::rspace::persistence::checkpoint::GenerationCheckpointErrorV1;
 use crate::rspace::persistence::{
     CanonicalFormatError, MutationError, ObjectDigest, ObjectRefV1, PhysicalDigest, StateVersionV1,
     StoreId,
@@ -42,6 +43,11 @@ pub enum LogPackFormatError {
     SequenceOverflow(u64),
     InvalidDomain,
     UnsupportedVersion(u64),
+    UnexpectedRecordKind {
+        expected: u64,
+        actual: u64,
+    },
+    UnsupportedPrepareKind(u64),
     LengthMismatch {
         declared: u64,
         actual: u64,
@@ -119,6 +125,21 @@ pub enum LogPackFormatError {
         declared: ObjectRefV1,
         actual: ObjectRefV1,
     },
+    CheckpointInventoryDigest {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+    CheckpointDesignatedObjectMissing {
+        role: &'static str,
+        reference: ObjectRefV1,
+    },
+    CheckpointDesignatedObjectKind {
+        role: &'static str,
+        reference: ObjectRefV1,
+        expected: crate::rspace::persistence::CanonicalObjectKind,
+        actual: crate::rspace::persistence::CanonicalObjectKind,
+    },
+    Checkpoint(GenerationCheckpointErrorV1),
     ResourceLimit {
         resource: &'static str,
         limit: u64,
@@ -132,6 +153,10 @@ impl From<CanonicalFormatError> for LogPackFormatError {
 
 impl From<MutationError> for LogPackFormatError {
     fn from(error: MutationError) -> Self { Self::Mutation(error) }
+}
+
+impl From<GenerationCheckpointErrorV1> for LogPackFormatError {
+    fn from(error: GenerationCheckpointErrorV1) -> Self { Self::Checkpoint(error) }
 }
 
 impl Display for LogPackFormatError {
@@ -150,6 +175,12 @@ impl Display for LogPackFormatError {
             Self::InvalidDomain => formatter.write_str("invalid log-pack record domain"),
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported log-pack version {version}")
+            }
+            Self::UnexpectedRecordKind { expected, actual } => {
+                write!(formatter, "unexpected log-pack record kind {actual}; expected {expected}")
+            }
+            Self::UnsupportedPrepareKind(kind) => {
+                write!(formatter, "unsupported log-pack prepare kind {kind}")
             }
             Self::LengthMismatch { declared, actual } => {
                 write!(formatter, "log-pack length mismatch: declared {declared}, actual {actual}")
@@ -248,6 +279,27 @@ impl Display for LogPackFormatError {
                 "canonical object does not match declared reference {declared:?}; actual \
                  {actual:?}"
             ),
+            Self::CheckpointInventoryDigest { expected, actual } => write!(
+                formatter,
+                "checkpoint object inventory digest mismatch: expected {expected:02x?}, got \
+                 {actual:02x?}"
+            ),
+            Self::CheckpointDesignatedObjectMissing { role, reference } => write!(
+                formatter,
+                "checkpoint {role} object {reference:?} is absent from its DATA inventory"
+            ),
+            Self::CheckpointDesignatedObjectKind {
+                role,
+                reference,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "checkpoint {role} object {reference:?} has kind {}; expected {}",
+                actual.name(),
+                expected.name()
+            ),
+            Self::Checkpoint(error) => Display::fmt(error, formatter),
             Self::ResourceLimit {
                 resource,
                 limit,
@@ -260,4 +312,13 @@ impl Display for LogPackFormatError {
     }
 }
 
-impl std::error::Error for LogPackFormatError {}
+impl std::error::Error for LogPackFormatError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Canonical(error) => Some(error),
+            Self::Mutation(error) => Some(error),
+            Self::Checkpoint(error) => Some(error),
+            _ => None,
+        }
+    }
+}

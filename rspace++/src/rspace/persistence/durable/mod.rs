@@ -15,6 +15,8 @@ mod pack;
 mod recovery;
 mod startup;
 
+#[cfg(test)]
+pub(crate) use admission::copy_verified_canonical_with_scratch;
 pub(crate) use admission::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAdmissionReportV1,
     DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1, DurableObjectReadErrorV1,
