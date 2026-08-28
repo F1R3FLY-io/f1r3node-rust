@@ -1,95 +1,108 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-const K1_PROPERTY_BINDINGS: &[(&str, &str)] = &[
-    ("K1-WIR-01", "canonical_v1_prepare_and_commit_images_are_frozen"),
-    ("K1-WIR-02", "prepare_discriminator_routes_only_exact_known_fixed_headers"),
-    ("K1-CUR-01", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-CUR-02", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-CUR-03", "prepare_rejects_every_truncation_without_panicking"),
-    ("K1-CUR-04", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-ARITH-01", "index_identity_counters_and_object_extent_overflow_are_checked"),
-    ("K1-PF-01", "prepare_prefix_is_authenticated_and_bounded_before_variable_size_reads"),
-    ("K1-PF-02", "range_and_object_work_are_admitted_before_open_or_variable_body_read"),
-    ("K1-LIM-01", "declared_resource_use_is_bounded_before_payload_parsing"),
-    ("K1-LIM-02", "declared_resource_use_is_bounded_before_payload_parsing"),
-    ("K1-LIM-03", "declared_resource_use_is_bounded_before_payload_parsing"),
-    ("K1-LIM-04", "declared_resource_use_is_bounded_before_payload_parsing"),
-    ("K1-LIM-05", "single_object_limit_applies_to_reuse_references_as_well_as_inline_data"),
-    ("K1-LIM-06", "decoder_enforces_total_resources_without_a_depth_limit"),
-    ("K1-LIM-07", "decoder_enforces_total_resources_without_a_depth_limit"),
-    ("K1-LIM-08", "range_and_object_work_are_admitted_before_open_or_variable_body_read"),
-    ("K1-ACC-01", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-ACC-02", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-ACC-03", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-CRC-01", "persisted_checksums_reject_nonzero_high_u64_bits"),
-    ("K1-CRC-02", "checksums_reject_header_and_payload_corruption"),
-    ("K1-CRC-03", "persisted_checksums_reject_nonzero_high_u64_bits"),
-    ("K1-CRC-04", "checksums_reject_header_and_payload_corruption"),
-    ("K1-CRC-05", "checksums_reject_header_and_payload_corruption"),
-    ("K1-DIG-01", "prepare_stream_round_trips_without_projecting_objects"),
-    ("K1-DIG-02", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-MUT-01", "decoder_rejects_header_reference_and_presence_corruption"),
-    ("K1-MUT-02", "decoder_rejects_noncontiguous_generation_and_wrong_section_order"),
-    ("K1-MUT-03", "decoder_rejects_noncontiguous_generation_and_wrong_section_order"),
-    ("K1-MUT-04", "decoder_enforces_total_resources_without_a_depth_limit"),
-    ("K1-MUT-05", "decoder_enforces_total_resources_without_a_depth_limit"),
-    ("K1-MUT-06", "decoder_enforces_total_resources_without_a_depth_limit"),
-    ("K1-MUT-07", "decoder_rejects_noop_unsorted_and_malformed_keys"),
-    ("K1-MUT-08", "decoder_rejects_noop_unsorted_and_malformed_keys"),
-    ("K1-MUT-09", "hundred_thousand_byte_key_round_trips_on_a_small_native_stack"),
-    ("K1-MUT-10", "decoder_rejects_noop_unsorted_and_malformed_keys"),
-    ("K1-MUT-11", "decoder_rejects_header_reference_and_presence_corruption"),
-    ("K1-MUT-12", "decoder_rejects_noop_unsorted_and_malformed_keys"),
-    ("K1-MUT-13", "generation_overflow_and_trailing_bytes_fail_closed"),
-    ("K1-MUT-14", "streaming_plan_propagates_sink_failure_and_has_a_payload_digest"),
-    ("K1-MUT-15", "normalized_batch_round_trips_all_three_semantic_sections"),
-    ("K1-OBJ-01", "prepared_layouts_are_the_single_source_for_parsed_object_offsets"),
-    ("K1-OBJ-02", "prepare_rejects_every_truncation_without_panicking"),
-    ("K1-OBJ-03", "prepared_layouts_are_the_single_source_for_parsed_object_offsets"),
-    ("K1-OBJ-04", "prepared_layouts_are_the_single_source_for_parsed_object_offsets"),
-    ("K1-OBJ-05", "single_object_limit_applies_to_reuse_references_as_well_as_inline_data"),
-    ("K1-OBJ-06", "prepared_layouts_are_the_single_source_for_parsed_object_offsets"),
-    ("K1-OBJ-07", "warm_store_reuse_omits_only_the_equal_body_and_collision_prevents_preflight"),
-    ("K1-OBJ-08", "malformed_envelopes_endpoints_and_branches_fail_closed"),
-    ("K1-OBJ-09", "malformed_child_tables_and_noncompressed_nodes_fail_closed"),
-    ("K1-OBJ-10", "prefix_and_blob_payload_views_borrow_the_original_bytes"),
-    ("K1-OBJ-11", "arbitrary_checkpoint_wire_bytes_are_total"),
-    ("K1-OBJ-12", "arbitrary_checkpoint_wire_bytes_are_total"),
-    ("K1-OBJ-13", "arbitrary_checkpoint_wire_bytes_are_total"),
-    ("K1-OBJ-14", "warm_store_reuse_omits_only_the_equal_body_and_collision_prevents_preflight"),
-    ("K1-OBJ-15", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-OBJ-16", "prepare_rejects_every_truncation_without_panicking"),
-    ("K1-COM-01", "incremental_parser_reports_checkpoint_kind_without_trusting_its_extents"),
-    ("K1-COM-02", "commit_has_a_fixed_portable_image_and_rejects_corruption"),
-    ("K1-BIND-01", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-BIND-02", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-BIND-03", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-BIND-04", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-BIND-05", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-BIND-06", "valid_commit_images_cannot_rebind_prepare_fields"),
-    ("K1-CHAIN-01", "cross_pack_sequence_state_and_previous_commit_discontinuities_fail_closed"),
-    ("K1-CHAIN-02", "terminal_publication_digest_and_address_mismatches_fail_before_authority"),
-    ("K1-CHAIN-03", "cross_pack_sequence_state_and_previous_commit_discontinuities_fail_closed"),
-    ("K1-CHAIN-04", "cross_pack_sequence_state_and_previous_commit_discontinuities_fail_closed"),
-    ("K1-CHAIN-05", "cross_pack_sequence_state_and_previous_commit_discontinuities_fail_closed"),
-    ("K1-CHAIN-06", "terminal_publication_digest_and_address_mismatches_fail_before_authority"),
-    ("K1-CHAIN-07", "terminal_publication_digest_and_address_mismatches_fail_before_authority"),
-    ("K1-CHAIN-08", "terminal_publication_digest_and_address_mismatches_fail_before_authority"),
-    ("K1-CHAIN-09", "terminal_publication_digest_and_address_mismatches_fail_before_authority"),
-    ("K1-IDX-01", "prepared_data_layouts_create_exact_locations_while_reuse_creates_none"),
-    ("K1-IDX-02", "warm_store_reuse_omits_only_the_equal_body_and_collision_prevents_preflight"),
-    ("K1-IDX-03", "generation_checkpoint_reuse_and_short_physical_pack_fail_closed"),
-    ("K1-TR-01", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-TR-02", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-TR-03", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-SRC-01", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-AUTH-01", "exact_catalog_image_is_consumed_before_recovered_authority_is_exposed"),
-    ("K1-AUTH-02", "range_and_object_work_are_admitted_before_open_or_variable_body_read"),
-    ("K1-EQV-01", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-EQV-02", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-EQV-03", "incremental_prepare_recovery_is_bounded_and_exact"),
-    ("K1-MEM-01", "incremental_prepare_recovery_never_requests_a_record_sized_buffer"),
-    ("K1-MEM-02", "hundred_thousand_byte_transition_streams_and_validates_on_a_small_stack"),
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+use proptest::prelude::*;
+
+use crate::rspace::persistence::durable::IncrementalLayoutTranscriptV1;
+use crate::rspace::persistence::{LogPackObjectDispositionV1, ObjectDigest, ObjectRefV1};
+
+const WIRE: &str = "kind1_wire_protocol_properties.rs";
+const RHO_PATH: &str = "rho_path_streaming_properties.rs";
+const MUTATION: &str = "mutation_streaming_properties.rs";
+const OBJECT: &str = "canonical_object_streaming_properties.rs";
+const RECOVERY: &str = "kind1_recovery_protocol_properties.rs";
+
+const K1_PROPERTY_BINDINGS: &[(&str, &str, &str)] = &[
+    ("K1-WIR-01", WIRE, "kind1_v1_wire_images_are_frozen_and_stream_identical"),
+    ("K1-WIR-02", WIRE, "kind1_discriminator_and_adjacent_pair_matrix_is_exact"),
+    ("K1-CUR-01", WIRE, "primary_read_trace_covers_authenticated_extent_once_in_order_for_every_partition"),
+    ("K1-CUR-02", WIRE, "primary_read_trace_covers_authenticated_extent_once_in_order_for_every_partition"),
+    ("K1-CUR-03", WIRE, "first_semantic_error_is_retained_while_declared_extent_is_raw_drained"),
+    ("K1-CUR-04", WIRE, "every_stream_transition_strictly_decreases_formal_progress_measure"),
+    ("K1-ARITH-01", WIRE, "all_kind1_extent_count_and_sum_arithmetic_fails_closed_at_boundaries"),
+    ("K1-PF-01", WIRE, "kind1_variable_work_is_silent_until_header_pair_and_aggregate_preadmission"),
+    ("K1-PF-02", WIRE, "kind1_variable_work_is_silent_until_header_pair_and_aggregate_preadmission"),
+    ("K1-LIM-01", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-02", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-03", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-04", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-05", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-06", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-07", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-LIM-08", WIRE, "every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_work"),
+    ("K1-ACC-01", WIRE, "recovery_read_work_separates_authorized_primary_prior_key_and_layout_bytes_exactly"),
+    ("K1-ACC-02", WIRE, "recovery_read_work_separates_authorized_primary_prior_key_and_layout_bytes_exactly"),
+    ("K1-ACC-03", WIRE, "recovery_physical_work_is_semantic_comm_neutral"),
+    ("K1-CRC-01", WIRE, "prepare_header_checksum_encoding_and_232_byte_domain_are_exact"),
+    ("K1-CRC-02", WIRE, "prepare_header_checksum_encoding_and_232_byte_domain_are_exact"),
+    ("K1-CRC-03", WIRE, "prepare_record_checksum_encoding_and_prefix_payload_domain_are_exact"),
+    ("K1-CRC-04", WIRE, "prepare_record_checksum_encoding_and_prefix_payload_domain_are_exact"),
+    ("K1-CRC-05", WIRE, "kind1_error_precedence_is_io_then_crc_then_first_semantic"),
+    ("K1-DIG-01", WIRE, "kind1_physical_digest_is_exact_chunk_fold_over_crc_domain"),
+    ("K1-DIG-02", WIRE, "computed_prepare_digest_has_no_authority_until_exact_commit_binding"),
+    ("K1-MUT-01", MUTATION, "streamed_mutation_envelope_generation_and_section_order_match_contiguous_oracle"),
+    ("K1-MUT-02", MUTATION, "streamed_mutation_envelope_generation_and_section_order_match_contiguous_oracle"),
+    ("K1-MUT-03", MUTATION, "streamed_mutation_envelope_generation_and_section_order_match_contiguous_oracle"),
+    ("K1-MUT-04", MUTATION, "streamed_mutation_aggregate_counts_and_key_bytes_are_exactly_admitted"),
+    ("K1-MUT-05", MUTATION, "streamed_mutation_aggregate_counts_and_key_bytes_are_exactly_admitted"),
+    ("K1-MUT-06", MUTATION, "streamed_mutation_aggregate_counts_and_key_bytes_are_exactly_admitted"),
+    ("K1-MUT-07", RHO_PATH, "rho_path_streaming_matches_contiguous_oracle_for_all_namespaces_partitions_and_prefixes"),
+    ("K1-MUT-08", MUTATION, "streamed_prior_key_reread_proves_full_lexicographic_order_or_rejects_source_change"),
+    ("K1-MUT-09", MUTATION, "streamed_prior_key_reread_proves_full_lexicographic_order_or_rejects_source_change"),
+    ("K1-MUT-10", MUTATION, "streamed_mutation_transition_presence_and_empty_rules_match_oracle"),
+    ("K1-MUT-11", MUTATION, "streamed_mutation_transition_presence_and_empty_rules_match_oracle"),
+    ("K1-MUT-12", MUTATION, "streamed_mutation_transition_presence_and_empty_rules_match_oracle"),
+    ("K1-MUT-13", MUTATION, "streamed_mutation_consumes_exact_declared_extent_and_preserves_precedence"),
+    ("K1-MUT-14", RECOVERY, "streamed_mutation_identity_matches_receipt_or_rejects_each_binding"),
+    ("K1-MUT-15", RECOVERY, "streamed_mutation_identity_matches_receipt_or_rejects_each_binding"),
+    ("K1-OBJ-01", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-02", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-03", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-04", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-05", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-06", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-07", RECOVERY, "kind1_object_layout_parser_enforces_count_disposition_reference_order_and_body_shape"),
+    ("K1-OBJ-08", OBJECT, "all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_valid_and_malformed_images"),
+    ("K1-OBJ-09", OBJECT, "all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_valid_and_malformed_images"),
+    ("K1-OBJ-10", OBJECT, "all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_valid_and_malformed_images"),
+    ("K1-OBJ-11", OBJECT, "all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_valid_and_malformed_images"),
+    ("K1-OBJ-12", OBJECT, "all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_valid_and_malformed_images"),
+    ("K1-OBJ-13", OBJECT, "all_five_canonical_object_stream_pdas_match_contiguous_oracles_for_generated_valid_and_malformed_images"),
+    ("K1-OBJ-14", RECOVERY, "declared_object_reference_must_equal_streamed_canonical_digest_and_length"),
+    ("K1-OBJ-15", RECOVERY, "object_byte_sum_includes_data_and_reuse_and_objects_end_at_trailer"),
+    ("K1-OBJ-16", RECOVERY, "object_byte_sum_includes_data_and_reuse_and_objects_end_at_trailer"),
+    ("K1-COM-01", WIRE, "kind1_discriminator_and_adjacent_pair_matrix_is_exact"),
+    ("K1-COM-02", RECOVERY, "incremental_commit_fixed_image_crc_domain_width_and_all_truncations_are_exact"),
+    ("K1-BIND-01", RECOVERY, "incremental_commit_binding_rejects_each_of_six_identity_fields_before_replay"),
+    ("K1-BIND-02", RECOVERY, "incremental_commit_binding_rejects_each_of_six_identity_fields_before_replay"),
+    ("K1-BIND-03", RECOVERY, "incremental_commit_binding_rejects_each_of_six_identity_fields_before_replay"),
+    ("K1-BIND-04", RECOVERY, "incremental_commit_binding_rejects_each_of_six_identity_fields_before_replay"),
+    ("K1-BIND-05", RECOVERY, "incremental_commit_binding_rejects_each_of_six_identity_fields_before_replay"),
+    ("K1-BIND-06", RECOVERY, "incremental_commit_binding_rejects_each_of_six_identity_fields_before_replay"),
+    ("K1-CHAIN-01", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-02", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-03", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-04", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-05", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-06", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-07", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-08", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-CHAIN-09", RECOVERY, "outer_chain_binding_rejects_each_of_nine_fields_before_replay"),
+    ("K1-IDX-01", RECOVERY, "authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rules"),
+    ("K1-IDX-02", RECOVERY, "authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rules"),
+    ("K1-IDX-03", RECOVERY, "authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rules"),
+    ("K1-TR-01", RECOVERY, "layout_transcript_and_replay_accept_iff_structurally_identical"),
+    ("K1-TR-02", RECOVERY, "layout_transcript_and_replay_accept_iff_structurally_identical"),
+    ("K1-TR-03", RECOVERY, "layout_transcript_and_replay_accept_iff_structurally_identical"),
+    ("K1-SRC-01", RECOVERY, "layout_transcript_and_replay_accept_iff_structurally_identical"),
+    ("K1-AUTH-01", RECOVERY, "no_validation_failure_exposes_recovery_authority_or_mutates_durable_index"),
+    ("K1-AUTH-02", RECOVERY, "no_validation_failure_exposes_recovery_authority_or_mutates_durable_index"),
+    ("K1-EQV-01", RECOVERY, "kind1_streaming_recovery_is_a_complete_structured_differential_of_contiguous_oracle"),
+    ("K1-EQV-02", RECOVERY, "kind1_streaming_recovery_is_a_complete_structured_differential_of_contiguous_oracle"),
+    ("K1-EQV-03", RECOVERY, "kind1_streaming_recovery_is_a_complete_structured_differential_of_contiguous_oracle"),
+    ("K1-MEM-01", RECOVERY, "kind1_decoder_owned_heap_has_zero_input_slope"),
+    ("K1-MEM-02", RECOVERY, "kind1_native_stack_high_water_has_zero_input_slope"),
 ];
 
 fn k1_id(token: &str) -> bool {
@@ -98,25 +111,50 @@ fn k1_id(token: &str) -> bool {
         matches!(
             parts.next(),
             Some(
-                "WIR" | "CUR" | "ARITH" | "PF" | "LIM" | "ACC" | "CRC" | "DIG" |
-                    "MUT" | "OBJ" | "COM" | "BIND" | "CHAIN" | "IDX" | "TR" | "SRC" |
-                    "AUTH" | "EQV" | "MEM"
+                "WIR" |
+                    "CUR" |
+                    "ARITH" |
+                    "PF" |
+                    "LIM" |
+                    "ACC" |
+                    "CRC" |
+                    "DIG" |
+                    "MUT" |
+                    "OBJ" |
+                    "COM" |
+                    "BIND" |
+                    "CHAIN" |
+                    "IDX" |
+                    "TR" |
+                    "SRC" |
+                    "AUTH" |
+                    "EQV" |
+                    "MEM"
             )
         ) &&
-        parts
-            .next()
-            .is_some_and(|index| index.len() == 2 && index.bytes().all(|byte| byte.is_ascii_digit())) &&
+        parts.next().is_some_and(|index| {
+            index.len() == 2 && index.bytes().all(|byte| byte.is_ascii_digit())
+        }) &&
         parts.next().is_none()
 }
 
 #[test]
 fn kind1_streaming_property_manifest_is_unique_exhaustive_and_formally_derived() {
-    let bindings = K1_PROPERTY_BINDINGS.iter().copied().collect::<BTreeMap<_, _>>();
+    let bindings = K1_PROPERTY_BINDINGS
+        .iter()
+        .map(|(id, source, target)| (*id, (*source, *target)))
+        .collect::<BTreeMap<_, _>>();
     assert_eq!(bindings.len(), 89, "the formal catalog contains exactly 89 K1 invariants");
     assert_eq!(bindings.len(), K1_PROPERTY_BINDINGS.len(), "duplicate K1 property ID");
+    assert_eq!(
+        bindings.values().copied().collect::<BTreeSet<_>>().len(),
+        35,
+        "the 89 formal invariants refine into exactly 35 executable property families",
+    );
 
     let catalog = include_str!(
-        "../../../docs/design/pathmap/incremental-prepare-streaming-invariant-catalog-2026-08-28.md"
+        "../../../docs/design/pathmap/incremental-prepare-streaming-invariant-catalog-2026-08-28.\
+         md"
     );
     let catalog_ids = catalog
         .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
@@ -143,9 +181,28 @@ fn kind1_streaming_property_manifest_is_unique_exhaustive_and_formally_derived()
         ),
     ];
     for (tla_source, tla_config) in tla_artifacts {
-        for invariant in
-            tla_config.lines().filter_map(|line| line.trim().strip_prefix("INVARIANT "))
-        {
+        let mut in_invariants = false;
+        let invariants = tla_config
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line == "INVARIANTS" {
+                    in_invariants = true;
+                    return None;
+                }
+                if in_invariants && line.is_empty() {
+                    in_invariants = false;
+                    return None;
+                }
+                line.strip_prefix("INVARIANT ").or_else(|| {
+                    in_invariants
+                        .then_some(line)
+                        .filter(|line| !line.is_empty())
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(!invariants.is_empty(), "TLA+ base config contains no invariants");
+        for invariant in invariants {
             assert!(
                 tla_source.contains(&format!("{invariant} ==")),
                 "base config cites missing TLA+ invariant {invariant}",
@@ -201,19 +258,152 @@ fn kind1_streaming_property_manifest_is_unique_exhaustive_and_formally_derived()
     assert!(formal_gate.contains("RSpaceStreamingCodecPDA.cfg"));
 
     let executable_sources = [
-        include_str!("incremental_prepare_streaming_properties.rs"),
-        include_str!("durable_recovery.rs"),
-        include_str!("generation_checkpoint_properties.rs"),
-        include_str!("index_codec.rs"),
-        include_str!("mutation_codec.rs"),
-        include_str!("object_codec.rs"),
-        include_str!("wal_codec.rs"),
+        (WIRE, include_str!("kind1_wire_protocol_properties.rs")),
+        (RHO_PATH, include_str!("rho_path_streaming_properties.rs")),
+        (MUTATION, include_str!("mutation_streaming_properties.rs")),
+        (OBJECT, include_str!("canonical_object_streaming_properties.rs")),
+        (RECOVERY, include_str!("kind1_recovery_protocol_properties.rs")),
     ]
-    .concat();
-    for (id, target) in K1_PROPERTY_BINDINGS {
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+    let registered_modules = include_str!("mod.rs");
+    for source in executable_sources.keys() {
+        let module = source.strip_suffix(".rs").unwrap();
         assert!(
-            executable_sources.contains(&format!("fn {target}(")),
-            "K1 property {id} names missing executable target {target}",
+            registered_modules.contains(&format!("mod {module};")),
+            "formal-derived property module {source} is not compiled",
         );
     }
+    for (id, source, target) in K1_PROPERTY_BINDINGS {
+        let source_text = executable_sources
+            .get(source)
+            .unwrap_or_else(|| panic!("K1 property {id} names unknown source {source}"));
+        let marker = format!("fn {target}(");
+        let function_offset = source_text
+            .find(&marker)
+            .unwrap_or_else(|| panic!("K1 property {id} names missing executable target {target}"));
+        let attribute_offset = source_text[..function_offset]
+            .rfind("#[test]")
+            .unwrap_or_else(|| panic!("K1 property {id} target {target} is not a test"));
+        assert!(
+            !source_text[attribute_offset..function_offset].contains("#[ignore]"),
+            "K1 property {id} target {target} is ignored",
+        );
+    }
+}
+
+fn independent_layout_digest(
+    entries: &[(LogPackObjectDispositionV1, ObjectRefV1, u64, Option<u64>, u64)],
+    final_extent: u64,
+) -> [u8; 32] {
+    let mut hasher = Blake2b::<U32>::new();
+    hasher.update(b"RSpaceK1LayoutTranscriptV1");
+    let mut data_count = 0u64;
+    let mut logical_object_bytes = 0u64;
+    for (ordinal, (disposition, reference, record, canonical, end)) in entries.iter().enumerate() {
+        hasher.update((ordinal as u64).to_le_bytes());
+        hasher.update(disposition.kind().to_le_bytes());
+        hasher.update(reference.digest().as_bytes());
+        hasher.update(reference.encoded_len().to_le_bytes());
+        hasher.update(record.to_le_bytes());
+        match canonical {
+            Some(offset) => {
+                hasher.update([1]);
+                hasher.update(offset.to_le_bytes());
+                data_count += 1;
+            }
+            None => {
+                hasher.update([0]);
+                hasher.update(0u64.to_le_bytes());
+            }
+        }
+        hasher.update(end.to_le_bytes());
+        logical_object_bytes += reference.encoded_len();
+    }
+    hasher.update((entries.len() as u64).to_le_bytes());
+    hasher.update(data_count.to_le_bytes());
+    hasher.update(logical_object_bytes.to_le_bytes());
+    hasher.update(final_extent.to_le_bytes());
+    hasher.finalize().into()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn layout_transcript_matches_an_independent_domain_separated_fold(
+        dispositions_and_lengths in proptest::collection::vec((any::<bool>(), 32_u64..8192), 0..64),
+        seed in any::<u8>(),
+    ) {
+        let mut transcript = IncrementalLayoutTranscriptV1::new();
+        let mut entries = Vec::with_capacity(dispositions_and_lengths.len());
+        let mut cursor = 0u64;
+        let mut data_count = 0u64;
+        let mut logical_object_bytes = 0u64;
+        for (ordinal, (is_data, encoded_len)) in
+            dispositions_and_lengths.into_iter().enumerate()
+        {
+            let mut digest = [seed; 32];
+            digest[..8].copy_from_slice(&(ordinal as u64).to_le_bytes());
+            let reference = ObjectRefV1::new(ObjectDigest::from_array(digest), encoded_len).unwrap();
+            let disposition = if is_data {
+                LogPackObjectDispositionV1::Data
+            } else {
+                LogPackObjectDispositionV1::Reuse
+            };
+            let record_offset = cursor;
+            cursor += 48;
+            let canonical_offset = is_data.then_some(cursor);
+            if is_data {
+                cursor += encoded_len;
+                data_count += 1;
+            }
+            transcript
+                .push(disposition, reference, record_offset, canonical_offset, cursor)
+                .unwrap();
+            entries.push((disposition, reference, record_offset, canonical_offset, cursor));
+            logical_object_bytes += encoded_len;
+        }
+        let summary = transcript.finish(cursor);
+        prop_assert_eq!(summary.object_count, entries.len() as u64);
+        prop_assert_eq!(summary.data_count, data_count);
+        prop_assert_eq!(summary.logical_object_bytes, logical_object_bytes);
+        prop_assert_eq!(summary.relative_final_extent, cursor);
+        prop_assert_eq!(
+            *summary.digest.as_bytes(),
+            independent_layout_digest(&entries, cursor),
+        );
+    }
+}
+
+#[test]
+fn layout_transcript_rejects_every_typed_layout_substitution_by_identity() {
+    let first = ObjectRefV1::new(ObjectDigest::from_array([1; 32]), 64).unwrap();
+    let second = ObjectRefV1::new(ObjectDigest::from_array([2; 32]), 96).unwrap();
+    let fold = |entries: &[(LogPackObjectDispositionV1, ObjectRefV1, u64, Option<u64>, u64)],
+                final_extent| {
+        let mut transcript = IncrementalLayoutTranscriptV1::new();
+        for entry in entries {
+            transcript
+                .push(entry.0, entry.1, entry.2, entry.3, entry.4)
+                .unwrap();
+        }
+        transcript.finish(final_extent).digest
+    };
+    let base = [
+        (LogPackObjectDispositionV1::Data, first, 0, Some(48), 112),
+        (LogPackObjectDispositionV1::Reuse, second, 112, None, 160),
+    ];
+    let expected = fold(&base, 160);
+    let variants = [
+        [base[1], base[0]],
+        [(LogPackObjectDispositionV1::Reuse, first, 0, None, 48), base[1]],
+        [base[0], (base[1].0, first, base[1].2, base[1].3, base[1].4)],
+        [base[0], (base[1].0, base[1].1, 113, base[1].3, base[1].4)],
+        [base[0], (base[1].0, base[1].1, base[1].2, base[1].3, 161)],
+    ];
+    for variant in variants {
+        assert_ne!(fold(&variant, 160), expected);
+    }
+    assert_ne!(fold(&base, 161), expected);
 }
