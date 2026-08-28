@@ -1664,13 +1664,27 @@ jobs:
           WORKFLOW_REF: ${{ github.ref_name }}
         shell: bash -euo pipefail {0}
         run: |
-          payload="$(printf '{"ref":"%s","inputs":{"target_sha":"%s","source_run_url":"%s"}}' \
-            "$WORKFLOW_REF" "$TARGET_SHA" "$RUN_URL")"
-          curl -sf --retry 4 --retry-connrefused -X POST \
+          # JSON built by a real serializer, never printf: ref_name is a
+          # branch name and must arrive escaped, whatever it contains.
+          payload="$(python3 -c 'import json, os; print(json.dumps({"ref": os.environ["WORKFLOW_REF"], "inputs": {"target_sha": os.environ["TARGET_SHA"], "source_run_url": os.environ["RUN_URL"]}}))')"
+          # -sS with a captured status, not -sf: this step is
+          # continue-on-error, so a swallowed error body would make a failed
+          # dispatch invisible. The response and HTTP code go to the log and
+          # the step still concludes failure (visibly, without failing the
+          # job) when the dispatch was rejected.
+          response="$(mktemp)"
+          http_code="$(curl -sS -o "$response" -w '%{http_code}' \
+            --retry 4 --retry-connrefused -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/soak-preflight-status.yml/dispatches" \
-            -d "$payload"
+            -d "$payload")" || http_code="000"
+          if [ "$http_code" != "204" ]; then
+            echo "::warning::preflight success-status dispatch failed (HTTP ${http_code}); preflight_finalize will publish the terminal status at run end"
+            cat "$response" || true
+            exit 1
+          fi
+          echo "dispatched soak-preflight-status for ${TARGET_SHA}"
 
       - name: Reset integration telemetry after preflight
         id: reset_telemetry
