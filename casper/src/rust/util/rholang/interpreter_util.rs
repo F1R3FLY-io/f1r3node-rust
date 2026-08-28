@@ -37,6 +37,8 @@ use crate::rust::metrics_constants::{
     PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC, PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC,
     PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC, PARENTS_POST_STATE_POST_MERGE_TIME_METRIC,
     PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC,
+    PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC,
+    PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC,
     PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC,
 };
 use crate::rust::util::proto_util;
@@ -1694,16 +1696,40 @@ pub async fn compute_parents_post_state(
             // The probe closures run per unique sig from inside the merge, so
             // the counter handles are registered once here; only the plain
             // increments run on the hot path.
+            //
+            // Batched settled-sig index (CLAIM-FINALITY-001, C2): the run
+            // 33099406770 telemetry put these probes at 92% of merge_call —
+            // ~30 per-sig lineage walks per merge, each loading full block
+            // bodies. Each closure now builds its applied-sig set with ONE
+            // walk on the first probe (`settled_sigs_of_lineage`, backed by
+            // the per-block lineage-step cache) and answers every probe by
+            // membership. Built lazily so a merge that never probes never
+            // walks; RefCell suffices because the merge is synchronous on
+            // this thread.
             let settled_probe_calls = metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE);
             let settled_probe_time_ns = metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE);
+            let base_settled_sigs: std::cell::RefCell<Option<HashSet<Bytes>>> =
+                std::cell::RefCell::new(None);
             let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
                 let probe_started = std::time::Instant::now();
-                let result = crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                    block_store,
-                    &main_parent_hash,
-                    sig,
-                    settled_walk_bound,
-                );
+                let result = (|| {
+                    let mut cell = base_settled_sigs.borrow_mut();
+                    if cell.is_none() {
+                        let build_started = std::time::Instant::now();
+                        let (sigs, walked) =
+                            crate::rust::finality::deploy_lifecycle::settled_sigs_of_lineage(
+                                block_store,
+                                &main_parent_hash,
+                                settled_walk_bound,
+                            )?;
+                        metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(build_started.elapsed().as_secs_f64());
+                        metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(walked as f64);
+                        *cell = Some(sigs);
+                    }
+                    Ok(cell.as_ref().expect("just built").contains(sig))
+                })();
                 settled_probe_calls.increment(1);
                 settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
@@ -1764,23 +1790,40 @@ pub async fn compute_parents_post_state(
             // rejected-then-tripped. Derived from the block's frozen
             // justification snapshot (the settled floors), so replay
             // answers identically.
+            // Batched the same way as the base probe: one walk per settled
+            // floor on the first probe, answers by membership in the union
+            // (∃ floor: settled-in-floor ⇔ member of the per-floor union —
+            // the claim's segment-composition algebra over floors).
+            let floor_settled_sigs: std::cell::RefCell<Option<HashSet<Bytes>>> =
+                std::cell::RefCell::new(None);
             let sig_settled_in_floor = |sig: &Bytes| -> Result<bool, CasperError> {
                 let probe_started = std::time::Instant::now();
                 let result = (|| {
-                    for floor in &settled_floors {
-                        let min_height = floor
-                            .block_number
-                            .saturating_sub(s.on_chain_state.shard_conf.deploy_lifespan);
-                        if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                            block_store,
-                            &floor.hash,
-                            sig,
-                            min_height,
-                        )? {
-                            return Ok(true);
+                    let mut cell = floor_settled_sigs.borrow_mut();
+                    if cell.is_none() {
+                        let build_started = std::time::Instant::now();
+                        let mut union: HashSet<Bytes> = HashSet::new();
+                        let mut total_walked = 0usize;
+                        for floor in &settled_floors {
+                            let min_height = floor
+                                .block_number
+                                .saturating_sub(s.on_chain_state.shard_conf.deploy_lifespan);
+                            let (sigs, walked) =
+                                crate::rust::finality::deploy_lifecycle::settled_sigs_of_lineage(
+                                    block_store,
+                                    &floor.hash,
+                                    min_height,
+                                )?;
+                            union.extend(sigs);
+                            total_walked += walked;
                         }
+                        metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(build_started.elapsed().as_secs_f64());
+                        metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(total_walked as f64);
+                        *cell = Some(union);
                     }
-                    Ok(false)
+                    Ok(cell.as_ref().expect("just built").contains(sig))
                 })();
                 settled_probe_calls.increment(1);
                 settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);

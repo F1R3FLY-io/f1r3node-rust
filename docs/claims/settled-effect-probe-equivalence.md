@@ -97,7 +97,13 @@ it covered and the bound it was computed under.
   its effect. This premise comes from the deploy-validity rules, not from
   this claim's mechanization.
 - **Availability deferral.** `BlockNotHeld` propagates as an error and
-  defers the block. The mechanization models only complete segments.
+  defers the block. The mechanization models only complete segments. The
+  batched implementation (`settled_sigs_of_lineage`) strengthens this
+  fail-closed: it always covers the full segment, so a gap below an
+  applied sig refuses the whole answer where the per-sig reference walk
+  can answer TRUE without reaching the gap. A deferral where the
+  reference sometimes answered is the safe direction, and the divergence
+  is pinned by `batched_walk_is_fail_closed_on_a_gapped_segment`.
 - **Terminal never-flip.** The deploy-lifecycle store enforces that a
   terminal record never flips (`put_deploy_terminal_if_absent`). C4's TRUE
   stability aligns with it but does not prove the store property.
@@ -118,14 +124,23 @@ capstones.
 
 ## Discharge plan for the remediation
 
-The optimization PR on `fix/sustained-finalization-lag-parents-post-state`
-must:
+The optimization on `fix/one-walk-merge-per-block-sig-nodeserialize`
+must, with the status of each item recorded here:
 
-1. Keep the reference walk as the specification oracle.
+1. Keep the reference walk as the specification oracle. **Done** —
+   `effect_in_state_of` is untouched; the batched form is the separate
+   `settled_sigs_of_lineage`.
 2. Add a property test that compares the batched implementation against
    the reference walk on generated lineages, including failed deploys,
    `applied_from_scope` entries, bound truncation, and segment splits.
+   **Done** — `batched_walk_matches_the_reference_walk_on_generated_lineages`
+   plus `batched_walk_is_fail_closed_on_a_gapped_segment` in
+   `deploy_lifecycle.rs`.
 3. Record the evidence in `docs/cbc-evidence/` for the touched
-   `cbc=mandatory` artifacts and cite this claim id.
+   `cbc=mandatory` artifacts and cite this claim id. **Done** —
+   `casper-src-rust-finality-deploy-lifecycle-rs.md` and the appended
+   record in `casper-src-rust-util-rholang-interpreter-util-rs.md`.
 4. Not change any rejected-record output: `InvalidRejectedDeploy`
    equality against unfixed peers is the end-to-end acceptance check.
+   **Open** — rides the casper merge/validation suites now and the next
+   soak preflight for the end-to-end run.

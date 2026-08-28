@@ -149,6 +149,117 @@ fn effect_in_state_of_above(
     }
 }
 
+/// One cached lineage step: everything the batched walk needs from a block
+/// without re-reading its body. Content-addressed by block hash, so an
+/// entry can never go stale.
+struct LineageStep {
+    block_number: i64,
+    /// Next block on the state lineage; `None` means genesis (exhausted).
+    base: Option<BlockHash>,
+    /// The block's applied-sig facts: sigs of its non-failed `deploys`
+    /// entries plus its `applied_from_scope` list.
+    sigs: std::sync::Arc<HashSet<Bytes>>,
+}
+
+/// Hard cap for the per-block lineage-step cache. At roughly a kilobyte
+/// per fat block the full cache stays under ~16MB; on overflow the cache
+/// is cleared rather than evicted piecewise — entries are pure functions
+/// of immutable bodies, so losing them costs only a re-read.
+const LINEAGE_STEP_CACHE_MAX: usize = 16_384;
+
+fn lineage_step_cache(
+) -> &'static parking_lot::Mutex<HashMap<BlockHash, std::sync::Arc<LineageStep>>> {
+    static CACHE: std::sync::OnceLock<
+        parking_lot::Mutex<HashMap<BlockHash, std::sync::Arc<LineageStep>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn lineage_step_cache_len() -> usize { lineage_step_cache().lock().len() }
+
+/// One walk, every sig: the applied-sig union of `block_hash`'s state
+/// lineage down to `min_height` — the batched form of
+/// [`effect_in_state_of`] (CLAIM-FINALITY-001, C2:
+/// `docs/claims/settled-effect-probe-equivalence.md`). A caller holding
+/// the returned set answers any per-sig probe by membership, turning the
+/// merge's ~30 per-sig lineage walks into one walk plus O(1) lookups.
+/// Also returns the number of blocks walked, for the caller's metrics.
+///
+/// Stepping, bounds, and the non-failed/`applied_from_scope` fact kinds
+/// are exactly the reference walk's. One deliberate strengthening: this
+/// walk always covers the FULL segment, so an absent body (or a malformed
+/// multi-parent block without a recorded base) anywhere above the bound
+/// refuses the whole answer — even when a probed sig is applied above the
+/// gap and the per-sig reference walk would have answered TRUE without
+/// reaching it. Availability must not shape verdicts (the claim's
+/// availability-deferral seam premise); a deferral where the reference
+/// sometimes answered is the fail-closed direction.
+pub(crate) fn settled_sigs_of_lineage(
+    block_store: &KeyValueBlockStore,
+    block_hash: &BlockHash,
+    min_height: i64,
+) -> Result<(HashSet<Bytes>, usize), CasperError> {
+    let mut settled: HashSet<Bytes> = HashSet::new();
+    let mut walked = 0usize;
+    let mut cur = block_hash.clone();
+    loop {
+        let cached = lineage_step_cache().lock().get(&cur).cloned();
+        let step = match cached {
+            Some(step) => step,
+            None => {
+                let Some(block) = block_store.get(&cur)? else {
+                    return Err(CasperError::BlockNotHeld(cur));
+                };
+                let base = if !block.body.merge_base.is_empty() {
+                    Some(block.body.merge_base.clone())
+                } else {
+                    match block.header.parents_hash_list.as_slice() {
+                        [] => None,
+                        [parent] => Some(parent.clone()),
+                        _ => {
+                            return Err(CasperError::Other(format!(
+                                "settled_sigs_of_lineage: multi-parent block {} \
+                                 carries no recorded merge_base — refusing to \
+                                 guess its state lineage",
+                                hex::encode(&cur[..8.min(cur.len())]),
+                            )))
+                        }
+                    }
+                };
+                let mut sigs: HashSet<Bytes> = block
+                    .body
+                    .deploys
+                    .iter()
+                    .filter(|pd| !pd.is_failed)
+                    .map(|pd| pd.deploy.sig.clone())
+                    .collect();
+                sigs.extend(block.body.applied_from_scope.iter().cloned());
+                let step = std::sync::Arc::new(LineageStep {
+                    block_number: block.body.state.block_number,
+                    base,
+                    sigs: std::sync::Arc::new(sigs),
+                });
+                let mut cache = lineage_step_cache().lock();
+                if cache.len() >= LINEAGE_STEP_CACHE_MAX {
+                    cache.clear();
+                }
+                cache.insert(cur.clone(), step.clone());
+                step
+            }
+        };
+        if step.block_number < min_height {
+            return Ok((settled, walked));
+        }
+        walked += 1;
+        settled.extend(step.sigs.iter().cloned());
+        match &step.base {
+            None => return Ok((settled, walked)),
+            Some(base) => cur = base.clone(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Schedule {
     /// Sigs to re-evaluate once the max frozen lm-floor height reaches the
@@ -1052,6 +1163,133 @@ mod tests {
             record.state,
             TerminalState::Finalized,
             "a readable re-application must still finalize a horizon-blocked sig"
+        );
+    }
+
+    /// CLAIM-FINALITY-001 C2 bridge (discharge plan item 2): on generated
+    /// lineages the batched walk answers exactly as the per-sig reference
+    /// walk — for every fresh sig (failed and non-failed), every
+    /// `applied_from_scope` sig, decoy sigs living only on a non-base
+    /// parent, and absent sigs, across low/mid/above-tip bounds. Each
+    /// (lineage, bound) runs twice so the second pass exercises the
+    /// lineage-step cache-hit path against the same oracle.
+    #[tokio::test]
+    async fn batched_walk_matches_the_reference_walk_on_generated_lineages() {
+        let store = store().await;
+        let mut lcg: u64 = 0x5eed_cafe_0000_0001;
+        let mut rand = move |modulo: u32| -> u32 {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 33) as u32) % modulo
+        };
+        let mut deploy_n: i32 = 100;
+        let mut seq: i32 = 1000;
+        let mut applied_n: u32 = 0;
+
+        for _config in 0..12 {
+            let len: i64 = 4 + i64::from(rand(6));
+            let mut probe_sigs: Vec<Bytes> = Vec::new();
+            let genesis = {
+                seq += 1;
+                block_at(0, vec![], seq)
+            };
+            store.put_block_message(&genesis).expect("store genesis");
+            let mut prev = genesis;
+            for h in 1..=len {
+                seq += 1;
+                let mut b = if h >= 2 && rand(3) == 0 {
+                    // A merged block: the side parent is stored but NOT on
+                    // the state lineage; its decoy applied sig must stay
+                    // invisible to both walks.
+                    seq += 1;
+                    let mut side = block_at(h, vec![prev.block_hash.clone()], seq);
+                    applied_n += 1;
+                    let decoy = Bytes::from(format!("decoy-{}", applied_n).into_bytes());
+                    side.body.applied_from_scope = vec![decoy.clone()];
+                    store.put_block_message(&side).expect("store side");
+                    probe_sigs.push(decoy);
+                    seq += 1;
+                    let mut m = block_at(
+                        h,
+                        vec![prev.block_hash.clone(), side.block_hash.clone()],
+                        seq,
+                    );
+                    m.body.merge_base = prev.block_hash.clone();
+                    m
+                } else {
+                    block_at(h, vec![prev.block_hash.clone()], seq)
+                };
+                for _ in 0..rand(3) {
+                    deploy_n += 1;
+                    let failed = rand(4) == 0;
+                    let (sig, pd) = processed(deploy_n, failed);
+                    b.body.deploys.push(pd);
+                    probe_sigs.push(sig);
+                }
+                for _ in 0..rand(3) {
+                    applied_n += 1;
+                    let sig = Bytes::from(format!("applied-{}", applied_n).into_bytes());
+                    b.body.applied_from_scope.push(sig.clone());
+                    probe_sigs.push(sig);
+                }
+                store.put_block_message(&b).expect("store block");
+                prev = b;
+            }
+            probe_sigs.push(Bytes::from_static(b"never-seen-anywhere"));
+
+            let tip = prev.block_hash.clone();
+            for bound in [0, len / 2, len + 1] {
+                for _pass in 0..2 {
+                    let (set, _walked) = settled_sigs_of_lineage(&store, &tip, bound)
+                        .expect("batched walk on a complete segment");
+                    for sig in &probe_sigs {
+                        let reference = effect_in_state_of(&store, &tip, sig, bound)
+                            .expect("reference walk on a complete segment");
+                        assert_eq!(
+                            reference,
+                            set.contains(sig),
+                            "batched membership diverged from the reference walk \
+                             (bound {}, sig {})",
+                            bound,
+                            hex::encode(&sig[..8.min(sig.len())]),
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            lineage_step_cache_len() <= LINEAGE_STEP_CACHE_MAX,
+            "lineage-step cache must respect its hard cap"
+        );
+    }
+
+    /// The batched walk's documented strengthening: it covers the FULL
+    /// segment, so a gap below an applied sig refuses the whole answer
+    /// (typed `BlockNotHeld`), where the per-sig reference walk answers
+    /// TRUE for that sig without ever reaching the gap. Fail-closed is the
+    /// safe direction — availability must not shape verdicts.
+    #[tokio::test]
+    async fn batched_walk_is_fail_closed_on_a_gapped_segment() {
+        let store = store().await;
+        let absent = block_at(1, vec![], 1);
+        let (sig_top, pd) = processed(90, false);
+        let mut b = block_at(2, vec![absent.block_hash.clone()], 2);
+        b.body.deploys = vec![pd];
+        store.put_block_message(&b).expect("store block");
+
+        assert!(
+            effect_in_state_of(&store, &b.block_hash, &sig_top, 0)
+                .expect("the reference walk answers above the gap"),
+            "reference: the sig applied above the gap is TRUE without \
+             reading the gap"
+        );
+        let err = settled_sigs_of_lineage(&store, &b.block_hash, 0)
+            .expect_err("the batched walk must refuse a gapped segment");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash),
+            "the refusal must carry the missing block typed; got: {}",
+            err
         );
     }
 }
