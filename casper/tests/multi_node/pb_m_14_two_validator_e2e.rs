@@ -44,29 +44,43 @@
 //! final post-state-hash.  The replay-side aggregation is
 //! DELIBERATELY NOT landed — see the "Reverted" note below.
 //!
-//! **Reverted: replay-side aggregation and the reducer race (item d-3).**
-//! An initial draft plumbed the drained `_replay_slice` up through
-//! `replay_deploy_e_with_snapshot` / `replay_deploys` so the follower
-//! also inserted into `pending_wal_slices`, mirroring the play-side
-//! insert.  It was reverted after uncovering that the follower's
-//! `is_replay = true` mutating fs handlers (fs_write, etc.) are
-//! dispatched via `tokio::spawn` (see `reduce.rs:845`) and the
-//! reducer's `evaluate` can return BEFORE those spawned tasks run
-//! their `journal_write`.  Result: `take_and_commit` at end-of-
-//! deploy observes an EMPTY WAL contribution (Stat entries from the
-//! earlier openFileImpl statCheck land in time, but the Write entries
-//! from the actual fsWrite are still queued).
+//! **Blocked on the follower-side reducer race (item d-3).**
+//!
+//! Concrete cause pinpointed in the 2026-08-28 investigation (see
+//! auto-memory `fileio_d3_reducer_race_finding.md`): RSpace's rigged
+//! replay fires the ack-consumer's continuation (which eventually
+//! invokes `fsWrite`) via a spawned task that does NOT observe
+//! `fs_open`'s `insert_at.await` — so the follower's fd table has no
+//! shadow handle when `fs_write.journal_write` calls
+//! `with_mut(fd, ...)`.  Result: `meta=None`, `journal_write` returns
+//! `Ok(false)` without appending, the Write entry never lands in the
+//! WAL, and `take_and_commit` drains only [Stat] instead of [Stat,
+//! Write].
+//!
+//! Failed quick-fix attempts (all ≤3/5 reliable, INVALID as
+//! production fixes): `tokio::task::yield_now().await` at drain-side
+//! or source-side, 10× yields in a row, changing `FileHandleTable`'s
+//! inner `tokio::sync::RwLock` to `std::sync::RwLock` (fully sync),
+//! named binding on `insert_at`'s return.  The only reliably-
+//! successful "fix" is an `eprintln!` inside `fs_write` or
+//! `journal_write` — the stderr syscall provides a cross-task
+//! synchronization point but is not a valid production fix.
 //!
 //! Publishing an INCOMPLETE follower-side slice into
 //! `pending_wal_slices` is more dangerous than publishing nothing:
 //! the finalization-runner would build a snapshot from the partial
 //! slice on the follower, diverging from the leader's snapshot and
 //! misleading joiners.  So the replay-side aggregation is deferred
-//! until the reducer completion race is fixed.  A targeted
-//! `tokio::task::yield_now().await` before the drain closes the race
-//! only ~20% of the time in isolated runs; the proper fix is a
-//! reducer-level change so `evaluate` waits for all spawned handler
-//! tasks before returning — that's task d-3.
+//! until d-3 lands.
+//!
+//! **Fix path (decided): pre-install shadows at `replay_deploys`
+//! entry.**  Before the user-deploy loop starts, walk each
+//! `ProcessedDeploy.deploy_log` for fs_open replies and pre-install
+//! shadow handles.  Then the rigged reducer's early-firing of
+//! continuations is harmless — shadows are already visible when
+//! `fs_write` looks them up.  See `../../under-review/2026-07-24-
+//! File-IO/handoff-item-d-3.md` in the FIPS repo for the concrete
+//! implementation plan.
 //!
 //! **How to un-ignore this test:** once the reducer race is closed,
 //! remove the `#[ignore]` attribute below.  The regression pin
@@ -112,13 +126,12 @@ const PAYLOAD: &[u8] = b"hello world";
 const PAYLOAD_HEX: &str = "68656c6c6f20776f726c64";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on follower-side reducer/handler completion race (2026-08-28 finding): \
-            the follower's is_replay=true fs_write handler is tokio::spawn'd but can complete \
-            AFTER take_and_commit drains the WAL, resulting in a Write entry that lands \
-            post-drain and diverges from the leader.  Play-side WAL aggregation is landed \
-            (see docstring 'What landed'); replay-side needs a reducer-level fix so \
-            evaluate waits for all spawned handler tasks.  Un-ignore after the reducer \
-            fix — see 'Fix cosigned WAL aggregation gap' follow-up."]
+#[ignore = "blocked on item d-3 (2026-08-28 root cause pinpointed): follower's rigged \
+            replay fires fs_write's continuation before fs_open's insert_at is observed, \
+            so journal_write's with_mut(fd) returns None and no Write WAL entry lands.  \
+            Fix path decided: pre-install shadow handles at replay_deploys entry by \
+            walking each ProcessedDeploy.deploy_log for fs_open replies.  See docstring \
+            + auto-memory fileio_d3_reducer_race_finding.md + FIPS handoff-item-d-3.md."]
 async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
     // ---- shared fs setup ---------------------------------------------
     // Shared tempdir (design option A): both validators point at the
