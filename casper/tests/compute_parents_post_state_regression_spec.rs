@@ -219,6 +219,9 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             quarantine_length: 50000,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -452,6 +455,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             quarantine_length: 50000,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -710,6 +716,9 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             quarantine_length: 50000,
             number_of_active_validators: 1,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -943,6 +952,9 @@ async fn run_visible_blocks_scope_test() {
             quarantine_length: 50000,
             number_of_active_validators: 3,
             fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 15,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),

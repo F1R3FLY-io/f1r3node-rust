@@ -3553,6 +3553,157 @@ async fn fault_tolerance_threshold_ppm_round_trips_through_genesis() {
     );
 }
 
+/// Consensus-parameters round-trip: genesis bakes (max-parent-depth,
+/// deploy-lifespan, min-phlo-price) into the PoS contract and any node can
+/// read them back from any post-state — the same shard-uniformity mechanism
+/// as the protocol FTT, extended to the parameters the validity rules
+/// (parent spread, expiry, repeat-deploy, phlo floor) fork on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_round_trip_through_genesis() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // Values the test-genesis defaults (15, 50, 0) can never produce by accident.
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_parent_depth = 21;
+    parameters.2.proof_of_stake.deploy_lifespan = 70;
+    parameters.2.proof_of_stake.min_phlo_price = 3;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with consensus parameters");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let read = runtime_manager
+        .get_consensus_parameters(&post_state)
+        .await
+        .expect("on-chain consensus-parameters query");
+
+    assert_eq!(
+        read,
+        Some((21, 70, 3)),
+        "genesis must bake the consensus parameters into the PoS contract and \
+         expose them via getConsensusParameters"
+    );
+}
+
+/// The adoption gap this pins: a node whose LOCAL configuration diverges from
+/// the chain must still RUN the on-chain consensus parameters — local config
+/// is not a fork input. `hash_set_casper` is the single adoption point (the
+/// protocol-FTT precedent); before adoption, a divergent node would accept
+/// blocks its peers reject (parent spread, expiry, repeat window, phlo floor).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use casper::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
+    use casper::rust::engine::block_retriever::BlockRetriever;
+    use casper::rust::estimator::Estimator;
+    use comm::rust::rp::connect::{Connections, ConnectionsCell};
+    use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+
+    use crate::engine::setup;
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        block_dag_storage_from_dyn, casper_buffer_storage_from_dyn,
+        key_value_deploy_storage_from_dyn, mk_runtime_manager_with_history_at,
+        mk_test_rnode_store_manager_from_genesis,
+    };
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_parent_depth = 21;
+    parameters.2.proof_of_stake.deploy_lifespan = 70;
+    parameters.2.proof_of_stake.min_phlo_price = 3;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with consensus parameters");
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
+        .await
+        .expect("block store");
+    let block_dag_storage = block_dag_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("dag storage");
+    let deploy_storage = key_value_deploy_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("deploy storage");
+    let casper_buffer = casper_buffer_storage_from_dyn(&mut *kvm)
+        .await
+        .expect("casper buffer");
+    let mut buffer_kvm = InMemoryStoreManager::new();
+    let rejected_deploy_buffer = Arc::new(Mutex::new(
+        KeyValueRejectedDeployBuffer::new(&mut buffer_kvm)
+            .await
+            .expect("rejected buffer"),
+    ));
+
+    let local_peer = setup::peer_node("adoption-local", 40400);
+    let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
+    let block_retriever = BlockRetriever::new(
+        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(TransportLayerStub::new()),
+        ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer]))),
+        },
+        rp_conf,
+    );
+
+    // Local conf diverges from the chain on all three values.
+    let mut local_conf = CasperShardConf::new();
+    local_conf.max_parent_depth = 15;
+    local_conf.deploy_lifespan = 50;
+    local_conf.min_phlo_price = 1;
+
+    let casper = hash_set_casper(
+        block_retriever,
+        F1r3flyEvents::new(),
+        Arc::new(runtime_manager),
+        Estimator::apply(),
+        block_store,
+        block_dag_storage,
+        deploy_storage,
+        rejected_deploy_buffer,
+        casper_buffer,
+        None,
+        local_conf,
+        genesis_context.genesis_block.clone(),
+        casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+    )
+    .await
+    .expect("hash_set_casper");
+
+    let adopted = casper.casper_shard_conf();
+    assert_eq!(
+        (
+            adopted.max_parent_depth,
+            adopted.deploy_lifespan,
+            adopted.min_phlo_price
+        ),
+        (21, 70, 3),
+        "the on-chain consensus parameters must be adopted over local configuration"
+    );
+}
+
 /// Strict exploratory-query regression (PR #122 review r3588246166): the
 /// lenient exploratory path degrades a runtime EXECUTION FAILURE into an
 /// empty result — indistinguishable from "the queried contract method does

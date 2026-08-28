@@ -216,10 +216,13 @@ pub mod builder {
         }
 
         // A dropped delivery freezes the receiver's view until the retriever's
-        // anchor fires; the citability window must leave recovery a wide margin.
+        // anchor fires; the citability window must leave recovery a wide
+        // margin. The anchor is swept by the casper maintenance loop, so the
+        // EFFECTIVE re-request clock is the slower of the two.
         let recovery_anchor = std::time::Duration::from_millis(
             casper::rust::engine::block_retriever::UNRESOLVED_REREQUEST_ANCHOR_MS,
-        );
+        )
+        .max(node_conf.casper.casper_loop_interval);
         if max_parent_depth != i32::MAX && max_parent_depth > 0 {
             let citability_window = node_conf
                 .casper
@@ -229,16 +232,80 @@ pub mod builder {
             if citability_window < recovery_anchor.saturating_mul(10) {
                 warnings.push(format!(
                     "the citability window (max-parent-depth {} x heartbeat.check-interval \
-                    {:?} = {:?}) is under 10x the dependency-recovery re-request anchor \
-                    ({:?}): one lost block delivery can outlive the window before recovery \
-                    retries, converting a dropped packet into a finality stall. Raise \
-                    max-parent-depth or slow the cadence.",
+                    {:?} = {:?}) is under 10x the dependency re-request anchor's effective \
+                    clock ({:?}): one lost block delivery can outlive the window before \
+                    recovery retries, converting a dropped packet into a finality stall. \
+                    Raise max-parent-depth or slow the cadence.",
                     max_parent_depth,
                     node_conf.casper.heartbeat_conf.check_interval,
                     citability_window,
                     recovery_anchor,
                 ));
             }
+        }
+
+        // Values the node cannot behave correctly under: fail startup rather
+        // than run inverted windows or nonsense rules.
+        if max_parent_depth <= 0 {
+            return Err(eyre::eyre!(
+                "casper.max-parent-depth ({}) must be positive (or i32::MAX to disable \
+                the depth check): the parent-spread validity rule and the citability \
+                horizon are undefined at zero or below",
+                max_parent_depth,
+            ));
+        }
+        if node_conf.casper.deploy_lifespan <= 0 {
+            return Err(eyre::eyre!(
+                "casper.deploy-lifespan ({}) must be positive: a non-positive validity \
+                window inverts the expiry and repeat-deploy rules",
+                node_conf.casper.deploy_lifespan,
+            ));
+        }
+        if node_conf.casper.min_phlo_price < 0 {
+            return Err(eyre::eyre!(
+                "casper.min-phlo-price ({}) must be non-negative",
+                node_conf.casper.min_phlo_price,
+            ));
+        }
+        if node_conf.casper.genesis_block_data.epoch_length <= 0 {
+            return Err(eyre::eyre!(
+                "casper.genesis-block-data.epoch-length ({}) must be positive: epoch \
+                arithmetic (slash activation, closeBlock boundaries) divides by it",
+                node_conf.casper.genesis_block_data.epoch_length,
+            ));
+        }
+
+        // The mpd sentinel's real side effect is easy to miss: with no
+        // citability horizon, nothing is ever provably beyond contest.
+        if max_parent_depth == i32::MAX {
+            warnings.push(
+                "casper.max-parent-depth is i32::MAX (depth check disabled): terminal \
+                Expired/Failed deploy verdicts are never written — deploys that miss \
+                inclusion stay Pending forever by design"
+                    .to_string(),
+            );
+        }
+
+        // The item-2 lesson: every request leg toward an unreachable peer
+        // costs up to network-timeout, so a timeout at or above the proposal
+        // cadence lets one dead peer tax each round end to end.
+        let network_timeout = node_conf.protocol_client.network_timeout;
+        let check_interval = node_conf.casper.heartbeat_conf.check_interval;
+        if network_timeout > check_interval {
+            warnings.push(format!(
+                "protocol-client.network-timeout ({:?}) exceeds \
+                heartbeat.check-interval ({:?}): one unreachable peer can tax every \
+                proposal round by a full timeout",
+                network_timeout, check_interval,
+            ));
+        }
+
+        if !node_conf.casper.enable_mergeable_channel_gc {
+            warnings.push(
+                "casper.enable-mergeable-channel-gc is false: mergeable-channel data is \
+                retained forever and the store grows without bound"
+                    .to_string(),
+            );
         }
 
         Ok(warnings)
@@ -578,6 +645,89 @@ mod embedded_defaults_tests {
         assert!(
             !warnings.iter().any(|w| w.contains("re-request anchor")),
             "a disabled parent-depth check must not warn, got {warnings:?}"
+        );
+    }
+
+    /// Startup must refuse geometry the validity rules are undefined under;
+    /// shipped defaults must pass with none of the new warnings.
+    #[test]
+    fn invalid_consensus_values_fail_startup() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let shipped = builder::validate_config(&base).expect("shipped defaults must validate");
+        assert!(
+            !shipped.iter().any(|w| w.contains("network-timeout")
+                || w.contains("mergeable-channel-gc")
+                || w.contains("depth check disabled")),
+            "shipped geometry must be silent on the new checks, got {shipped:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.max_parent_depth = 0;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "max-parent-depth 0 must fail startup"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.deploy_lifespan = 0;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "deploy-lifespan 0 must fail startup"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.min_phlo_price = -1;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "negative min-phlo-price must fail startup"
+        );
+
+        let mut cfg = base;
+        cfg.casper.genesis_block_data.epoch_length = 0;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "epoch-length 0 must fail startup"
+        );
+    }
+
+    /// Side-effect configurations warn: the mpd sentinel disables terminal
+    /// deploy verdicts, an oversized network timeout taxes every proposal
+    /// round, and disabled mergeable-GC grows the store without bound.
+    #[test]
+    fn side_effect_configurations_warn_at_startup() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let mut cfg = base.clone();
+        cfg.casper.max_parent_depth = i32::MAX;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("depth check disabled")),
+            "the mpd sentinel must surface its terminal-verdict side effect, got {warnings:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.protocol_client.network_timeout = Duration::from_secs(15);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("network-timeout")),
+            "a network timeout above the proposal cadence must warn, got {warnings:?}"
+        );
+
+        let mut cfg = base;
+        cfg.casper.enable_mergeable_channel_gc = false;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings.iter().any(|w| w.contains("mergeable-channel-gc")),
+            "disabled mergeable-GC must warn about unbounded growth, got {warnings:?}"
         );
     }
 

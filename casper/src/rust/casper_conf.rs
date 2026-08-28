@@ -31,6 +31,11 @@ pub struct CasperConf {
     pub max_number_of_parents: i32,
     #[serde(rename = "max-parent-depth")]
     pub max_parent_depth: i32,
+    /// Deploy validity window in blocks. Consensus-bearing (expiry and
+    /// repeat-deploy validity rules read it), so the genesis value is baked
+    /// into the PoS contract and adopted from chain at startup.
+    #[serde(rename = "deploy-lifespan", default = "default_deploy_lifespan")]
+    pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block.
     /// Zero means derived: `max-parent-depth * heartbeat.check-interval / 5`,
     /// resolved at launch — see `deploy_play_budget_millis` on
@@ -133,6 +138,8 @@ pub struct CasperConf {
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
+
+fn default_deploy_lifespan() -> i64 { 50 }
 
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
