@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
-use crate::rspace::persistence::PackId;
+use crate::rspace::persistence::{CanonicalSink, PackId};
 
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
 pub(crate) const WRITER_LOCK_FILE_NAME_V1: &str = "writer.lock.v1";
@@ -174,6 +174,24 @@ pub(crate) enum DurableIoError {
         operation: DurableIoOperation,
         path: PathBuf,
     },
+    Allocation {
+        operation: DurableIoOperation,
+        path: PathBuf,
+        requested: u64,
+    },
+    AppendOverrun {
+        operation: DurableIoOperation,
+        path: PathBuf,
+        cursor: u64,
+        offered: u64,
+        appointed_end: u64,
+    },
+    AppendUnderrun {
+        operation: DurableIoOperation,
+        path: PathBuf,
+        actual_end: u64,
+        appointed_end: u64,
+    },
 }
 
 impl Display for DurableIoError {
@@ -299,6 +317,39 @@ impl Display for DurableIoError {
             Self::UnsupportedPlatform { operation, path } => write!(
                 formatter,
                 "{} {}: durable operation is unsupported on this platform",
+                operation.name(),
+                path.display()
+            ),
+            Self::Allocation {
+                operation,
+                path,
+                requested,
+            } => write!(
+                formatter,
+                "{} {}: cannot allocate bounded {requested}-byte append buffer",
+                operation.name(),
+                path.display()
+            ),
+            Self::AppendOverrun {
+                operation,
+                path,
+                cursor,
+                offered,
+                appointed_end,
+            } => write!(
+                formatter,
+                "{} {}: {offered}-byte append at {cursor} exceeds appointed end {appointed_end}",
+                operation.name(),
+                path.display()
+            ),
+            Self::AppendUnderrun {
+                operation,
+                path,
+                actual_end,
+                appointed_end,
+            } => write!(
+                formatter,
+                "{} {}: append ended at {actual_end}, before appointed end {appointed_end}",
                 operation.name(),
                 path.display()
             ),
@@ -467,6 +518,143 @@ impl DurableWritableFileV1<'_> {
     ) -> Result<(), DurableIoError> {
         self.require_length(FileLengthExpectation::Exact(CATALOG_IMAGE_LEN as u64))?;
         self.write_all_at(slot.offset(), bytes)
+    }
+}
+
+const DURABLE_APPEND_BUFFER_LEN: usize = 64 * 1024;
+
+/// Bounded, exact-extent canonical stream over one positional durable file.
+///
+/// Large canonical records are never materialized. Small encoder writes are
+/// coalesced into one fallibly allocated buffer, while chunks at least as
+/// large as that buffer bypass it. Every accepted byte is checked against the
+/// appointed end before any write can extend the file beyond authority.
+pub(crate) struct DurableCanonicalAppendSinkV1<'file, 'lease> {
+    file: &'file mut DurableWritableFileV1<'lease>,
+    flushed_end: u64,
+    appointed_end: u64,
+    buffer: Vec<u8>,
+}
+
+impl<'file, 'lease> DurableCanonicalAppendSinkV1<'file, 'lease> {
+    pub(crate) fn new(
+        file: &'file mut DurableWritableFileV1<'lease>,
+        start: u64,
+        appointed_end: u64,
+    ) -> Result<Self, DurableIoError> {
+        let span =
+            appointed_end
+                .checked_sub(start)
+                .ok_or_else(|| DurableIoError::AppendOverrun {
+                    operation: DurableIoOperation::PositionalWrite,
+                    path: file.path().to_path_buf(),
+                    cursor: start,
+                    offered: 0,
+                    appointed_end,
+                })?;
+        let capacity = usize::try_from(span.min(DURABLE_APPEND_BUFFER_LEN as u64))
+            .expect("bounded append capacity fits usize");
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(capacity)
+            .map_err(|_| DurableIoError::Allocation {
+                operation: DurableIoOperation::PositionalWrite,
+                path: file.path().to_path_buf(),
+                requested: capacity as u64,
+            })?;
+        Ok(Self {
+            file,
+            flushed_end: start,
+            appointed_end,
+            buffer,
+        })
+    }
+
+    pub(crate) fn cursor(&self) -> u64 {
+        self.flushed_end
+            .checked_add(self.buffer.len() as u64)
+            .expect("accepted append extent was checked before buffering")
+    }
+
+    fn flush_buffer(&mut self) -> Result<(), DurableIoError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        self.file.write_all_at(self.flushed_end, &self.buffer)?;
+        self.flushed_end = self
+            .flushed_end
+            .checked_add(self.buffer.len() as u64)
+            .ok_or_else(|| DurableIoError::OffsetOverflow {
+                operation: DurableIoOperation::PositionalWrite,
+                path: self.file.path().to_path_buf(),
+                offset: self.flushed_end,
+                completed: self.buffer.len() as u64,
+            })?;
+        self.buffer.clear();
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<u64, DurableIoError> {
+        self.flush_buffer()?;
+        if self.flushed_end != self.appointed_end {
+            return Err(DurableIoError::AppendUnderrun {
+                operation: DurableIoOperation::PositionalWrite,
+                path: self.file.path().to_path_buf(),
+                actual_end: self.flushed_end,
+                appointed_end: self.appointed_end,
+            });
+        }
+        self.file
+            .require_length(FileLengthExpectation::Exact(self.appointed_end))?;
+        Ok(self.flushed_end)
+    }
+}
+
+impl CanonicalSink for DurableCanonicalAppendSinkV1<'_, '_> {
+    type Error = DurableIoError;
+
+    fn write_all(&mut self, mut bytes: &[u8]) -> Result<(), Self::Error> {
+        let cursor = self.cursor();
+        let offered = u64::try_from(bytes.len()).map_err(|_| DurableIoError::OffsetOverflow {
+            operation: DurableIoOperation::PositionalWrite,
+            path: self.file.path().to_path_buf(),
+            offset: cursor,
+            completed: u64::MAX,
+        })?;
+        let end = cursor
+            .checked_add(offered)
+            .ok_or_else(|| DurableIoError::OffsetOverflow {
+                operation: DurableIoOperation::PositionalWrite,
+                path: self.file.path().to_path_buf(),
+                offset: cursor,
+                completed: offered,
+            })?;
+        if end > self.appointed_end {
+            return Err(DurableIoError::AppendOverrun {
+                operation: DurableIoOperation::PositionalWrite,
+                path: self.file.path().to_path_buf(),
+                cursor,
+                offered,
+                appointed_end: self.appointed_end,
+            });
+        }
+
+        while !bytes.is_empty() {
+            if self.buffer.is_empty() && bytes.len() >= DURABLE_APPEND_BUFFER_LEN {
+                self.file.write_all_at(self.flushed_end, bytes)?;
+                self.flushed_end = end;
+                return Ok(());
+            }
+            let available = self.buffer.capacity() - self.buffer.len();
+            if available == 0 {
+                self.flush_buffer()?;
+                continue;
+            }
+            let take = available.min(bytes.len());
+            self.buffer.extend_from_slice(&bytes[..take]);
+            bytes = &bytes[take..];
+        }
+        Ok(())
     }
 }
 
@@ -1557,6 +1745,105 @@ mod tests {
         assert!(lease.create_index(IndexGenerationV1::FIRST).is_err());
         let index = lease.open_index(IndexGenerationV1::FIRST).unwrap();
         assert_eq!(index.len().unwrap(), INDEX_HEADER_LEN_V1);
+    }
+
+    #[test]
+    fn canonical_append_sink_streams_exact_extent_without_record_materialization() {
+        let scratch = test_scratch::acquire("rspace-durable-io-append-");
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let prefix = [0x31; PACK_HEADER_LEN_V1 as usize];
+        let large = vec![0x7d; DURABLE_APPEND_BUFFER_LEN + 17];
+        let suffix = [0xa4; 19];
+        let appointed_end = PACK_HEADER_LEN_V1 + large.len() as u64 + suffix.len() as u64;
+
+        {
+            let mut pack = lease.create_pack(PackId::GENESIS).unwrap();
+            pack.write_all_at(0, &prefix).unwrap();
+            let mut sink =
+                DurableCanonicalAppendSinkV1::new(&mut pack, PACK_HEADER_LEN_V1, appointed_end)
+                    .unwrap();
+            sink.write_all(&large).unwrap();
+            sink.write_all(&suffix[..7]).unwrap();
+            sink.write_all(&suffix[7..]).unwrap();
+            assert_eq!(sink.cursor(), appointed_end);
+            assert_eq!(sink.finish().unwrap(), appointed_end);
+        }
+
+        let pack = lease.directory().open_pack(PackId::GENESIS).unwrap();
+        let mut actual = vec![0; appointed_end as usize];
+        pack.read_exact_at(0, &mut actual).unwrap();
+        assert_eq!(&actual[..prefix.len()], &prefix);
+        assert_eq!(&actual[prefix.len()..prefix.len() + large.len()], &large);
+        assert_eq!(&actual[prefix.len() + large.len()..], &suffix);
+    }
+
+    #[test]
+    fn canonical_append_sink_rejects_overrun_before_extending_the_file() {
+        let scratch = test_scratch::acquire("rspace-durable-io-append-overrun-");
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let mut pack = lease.create_pack(PackId::GENESIS).unwrap();
+        pack.write_all_at(0, &[0x21; PACK_HEADER_LEN_V1 as usize])
+            .unwrap();
+        let appointed_end = PACK_HEADER_LEN_V1 + 3;
+        let mut sink =
+            DurableCanonicalAppendSinkV1::new(&mut pack, PACK_HEADER_LEN_V1, appointed_end)
+                .unwrap();
+        let error = sink.write_all(&[1, 2, 3, 4]).unwrap_err();
+        assert!(matches!(
+            error,
+            DurableIoError::AppendOverrun {
+                cursor: PACK_HEADER_LEN_V1,
+                offered: 4,
+                appointed_end: end,
+                ..
+            } if end == appointed_end
+        ));
+        drop(sink);
+        assert_eq!(pack.len().unwrap(), PACK_HEADER_LEN_V1);
+    }
+
+    #[test]
+    fn canonical_append_sink_reports_underrun_and_invalid_extent() {
+        let scratch = test_scratch::acquire("rspace-durable-io-append-underrun-");
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let mut pack = lease.create_pack(PackId::GENESIS).unwrap();
+        pack.write_all_at(0, &[0x21; PACK_HEADER_LEN_V1 as usize])
+            .unwrap();
+        let appointed_end = PACK_HEADER_LEN_V1 + 4;
+        let mut sink =
+            DurableCanonicalAppendSinkV1::new(&mut pack, PACK_HEADER_LEN_V1, appointed_end)
+                .unwrap();
+        sink.write_all(&[1, 2, 3]).unwrap();
+        let error = sink.finish().unwrap_err();
+        assert!(matches!(
+            error,
+            DurableIoError::AppendUnderrun {
+                actual_end,
+                appointed_end: end,
+                ..
+            } if actual_end == PACK_HEADER_LEN_V1 + 3 && end == appointed_end
+        ));
+        assert_eq!(pack.len().unwrap(), PACK_HEADER_LEN_V1 + 3);
+
+        let error = match DurableCanonicalAppendSinkV1::new(&mut pack, 10, 9) {
+            Ok(_) => panic!("a reversed append extent must be rejected"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, DurableIoError::AppendOverrun {
+            cursor: 10,
+            offered: 0,
+            appointed_end: 9,
+            ..
+        }));
     }
 
     #[test]
