@@ -134,6 +134,20 @@ pub const PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC: &str =
     "block.processing.stage.parents-post-state.settled-probe.wrapper.calls";
 pub const PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC: &str =
     "block.processing.stage.parents-post-state.settled-probe.wrapper.time-ns";
+// The batched settled-sig index (CLAIM-FINALITY-001): one lineage walk per
+// merge replaces the per-sig probe walks; these time that build and record
+// its depth. The wrapper counters above keep running — after the batching
+// they measure set-membership lookups, which is the before/after evidence.
+pub const PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-index.build.time";
+pub const PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-index.blocks";
+// The floor probe's per-floor lazy builds, kept separate from the base
+// index above so the two walks stay individually attributable.
+pub const PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-floor-index.build.time";
+pub const PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BLOCKS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-floor-index.blocks";
 
 // Wrapper counters surfacing the unaccounted overhead inside
 // `evaluate_system_source` (env build + rand clone + post-evaluate fixup) and
