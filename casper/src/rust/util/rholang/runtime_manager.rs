@@ -212,6 +212,14 @@ pub struct StateBoundAdmission {
     evidence: Arc<[ProcessedDeploy]>,
     user_post_state: StateHash,
     user_mergeable: Arc<[NumberChannelsEndVal]>,
+    /// PB-M-14 fix (2026-08-28): the aggregated per-block WAL slice
+    /// captured during user-deploy execution.  Threaded up from
+    /// `state_bound_cost_evidence_for_state_cosigned` so
+    /// `compute_state_with_bonds_cosigned_admitted` can insert into
+    /// `pending_wal_slices` under the block's final post-state-hash
+    /// after system deploys land.  Empty for blocks with no Consensus-
+    /// cap fs writes (the common case).
+    fs_wal: Arc<[rholang::rust::interpreter::io::wal::WalEntry]>,
 }
 
 #[derive(Clone)]
@@ -219,6 +227,11 @@ struct StateBoundExecution {
     post_state: StateHash,
     processed: Arc<[ProcessedDeploy]>,
     mergeable: Arc<[NumberChannelsEndVal]>,
+    /// PB-M-14 fix (2026-08-28): mirror of `StateBoundAdmission.fs_wal`;
+    /// captured from `state_bound_cost_evidence_for_state_cosigned` so
+    /// the certifying wrapper can promote it into the admission
+    /// token verbatim.
+    fs_wal: Arc<[rholang::rust::interpreter::io::wal::WalEntry]>,
 }
 
 fn ensure_terminal_close(
@@ -717,7 +730,9 @@ impl RuntimeManager {
             evidence,
             user_post_state,
             user_mergeable,
+            fs_wal,
         } = admission;
+        let block_number_for_slice = block_data.block_number;
         ensure_terminal_close(&mut system_deploys, &block_data)?;
         if evidence.len() != outcome.admitted.len() {
             return Err(CasperError::InvalidCostSettlement(
@@ -780,6 +795,46 @@ impl RuntimeManager {
         let bonds = runtime_ops.compute_bonds(&state_hash).await?;
         drop(runtime_ops);
 
+        // PB-M-14 fix (2026-08-28): publish the aggregated per-block
+        // WAL slice into `pending_wal_slices` under the block's final
+        // post-state-hash.  The finalization runner's `new_lfb_found_
+        // effect` looks up slices by `block.body.state.post_state_hash`
+        // (see `finalization_runner.rs`), so the key MUST include
+        // any system-deploy state effects — hence the insert happens
+        // here (after system deploys land), not inside
+        // `state_bound_cost_evidence_for_state_cosigned` (which only
+        // knows the user_post_state).
+        //
+        // Mirrors the legacy `play_deploys_for_state` insert
+        // (`runtime.rs:1515-1534`) shape verbatim — same eviction
+        // policy, same tracing target.  Pre-fix this insert never
+        // happened for cosigned blocks; the LFB-snapshot writer's
+        // input starved and the joiner-reconstruction path was
+        // unobservable end-to-end.
+        if !fs_wal.is_empty() {
+            const MAX_PENDING_WAL_SLICES: usize = 1024;
+            let mut slices = self.pending_wal_slices.write().await;
+            if slices.len() >= MAX_PENDING_WAL_SLICES {
+                if let Some(oldest_key) = slices
+                    .iter()
+                    .min_by_key(|(_, (bn, _))| *bn)
+                    .map(|(k, _)| k.clone())
+                {
+                    slices.remove(&oldest_key);
+                    tracing::warn!(
+                        target: "f1r3fly.casper.fs_wal",
+                        cap = MAX_PENDING_WAL_SLICES,
+                        "pending_wal_slices cache full; evicting oldest entry.  \
+                         Deep-fork scenario or stalled finalizer?"
+                    );
+                }
+            }
+            slices.insert(
+                state_hash.to_vec(),
+                (block_number_for_slice, fs_wal.to_vec()),
+            );
+        }
+
         Ok((state_hash, usr_processed, sys_processed, bonds))
     }
 
@@ -815,7 +870,7 @@ impl RuntimeManager {
         let fee_recipient = block_data.sender.clone();
         runtime_ops.runtime.set_block_data(block_data).await;
         runtime_ops.runtime.set_invalid_blocks(invalid_blocks).await;
-        let (post_state, processed, outcome) = runtime_ops
+        let (post_state, processed, outcome, fs_wal) = runtime_ops
             .state_bound_cost_evidence_for_state_cosigned(start_hash, terms, &fee_recipient)
             .await?;
         let (processed, mergeable): (Vec<_>, Vec<_>) = processed.into_iter().unzip();
@@ -824,6 +879,7 @@ impl RuntimeManager {
                 post_state,
                 processed: Arc::from(processed),
                 mergeable: Arc::from(mergeable),
+                fs_wal: Arc::from(fs_wal),
             },
             outcome,
         ))
@@ -894,6 +950,7 @@ impl RuntimeManager {
             evidence: execution.processed,
             user_post_state: execution.post_state,
             user_mergeable: execution.mergeable,
+            fs_wal: execution.fs_wal,
         })
     }
 
@@ -2730,6 +2787,9 @@ mod tests {
             evidence: Arc::from(Vec::<ProcessedDeploy>::new()),
             user_post_state: vec![1; 32].into(),
             user_mergeable: Arc::from(Vec::<NumberChannelsEndVal>::new()),
+            fs_wal: Arc::from(
+                Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new(),
+            ),
         }
     }
 
@@ -2773,6 +2833,54 @@ mod tests {
 
         assert_eq!(admission.pre_state(), &StateHash::from(vec![1; 32]));
         assert_ne!(admission.pre_state(), &StateHash::from(vec![2; 32]));
+    }
+
+    /// Item (d-2) regression pin (2026-08-28): the cosigned admitted-
+    /// checkpoint path publishes the aggregated per-block WAL slice
+    /// into `pending_wal_slices` keyed by the block's final post-
+    /// state-hash.  Without this insert, the LFB-snapshot writer's
+    /// input starves for every cosigned block, breaking joiner
+    /// reconstruction end-to-end (see `pb_m_14_two_validator_e2e`).
+    ///
+    /// Companion pin to
+    /// `state_bound_cost_evidence_for_state_cosigned_aggregates_fs_wal`
+    /// in `runtime.rs` — that pin guards the aggregation; this one
+    /// guards the publish.
+    #[test]
+    fn compute_state_with_bonds_cosigned_admitted_publishes_pending_wal_slice() {
+        let src = include_str!("runtime_manager.rs");
+        let start_idx = src
+            .find("pub async fn compute_state_with_bonds_cosigned_admitted")
+            .expect(
+                "compute_state_with_bonds_cosigned_admitted must exist in this file",
+            );
+        let end_marker = "Ok((state_hash, usr_processed, sys_processed, bonds))";
+        let body_end = src[start_idx..].find(end_marker).expect(
+            "terminal return `Ok((state_hash, usr_processed, sys_processed, bonds))` \
+             must exist inside compute_state_with_bonds_cosigned_admitted",
+        );
+        let body = &src[start_idx..start_idx + body_end];
+        assert!(
+            body.contains("self.pending_wal_slices.write().await"),
+            "compute_state_with_bonds_cosigned_admitted must acquire a write \
+             lock on `pending_wal_slices` to publish the block's aggregated \
+             WAL slice (item d-2)"
+        );
+        assert!(
+            body.contains("state_hash.to_vec()"),
+            "compute_state_with_bonds_cosigned_admitted must key the \
+             `pending_wal_slices` insert by the block's FINAL post-state-hash \
+             (`state_hash`, computed after system deploys land), NOT the \
+             intermediate user_post_state.  Wrong key → finalization runner \
+             lookup by `block.body.state.post_state_hash` misses the slice."
+        );
+        assert!(
+            body.contains("MAX_PENDING_WAL_SLICES"),
+            "compute_state_with_bonds_cosigned_admitted must apply the same \
+             eviction cap the legacy `play_deploys_for_state` uses \
+             (defense-in-depth against deep-fork or stalled-finalizer \
+             pending-slice accumulation)"
+        );
     }
 
     fn close() -> super::super::system_deploy_enum::SystemDeployEnum {
@@ -2832,6 +2940,9 @@ mod tests {
             evidence: Arc::from(vec![witness.clone()]),
             user_post_state: witness.post_state_hash.clone(),
             user_mergeable: Arc::from(vec![NumberChannelsEndVal::new()]),
+            fs_wal: Arc::from(
+                Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new(),
+            ),
         };
 
         assert_eq!(admission.evidence.as_ref(), std::slice::from_ref(&witness));

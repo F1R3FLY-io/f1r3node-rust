@@ -364,19 +364,23 @@ async fn apply_finalization_effects(
         // executing), record the receipt anyway so retries don't
         // loop and downstream peer catch-up fills the snapshot gap.
         //
-        // Lock-ordering audit (2026-08-26): safe.  This branch
-        // acquires `pending_wal_slices.write().await` (tokio
-        // RwLock, released before) then `record_finalization_effect`
-        // (which briefly grabs FinalizationLedger's `append_lock`
-        // — a parking_lot::Mutex held only across a single store
-        // put).  Reverse-order path does not exist: the only other
-        // pending_wal_slices writer is `runtime.rs::play_deploys_for_state`
-        // which never touches `append_lock` (block-processing vs.
-        // finalization subsystems are disjoint).  The atomic
-        // wrapper `record_directly_finalized_certified_atomic`
-        // releases its own `global_lock` before invoking this
-        // callback (see block_dag_key_value_storage.rs:2261-2303),
-        // so no shared lock is held across the awaits below.
+        // Lock-ordering audit (2026-08-26, refreshed 2026-08-28
+        // for item d-2): safe.  This branch acquires
+        // `pending_wal_slices.write().await` (tokio RwLock, released
+        // before) then `record_finalization_effect` (which briefly
+        // grabs FinalizationLedger's `append_lock` — a
+        // parking_lot::Mutex held only across a single store put).
+        // Reverse-order path does not exist: the pending_wal_slices
+        // writers are `runtime.rs::play_deploys_for_state` (legacy
+        // single-sig path) and
+        // `runtime_manager.rs::compute_state_with_bonds_cosigned_admitted`
+        // (item d-2 cosigned block-creation path); neither touches
+        // `append_lock` (block-processing vs. finalization subsystems
+        // are disjoint).  The atomic wrapper
+        // `record_directly_finalized_certified_atomic` releases its
+        // own `global_lock` before invoking this callback (see
+        // block_dag_key_value_storage.rs:2261-2303), so no shared
+        // lock is held across the awaits below.
         let snapshot_effect = effect_id(
             revision,
             block.block_hash.clone(),

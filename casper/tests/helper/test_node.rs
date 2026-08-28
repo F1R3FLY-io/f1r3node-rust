@@ -1,6 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/TestNode.scala
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -85,6 +86,40 @@ pub struct TestNode {
     /// shard, where a validator always proposes to keep the chain advancing.
     /// Defaults to false (the historic manual-propose test behavior).
     pub allow_empty_blocks: bool,
+}
+
+/// Per-node fs wiring for Casper-level fileio tests.  Passed into
+/// `TestNode::create_network_with_fs_provisioning` to hook a node's
+/// `RuntimeManager` up to a payload store and populate its root-
+/// identity registry — the two pieces the production boot pipeline
+/// (`node::runtime::setup`) installs when consensus-static provisioning
+/// is present.
+///
+/// Snapshot writer wiring is intentionally omitted: the canary tests
+/// this helper unblocks assert on the pre-finalization `pending_wal_
+/// slices` cache + on-disk file bytes, both of which populate without
+/// SnapshotWriter involvement (the writer only fires on LFB advance).
+/// Tests that need snapshot emission can construct a `SnapshotWriter`
+/// directly and call `runtime_manager.set_fs_snapshot_writer` after
+/// `create_network_with_fs_provisioning` returns.
+#[derive(Debug, Clone)]
+pub struct TestFsProvisioning {
+    /// Absolute paths to register with the RuntimeManager's root-
+    /// identity registry.  For File-kind bundle entries pass the
+    /// file's parent directory; for Dir-kind entries pass the dir
+    /// itself.  Every fs handler consults this registry through
+    /// `safe_descend_verified` — a missing entry causes the first
+    /// syscall on that root to fail with `RootIdentityChanged`, so
+    /// tests that never touch the fs can pass `Vec::new()`.
+    pub root_paths: Vec<PathBuf>,
+    /// Directory to back the content-addressed payload store.  Auto-
+    /// created on `create_node` (via `DirectoryPayloadStore::insert`,
+    /// which mkdirs on first write; the helper mkdirs eagerly so a
+    /// unwritable directory surfaces during setup, not deep inside
+    /// a deploy).  Per-node in tests; two nodes writing identical
+    /// bytes produce identically-named files in their respective
+    /// dirs.
+    pub payload_dir: PathBuf,
 }
 
 impl TestNode {
@@ -815,10 +850,11 @@ impl TestNode {
         let test_network = TestNetwork::empty();
 
         // Take the required number of validator keys
+        let total_nodes = network_size + with_read_only_size.unwrap_or(0);
         let sks_to_use: Vec<PrivateKey> = genesis
             .validator_sks()
             .into_iter()
-            .take(network_size + with_read_only_size.unwrap_or(0))
+            .take(total_nodes)
             .collect();
 
         Self::network(
@@ -831,6 +867,7 @@ impl TestNode {
             None,
             test_network,
             finalization_rate,
+            vec![None; total_nodes],
         )
         .await
     }
@@ -859,6 +896,55 @@ impl TestNode {
             Some(bootstrap_index),
             test_network,
             1,
+            vec![None; network_size],
+        )
+        .await
+    }
+
+    /// Creates a network with per-node fs provisioning.  Each entry in
+    /// `fs_provisionings` corresponds positionally to a node — passing
+    /// `Some(cfg)` wires that node's RuntimeManager with a payload
+    /// store + root-identity registry entries, matching what production
+    /// boot (`node::runtime::setup:245-466`) does when
+    /// `storage.file-io-provisioning` has consensus-static entries.
+    ///
+    /// Panics if `fs_provisionings.len() != network_size` — position
+    /// matters, so a mismatched length would silently drop provisioning
+    /// for the trailing nodes.
+    pub async fn create_network_with_fs_provisioning(
+        genesis: GenesisContext,
+        network_size: usize,
+        fs_provisionings: Vec<Option<TestFsProvisioning>>,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        assert_eq!(
+            fs_provisionings.len(),
+            network_size,
+            "TestNode::create_network_with_fs_provisioning: \
+             fs_provisionings.len() ({}) must equal network_size ({})",
+            fs_provisionings.len(),
+            network_size,
+        );
+
+        crate::init_logger();
+
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis
+            .validator_sks()
+            .into_iter()
+            .take(network_size)
+            .collect();
+
+        Self::network(
+            sks_to_use,
+            genesis,
+            0.0,
+            Estimator::UNLIMITED_PARENTS,
+            None,
+            0,
+            None,
+            test_network,
+            1,
+            fs_provisionings,
         )
         .await
     }
@@ -875,9 +961,17 @@ impl TestNode {
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
         finalization_rate: i32,
+        fs_provisionings: Vec<Option<TestFsProvisioning>>,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
+        assert_eq!(
+            fs_provisionings.len(),
+            n,
+            "TestNode::network: fs_provisionings.len() ({}) must equal sks.len() ({})",
+            fs_provisionings.len(),
+            n,
+        );
 
         // Generate node names: "node-1", "node-2", ..., "readOnly-{i}" for read-only nodes
         let names: Vec<String> = (1..=n)
@@ -902,11 +996,12 @@ impl TestNode {
 
         // Create nodes
         let mut nodes = Vec::new();
-        for (((name, peer), sk), is_readonly) in names
+        for ((((name, peer), sk), is_readonly), fs_prov) in names
             .into_iter()
             .zip(peers.into_iter())
             .zip(sks.into_iter())
             .zip(is_read_only.into_iter())
+            .zip(fs_provisionings.into_iter())
         {
             let node = Self::create_node(
                 name,
@@ -921,6 +1016,7 @@ impl TestNode {
                 &genesis_context,
                 bootstrap_peer.clone(),
                 finalization_rate,
+                fs_prov,
             )
             .await;
             nodes.push(node);
@@ -959,6 +1055,7 @@ impl TestNode {
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
         finalization_rate: i32,
+        fs_provisioning: Option<TestFsProvisioning>,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1025,6 +1122,51 @@ impl TestNode {
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
+
+        // Wire fs provisioning (payload store + root-identity registry)
+        // if the test asked for it.  Mirrors `node::runtime::setup:245-466`
+        // — the two side-effects there that are consensus-observable
+        // for Casper-level fileio tests are (a) the payload store,
+        // which is where Consensus-cap writes stash bytes for joining
+        // validators to fetch, and (b) the root-identity registry,
+        // which every `safe_descend_verified` consults to detect
+        // rename-and-recreate.  SnapshotWriter is INTENTIONALLY not
+        // wired here — it only fires on LFB advance and the canary
+        // tests exercise pre-finalization state.  Tests that need
+        // snapshot emission can call `runtime_manager.
+        // set_fs_snapshot_writer` themselves post-construction.
+        if let Some(prov) = fs_provisioning {
+            use casper::rust::engine::wal_payload_server::{
+                DirectoryPayloadStore, PayloadStoreBundle,
+            };
+            use rholang::rust::interpreter::io::path::capture_root_identity;
+
+            std::fs::create_dir_all(&prov.payload_dir)
+                .unwrap_or_else(|e| panic!(
+                    "TestNode({}): create_dir_all({:?}) failed: {e}",
+                    name, prov.payload_dir,
+                ));
+
+            let store_bundle = PayloadStoreBundle::from_directory(
+                DirectoryPayloadStore::new(prov.payload_dir.clone()),
+            );
+            runtime_manager.set_payload_store(Some(store_bundle)).await;
+
+            for root in &prov.root_paths {
+                match capture_root_identity(root) {
+                    Ok(id) => runtime_manager.register_root_identity(root.clone(), id),
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.test.fs_provisioning",
+                        node = %name,
+                        path = ?root,
+                        error = %e,
+                        "TestFsProvisioning: capture_root_identity failed; \
+                         first syscall on this root will fail with RootIdentityChanged"
+                    ),
+                }
+            }
+        }
+
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
         let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);

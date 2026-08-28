@@ -567,6 +567,27 @@ impl ReplayRuntimeOps {
         // downstream consumer on the replay side today; the
         // side effect (releasing entries from the shared WAL) is
         // the H-2 fix's purpose.
+        //
+        // Item (d-2) 2026-08-28 note: an earlier draft plumbed the
+        // drained slice up to `replay_deploys` so it could feed
+        // `pending_wal_slices` on the follower, mirroring the play-
+        // side fix in `state_bound_cost_evidence_for_state_cosigned`
+        // + `compute_state_with_bonds_cosigned_admitted`.  It was
+        // reverted after uncovering a reducer race: the follower's
+        // `is_replay = true` mutating fs handlers (fs_write,
+        // fs_write_at, ...) are dispatched via `tokio::spawn` in
+        // `reduce.rs:845` and short-circuit without a
+        // `spawn_blocking` syscall, so `take_and_commit` here can
+        // fire BEFORE the spawned handler's `journal_write` runs —
+        // producing a per-deploy slice missing its Write entries.
+        // Publishing an incomplete slice into `pending_wal_slices`
+        // is more dangerous than not publishing at all: the
+        // finalization-runner would build a snapshot from the
+        // partial slice on the follower, diverging from the
+        // leader's snapshot and misleading joiners.  Follow-up
+        // d-3 fixes the reducer completion semantics; only then
+        // can the replay-side aggregation land.  See canary
+        // `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`.
         let _replay_slice = wal_scope.take_and_commit(&processed_deploy.deploy_log);
 
         // Time checkpoint-mergeable operation (matches Scala RuntimeReplaySyntax.scala:L322)

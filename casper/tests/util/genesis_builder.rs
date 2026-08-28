@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::errors::CasperError;
+use casper::rust::genesis::contracts::fs_genesis::BundleEntry;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::contracts::vault::Vault;
@@ -79,13 +80,45 @@ static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 pub struct GenesisBuilder {
     vaults: Option<Vec<Vault>>,
+    fs_bundle: Option<Vec<BundleEntry>>,
+    /// Outer Option distinguishes "unset by builder" (None) from "set to
+    /// None" (Some(None), meaning the caller explicitly disables cadence).
+    consensus_fs_snapshot_cadence: Option<Option<u64>>,
 }
 
 impl GenesisBuilder {
-    pub fn new() -> Self { Self { vaults: None } }
+    pub fn new() -> Self {
+        Self {
+            vaults: None,
+            fs_bundle: None,
+            consensus_fs_snapshot_cadence: None,
+        }
+    }
 
     pub fn with_vaults(mut self, vaults: Vec<Vault>) -> Self {
         self.vaults = Some(vaults);
+        self
+    }
+
+    /// Attach a fs bundle to the genesis under construction.  Each entry
+    /// becomes an fs-generator input at genesis time and is discoverable
+    /// via `Fs.openFile("<logical_name>", ...)` post-boot.  Prefer this
+    /// over mutating `params.2.fs_bundle` directly so the static
+    /// `GENESIS_CACHE` keys on the bundle content — omitting this step
+    /// causes a fresh test with a new bundle to reuse a cached genesis
+    /// built for a different bundle.
+    pub fn with_fs_bundle(mut self, bundle: Vec<BundleEntry>) -> Self {
+        self.fs_bundle = Some(bundle);
+        self
+    }
+
+    /// Set the shard-wide LFB snapshot cadence.  `Some(n)` triggers
+    /// a snapshot at every finalized block whose height is a multiple
+    /// of `n`; `None` disables cadence-driven snapshots.  Required
+    /// alongside a wired `SnapshotWriter` for `pending_wal_slices` to
+    /// flush to disk on cadence-hit finalization.
+    pub fn with_consensus_fs_snapshot_cadence(mut self, cadence: Option<u64>) -> Self {
+        self.consensus_fs_snapshot_cadence = Some(cadence);
         self
     }
 
@@ -278,8 +311,19 @@ impl GenesisBuilder {
         &mut self,
         parameters: Option<GenesisParameters>,
     ) -> Result<GenesisContext, CasperError> {
-        let parameters =
+        let mut parameters =
             parameters.unwrap_or(Self::build_genesis_parameters_with_defaults(None, None));
+        // Fold builder-level fs overrides into `parameters` BEFORE the
+        // cache lookup so distinct bundles / cadences hash to distinct
+        // cache keys.  (`with_vaults`'s override happens later in
+        // `do_build_genesis` and is subject to a known cache-key
+        // mismatch — kept as-is to avoid perturbing unrelated tests.)
+        if let Some(ref bundle) = self.fs_bundle {
+            parameters.2.fs_bundle = bundle.clone();
+        }
+        if let Some(cadence) = self.consensus_fs_snapshot_cadence {
+            parameters.2.consensus_fs_snapshot_cadence = cadence;
+        }
         CACHE_ACCESSES.fetch_add(1, Ordering::SeqCst);
 
         if GENESIS_CACHE.contains_key(&parameters) {

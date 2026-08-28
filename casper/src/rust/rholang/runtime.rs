@@ -855,6 +855,19 @@ impl RuntimeOps {
             StateHash,
             Vec<(ProcessedDeploy, NumberChannelsEndVal)>,
             crate::rust::util::rholang::acceptance::AdmissionOutcome,
+            // PB-M-14 fix (2026-08-28): aggregated per-deploy WAL slice
+            // across the user-deploy execution loop.  Threaded upward
+            // via `StateBoundExecution.fs_wal` /
+            // `StateBoundAdmission.fs_wal` so
+            // `compute_state_with_bonds_cosigned_admitted` can insert
+            // into `pending_wal_slices` under the block's final
+            // post-state-hash after system deploys land.  Pre-fix the
+            // per-deploy `_fs_wal` was dropped here, leaving
+            // `pending_wal_slices` empty for every cosigned-path
+            // block and starving the finalization-runner's
+            // snapshot-write pipeline of input for Consensus-cap
+            // writes.
+            Vec<WalEntry>,
         ),
         CasperError,
     > {
@@ -865,6 +878,7 @@ impl RuntimeOps {
         let mut accepted = Vec::with_capacity(terms.len());
         let mut outcome = crate::rust::util::rholang::acceptance::AdmissionOutcome::default();
         let mut closed_groups = std::collections::BTreeSet::new();
+        let mut block_fs_wal: Vec<WalEntry> = Vec::new();
         let fee_address =
             rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(
                 fee_recipient,
@@ -914,7 +928,7 @@ impl RuntimeOps {
                     break None;
                 }
                 previous_capacity = Some(capacity);
-                let (processed, user_mergeable, _fs_wal, exhausted) = self
+                let (processed, user_mergeable, deploy_fs_wal, exhausted) = self
                     .process_deploy_cosigned_with_budget_and_authority(
                         cosigned.clone(),
                         Cost::create(capacity, "state-bound authority capacity"),
@@ -968,10 +982,17 @@ impl RuntimeOps {
                         "state-bound user post-state is not Blake2b-256".to_string(),
                     )
                 })?;
-                break Some((processed, user_mergeable, witness, user_post_state));
+                break Some((
+                    processed,
+                    user_mergeable,
+                    witness,
+                    user_post_state,
+                    deploy_fs_wal,
+                ));
             };
 
-            let Some((mut processed, user_mergeable, mut witness, user_post_state)) = discovered
+            let Some((mut processed, user_mergeable, mut witness, user_post_state, deploy_fs_wal)) =
+                discovered
             else {
                 self.runtime
                     .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
@@ -1326,9 +1347,17 @@ impl RuntimeOps {
             )?;
             outcome.admitted.push(cosigned);
             accepted.push((processed, mergeable));
+            // PB-M-14 fix (2026-08-28): fold this accepted deploy's
+            // per-runtime WAL contribution into the block-level slice.
+            // The lifecycle above (`?` returns on any settlement /
+            // signature check failure) means we only reach here if the
+            // deploy was fully accepted into the block, so a failed-
+            // deploy's WAL entries are correctly excluded — matching
+            // the discard-drain-on-error semantics of `WalDeployScope`.
+            block_fs_wal.extend(deploy_fs_wal);
         }
 
-        Ok((current_root, accepted, outcome))
+        Ok((current_root, accepted, outcome, block_fs_wal))
     }
 
     async fn play_deploys_for_state_cosigned_internal(
@@ -3322,6 +3351,67 @@ mod tests {
             body.contains("pending_wal_slices"),
             "play_deploys_for_state must cache the per-block WAL slice into \
              pending_wal_slices for finalization_runner to pick up"
+        );
+    }
+
+    /// Item (d-2) fix regression pin (2026-08-28): the cosigned
+    /// user-deploy execution path aggregates per-deploy `fs_wal`
+    /// entries into a block-level slice and returns them to the
+    /// caller, so the caller can insert into
+    /// `RuntimeManager.pending_wal_slices` keyed by the block's
+    /// final post-state-hash.  Pre-fix,
+    /// `state_bound_cost_evidence_for_state_cosigned` unpacked the
+    /// per-deploy return as `let (_, _, _fs_wal, _) = ...` and
+    /// dropped the WAL contribution on the floor — the LFB-snapshot
+    /// pipeline's input starved and the joiner-reconstruction path
+    /// was unobservable through the block-processing chain.  The
+    /// legacy single-sig `play_deploys_for_state` already had this
+    /// aggregation; the merge to cosigned lost it.
+    ///
+    /// If a future refactor renames the local (`block_fs_wal`,
+    /// `deploy_fs_wal`) or restructures the loop, keep the
+    /// AGGREGATION semantic intact: on every accepted deploy, extend
+    /// the block-level Vec with the deploy's returned Vec.  Update
+    /// this pin's markers alongside the rename.
+    #[test]
+    fn state_bound_cost_evidence_for_state_cosigned_aggregates_fs_wal() {
+        let src = include_str!("runtime.rs");
+        let start_idx = src
+            .find("pub(crate) async fn state_bound_cost_evidence_for_state_cosigned")
+            .expect(
+                "state_bound_cost_evidence_for_state_cosigned must exist in this file",
+            );
+        let end_marker = "Ok((current_root, accepted, outcome, block_fs_wal))";
+        let body_end = src[start_idx..].find(end_marker).expect(
+            "terminal return `Ok((current_root, accepted, outcome, block_fs_wal))` \
+             must exist inside state_bound_cost_evidence_for_state_cosigned",
+        );
+        let body = &src[start_idx..start_idx + body_end];
+        assert!(
+            body.contains("let mut block_fs_wal: Vec<WalEntry>"),
+            "state_bound_cost_evidence_for_state_cosigned must declare a \
+             block-level `block_fs_wal: Vec<WalEntry>` accumulator (item d-2)"
+        );
+        assert!(
+            body.contains("block_fs_wal.extend(deploy_fs_wal)"),
+            "state_bound_cost_evidence_for_state_cosigned must extend \
+             `block_fs_wal` with each accepted deploy's `deploy_fs_wal` \
+             (item d-2).  If you rename the local, update this pin's \
+             marker."
+        );
+        // Pattern-specificity: `_fs_wal` alone is a substring of
+        // `deploy_fs_wal`, so we can't just grep for it — the fix
+        // renames the binding, not just its underscore.  We check
+        // for the pre-fix tuple pattern with the leading `, ` guard
+        // so `deploy_fs_wal` (no leading comma before it as an
+        // underscored name) doesn't false-positive.
+        assert!(
+            !body.contains(", _fs_wal,"),
+            "state_bound_cost_evidence_for_state_cosigned must NOT drop the \
+             per-deploy `fs_wal` return (item d-2 regression).  Bind as \
+             `deploy_fs_wal` and extend `block_fs_wal` on the accepted \
+             path; on the exhausted path the drop is correct (the deploy \
+             is retried with a wider frontier)."
         );
     }
 
