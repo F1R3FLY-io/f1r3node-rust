@@ -18,8 +18,9 @@ use crate::rspace::persistence::durable::{
     reset_committed_index_constructions,
 };
 use crate::rspace::persistence::{
-    DurableLimitConfig, DurableLimitKind, DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1,
-    IndexGenerationV1, LogPackDecodeLimits, ObjectIndexHeaderV1, PackId,
+    CATALOG_IMAGE_LEN, CatalogAuthorityTokenV1, DurableLimitConfig, DurableLimitKind,
+    DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexGenerationV1,
+    LogPackDecodeLimits, ObjectIndexHeaderV1, PackId,
 };
 
 fn write_owner_only(path: &Path, bytes: &[u8]) {
@@ -136,6 +137,80 @@ fn restart_grade_recovery_consumes_an_existing_writer_lease_without_reacquiring_
 
     let reopened = recover(scratch.path(), limits());
     assert_eq!(reopened.recovered().state(), image.catalog.state());
+}
+
+#[test]
+fn exact_catalog_authority_guards_successor_orphan_cleanup() {
+    let scratch = test_scratch::acquire("rspace-durable-startup-orphan-cleanup-");
+    let image = install_checkpoint_store(scratch.path());
+    let catalog_bytes = catalog_image(image.catalog);
+    let authority = CatalogAuthorityTokenV1::select(catalog_bytes)
+        .unwrap()
+        .unwrap();
+    let successor_pack = PackId::GENESIS.successor().unwrap();
+    let successor_index = IndexGenerationV1::FIRST.successor().unwrap();
+    let successor_pack_path = scratch.path().join(pack_file_name(successor_pack));
+    let successor_index_path = scratch.path().join(index_file_name(successor_index));
+    write_owner_only(&successor_pack_path, &[0x11; 7]);
+    write_owner_only(&successor_index_path, &[0x22; 9]);
+    let current_pack_path = scratch.path().join(pack_file_name(PackId::GENESIS));
+    let current_pack = fs::read(&current_pack_path).unwrap();
+
+    let mut lease = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .try_acquire_writer()
+        .unwrap();
+    let prepared = lease
+        .prepare_unpublished_successor_artifacts(&authority)
+        .unwrap();
+    assert_eq!(prepared.pack(), successor_pack);
+    assert_eq!(prepared.index(), successor_index);
+    assert!(prepared.removed_pack());
+    assert!(prepared.removed_index());
+    assert!(!successor_pack_path.exists());
+    assert!(!successor_index_path.exists());
+    assert_eq!(fs::read(current_pack_path).unwrap(), current_pack);
+
+    let clean = lease
+        .prepare_unpublished_successor_artifacts(&authority)
+        .unwrap();
+    assert!(!clean.removed_pack());
+    assert!(!clean.removed_index());
+}
+
+#[test]
+fn changed_catalog_prevents_any_successor_orphan_cleanup() {
+    let scratch = test_scratch::acquire("rspace-durable-startup-orphan-cas-");
+    let image = install_checkpoint_store(scratch.path());
+    let authority = CatalogAuthorityTokenV1::select(catalog_image(image.catalog))
+        .unwrap()
+        .unwrap();
+    let successor_pack_path = scratch
+        .path()
+        .join(pack_file_name(PackId::GENESIS.successor().unwrap()));
+    let successor_index_path = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST.successor().unwrap()));
+    write_owner_only(&successor_pack_path, &[0x33; 5]);
+    write_owner_only(&successor_index_path, &[0x44; 6]);
+
+    let catalog_path = scratch.path().join("catalog.v1");
+    let mut changed = fs::read(&catalog_path).unwrap();
+    changed[CATALOG_IMAGE_LEN - 1] ^= 1;
+    fs::write(&catalog_path, changed).unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&catalog_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let mut lease = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .try_acquire_writer()
+        .unwrap();
+    let error = lease
+        .prepare_unpublished_successor_artifacts(&authority)
+        .unwrap_err();
+    assert!(matches!(error, DurableIoError::CatalogAuthorityChanged { .. }));
+    assert_eq!(fs::read(successor_pack_path).unwrap(), &[0x33; 5]);
+    assert_eq!(fs::read(successor_index_path).unwrap(), &[0x44; 6]);
 }
 
 #[test]

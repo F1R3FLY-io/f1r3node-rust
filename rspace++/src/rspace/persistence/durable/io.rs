@@ -5,7 +5,8 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use super::{
-    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, INDEX_HEADER_LEN_V1,
+    IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
 use crate::rspace::persistence::{CanonicalSink, PackId};
 
@@ -192,6 +193,14 @@ pub(crate) enum DurableIoError {
         actual_end: u64,
         appointed_end: u64,
     },
+    CatalogAuthorityChanged {
+        path: PathBuf,
+    },
+    SuccessorOverflow {
+        path: PathBuf,
+        artifact: &'static str,
+        current: u64,
+    },
 }
 
 impl Display for DurableIoError {
@@ -351,6 +360,20 @@ impl Display for DurableIoError {
                 formatter,
                 "{} {}: append ended at {actual_end}, before appointed end {appointed_end}",
                 operation.name(),
+                path.display()
+            ),
+            Self::CatalogAuthorityChanged { path } => write!(
+                formatter,
+                "durable catalog {} changed before successor orphan cleanup",
+                path.display()
+            ),
+            Self::SuccessorOverflow {
+                path,
+                artifact,
+                current,
+            } => write!(
+                formatter,
+                "durable catalog {} appoints {artifact} {current}, which has no successor",
                 path.display()
             ),
         }
@@ -826,6 +849,26 @@ pub(crate) struct DurableWriterLeaseV1 {
     _lock: DurableFileV1,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UnpublishedSuccessorArtifactsV1 {
+    pack: PackId,
+    index: IndexGenerationV1,
+    removed_pack: bool,
+    removed_index: bool,
+}
+
+impl UnpublishedSuccessorArtifactsV1 {
+    pub(crate) const fn pack(self) -> PackId { self.pack }
+
+    pub(crate) const fn index(self) -> IndexGenerationV1 { self.index }
+
+    #[cfg(test)]
+    pub(crate) const fn removed_pack(self) -> bool { self.removed_pack }
+
+    #[cfg(test)]
+    pub(crate) const fn removed_index(self) -> bool { self.removed_index }
+}
+
 /// Unpublished index bytes tied to the exclusive writer-lease lifetime.
 pub(crate) struct DurableRebuildCandidateV1<'lease> {
     file: DurableWritableFileV1<'lease>,
@@ -896,6 +939,7 @@ impl DurableSyncedRebuildCandidateV1<'_> {
             &temporary,
             &candidate.file.file.file,
             &candidate.directory_path,
+            DurableIoOperation::ReplaceFile,
         )?;
         let final_name = index_file_name(candidate.generation);
         replace_child_handle(&candidate.directory, &temporary, &final_name).map_err(|source| {
@@ -1045,6 +1089,106 @@ impl DurableWriterLeaseV1 {
         Ok(DurableWritableFileV1 {
             file,
             _lease: PhantomData,
+        })
+    }
+
+    /// Derive and clear only the exact successor names that are unreachable
+    /// from one retained catalog authority.
+    ///
+    /// All 672 catalog bytes are compared before any removal. Both possible
+    /// entries are then opened relative to the pinned directory without
+    /// following links and validated before either is unlinked. Thus callers
+    /// cannot select arbitrary or current-authority names, and a symlink,
+    /// FIFO, device, hard link, unsafe owner/mode, or concurrent substitution
+    /// fails closed. Successful removal is directory-synchronized before the
+    /// final names may be recreated.
+    pub(crate) fn prepare_unpublished_successor_artifacts(
+        &mut self,
+        authority: &CatalogAuthorityTokenV1,
+    ) -> Result<UnpublishedSuccessorArtifactsV1, DurableIoError> {
+        let catalog_path = self.directory.path.join(CATALOG_FILE_NAME_V1);
+        let current_image = self.directory.open_catalog()?.read_catalog_image()?;
+        if !authority.matches_exactly(&current_image) {
+            return Err(DurableIoError::CatalogAuthorityChanged { path: catalog_path });
+        }
+
+        let current = authority.slot().pack();
+        let pack_value = current.active_pack().checked_add(1).ok_or_else(|| {
+            DurableIoError::SuccessorOverflow {
+                path: self.directory.path.clone(),
+                artifact: "pack",
+                current: current.active_pack(),
+            }
+        })?;
+        let pack = PackId::new(pack_value).expect("checked nonzero pack successor is valid");
+        let index_value = current.index_generation().checked_add(1).ok_or_else(|| {
+            DurableIoError::SuccessorOverflow {
+                path: self.directory.path.clone(),
+                artifact: "index generation",
+                current: current.index_generation(),
+            }
+        })?;
+        let index = IndexGenerationV1::new(index_value)
+            .expect("checked nonzero index-generation successor is valid");
+        let pack_name = pack_file_name(pack);
+        let index_name = index_file_name(index);
+
+        let open_optional = |name: &str| match self
+            .directory
+            .open_child(name, ChildOpenMode::ReadOnly)
+        {
+            Ok(opened) => Ok(Some(opened)),
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        };
+        let pack_opened = open_optional(&pack_name)?;
+        let index_opened = open_optional(&index_name)?;
+
+        for (name, opened) in
+            [(&pack_name, pack_opened.as_ref()), (&index_name, index_opened.as_ref())]
+        {
+            if let Some(opened) = opened {
+                ensure_child_matches_handle(
+                    &self.directory.directory,
+                    name,
+                    &opened.file,
+                    &self.directory.path,
+                    DurableIoOperation::RemoveFile,
+                )?;
+            }
+        }
+
+        let remove = |name: &str| {
+            remove_child_handle(&self.directory.directory, name).map_err(|source| {
+                DurableIoError::Io {
+                    operation: DurableIoOperation::RemoveFile,
+                    path: self.directory.path.join(name),
+                    source,
+                }
+            })
+        };
+        let removed_pack = if pack_opened.is_some() {
+            remove(&pack_name)?;
+            true
+        } else {
+            false
+        };
+        let removed_index = if index_opened.is_some() {
+            remove(&index_name)?;
+            true
+        } else {
+            false
+        };
+        if removed_pack || removed_index {
+            self.sync_directory()?;
+        }
+        Ok(UnpublishedSuccessorArtifactsV1 {
+            pack,
+            index,
+            removed_pack,
+            removed_index,
         })
     }
 
@@ -1252,6 +1396,7 @@ fn ensure_child_matches_handle(
     name: &str,
     expected: &File,
     directory_path: &Path,
+    operation: DurableIoOperation,
 ) -> Result<(), DurableIoError> {
     use std::ffi::CString;
     use std::mem::MaybeUninit;
@@ -1295,10 +1440,7 @@ fn ensure_child_matches_handle(
     if stat.st_dev != expected_metadata.dev() as libc::dev_t ||
         stat.st_ino != expected_metadata.ino() as libc::ino_t
     {
-        return Err(DurableIoError::UnsafeFileType {
-            operation: DurableIoOperation::ReplaceFile,
-            path,
-        });
+        return Err(DurableIoError::UnsafeFileType { operation, path });
     }
     Ok(())
 }
@@ -1365,9 +1507,10 @@ fn ensure_child_matches_handle(
     _name: &str,
     _expected: &File,
     directory_path: &Path,
+    operation: DurableIoOperation,
 ) -> Result<(), DurableIoError> {
     Err(DurableIoError::UnsupportedPlatform {
-        operation: DurableIoOperation::ReplaceFile,
+        operation,
         path: directory_path.to_path_buf(),
     })
 }
