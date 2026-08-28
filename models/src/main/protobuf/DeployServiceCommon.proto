@@ -260,8 +260,16 @@ message ReportProto{
   }
 }
 
+enum ReportPhase {
+  REPORT_PHASE_UNSPECIFIED = 0;
+  REPORT_PHASE_PRECHARGE   = 1;
+  REPORT_PHASE_USER        = 2;
+  REPORT_PHASE_REFUND      = 3;
+}
+
 message SingleReport{
   repeated ReportProto events = 1;
+  ReportPhase phase           = 2;
 }
 
 message DeployInfoWithEventData{
