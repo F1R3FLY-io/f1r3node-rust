@@ -530,10 +530,7 @@ jobs:
             integration-tests/test/tests/standalone/ \
             --deselect integration-tests/test/tests/custom/test_load.py \
             --deselect integration-tests/test/tests/custom/test_shard_degradation.py \
-            --deselect integration-tests/test/tests/shared/test_convergence.py::test_network_converges_after_slow_deploy \
             --deselect integration-tests/test/tests/custom/test_user_contract_concurrency.py \
-            --deselect integration-tests/test/tests/custom/test_cold_start_readiness.py \
-            --deselect integration-tests/test/tests/custom/test_slow_peer_notification.py \
             --provider=${{ matrix.provider }} \
             "${NODE_CAPABILITY_ARGS[@]}" \
             -v --tb=short --instafail --maxfail=10 \
