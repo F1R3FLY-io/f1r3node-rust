@@ -65,7 +65,6 @@ fn mk_casper_snapshot(
         min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
-        disable_late_block_filtering: false,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };

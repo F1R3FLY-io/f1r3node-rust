@@ -382,7 +382,6 @@ pub async fn validate_block_checkpoint(
         s,
         runtime_manager,
         &latest_messages,
-        None,
         rejected_deploy_buffer,
         floor_ctx,
         local_validator,
@@ -813,7 +812,6 @@ pub async fn compute_deploys_checkpoint(
         s,
         runtime_manager,
         &latest_messages,
-        None,
         rejected_deploy_buffer,
         floor_ctx,
         local_validator,
@@ -1057,10 +1055,6 @@ fn parent_state_holds_floor(
 }
 
 /// Compute the merged post-state from multiple parent blocks.
-///
-/// For exploratory deploy, pass `disable_late_block_filtering_override = Some(true)` to
-/// always disable late block filtering (see full merged state).
-/// For normal block creation, pass `None` to use the shard config value.
 pub async fn compute_parents_post_state(
     block_store: &KeyValueBlockStore,
     parents: Vec<BlockMessage>,
@@ -1070,7 +1064,6 @@ pub async fn compute_parents_post_state(
     // propose, the block's recorded justifications at validate) — NEVER the live
     // DAG view. The finalized floor is derived from this so it is node-identical.
     latest_messages: &BTreeMap<Validator, BlockHash>,
-    disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
     // The caller's per-operation derivation context. When present, the
     // floor (and its post-state) come from it instead of a second
@@ -1253,8 +1246,6 @@ pub async fn compute_parents_post_state(
             let mut parent_hashes_for_key: Vec<BlockHash> =
                 parents.iter().map(|p| p.block_hash.clone()).collect();
             parent_hashes_for_key.sort();
-            let disable_late_block_filtering = disable_late_block_filtering_override
-                .unwrap_or(s.on_chain_state.shard_conf.disable_late_block_filtering);
             let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
                 sorted_parent_hashes: parent_hashes_for_key,
                 snapshot_lfb_hash: s.last_finalized_block.clone(),
@@ -1263,7 +1254,6 @@ pub async fn compute_parents_post_state(
                     .iter()
                     .map(|(v, h)| (v.clone(), h.clone()))
                     .collect(),
-                disable_late_block_filtering,
                 buffer_populated: rejected_deploy_buffer.is_some(),
             };
             if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
@@ -1680,7 +1670,6 @@ pub async fn compute_parents_post_state(
                 base = %hex::encode(&scope_anchor_hash[..8.min(scope_anchor_hash.len())]),
                 base_state = %hex::encode(&base_state.bytes()[..8.min(base_state.bytes().len())]),
                 scope_blocks = visible_blocks_len,
-                disable_late_block_filtering,
                 "merge.cpps: dag_merger::merge begin"
             );
             // Settled-sig probe for the merge dedup: a sig whose effect is
@@ -1854,7 +1843,6 @@ pub async fn compute_parents_post_state(
                 &runtime_manager.history_repo,
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(visible_blocks.clone()),
-                disable_late_block_filtering,
                 floor_block_number,
                 s.on_chain_state.shard_conf.deploy_lifespan,
                 &sig_settled_in_base,

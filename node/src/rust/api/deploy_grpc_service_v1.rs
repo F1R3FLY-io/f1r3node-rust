@@ -271,7 +271,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
             &self.engine_cell,
             signed_deploy,
             &self.trigger_propose_f,
-            self.min_phlo_price,
             self.is_node_read_only,
             &self.shard_id,
         )

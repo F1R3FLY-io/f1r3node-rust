@@ -2913,7 +2913,6 @@ pub async fn create(
         casper_snapshot,
         runtime_manager,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         floor_ctx.as_ref(),
         Some(&local_validator),

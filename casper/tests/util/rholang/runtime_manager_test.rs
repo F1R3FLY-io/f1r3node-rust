@@ -2153,7 +2153,6 @@ async fn bridge_query_survives_multi_parent_merge() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("merge parents");
@@ -2678,7 +2677,6 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &snapshot_merge,
         &rm,
         &latest_messages,
-        None,
         None,
         None,
         None,
@@ -3399,7 +3397,6 @@ new deployId(`rho:system:deployId`) in {
         &snapshot_cd,
         &rm,
         &latest_messages,
-        None,
         None,
         None,
         None,

@@ -231,7 +231,6 @@ pub struct ParentsPostStateCacheKey {
     // Sorted (validator, latest_block_hash) pairs keep such contexts from
     // sharing a cache entry.
     pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
-    pub disable_late_block_filtering: bool,
     // Whether the computation ran with a rejected-deploy buffer attached.
     // Buffer population is a side effect of the merge, not part of the
     // cached value — a bufferless computation (exploratory deploy) must

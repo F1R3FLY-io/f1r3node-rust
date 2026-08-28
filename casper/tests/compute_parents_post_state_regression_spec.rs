@@ -54,7 +54,6 @@ fn mk_snapshot(
     shard_conf.shard_name = shard_name;
     shard_conf.max_parent_depth = 0;
     shard_conf.deploy_lifespan = 50;
-    shard_conf.disable_late_block_filtering = false;
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
@@ -337,7 +336,6 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
@@ -370,7 +368,6 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &snapshot_with_skew,
         &runtime_manager,
         &latest_messages_with_skew,
-        None,
         None,
         None,
         None,
@@ -627,7 +624,6 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         None,
         None,
         None,
-        None,
     )
     .await
     .expect("Failed to compute parents post-state");
@@ -842,7 +838,6 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         &snapshot,
         &runtime_manager,
         &latest_messages,
-        None,
         None,
         None,
         None,

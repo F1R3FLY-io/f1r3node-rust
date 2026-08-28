@@ -105,15 +105,6 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
-    /// Disable late block filtering in DagMerger.
-    /// When true (default), all blocks are included in merged state regardless of when
-    /// they were observed. This prevents deploy loss during network partitions.
-    #[serde(
-        rename = "disable-late-block-filtering",
-        default = "default_disable_late_block_filtering"
-    )]
-    pub disable_late_block_filtering: bool,
-
     /// Enable background garbage collection for mergeable channels.
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
@@ -154,8 +145,6 @@ fn default_synchrony_finalized_baseline_enabled() -> bool { true }
 fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
 fn default_max_user_deploys_per_block() -> u32 { 128 }
-
-fn default_disable_late_block_filtering() -> bool { true }
 
 fn default_enable_mergeable_channel_gc() -> bool { false }
 

@@ -75,7 +75,6 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 ..HeartbeatConf::default()
             },
-            disable_late_block_filtering: true,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,

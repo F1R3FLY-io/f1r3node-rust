@@ -113,7 +113,6 @@ fn create_snapshot_with_parent(
     shard_conf.config_version = 1;
     shard_conf.bond_minimum = 0;
     shard_conf.bond_maximum = i64::MAX;
-    shard_conf.disable_late_block_filtering = false;
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
@@ -581,7 +580,6 @@ async fn run_block_creator_phase_split_memory_profile() {
                 &snapshot,
                 &runtime_manager,
                 &latest_messages,
-                None,
                 None,
                 None,
                 None,

@@ -309,7 +309,7 @@ impl TestFixture {
             }));
 
         // Scala: implicit val estimator = Estimator[Task](Estimator.UnlimitedParents, None)
-        let estimator = Estimator::apply(Estimator::UNLIMITED_PARENTS, None);
+        let estimator = Estimator::apply();
 
         // Create NoOpsCasperEffect with comprehensive dependencies from genesis context
         // NoOpsCasperEffect will use the same kvm_blockstorage for its internal block store

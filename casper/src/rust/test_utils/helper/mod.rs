@@ -8,4 +8,3 @@ pub mod block_util;
 pub mod bonding_util;
 pub mod no_ops_casper_effect;
 pub mod test_node;
-pub mod unlimited_parents_estimator_fixture;

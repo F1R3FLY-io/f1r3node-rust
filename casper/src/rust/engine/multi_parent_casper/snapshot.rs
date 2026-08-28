@@ -181,7 +181,13 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
     let fork_choice = this
         .estimator
-        .tips_with_latest_messages(&mut dag, &this.approved_block, valid_latest_msgs.clone())
+        .tips_with_latest_messages(
+            &mut dag,
+            &this.approved_block,
+            valid_latest_msgs.clone(),
+            this.casper_shard_conf.max_number_of_parents,
+            Some(this.casper_shard_conf.max_parent_depth),
+        )
         .await?;
     let ghost_main_parent = fork_choice.tips.into_iter().next();
     let mut sorted_parents_list = parent_blocks_list;

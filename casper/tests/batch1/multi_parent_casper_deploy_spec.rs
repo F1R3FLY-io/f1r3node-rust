@@ -117,7 +117,6 @@ async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
         &node.engine_cell,
         deploy,
         &Some(trigger),
-        0,
         false,
         &genesis.genesis_block.shard_id,
     )
@@ -310,8 +309,10 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
 
     let node = TestNode::standalone(genesis.clone()).await.unwrap();
 
-    let min_phlo_price = 10i64;
-    let phlo_price = 1i64;
+    // The API reads the floor from the running casper's shard conf (1 in the
+    // test fixture), so an underpriced deploy is one below that value.
+    let min_phlo_price = 1i64;
+    let phlo_price = 0i64;
     let is_node_read_only = false;
     let shard_id = genesis.genesis_block.shard_id.clone();
 
@@ -330,7 +331,6 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
         &node.engine_cell,
         deploy_data,
         &None,
-        min_phlo_price,
         is_node_read_only,
         &shard_id,
     )

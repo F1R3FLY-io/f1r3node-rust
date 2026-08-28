@@ -46,28 +46,25 @@ pub struct ForkChoice {
     pub scores: HashMap<BlockHash, i64>,
 }
 
+/// Stateless GHOST fork-choice. The parent-count and parent-depth bounds are
+/// per-call inputs from the caller's shard conf, so the estimator can never
+/// run on a stale copy of them.
 #[derive(Debug, Clone)]
-pub struct Estimator {
-    max_number_of_parents: i32,
-    max_parent_depth_opt: Option<i32>,
-}
+pub struct Estimator;
 
 impl Estimator {
     pub const UNLIMITED_PARENTS: i32 = i32::MAX;
     const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
 
-    pub fn apply(max_number_of_parents: i32, max_parent_depth_opt: Option<i32>) -> Self {
-        Self {
-            max_number_of_parents,
-            max_parent_depth_opt,
-        }
-    }
+    pub fn apply() -> Self { Self }
 
     #[tracing::instrument(name = "tips0", target = "f1r3fly.casper.estimator.tips0", skip_all)]
     pub async fn tips(
         &self,
         dag: &mut KeyValueDagRepresentation,
         genesis: &BlockMessage,
+        max_number_of_parents: i32,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<ForkChoice, KvStoreError> {
         // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
         // `imbl::HashMap` (refcount-bump clone). Use `into_iter` to collect
@@ -75,8 +72,14 @@ impl Estimator {
         let latest_message_hashes: HashMap<Validator, BlockHash> =
             dag.latest_message_hashes().into_iter().collect();
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_primary", "latest-message-hashes");
-        self.tips_with_latest_messages(dag, genesis, latest_message_hashes)
-            .await
+        self.tips_with_latest_messages(
+            dag,
+            genesis,
+            latest_message_hashes,
+            max_number_of_parents,
+            max_parent_depth_opt,
+        )
+        .await
     }
 
     /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
@@ -86,6 +89,8 @@ impl Estimator {
         dag: &mut KeyValueDagRepresentation,
         genesis: &BlockMessage,
         latest_messages_hashes: HashMap<Validator, BlockHash>,
+        max_number_of_parents: i32,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<ForkChoice, KvStoreError> {
         let invalid_latest_messages =
             dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
@@ -114,25 +119,24 @@ impl Estimator {
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
         let ranked_shallow_hashes = self
-            .filter_deep_parents(ranked_latest_messages_hashes, dag)
+            .filter_deep_parents(ranked_latest_messages_hashes, dag, max_parent_depth_opt)
             .await?;
 
         // B2: treat BOTH "unlimited" sentinels EXPLICITLY rather than relying on
         // `-1 as usize` wrapping to usize::MAX. The estimator's own sentinel is
         // `Self::UNLIMITED_PARENTS` (i32::MAX); the config wire convention
-        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that config value reaches this
-        // field directly (node setup passes `conf.casper.max_number_of_parents`). A
-        // genuine positive cap truncates; any negative value or i32::MAX means
-        // unlimited (take all). Behaviour is unchanged; the cast is now cast-safe and
-        // the two conventions are no longer silently conflated by two's-complement.
-        let tips = if self.max_number_of_parents < 0
-            || self.max_number_of_parents == Self::UNLIMITED_PARENTS
+        // (`casper::UNLIMITED_PARENTS`) is `-1`, and that value arrives here
+        // straight from the caller's shard conf. A genuine positive cap
+        // truncates; any negative value or i32::MAX means unlimited (take
+        // all). The cast is cast-safe and the two conventions are not
+        // conflated by two's-complement.
+        let tips = if max_number_of_parents < 0 || max_number_of_parents == Self::UNLIMITED_PARENTS
         {
             ranked_shallow_hashes
         } else {
             ranked_shallow_hashes
                 .into_iter()
-                .take(self.max_number_of_parents as usize)
+                .take(max_number_of_parents as usize)
                 .collect()
         };
         Ok(ForkChoice {
@@ -146,8 +150,9 @@ impl Estimator {
         &self,
         ranked_latest_hashes: Vec<BlockHash>,
         dag: &KeyValueDagRepresentation,
+        max_parent_depth_opt: Option<i32>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
-        match self.max_parent_depth_opt {
+        match max_parent_depth_opt {
             Some(max_parent_depth) => {
                 // P2-8: avoid `split_first().unwrap()` panic when
                 // `rank_forkchoices` returns an empty list (e.g.,

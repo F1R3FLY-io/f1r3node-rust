@@ -231,10 +231,10 @@ proptest! {
             let mut dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
-            let estimator = Estimator::apply(i32::MAX, None);
+            let estimator = Estimator::apply();
 
             let tips = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, latest)
+                .tips_with_latest_messages(&mut dag, &genesis, latest, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips;
@@ -281,7 +281,7 @@ async fn main_parent_is_ghost_head_deterministic() {
         let mut dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let estimator = Estimator::apply(i32::MAX, None);
+        let estimator = Estimator::apply();
 
         // The heaviest branch is validator 0's (stake 30) — the expected main parent.
         let expected_main = branch_blocks[0].block_hash.clone();
@@ -296,7 +296,7 @@ async fn main_parent_is_ghost_head_deterministic() {
             let permuted: HashMap<Validator, BlockHash> =
                 order.iter().map(|&i| entries[i].clone()).collect();
             let ghost_main_parent = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, permuted)
+                .tips_with_latest_messages(&mut dag, &genesis, permuted, i32::MAX, None)
                 .await
                 .expect("tips")
                 .tips

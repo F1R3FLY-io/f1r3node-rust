@@ -174,15 +174,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         CliqueOracleImpl
     };
 
-    // Estimator
-    let estimator = {
-        use casper::rust::estimator::Estimator;
-
-        Estimator::apply(
-            conf.casper.max_number_of_parents,
-            Some(conf.casper.max_parent_depth),
-        )
-    };
+    // Estimator (stateless; parent bounds come from the shard conf per call)
+    let estimator = casper::rust::estimator::Estimator::apply();
 
     // Determine if this node is a validator
     let is_validator = conf.casper.validator_private_key.is_some();
@@ -876,8 +869,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
     // Only created when GC is enabled in config (required for multi-parent mode)
     let mergeable_channels_gc_loop: Option<CasperLoop> = if conf.casper.enable_mergeable_channel_gc
     {
-        use casper::rust::casper::CasperShardConf;
-
         let gc_block_dag_storage = block_dag_storage.clone();
         let gc_block_store = block_store.clone();
         let gc_runtime_manager = Arc::new(runtime_manager.clone());
@@ -888,52 +879,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             casper::rust::util::mergeable_channels_gc::GcSweep::new(),
         ));
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
-        let gc_casper_shard_conf = CasperShardConf {
-            fault_tolerance_threshold: conf.casper.fault_tolerance_threshold,
-            fault_tolerance_threshold_ppm:
-                casper::rust::genesis::contracts::proof_of_stake::ProofOfStake::fault_tolerance_threshold_to_ppm(
-                    conf.casper.fault_tolerance_threshold,
-                ),
-            shard_name: conf.casper.shard_name.clone(),
-            parent_shard_id: conf.casper.parent_shard_id.clone(),
-            finalization_rate: conf.casper.finalization_rate,
-            max_number_of_parents: conf.casper.max_number_of_parents,
-            max_parent_depth: conf.casper.max_parent_depth,
-            synchrony_constraint_threshold: conf.casper.synchrony_constraint_threshold,
-            height_constraint_threshold: conf.casper.height_constraint_threshold,
-            deploy_lifespan: 50,
-            // Packaging-only policy; the GC sweep never builds blocks.
-            deploy_play_budget_millis: 0,
-            casper_version: 1,
-            config_version: 1,
-            bond_minimum: conf.casper.genesis_block_data.bond_minimum,
-            bond_maximum: conf.casper.genesis_block_data.bond_maximum,
-            epoch_length: conf.casper.genesis_block_data.epoch_length,
-            quarantine_length: conf.casper.genesis_block_data.quarantine_length,
-            min_phlo_price: conf.casper.min_phlo_price,
-            disable_late_block_filtering: conf.casper.disable_late_block_filtering,
-            deploy_heartbeat_wake_enabled: false,
-            disable_validator_progress_check: conf.standalone,
-            enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
-            mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
-            synchrony_recovery_stall_window: conf.casper.synchrony_recovery_stall_window,
-            synchrony_recovery_cooldown: conf.casper.synchrony_recovery_cooldown,
-            synchrony_recovery_max_bypasses: conf.casper.synchrony_recovery_max_bypasses,
-            synchrony_finalized_baseline_enabled: conf.casper.synchrony_finalized_baseline_enabled,
-            synchrony_finalized_baseline_max_distance: conf
-                .casper
-                .synchrony_finalized_baseline_max_distance,
-            max_user_deploys_per_block: conf.casper.max_user_deploys_per_block,
-            native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
-            native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
-            native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
-            // Phase 13 defaults centralized as named consts in
-            // `casper::rust::casper`. When `CasperConf` gains corresponding
-            // fields, plumb them through here; the consts are then the
-            // documented fallback.
-            active_validators_cache_max_entries:
-                casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
-        };
+        let gc_engine_cell = engine_cell.clone();
 
         Some(Arc::new(
             move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
@@ -942,13 +888,27 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 let gc_block_dag_storage = gc_block_dag_storage.clone();
                 let gc_block_store = gc_block_store.clone();
                 let gc_runtime_manager = gc_runtime_manager.clone();
-                let gc_casper_shard_conf = gc_casper_shard_conf.clone();
+                let gc_engine_cell = gc_engine_cell.clone();
                 let gc_state = gc_state.clone();
                 let gc_interval = gc_interval;
 
                 Box::pin(async move {
                     // Sleep for the configured interval
                     tokio::time::sleep(gc_interval).await;
+
+                    // The GC anchors deletion on a finalized floor, so it must
+                    // run on the SAME shard conf as consensus — the running
+                    // casper's (chain-adopted at hash_set_casper), never a
+                    // second locally-derived copy. No casper yet = no floor to
+                    // anchor on; skip the pass.
+                    let engine = gc_engine_cell.get().await;
+                    let Some(gc_casper) = engine.with_casper() else {
+                        tracing::debug!(
+                            "Mergeable-channels GC: casper not initialized yet; skipping pass"
+                        );
+                        return Ok(());
+                    };
+                    let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
 
                     // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
                     // common multi-thread runtime the whole pass (including the

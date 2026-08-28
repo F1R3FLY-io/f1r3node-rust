@@ -1053,7 +1053,7 @@ impl TestNode {
 
         let connections_cell = ConnectionsCell::new();
         let clique_oracle = CliqueOracleImpl;
-        let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
+        let estimator = Estimator::apply();
         let rp_conf = create_rp_conf_ask(current_peer_node.clone(), None, None);
         let event_publisher = F1r3flyEvents::new();
         // Scala: implicit val requestedBlocks: RequestedBlocks[F] = Ref.unsafe[F, Map[BlockHash, RequestState]](Map.empty)
@@ -1149,7 +1149,6 @@ impl TestNode {
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: 1,
-            disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,

@@ -399,8 +399,6 @@ pub struct CasperShardConf {
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
-    /// Disable late block filtering in DagMerger (for testing or special configurations)
-    pub disable_late_block_filtering: bool,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -458,7 +456,6 @@ impl CasperShardConf {
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
-            disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,

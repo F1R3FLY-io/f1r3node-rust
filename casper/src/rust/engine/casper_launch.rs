@@ -185,10 +185,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
             min_phlo_price: conf.min_phlo_price,
-            // Late block filtering disabled = deploys from "late" blocks (blocks not yet seen by
-            // all validators) are included in merged state. Prevents deploy loss during network
-            // partitions or validator catchup. Default is true (disabled).
-            disable_late_block_filtering: conf.disable_late_block_filtering,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,

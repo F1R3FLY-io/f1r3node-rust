@@ -185,7 +185,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
-        disable_late_block_filtering: false,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
