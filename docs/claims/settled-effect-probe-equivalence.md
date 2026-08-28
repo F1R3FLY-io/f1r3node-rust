@@ -99,24 +99,37 @@ it covered and the bound it was computed under.
 - **Availability deferral.** `BlockNotHeld` propagates as an error and
   defers the block. The mechanization models only complete segments. The
   batched implementation (`settled_sigs_of_lineage`) strengthens this
-  fail-closed: it always covers the full segment, so a gap below an
-  applied sig refuses the whole answer where the per-sig reference walk
-  can answer TRUE without reaching the gap. A deferral where the
-  reference sometimes answered is the safe direction, and the divergence
-  is pinned by `batched_walk_is_fail_closed_on_a_gapped_segment`.
+  fail-closed WITHIN one segment: it always covers the full segment, so a
+  gap below an applied sig refuses the whole answer where the per-sig
+  reference walk can answer TRUE without reaching the gap. A deferral
+  where the reference sometimes answered is the safe direction, and the
+  divergence is pinned by `batched_walk_is_fail_closed_on_a_gapped_segment`.
+  ACROSS floors the reference short-circuit is preserved:
+  `FloorSettledProbe` scans floors in order and builds each floor's set
+  lazily, so a floor after the answering one is never read and its
+  unavailability cannot poison the probe (pinned by
+  `floor_probe_short_circuit_skips_unavailable_later_floors`).
 - **Terminal never-flip.** The deploy-lifecycle store enforces that a
   terminal record never flips (`put_deploy_terminal_if_absent`). C4's TRUE
   stability aligns with it but does not prove the store property.
 
 ## Mechanization mapping
 
-| Model (`SettledEffectProbe.v`) | Rust |
+| Model (`SettledEffectProbe.v`) | Rust (`deploy_lifecycle.rs`) |
 |---|---|
 | `lineage_block` (list of sigs) | non-failed `body.deploys` sigs ∪ `body.applied_from_scope` |
 | `segment` (tip-first list) | merge-base lineage from tip down to the walk bound |
-| `walk seg sig` | `effect_in_state_of` per-sig loop (`deploy_lifecycle.rs:78`) |
-| `collect seg` | planned one-pass applied-sig set per merge |
+| `walk seg sig` | `effect_in_state_of` per-sig loop |
+| `collect seg` | `settled_sigs_of_lineage` (one walk, every sig) |
+| per-floor short-circuit scan | `FloorSettledProbe::settled` (in-order lazy per-floor sets) |
 | `walk_memo_false_stable` premise | `checked_below` early stop (`effect_in_state_of_above`) |
+
+The per-block `LineageStep` cache stores content-addressed per-block
+facts, never answers, so cache hits stay inside C2's equivalence. A hit
+is additionally revalidated against the CALLER's store with a raw
+key-existence check, so the walk remains a function of the supplied
+store: a block that store does not hold is `BlockNotHeld` even when
+another store in the same process cached it.
 
 The gate `scripts/check-finalized-floor-ALL.sh` builds the theory and
 asserts all four probe theorems axiom-free alongside the domain

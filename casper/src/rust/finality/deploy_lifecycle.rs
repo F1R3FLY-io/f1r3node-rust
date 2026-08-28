@@ -161,22 +161,47 @@ struct LineageStep {
     sigs: std::sync::Arc<HashSet<Bytes>>,
 }
 
-/// Hard cap for the per-block lineage-step cache. At roughly a kilobyte
-/// per fat block the full cache stays under ~16MB; on overflow the cache
-/// is cleared rather than evicted piecewise — entries are pure functions
-/// of immutable bodies, so losing them costs only a re-read.
-const LINEAGE_STEP_CACHE_MAX: usize = 16_384;
+/// Byte budget for the per-block lineage-step cache, tracked from each
+/// entry's measured sig bytes (an entry-count cap understates fat blocks:
+/// 128 sigs × ~70B is ~9KB for one entry). On overflow the cache is
+/// cleared rather than evicted piecewise — entries are pure functions of
+/// immutable bodies, so losing them costs only a re-read. Repeated
+/// clear-rebuild thrash would need one walk's entries to approach the
+/// budget, and walk depth is bounded far below it by the deterministic
+/// floor-distance merge backstop (`merge_scope_backstop_exceeded`).
+const LINEAGE_STEP_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 
-fn lineage_step_cache(
-) -> &'static parking_lot::Mutex<HashMap<BlockHash, std::sync::Arc<LineageStep>>> {
-    static CACHE: std::sync::OnceLock<
-        parking_lot::Mutex<HashMap<BlockHash, std::sync::Arc<LineageStep>>>,
-    > = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+/// Per-entry overhead estimate added to the measured sig bytes: map slot,
+/// `Arc` headers, hash key.
+const LINEAGE_STEP_ENTRY_OVERHEAD_BYTES: usize = 128;
+
+#[derive(Default)]
+struct LineageStepCache {
+    map: HashMap<BlockHash, std::sync::Arc<LineageStep>>,
+    approx_bytes: usize,
+}
+
+impl LineageStepCache {
+    fn insert(&mut self, hash: BlockHash, step: std::sync::Arc<LineageStep>) {
+        let entry_bytes =
+            LINEAGE_STEP_ENTRY_OVERHEAD_BYTES + step.sigs.iter().map(Bytes::len).sum::<usize>();
+        if self.approx_bytes + entry_bytes > LINEAGE_STEP_CACHE_MAX_BYTES {
+            self.map.clear();
+            self.approx_bytes = 0;
+        }
+        self.approx_bytes += entry_bytes;
+        self.map.insert(hash, step);
+    }
+}
+
+fn lineage_step_cache() -> &'static parking_lot::Mutex<LineageStepCache> {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<LineageStepCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| parking_lot::Mutex::new(LineageStepCache::default()))
 }
 
 #[cfg(test)]
-fn lineage_step_cache_len() -> usize { lineage_step_cache().lock().len() }
+fn lineage_step_cache_bytes() -> usize { lineage_step_cache().lock().approx_bytes }
 
 /// One walk, every sig: the applied-sig union of `block_hash`'s state
 /// lineage down to `min_height` — the batched form of
@@ -204,10 +229,24 @@ pub(crate) fn settled_sigs_of_lineage(
     let mut walked = 0usize;
     let mut cur = block_hash.clone();
     loop {
-        let cached = lineage_step_cache().lock().get(&cur).cloned();
+        // The cache is process-global and keyed by hash alone, while this
+        // function's answer must be a function of the SUPPLIED store: a hit
+        // is revalidated with a raw key-existence check (no decompression,
+        // no decode) so a block this store does not hold is `BlockNotHeld`
+        // exactly as on the cold path — availability semantics survive the
+        // cache, and one process serving several stores (tests) cannot
+        // cross-answer.
+        let cached = lineage_step_cache().lock().map.get(&cur).cloned();
+        let cached = match cached {
+            Some(step) if block_store.contains_key(&cur)? => Some(step),
+            _ => None,
+        };
         let step = match cached {
             Some(step) => step,
             None => {
+                // Miss path: two short lock acquisitions (lookup above,
+                // insert below) are deliberate — the store read between
+                // them is I/O and must not run under the lock.
                 let Some(block) = block_store.get(&cur)? else {
                     return Err(CasperError::BlockNotHeld(cur));
                 };
@@ -240,11 +279,9 @@ pub(crate) fn settled_sigs_of_lineage(
                     base,
                     sigs: std::sync::Arc::new(sigs),
                 });
-                let mut cache = lineage_step_cache().lock();
-                if cache.len() >= LINEAGE_STEP_CACHE_MAX {
-                    cache.clear();
-                }
-                cache.insert(cur.clone(), step.clone());
+                lineage_step_cache()
+                    .lock()
+                    .insert(cur.clone(), step.clone());
                 step
             }
         };
@@ -257,6 +294,58 @@ pub(crate) fn settled_sigs_of_lineage(
             None => return Ok((settled, walked)),
             Some(base) => cur = base.clone(),
         }
+    }
+}
+
+/// Batched multi-floor settled probe with the reference loop's per-floor
+/// short-circuit. The reference form checks floors IN ORDER and returns
+/// TRUE at the first floor whose lineage holds the sig; floors after the
+/// answering one are never read. This probe builds each floor's applied-sig
+/// set lazily via [`settled_sigs_of_lineage`] the first time the in-order
+/// scan reaches that floor, so an unavailable LATER floor cannot poison a
+/// probe an earlier floor answers — the error surface matches the
+/// reference at floor granularity (within one floor's segment the
+/// fail-closed strengthening of the batched walk applies).
+pub(crate) struct FloorSettledProbe {
+    /// `(floor hash, min_height)` in the reference scan order.
+    floors: Vec<(BlockHash, i64)>,
+    /// Lazily built per-floor applied-sig sets, index-aligned with
+    /// `floors`.
+    sets: Vec<Option<HashSet<Bytes>>>,
+    /// Blocks walked across every set built so far, for the caller's
+    /// metrics.
+    pub(crate) total_walked: usize,
+}
+
+impl FloorSettledProbe {
+    pub(crate) fn new(floors: Vec<(BlockHash, i64)>) -> Self {
+        let sets = floors.iter().map(|_| None).collect();
+        Self {
+            floors,
+            sets,
+            total_walked: 0,
+        }
+    }
+
+    /// TRUE iff some floor's lineage (down to that floor's bound) holds
+    /// the sig, scanning floors in order and stopping at the first hit.
+    pub(crate) fn settled(
+        &mut self,
+        block_store: &KeyValueBlockStore,
+        sig: &Bytes,
+    ) -> Result<bool, CasperError> {
+        for i in 0..self.floors.len() {
+            if self.sets[i].is_none() {
+                let (hash, min_height) = &self.floors[i];
+                let (sigs, walked) = settled_sigs_of_lineage(block_store, hash, *min_height)?;
+                self.total_walked += walked;
+                self.sets[i] = Some(sigs);
+            }
+            if self.sets[i].as_ref().expect("just built").contains(sig) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -1259,8 +1348,85 @@ mod tests {
             }
         }
         assert!(
-            lineage_step_cache_len() <= LINEAGE_STEP_CACHE_MAX,
-            "lineage-step cache must respect its hard cap"
+            lineage_step_cache_bytes() <= LINEAGE_STEP_CACHE_MAX_BYTES,
+            "lineage-step cache must respect its byte budget"
+        );
+    }
+
+    /// The multi-floor probe answers exactly as the reference per-floor
+    /// loop (first floor whose lineage holds the sig wins), across sigs
+    /// held by the first floor, only a later floor, or none.
+    #[tokio::test]
+    async fn floor_probe_matches_the_reference_floor_loop() {
+        let store = store().await;
+        let genesis = block_at(0, vec![], 300);
+        let (sig_a, pd_a) = processed(301, false);
+        let mut floor1 = block_at(1, vec![genesis.block_hash.clone()], 301);
+        floor1.body.deploys = vec![pd_a];
+        let (sig_b, pd_b) = processed(302, false);
+        let mut mid = block_at(1, vec![genesis.block_hash.clone()], 302);
+        mid.body.deploys = vec![pd_b];
+        let floor2 = block_at(2, vec![mid.block_hash.clone()], 303);
+        for b in [&genesis, &floor1, &mid, &floor2] {
+            store.put_block_message(b).expect("store block");
+        }
+        let floors = vec![
+            (floor1.block_hash.clone(), 0),
+            (floor2.block_hash.clone(), 0),
+        ];
+        let sig_absent = Bytes::from_static(b"absent-floor-sig");
+        let mut probe = FloorSettledProbe::new(floors.clone());
+        for sig in [&sig_a, &sig_b, &sig_absent] {
+            let reference = floors
+                .iter()
+                .map(|(hash, bound)| effect_in_state_of(&store, hash, sig, *bound))
+                .try_fold(false, |acc, r| r.map(|hit| acc || hit))
+                .expect("reference loop");
+            assert_eq!(
+                reference,
+                probe.settled(&store, sig).expect("probe"),
+                "floor probe diverged from the reference loop for sig {}",
+                hex::encode(&sig[..8.min(sig.len())]),
+            );
+        }
+    }
+
+    /// The probe keeps the reference loop's short-circuit: a sig the FIRST
+    /// floor holds answers TRUE without reading the second floor at all,
+    /// so a gap in the later floor's lineage cannot poison that probe. A
+    /// sig no floor holds must still reach the gap and refuse, exactly as
+    /// the reference loop does.
+    #[tokio::test]
+    async fn floor_probe_short_circuit_skips_unavailable_later_floors() {
+        let store = store().await;
+        let genesis = block_at(0, vec![], 310);
+        let (sig_a, pd_a) = processed(311, false);
+        let mut floor1 = block_at(1, vec![genesis.block_hash.clone()], 311);
+        floor1.body.deploys = vec![pd_a];
+        let absent = block_at(1, vec![], 312);
+        let floor2 = block_at(2, vec![absent.block_hash.clone()], 313);
+        for b in [&genesis, &floor1, &floor2] {
+            store.put_block_message(b).expect("store block");
+        }
+        let floors = vec![
+            (floor1.block_hash.clone(), 0),
+            (floor2.block_hash.clone(), 0),
+        ];
+
+        let mut probe = FloorSettledProbe::new(floors.clone());
+        assert!(
+            probe.settled(&store, &sig_a).expect("first floor answers"),
+            "a first-floor hit must not read the gapped later floor"
+        );
+
+        let sig_unknown = Bytes::from_static(b"unknown-floor-sig");
+        let err = probe
+            .settled(&store, &sig_unknown)
+            .expect_err("an unanswered probe must reach the gap and refuse");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref h) if *h == absent.block_hash),
+            "the refusal must name the missing block typed; got: {}",
+            err
         );
     }
 

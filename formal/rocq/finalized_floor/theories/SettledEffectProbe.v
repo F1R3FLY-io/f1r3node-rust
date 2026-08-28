@@ -16,7 +16,7 @@
  * lineage segment. The remediation batches the walk — one pass collects
  * every applied sig, then each probe is a set-membership test — and reuses
  * answers across merges through segment memoization (the `checked_below`
- * early stop). This module proves the three facts that reshape rests on:
+ * early stop). This module proves the four results that reshape rests on:
  *
  *   1. `walk_collect_equiv`      — the per-sig walk equals membership in the
  *                                  one-pass collection (batching is sound).
@@ -25,6 +25,8 @@
  *   3. `walk_memo_false_stable`  — a segment known FALSE for a sig can be
  *                                  skipped without changing any answer
  *                                  (`checked_below` memoization is sound).
+ *   4. `walk_true_stable`        — a TRUE answer survives any extension
+ *                                  above the answering segment.
  *
  * The model abstracts a lineage block to the finite set of sigs whose
  * effects it applies, and a walked segment to the tip-first list of such
