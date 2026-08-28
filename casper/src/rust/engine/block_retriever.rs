@@ -10,7 +10,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -855,27 +855,48 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             }
         }
 
-        // Handle broadcasting and requesting
+        // Handle broadcasting and requesting. A failed ask is gossip lost,
+        // not an error: the entry is tracked, so the re-request clock owns
+        // the retry — propagating would abort the caller's block validation.
         if result.broadcast_request {
-            self.transport
+            if let Err(err) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
-            debug!(
-                "Broadcasted HasBlockRequest for {}",
-                PrettyPrinter::build_string_bytes(&hash)
-            );
+                .await
+            {
+                warn!(
+                    "HasBlockRequest broadcast failed for {}: {}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    err
+                );
+            } else {
+                debug!(
+                    "Broadcasted HasBlockRequest for {}",
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+            }
         }
 
         if result.request_block {
             if let Some(peer_node) = request_from_peer {
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &peer_node, hash.clone())
-                    .await?;
-                debug!(
-                    "Requested block {} from {}",
-                    PrettyPrinter::build_string_bytes(&hash),
-                    peer_node.endpoint.host
-                );
+                    .await
+                {
+                    warn!(
+                        "Block request to {} failed for {}: {}",
+                        peer_node.endpoint.host,
+                        PrettyPrinter::build_string_bytes(&hash),
+                        err
+                    );
+                } else {
+                    debug!(
+                        "Requested block {} from {}",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        peer_node.endpoint.host
+                    );
+                }
             }
         }
 
@@ -1104,9 +1125,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             )
             .await?;
         if matches!(admit_result.status, AdmitHashStatus::Ignore) {
-            self.transport
+            if let Err(err) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
+                .await
+            {
+                warn!(
+                    "Recovery HasBlockRequest broadcast failed for {}: {}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    err
+                );
+            }
         }
 
         self.register_retry_attempt(&hash)?;
@@ -1189,10 +1218,21 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         .join(", ")
                 );
 
-                // Request block from the peer
-                self.transport
+                // Request block from the peer; a failed send must not abort
+                // the sweep, and still counts as an attempt (cooldowns and
+                // cursors advance) — the entry's clock owns the retry.
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &next_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "Block re-request to {} failed for {}: {}",
+                        next_peer.endpoint.host,
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
 
                 // If this was the last peer in the waiting list, also broadcast HasBlockRequest.
                 if remaining_waiting.is_empty() {
@@ -1201,9 +1241,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(hash)
                     );
 
-                    self.transport
+                    if let Err(err) = self
+                        .transport
                         .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                        .await?;
+                        .await
+                    {
+                        warn!(
+                            "HasBlockRequest broadcast failed for {}: {}",
+                            PrettyPrinter::build_string_bytes(hash),
+                            err
+                        );
+                    }
                 }
                 Ok(true)
             }
@@ -1244,9 +1292,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     "No peers in waiting list for block {}. Broadcasting HasBlockRequest.",
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "HasBlockRequest broadcast failed for {}: {}",
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
                 Ok(true)
             }
             RerequestAction::RequestKnownPeer(known_peer, now) => {
@@ -1287,9 +1343,18 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     known_peer.endpoint.host,
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &known_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "Peer requery to {} failed for {}: {}",
+                        known_peer.endpoint.host,
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
                 self.register_peer_requery_attempt(hash)?;
                 Ok(true)
             }
