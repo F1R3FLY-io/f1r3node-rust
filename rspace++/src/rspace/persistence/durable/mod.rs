@@ -57,6 +57,7 @@ pub(crate) use recovery::{
 pub(crate) use startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
     IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1,
+    recover_physical_with_lease_v1,
 };
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};

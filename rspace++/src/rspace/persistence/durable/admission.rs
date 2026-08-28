@@ -897,7 +897,7 @@ impl DurableDirectoryV1 {
     }
 }
 
-fn admit_physical_writer<P: SemanticProfile>(
+pub(super) fn admit_physical_writer<P: SemanticProfile>(
     physical: PhysicallyRecoveredDurableWriterV1,
     limits: DurableAdmissionLimitsV1,
 ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, DurableAdmissionErrorV1> {

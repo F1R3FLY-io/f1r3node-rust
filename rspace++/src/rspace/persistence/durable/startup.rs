@@ -244,10 +244,7 @@ impl DurableDirectoryV1 {
         limits: DurableLimits,
         wal_limits: LogPackDecodeLimits,
     ) -> Result<PhysicallyRecoveredDurableWriterV1, DurableStartupErrorV1> {
-        let mut lease = self.try_acquire_writer()?;
-        let reader = lease.directory().try_clone_reader()?;
-        let recovered = recover_index_bound_v1(&reader, &mut lease, limits, wal_limits)?;
-        Ok(PhysicallyRecoveredDurableWriterV1 { lease, recovered })
+        recover_physical_with_lease_v1(self.try_acquire_writer()?, limits, wal_limits)
     }
 
     /// Focused physical-recovery tests exercise this phase independently.
@@ -260,6 +257,23 @@ impl DurableDirectoryV1 {
     ) -> Result<PhysicallyRecoveredDurableWriterV1, DurableStartupErrorV1> {
         self.recover_physical_writer_v1(limits, wal_limits)
     }
+}
+
+/// Run the exact restart-grade physical recovery path while retaining an
+/// already-held writer lease.
+///
+/// Generation publication cannot reacquire its own process lock. Consuming
+/// the affine lease here keeps the lock continuously held while deliberately
+/// discarding every stale in-memory index/store view and reconstructing
+/// authority from the catalog-appointed durable bytes.
+pub(crate) fn recover_physical_with_lease_v1(
+    mut lease: DurableWriterLeaseV1,
+    limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+) -> Result<PhysicallyRecoveredDurableWriterV1, DurableStartupErrorV1> {
+    let reader = lease.directory().try_clone_reader()?;
+    let recovered = recover_index_bound_v1(&reader, &mut lease, limits, wal_limits)?;
+    Ok(PhysicallyRecoveredDurableWriterV1 { lease, recovered })
 }
 
 struct DirectoryPackProviderV1<'directory>(&'directory DurableDirectoryV1);

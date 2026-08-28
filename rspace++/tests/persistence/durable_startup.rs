@@ -14,7 +14,7 @@ use crate::rspace::persistence::durable::{
     DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
     DurableIoFailpointV1, DurableStartupErrorV1, DurableStartupHookPointV1,
     IndexBindingDispositionV1, arm_durable_io_failpoint, arm_durable_startup_hook,
-    committed_index_constructions, index_file_name, pack_file_name,
+    committed_index_constructions, index_file_name, pack_file_name, recover_physical_with_lease_v1,
     reset_committed_index_constructions,
 };
 use crate::rspace::persistence::{
@@ -105,6 +105,37 @@ fn checkpoint_index_is_rebuilt_byte_exactly_and_verified_on_reopen() {
     assert_eq!(verify_work.wal_scan_passes(), 1);
     assert_eq!(verify_work.wal_bytes_read(), image.pack.len() as u64);
     assert_eq!(verify_work.index_bytes_written(), 0);
+}
+
+#[test]
+fn restart_grade_recovery_consumes_an_existing_writer_lease_without_reacquiring_it() {
+    let scratch = test_scratch::acquire("rspace-durable-startup-held-lease-");
+    let image = install_checkpoint_store(scratch.path());
+    let lease = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .try_acquire_writer()
+        .unwrap();
+
+    let recovered =
+        recover_physical_with_lease_v1(lease, limits(), LogPackDecodeLimits::UNBOUNDED).unwrap();
+    assert_eq!(recovered.recovered().state(), image.catalog.state());
+    assert_eq!(recovered.recovered().checkpoints(), 1);
+
+    let contention = match DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .recover_writer_v1(limits(), LogPackDecodeLimits::UNBOUNDED)
+    {
+        Ok(_) => panic!("held-lease recovery released the exclusive writer lock"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        contention,
+        DurableStartupErrorV1::Io(DurableIoError::WriterLockContended { .. })
+    ));
+    drop(recovered);
+
+    let reopened = recover(scratch.path(), limits());
+    assert_eq!(reopened.recovered().state(), image.catalog.state());
 }
 
 #[test]
