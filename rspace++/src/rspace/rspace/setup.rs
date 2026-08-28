@@ -36,7 +36,7 @@ where
     ) -> RSpace<C, P, A, K> {
         RSpace {
             history_repository: Arc::new(std::sync::RwLock::new(history_repository)),
-            store: Arc::new(std::sync::RwLock::new(Arc::new(store))),
+            store: Arc::new(arc_swap::ArcSwap::new(Arc::new(store))),
             matcher,
             installs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             event_log: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -172,6 +172,10 @@ where
         history_reader: Box<dyn HistoryReader<Blake2b256Hash, C, P, A, K>>,
     ) {
         let next_hot_store = HotStoreInstances::create_from_hr(history_reader.base());
-        *self.store.write().expect("store write lock") = Arc::new(next_hot_store);
+        // No in-flight produce/consume can be concurrent with this swap —
+        // callers already only clone the store Arc and drop any lock
+        // immediately, so a reader that started before this swap keeps
+        // running against the old store either way.
+        self.store.store(Arc::new(next_hot_store));
     }
 }

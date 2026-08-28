@@ -131,3 +131,4 @@ docs/discoveries/*.md
 .tmp/
 .pi/
 graphify-out/
+/graphify-out
