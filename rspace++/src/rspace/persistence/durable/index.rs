@@ -320,6 +320,16 @@ impl ObjectIndexRecordV1 {
         Self::from_relative(object.reference(), relative, pack_id, prepare_offset, sequence)
     }
 
+    pub(crate) fn from_checkpoint_reference(
+        pack_id: PackId,
+        prepare_offset: u64,
+        sequence: LogPackSequence,
+        reference: ObjectRefV1,
+        relative_canonical_offset: u64,
+    ) -> Result<Self, IndexFormatError> {
+        Self::from_relative(reference, relative_canonical_offset, pack_id, prepare_offset, sequence)
+    }
+
     fn from_relative(
         reference: ObjectRefV1,
         relative: u64,

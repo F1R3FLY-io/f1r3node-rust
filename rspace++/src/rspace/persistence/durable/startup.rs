@@ -125,6 +125,8 @@ impl IndexBoundPhysicalRecoveryV1 {
 
     pub(crate) const fn transactions(&self) -> u64 { self.recovery.transactions() }
 
+    pub(crate) const fn checkpoints(&self) -> u64 { self.recovery.checkpoints() }
+
     pub(crate) const fn object_records(&self) -> u64 { self.recovery.object_records() }
 
     pub(crate) const fn scanned_bytes(&self) -> u64 { self.recovery.scanned_bytes() }
@@ -398,6 +400,7 @@ struct RecoverySummaryV1 {
     terminal_address: LogPackAddress,
     index_tail: u64,
     transactions: u64,
+    checkpoints: u64,
     object_records: u64,
     scanned_bytes: u64,
 }
@@ -412,6 +415,7 @@ impl RecoverySummaryV1 {
             terminal_address: recovery.terminal_address(),
             index_tail: recovery.expected_index_tail(),
             transactions: recovery.transactions(),
+            checkpoints: recovery.checkpoints(),
             object_records: recovery.object_records(),
             scanned_bytes: recovery.scanned_bytes(),
         }

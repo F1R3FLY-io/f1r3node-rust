@@ -31,9 +31,9 @@ use crate::rspace::persistence::{
 const PROFILE: SemanticProfileId = SemanticProfileId::from_array(*b"RSpace.Test.V1\0\0");
 
 #[derive(Clone)]
-struct SyntheticCheckpointSource {
-    descriptor: GenerationCheckpointDescriptorV1,
-    objects: Vec<(ObjectRefV1, Vec<u8>)>,
+pub(super) struct SyntheticCheckpointSource {
+    pub(super) descriptor: GenerationCheckpointDescriptorV1,
+    pub(super) objects: Vec<(ObjectRefV1, Vec<u8>)>,
 }
 
 impl GenerationCheckpointSourceTestSealV1 for SyntheticCheckpointSource {}
@@ -80,21 +80,32 @@ fn encoded<T: CanonicalEncode>(value: &T) -> (ObjectRefV1, Vec<u8>) {
     (reference, bytes)
 }
 
-fn fixture() -> SyntheticCheckpointSource {
-    let empty = encoded(&CanonicalDagNode::empty());
+pub(super) fn fixture() -> SyntheticCheckpointSource {
+    fixture_with_root(encoded(&CanonicalDagNode::empty()))
+}
+
+pub(super) fn malformed_interior_fixture() -> SyntheticCheckpointSource {
+    let mut bytes = b"RSpaceDAG.Node\0\0".to_vec();
+    bytes.resize(32, 0);
+    let reference =
+        ObjectRefV1::new(ObjectDigest::of_canonical_bytes(&bytes), bytes.len() as u64).unwrap();
+    fixture_with_root((reference, bytes))
+}
+
+fn fixture_with_root(root: (ObjectRefV1, Vec<u8>)) -> SyntheticCheckpointSource {
     let roots = SemanticRoots {
-        data_bag: empty.0,
-        continuation_map: empty.0,
-        join_bag: empty.0,
+        data_bag: root.0,
+        continuation_map: root.0,
+        join_bag: root.0,
     };
     let state_manifest = encoded(&SemanticStateManifestV1::new(1, PROFILE, roots, None).unwrap());
     let state = StateVersionV1::new(7, state_manifest.0);
-    let current_bytes = empty.0.encoded_len() + state_manifest.0.encoded_len();
+    let current_bytes = root.0.encoded_len() + state_manifest.0.encoded_len();
     let retention_manifest = encoded(
         &RetentionManifestV1::new(RetainedStateV1::new(state, current_bytes).unwrap(), Vec::new())
             .unwrap(),
     );
-    let mut objects = vec![empty, state_manifest, retention_manifest];
+    let mut objects = vec![root, state_manifest, retention_manifest];
     objects.sort_unstable_by_key(|(reference, _)| reference.digest());
     let data_bytes = objects
         .iter()

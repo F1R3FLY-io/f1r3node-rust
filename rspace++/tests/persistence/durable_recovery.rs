@@ -4,18 +4,29 @@ use std::convert::Infallible;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use super::checkpoint_wal::{
+    SyntheticCheckpointSource, fixture as checkpoint_source_fixture,
+    malformed_interior_fixture as malformed_checkpoint_source_fixture,
+};
 use super::support::{TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, synthetic_ref};
 use super::transaction_sealing::{base_state, data_batch, seal_data};
 use crate::rspace::persistence::durable::{
-    CatalogPackProviderV1, DurableReadAt, RecoveryError, scan_catalog_authorized_pack_chain,
+    CatalogPackProviderV1, DurableReadAt, PreparedGenerationCheckpointIndexV1,
+    PreparedIndexAppendV1, RecoveryError, scan_catalog_authorized_pack_chain,
+};
+use crate::rspace::persistence::wal::{
+    GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1,
+    GenerationCheckpointCommitRecordV1, PreparedGenerationCheckpointV1,
 };
 use crate::rspace::persistence::{
-    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalObjectStore, CatalogAuthorityTokenV1,
-    CatalogPackStateV1, CatalogSlotV1, CommittedObjectComparison, CommittedObjectLookup,
-    DurableFormatError, DurableLimitConfig, DurableLimitKind, DurableLimits, INDEX_HEADER_LEN_V1,
-    INDEX_RECORD_LEN_V1, IndexGenerationV1, LogPackAddress, LogPackDecodeLimits,
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, COMMIT_DISCRIMINATOR_LEN_V1, CanonicalObjectStore,
+    CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1, CommitPublicationV1,
+    CommitRecordKindV1, CommittedObjectComparison, CommittedObjectLookup, DurableFormatError,
+    DurableLimitConfig, DurableLimitKind, DurableLimits, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1,
+    IndexGenerationV1, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
     LogPackObjectPlanV1, LogPackSequence, MutableObjectStore, ObjectAdmission, ObjectDigest,
-    PACK_HEADER_LEN_V1, PackHeaderV1, PackId, PackTerminalIdentityV1, PhysicalDigest,
+    ObjectIndexHeaderV1, ObjectIndexRecordV1, PACK_HEADER_LEN_V1, PREPARE_DISCRIMINATOR_LEN_V1,
+    PackHeaderV1, PackId, PackTerminalIdentityV1, PhysicalDigest, PrepareRecordKindV1,
     PreparedLogPackTransactionV1, StoreId, TRANSACTION_COMMIT_RECORD_LEN_V1,
     TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
 };
@@ -189,6 +200,277 @@ pub(super) struct TwoPackImage {
     pub(super) second: Arc<[u8]>,
     pub(super) catalog: CatalogSlotV1,
     pub(super) transactions: u64,
+}
+
+pub(super) struct CheckpointPackImage {
+    pub(super) pack: Arc<[u8]>,
+    pub(super) catalog: CatalogSlotV1,
+    pub(super) canonical_index: Vec<u8>,
+    pub(super) records: Vec<ObjectIndexRecordV1>,
+    pub(super) prepare_address: LogPackAddress,
+    pub(super) commit_address: LogPackAddress,
+}
+
+pub(super) fn valid_checkpoint_image() -> CheckpointPackImage {
+    checkpoint_image_from_source(checkpoint_source_fixture())
+}
+
+pub(super) fn malformed_checkpoint_image() -> CheckpointPackImage {
+    checkpoint_image_from_source(malformed_checkpoint_source_fixture())
+}
+
+fn checkpoint_image_from_source(source: SyntheticCheckpointSource) -> CheckpointPackImage {
+    let store_id = StoreId::from_array([0x91; 16]);
+    let sequence = LogPackSequence::FIRST;
+    let prepared = PreparedGenerationCheckpointV1::<TestSemanticProfile, _>::new(
+        &source,
+        store_id,
+        sequence,
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let mut pack = PackHeaderV1::genesis(store_id).encode().to_vec();
+    let prepare_offset = pack.len() as u64;
+    let prepare_identity = prepared.write_to(&mut pack).unwrap();
+    let prepare_address =
+        LogPackAddress::from_pack(PackId::GENESIS, prepare_offset, prepare_identity.record_len())
+            .unwrap();
+    let index_header = ObjectIndexHeaderV1::new(store_id, IndexGenerationV1::FIRST);
+    let index =
+        PreparedGenerationCheckpointIndexV1::new(index_header, prepare_address, &prepared).unwrap();
+    let mut records = Vec::new();
+    index
+        .try_visit_records(|record| {
+            records.push(record);
+            Ok::<(), Infallible>(())
+        })
+        .unwrap();
+    let mut canonical_index = index_header.encode().to_vec();
+    for record in &records {
+        canonical_index.extend_from_slice(&record.encode());
+    }
+    assert_eq!(canonical_index.len() as u64, index.exact_tail());
+
+    let commit = GenerationCheckpointCommitRecordV1::new(
+        store_id,
+        PhysicalDigest::ZERO,
+        prepare_address,
+        prepare_identity,
+        index.publication(),
+    )
+    .unwrap();
+    let commit_address = LogPackAddress::from_pack(
+        PackId::GENESIS,
+        pack.len() as u64,
+        GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+    )
+    .unwrap();
+    pack.extend_from_slice(commit.canonical_bytes());
+    let descriptor = source.descriptor;
+    let pack_state = CatalogPackStateV1::new(
+        PackId::GENESIS.get(),
+        PackId::GENESIS.get(),
+        commit_address.end(),
+        IndexGenerationV1::FIRST.get(),
+        index.exact_tail(),
+        descriptor.retention_manifest(),
+        descriptor.current_state_canonical_bytes().get(),
+        descriptor
+            .inventory()
+            .retained_union_canonical_bytes()
+            .get(),
+    )
+    .unwrap();
+    assert_eq!(pack_state.commit_publication(), index.publication());
+    let catalog = CatalogSlotV1::new(
+        store_id,
+        1,
+        descriptor.state(),
+        descriptor.profile_id(),
+        commit.digest(),
+        sequence,
+        commit_address,
+        pack_state,
+    )
+    .unwrap();
+    CheckpointPackImage {
+        pack: pack.into(),
+        catalog,
+        canonical_index,
+        records,
+        prepare_address,
+        commit_address,
+    }
+}
+
+struct CheckpointThenIncrementalImage {
+    pack: Arc<[u8]>,
+    catalog: CatalogSlotV1,
+    canonical_index: Vec<u8>,
+    records: Vec<ObjectIndexRecordV1>,
+    object_records: u64,
+}
+
+fn checkpoint_then_incremental_image() -> CheckpointThenIncrementalImage {
+    let source = checkpoint_source_fixture();
+    let store_id = StoreId::from_array([0x91; 16]);
+    let checkpoint_sequence = LogPackSequence::FIRST;
+    let index_header = ObjectIndexHeaderV1::new(store_id, IndexGenerationV1::FIRST);
+    let store = CanonicalObjectStore::new();
+    let mut known = BTreeMap::new();
+    for (reference, bytes) in &source.objects {
+        let bytes: Arc<[u8]> = bytes.clone().into();
+        assert!(matches!(
+            store
+                .put_if_absent_or_equal(*reference, Arc::clone(&bytes))
+                .unwrap(),
+            ObjectAdmission::Inserted | ObjectAdmission::AlreadyPresent,
+        ));
+        known.insert(reference.digest(), bytes);
+    }
+
+    let checkpoint = PreparedGenerationCheckpointV1::<TestSemanticProfile, _>::new(
+        &source,
+        store_id,
+        checkpoint_sequence,
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let mut pack = PackHeaderV1::genesis(store_id).encode().to_vec();
+    let checkpoint_prepare_offset = pack.len() as u64;
+    let checkpoint_identity = checkpoint.write_to(&mut pack).unwrap();
+    let checkpoint_prepare_address = LogPackAddress::from_pack(
+        PackId::GENESIS,
+        checkpoint_prepare_offset,
+        checkpoint_identity.record_len(),
+    )
+    .unwrap();
+    let checkpoint_index = PreparedGenerationCheckpointIndexV1::new(
+        index_header,
+        checkpoint_prepare_address,
+        &checkpoint,
+    )
+    .unwrap();
+    let mut records = Vec::new();
+    let mut canonical_index = index_header.encode().to_vec();
+    checkpoint_index
+        .try_visit_records(|record| {
+            records.push(record);
+            canonical_index.extend_from_slice(&record.encode());
+            Ok::<(), Infallible>(())
+        })
+        .unwrap();
+    let checkpoint_commit = GenerationCheckpointCommitRecordV1::new(
+        store_id,
+        PhysicalDigest::ZERO,
+        checkpoint_prepare_address,
+        checkpoint_identity,
+        checkpoint_index.publication(),
+    )
+    .unwrap();
+    pack.extend_from_slice(checkpoint_commit.canonical_bytes());
+
+    let mutation = data_batch(source.descriptor.state(), "after-checkpoint");
+    let sealed = seal_data(&store, &mutation);
+    let object_plan = LogPackObjectPlanV1::classify(&sealed, &KnownObjects(known)).unwrap();
+    let incremental_sequence = checkpoint_sequence.successor().unwrap();
+    let prepared = PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
+        &sealed,
+        object_plan,
+        store_id,
+        incremental_sequence,
+        LogPackDecodeLimits::UNBOUNDED,
+    )
+    .unwrap();
+    let incremental_prepare_offset = pack.len() as u64;
+    let index_append = PreparedIndexAppendV1::new(
+        index_header,
+        checkpoint_index.exact_tail(),
+        PackId::GENESIS,
+        incremental_prepare_offset,
+        &prepared,
+    )
+    .unwrap();
+    let current_state_bytes = sealed.diagnostics().closure.canonical_bytes;
+    let new_canonical_bytes = sealed
+        .objects()
+        .iter()
+        .try_fold(0u64, |total, object| total.checked_add(object.reference().encoded_len()))
+        .unwrap();
+    let retained_bytes = source
+        .descriptor
+        .inventory()
+        .retained_union_canonical_bytes()
+        .get()
+        .checked_add(new_canonical_bytes)
+        .unwrap();
+    let publication = CommitPublicationV1::new(
+        PackId::GENESIS.get(),
+        IndexGenerationV1::FIRST.get(),
+        index_append.new_tail(),
+        source.descriptor.retention_manifest(),
+        current_state_bytes,
+        retained_bytes,
+    )
+    .unwrap();
+    let incremental_identity = prepared.write_to(&mut pack).unwrap();
+    let incremental_prepare_address = LogPackAddress::from_pack(
+        PackId::GENESIS,
+        incremental_prepare_offset,
+        incremental_identity.record_len(),
+    )
+    .unwrap();
+    let incremental_commit = TransactionCommitRecordV1::new(
+        sealed.receipt(),
+        store_id,
+        checkpoint_commit.digest(),
+        incremental_prepare_address,
+        incremental_identity,
+        publication,
+    )
+    .unwrap();
+    let commit_address = LogPackAddress::from_pack(
+        PackId::GENESIS,
+        pack.len() as u64,
+        TRANSACTION_COMMIT_RECORD_LEN_V1,
+    )
+    .unwrap();
+    pack.extend_from_slice(incremental_commit.canonical_bytes());
+    for record in index_append.records() {
+        let record = record.unwrap();
+        records.push(record);
+        canonical_index.extend_from_slice(&record.encode());
+    }
+    assert_eq!(canonical_index.len() as u64, index_append.new_tail());
+    let pack_state = CatalogPackStateV1::new(
+        PackId::GENESIS.get(),
+        PackId::GENESIS.get(),
+        commit_address.end(),
+        IndexGenerationV1::FIRST.get(),
+        index_append.new_tail(),
+        publication.retention_manifest(),
+        publication.current_state_canonical_bytes(),
+        publication.retained_canonical_bytes(),
+    )
+    .unwrap();
+    let catalog = CatalogSlotV1::new(
+        store_id,
+        1,
+        sealed.receipt().target(),
+        TEST_SEMANTIC_PROFILE_ID,
+        incremental_commit.digest(),
+        incremental_sequence,
+        commit_address,
+        pack_state,
+    )
+    .unwrap();
+    CheckpointThenIncrementalImage {
+        pack: pack.into(),
+        catalog,
+        canonical_index,
+        records,
+        object_records: checkpoint_index.record_count() + sealed.objects().len() as u64,
+    }
 }
 
 fn two_pack_image(fault: SecondPackFault) -> TwoPackImage {
@@ -458,6 +740,209 @@ fn exact_pack_chain_scans_iteratively_and_consumes_the_catalog_tip() {
     assert_eq!(observed.len() as u64, data_count);
     assert_eq!(recovered.expected_index_tail(), catalog.durable_index_tail());
     assert_eq!(recovered.scanned_bytes(), bytes.len() as u64);
+}
+
+#[test]
+fn checkpoint_pack_streams_once_and_rebuilds_the_exact_fresh_index() {
+    let image = valid_checkpoint_image();
+    let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
+    let reads = Arc::clone(&provider.reader.reads);
+    let token = token_with_slot(image.catalog, false);
+    let mut observed = Vec::new();
+    let scanned = scan_catalog_authorized_pack_chain(
+        &mut provider,
+        &token,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        |record| {
+            observed.push(record);
+            Ok(())
+        },
+    )
+    .unwrap();
+    let recovered = scanned.verify_catalog(token).unwrap();
+
+    assert_eq!(provider.opens, 1);
+    assert_eq!(recovered.transactions(), 0);
+    assert_eq!(recovered.checkpoints(), 1);
+    assert_eq!(recovered.object_records(), image.records.len() as u64);
+    assert_eq!(recovered.object_index().record_count(), image.records.len() as u64);
+    assert_eq!(observed, image.records);
+    assert_eq!(recovered.state(), image.catalog.state());
+    assert_eq!(recovered.terminal_address(), image.commit_address);
+    assert_eq!(recovered.expected_index_tail(), image.canonical_index.len() as u64);
+    assert_eq!(recovered.scanned_bytes(), image.pack.len() as u64);
+    assert_eq!(image.prepare_address.offset(), PACK_HEADER_LEN_V1);
+
+    let mut intervals = reads.lock().unwrap().clone();
+    intervals.sort_unstable_by_key(|(offset, _)| *offset);
+    let mut cursor = 0u64;
+    for (offset, length) in intervals {
+        assert_eq!(offset, cursor, "checkpoint recovery reread or skipped a byte");
+        assert!(length <= 64 * 1024, "checkpoint read exceeded its bounded scratch");
+        cursor = cursor.checked_add(length as u64).unwrap();
+    }
+    assert_eq!(cursor, image.pack.len() as u64);
+}
+
+#[test]
+fn incremental_history_continues_from_checkpoint_state_and_index() {
+    let image = checkpoint_then_incremental_image();
+    let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
+    let token = token_with_slot(image.catalog, false);
+    let mut observed = Vec::new();
+    let scanned = scan_catalog_authorized_pack_chain(
+        &mut provider,
+        &token,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        |record| {
+            observed.push(record);
+            Ok(())
+        },
+    )
+    .unwrap();
+    let recovered = scanned.verify_catalog(token).unwrap();
+
+    assert_eq!(recovered.transactions(), 1);
+    assert_eq!(recovered.checkpoints(), 1);
+    assert_eq!(recovered.state(), image.catalog.state());
+    assert_eq!(recovered.terminal_address(), image.catalog.commit_address());
+    assert_eq!(recovered.object_records(), image.object_records);
+    assert_eq!(recovered.object_index().record_count(), image.records.len() as u64);
+    assert_eq!(observed, image.records);
+    assert_eq!(recovered.expected_index_tail(), image.canonical_index.len() as u64);
+    assert_eq!(recovered.scanned_bytes(), image.pack.len() as u64);
+}
+
+#[test]
+fn checkpoint_corruption_and_kind_pairing_fail_before_authority() {
+    let image = valid_checkpoint_image();
+    let token = token_with_slot(image.catalog, false);
+
+    let mut body_corruption = image.pack.to_vec();
+    let body_offset = image.records[0].location().canonical_offset() as usize;
+    body_corruption[body_offset] ^= 1;
+    let mut provider = MemoryProvider::new(PackId::GENESIS, body_corruption);
+    assert!(matches!(
+        scan_catalog_authorized_pack_chain(
+            &mut provider,
+            &token,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            |_| Ok(()),
+        ),
+        Err(RecoveryError::Wal(LogPackFormatError::ObjectReference { .. }))
+    ));
+
+    let mut trailer_corruption = image.pack.to_vec();
+    trailer_corruption[(image.prepare_address.end() - 8) as usize] ^= 1;
+    let mut provider = MemoryProvider::new(PackId::GENESIS, trailer_corruption);
+    assert!(matches!(
+        scan_catalog_authorized_pack_chain(
+            &mut provider,
+            &token,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            |_| Ok(()),
+        ),
+        Err(RecoveryError::Wal(LogPackFormatError::RecordChecksum { .. }))
+    ));
+
+    let (legacy_pack, legacy_catalog, _) = image_with_lookup(&MissingLookup);
+    let mut mismatched_pair = image.pack.to_vec();
+    let checkpoint_commit = image.commit_address.offset() as usize;
+    let legacy_commit = legacy_catalog.commit_address().offset() as usize;
+    mismatched_pair[checkpoint_commit..checkpoint_commit + COMMIT_DISCRIMINATOR_LEN_V1 as usize]
+        .copy_from_slice(
+            &legacy_pack[legacy_commit..legacy_commit + COMMIT_DISCRIMINATOR_LEN_V1 as usize],
+        );
+    let mut provider = MemoryProvider::new(PackId::GENESIS, mismatched_pair);
+    assert!(matches!(
+        scan_catalog_authorized_pack_chain(
+            &mut provider,
+            &token,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            |_| Ok(()),
+        ),
+        Err(RecoveryError::CommitPairing {
+            prepare: PrepareRecordKindV1::GenerationCheckpoint,
+            commit: CommitRecordKindV1::Incremental,
+        })
+    ));
+
+    let two_pack = valid_two_pack_image();
+    let second_pack_id = PackId::GENESIS.successor().unwrap();
+    let mut wrong_position = two_pack.second.to_vec();
+    wrong_position[PACK_HEADER_LEN_V1 as usize..
+        PACK_HEADER_LEN_V1 as usize + PREPARE_DISCRIMINATOR_LEN_V1 as usize]
+        .copy_from_slice(
+            &image.pack[PACK_HEADER_LEN_V1 as usize..
+                PACK_HEADER_LEN_V1 as usize + PREPARE_DISCRIMINATOR_LEN_V1 as usize],
+        );
+    let mut provider = MultiPackProvider::new([
+        (PackId::GENESIS, Arc::clone(&two_pack.first)),
+        (second_pack_id, wrong_position.into()),
+    ]);
+    let token = token_with_slot(two_pack.catalog, false);
+    assert!(matches!(
+        scan_catalog_authorized_pack_chain(
+            &mut provider,
+            &token,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            |_| Ok(()),
+        ),
+        Err(RecoveryError::GenerationCheckpointPosition {
+            actual_pack,
+            actual_offset: PACK_HEADER_LEN_V1,
+            ..
+        }) if actual_pack == second_pack_id
+    ));
+}
+
+#[test]
+fn checkpoint_aggregate_limits_reject_before_object_reads_or_index_emission() {
+    let image = valid_checkpoint_image();
+    let object_count = image.records.len() as u64;
+    let mut configs = Vec::new();
+    let mut object_limited = limit_config();
+    object_limited.max_object_records = object_count - 1;
+    configs.push(object_limited);
+    let mut record_limited = limit_config();
+    record_limited.max_index_records = object_count - 1;
+    configs.push(record_limited);
+    let mut byte_limited = limit_config();
+    byte_limited.max_index_bytes = image.canonical_index.len() as u64 - INDEX_RECORD_LEN_V1;
+    configs.push(byte_limited);
+
+    let object_stream =
+        image.prepare_address.offset() + GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1;
+    for config in configs {
+        let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
+        let reads = Arc::clone(&provider.reader.reads);
+        let token = token_with_slot(image.catalog, false);
+        let mut emitted = 0u64;
+        assert!(matches!(
+            scan_catalog_authorized_pack_chain(
+                &mut provider,
+                &token,
+                DurableLimits::new(config).unwrap(),
+                LogPackDecodeLimits::UNBOUNDED,
+                |_| {
+                    emitted += 1;
+                    Ok(())
+                },
+            ),
+            Err(RecoveryError::Limit(_))
+        ));
+        assert_eq!(emitted, 0);
+        assert!(reads.lock().unwrap().iter().all(|(offset, length)| {
+            let end = offset.checked_add(*length as u64).unwrap();
+            end <= object_stream || *offset >= image.prepare_address.end()
+        }));
+    }
 }
 
 #[test]

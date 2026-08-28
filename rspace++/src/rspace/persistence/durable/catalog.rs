@@ -8,6 +8,9 @@ use crate::rspace::persistence::manifest::{SEMANTIC_PROFILE_ID_LEN, SemanticProf
 use crate::rspace::persistence::physical::{
     PHYSICAL_DIGEST_LEN, PhysicalDigest, STORE_ID_LEN, StoreId,
 };
+use crate::rspace::persistence::wal::{
+    GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, TerminalCommitViewV1,
+};
 use crate::rspace::persistence::{
     CommitPublicationV1, LogPackAddress, LogPackSequence, StateVersionV1,
     TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitViewV1,
@@ -156,9 +159,12 @@ impl CatalogSlotV1 {
                 active: pack.active_pack(),
             });
         }
-        if commit_address.length() != TRANSACTION_COMMIT_RECORD_LEN_V1 {
+        if commit_address.length() != TRANSACTION_COMMIT_RECORD_LEN_V1 &&
+            commit_address.length() != GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1
+        {
             return Err(DurableFormatError::CatalogCommitLength {
-                expected: TRANSACTION_COMMIT_RECORD_LEN_V1,
+                incremental: TRANSACTION_COMMIT_RECORD_LEN_V1,
+                checkpoint: GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
                 actual: commit_address.length(),
             });
         }
@@ -214,6 +220,13 @@ impl CatalogSlotV1 {
     /// prevents a valid commit from another store, sequence, state, profile,
     /// or publication inventory from being substituted at recovery time.
     pub fn verify_commit(self, commit: TransactionCommitViewV1) -> Result<(), DurableFormatError> {
+        self.verify_terminal_commit(commit.into())
+    }
+
+    pub(crate) fn verify_terminal_commit(
+        self,
+        commit: TerminalCommitViewV1,
+    ) -> Result<(), DurableFormatError> {
         if self.store_id != commit.store_id() {
             return Err(DurableFormatError::CatalogCommitStore {
                 catalog: self.store_id,
@@ -232,16 +245,16 @@ impl CatalogSlotV1 {
                 commit: commit.digest(),
             });
         }
-        if self.state != commit.receipt().target() {
+        if self.state != commit.state() {
             return Err(DurableFormatError::CatalogCommitState {
                 catalog: self.state,
-                commit: commit.receipt().target(),
+                commit: commit.state(),
             });
         }
-        if self.profile_id != commit.receipt().profile_id() {
+        if self.profile_id != commit.profile_id() {
             return Err(DurableFormatError::CatalogCommitProfile {
                 catalog: self.profile_id,
-                commit: commit.receipt().profile_id(),
+                commit: commit.profile_id(),
             });
         }
         let catalog_publication = self.pack.commit_publication();

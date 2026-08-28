@@ -7,18 +7,36 @@
 
 use std::fmt::{Display, Formatter};
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+
 use super::{
     CommittedObjectIndexV1, DurableFormatError, DurableLimitError, DurableLimitKind, DurableLimits,
     INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError, ObjectIndexRecordV1,
     PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1, PackTerminalIdentityV1,
 };
-use crate::rspace::persistence::{
-    CATALOG_IMAGE_LEN, CatalogAuthorityTokenV1, LogPackAddress, LogPackDecodeLimits,
-    LogPackFormatError, LogPackObjectDispositionV1, LogPackSequence, PackId, PhysicalDigest,
-    SemanticProfileId, StateVersionV1, StoreId, TRANSACTION_COMMIT_RECORD_LEN_V1,
-    TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
-    preflight_prepare_record_v1,
+use crate::rspace::persistence::canonical::{OBJECT_DOMAIN_LEN, ReadCursor};
+use crate::rspace::persistence::checkpoint::OrderedObjectInventoryBuilderV1;
+use crate::rspace::persistence::checksum::{CHECKSUM_FIELD_LEN, Crc32c, decode_crc32c};
+use crate::rspace::persistence::physical::PHYSICAL_DIGEST_LEN;
+use crate::rspace::persistence::wal::{
+    GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1,
+    GenerationCheckpointCommitViewV1, GenerationCheckpointPrepareIdentityV1,
+    GenerationCheckpointPreparePreflightV1, TerminalCommitViewV1,
+    preflight_generation_checkpoint_prepare_v1,
 };
+use crate::rspace::persistence::{
+    CATALOG_IMAGE_LEN, COMMIT_DISCRIMINATOR_LEN_V1, CanonicalObjectKind, CatalogAuthorityTokenV1,
+    CommitRecordKindV1, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
+    LogPackObjectDispositionV1, LogPackSequence, ObjectDigest, ObjectRefV1,
+    PREPARE_DISCRIMINATOR_LEN_V1, PackId, PhysicalDigest, PrepareRecordKindV1, SemanticProfileId,
+    StateVersionV1, StoreId, TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1,
+    TransactionCommitViewV1, TransactionPrepareRecordViewV1, decode_commit_kind_v1,
+    decode_prepare_kind_v1, preflight_prepare_record_v1,
+};
+
+const CHECKPOINT_OBJECT_REFERENCE_LEN: u64 = 40;
+const CHECKPOINT_STREAM_SCRATCH_LEN: usize = 64 * 1024;
 
 /// Minimal positional-read contract used by both production files and exact
 /// in-memory crash images. Implementations must fill the complete destination
@@ -51,10 +69,11 @@ pub(crate) struct ScannedPackChainV1<I = CommittedObjectIndexV1> {
     state: StateVersionV1,
     terminal: PackTerminalIdentityV1,
     terminal_address: LogPackAddress,
-    terminal_commit_bytes: [u8; TRANSACTION_COMMIT_RECORD_LEN_V1 as usize],
+    terminal_commit: TerminalCommitViewV1,
     index: I,
     expected_index_tail: u64,
     transactions: u64,
+    checkpoints: u64,
     object_records: u64,
     scanned_bytes: u64,
 }
@@ -75,9 +94,9 @@ impl<I> ScannedPackChainV1<I> {
             return Err(RecoveryError::CatalogAuthorityChanged);
         }
         let catalog = authority.slot();
-        let commit = TransactionCommitViewV1::parse(&self.terminal_commit_bytes)?;
+        let commit = self.terminal_commit;
         catalog
-            .verify_commit(commit)
+            .verify_terminal_commit(commit)
             .map_err(RecoveryError::Catalog)?;
         if self.terminal_address != catalog.commit_address() {
             return Err(RecoveryError::CatalogTerminal {
@@ -110,6 +129,8 @@ impl<I> CatalogVerifiedRecoveryV1<I> {
     pub(crate) const fn expected_index_tail(&self) -> u64 { self.scan.expected_index_tail }
 
     pub(crate) const fn transactions(&self) -> u64 { self.scan.transactions }
+
+    pub(crate) const fn checkpoints(&self) -> u64 { self.scan.checkpoints }
 
     pub(crate) const fn object_records(&self) -> u64 { self.scan.object_records }
 
@@ -182,6 +203,29 @@ pub(crate) enum RecoveryError<E> {
     },
     MissingReuse(crate::rspace::persistence::ObjectRefV1),
     GenerationCheckpointReuse(crate::rspace::persistence::ObjectRefV1),
+    GenerationCheckpointPosition {
+        expected_pack: PackId,
+        expected_offset: u64,
+        actual_pack: PackId,
+        actual_offset: u64,
+    },
+    CheckpointObjectExtent {
+        reference: ObjectRefV1,
+        body_offset: u64,
+        body_end: u64,
+        trailer_offset: u64,
+    },
+    CheckpointPrepareTail {
+        expected: u64,
+        actual: u64,
+    },
+    CheckpointScratchAllocation {
+        bytes: u64,
+    },
+    CommitPairing {
+        prepare: PrepareRecordKindV1,
+        commit: CommitRecordKindV1,
+    },
     ReuseReference {
         indexed: crate::rspace::persistence::ObjectRefV1,
         reused: crate::rspace::persistence::ObjectRefV1,
@@ -323,6 +367,41 @@ impl<E: Display> Display for RecoveryError<E> {
                  complete retained closure as DATA",
                 reference.digest()
             ),
+            Self::GenerationCheckpointPosition {
+                expected_pack,
+                expected_offset,
+                actual_pack,
+                actual_offset,
+            } => write!(
+                formatter,
+                "generation checkpoint at pack {} offset {actual_offset} does not equal required \
+                 first-live position pack {} offset {expected_offset}",
+                actual_pack.get(),
+                expected_pack.get(),
+            ),
+            Self::CheckpointObjectExtent {
+                reference,
+                body_offset,
+                body_end,
+                trailer_offset,
+            } => write!(
+                formatter,
+                "checkpoint object {} body [{body_offset}, {body_end}) crosses its record trailer \
+                 at {trailer_offset}",
+                reference.digest(),
+            ),
+            Self::CheckpointPrepareTail { expected, actual } => write!(
+                formatter,
+                "checkpoint object stream ended at {actual}, not at authenticated trailer offset \
+                 {expected}"
+            ),
+            Self::CheckpointScratchAllocation { bytes } => write!(
+                formatter,
+                "cannot allocate the reusable {bytes}-byte checkpoint recovery scratch buffer"
+            ),
+            Self::CommitPairing { prepare, commit } => {
+                write!(formatter, "WAL {prepare:?} PREPARE is paired with {commit:?} COMMIT")
+            }
             Self::ReuseReference { indexed, reused } => write!(
                 formatter,
                 "REUSE reference {reused:?} disagrees with indexed DATA {indexed:?}"
@@ -479,6 +558,293 @@ where F: FnMut(ObjectIndexRecordV1) -> Result<(), RecoveryError<E>>
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn stream_generation_checkpoint_prepare<R, S>(
+    reader: &R,
+    pack_id: PackId,
+    prepare_offset: u64,
+    prefix: &[u8; GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize],
+    preflight: GenerationCheckpointPreparePreflightV1,
+    limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+    object_records: &mut u64,
+    index_records: &mut u64,
+    expected_index_tail: &mut u64,
+    index_sink: &mut S,
+    scratch: &mut [u8],
+) -> Result<GenerationCheckpointPrepareIdentityV1, RecoveryError<R::Error>>
+where
+    R: DurableReadAt,
+    S: RecoveryIndexSinkV1<R::Error>,
+{
+    debug_assert!(!scratch.is_empty());
+    let descriptor = preflight.descriptor();
+    *object_records = limits.checked_charge(
+        DurableLimitKind::ObjectRecords,
+        *object_records,
+        descriptor.data_objects(),
+    )?;
+    let prepare_end = prepare_offset
+        .checked_add(preflight.record_len())
+        .ok_or(RecoveryError::Arithmetic("checkpoint prepare end"))?;
+    let trailer_offset = prepare_end
+        .checked_sub(CHECKSUM_FIELD_LEN as u64)
+        .ok_or(RecoveryError::Arithmetic("checkpoint trailer offset"))?;
+
+    let mut record_crc = Crc32c::new();
+    let mut record_hasher = Blake2b::<U32>::new();
+    record_crc.update(prefix);
+    record_hasher.update(prefix);
+    let mut inventory = OrderedObjectInventoryBuilderV1::new(
+        descriptor.data_objects(),
+        descriptor.data_canonical_bytes().get(),
+    );
+    let state_manifest = descriptor.state().manifest();
+    let retention_manifest = descriptor.retention_manifest();
+    let mut saw_state_manifest = false;
+    let mut saw_retention_manifest = false;
+    let mut cursor = prepare_offset
+        .checked_add(GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1)
+        .ok_or(RecoveryError::Arithmetic("checkpoint object stream offset"))?;
+
+    for _ in 0..descriptor.data_objects() {
+        let reference_end = cursor
+            .checked_add(CHECKPOINT_OBJECT_REFERENCE_LEN)
+            .ok_or(RecoveryError::Arithmetic("checkpoint object-reference end"))?;
+        if reference_end > trailer_offset {
+            return Err(RecoveryError::CheckpointPrepareTail {
+                expected: trailer_offset,
+                actual: reference_end,
+            });
+        }
+        let mut reference_bytes = [0u8; CHECKPOINT_OBJECT_REFERENCE_LEN as usize];
+        reader
+            .read_exact_at(cursor, &mut reference_bytes)
+            .map_err(RecoveryError::Read)?;
+        record_crc.update(&reference_bytes);
+        record_hasher.update(&reference_bytes);
+        let mut reference_cursor = ReadCursor::new(&reference_bytes);
+        let reference =
+            ObjectRefV1::parse(&mut reference_cursor).map_err(LogPackFormatError::from)?;
+        reference_cursor
+            .finish()
+            .map_err(LogPackFormatError::from)?;
+        if reference.encoded_len() > wal_limits.max_single_object_bytes {
+            return Err(RecoveryError::Wal(LogPackFormatError::ResourceLimit {
+                resource: "single canonical object bytes",
+                limit: wal_limits.max_single_object_bytes,
+                attempted: reference.encoded_len(),
+            }));
+        }
+        inventory
+            .push(reference)
+            .map_err(LogPackFormatError::from)?;
+        let body_offset = reference_end;
+        let body_end = body_offset
+            .checked_add(reference.encoded_len())
+            .ok_or(RecoveryError::Arithmetic("checkpoint object body end"))?;
+        if body_end > trailer_offset {
+            return Err(RecoveryError::CheckpointObjectExtent {
+                reference,
+                body_offset,
+                body_end,
+                trailer_offset,
+            });
+        }
+
+        let mut object_hasher = Blake2b::<U32>::new();
+        let mut domain = [0u8; OBJECT_DOMAIN_LEN];
+        let mut body_cursor = body_offset;
+        let mut body_consumed = 0u64;
+        while body_cursor < body_end {
+            let remaining = body_end - body_cursor;
+            let take = usize::try_from(remaining.min(scratch.len() as u64))
+                .expect("bounded checkpoint scratch length fits usize");
+            let chunk = &mut scratch[..take];
+            reader
+                .read_exact_at(body_cursor, chunk)
+                .map_err(RecoveryError::Read)?;
+            if body_consumed < OBJECT_DOMAIN_LEN as u64 {
+                let domain_start = body_consumed as usize;
+                let copy_len = (OBJECT_DOMAIN_LEN - domain_start).min(take);
+                domain[domain_start..domain_start + copy_len].copy_from_slice(&chunk[..copy_len]);
+            }
+            record_crc.update(chunk);
+            record_hasher.update(&*chunk);
+            object_hasher.update(&*chunk);
+            body_cursor = body_cursor
+                .checked_add(take as u64)
+                .ok_or(RecoveryError::Arithmetic("checkpoint object stream cursor"))?;
+            body_consumed = body_consumed
+                .checked_add(take as u64)
+                .ok_or(RecoveryError::Arithmetic("checkpoint object bytes read"))?;
+        }
+        let object_digest = finish_object_digest(object_hasher);
+        if object_digest != reference.digest() {
+            let actual = ObjectRefV1::new(object_digest, reference.encoded_len())
+                .map_err(LogPackFormatError::from)?;
+            return Err(RecoveryError::Wal(LogPackFormatError::ObjectReference {
+                declared: reference,
+                actual,
+            }));
+        }
+        let captured_domain_len = reference.encoded_len().min(OBJECT_DOMAIN_LEN as u64) as usize;
+        let kind = CanonicalObjectKind::from_domain_prefix(&domain[..captured_domain_len])
+            .map_err(LogPackFormatError::from)?;
+        if reference == state_manifest {
+            require_checkpoint_kind(
+                "state manifest",
+                reference,
+                kind,
+                CanonicalObjectKind::SemanticManifest,
+            )?;
+            saw_state_manifest = true;
+        }
+        if reference == retention_manifest {
+            require_checkpoint_kind(
+                "retention manifest",
+                reference,
+                kind,
+                CanonicalObjectKind::RetentionManifest,
+            )?;
+            saw_retention_manifest = true;
+        }
+
+        *index_records = index_records
+            .checked_add(1)
+            .ok_or(RecoveryError::Arithmetic("checkpoint index record count"))?;
+        limits.require(DurableLimitKind::IndexRecords, *index_records)?;
+        let relative_canonical_offset = body_offset
+            .checked_sub(prepare_offset)
+            .ok_or(RecoveryError::Arithmetic("checkpoint relative object offset"))?;
+        let record = ObjectIndexRecordV1::from_checkpoint_reference(
+            pack_id,
+            prepare_offset,
+            preflight.sequence(),
+            reference,
+            relative_canonical_offset,
+        )?;
+        *expected_index_tail = expected_index_tail
+            .checked_add(INDEX_RECORD_LEN_V1)
+            .ok_or(RecoveryError::Arithmetic("checkpoint index tail"))?;
+        limits.require(DurableLimitKind::IndexBytes, *expected_index_tail)?;
+        index_sink.data(record)?;
+        cursor = body_end;
+    }
+
+    if cursor != trailer_offset {
+        return Err(RecoveryError::CheckpointPrepareTail {
+            expected: trailer_offset,
+            actual: cursor,
+        });
+    }
+    let mut trailer = [0u8; CHECKSUM_FIELD_LEN];
+    reader
+        .read_exact_at(trailer_offset, &mut trailer)
+        .map_err(RecoveryError::Read)?;
+    let declared_crc = decode_crc32c(trailer).map_err(|encoded| {
+        RecoveryError::Wal(LogPackFormatError::ChecksumOutOfRange {
+            field: "checkpoint prepare record",
+            encoded,
+        })
+    })?;
+    let actual_crc = record_crc.finish();
+    if declared_crc != actual_crc {
+        return Err(RecoveryError::Wal(LogPackFormatError::RecordChecksum {
+            expected: declared_crc,
+            actual: actual_crc,
+        }));
+    }
+    if !saw_state_manifest {
+        return Err(RecoveryError::Wal(LogPackFormatError::CheckpointDesignatedObjectMissing {
+            role: "state manifest",
+            reference: state_manifest,
+        }));
+    }
+    if !saw_retention_manifest {
+        return Err(RecoveryError::Wal(LogPackFormatError::CheckpointDesignatedObjectMissing {
+            role: "retention manifest",
+            reference: retention_manifest,
+        }));
+    }
+    let observed = inventory.finish().map_err(LogPackFormatError::from)?;
+    if observed.digest() != descriptor.ordered_digest() {
+        return Err(RecoveryError::Wal(LogPackFormatError::CheckpointInventoryDigest {
+            expected: *descriptor.ordered_digest().as_bytes(),
+            actual: *observed.digest().as_bytes(),
+        }));
+    }
+    Ok(GenerationCheckpointPrepareIdentityV1::from_streamed(
+        preflight,
+        finish_physical_digest(record_hasher),
+        declared_crc,
+    ))
+}
+
+fn require_checkpoint_kind<E>(
+    role: &'static str,
+    reference: ObjectRefV1,
+    actual: CanonicalObjectKind,
+    expected: CanonicalObjectKind,
+) -> Result<(), RecoveryError<E>> {
+    if actual != expected {
+        return Err(RecoveryError::Wal(LogPackFormatError::CheckpointDesignatedObjectKind {
+            role,
+            reference,
+            expected,
+            actual,
+        }));
+    }
+    Ok(())
+}
+
+fn finish_object_digest(hasher: Blake2b<U32>) -> ObjectDigest {
+    let hash = hasher.finalize();
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&hash);
+    ObjectDigest::from_array(digest)
+}
+
+fn finish_physical_digest(hasher: Blake2b<U32>) -> PhysicalDigest {
+    let hash = hasher.finalize();
+    let mut digest = [0u8; PHYSICAL_DIGEST_LEN];
+    digest.copy_from_slice(&hash);
+    PhysicalDigest::from_array(digest)
+}
+
+fn require_commit_pair<R: DurableReadAt>(
+    reader: &R,
+    pack_id: PackId,
+    commit_offset: u64,
+    durable_tail: u64,
+    prepare: PrepareRecordKindV1,
+    expected: CommitRecordKindV1,
+) -> Result<[u8; COMMIT_DISCRIMINATOR_LEN_V1 as usize], RecoveryError<R::Error>> {
+    let discriminator_end = commit_offset
+        .checked_add(COMMIT_DISCRIMINATOR_LEN_V1)
+        .ok_or(RecoveryError::Arithmetic("commit discriminator end"))?;
+    if discriminator_end > durable_tail {
+        return Err(RecoveryError::AuthorizedTailCutsRecord {
+            pack: pack_id,
+            record_offset: commit_offset,
+            required_end: discriminator_end,
+            durable_tail,
+        });
+    }
+    let mut discriminator = [0u8; COMMIT_DISCRIMINATOR_LEN_V1 as usize];
+    reader
+        .read_exact_at(commit_offset, &mut discriminator)
+        .map_err(RecoveryError::Read)?;
+    let actual = decode_commit_kind_v1(&discriminator)?;
+    if actual != expected {
+        return Err(RecoveryError::CommitPairing {
+            prepare,
+            commit: actual,
+        });
+    }
+    Ok(discriminator)
+}
+
 /// Scan the exact pack range named by a selected catalog authority.
 ///
 /// Range cardinality is admitted before the provider is called. Packs are
@@ -567,6 +933,7 @@ where
     let expected_profile = catalog.profile_id();
     let index_generation = pack_state.index_generation();
     let mut transactions = 0u64;
+    let mut checkpoints = 0u64;
     let mut object_records = 0u64;
     let mut index_records = 0u64;
     let mut scanned_bytes = 0u64;
@@ -575,7 +942,8 @@ where
     let mut previous_terminal = None;
     let mut previous_state = None;
     let mut terminal_address = None;
-    let mut terminal_commit_bytes = None;
+    let mut terminal_commit = None;
+    let mut checkpoint_scratch = None;
     let mut pack_raw = first_live_pack.get();
 
     loop {
@@ -620,106 +988,397 @@ where
         let mut previous_commit = header.previous_terminal_commit();
         let mut offset = PACK_HEADER_LEN_V1;
         while offset < durable_tail {
-            transactions =
-                limits.checked_charge(DurableLimitKind::Transactions, transactions, 1)?;
-            let prefix_end = offset
-                .checked_add(TRANSACTION_PREPARE_HEADER_LEN_V1)
-                .ok_or(RecoveryError::Arithmetic("prepare prefix end"))?;
-            if prefix_end > durable_tail {
+            let discriminator_end = offset
+                .checked_add(PREPARE_DISCRIMINATOR_LEN_V1)
+                .ok_or(RecoveryError::Arithmetic("prepare discriminator end"))?;
+            if discriminator_end > durable_tail {
                 return Err(RecoveryError::AuthorizedTailCutsRecord {
                     pack: pack_id,
                     record_offset: offset,
-                    required_end: prefix_end,
+                    required_end: discriminator_end,
                     durable_tail,
                 });
             }
-            let mut prefix = [0u8; TRANSACTION_PREPARE_HEADER_LEN_V1 as usize];
+            let mut discriminator = [0u8; PREPARE_DISCRIMINATOR_LEN_V1 as usize];
             reader
-                .read_exact_at(offset, &mut prefix)
+                .read_exact_at(offset, &mut discriminator)
                 .map_err(RecoveryError::Read)?;
-            let preflight = preflight_prepare_record_v1(&prefix, wal_limits)?;
-            // Prefix authentication precedes this charge; allocation and the
-            // remaining read follow it. No body work occurs if the aggregate
-            // budget rejects the declared count.
-            object_records = limits.checked_charge(
-                DurableLimitKind::ObjectRecords,
-                object_records,
-                preflight.object_count(),
-            )?;
-            let prepare_len = preflight.record_len();
-            let prepare_end = offset
-                .checked_add(prepare_len)
-                .ok_or(RecoveryError::Arithmetic("prepare end"))?;
-            let commit_end = prepare_end
-                .checked_add(TRANSACTION_COMMIT_RECORD_LEN_V1)
-                .ok_or(RecoveryError::Arithmetic("commit end"))?;
-            if commit_end > durable_tail {
-                return Err(RecoveryError::AuthorizedTailCutsRecord {
-                    pack: pack_id,
-                    record_offset: offset,
-                    required_end: commit_end,
-                    durable_tail,
+            let prepare_kind = decode_prepare_kind_v1(&discriminator)?;
+            let generation_start = pack_id == first_live_pack && offset == PACK_HEADER_LEN_V1;
+            if prepare_kind == PrepareRecordKindV1::GenerationCheckpoint && !generation_start {
+                return Err(RecoveryError::GenerationCheckpointPosition {
+                    expected_pack: first_live_pack,
+                    expected_offset: PACK_HEADER_LEN_V1,
+                    actual_pack: pack_id,
+                    actual_offset: offset,
                 });
             }
 
-            let prepare_size = usize::try_from(prepare_len)
-                .map_err(|_| RecoveryError::Arithmetic("prepare allocation"))?;
-            let mut prepare_bytes = Vec::new();
-            prepare_bytes.try_reserve_exact(prepare_size).map_err(|_| {
-                RecoveryError::Wal(LogPackFormatError::ResourceLimit {
-                    resource: "prepare allocation bytes",
-                    limit: wal_limits.max_record_bytes,
-                    attempted: prepare_len,
-                })
-            })?;
-            prepare_bytes.resize(prepare_size, 0);
-            prepare_bytes[..TRANSACTION_PREPARE_HEADER_LEN_V1 as usize].copy_from_slice(&prefix);
-            reader
-                .read_exact_at(
-                    prefix_end,
-                    &mut prepare_bytes[TRANSACTION_PREPARE_HEADER_LEN_V1 as usize..],
-                )
-                .map_err(RecoveryError::Read)?;
-            let prepare = TransactionPrepareRecordViewV1::parse(&prepare_bytes, wal_limits)?;
-            if prepare.sequence() != expected_sequence {
+            let (
+                prepare_len,
+                prepare_sequence,
+                prepare_store,
+                prepare_profile,
+                prepare_base,
+                target_state,
+                commit,
+                commit_len,
+            ) = match prepare_kind {
+                PrepareRecordKindV1::Incremental => {
+                    transactions =
+                        limits.checked_charge(DurableLimitKind::Transactions, transactions, 1)?;
+                    let prefix_end = offset
+                        .checked_add(TRANSACTION_PREPARE_HEADER_LEN_V1)
+                        .ok_or(RecoveryError::Arithmetic("incremental prepare prefix end"))?;
+                    if prefix_end > durable_tail {
+                        return Err(RecoveryError::AuthorizedTailCutsRecord {
+                            pack: pack_id,
+                            record_offset: offset,
+                            required_end: prefix_end,
+                            durable_tail,
+                        });
+                    }
+                    let mut prefix = [0u8; TRANSACTION_PREPARE_HEADER_LEN_V1 as usize];
+                    prefix[..PREPARE_DISCRIMINATOR_LEN_V1 as usize].copy_from_slice(&discriminator);
+                    reader
+                        .read_exact_at(
+                            discriminator_end,
+                            &mut prefix[PREPARE_DISCRIMINATOR_LEN_V1 as usize..],
+                        )
+                        .map_err(RecoveryError::Read)?;
+                    let preflight = preflight_prepare_record_v1(&prefix, wal_limits)?;
+                    object_records = limits.checked_charge(
+                        DurableLimitKind::ObjectRecords,
+                        object_records,
+                        preflight.object_count(),
+                    )?;
+                    let prepare_len = preflight.record_len();
+                    let prepare_end = offset
+                        .checked_add(prepare_len)
+                        .ok_or(RecoveryError::Arithmetic("incremental prepare end"))?;
+                    let commit_discriminator = require_commit_pair(
+                        &reader,
+                        pack_id,
+                        prepare_end,
+                        durable_tail,
+                        prepare_kind,
+                        CommitRecordKindV1::Incremental,
+                    )?;
+                    let commit_end = prepare_end
+                        .checked_add(TRANSACTION_COMMIT_RECORD_LEN_V1)
+                        .ok_or(RecoveryError::Arithmetic("incremental commit end"))?;
+                    if commit_end > durable_tail {
+                        return Err(RecoveryError::AuthorizedTailCutsRecord {
+                            pack: pack_id,
+                            record_offset: offset,
+                            required_end: commit_end,
+                            durable_tail,
+                        });
+                    }
+
+                    let prepare_size = usize::try_from(prepare_len)
+                        .map_err(|_| RecoveryError::Arithmetic("prepare allocation"))?;
+                    let mut prepare_bytes = Vec::new();
+                    prepare_bytes.try_reserve_exact(prepare_size).map_err(|_| {
+                        RecoveryError::Wal(LogPackFormatError::ResourceLimit {
+                            resource: "prepare allocation bytes",
+                            limit: wal_limits.max_record_bytes,
+                            attempted: prepare_len,
+                        })
+                    })?;
+                    prepare_bytes.resize(prepare_size, 0);
+                    prepare_bytes[..TRANSACTION_PREPARE_HEADER_LEN_V1 as usize]
+                        .copy_from_slice(&prefix);
+                    reader
+                        .read_exact_at(
+                            prefix_end,
+                            &mut prepare_bytes[TRANSACTION_PREPARE_HEADER_LEN_V1 as usize..],
+                        )
+                        .map_err(RecoveryError::Read)?;
+                    let prepare =
+                        TransactionPrepareRecordViewV1::parse(&prepare_bytes, wal_limits)?;
+                    let mut raw_commit = [0u8; TRANSACTION_COMMIT_RECORD_LEN_V1 as usize];
+                    raw_commit[..COMMIT_DISCRIMINATOR_LEN_V1 as usize]
+                        .copy_from_slice(&commit_discriminator);
+                    let commit_body_offset =
+                        prepare_end
+                            .checked_add(COMMIT_DISCRIMINATOR_LEN_V1)
+                            .ok_or(RecoveryError::Arithmetic("incremental commit body offset"))?;
+                    reader
+                        .read_exact_at(
+                            commit_body_offset,
+                            &mut raw_commit[COMMIT_DISCRIMINATOR_LEN_V1 as usize..],
+                        )
+                        .map_err(RecoveryError::Read)?;
+                    let incremental_commit = TransactionCommitViewV1::parse(&raw_commit)?;
+                    incremental_commit.verify_prepare(prepare)?;
+
+                    for object in prepare.objects() {
+                        match object.disposition() {
+                            LogPackObjectDispositionV1::Data => {
+                                index_records = index_records
+                                    .checked_add(1)
+                                    .ok_or(RecoveryError::Arithmetic("index record count"))?;
+                                limits.require(DurableLimitKind::IndexRecords, index_records)?;
+                                let record = ObjectIndexRecordV1::from_data_view(
+                                    pack_id,
+                                    offset,
+                                    prepare.sequence(),
+                                    object,
+                                )?;
+                                expected_index_tail = expected_index_tail
+                                    .checked_add(INDEX_RECORD_LEN_V1)
+                                    .ok_or(RecoveryError::Arithmetic("index tail"))?;
+                                limits
+                                    .require(DurableLimitKind::IndexBytes, expected_index_tail)?;
+                                index_sink.data(record)?;
+                            }
+                            LogPackObjectDispositionV1::Reuse if generation_start => {
+                                return Err(RecoveryError::GenerationCheckpointReuse(
+                                    object.reference(),
+                                ));
+                            }
+                            LogPackObjectDispositionV1::Reuse => {
+                                index_sink.reuse(object.reference(), prepare.sequence())?;
+                            }
+                        }
+                    }
+                    (
+                        prepare_len,
+                        prepare.sequence(),
+                        prepare.store_id(),
+                        prepare.receipt().profile_id(),
+                        Some(prepare.receipt().base()),
+                        prepare.receipt().target(),
+                        TerminalCommitViewV1::Incremental(incremental_commit),
+                        TRANSACTION_COMMIT_RECORD_LEN_V1,
+                    )
+                }
+                PrepareRecordKindV1::GenerationCheckpoint => {
+                    checkpoints = checkpoints
+                        .checked_add(1)
+                        .ok_or(RecoveryError::Arithmetic("checkpoint record count"))?;
+                    let prefix_end = offset
+                        .checked_add(GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1)
+                        .ok_or(RecoveryError::Arithmetic("checkpoint prepare prefix end"))?;
+                    if prefix_end > durable_tail {
+                        return Err(RecoveryError::AuthorizedTailCutsRecord {
+                            pack: pack_id,
+                            record_offset: offset,
+                            required_end: prefix_end,
+                            durable_tail,
+                        });
+                    }
+                    let mut prefix = [0u8; GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1 as usize];
+                    prefix[..PREPARE_DISCRIMINATOR_LEN_V1 as usize].copy_from_slice(&discriminator);
+                    reader
+                        .read_exact_at(
+                            discriminator_end,
+                            &mut prefix[PREPARE_DISCRIMINATOR_LEN_V1 as usize..],
+                        )
+                        .map_err(RecoveryError::Read)?;
+                    let preflight =
+                        preflight_generation_checkpoint_prepare_v1(&prefix, wal_limits)?;
+                    if preflight.sequence() != expected_sequence {
+                        return Err(RecoveryError::Sequence {
+                            expected: expected_sequence,
+                            actual: preflight.sequence(),
+                        });
+                    }
+                    if preflight.store_id() != expected_store {
+                        return Err(RecoveryError::Store {
+                            expected: expected_store,
+                            actual: preflight.store_id(),
+                        });
+                    }
+                    if preflight.descriptor().profile_id() != expected_profile {
+                        return Err(RecoveryError::Profile {
+                            expected: expected_profile,
+                            actual: preflight.descriptor().profile_id(),
+                        });
+                    }
+                    let prepare_len = preflight.record_len();
+                    let prepare_end = offset
+                        .checked_add(prepare_len)
+                        .ok_or(RecoveryError::Arithmetic("checkpoint prepare end"))?;
+                    let commit_discriminator = require_commit_pair(
+                        &reader,
+                        pack_id,
+                        prepare_end,
+                        durable_tail,
+                        prepare_kind,
+                        CommitRecordKindV1::GenerationCheckpoint,
+                    )?;
+                    let commit_end = prepare_end
+                        .checked_add(GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1)
+                        .ok_or(RecoveryError::Arithmetic("checkpoint commit end"))?;
+                    if commit_end > durable_tail {
+                        return Err(RecoveryError::AuthorizedTailCutsRecord {
+                            pack: pack_id,
+                            record_offset: offset,
+                            required_end: commit_end,
+                            durable_tail,
+                        });
+                    }
+                    let mut raw_commit = [0u8; GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1 as usize];
+                    raw_commit[..COMMIT_DISCRIMINATOR_LEN_V1 as usize]
+                        .copy_from_slice(&commit_discriminator);
+                    let commit_body_offset =
+                        prepare_end
+                            .checked_add(COMMIT_DISCRIMINATOR_LEN_V1)
+                            .ok_or(RecoveryError::Arithmetic("checkpoint commit body offset"))?;
+                    reader
+                        .read_exact_at(
+                            commit_body_offset,
+                            &mut raw_commit[COMMIT_DISCRIMINATOR_LEN_V1 as usize..],
+                        )
+                        .map_err(RecoveryError::Read)?;
+                    let checkpoint_commit = GenerationCheckpointCommitViewV1::parse(&raw_commit)?;
+                    if checkpoint_commit.sequence() != expected_sequence {
+                        return Err(RecoveryError::Sequence {
+                            expected: expected_sequence,
+                            actual: checkpoint_commit.sequence(),
+                        });
+                    }
+                    if checkpoint_commit.store_id() != expected_store {
+                        return Err(RecoveryError::Store {
+                            expected: expected_store,
+                            actual: checkpoint_commit.store_id(),
+                        });
+                    }
+                    if checkpoint_commit.descriptor() != preflight.descriptor() {
+                        return Err(RecoveryError::Wal(
+                            LogPackFormatError::CheckpointDescriptorMismatch,
+                        ));
+                    }
+                    if checkpoint_commit.previous_commit() != previous_commit {
+                        return Err(RecoveryError::PreviousCommit {
+                            expected: previous_commit,
+                            actual: checkpoint_commit.previous_commit(),
+                        });
+                    }
+                    let expected_prepare_address =
+                        LogPackAddress::from_pack(pack_id, offset, prepare_len)?;
+                    if checkpoint_commit.prepare_address() != expected_prepare_address {
+                        return Err(RecoveryError::PrepareAddress {
+                            expected: expected_prepare_address,
+                            actual: checkpoint_commit.prepare_address(),
+                        });
+                    }
+                    if checkpoint_commit.publication().first_live_pack() != first_live_pack.get() {
+                        return Err(RecoveryError::PublicationFirstLive {
+                            expected: first_live_pack.get(),
+                            actual: checkpoint_commit.publication().first_live_pack(),
+                        });
+                    }
+                    if checkpoint_commit.publication().index_generation() != index_generation {
+                        return Err(RecoveryError::PublicationIndexGeneration {
+                            expected: index_generation,
+                            actual: checkpoint_commit.publication().index_generation(),
+                        });
+                    }
+                    let checkpoint_index_bytes = preflight
+                        .descriptor()
+                        .data_objects()
+                        .checked_mul(INDEX_RECORD_LEN_V1)
+                        .ok_or(RecoveryError::Arithmetic("checkpoint exact index record bytes"))?;
+                    let checkpoint_index_tail = expected_index_tail
+                        .checked_add(checkpoint_index_bytes)
+                        .ok_or(RecoveryError::Arithmetic("checkpoint exact index tail"))?;
+                    let _checkpoint_object_records = limits.checked_charge(
+                        DurableLimitKind::ObjectRecords,
+                        object_records,
+                        preflight.descriptor().data_objects(),
+                    )?;
+                    let checkpoint_index_records = index_records
+                        .checked_add(preflight.descriptor().data_objects())
+                        .ok_or(RecoveryError::Arithmetic(
+                            "checkpoint projected index record count",
+                        ))?;
+                    limits.require(DurableLimitKind::IndexRecords, checkpoint_index_records)?;
+                    limits.require(DurableLimitKind::IndexBytes, checkpoint_index_tail)?;
+                    if checkpoint_commit.publication().durable_index_tail() != checkpoint_index_tail
+                    {
+                        return Err(RecoveryError::IndexTail {
+                            expected: checkpoint_index_tail,
+                            actual: checkpoint_commit.publication().durable_index_tail(),
+                        });
+                    }
+                    if checkpoint_scratch.is_none() {
+                        let mut scratch = Vec::new();
+                        scratch
+                            .try_reserve_exact(CHECKPOINT_STREAM_SCRATCH_LEN)
+                            .map_err(|_| RecoveryError::CheckpointScratchAllocation {
+                                bytes: CHECKPOINT_STREAM_SCRATCH_LEN as u64,
+                            })?;
+                        scratch.resize(CHECKPOINT_STREAM_SCRATCH_LEN, 0);
+                        checkpoint_scratch = Some(scratch);
+                    }
+                    let identity = stream_generation_checkpoint_prepare(
+                        &reader,
+                        pack_id,
+                        offset,
+                        &prefix,
+                        preflight,
+                        limits,
+                        wal_limits,
+                        &mut object_records,
+                        &mut index_records,
+                        &mut expected_index_tail,
+                        &mut index_sink,
+                        checkpoint_scratch
+                            .as_deref_mut()
+                            .expect("checkpoint branch initialized its bounded scratch"),
+                    )?;
+                    checkpoint_commit.verify_prepare(identity)?;
+                    (
+                        prepare_len,
+                        identity.sequence(),
+                        identity.store_id(),
+                        identity.descriptor().profile_id(),
+                        None,
+                        identity.descriptor().state(),
+                        TerminalCommitViewV1::GenerationCheckpoint(checkpoint_commit),
+                        GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+                    )
+                }
+            };
+
+            if prepare_sequence != expected_sequence {
                 return Err(RecoveryError::Sequence {
                     expected: expected_sequence,
-                    actual: prepare.sequence(),
+                    actual: prepare_sequence,
                 });
             }
-            if prepare.store_id() != expected_store {
+            if prepare_store != expected_store {
                 return Err(RecoveryError::Store {
                     expected: expected_store,
-                    actual: prepare.store_id(),
+                    actual: prepare_store,
                 });
             }
-            if prepare.receipt().profile_id() != expected_profile {
+            if prepare_profile != expected_profile {
                 return Err(RecoveryError::Profile {
                     expected: expected_profile,
-                    actual: prepare.receipt().profile_id(),
+                    actual: prepare_profile,
                 });
             }
-            if let Some(expected_base) = previous_state {
-                if prepare.receipt().base() != expected_base {
+            if let (Some(expected_base), Some(actual_base)) = (previous_state, prepare_base) {
+                if actual_base != expected_base {
                     return Err(RecoveryError::StateContinuity {
                         expected: expected_base,
-                        actual: prepare.receipt().base(),
+                        actual: actual_base,
                     });
                 }
             }
-
-            let mut commit_bytes = [0u8; TRANSACTION_COMMIT_RECORD_LEN_V1 as usize];
-            reader
-                .read_exact_at(prepare_end, &mut commit_bytes)
-                .map_err(RecoveryError::Read)?;
-            let commit = TransactionCommitViewV1::parse(&commit_bytes)?;
-            commit.verify_prepare(prepare)?;
             if commit.previous_commit() != previous_commit {
                 return Err(RecoveryError::PreviousCommit {
                     expected: previous_commit,
                     actual: commit.previous_commit(),
                 });
             }
+            let prepare_end = offset
+                .checked_add(prepare_len)
+                .ok_or(RecoveryError::Arithmetic("prepare end"))?;
             let expected_prepare_address = LogPackAddress::from_pack(pack_id, offset, prepare_len)?;
             if commit.prepare_address() != expected_prepare_address {
                 return Err(RecoveryError::PrepareAddress {
@@ -740,37 +1399,6 @@ where
                 });
             }
 
-            // A generation begins with a self-contained checkpoint in its
-            // first live pack. Because the rebuilt index is empty here, REUSE
-            // would depend on a retired generation and is rejected explicitly.
-            let generation_checkpoint = pack_id == first_live_pack && offset == PACK_HEADER_LEN_V1;
-            for object in prepare.objects() {
-                match object.disposition() {
-                    LogPackObjectDispositionV1::Data => {
-                        index_records = index_records
-                            .checked_add(1)
-                            .ok_or(RecoveryError::Arithmetic("index record count"))?;
-                        limits.require(DurableLimitKind::IndexRecords, index_records)?;
-                        let record = ObjectIndexRecordV1::from_data_view(
-                            pack_id,
-                            offset,
-                            prepare.sequence(),
-                            object,
-                        )?;
-                        expected_index_tail = expected_index_tail
-                            .checked_add(INDEX_RECORD_LEN_V1)
-                            .ok_or(RecoveryError::Arithmetic("index tail"))?;
-                        limits.require(DurableLimitKind::IndexBytes, expected_index_tail)?;
-                        index_sink.data(record)?;
-                    }
-                    LogPackObjectDispositionV1::Reuse if generation_checkpoint => {
-                        return Err(RecoveryError::GenerationCheckpointReuse(object.reference()));
-                    }
-                    LogPackObjectDispositionV1::Reuse => {
-                        index_sink.reuse(object.reference(), prepare.sequence())?;
-                    }
-                }
-            }
             if commit.durable_index_tail() != expected_index_tail {
                 return Err(RecoveryError::IndexTail {
                     expected: expected_index_tail,
@@ -779,15 +1407,13 @@ where
             }
 
             previous_commit = commit.digest();
-            previous_state = Some(commit.receipt().target());
+            previous_state = Some(target_state);
             last_sequence = Some(expected_sequence);
-            terminal_address = Some(LogPackAddress::from_pack(
-                pack_id,
-                prepare_end,
-                TRANSACTION_COMMIT_RECORD_LEN_V1,
-            )?);
-            terminal_commit_bytes = Some(commit_bytes);
-            offset = commit_end;
+            terminal_address = Some(LogPackAddress::from_pack(pack_id, prepare_end, commit_len)?);
+            terminal_commit = Some(commit);
+            offset = prepare_end
+                .checked_add(commit_len)
+                .ok_or(RecoveryError::Arithmetic("commit end"))?;
             if offset < durable_tail {
                 expected_sequence = expected_sequence.successor()?;
             }
@@ -813,7 +1439,7 @@ where
 
     let terminal = previous_terminal.ok_or(RecoveryError::EmptyPackSet)?;
     let terminal_address = terminal_address.ok_or(RecoveryError::EmptyPackSet)?;
-    let terminal_commit_bytes = terminal_commit_bytes.ok_or(RecoveryError::EmptyPackSet)?;
+    let terminal_commit = terminal_commit.ok_or(RecoveryError::EmptyPackSet)?;
     let state = previous_state.ok_or(RecoveryError::EmptyPackSet)?;
     let index = index_sink.finish()?;
     Ok(ScannedPackChainV1 {
@@ -823,10 +1449,11 @@ where
         state,
         terminal,
         terminal_address,
-        terminal_commit_bytes,
+        terminal_commit,
         index,
         expected_index_tail,
         transactions,
+        checkpoints,
         object_records,
         scanned_bytes,
     })

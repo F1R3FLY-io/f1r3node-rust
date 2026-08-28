@@ -1,7 +1,9 @@
 use std::convert::Infallible;
 
+use super::durable_recovery::valid_checkpoint_image;
 use super::support::{TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, synthetic_ref};
 use super::transaction_sealing::{base_state, data_batch, seal_data};
+use crate::rspace::persistence::wal::GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1;
 use crate::rspace::persistence::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalObjectStore, CatalogAuthorityTokenV1,
     CatalogPackStateV1, CatalogSelectionV1, CatalogSlotV1, CommittedObjectComparison,
@@ -131,6 +133,41 @@ fn slot_round_trip_and_adjacent_epoch_selection_are_exact() {
     assert_eq!(selected.inactive_slot_index(), 0);
     assert_eq!(selected.slot(), second);
     assert_eq!(selected.ignored_corrupt_slot(), None);
+}
+
+#[test]
+fn catalog_accepts_only_the_two_typed_terminal_commit_lengths() {
+    let checkpoint = valid_checkpoint_image();
+    assert_eq!(
+        CatalogSlotV1::parse(&checkpoint.catalog.encode()).unwrap(),
+        Some(checkpoint.catalog),
+    );
+
+    for rejected in [383, 385, 391, 393] {
+        let address = LogPackAddress::new(
+            checkpoint.catalog.active_pack(),
+            checkpoint.catalog.commit_address().offset(),
+            rejected,
+        )
+        .unwrap();
+        assert!(matches!(
+            CatalogSlotV1::new(
+                checkpoint.catalog.store_id(),
+                checkpoint.catalog.epoch(),
+                checkpoint.catalog.state(),
+                checkpoint.catalog.profile_id(),
+                checkpoint.catalog.commit_digest(),
+                checkpoint.catalog.commit_sequence(),
+                address,
+                checkpoint.catalog.pack(),
+            ),
+            Err(DurableFormatError::CatalogCommitLength {
+                incremental: TRANSACTION_COMMIT_RECORD_LEN_V1,
+                checkpoint: GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+                actual,
+            }) if actual == rejected
+        ));
+    }
 }
 
 #[test]

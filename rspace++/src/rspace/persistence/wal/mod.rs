@@ -10,6 +10,7 @@ mod checkpoint;
 mod checkpoint_commit;
 mod disposition;
 mod error;
+mod terminal;
 mod types;
 
 #[cfg(test)]
@@ -40,6 +41,7 @@ pub use disposition::{
     LogPackObjectPlanError, LogPackObjectPlanV1,
 };
 pub use error::{LogPackFormatError, LogPackWriteError};
+pub(crate) use terminal::TerminalCommitViewV1;
 pub use types::{
     CommitPublicationV1, LogPackAddress, LogPackDecodeLimits, LogPackSequence, PackId,
 };

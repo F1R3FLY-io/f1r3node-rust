@@ -6,11 +6,15 @@ use std::path::Path;
 
 use shared::rust::test_scratch;
 
-use super::durable_recovery::{catalog_image, limits, valid_two_pack_image};
+use super::durable_recovery::{
+    catalog_image, limits, malformed_checkpoint_image, valid_checkpoint_image, valid_two_pack_image,
+};
+use super::support::TestSemanticProfile;
 use crate::rspace::persistence::durable::{
-    DurableDirectoryV1, DurableIoError, DurableIoFailpointV1, DurableStartupErrorV1,
-    DurableStartupHookPointV1, IndexBindingDispositionV1, arm_durable_io_failpoint,
-    arm_durable_startup_hook, committed_index_constructions, index_file_name, pack_file_name,
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1, DurableIoError,
+    DurableIoFailpointV1, DurableStartupErrorV1, DurableStartupHookPointV1,
+    IndexBindingDispositionV1, arm_durable_io_failpoint, arm_durable_startup_hook,
+    committed_index_constructions, index_file_name, pack_file_name,
     reset_committed_index_constructions,
 };
 use crate::rspace::persistence::{
@@ -42,6 +46,13 @@ fn install_valid_store(root: &Path) -> (u64, u64) {
     (image.first.len() as u64 + image.second.len() as u64, image.transactions)
 }
 
+fn install_checkpoint_store(root: &Path) -> super::durable_recovery::CheckpointPackImage {
+    let image = valid_checkpoint_image();
+    write_owner_only(root.join("catalog.v1").as_path(), &catalog_image(image.catalog));
+    write_owner_only(root.join(pack_file_name(PackId::GENESIS)).as_path(), &image.pack);
+    image
+}
+
 fn recover(
     root: &Path,
     limits: DurableLimits,
@@ -60,6 +71,68 @@ fn recover_error(root: &Path, limits: DurableLimits) -> DurableStartupErrorV1 {
         Err(error) => error,
         Ok(_) => panic!("durable startup unexpectedly succeeded"),
     }
+}
+
+#[test]
+fn checkpoint_index_is_rebuilt_byte_exactly_and_verified_on_reopen() {
+    let scratch = test_scratch::acquire("rspace-durable-startup-checkpoint-");
+    let image = install_checkpoint_store(scratch.path());
+    let index_path = scratch
+        .path()
+        .join(index_file_name(IndexGenerationV1::FIRST));
+
+    reset_committed_index_constructions();
+    let rebuilt = recover(scratch.path(), limits());
+    assert_eq!(committed_index_constructions(), 1);
+    assert_eq!(rebuilt.recovered().disposition(), IndexBindingDispositionV1::RebuiltAndVerified,);
+    assert_eq!(rebuilt.recovered().transactions(), 0);
+    assert_eq!(rebuilt.recovered().checkpoints(), 1);
+    assert_eq!(rebuilt.recovered().state(), image.catalog.state());
+    assert_eq!(rebuilt.recovered().terminal_address(), image.commit_address);
+    assert_eq!(fs::read(&index_path).unwrap(), image.canonical_index);
+    let rebuild_work = rebuilt.recovered().startup_work();
+    assert_eq!(rebuild_work.wal_scan_passes(), 3);
+    assert_eq!(rebuild_work.wal_bytes_read(), 3 * image.pack.len() as u64);
+    assert_eq!(rebuild_work.index_bytes_written(), image.canonical_index.len() as u64,);
+    drop(rebuilt);
+
+    let verified = recover(scratch.path(), limits());
+    assert_eq!(verified.recovered().disposition(), IndexBindingDispositionV1::VerifiedExisting,);
+    assert_eq!(verified.recovered().transactions(), 0);
+    assert_eq!(verified.recovered().checkpoints(), 1);
+    assert_eq!(fs::read(&index_path).unwrap(), image.canonical_index);
+    let verify_work = verified.recovered().startup_work();
+    assert_eq!(verify_work.wal_scan_passes(), 1);
+    assert_eq!(verify_work.wal_bytes_read(), image.pack.len() as u64);
+    assert_eq!(verify_work.index_bytes_written(), 0);
+}
+
+#[test]
+fn checkpoint_physical_authenticity_never_bypasses_semantic_admission() {
+    let scratch = test_scratch::acquire("rspace-durable-checkpoint-admission-");
+    let image = malformed_checkpoint_image();
+    write_owner_only(scratch.path().join("catalog.v1").as_path(), &catalog_image(image.catalog));
+    write_owner_only(
+        scratch
+            .path()
+            .join(pack_file_name(PackId::GENESIS))
+            .as_path(),
+        &image.pack,
+    );
+
+    let physical = recover(scratch.path(), limits());
+    assert_eq!(physical.recovered().checkpoints(), 1);
+    assert_eq!(physical.recovered().object_records(), image.records.len() as u64);
+    drop(physical);
+
+    let result = DurableDirectoryV1::open(scratch.path())
+        .unwrap()
+        .recover_and_admit_v1::<TestSemanticProfile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        );
+    assert!(matches!(result, Err(DurableAdmissionErrorV1::Closure(_))));
 }
 
 #[test]

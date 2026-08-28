@@ -157,6 +157,23 @@ impl GenerationCheckpointPrepareIdentityV1 {
         }
     }
 
+    /// Reconstitute the same compact identity after a bounded positional
+    /// scanner has authenticated the complete record without materializing it.
+    pub(crate) const fn from_streamed(
+        preflight: GenerationCheckpointPreparePreflightV1,
+        digest: PhysicalDigest,
+        crc32c: u32,
+    ) -> Self {
+        Self {
+            sequence: preflight.sequence,
+            store_id: preflight.store_id,
+            descriptor: GenerationCheckpointDescriptorV1::from_view(preflight.descriptor),
+            record_len: preflight.record_len,
+            digest,
+            crc32c,
+        }
+    }
+
     pub(crate) const fn sequence(self) -> LogPackSequence { self.sequence }
 
     pub(crate) const fn store_id(self) -> StoreId { self.store_id }

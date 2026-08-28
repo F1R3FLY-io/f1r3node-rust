@@ -37,7 +37,8 @@ pub enum DurableFormatError {
         active: u64,
     },
     CatalogCommitLength {
-        expected: u64,
+        incremental: u64,
+        checkpoint: u64,
         actual: u64,
     },
     CatalogCommitBeforePackHeader {
@@ -156,9 +157,14 @@ impl Display for DurableFormatError {
             Self::CatalogCommitSegment { commit, active } => {
                 write!(formatter, "catalog commit segment {commit} is not active pack {active}")
             }
-            Self::CatalogCommitLength { expected, actual } => write!(
+            Self::CatalogCommitLength {
+                incremental,
+                checkpoint,
+                actual,
+            } => write!(
                 formatter,
-                "catalog commit length {actual} does not equal V1 length {expected}"
+                "catalog commit length {actual} is neither V1 incremental length {incremental} \
+                 nor V1 checkpoint length {checkpoint}"
             ),
             Self::CatalogCommitBeforePackHeader { offset, header_len } => write!(
                 formatter,

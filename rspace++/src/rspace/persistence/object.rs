@@ -741,6 +741,32 @@ impl CanonicalObjectKind {
             Self::RetentionManifest => "retention-manifest",
         }
     }
+
+    /// Classify only the fixed canonical domain prefix. This is sufficient for
+    /// bounded physical recovery to recognize checkpoint-designated objects;
+    /// complete canonical and semantic parsing remains mandatory admission.
+    pub(crate) fn from_domain_prefix(bytes: &[u8]) -> Result<Self, CanonicalFormatError> {
+        let Some(domain) = bytes.get(..OBJECT_DOMAIN_LEN) else {
+            return Err(CanonicalFormatError::Truncated {
+                offset: 0,
+                needed: OBJECT_DOMAIN_LEN,
+                available: bytes.len(),
+            });
+        };
+        if domain == DAG_NODE_DOMAIN {
+            Ok(Self::DagNode)
+        } else if domain == DAG_BLOB_DOMAIN {
+            Ok(Self::Blob)
+        } else if domain == SEMANTIC_MANIFEST_DOMAIN {
+            Ok(Self::SemanticManifest)
+        } else if domain == ACCELERATOR_MANIFEST_DOMAIN {
+            Ok(Self::AcceleratorManifest)
+        } else if domain == RETENTION_MANIFEST_DOMAIN {
+            Ok(Self::RetentionManifest)
+        } else {
+            Err(CanonicalFormatError::UnknownObjectDomain)
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -754,25 +780,18 @@ pub enum CanonicalObjectView<'a> {
 
 impl<'a> CanonicalObjectView<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, CanonicalFormatError> {
-        let Some(domain) = bytes.get(..OBJECT_DOMAIN_LEN) else {
-            return Err(CanonicalFormatError::Truncated {
-                offset: 0,
-                needed: OBJECT_DOMAIN_LEN,
-                available: bytes.len(),
-            });
-        };
-        if domain == DAG_NODE_DOMAIN {
-            Ok(Self::DagNode(CanonicalDagNodeView::parse(bytes)?))
-        } else if domain == DAG_BLOB_DOMAIN {
-            Ok(Self::Blob(CanonicalBlobView::parse(bytes)?))
-        } else if domain == SEMANTIC_MANIFEST_DOMAIN {
-            Ok(Self::SemanticManifest(SemanticStateManifestView::parse(bytes)?))
-        } else if domain == ACCELERATOR_MANIFEST_DOMAIN {
-            Ok(Self::AcceleratorManifest(AcceleratorManifestView::parse(bytes)?))
-        } else if domain == RETENTION_MANIFEST_DOMAIN {
-            Ok(Self::RetentionManifest(RetentionManifestView::parse(bytes)?))
-        } else {
-            Err(CanonicalFormatError::UnknownObjectDomain)
+        match CanonicalObjectKind::from_domain_prefix(bytes)? {
+            CanonicalObjectKind::DagNode => Ok(Self::DagNode(CanonicalDagNodeView::parse(bytes)?)),
+            CanonicalObjectKind::Blob => Ok(Self::Blob(CanonicalBlobView::parse(bytes)?)),
+            CanonicalObjectKind::SemanticManifest => {
+                Ok(Self::SemanticManifest(SemanticStateManifestView::parse(bytes)?))
+            }
+            CanonicalObjectKind::AcceleratorManifest => {
+                Ok(Self::AcceleratorManifest(AcceleratorManifestView::parse(bytes)?))
+            }
+            CanonicalObjectKind::RetentionManifest => {
+                Ok(Self::RetentionManifest(RetentionManifestView::parse(bytes)?))
+            }
         }
     }
 
