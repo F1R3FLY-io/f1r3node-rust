@@ -29,7 +29,20 @@ use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::merging::dag_merger;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
-use crate::rust::metrics_constants::{BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE};
+use crate::rust::metrics_constants::{
+    BLOCK_PROCESSING_REPLAY_TIME_METRIC, CASPER_METRICS_SOURCE,
+    PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC,
+    PARENTS_POST_STATE_BASE_LINEAGE_WALK_TIME_METRIC, PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC,
+    PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC,
+    PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC, PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC,
+    PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC, PARENTS_POST_STATE_POST_MERGE_TIME_METRIC,
+    PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC,
+    PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BLOCKS_METRIC,
+    PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BUILD_TIME_METRIC,
+    PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC,
+    PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC,
+    PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC,
+};
 use crate::rust::util::proto_util;
 use crate::rust::BlockProcessing;
 
@@ -1250,6 +1263,9 @@ pub async fn compute_parents_post_state(
                 buffer_populated: rejected_deploy_buffer.is_some(),
             };
             if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
+                let cache_lookup_elapsed = cache_lookup_started.elapsed();
+                metrics::histogram!(PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "result" => "hit")
+                    .record(cache_lookup_elapsed.as_secs_f64());
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
@@ -1261,7 +1277,7 @@ pub async fn compute_parents_post_state(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
                     "compute_parents_post_state timing: path=cache_hit, parents={}, cache_lookup_ms={}, total_ms={}",
                     cache_key.sorted_parent_hashes.len(),
-                    cache_lookup_started.elapsed().as_millis(),
+                    cache_lookup_elapsed.as_millis(),
                     total_started.elapsed().as_millis()
                 );
                 tracing::debug!(
@@ -1275,7 +1291,10 @@ pub async fn compute_parents_post_state(
                 );
                 return Ok(cached);
             }
-            let cache_lookup_ms = cache_lookup_started.elapsed().as_millis();
+            let cache_lookup_elapsed = cache_lookup_started.elapsed();
+            let cache_lookup_ms = cache_lookup_elapsed.as_millis();
+            metrics::histogram!(PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "result" => "miss")
+                .record(cache_lookup_elapsed.as_secs_f64());
 
             // Function to get or compute BlockIndex for each parent block hash
             let block_index_f = |v: &BlockHash| -> Result<BlockIndex, CasperError> {
@@ -1343,7 +1362,10 @@ pub async fn compute_parents_post_state(
                         .await?
                 }
             };
-            let floor_derive_ms = floor_derive_started.elapsed().as_millis();
+            let floor_derive_elapsed = floor_derive_started.elapsed();
+            let floor_derive_ms = floor_derive_elapsed.as_millis();
+            metrics::histogram!(PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(floor_derive_elapsed.as_secs_f64());
 
             // The merge base is the MAIN PARENT, not the floor. A block extends
             // its main parent on the spine, so building its state from anywhere
@@ -1378,6 +1400,7 @@ pub async fn compute_parents_post_state(
             // re-collects exactly what the base is missing — the repair the old
             // floor-wide rebase performed on every merge, now paid for only
             // when it is needed.
+            let base_holds_floor_started = std::time::Instant::now();
             let mut containment_memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
             let base_holds_floor = crate::rust::finality::floor::state_contains(
                 &s.dag,
@@ -1392,6 +1415,8 @@ pub async fn compute_parents_post_state(
                 },
                 &mut containment_memo,
             )?;
+            metrics::histogram!(PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(base_holds_floor_started.elapsed().as_secs_f64());
             // The BASE moves with the anchor, not just the scope. Widening the
             // scope alone is not enough: the base's own content cannot be
             // adjudicated away, so a settled chain re-collected into scope would
@@ -1417,6 +1442,7 @@ pub async fn compute_parents_post_state(
             // contribution. Without that bound a genesis co-parent (one bonded
             // validator that has not spoken) makes "seen by every other parent"
             // unsatisfiable and the walk runs to genesis.
+            let base_lineage_walk_started = std::time::Instant::now();
             let mut base_lineage_blocks: HashSet<BlockHash> = HashSet::new();
             let mut cursor = Some(scope_anchor_hash.clone());
             while let Some(hash) = cursor {
@@ -1440,6 +1466,8 @@ pub async fn compute_parents_post_state(
                 base_lineage_blocks.insert(hash.clone());
                 cursor = s.dag.main_parent(&hash);
             }
+            metrics::histogram!(PARENTS_POST_STATE_BASE_LINEAGE_WALK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(base_lineage_walk_started.elapsed().as_secs_f64());
 
             let anchor_block = block_store.get(&scope_anchor_hash)?.ok_or_else(|| {
                 CasperError::RuntimeError(format!(
@@ -1489,6 +1517,8 @@ pub async fn compute_parents_post_state(
                 block_in_base_merge_scope(&s.dag, bh, &scope_anchor_hash, scope_anchor_number)
                     .unwrap_or(true)
             });
+            metrics::histogram!(PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(collect_ancestors_started.elapsed().as_secs_f64());
             if tracing::enabled!(target: "f1r3fly.merge.cpps", tracing::Level::DEBUG) {
                 let dropped: Vec<String> = match &pre_filter_blocks {
                     Some(pre) => pre
@@ -1621,6 +1651,7 @@ pub async fn compute_parents_post_state(
                 .chain(base_lineage_blocks.iter())
                 .cloned()
                 .collect();
+            let ensure_mergeable_started = std::time::Instant::now();
             ensure_scope_mergeable_present(
                 block_store,
                 runtime_manager,
@@ -1628,6 +1659,8 @@ pub async fn compute_parents_post_state(
                 &mergeable_required,
             )
             .await?;
+            metrics::histogram!(PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(ensure_mergeable_started.elapsed().as_secs_f64());
             tracing::debug!(
                 target: "f1r3fly.merge.cpps",
                 step = "compute_parents_post_state.ENSURE_MERGEABLE_POST",
@@ -1646,7 +1679,6 @@ pub async fn compute_parents_post_state(
                 disable_late_block_filtering,
                 "merge.cpps: dag_merger::merge begin"
             );
-            let merge_started = std::time::Instant::now();
             // Settled-sig probe for the merge dedup: a sig whose effect is
             // already in the base's committed state has no legitimate scope
             // copy — every one is a stale duplicate no rejection record
@@ -1663,13 +1695,48 @@ pub async fn compute_parents_post_state(
             // but their effects are already in the base and re-applying would
             // double them. The floor context's memo is keyed on the floor and
             // cannot answer this question.
+            // The probe closures run per unique sig from inside the merge, so
+            // the counter handles are registered once here; only the plain
+            // increments run on the hot path.
+            //
+            // Batched settled-sig index (CLAIM-FINALITY-001, C2): the run
+            // 33099406770 telemetry put these probes at 92% of merge_call —
+            // ~30 per-sig lineage walks per merge, each loading full block
+            // bodies. Each closure now builds its applied-sig set with ONE
+            // walk on the first probe (`settled_sigs_of_lineage`, backed by
+            // the per-block lineage-step cache) and answers every probe by
+            // membership. Built lazily so a merge that never probes never
+            // walks; RefCell suffices because the merge is synchronous on
+            // this thread. The FIRST probe's wrapper-counter sample folds
+            // the index build in; the build histograms isolate it, so the
+            // spike stays attributable when reading the telemetry.
+            let settled_probe_calls = metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC, "source" => CASPER_METRICS_SOURCE);
+            let settled_probe_time_ns = metrics::counter!(PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC, "source" => CASPER_METRICS_SOURCE);
+            let base_settled_sigs: std::cell::RefCell<Option<HashSet<Bytes>>> =
+                std::cell::RefCell::new(None);
             let sig_settled_in_base = |sig: &Bytes| -> Result<bool, CasperError> {
-                crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                    block_store,
-                    &main_parent_hash,
-                    sig,
-                    settled_walk_bound,
-                )
+                let probe_started = std::time::Instant::now();
+                let result = (|| {
+                    let mut cell = base_settled_sigs.borrow_mut();
+                    if cell.is_none() {
+                        let build_started = std::time::Instant::now();
+                        let (sigs, walked) =
+                            crate::rust::finality::deploy_lifecycle::settled_sigs_of_lineage(
+                                block_store,
+                                &main_parent_hash,
+                                settled_walk_bound,
+                            )?;
+                        metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(build_started.elapsed().as_secs_f64());
+                        metrics::histogram!(PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                            .record(walked as f64);
+                        *cell = Some(sigs);
+                    }
+                    Ok(cell.as_ref().expect("just built").contains(sig))
+                })();
+                settled_probe_calls.increment(1);
+                settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
+                result
             };
             // Prior-rejection counts (issue #294): kept records from every
             // block this merge can see. The base's main-chain ancestry down
@@ -1686,6 +1753,7 @@ pub async fn compute_parents_post_state(
             // different block availability must not derive different counts
             // from the same parents. The walk reads DAG metadata only; block
             // bodies load once, inside `records_of`.
+            let prior_rejection_started = std::time::Instant::now();
             let prior_rejection_counts = {
                 let mut count_visible: HashSet<BlockHash> = visible_blocks
                     .iter()
@@ -1715,6 +1783,10 @@ pub async fn compute_parents_post_state(
                         .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
                 })?
             };
+            let prior_rejection_elapsed = prior_rejection_started.elapsed();
+            let prior_rejection_counts_ms = prior_rejection_elapsed.as_millis();
+            metrics::histogram!(PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(prior_rejection_elapsed.as_secs_f64());
             // Settled-floor probe for the merge's settled-content protection
             // (#341): the same settled definition as the post-merge
             // `assert_no_settled_rejection` tripwire, evaluated BEFORE
@@ -1722,22 +1794,51 @@ pub async fn compute_parents_post_state(
             // rejected-then-tripped. Derived from the block's frozen
             // justification snapshot (the settled floors), so replay
             // answers identically.
+            // Batched like the base probe, but with the reference loop's
+            // PER-FLOOR short-circuit preserved: `FloorSettledProbe` builds
+            // each floor's applied-sig set lazily the first time the
+            // in-order scan reaches it, so a floor after the answering one
+            // is never read and its unavailability cannot poison the probe.
+            // RefCell suffices for the same reason as the base probe: the
+            // merge invokes the closures synchronously on this thread (the
+            // `&dyn Fn` params of `dag_merger::merge` are not Send/Sync,
+            // and no await point exists between here and the merge call).
+            let floor_probe: std::cell::RefCell<
+                crate::rust::finality::deploy_lifecycle::FloorSettledProbe,
+            > = std::cell::RefCell::new(
+                crate::rust::finality::deploy_lifecycle::FloorSettledProbe::new(
+                    settled_floors
+                        .iter()
+                        .map(|floor| {
+                            (
+                                floor.hash.clone(),
+                                floor
+                                    .block_number
+                                    .saturating_sub(s.on_chain_state.shard_conf.deploy_lifespan),
+                            )
+                        })
+                        .collect(),
+                ),
+            );
             let sig_settled_in_floor = |sig: &Bytes| -> Result<bool, CasperError> {
-                for floor in &settled_floors {
-                    let min_height = floor
-                        .block_number
-                        .saturating_sub(s.on_chain_state.shard_conf.deploy_lifespan);
-                    if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                        block_store,
-                        &floor.hash,
-                        sig,
-                        min_height,
-                    )? {
-                        return Ok(true);
-                    }
+                let probe_started = std::time::Instant::now();
+                let mut probe = floor_probe.borrow_mut();
+                let walked_before = probe.total_walked;
+                let result = probe.settled(block_store, sig);
+                let walked_now = probe.total_walked;
+                if walked_now > walked_before {
+                    // This probe extended the lazy floor index; attribute
+                    // the growth so first-probe spikes stay explainable.
+                    metrics::histogram!(PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BUILD_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                        .record(probe_started.elapsed().as_secs_f64());
+                    metrics::histogram!(PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BLOCKS_METRIC, "source" => CASPER_METRICS_SOURCE)
+                        .record((walked_now - walked_before) as f64);
                 }
-                Ok(false)
+                settled_probe_calls.increment(1);
+                settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
+                result
             };
+            let merge_started = std::time::Instant::now();
             let merger_result = dag_merger::merge(
                 &s.dag,
                 &scope_anchor_hash,
@@ -1757,7 +1858,11 @@ pub async fn compute_parents_post_state(
                 &base_lineage_blocks,
                 &prior_rejection_counts,
             )?;
-            let merge_ms = merge_started.elapsed().as_millis();
+            let merge_elapsed = merge_started.elapsed();
+            let merge_ms = merge_elapsed.as_millis();
+            metrics::histogram!(PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(merge_elapsed.as_secs_f64());
+            let post_merge_started = std::time::Instant::now();
 
             let (state, mut rejected_user_records, rejected_slash_pairs, applied_user_sigs) =
                 merger_result;
@@ -2040,15 +2145,20 @@ pub async fn compute_parents_post_state(
                 "merge.cpps: cache put merged parents-post-state"
             );
             runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
+            let post_merge_elapsed = post_merge_started.elapsed();
+            metrics::histogram!(PARENTS_POST_STATE_POST_MERGE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
+                .record(post_merge_elapsed.as_secs_f64());
             tracing::debug!(
                 target: "f1r3fly.casper.compute_parents_post_state.timing",
-                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
+                "compute_parents_post_state timing: path=merged, parents={}, cache_lookup_ms={}, collect_ancestors_ms={}, flatten_visible_ms={}, floor_derive_ms={}, prior_rejection_counts_ms={}, merge_ms={}, post_merge_ms={}, visible_blocks={}, rejected_deploys={}, rejected_slashes={}, total_ms={}",
                 parents.len(),
                 cache_lookup_ms,
                 collect_ancestors_ms,
                 flatten_visible_ms,
                 floor_derive_ms,
+                prior_rejection_counts_ms,
                 merge_ms,
+                post_merge_elapsed.as_millis(),
                 visible_blocks_len,
                 merged.rejected_user.len(),
                 merged.rejected_slashes.len(),

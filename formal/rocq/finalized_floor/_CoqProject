@@ -26,6 +26,7 @@
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
 #   AdmissionEffectAlignment     (status-record to runtime-effect refinement)
 #   EffectCausalClosure           (least exact-effect rejection closure)
+#   SettledEffectProbe            (settled-effect walk algebra: batched ≡ per-sig, memo soundness)
 #   StateEffectProvenance         (exact accepted/rejected merge-effect recurrence)
 #   StateLineageFinality          (abstract certificate/admission separation)
 #   CertifiedFloorPromotion       (dual-certified all-parent floor discovery)
@@ -55,6 +56,7 @@ theories/FinalizerProgress.v
 theories/BootstrapReplayContext.v
 theories/LocalFaultDeferral.v
 theories/EffectCausalClosure.v
+theories/SettledEffectProbe.v
 theories/StateEffectProvenance.v
 theories/StateLineageFinality.v
 theories/CertifiedFloorPromotion.v

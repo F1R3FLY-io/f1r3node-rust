@@ -105,6 +105,50 @@ pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_EVALUATE_SOURCE_TIME_METRIC: &str =
 pub const BLOCK_REPLAY_SYSDEPLOY_EVAL_CONSUME_RESULT_TIME_METRIC: &str =
     "block.replay.sysdeploy.eval.consume-result.time";
 
+// Per-step breakdown of `compute_parents_post_state`'s full-merge path. The
+// outer stage histogram (`…parents-post-state.time`) dominates block cost in
+// sustained-load soaks while the `dag.merge.*` buckets stay small (issue #24);
+// these attribute the gap. `merge-call` times the `dag_merger::merge` call
+// alone — the prior-rejection-counts walk is timed separately, and the
+// settled-sig probe closures invoked from inside the merge are surfaced by
+// the wrapper counters below.
+pub const PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.cache-lookup.time";
+pub const PARENTS_POST_STATE_FLOOR_DERIVE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.floor-derive.time";
+pub const PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.base-holds-floor.time";
+pub const PARENTS_POST_STATE_BASE_LINEAGE_WALK_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.base-lineage-walk.time";
+pub const PARENTS_POST_STATE_COLLECT_ANCESTORS_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.collect-ancestors.time";
+pub const PARENTS_POST_STATE_ENSURE_MERGEABLE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.ensure-mergeable.time";
+pub const PARENTS_POST_STATE_PRIOR_REJECTION_COUNTS_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.prior-rejection-counts.time";
+pub const PARENTS_POST_STATE_MERGE_CALL_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.merge-call.time";
+pub const PARENTS_POST_STATE_POST_MERGE_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.post-merge.time";
+pub const PARENTS_POST_STATE_SETTLED_PROBE_CALLS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-probe.wrapper.calls";
+pub const PARENTS_POST_STATE_SETTLED_PROBE_TIME_NS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-probe.wrapper.time-ns";
+// The batched settled-sig index (CLAIM-FINALITY-001): one lineage walk per
+// merge replaces the per-sig probe walks; these time that build and record
+// its depth. The wrapper counters above keep running — after the batching
+// they measure set-membership lookups, which is the before/after evidence.
+pub const PARENTS_POST_STATE_SETTLED_INDEX_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-index.build.time";
+pub const PARENTS_POST_STATE_SETTLED_INDEX_BLOCKS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-index.blocks";
+// The floor probe's per-floor lazy builds, kept separate from the base
+// index above so the two walks stay individually attributable.
+pub const PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BUILD_TIME_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-floor-index.build.time";
+pub const PARENTS_POST_STATE_SETTLED_FLOOR_INDEX_BLOCKS_METRIC: &str =
+    "block.processing.stage.parents-post-state.settled-floor-index.blocks";
+
 // Wrapper counters surfacing the unaccounted overhead inside
 // `evaluate_system_source` (env build + rand clone + post-evaluate fixup) and
 // `eval_system_deploy` (everything outside the two phase histograms above).
