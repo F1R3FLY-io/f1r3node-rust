@@ -7,10 +7,10 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::{
     block_element_gen, block_elements_with_parents_gen, block_hash_gen, block_with_new_hashes_gen,
-    get_random_block, validator_gen,
+    get_random_block, get_random_block_default, validator_gen,
 };
 use models::rust::block_metadata::BlockMetadata;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
 use once_cell::sync::Lazy;
@@ -456,9 +456,9 @@ fn dag_storage_should_be_able_to_restore_equivocations_tracker_on_startup() {
         }
 
         let equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash]));
-        dag_storage.insert_equivocation_record(equivocation_record.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
 
-        let records = dag_storage.equivocation_records().unwrap();
+        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
         assert_eq!(records, HashSet::from([equivocation_record]));
 
         let result = lookup_elements(&block_elements, &dag_storage, None);
@@ -475,12 +475,16 @@ fn dag_storage_should_be_able_to_modify_equivocation_records() {
         let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
         let equivocation_record = EquivocationRecord::new(equivocator.clone(), 0, BTreeSet::from([block_hash1.clone()]));
-        dag_storage.insert_equivocation_record(equivocation_record.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
 
-        dag_storage.update_equivocation_record(equivocation_record, block_hash2.clone()).unwrap();
+        dag_storage.access_equivocations_tracker(|tracker| {
+            let mut updated = equivocation_record.clone();
+            updated.equivocation_detected_block_hashes.insert(block_hash2.clone());
+            tracker.add(updated)
+        }).unwrap();
 
         let updated_equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash1, block_hash2]));
-        let records = dag_storage.equivocation_records().unwrap();
+        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
         assert_eq!(records, HashSet::from([updated_equivocation_record]));
     });
 }
@@ -572,33 +576,192 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
     );
 }
 
+/// Inserting an OLDER block by a sender must not move that sender's latest
+/// message backward. Settled-history admission inserts old blocks at runtime
+/// — a straggler a joiner's restore missed, arriving while the sender's real
+/// latest message is a hundred blocks ahead — so the sequence-monotone guard
+/// on the latest-message update is what keeps admission from rewriting any
+/// validator's position. (Insertion ORDER is an optimization, not what this
+/// depends on.)
 #[test]
-fn dag_storage_should_be_able_to_restore_deploy_index_on_startup() {
+fn dag_storage_keeps_latest_message_when_an_older_block_arrives() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let newer = get_random_block(
+        Some(5),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &newer,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let older = get_random_block(
+        Some(2),
+        Some(2),
+        None,
+        None,
+        Some(newer.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &older,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(
+        dag.latest_message_hash(&newer.sender),
+        Some(newer.block_hash.clone()),
+        "an old block arriving late must not regress its sender's latest message"
+    );
+}
+
+/// A `SettledHistory` insert leaves latest messages untouched entirely: the
+/// sender's slot does not advance even for a HIGHER sequence number (the
+/// cross-shard pollution shape — a foreign block wearing a shared validator
+/// key), and the block's bond set seeds no newly-bonded slots (a sub-anchor
+/// bond set is stale testimony).
+#[test]
+fn dag_storage_settled_history_insert_never_touches_latest_messages() {
+    let genesis = genesis_block();
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+
+    let live_head = get_random_block(
+        Some(39),
+        Some(5),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        Some(vec![]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &live_head,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let unseen_validator = get_random_block_default().sender;
+    let settled = get_random_block(
+        Some(6),
+        Some(live_head.seq_num + 35),
+        None,
+        None,
+        Some(live_head.sender.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        Some(vec![Bond {
+            validator: unseen_validator.clone(),
+            stake: 100,
+        }]),
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &settled,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,
+        )
+        .unwrap();
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert!(
+        dag.contains(&settled.block_hash),
+        "the settled block itself must be in the DAG"
+    );
+    assert_eq!(
+        dag.latest_message_hash(&live_head.sender),
+        Some(live_head.block_hash.clone()),
+        "a settled-history insert must not advance its sender's latest message"
+    );
+    assert_eq!(
+        dag.latest_message_hash(&unseen_validator),
+        None,
+        "a settled-history insert must not seed newly-bonded latest-message slots"
+    );
+}
+
+/// Every deploy in a VALID inserted body resolves to its carrier; invalid
+/// bodies are not canonical history and resolve to nothing.
+#[test]
+fn deploy_appearance_resolves_valid_bodies_and_ignores_invalid_ones() {
     let genesis = genesis_block();
     proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10))| {
-      let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+      for mode in [
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+          block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+      ] {
+          let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
 
-      for block_element in &block_elements {
-        dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
-      }
-
-      let dag = dag_storage.get_representation().expect("dag representation");
-      let mut deploy_sigs = Vec::new();
-      let mut block_hashes = Vec::new();
-
-      for block in &block_elements {
-          for deploy in &block.body.deploys {
-              deploy_sigs.push(deploy.deploy.sig.clone());
-              block_hashes.push(block.block_hash.clone());
+          for block_element in &block_elements {
+            dag_storage.insert(block_element, mode).unwrap();
           }
+
+          let dag = dag_storage.get_representation().expect("dag representation");
+          let mut deploy_sigs = Vec::new();
+          let mut block_hashes = Vec::new();
+
+          for block in &block_elements {
+              for deploy in &block.body.deploys {
+                  deploy_sigs.push(deploy.deploy.sig.clone());
+                  block_hashes.push(block.block_hash.clone());
+              }
+          }
+
+          let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
+              .iter()
+              .map(|sig| dag.deploy_canonical_appearance(sig).unwrap())
+              .collect();
+
+          let expected: Vec<Option<BlockHash>> = match mode {
+              block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid =>
+                  vec![None; deploy_sigs.len()],
+              _ => block_hashes.iter().map(|h| Some(h.clone())).collect(),
+          };
+          assert_eq!(deploy_lookups, expected, "mode {:?}", mode);
       }
-
-      let deploy_lookups: Vec<Option<BlockHash>> = deploy_sigs
-          .iter()
-          .map(|sig| dag.lookup_by_deploy_id(&sig.to_vec()).unwrap())
-          .collect();
-
-      assert_eq!(deploy_lookups, block_hashes.iter().map(|h| Some(h.clone())).collect::<Vec<_>>());
     });
 }
 
@@ -787,6 +950,116 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
     assert_eq!(*finalized_effects, expected_effects);
 }
 
+/// A restored (truncated) DAG holds blocks whose parent edges reach BELOW the
+/// restore horizon: the parent hash is referenced but the block is not held.
+/// Such an ancestor is settled by the restore contract — everything under the
+/// shipped window is finalized ancestry — so the finalization sweep must mark
+/// the HELD unfinalized ancestry and never descend into unheld blocks. The
+/// unguarded walk erred with MissingBlock on the first sub-horizon parent and
+/// failed the entire finalizer run, permanently: the same ancestry re-walks
+/// every run, so a restored node's LFB froze at its restore-era floor while
+/// the shard finalized on (CI lifecycle joiner3, 366 identical failures).
+#[tokio::test]
+async fn finalization_sweep_treats_unheld_parents_as_settled_ancestry() {
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    dag_storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
+
+    let b1 = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b1,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    // b2's second parent is a merge edge to a block below the restore
+    // horizon: referenced, never held.
+    let sub_horizon_parent = BlockHash::from(vec![0x5b; 32]);
+    let b2 = get_random_block(
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![b1.block_hash.clone(), sub_horizon_parent.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b2,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    let b3 = get_random_block(
+        Some(3),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![b2.block_hash.clone()]),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    dag_storage
+        .insert(
+            &b3,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+        )
+        .unwrap();
+
+    dag_storage
+        .record_directly_finalized(b3.block_hash.clone(), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("the sweep must not descend into unheld sub-horizon ancestry");
+
+    let dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    assert_eq!(dag.last_finalized_block(), b3.block_hash);
+    assert!(dag.is_finalized(&b1.block_hash));
+    assert!(dag.is_finalized(&b2.block_hash));
+    assert!(dag.is_finalized(&b3.block_hash));
+    assert!(
+        !dag.contains(&sub_horizon_parent),
+        "staging: the sub-horizon parent must not be held"
+    );
+}
+
 #[test]
 fn find_returns_some_for_valid_even_length_truncated_hash() {
     let rt = Runtime::new().unwrap();
@@ -867,5 +1140,577 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
             }
             Err(e) => panic!("find() returned Err for valid hex prefix: {e:?}"),
         }
+    });
+}
+
+/// A re-included sig's canonical appearance is a function of the DAG, not
+/// of node-local insertion order: whichever order the two carriers arrive
+/// in, the answer is the latest inclusion by (height, hash).
+#[test]
+fn deploy_appearance_is_insertion_order_independent() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        for reversed in [false, true] {
+            let genesis = genesis_block();
+            let dag_storage = create_dag_storage(&genesis).await;
+            let mk = |height: i64| {
+                get_random_block(
+                    Some(height),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(vec![genesis.block_hash.clone()]),
+                    None,
+                    Some(vec![deploy.clone()]),
+                    None,
+                    Some(vec![]),
+                    None,
+                    None,
+                )
+            };
+            let early = mk(1);
+            let late = mk(2);
+            let order = if reversed {
+                [&late, &early]
+            } else {
+                [&early, &late]
+            };
+            for b in order {
+                dag_storage
+                    .insert(
+                        b,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                    )
+                    .expect("insert carrier");
+            }
+            let dag = dag_storage
+                .get_representation()
+                .expect("dag representation");
+            assert_eq!(
+                dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                    .expect("appearance lookup"),
+                Some(late.block_hash.clone()),
+                "reversed={}: the canonical appearance is the latest \
+                 inclusion by (height, hash), independent of which carrier \
+                 this node inserted first",
+                reversed
+            );
+        }
+    });
+}
+
+/// An appearance is a block that CARRIES the deploy. A rejection record
+/// event at a greater height than the inclusion must not become the
+/// canonical appearance: the record's block does not hold the deploy, and
+/// naming it sends every consumer that fetches the block looking for a
+/// deploy that is not in its deploy list.
+#[test]
+fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let inclusion = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        let mut rejecting_merge = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![inclusion.block_hash.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        rejecting_merge.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy.deploy.sig.clone(),
+            duplicate: false,
+            carrier: inclusion.block_hash.clone(),
+        }];
+
+        for b in [&inclusion, &rejecting_merge] {
+            dag_storage
+                .insert(
+                    b,
+                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+                )
+                .expect("insert block");
+        }
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig)
+                .expect("appearance lookup"),
+            Some(inclusion.block_hash.clone()),
+            "the record event at height 2 outranks the inclusion by height, \
+             but its block does not carry the deploy — the appearance must \
+             stay on the inclusion carrier"
+        );
+    });
+}
+
+/// The lifecycle event ingest rides `insert`'s body pass: a valid block's
+/// executions and records project into per-sig rows; an invalid block's
+/// body contributes nothing (it is not canonical history).
+#[test]
+fn insert_projects_lifecycle_events_from_valid_bodies_only() {
+    use models::rust::block_implicits::processed_deploy_gen;
+    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let mut runner = TestRunner::default();
+        let executed = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let rejected_sig = prost::bytes::Bytes::from(vec![0xAA; 70]);
+        let carrier = prost::bytes::Bytes::from(vec![0xBB; 32]);
+
+        let mut valid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![executed.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        valid_block.body.rejected_deploys = vec![RejectedDeploy {
+            sig: rejected_sig.clone(),
+            duplicate: true,
+            carrier: carrier.clone(),
+        }];
+        dag_storage
+            .insert(
+                &valid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .expect("insert valid block");
+
+        let invalid_deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let invalid_block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![invalid_deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &invalid_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
+            )
+            .expect("insert invalid block");
+
+        let dag = dag_storage
+            .get_representation()
+            .expect("dag representation");
+
+        let included_row = dag
+            .deploy_lifecycle_events(&executed.deploy.sig)
+            .expect("read row")
+            .expect("executed deploy has a row");
+        assert_eq!(
+            included_row.valid_after,
+            Some(executed.deploy.data.valid_after_block_number),
+            "the first inclusion records the deploy's window start"
+        );
+        assert!(
+            matches!(
+                included_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 1,
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included { is_failed: false },
+                    ..
+                }]
+            ),
+            "one Included event at the block's height; got {:?}",
+            included_row.events
+        );
+
+        let rejected_row = dag
+            .deploy_lifecycle_events(&rejected_sig)
+            .expect("read row")
+            .expect("rejected sig has a row");
+        assert!(
+            matches!(
+                rejected_row.events.as_slice(),
+                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Rejected { duplicate: true, .. },
+                    ..
+                }]
+            ),
+            "one Rejected event carrying the record's duplicate flag; got {:?}",
+            rejected_row.events
+        );
+
+        assert!(
+            dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "an invalid block's body must contribute no lifecycle events"
+        );
+    });
+}
+
+// The bound has to follow blocks admitted at a LOWER value back down: tracking
+// the highest value seen instead would skip a scan those blocks still need.
+#[tokio::test]
+async fn a_lower_finalization_round_does_not_block_a_later_raise() {
+    init_logger();
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+
+    let mut chain = vec![genesis.clone()];
+    for n in 1..=3 {
+        let parent = chain.last().unwrap().block_hash.clone();
+        let block = get_random_block(
+            Some(n),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![parent]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        dag_storage
+            .insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+        chain.push(block);
+    }
+
+    let ft_of = |storage: &BlockDagKeyValueStorage, hash: &BlockHash| {
+        storage
+            .get_representation()
+            .expect("dag representation")
+            .lookup_unsafe(hash)
+            .expect("metadata")
+            .fault_tolerance_value
+    };
+
+    // Round 1: a high value. Every finalized block ends at or above it.
+    dag_storage
+        .record_directly_finalized(chain[1].block_hash.clone(), 0.9, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(ft_of(&dag_storage, &chain[1].block_hash), 0.9);
+
+    // Round 2: a lower value. It admits b2 at 0.4 and must not drag b1 down.
+    dag_storage
+        .record_directly_finalized(chain[2].block_hash.clone(), 0.4, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "a lower round must never lower an already-higher value"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[2].block_hash), 0.4);
+
+    // Round 3: above round 2 but below round 1. b2 sits at 0.4 and must be
+    // raised — this is the scan that a highest-value-seen bound would skip.
+    dag_storage
+        .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+        .await
+        .unwrap();
+    assert_eq!(
+        ft_of(&dag_storage, &chain[2].block_hash),
+        0.5,
+        "the block admitted at 0.4 must be raised to 0.5"
+    );
+    assert_eq!(ft_of(&dag_storage, &chain[3].block_hash), 0.5);
+    assert_eq!(
+        ft_of(&dag_storage, &chain[1].block_hash),
+        0.9,
+        "the highest value still stands"
+    );
+}
+
+/// A restored (truncated) DAG holds a window of blocks whose deepest
+/// parent references point below the truncation boundary, and LFS
+/// populate marks only the ANCHOR finalized — the window itself, the
+/// anchor's own ancestry included, carries no finality marks. Adopting a
+/// new LFB above the anchor must therefore walk unmarked window branches,
+/// and that walk must treat an unheld parent as the horizon (everything
+/// below the boundary is below the anchor's floor, i.e. settled), never
+/// as an error: erroring aborts the adoption and wedges the finalizer
+/// forever while the chain grows past it.
+#[test]
+fn truncated_window_finalization_walk_terminates_at_the_horizon() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        // Never inserted: the parent reference below the truncation boundary.
+        let below_boundary = get_random_block(
+            Some(2),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+        let b3 = make(3, vec![below_boundary.block_hash.clone()]);
+        let b4 = make(4, vec![b3.block_hash.clone()]);
+        let anchor = make(5, vec![b4.block_hash.clone()]);
+        // Multi-parent: the finalized anchor plus an unmarked window block,
+        // so the marking walk cannot stop at the anchor alone.
+        let b6 = make(6, vec![anchor.block_hash.clone(), b4.block_hash.clone()]);
+
+        // LFS populate order: anchor (Approved — the only finality mark),
+        // then the window, newest to oldest, then post-restore admission.
+        let mode_approved =
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved;
+        let mode_normal = block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal;
+        dag_storage.insert(&anchor, mode_approved).unwrap();
+        dag_storage.insert(&b4, mode_normal).unwrap();
+        dag_storage.insert(&b3, mode_normal).unwrap();
+        dag_storage.insert(&b6, mode_normal).unwrap();
+
+        let result = dag_storage
+            .record_directly_finalized(b6.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await;
+        assert!(
+            result.is_ok(),
+            "adopting an LFB above a truncated window must terminate the \
+             finalized-ancestry marking walk at the horizon, not abort on the \
+             unheld parent: {:?}",
+            result.err()
+        );
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.last_finalized_block(),
+            b6.block_hash,
+            "the adoption must land: the LFB pointer moves to the new block"
+        );
+        for (name, hash) in [
+            ("b6", &b6.block_hash),
+            ("b4", &b4.block_hash),
+            ("b3", &b3.block_hash),
+        ] {
+            assert!(
+                dag.is_finalized(hash),
+                "{name} is held ancestry of the adopted LFB and must be marked finalized"
+            );
+        }
+        assert!(
+            !dag.contains(&below_boundary.block_hash),
+            "the below-boundary reference stays unheld: the walk terminates \
+             there without inventing an entry for it"
+        );
+    });
+}
+
+/// The newly-bonded latest-message placeholder must be network-uniform:
+/// every node seeds the same slot with the same value, or the joiner's
+/// first self-justifying proposal reads as an equivocation on whichever
+/// side seeded differently. Ceremony nodes derive genesis from their
+/// height-0 block; a truncated node holds no height-0 block and must use
+/// the LEARNED genesis hash — never the block that happens to be inserted
+/// at seeding time, which is right on no node.
+#[test]
+fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        let make = |number: i64, parents: Vec<BlockHash>| {
+            get_random_block(
+                Some(number),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(parents),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            )
+        };
+
+        // Truncated window: the anchor's own parent is never inserted, and
+        // no height-0 block exists anywhere in this DAG.
+        let below_boundary = make(4, vec![]);
+        let anchor = make(5, vec![below_boundary.block_hash.clone()]);
+        dag_storage
+            .insert(
+                &anchor,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )
+            .unwrap();
+
+        // The genesis hash this node learned during restore.
+        let genesis = make(0, vec![]);
+        dag_storage
+            .record_genesis_hash(genesis.block_hash.clone())
+            .unwrap();
+
+        // A bonding block: its bonds name a validator that has no latest
+        // message and appears in no justification — the newly-bonded case.
+        let new_validator = Validator::from(vec![7u8; 65]);
+        let bonding_block = get_random_block(
+            Some(6),
+            None,
+            None,
+            None,
+            Some(Validator::from(vec![9u8; 65])),
+            None,
+            None,
+            Some(vec![anchor.block_hash.clone()]),
+            Some(vec![]),
+            None,
+            None,
+            Some(vec![models::rust::casper::protocol::casper_message::Bond {
+                validator: new_validator.clone(),
+                stake: 100,
+            }]),
+            None,
+            None,
+        );
+        assert_ne!(
+            bonding_block.sender, new_validator,
+            "fixture: the joiner must not be the inserting block's sender"
+        );
+        dag_storage
+            .insert(
+                &bonding_block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )
+            .unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.latest_message_hash(&new_validator),
+            Some(genesis.block_hash.clone()),
+            "the newly-bonded slot on a truncated node must be seeded with the \
+             learned genesis hash, not with whatever block was being inserted \
+             (got {:?}, inserting block was {})",
+            dag.latest_message_hash(&new_validator)
+                .map(|h| hex::encode(&h)),
+            hex::encode(&bonding_block.block_hash),
+        );
     });
 }

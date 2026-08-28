@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-67 — Report-time closure shrinkage.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-67.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-67.
 // Theorem: T-12 report suppression (Sage finding 14 — "evidence
 // propagation over time is not monotone once reports are modeled").
 // Reference: formal/sage/slashing/FINDINGS.md row 14.

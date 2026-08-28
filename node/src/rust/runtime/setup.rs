@@ -344,6 +344,23 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         .read()
         .map_err(|e| CasperError::Other(format!("Failed to read RPConf: {}", e)))?;
 
+    // Runtime state requester: fetches rspace roots named as missing while the
+    // node runs — the state a settled-history admission arrives without, and
+    // the state a deferred replay is waiting on. The processor names roots on
+    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
+    // `items_tx`.
+    let state_requester_handles = {
+        let has_root_rm = runtime_manager.clone();
+        let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
+            Arc::new(move |root| has_root_rm.has_root(root));
+        casper::rust::engine::runtime_state_requester::spawn(
+            transport_layer.clone(),
+            rp_conf.clone(),
+            rspace_state_manager.importer.clone(),
+            has_root,
+        )
+    };
+
     // Block processor
     let block_processor = casper::rust::blocks::block_processor::new_block_processor(
         block_store.clone(),
@@ -353,6 +370,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transport_layer.clone(),
         rp_connections.clone(),
         rp_conf.clone(),
+        Some(state_requester_handles.fetch_tx.clone()),
     );
 
     // Proposer instance
@@ -536,6 +554,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            Some(state_requester_handles.items_tx.clone()),
         )) as Arc<dyn CasperLaunch>
     };
     info!("CasperLaunch initialized");
@@ -862,6 +881,12 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let gc_block_dag_storage = block_dag_storage.clone();
         let gc_block_store = block_store.clone();
         let gc_runtime_manager = Arc::new(runtime_manager.clone());
+        // tokio::sync::Mutex, not parking_lot: the fallback (non-multi-thread)
+        // path below holds the guard across the `collect_garbage().await`, and
+        // only a Send guard can cross an await point in this boxed future.
+        let gc_state = Arc::new(tokio::sync::Mutex::new(
+            casper::rust::util::mergeable_channels_gc::GcSweep::new(),
+        ));
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
         let gc_casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.casper.fault_tolerance_threshold,
@@ -889,7 +914,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             disable_validator_progress_check: conf.standalone,
             enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.casper.finalizer.clone(),
             synchrony_recovery_stall_window: conf.casper.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.casper.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.casper.synchrony_recovery_max_bypasses,
@@ -905,7 +929,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             // `casper::rust::casper`. When `CasperConf` gains corresponding
             // fields, plumb them through here; the consts are then the
             // documented fallback.
-            finalizer_blocking_timeout: casper::rust::casper::FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries:
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
@@ -918,24 +941,56 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                 let gc_block_store = gc_block_store.clone();
                 let gc_runtime_manager = gc_runtime_manager.clone();
                 let gc_casper_shard_conf = gc_casper_shard_conf.clone();
+                let gc_state = gc_state.clone();
                 let gc_interval = gc_interval;
 
                 Box::pin(async move {
                     // Sleep for the configured interval
                     tokio::time::sleep(gc_interval).await;
 
-                    // Run GC
-                    let dag = gc_block_dag_storage
-                        .get_representation()
-                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                    mergeable_channels_gc::collect_garbage(
-                        &dag,
-                        &gc_block_store,
-                        &gc_runtime_manager,
-                        &gc_casper_shard_conf,
-                    )
-                    .await
-                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
+                    // common multi-thread runtime the whole pass (including the
+                    // blocking LMDB reads in `get_representation`/`block_store`)
+                    // runs inside `block_in_place`, driven via a nested `block_on`
+                    // — the standard pattern for calling async code from a
+                    // blocking context without starving other workers.
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(rt_handle)
+                            if rt_handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(move || {
+                                let dag = gc_block_dag_storage
+                                    .get_representation()
+                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                                let mut gc_state = gc_state.blocking_lock();
+                                rt_handle
+                                    .block_on(mergeable_channels_gc::collect_garbage(
+                                        &mut gc_state,
+                                        &dag,
+                                        &gc_block_store,
+                                        &gc_runtime_manager,
+                                        &gc_casper_shard_conf,
+                                    ))
+                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            })?;
+                        }
+                        _ => {
+                            let dag = gc_block_dag_storage
+                                .get_representation()
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                            let mut gc_state = gc_state.lock().await;
+                            mergeable_channels_gc::collect_garbage(
+                                &mut gc_state,
+                                &dag,
+                                &gc_block_store,
+                                &gc_runtime_manager,
+                                &gc_casper_shard_conf,
+                            )
+                            .await
+                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                        }
+                    }
 
                     Ok::<(), CasperError>(())
                 })
@@ -993,7 +1048,7 @@ async fn handle_block_finalized(
     block_hash: String,
     block_number: i64,
 ) {
-    use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
+    use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
     use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 
@@ -1012,21 +1067,7 @@ async fn handle_block_finalized(
         Ok(report) => {
             let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-            let deploy_transfers: Vec<DeployTransfers> = transfers_by_deploy
-                .into_iter()
-                .map(|(deploy_id, transfers)| DeployTransfers {
-                    deploy_id,
-                    transfers: transfers
-                        .into_iter()
-                        .map(|t| TransferEvent {
-                            from_addr: t.from_addr,
-                            to_addr: t.to_addr,
-                            amount: t.amount,
-                            success: t.success,
-                        })
-                        .collect(),
-                })
-                .collect();
+            let deploy_transfers = build_deploy_transfers(transfers_by_deploy);
 
             if !deploy_transfers.is_empty() {
                 if let Err(e) = event_publisher.publish(F1r3flyEvent::transfers_available(
@@ -1056,9 +1097,34 @@ async fn handle_block_finalized(
     }
 }
 
+fn build_deploy_transfers(
+    transfers_by_deploy: std::collections::HashMap<String, Vec<models::casper::TransferInfo>>,
+) -> Vec<shared::rust::shared::f1r3fly_event::DeployTransfers> {
+    use shared::rust::shared::f1r3fly_event::{DeployTransfers, TransferEvent};
+
+    transfers_by_deploy
+        .into_iter()
+        .filter(|(_, transfers)| !transfers.is_empty())
+        .map(|(deploy_id, transfers)| DeployTransfers {
+            deploy_id,
+            transfers: transfers
+                .into_iter()
+                .map(|t| TransferEvent {
+                    from_addr: t.from_addr,
+                    to_addr: t.to_addr,
+                    amount: t.amount,
+                    success: t.success,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::block_report_prewarm_enabled;
+    use models::casper::TransferInfo;
+
+    use super::{block_report_prewarm_enabled, build_deploy_transfers};
 
     #[test]
     fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
@@ -1066,5 +1132,60 @@ mod tests {
         assert!(block_report_prewarm_enabled(false, true));
         assert!(block_report_prewarm_enabled(true, true));
         assert!(!block_report_prewarm_enabled(false, false));
+    }
+
+    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+        TransferInfo {
+            from_addr: from.to_string(),
+            to_addr: to.to_string(),
+            amount,
+            success: true,
+            fail_reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_deploy_transfers_drops_deploys_with_no_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("deploy_with".to_string(), vec![transfer("a", "b", 10)]);
+        map.insert("deploy_without".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1, "only deploys with transfers are kept");
+        let entry = &out[0];
+        assert_eq!(entry.deploy_id, "deploy_with");
+        assert_eq!(entry.transfers.len(), 1);
+        assert_eq!(entry.transfers[0].amount, 10);
+    }
+
+    #[test]
+    fn build_deploy_transfers_returns_empty_when_no_deploy_has_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![]);
+        map.insert("d2".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert!(
+            out.is_empty(),
+            "no event payload when no deploy in the block has transfers"
+        );
+    }
+
+    #[test]
+    fn build_deploy_transfers_preserves_multiple_transfers_per_deploy() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![
+            transfer("a", "b", 1),
+            transfer("a", "c", 2),
+        ]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].transfers.len(), 2);
+        assert_eq!(out[0].transfers[0].amount, 1);
+        assert_eq!(out[0].transfers[1].amount, 2);
     }
 }

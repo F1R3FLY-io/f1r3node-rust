@@ -4,10 +4,10 @@ use prost::Message;
 
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
-    HasBlockRequestProto, MergeableEntryRequestProto, MergeableEntryResponseProto,
-    NoApprovedBlockAvailableProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
-    UnapprovedBlockProto,
+    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
+    ForkChoiceTipRequestProto, HasBlockProto, HasBlockRequestProto, MergeableEntryRequestProto,
+    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
+    StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
 use crate::routing::Packet;
 
@@ -51,3 +51,5 @@ impl_packet!(StoreItemsMessageRequestProto, "StoreItemsMessageRequest");
 impl_packet!(StoreItemsMessageProto, "StoreItemsMessage");
 impl_packet!(MergeableEntryRequestProto, "MergeableEntryRequest");
 impl_packet!(MergeableEntryResponseProto, "MergeableEntryResponse");
+impl_packet!(FloorCacheRequestProto, "FloorCacheRequest");
+impl_packet!(FloorCacheResponseProto, "FloorCacheResponse");

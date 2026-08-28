@@ -59,8 +59,9 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// `strict=false` ⇒ (2q−S)/S ≥ θ (floor path); `strict=true` ⇒ > θ (LFB
-/// finalizer). Cleared of denominators (S, den > 0), the test is
+/// `strict=false` ⇒ (2q−S)/S ≥ θ — every production decision site (the LFB
+/// is the floor of the live view, one clock); `strict=true` ⇒ > θ, retained
+/// in the API and its unit pins only. Cleared of denominators (S, den > 0), the test is
 /// `2·q·den ⋛ S·(den+num)`. `i128` so `2·q·den` and `S·(den+num)` (≤ ~2^84 for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
@@ -158,10 +159,16 @@ impl CliqueOracle {
     /// ```
     ///
     /// 1. get justification of validator b as per latest message of a (lmAjB)
-    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB are NOT in main chain
-    ///    with target message.
+    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB
+    ///    DISAGREE with the target message. The test is two-sided by height:
+    ///    a visited block at or above the target's height disagrees iff the
+    ///    target is not on its spine (a rival estimate); a visited block
+    ///    BELOW the target's height disagrees iff it is not on the TARGET'S
+    ///    spine (a rival prefix). A below-target block on the target's own
+    ///    main chain is settled ancestry the window has not caught up past —
+    ///    ignorance, not disagreement — and must not veto the edge.
     ///
-    ///    If one found - this is a source of disagreement.
+    ///    If a disagreeing block is found - this is a source of disagreement.
     async fn never_eventually_see_disagreement(
         lm_b: &M,
         lm_a_j_b: &M,
@@ -215,6 +222,7 @@ impl CliqueOracle {
                 );
                 value
             };
+            let target_height = dag.lookup_unsafe(target_msg)?.block_number;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
@@ -228,21 +236,41 @@ impl CliqueOracle {
                     last_yield = Instant::now();
                 }
                 idx += 1;
-                // DAG-ancestry (multi-parent), matching `agree`. A
-                // self-justification of b that has NOT merged `target_msg`
-                // (target is not a DAG-ancestor via any parent path) is a genuine
-                // divergence; one that merged it agrees. Under the old
-                // single-main-parent check, a merge block whose main parent was a
-                // sibling looked like a disagreement even though it had merged
-                // the target — collapsing the clique on equal-weight forks.
-                // (`ancestor_cache` now memoizes this DAG-ancestry result,
-                // keyed by (target, hash); for single-parent histories it is
-                // identical to the prior main-chain result.)
+                // Main-chain membership, matching `agree`, decided by height.
+                //
+                // At or above the target's height: a self-justification of b
+                // whose SPINE does not pass through `target_msg` is a genuine
+                // divergence — b's chain left (or never held) the candidate,
+                // which is exactly the fork-choice flip the clique must not
+                // contain. Merging the target on a secondary parent is not
+                // agreement; counting it as such let both sides of a
+                // conflicting sibling pair keep full mutual cliques and
+                // certify together (the ucc 00e6a2e3 consensus halt).
+                //
+                // BELOW the target's height, the target can never be on the
+                // visited block's spine, so that test conflates two
+                // different prefixes: a block on the TARGET'S OWN main chain
+                // (settled ancestry the window has not caught up past —
+                // ignorance, not disagreement) and a rival prefix (a real
+                // divergent estimate). Only the rival prefix vetoes. The
+                // conflation held certification hostage to the STALEST
+                // window in the committee: one departed-era justification
+                // reaching below the candidate froze finality for 851 s in
+                // CI (stall instance i5, run 32397055615 — see
+                // tests/finalized_floor/oracle_stall_replay_spec.rs).
+                //
+                // (`ancestor_cache` memoizes the per-(target, hash) verdict:
+                // true = this visited block does not veto.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let target_is_ancestor = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
+                let no_disagreement = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
                     *cached
                 } else {
-                    let value = dag.is_dag_ancestor(target_msg, &hash)?;
+                    let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                    let value = if visited_height < target_height {
+                        dag.is_in_main_chain(&hash, target_msg)?
+                    } else {
+                        dag.is_in_main_chain(target_msg, &hash)?
+                    };
                     CliqueOracle::bounded_cache_insert(
                         ancestor_cache,
                         ancestor_key,
@@ -251,7 +279,7 @@ impl CliqueOracle {
                     );
                     value
                 };
-                if !target_is_ancestor {
+                if !no_disagreement {
                     return Ok(true);
                 }
 
@@ -510,18 +538,22 @@ impl CliqueOracle {
             dag: &KeyValueDagRepresentation,
             latest_messages: &BTreeMap<V, M>,
         ) -> Result<bool, KvStoreError> {
-            // Multi-parent agreement: a validator agrees with `message` iff
-            // `message` is a DAG-ancestor of its latest message — i.e. the
-            // validator has MERGED `message` into its state via any parent
-            // path. The prior `is_in_main_chain` check counted only the
-            // single main-parent chain, which under-counts merges: an
-            // equal-weight concurrent fork that every validator has merged
-            // would still show <=1/2 agreeing weight and never finalize
-            // (the liveness wedge). For single-parent histories the two
-            // predicates coincide, so single-chain finality is unchanged.
+            // Agreement is CHAIN CHOICE, not merging: a validator agrees
+            // with `message` iff `message` is on the MAIN-PARENT SPINE of
+            // its latest message. A spine passes through exactly one block
+            // per height, so agreement is exclusive between same-height
+            // siblings — the property the clique theorem certifies (the
+            // estimator can never move off the candidate without >θ weight
+            // faulting). DAG ancestry is the wrong relation in a merging
+            // DAG: every block is eventually merged by everyone, so
+            // ancestry-agreement saturates and certifies BOTH sides of a
+            // conflicting sibling pair — two finalized floors then freeze
+            // at one height and every join derivation refuses forever (the
+            // ucc 00e6a2e3 consensus halt). Matches the Scala reference
+            // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
             latest_messages
                 .get(validator)
-                .map_or(Ok(false), |hash| dag.is_dag_ancestor(message, hash))
+                .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
         }
 
         let mut agreeing_map = HashMap::new();
@@ -537,8 +569,8 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); `strict`
-    /// selects ≥ (floor path) vs > (LFB finalizer). Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den ⋛ S·(den+num)` (see [`ft_decides_exact`]); every
+    /// production caller passes `strict=false` (≥). Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(
@@ -617,46 +649,6 @@ impl CliqueOracle {
             );
         }
         Ok(decision)
-    }
-
-    /// Finalizer decision + display value in one clique pass. Computes the max
-    /// clique weight `q` and total stake `S` once and returns `(decision,
-    /// ft_value)` where `decision` is the EXACT verdict
-    /// [`ft_decides_exact`]`(agreeing, q, S, num, den, strict)` and `ft_value` =
-    /// (2q−S)/S as `f32` for display/telemetry only. The `agreeing ≤ S/2`
-    /// short-circuit returns `(false, MIN_FAULT_TOLERANCE)`, matching
-    /// [`CliqueOracle::compute_output_with_cache`].
-    pub async fn compute_decision_with_cache(
-        target_msg: &M,
-        message_weight_map: &WeightMap,
-        agreeing_weight_map: &WeightMap,
-        dag: &KeyValueDagRepresentation,
-        run_cache: &mut CliqueOracleRunCache,
-        latest_messages: &BTreeMap<V, M>,
-        num: i64,
-        den: i64,
-        strict: bool,
-    ) -> Result<(bool, f32), KvStoreError> {
-        let total_stake = message_weight_map.values().sum::<i64>();
-        assert!(total_stake > 0, "Long overflow when computing total stake");
-        let agreeing = agreeing_weight_map.values().sum::<i64>();
-        if (agreeing as i128) * 2 <= total_stake as i128 {
-            return Ok((false, MIN_FAULT_TOLERANCE));
-        }
-        let max_clique_weight = CliqueOracle::compute_max_clique_weight(
-            target_msg,
-            agreeing_weight_map,
-            dag,
-            run_cache,
-            latest_messages,
-        )
-        .await?;
-        // Display value only: identical formula to compute_output_with_cache.
-        let ft_value = (max_clique_weight as f32 * 2.0 - total_stake as f32) / total_stake as f32;
-        Ok((
-            ft_decides_exact(agreeing, max_clique_weight, total_stake, num, den, strict),
-            ft_value,
-        ))
     }
 
     /// Deterministic fault tolerance over a FROZEN latest-message snapshot.

@@ -1,13 +1,13 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // Property-based test for T-9.7 (canonical seq-number density).
 //
 // Theorem: T-9.7 (`t_9_7_canonical_finds_visible_descendant_with_gap`,
 // formal/rocq/slashing/theories/BugFixSeqNumDensity.v).
-// Reference: docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
+// Reference: docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.8.
 //
 // Property: an equivocation is detected even when the validator
 // has skipped sequence numbers (under partition recovery). The

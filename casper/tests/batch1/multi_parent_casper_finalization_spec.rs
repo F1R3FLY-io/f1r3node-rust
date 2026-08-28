@@ -24,9 +24,6 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
             .expect("dag representation")
             .last_finalized_block();
 
-        // Scala uses withClue to add file:line context to assertions.
-        // In Rust, assert_eq! automatically shows file and line on failure,
-        // so I'll just add helpful hex-encoded block hashes for debugging.
         assert_eq!(
             last_finalized_block_hash,
             expected.block_hash,
@@ -66,11 +63,11 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         })
         .collect();
 
-    let block1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[0].clone()])
+    let _block1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[0].clone()])
         .await
         .unwrap();
 
-    let block2 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[1].clone()])
+    let _block2 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[1].clone()])
         .await
         .unwrap();
 
@@ -82,29 +79,37 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         .await
         .unwrap();
 
-    let _block5 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[4].clone()])
-        .await
-        .unwrap();
-
-    assert_finalized_block(&nodes[0], &block1);
-
-    let _block6 = TestNode::propagate_block_at_index(&mut nodes, 2, &[deploy_datas[5].clone()])
-        .await
-        .unwrap();
-
-    assert_finalized_block(&nodes[0], &block2);
-
-    let _block7 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[6].clone()])
+    // One clock: the LFB is the floor of the live view, whose per-parent
+    // frontier witnesses one round EARLIER than the retired Finalizer's
+    // agreement aggregation did. The two-sided disagreement walk moved the
+    // pins one further block ahead: a round-robin chain's one-round-stale
+    // windows visit the target's own below-target ancestry, which used to
+    // veto the certification edge for a round and no longer does (ignorance
+    // of settled ancestry is not disagreement). Verified by probing the
+    // clocks over this exact staging at each change.
+    let block5 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[4].clone()])
         .await
         .unwrap();
 
     assert_finalized_block(&nodes[0], &block3);
 
-    let _block8 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[7].clone()])
+    let block6 = TestNode::propagate_block_at_index(&mut nodes, 2, &[deploy_datas[5].clone()])
         .await
         .unwrap();
 
     assert_finalized_block(&nodes[0], &block4);
+
+    let _block7 = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy_datas[6].clone()])
+        .await
+        .unwrap();
+
+    assert_finalized_block(&nodes[0], &block5);
+
+    let _block8 = TestNode::propagate_block_at_index(&mut nodes, 1, &[deploy_datas[7].clone()])
+        .await
+        .unwrap();
+
+    assert_finalized_block(&nodes[0], &block6);
 }
 
 /// This test verifies that finalization advances monotonically (block number never

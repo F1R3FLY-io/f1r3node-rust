@@ -70,6 +70,7 @@ impl TestContext {
 async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
     // Create engine and engine_cell (Scala lines 40-41)
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
+        divergence_monitor: node.casper.divergence_monitor.clone(),
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),
@@ -78,6 +79,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
+        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),

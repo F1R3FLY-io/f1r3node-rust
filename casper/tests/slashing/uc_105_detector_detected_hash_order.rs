@@ -1,6 +1,6 @@
 // UC-105 — `equivocation_detected_block_hashes` membership is order-independent.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-105.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-105.
 // Theorems: T-9.11.
 //
 // Scenario: when a record already contains a detected-hash entry, the

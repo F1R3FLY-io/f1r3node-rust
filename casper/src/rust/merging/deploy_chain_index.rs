@@ -41,6 +41,11 @@ pub struct DeployChainIndex {
     /// merge-time window rule; NOT part of the chain's identity
     /// (`PartialEq`/`Hash`/`Ord` cover `deploys_with_cost` only).
     pub deploy_windows: std::collections::HashMap<Bytes, i64>,
+    /// Kept (non-duplicate) rejection records for this chain's deploys
+    /// visible in the merge scope — on-DAG data, so every validator derives
+    /// the same count. Feeds loss-aware conflict adjudication (issue #294);
+    /// NOT part of the chain's identity.
+    pub prior_rejections: u64,
 }
 
 impl DeployChainIndex {
@@ -51,7 +56,7 @@ impl DeployChainIndex {
         history_repository: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         source_block_hash: BlockHash,
         source_block_number: i64,
-        deploy_windows: &std::collections::HashMap<Bytes, i64>,
+        deploy_windows: std::collections::HashMap<Bytes, i64>,
     ) -> Result<Self, HistoryError>
     where
         C: std::clone::Clone
@@ -100,9 +105,8 @@ impl DeployChainIndex {
             StateChange::new(pre_history_reader, post_history_reader, &event_log_index)?;
 
         let deploy_windows = deploy_windows
-            .iter()
-            .filter(|(id, _)| deploys_with_cost.iter().any(|d| d.deploy_id == ***id))
-            .map(|(id, valid_after)| (id.clone(), *valid_after))
+            .into_iter()
+            .filter(|(id, _)| deploys_with_cost.iter().any(|d| d.deploy_id == *id))
             .collect();
 
         Ok(Self {
@@ -115,6 +119,7 @@ impl DeployChainIndex {
             source_block_hash,
             source_block_number,
             deploy_windows,
+            prior_rejections: 0,
         })
     }
 
@@ -150,6 +155,7 @@ impl DeployChainIndex {
             source_block_hash,
             source_block_number,
             deploy_windows,
+            prior_rejections: 0,
         }
     }
 }
@@ -280,6 +286,7 @@ mod tests {
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
             deploy_windows: std::collections::HashMap::new(),
+            prior_rejections: 0,
         }
     }
 

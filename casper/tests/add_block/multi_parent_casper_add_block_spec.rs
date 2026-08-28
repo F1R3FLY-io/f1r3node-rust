@@ -728,8 +728,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_invalid_block_pointer(
-) {
+async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence() {
     let ctx = TestContext::new().await;
 
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
@@ -798,25 +797,23 @@ async fn multi_parent_casper_should_prepare_to_slash_a_block_that_includes_an_in
         .await
         .expect("Node 1 should handle receive");
 
-    // Verify the invalid block was recorded in the DAG (better than checking log messages)
+    // A bad sequence number is judged against local state (demoted since
+    // the is_slashable narrowing): the block is dropped without entering
+    // the DAG or minting slash evidence.
     let dag = nodes[1].casper.block_dag().await.unwrap();
     let invalid_blocks = dag.invalid_blocks();
 
-    // Check if the signed_invalid_block is in the invalid blocks set
-    let is_invalid = invalid_blocks
+    let is_recorded = invalid_blocks
         .iter()
         .any(|block_meta| block_meta.block_hash == signed_invalid_block.block_hash);
 
     assert!(
-        is_invalid,
-        "The invalid block should be recorded in the DAG's invalid blocks set"
+        !is_recorded,
+        "a demoted verdict's block must be dropped, not recorded as evidence"
     );
-
-    // Verify we have exactly 1 invalid block
-    assert_eq!(
-        invalid_blocks.len(),
-        1,
-        "Should have exactly 1 invalid block recorded in the DAG"
+    assert!(
+        !dag.contains(&signed_invalid_block.block_hash),
+        "a demoted verdict's block must not enter the DAG"
     );
 }
 
@@ -1128,6 +1125,8 @@ async fn build_block_with_invalid_justification(
         rejected_deploys: vec![],
         system_deploys: vec![],
         extra_bytes: Bytes::new(),
+        applied_from_scope: vec![],
+        merge_base: Bytes::new(),
     };
 
     let serialized_justifications = vec![Justification {

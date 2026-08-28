@@ -1,7 +1,21 @@
 name: CI
+run-name: ${{ inputs.target_sha != '' && format('CI [exact merge {0}]', inputs.target_sha) || github.event.pull_request.title || github.event.head_commit.message || github.ref_name }}
+
+# Exact-merge dispatch metadata names the trusted default branch. The ci-target artifact names the candidate merge that the trusted workflow tests.
 
 on:
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact synthetic merge SHA for a Deployment Train
+        required: false
+        default: ""
+        type: string
+      top_pull_request:
+        description: Top pull request for target_sha
+        required: false
+        default: ""
+        type: string
   push:
     branches:
       - dev
@@ -11,12 +25,7 @@ on:
     tags:
       - "**"
   pull_request:
-    branches:
-      - dev
-      - master
-      - staging
-      - trying
-      - "feature/**"
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 # GitHub keeps one running item and one pending item in each concurrency group.
 # Issue #267 showed that one shared push group can discard a pending test run.
@@ -24,8 +33,8 @@ on:
 # separate.
 # A newer PR head cancels only the obsolete run for that PR.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.target_sha != '') }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -43,6 +52,9 @@ jobs:
     name: Build Base
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     if: >-
       !startsWith(github.event.head_commit.message, 'chore(release)')
       || startsWith(github.ref, 'refs/tags/')
@@ -50,10 +62,95 @@ jobs:
       VERSION: ${{ steps.env.outputs.VERSION }}
       BRANCH: ${{ steps.env.outputs.BRANCH }}
       SYSTEM_INTEGRATION_REF: ${{ steps.env.outputs.SYSTEM_INTEGRATION_REF }}
+      TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+      TOP_PULL_REQUEST: ${{ steps.target.outputs.top_pull_request }}
+      HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+      BASE_SHA: ${{ steps.target.outputs.base_sha }}
+      MERGE_BASE_SHA: ${{ steps.target.outputs.merge_base_sha }}
+      RUN_HEAVY: ${{ steps.target.outputs.run_heavy }}
     steps:
+      - name: Resolve source target
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_TARGET_SHA: ${{ inputs.target_sha }}
+          REQUESTED_TOP_PULL_REQUEST: ${{ inputs.top_pull_request }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          PR_BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        shell: bash -euo pipefail {0}
+        run: |
+          target="$REQUESTED_TARGET_SHA"
+          top="$REQUESTED_TOP_PULL_REQUEST"
+          head=""
+          base=""
+          merge_base=""
+          if [ -z "$target" ] && [ -z "$top" ]; then
+            target="$GITHUB_SHA"
+            top=0
+          else
+            [[ "$target" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::target_sha must be a full commit SHA"; exit 1; }
+            [[ "$top" =~ ^[1-9][0-9]*$ ]] || { echo "::error::top_pull_request must be a positive integer"; exit 1; }
+            pull="$RUNNER_TEMP/top-pull.json"
+            commit="$RUNNER_TEMP/target-commit.json"
+            gh api "repos/${GITHUB_REPOSITORY}/pulls/${top}" > "$pull"
+            jq -e --arg repo "$GITHUB_REPOSITORY" '
+              .state == "open" and .head.repo.full_name == $repo' "$pull" >/dev/null || {
+              echo "::error::top pull request must be open and its head must be in ${GITHUB_REPOSITORY}"
+              exit 1
+            }
+            observed="$(jq -r '.merge_commit_sha // empty' "$pull")"
+            [ "$observed" = "$target" ] || {
+              echo "::error::pull request #${top} synthetic merge changed from ${target} to ${observed:-unavailable}"
+              exit 1
+            }
+            head="$(jq -r '.head.sha' "$pull")"
+            base="$(jq -r '.base.sha' "$pull")"
+            gh api "repos/${GITHUB_REPOSITORY}/commits/${target}" > "$commit"
+            jq -e --arg merge "$target" --arg head "$head" '
+              .sha == $merge and (.parents | length == 2)
+              and (.parents[0].sha | type == "string" and test("^[0-9a-f]{40}$"))
+              and .parents[1].sha == $head' "$commit" >/dev/null || {
+              echo "::error::target_sha does not join the current top pull request head"
+              exit 1
+            }
+            merge_base="$(jq -r '.parents[0].sha' "$commit")"
+            relationship="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${merge_base}" --jq '.status')"
+            [ "$relationship" = ahead ] || [ "$relationship" = identical ] || {
+              echo "::error::current pull request base is not an ancestor of the synthetic merge base"
+              exit 1
+            }
+          fi
+          run_heavy=false
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
+            run_heavy=true
+          elif [ "$EVENT_NAME" = push ] && {
+            [ "$EVENT_REF" = refs/heads/dev ] ||
+            [ "$EVENT_REF" = refs/heads/master ] ||
+            [[ "$EVENT_REF" == refs/tags/v* ]];
+          }; then
+            run_heavy=true
+          elif [ "$EVENT_NAME" = pull_request ] \
+            && [ "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY" ] \
+            && { [ "$PR_BASE_REF" = dev ] || [ "$PR_BASE_REF" = master ]; } \
+            && [ "$PR_HEAD_REF" != dev ] && [ "$PR_HEAD_REF" != master ]; then
+            run_heavy=true
+          fi
+          {
+            echo "target_sha=$target"
+            echo "top_pull_request=$top"
+            echo "head_sha=$head"
+            echo "base_sha=$base"
+            echo "merge_base_sha=$merge_base"
+            echo "run_heavy=$run_heavy"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          ref: ${{ steps.target.outputs.target_sha }}
           fetch-depth: 0
 
       - name: Initialize Environment
@@ -83,6 +180,44 @@ jobs:
           echo "SYSTEM_INTEGRATION_REF=$SYSTEM_INTEGRATION_REF" >> "$GITHUB_OUTPUT"
 
           echo "Version: $VERSION | Branch: $BRANCH"
+
+      - name: Write exact target evidence
+        if: inputs.target_sha != ''
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          TOP_PULL_REQUEST: ${{ steps.target.outputs.top_pull_request }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          BASE_SHA: ${{ steps.target.outputs.base_sha }}
+          MERGE_BASE_SHA: ${{ steps.target.outputs.merge_base_sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-target"
+          jq -n --arg repo "$GITHUB_REPOSITORY" --arg target "$TARGET_SHA" \
+            --argjson top "$TOP_PULL_REQUEST" --arg head "$HEAD_SHA" --arg base "$BASE_SHA" \
+            --arg merge_base "$MERGE_BASE_SHA" --argjson run "$RUN_ID" --argjson attempt "$RUN_ATTEMPT" '{
+              schema_version: 1,
+              repository: $repo,
+              workflow: ".github/workflows/ci.yml",
+              event: "workflow_dispatch",
+              target_sha: $target,
+              top_pull_request: $top,
+              head_sha: $head,
+              base_sha: $base,
+              merge_base_sha: $merge_base,
+              run_id: $run,
+              run_attempt: $attempt
+            }' > "$RUNNER_TEMP/ci-target/ci-target.json"
+
+      - name: Upload exact target evidence
+        if: inputs.target_sha != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-target-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-target/ci-target.json
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Verify OCI/system-integration pin consistency
         shell: bash -euo pipefail {0}
@@ -138,6 +273,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
 
       # Deliberately the first step and deliberately in this job. `Lint` is a
       # required status check on devProtect and masterProtect, so a violation
@@ -148,6 +285,14 @@ jobs:
       - name: Verify workflow security invariants
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/check-workflow-invariants.sh
+
+      - name: Verify pre-push hook
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-pre-push-hook.sh
+
+      - name: Verify stack CI gate
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-ci-stack-gate.sh
 
       - name: Verify soak schedule routing
         shell: bash -euo pipefail {0}
@@ -160,6 +305,37 @@ jobs:
       - name: Verify system-integration repin helper
         shell: bash -euo pipefail {0}
         run: scripts/test-repin-system-integration.sh
+
+      - name: Verify release evidence
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-evidence.sh
+
+      - name: Verify release gates
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-gates.sh
+
+      - name: Verify release promotion
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-promote-release.sh
+
+      - name: Verify release gate evidence
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-gate-evidence.sh
+
+      - name: Verify deployment train validator
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-train.sh
+
+      - name: Verify deployment train manifests
+        shell: bash -euo pipefail {0}
+        run: |
+          for m in .github/deployment-trains/*.yml; do
+            .github/scripts/release-train.sh validate-manifest "$m" >/dev/null && echo "ok: $m"
+          done
+
+      - name: Verify release workflows
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-release-workflows.sh
 
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
@@ -213,6 +389,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
 
       - name: cargo-deny check
         uses: EmbarkStudios/cargo-deny-action@v2
@@ -232,42 +410,42 @@ jobs:
   markdown_link_check:
     name: Markdown Link Check
     needs: build_base
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(fromJSON('["dev", "master", "staging", "trying"]'), github.base_ref)
+      || startsWith(github.base_ref, 'feature/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
 
       - name: Link Checker
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
         with:
-          # 403 is accepted alongside 200..=299 and 429 because many
-          # citations in `docs/theory/slashing/methodology/references.md`
-          # are DOIs that redirect to publisher portals (ACM DL, Oxford
-          # Academic, IEEE Xplore, IACR ePrint, Medium) which 403 on
-          # unauthenticated/bot requests. A 403 response from these
-          # endpoints still proves the URL is well-formed and the
-          # resource exists; a real broken link would 404. The 429
-          # allowance for rate-limited fetches is unchanged. 503/504 are
-          # accepted because they are transient by definition (seen
-          # from rust-fuzz.github.io during a GitHub Pages blip and
-          # from zenodo.org DOI redirects during gateway timeouts);
-          # a genuinely dead link returns 404/410, not 503/504.
-          # --timeout 45 (lychee defaults to 20). The slashing references carry
-          # ~73 doi.org citations, and doi.org resolution is slow and variable:
-          # it redirects to publisher portals that can take tens of seconds to
-          # answer, and lychee fires the whole corpus concurrently. Runs
-          # therefore flip between zero timeouts and a handful, on unchanged
-          # content — run 30482440004 reported 3 TIMEOUT and 0 errors, which is
-          # "valid but slow", not "broken". Raising the ceiling keeps every DOI
-          # actually verified; excluding them instead would leave 73 citations
-          # unchecked and would need extending every time a different one is
-          # unlucky. The whole 1744-link sweep runs in ~65s against a
-          # timeout-minutes: 10 job, so the extra tail costs nothing.
+          # Scope: local file links plus repository-hosting URLs only.
+          # The broad exclude drops every http(s) URL; the includes add
+          # back github.com, raw.githubusercontent.com, and gitlab.com
+          # (lychee includes take precedence over excludes). Local file
+          # links are not http and are always checked. General-web URLs
+          # (DOIs, publisher portals, project sites) were removed from
+          # the blocking gate 2026-08-19: several domains answer GitHub
+          # runner IPs differently from developer machines, so results
+          # were vantage-dependent and not reproducible locally. The
+          # non-blocking external sweep runs with the 60h stability soak
+          # preflight instead. Fragment checking stays off: the repo
+          # carries pre-existing broken anchors in docs/theory/slashing;
+          # enable it after that debt is cleared. The accept list keeps
+          # 403/429 (rate limits, bot checks) and 503/504 (transient
+          # gateway states) from failing hosting-domain checks.
           args: >-
             --no-progress
-            --exclude-loopback
-            --exclude 'https://www\.gutenberg\.org/ebooks/132'
+            --exclude '^https?://'
+            --include '^https?://(www\.)?github\.com'
+            --include '^https?://raw\.githubusercontent\.com'
+            --include '^https?://(www\.)?gitlab\.com'
             --max-retries 2
             --retry-wait-time 5
             --timeout 45
@@ -277,14 +455,13 @@ jobs:
 
   test:
     name: Test (${{ matrix.crate }})
-    needs: lint
+    needs: [build_base, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         crate:
-          - casper
           - rspace_plus_plus
           - rholang
           - shared
@@ -297,6 +474,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -347,38 +526,119 @@ jobs:
           path: /tmp/test-logs/
           retention-days: 7
 
+  # casper is the one crate whose suite does not reliably fit the shared
+  # 30-minute test-job ceiling: ~23 minutes on a nominal runner (7m build +
+  # 15m tests), which a degraded runner overran on 2026-08-27 with every
+  # completed test passing. It runs here as two nextest count-partition
+  # shards so each leg carries roughly half the test wall-clock. Larger
+  # GitHub-hosted runners are not an option: the org's plan does not support
+  # them, and OCI ephemeral runners are reserved for the approval-gated
+  # heavy pipeline (shared daily instance quota).
+  test_casper:
+    name: Test (casper ${{ matrix.partition }}/2)
+    needs: [build_base, lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-02-09
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-casper
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Run tests (shard ${{ matrix.partition }}/2)
+        env:
+          RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        # Explicit pipefail: cargo's exit status survives the `tee` pipe, and
+        # `|| var=$?` captures it without tripping `-e`. This avoids the
+        # PIPESTATUS idiom, which silently depends on pipefail staying off.
+        shell: bash -euo pipefail {0}
+        run: |
+          ulimit -n 65536
+          mkdir -p /tmp/test-logs
+          # `count:m/2` deals tests round-robin across the two shards, so the
+          # slow convergence/recursion specs spread over both legs instead of
+          # landing together. `--no-tests=pass` tolerates an empty shard.
+          nt=0
+          cargo nextest run --release -p casper --no-tests=pass \
+            --partition count:${{ matrix.partition }}/2 2>&1 \
+            | tee /tmp/test-logs/casper-${{ matrix.partition }}.txt || nt=$?
+          # nextest does NOT run doctests, and doctests cannot be partitioned;
+          # shard 1 runs them once for the whole crate.
+          dt=0
+          if [ "${{ matrix.partition }}" = "1" ]; then
+            cargo test --release -p casper --doc 2>&1 \
+              | tee /tmp/test-logs/casper-doc.txt || dt=$?
+          fi
+          echo "nextest exit=$nt doctest exit=$dt"
+          [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-casper-${{ matrix.partition }}
+          path: /tmp/test-logs/
+          retention-days: 7
+
+  # Ruleset gate. The branch ruleset requires a status check named exactly
+  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
+  # shard jobs into that one required context, in the same style as the
+  # per-arch integration aggregators below. `needs` on a matrix job resolves
+  # to success only when every shard succeeds.
+  test_casper_gate:
+    name: Test (casper)
+    needs: test_casper
+    # Skip (rather than fail) when the shards never ran — e.g. lint failed —
+    # matching how the former single `Test (casper)` leg reported.
+    if: always() && needs.test_casper.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check casper shards
+        shell: bash -e {0}
+        run: |
+          result="${{ needs.test_casper.result }}"
+          if [ "$result" != "success" ]; then
+            echo "casper shard matrix concluded: $result"
+            exit 1
+          fi
+          echo "Both casper shards succeeded"
+
   # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
-  # This call runs it for INTERNAL events only (pushes + same-repo PRs), which
-  # receive secrets normally and need no approval gate (gated: false). Fork PRs
-  # cannot get secrets on a `pull_request` event, so they skip this job and are
-  # served by ci-fork-pr.yml (pull_request_target, maintainer-gated) instead.
-  #
-  # Promotion PRs whose head is dev or master also skip: the push run on the
-  # identical commit already runs the identical
-  # pipeline, so the PR-event copy would only double OCI VM creations against
-  # the tenancy's daily limit. Required checks are commit-scoped — the push
-  # run's aggregator results land on the same SHA and gate the PR; the
-  # PR-side aggregators skip alongside (skipped = passing, same semantics the
-  # fork path relies on) and finish long before the push run's real results,
-  # so the real results are the latest and win.
   pipeline:
     name: Heavy Pipeline
-    needs: lint
+    needs: [build_base, lint]
     # A newer branch or PR head replaces obsolete heavy work. Version tags use
     # separate groups and run to completion. OCI launch remains globally locked.
     concurrency:
-      group: ci-heavy-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+      group: ci-heavy-${{ github.event_name == 'workflow_dispatch' && inputs.target_sha != '' && format('exact-{0}', inputs.target_sha) || (github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref) }}
       cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
-    if: >-
-      (github.event_name == 'push'
-      && (github.ref == 'refs/heads/dev'
-      || github.ref == 'refs/heads/master'
-      || startsWith(github.ref, 'refs/tags/v')))
-      || (github.event_name == 'pull_request'
-      && contains(fromJSON('["dev", "master"]'), github.base_ref)
-      && github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref))
+    if: needs.build_base.outputs.RUN_HEAVY == 'true'
     # `secrets: inherit` is required here, not incidental. A called workflow's
     # jobs do not receive `secrets.*` merely by naming an environment — the
     # caller must pass secrets down. Removing this line made the launch job's
@@ -389,6 +649,7 @@ jobs:
     uses: ./.github/workflows/_integration-pipeline.yml
     with:
       gated: false
+      checkout_ref: ${{ needs.build_base.outputs.TARGET_SHA }}
     secrets: inherit
 
   # Per-arch aggregators. The branch ruleset requires status checks named
@@ -396,24 +657,12 @@ jobs:
   # pipeline's per-arch matrix jobs into one ruleset gate per arch. They use
   # `contains(...)` (not `startswith`) because reusable-workflow job names are
   # prefixed with the caller job id ("Heavy Pipeline / Integration Tests (...)").
-  # Internal-only: fork PRs get this check from ci-fork-pr.yml instead, so this
-  # one skips for them (a skipped required check is treated as passing).
-  # PRs from dev/master skip too, mirroring the pipeline job's dedupe condition.
   # Each gate checks only its two architecture slots. A failure in another
   # architecture does not change this gate's result.
   integration_tests_amd64:
     name: Integration Tests (amd64)
     needs: pipeline
-    if: >-
-      always()
-      && ((github.event_name == 'push'
-      && (github.ref == 'refs/heads/dev'
-      || github.ref == 'refs/heads/master'
-      || startsWith(github.ref, 'refs/tags/v')))
-      || (github.event_name == 'pull_request'
-      && contains(fromJSON('["dev", "master"]'), github.base_ref)
-      && github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref)))
+    if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -429,8 +678,8 @@ jobs:
             --paginate \
             --jq '.jobs[] | select(.name | contains("Integration Tests (amd64-")) | "\(.conclusion // "pending")\t\(.name)"')
           slot_count=$(printf '%s\n' "$slots" | grep -c . || true)
-          if [ "$slot_count" -ne 2 ]; then
-            echo "Expected 2 amd64 integration test slots, but found $slot_count:"
+          if [ "$slot_count" -ne 4 ]; then
+            echo "Expected 4 amd64 integration test slots (docker, subprocess, plus the two ucc legs), but found $slot_count:"
             printf '%s\n' "$slots"
             exit 1
           fi
@@ -445,16 +694,7 @@ jobs:
   integration_tests_arm64:
     name: Integration Tests (arm64)
     needs: pipeline
-    if: >-
-      always()
-      && ((github.event_name == 'push'
-      && (github.ref == 'refs/heads/dev'
-      || github.ref == 'refs/heads/master'
-      || startsWith(github.ref, 'refs/tags/v')))
-      || (github.event_name == 'pull_request'
-      && contains(fromJSON('["dev", "master"]'), github.base_ref)
-      && github.event.pull_request.head.repo.fork == false
-      && !contains(fromJSON('["dev", "master"]'), github.event.pull_request.head.ref)))
+    if: always() && needs.pipeline.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

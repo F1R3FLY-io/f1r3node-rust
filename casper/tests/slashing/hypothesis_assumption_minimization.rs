@@ -1,11 +1,11 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // UC-79 — Hypothesis assumption-minimization corpus.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §12 UC-79.
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-79.
 // Theorems: T-12 hypotheses (closure-bound, NoDup-quorum, etc.).
 // Reference: formal/sage/slashing/FINDINGS.md row 20 (assumption
 // catalogue), `theorem_assumption_counterexamples.rs` (UC-69).

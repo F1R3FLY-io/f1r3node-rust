@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use casper::rust::blocks::block_processor::BlockProcessor;
+use casper::rust::blocks::block_processor::{BlockProcessor, ValidationFailureDisposition};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
@@ -262,26 +262,60 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     .await;
 
                     match result {
-                        Ok(res) => {
+                        Ok(BlockProcessOutcome::Processed(block, res)) => {
                             tracing::info!("Block {} processing finished.", block_str);
-                            match result_tx.send(res).await {
+                            if let Err(err) =
+                                block_processor.clear_validation_failures(&block.block_hash)
+                            {
+                                tracing::warn!(
+                                    block = %block_str,
+                                    error = %err,
+                                    "failed to clear validation-failure ledger"
+                                );
+                            }
+                            match result_tx.send((block, res)).await {
                                 Ok(_) => {}
                                 Err(err) => {
                                     tracing::error!(error = %err, "block processing result send failed")
                                 }
                             }
                         }
-                        Err(e) => match &e {
-                            CasperError::Other(msg) if msg == "Missing dependencies" => {
-                                tracing::warn!(
-                                    "Block {} delayed: missing dependencies.",
-                                    block_str
-                                );
+                        Ok(BlockProcessOutcome::MissingDependencies) => {
+                            tracing::warn!("Block {} delayed: missing dependencies.", block_str);
+                        }
+                        // Already logged at INFO by the pipeline; a routine
+                        // drop is not a failure.
+                        Ok(BlockProcessOutcome::NotOfInterest)
+                        | Ok(BlockProcessOutcome::Malformed) => {}
+                        Err(e) => {
+                            tracing::error!(block = %block_str, error = %e, "block processing failed");
+                            match block_processor.note_validation_failure(&block.block_hash) {
+                                Ok(ValidationFailureDisposition::Retry) => {}
+                                Ok(ValidationFailureDisposition::PurgeAndQuarantine) => {
+                                    tracing::warn!(
+                                        block = %block_str,
+                                        "hard-failing block purged from buffer after \
+                                         reaching the validation-error attempt cap"
+                                    );
+                                    if let Err(purge_err) =
+                                        block_processor.purge_from_buffer_and_ack(&block).await
+                                    {
+                                        tracing::warn!(
+                                            block = %block_str,
+                                            error = %purge_err,
+                                            "purge after validation-error cap failed"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        block = %block_str,
+                                        error = %err,
+                                        "failed to record validation failure"
+                                    );
+                                }
                             }
-                            _ => {
-                                tracing::error!(block = %block_str, error = %e, "block processing failed");
-                            }
-                        },
+                        }
                     }
 
                     // Release in-flight marker before scanning dependency-free pendants.
@@ -311,6 +345,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                             // Enqueue pendants if we can mark them as queued/in-processing first.
                             for pendant in &buffer_pendants {
                                 let pendant_hash = BlockHash::from(pendant.block_hash.clone());
+                                if block_processor
+                                    .is_validation_failure_quarantined(&pendant_hash)
+                                    .unwrap_or(false)
+                                {
+                                    tracing::debug!(
+                                        "Skipping dependency-free pendant {} during \
+                                         validation-failure quarantine",
+                                        PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                    );
+                                    continue;
+                                }
                                 if blocks_in_processing.insert(pendant_hash.clone()) {
                                     let max_in_flight = max_blocks_in_processing();
                                     if blocks_in_processing.len() > max_in_flight {
@@ -419,6 +464,17 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
     }
 }
 
+/// A processing attempt's outcome. The non-`Processed` variants are normal
+/// pipeline exits — a duplicate delivery, a malformed block, a block waiting
+/// on its dependencies — not failures, and they must never travel the error
+/// channel: an `Err` here means something actually broke.
+enum BlockProcessOutcome {
+    Processed(BlockMessage, ValidBlockProcessing),
+    NotOfInterest,
+    Malformed,
+    MissingDependencies,
+}
+
 /// Process a block through all validation steps
 ///
 /// This implements the Scala pipeline:
@@ -432,7 +488,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
     block: BlockMessage,
-) -> Result<(BlockMessage, ValidBlockProcessing), CasperError> {
+) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
     // Step 1: Check if block is of interest
@@ -464,7 +520,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                     block_str, err
                 ))
             })?;
-        return Err(CasperError::Other("Block not of interest".to_string()));
+        return Ok(BlockProcessOutcome::NotOfInterest);
     }
 
     // Step 2: Check if well-formed and store
@@ -496,11 +552,45 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
                     block_str, err
                 ))
             })?;
-        return Err(CasperError::Other("Block is malformed".to_string()));
+        return Ok(BlockProcessOutcome::Malformed);
     }
 
     // Step 3: Log started
     tracing::info!("Block {} processing started.", block_str);
+
+    // Settled-history door: a signature-checked block at-or-below this node's
+    // sync anchor, solicited by a bonded validator's block, enters the DAG the
+    // way LFS restore admitted its neighbours — hash-checked, unjudged. Judging
+    // it instead runs tip-state validation checks against settled history,
+    // which is how a restored joiner recorded verdicts against honest
+    // validators. The outer loop's pendant scan then re-enqueues whatever was
+    // deferred waiting on this block.
+    match block_processor
+        .try_admit_settled(casper.clone(), &block)
+        .await
+    {
+        Ok(true) => {
+            return Ok(BlockProcessOutcome::Processed(
+                block,
+                rspace_plus_plus::rspace::history::Either::Left(
+                    casper::rust::block_status::BlockError::AdmittedSettled,
+                ),
+            ));
+        }
+        Ok(false) => {}
+        Err(err) => {
+            block_processor
+                .ack_processed(&block)
+                .await
+                .map_err(|ack_err| {
+                    CasperError::RuntimeError(format!(
+                        "try_admit_settled failed for {}, and cleanup failed: {}",
+                        block_str, ack_err
+                    ))
+                })?;
+            return Err(err);
+        }
+    }
 
     // Step 4: Check dependencies with effects
     // Equivalent to: blockProcessor.checkDependenciesWithEffects(c, b)
@@ -526,7 +616,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
     if !has_dependencies {
         tracing::info!("Block {} missing dependencies.", block_str);
         // `check_dependencies_with_effects` already performs ack/cleanup for this path.
-        return Err(CasperError::Other("Missing dependencies".to_string()));
+        return Ok(BlockProcessOutcome::MissingDependencies);
     }
 
     // Step 5: Validate block with effects
@@ -554,7 +644,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync>(
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok((block, validation_result))
+    Ok(BlockProcessOutcome::Processed(block, validation_result))
 }
 
 #[cfg(test)]

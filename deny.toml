@@ -29,6 +29,14 @@ ignore = [
   "RUSTSEC-2026-0099", # wildcard-name constraints
   "RUSTSEC-2026-0104", # CRL parsing panic
 
+  # h2 0.3.27 (transitive via hyper 0.14 -> the same reqwest 0.11 chain as
+  # above). Low severity: unbounded queueing of empty DATA frames when
+  # streams are not drained. The fix landed only in h2 0.4.16; the 0.3 line
+  # has no patched release. The workspace h2 0.4.x copy is bumped to 0.4.16,
+  # so this ignore covers only the legacy 0.3 line. Remove when the
+  # reqwest 0.11 chain (hocon / opentelemetry-zipkin / rust-bert) is bumped.
+  "RUSTSEC-2026-0258", # h2 unbounded empty DATA frames (0.3 line unpatched)
+
     # Unmaintained advisories accepted for now (transitive deps from upstream
     # crates we don't own). Track upstream remediation; revisit on next sync.
     "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)

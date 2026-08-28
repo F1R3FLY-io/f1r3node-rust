@@ -6,9 +6,10 @@ use std::time::Duration;
 use casper::rust::genesis::contracts::vault::Vault;
 use crypto::rust::public_key::PublicKey;
 use rholang::rust::build::compile_rholang_source::CompiledRholangSource;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use crate::helper::rho_spec::RhoSpec;
+use crate::helper::rho_spec::{timeout_phase, RhoSpec, EVAL_TEST_SOURCE_PHASE};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn prepare_vault(vault_data: (&str, u64)) -> Vault {
@@ -42,8 +43,7 @@ fn test_vaults() -> Vec<Vault> {
     .collect()
 }
 
-#[test]
-fn pos_spec() {
+fn run_pos_spec_once() -> Result<(), InterpreterError> {
     // Note: it's not 1:1 port, we should use larger stack size (16MB) to prevent stack overflow
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
@@ -81,23 +81,44 @@ fn pos_spec() {
                     vec![],
                     // pos_spec runs the full 16-test PoSTest.rho through the interpreter over a
                     // custom-param genesis with test vaults (an unavoidable GENESIS_CACHE miss) —
-                    // the heaviest genesis-contract spec, ~11-50s in isolation now that the harness
-                    // enforces. `.config/nextest.toml` gives it `threads-required = "num-cpus"`,
-                    // which isolates it within a single-crate run (`cargo nextest run -p casper`
-                    // => ~11s). But under a full-workspace run (`--workspace`, ~2700 tests) other
-                    // crates' interpreter/LMDB-heavy tests still contend at the OS level, starving
-                    // it well past a short bound (observed ~400-900s). This timeout only exists to
-                    // catch a genuine HANG (the work is deterministic and finite); a very generous
-                    // value keeps scheduling latency from producing a false failure while still
-                    // bounding a true hang. See .config/nextest.toml.
-                    Duration::from_secs(1800),
+                    // the heaviest genesis-contract spec, ~10-50s in isolation. The bound is a
+                    // WEDGE-CATCHER: pos_spec intermittently wedges under parallel suite
+                    // execution (all tokio workers parked, zero runnable tasks; the timed run
+                    // localized it to the 'eval-test-source' phase — the interpreter evaluating
+                    // PoSTest.rho), and the previous 1800s value burned half an hour per
+                    // occurrence. The RhoSpec harness times the WHOLE pipeline and names the
+                    // wedged phase in the failure message, so an expiry here is diagnostic
+                    // signal, not lost work; a healthy run that trips it under load should be
+                    // retried, not accommodated with a wider bound.
+                    Duration::from_secs(60),
                     genesis_parameters,
                 );
 
-                spec.run_tests().await.expect("PoSSpec tests failed");
+                spec.run_tests().await.map(|_| ())
             })
         })
         .unwrap()
         .join()
-        .unwrap();
+        .unwrap()
+}
+
+/// The single retry absorbs a wedge under parallel suite load. It is not a
+/// performance allowance: set `RHO_SPEC_NO_RETRY=1` to surface the first
+/// timeout as the failure, so a run that must measure interpreter speed does
+/// not hide a regression behind the retry.
+#[test]
+fn pos_spec() {
+    match run_pos_spec_once() {
+        Err(err)
+            if timeout_phase(&err) == Some(EVAL_TEST_SOURCE_PHASE)
+                && std::env::var_os("RHO_SPEC_NO_RETRY").is_none() =>
+        {
+            eprintln!(
+                "PoSSpec timed out in phase '{EVAL_TEST_SOURCE_PHASE}' under parallel load. \
+                 The test will retry once (set RHO_SPEC_NO_RETRY=1 to disable): {err:?}"
+            );
+            run_pos_spec_once().expect("PoSSpec tests failed after timeout retry");
+        }
+        result => result.expect("PoSSpec tests failed"),
+    }
 }

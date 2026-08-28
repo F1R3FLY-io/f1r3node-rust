@@ -8,14 +8,45 @@
 //     `block_creator::create` exercises the re-issuance loop and emits
 //     a SlashDeploy in the proposed block's body.
 
+use std::collections::BTreeSet;
+
+use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::casper::Casper;
 use casper::rust::merging::rejected_slash::RejectedSlash;
+use casper::rust::slashing_authorization::checked_base_seq;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::ParentsPostStateCacheKey;
-use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+};
+use models::rust::equivocation_record::EquivocationRecord;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+
+/// Seed the evidence state an equivocation verdict leaves behind: the
+/// invalid record in the DAG plus the tracker's EquivocationRecord. The
+/// recovery machinery under test starts downstream of that state;
+/// verdict classification itself is covered by the `slashing::`
+/// integration suite, and only the equivocation class mints evidence
+/// since the `is_slashable` narrowing.
+fn observe_slashable_evidence(node: &TestNode, block: &BlockMessage) {
+    node.casper
+        .block_dag_storage
+        .insert(block, InsertMode::Invalid)
+        .expect("record invalid evidence");
+    let base_seq = checked_base_seq(block.seq_num).expect("evidence block has positive seq");
+    node.casper
+        .block_dag_storage
+        .access_equivocations_tracker(|tracker| {
+            tracker.add(EquivocationRecord::new(
+                block.sender.clone(),
+                base_seq,
+                BTreeSet::new(),
+            ))
+        })
+        .expect("record equivocation evidence");
+}
 
 struct TestContext {
     genesis: GenesisContext,
@@ -97,14 +128,8 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
         b.seq_num = 47;
         b
     };
-    nodes[1]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 1 processes invalid_block");
-    nodes[2]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 2 processes invalid_block");
+    observe_slashable_evidence(&nodes[1], &invalid_block);
+    observe_slashable_evidence(&nodes[2], &invalid_block);
 
     // Each honest validator proposes a block containing its own
     // auto-emitted SlashDeploy via prepare_slashing_deploys.
@@ -297,10 +322,7 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     };
 
     // ONLY node 1 observes the equivocation → only node 1 will slash.
-    nodes[1]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 1 processes invalid_block");
+    observe_slashable_evidence(&nodes[1], &invalid_block);
 
     // Node 1 proposes a POST-slash block (auto-emitted SlashDeploy for V0).
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
@@ -455,14 +477,8 @@ async fn e1c_re_issues_merge_rejected_slash() {
         b.seq_num = 47;
         b
     };
-    nodes[1]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 1 processes invalid_block");
-    nodes[2]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 2 processes invalid_block");
+    observe_slashable_evidence(&nodes[1], &invalid_block);
+    observe_slashable_evidence(&nodes[2], &invalid_block);
 
     // Each honest validator proposes a sibling block at block_number=1
     // so the merge proposer's tip set contains two non-ancestor parents.
@@ -528,6 +544,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
             .on_chain_state
             .shard_conf
             .disable_late_block_filtering,
+        buffer_populated: true,
     };
 
     let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -543,6 +560,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
         &latest_messages,
         None,
         Some(&nodes[1].rejected_deploy_buffer),
+        None,
         None,
     )
     .await
@@ -649,14 +667,8 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         b.seq_num = 47;
         b
     };
-    nodes[1]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 1 processes invalid_block");
-    nodes[2]
-        .process_block(invalid_block.clone())
-        .await
-        .expect("node 2 processes invalid_block");
+    observe_slashable_evidence(&nodes[1], &invalid_block);
+    observe_slashable_evidence(&nodes[2], &invalid_block);
 
     let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
@@ -713,6 +725,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
             .on_chain_state
             .shard_conf
             .disable_late_block_filtering,
+        buffer_populated: true,
     };
 
     let latest_messages: std::collections::BTreeMap<_, _> = snapshot
@@ -728,6 +741,7 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         &latest_messages,
         None,
         Some(&nodes[1].rejected_deploy_buffer),
+        None,
         None,
     )
     .await

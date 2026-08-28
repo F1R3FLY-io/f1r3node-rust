@@ -53,6 +53,13 @@ pub struct RequestState {
     pub in_casper_buffer: bool,
     pub waiting_list: Vec<PeerNode>,
     pub peer_requery_cursor: u32,
+    /// This node asked for the hash to satisfy a missing dependency, rather
+    /// than merely hearing it announced. Sticky: a later gossip announcement
+    /// does not clear it. Read by `check_if_of_interest`, which must not drop
+    /// a solicited dependency as "old" — the block's height is below the
+    /// joiner's approved block precisely because it is history the joiner
+    /// lacks.
+    pub requested_as_dependency: bool,
 }
 
 // Scala: type RequestedBlocks[F[_]] = Ref[F, Map[BlockHash, RequestState]]
@@ -528,6 +535,18 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Get access to the requested_blocks for testing purposes
     pub fn requested_blocks(&self) -> &RequestedBlocks { &self.requested_blocks }
 
+    /// True iff this node asked for the hash to satisfy a missing dependency.
+    /// An unsolicited gossip announcement does not qualify.
+    pub fn was_requested_as_dependency(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        let state = self.requested_blocks.lock().map_err(|_| {
+            CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
+        })?;
+        Ok(state
+            .get(hash)
+            .map(|s| s.requested_as_dependency)
+            .unwrap_or(false))
+    }
+
     /// Helper method to add a source peer to an existing request
     fn add_source_peer_to_request(
         init_state: &mut HashMap<BlockHash, RequestState>,
@@ -546,6 +565,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         now: u64,
         mark_as_received: bool,
         source_peers: Vec<PeerNode>,
+        requested_as_dependency: bool,
     ) -> bool {
         let normalized_waiting_list = {
             let mut deduped = Vec::new();
@@ -564,7 +584,10 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             deduped
         };
 
-        if init_state.contains_key(&hash) {
+        if let Some(existing) = init_state.get_mut(&hash) {
+            // Sticky: a hash first heard by gossip and later needed as a
+            // dependency must end up marked, or the solicited copy is dropped.
+            existing.requested_as_dependency |= requested_as_dependency;
             false // Request already exists
         } else {
             init_state.insert(hash, RequestState {
@@ -575,6 +598,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 in_casper_buffer: false,
                 waiting_list: normalized_waiting_list,
                 peer_requery_cursor: 0,
+                requested_as_dependency,
             });
             true
         }
@@ -695,7 +719,14 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 } else {
                     missing_dependency_peers
                 };
-                Self::add_new_request(&mut state, hash.clone(), now, false, initial_peers);
+                Self::add_new_request(
+                    &mut state,
+                    hash.clone(),
+                    now,
+                    false,
+                    initial_peers,
+                    admit_hash_reason == AdmitHashReason::MissingDependencyRequested,
+                );
                 AdmitHashResult {
                     status: AdmitHashStatus::NewRequestAdded,
                     broadcast_request: request_from_peer.is_none(),
@@ -1270,7 +1301,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             match state.get(&hash) {
                 // There might be blocks that are not maintained by RequestedBlocks, e.g. fork-choice tips
                 None => {
-                    Self::add_new_request(&mut state, hash.clone(), now, true, Vec::new());
+                    Self::add_new_request(&mut state, hash.clone(), now, true, Vec::new(), false);
                     (AckReceiveResult::AddedAsReceived, None)
                 }
                 Some(requested) => {
@@ -1452,6 +1483,7 @@ mod tests {
                 in_casper_buffer: false,
                 waiting_list: Vec::new(),
                 peer_requery_cursor: 0,
+                requested_as_dependency: false,
             })
             .await
             .expect("should seed request state");
@@ -1539,6 +1571,7 @@ mod tests {
                 in_casper_buffer: false,
                 waiting_list: Vec::new(),
                 peer_requery_cursor: 0,
+                requested_as_dependency: false,
             })
             .await
             .expect("should seed request state");
@@ -1590,6 +1623,7 @@ mod tests {
                 in_casper_buffer: false,
                 waiting_list: Vec::new(),
                 peer_requery_cursor: 0,
+                requested_as_dependency: false,
             })
             .await
             .expect("should seed request state");
@@ -1659,6 +1693,7 @@ mod tests {
                 in_casper_buffer: false,
                 waiting_list: vec![waiting_peer.clone()],
                 peer_requery_cursor: 0,
+                requested_as_dependency: false,
             })
             .await
             .expect("should seed request state");

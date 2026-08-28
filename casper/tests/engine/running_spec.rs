@@ -264,6 +264,7 @@ mod tests {
                     block: genesis_block,
                     required_sigs: 0,
                 },
+                floor_seed: None,
                 sigs: Vec::new(),
             };
 
@@ -386,6 +387,7 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 
@@ -421,8 +423,14 @@ mod tests {
                 casper_shard_conf: fixture.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
+
+        // The rejoin requires receive-quiescence in addition to the stale
+        // own message: no peer block has arrived since construction, so
+        // aging past the threshold makes the node genuinely quiescent.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
 
         update_fork_choice_tips_if_stuck(
             &engine_cell,
@@ -491,6 +499,7 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
+            floor_seed: None,
             sigs: Vec::new(),
         };
 
@@ -526,6 +535,7 @@ mod tests {
                 casper_shard_conf: fixture.casper_shard_conf.clone(),
                 heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
 

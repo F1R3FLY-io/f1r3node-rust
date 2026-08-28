@@ -275,16 +275,16 @@ async fn history_repository_should_process_insert_and_delete_of_thirty_mixed_ele
 async fn history_repository_should_not_allow_switching_to_a_not_existing_root() {
     let repo = create_empty_repository();
 
+    // The absent root keeps its NAME: `RootNotFound` carries the hash so a
+    // caller can fetch it instead of parsing prose. Downstream, this is what
+    // lets a replay classify the absence as an availability event rather
+    // than a verdict.
     match repo.reset(&zeros_blake()) {
-        Err(HistoryError::RootError(RootError::UnknownRootError(err))) => {
-            assert!(
-                err.contains("unknown root"),
-                "Expected error containing 'unknown root', got: {}",
-                err
-            )
+        Err(HistoryError::RootError(RootError::RootNotFound(root))) => {
+            assert_eq!(root, zeros_blake(), "the error must name the exact root that was not found")
         }
         Ok(_) => assert!(false, "Expected a failure"),
-        _ => assert!(false, "Wrong error thrown"),
+        Err(other) => assert!(false, "Wrong error thrown: {:?}", other),
     }
 }
 

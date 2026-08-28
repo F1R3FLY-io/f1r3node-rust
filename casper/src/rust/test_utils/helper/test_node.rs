@@ -1100,6 +1100,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -1125,6 +1126,7 @@ impl TestNode {
                 required_sigs: 0,
             },
             sigs: vec![],
+            floor_seed: None,
         };
 
         let shard_conf = CasperShardConf {
@@ -1156,6 +1158,9 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            divergence_monitor: std::sync::Arc::new(
+                crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1164,6 +1169,9 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: Arc::new(
+                crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
@@ -1194,6 +1202,7 @@ impl TestNode {
         let casper_for_engine = {
             let casper_guard = casper.clone();
             Arc::new(MultiParentCasperImpl {
+                divergence_monitor: casper_guard.divergence_monitor.clone(),
                 block_retriever: casper_guard.block_retriever.clone(),
                 event_publisher: casper_guard.event_publisher.clone(),
                 runtime_manager: casper_guard.runtime_manager.clone(),
@@ -1202,6 +1211,7 @@ impl TestNode {
                 block_dag_storage: casper_guard.block_dag_storage.clone(),
                 deploy_storage: casper_guard.deploy_storage.clone(),
                 rejected_deploy_buffer: casper_guard.rejected_deploy_buffer.clone(),
+                deploy_lifecycle: casper_guard.deploy_lifecycle.clone(),
                 casper_buffer_storage: casper_guard.casper_buffer_storage.clone(),
                 validator_id: casper_guard.validator_id.clone(),
                 casper_shard_conf: casper_guard.casper_shard_conf.clone(),

@@ -62,6 +62,12 @@ pub struct LogFileConfig {
 pub enum LogRotation {
     #[default]
     Never,
+    /// Rotate every minute. Retention then bounds the log to roughly
+    /// `retention` minutes rather than days — the only granularity that
+    /// keeps a debug-level run (measured at gigabytes per minute across a
+    /// shard) inside a fixed disk budget while still retaining the window
+    /// around a failure.
+    Minutely,
     Hourly,
     Daily,
 }
@@ -158,6 +164,7 @@ fn make_file_writer(
     let mut builder = tracing_appender::rolling::Builder::new()
         .rotation(match cfg.rotation {
             LogRotation::Never => tracing_appender::rolling::Rotation::NEVER,
+            LogRotation::Minutely => tracing_appender::rolling::Rotation::MINUTELY,
             LogRotation::Hourly => tracing_appender::rolling::Rotation::HOURLY,
             LogRotation::Daily => tracing_appender::rolling::Rotation::DAILY,
         })

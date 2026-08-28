@@ -74,9 +74,6 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
             Some("No new deploys to propose.".to_string())
         }
-        ProposeStatus::Failure(ProposeFailure::RecoveryDeferred) => {
-            Some("Rejected deploy recovery deferred to selected leader.".to_string())
-        }
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
         )) => Some("No new blocks from peers yet; synchronize with network first.".to_string()),
@@ -1423,7 +1420,10 @@ impl BlockAPI {
 
         if let Some(casper) = eng.with_casper() {
             let dag = casper.block_dag().await?;
-            let maybe_block_hash = dag.lookup_by_deploy_id(deploy_id)?;
+            // The sig's most recent canonical appearance, from the
+            // lifecycle rows — a pure function of the DAG's bodies, never
+            // of node-local insertion order.
+            let maybe_block_hash = dag.deploy_canonical_appearance(deploy_id)?;
 
             match maybe_block_hash {
                 Some(block_hash) => {
@@ -1735,9 +1735,6 @@ impl BlockAPI {
     ///
     /// Thin wrapper around
     /// `deploy_finalization_status::resolve` that unwraps the engine cell.
-    /// The pure resolver is reused by the catchup gate in
-    /// `compute_parents_post_state` to avoid gating buffer population on
-    /// already-finalized sigs.
     pub async fn deploy_finalization_status(
         engine_cell: &EngineCell,
         sig: &[u8],
@@ -1759,20 +1756,22 @@ impl BlockAPI {
         };
 
         let dag = casper.block_dag().await?;
-        match crate::rust::api::deploy_finalization_status::resolve_with_known_block(
+        // A pure LOOKUP over the deploy-lifecycle register: terminal
+        // verdicts were determined at their threshold crossings by
+        // `finality::deploy_lifecycle` and persisted write-once — no
+        // per-query parameters.
+        match crate::rust::api::deploy_finalization_status::resolve(
             &dag,
             casper.block_store(),
-            casper.casper_shard_conf().deploy_lifespan,
             sig,
             known_block_hash,
         ) {
             Ok(status) => Ok(status),
             Err(err) => {
-                // Convert deploy-index inconsistency to `pending_unknown`
-                // so HTTP/gRPC callers see a tractable response. The
-                // resolver returns `Err` so the consensus path
-                // (`repeat_deploy`) conservative-fails on the same
-                // inconsistency. Genuine I/O failures keep propagating.
+                // Convert the known-block inconsistency (a caller-claimed
+                // block whose body does not list the sig) to
+                // `pending_unknown` so HTTP/gRPC callers see a tractable
+                // response. Genuine I/O failures keep propagating.
                 if err
                     .downcast_ref::<crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption>()
                     .is_some()
@@ -1783,6 +1782,66 @@ impl BlockAPI {
                 }
             }
         }
+    }
+
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag.
+    ///
+    /// When `deployer` is `Some`, only deploys signed by that public key
+    /// are returned. The result is capped at
+    /// [`pending_deploys::PENDING_DEPLOYS_MAX_RESULTS`] entries; the
+    /// `total_available` field reports the count that matched before
+    /// truncation, so callers can detect truncation by comparing
+    /// `deploys.len() < total_available`.
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Returns an error on bootstrapping nodes where Casper is not yet
+    /// initialised (`with_casper()` returns `None`).
+    pub async fn list_pending_deploys(
+        engine_cell: &EngineCell,
+        deployer: Option<&[u8]>,
+    ) -> ApiErr<crate::rust::api::pending_deploys::PendingDeploysSnapshot> {
+        use crate::rust::api::pending_deploys::{
+            PendingDeploysSnapshot, PENDING_DEPLOYS_MAX_RESULTS,
+        };
+
+        let error_message =
+            "Could not list pending deploys, casper instance was not available yet.";
+        let eng = engine_cell.get().await;
+        let Some(casper) = eng.with_casper() else {
+            tracing::warn!("{}", error_message);
+            return Err(eyre::eyre!("Error: {}", error_message));
+        };
+
+        let mut deploys = casper.list_pending_deploys().await?;
+
+        if let Some(pk) = deployer {
+            deploys.retain(|(d, _)| d.pk.bytes.as_ref() == pk);
+        }
+
+        // Deterministic ordering before cap truncation: by timestamp, then
+        // by signature bytes. Makes the truncation result reproducible
+        // across calls for the same queue state.
+        deploys.sort_by(|(a, _), (b, _)| {
+            a.data
+                .time_stamp
+                .cmp(&b.data.time_stamp)
+                .then_with(|| a.sig.as_ref().cmp(b.sig.as_ref()))
+        });
+
+        let total_available = deploys.len() as u32;
+        deploys.truncate(PENDING_DEPLOYS_MAX_RESULTS);
+
+        Ok(PendingDeploysSnapshot {
+            deploys,
+            total_available,
+        })
     }
 
     pub async fn bond_status(engine_cell: &EngineCell, public_key: &ByteString) -> ApiErr<bool> {

@@ -224,9 +224,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                     }
                                 }
                                 None => {
-                                    if propose_result.is_no_new_deploys()
-                                        || propose_result.is_recovery_deferred()
-                                    {
+                                    if propose_result.is_no_new_deploys() {
                                         tracing::info!("Propose: {}", propose_result.propose_status)
                                     } else {
                                         tracing::error!(
@@ -241,6 +239,19 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                         }
                         Err(e) => {
                             tracing::error!(error = %e, "propose call failed");
+
+                            let (classified_failure, block_to_request) = classify_propose_error(&e);
+                            if let Some(hash) = block_to_request {
+                                if let Err(req_err) =
+                                    casper.request_block_from_peers(hash.clone()).await
+                                {
+                                    tracing::warn!(
+                                        error = %req_err,
+                                        block = %hex::encode(&hash[..hash.len().min(8)]),
+                                        "failed to request the block the propose walk needs"
+                                    );
+                                }
+                            }
 
                             let failure_seq_number = match casper.get_snapshot().await {
                                 Ok(snapshot) => snapshot
@@ -262,14 +273,14 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                             // Dropping this sender causes "channel closed" at caller and
                             // unnecessarily breaks heartbeat liveness flow.
                             let _ = propose_id_sender.send(ProposerResult::failure(
-                                ProposeStatus::Failure(ProposeFailure::BugError),
+                                ProposeStatus::Failure(classified_failure.clone()),
                                 failure_seq_number,
                             ));
 
                             // Runtime propose errors are internal failures and should not be
                             // reported as NoNewDeploys / InternalDeployError.
                             let error_result: (ProposeResult, Option<BlockMessage>) =
-                                (ProposeResult::failure(ProposeFailure::BugError), None);
+                                (ProposeResult::failure(classified_failure), None);
 
                             // Send to both channels
                             let _ = curr_result_tx.send(error_result);
@@ -386,11 +397,55 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
     }
 }
 
+/// Classify a propose-call error into the failure the channels report and
+/// the block to request, if any. `BlockNotHeld` carries the floor
+/// machinery's fetch-and-retry contract; everything else is a genuine bug
+/// the heartbeat should back off on.
+pub(crate) fn classify_propose_error(
+    error: &CasperError,
+) -> (ProposeFailure, Option<models::rust::block_hash::BlockHash>) {
+    match error {
+        CasperError::BlockNotHeld(hash) => (
+            ProposeFailure::MissingBlock(hash.clone()),
+            Some(hash.clone()),
+        ),
+        _ => (ProposeFailure::BugError, None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use casper::rust::blocks::proposer::propose_result::CheckProposeConstraintsFailure;
 
     use super::*;
+
+    /// `BlockNotHeld` is availability, not a bug: the classification must
+    /// name the block so the caller requests it, and must not report the
+    /// backoff-escalating BugError.
+    #[test]
+    fn block_not_held_classifies_as_missing_block_to_request() {
+        let hash = models::rust::block_hash::BlockHash::from(vec![0x5a; 32]);
+        let (failure, request) = classify_propose_error(&CasperError::BlockNotHeld(hash.clone()));
+        assert_eq!(
+            request.as_ref(),
+            Some(&hash),
+            "the named block must be requested"
+        );
+        assert!(
+            matches!(failure, ProposeFailure::MissingBlock(h) if h == hash),
+            "availability failure, never BugError"
+        );
+    }
+
+    /// Every other propose error keeps the bug classification (and its
+    /// backoff) — the availability carve-out must not widen.
+    #[test]
+    fn other_errors_stay_bug_classified() {
+        let (failure, request) =
+            classify_propose_error(&CasperError::RuntimeError("genuinely broken".to_string()));
+        assert!(request.is_none());
+        assert!(matches!(failure, ProposeFailure::BugError));
+    }
 
     #[test]
     fn should_not_retry_internal_deploy_error_immediately() {

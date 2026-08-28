@@ -1,23 +1,23 @@
 (* ===========================================================================
-   KeepOneOrder.v - THE P3 (block-merge determinism) proof: the 5-key
+   KeepOneOrder.v - THE P3 (block-merge determinism) proof: the four priority
+   tiers plus injective composite identity in the
    DeployChainIndex comparator is a STRICT TOTAL ORDER whose Equal-class is
    EXACTLY the identity on the injective terminal key, so the merge's
    `min_by`/`sort` winner is NODE-IDENTICAL regardless of HashSet reseeding.
 
    `impl Ord for DeployChainIndex` (casper/src/rust/merging/deploy_chain_index.rs
-   :151-230) is, after the fix, a 5-key lexicographic tower:
+   implementation form a lexicographic tower:
 
        1. Σcost           DESCENDING   (total deploy cost, economic priority)
        2. max single cost DESCENDING
        3. min deploy_id    ASCENDING   (lexicographically smallest signature)
        4. post_state_hash  ASCENDING
-       5. deploys_with_cost.cmp  ASCENDING  (HashableSet<DeployIdWithCost>: Ord)
+       5. composite chain identity ASCENDING
 
-   Key 5 is the INJECTIVE Eq/Hash key itself: `PartialEq`/`Hash` are defined by
-   `deploys_with_cost` equality, and `HashableSet<_>: Ord` SORTS the set (so it is
-   deterministic regardless of HashSet iteration order). Because keys 1-4 are all
-   FUNCTIONS of that set, `cmp a b = Eq` holds iff the two chains share the same
-   set, i.e. iff they are Eq. Hence NO two DISTINCT chains ever tie.
+   The terminal key models the tuple compared by Rust after the priority tiers:
+   deploy sequence, source_block_hash, effect_indices, and witness mode. It is
+   the INJECTIVE Eq/Hash identity. Because keys 1-4 are functions of the complete
+   entry, `cmp a b = Eq` holds iff the entries are Eq. Hence no distinct chains tie.
 
    ---------------------------------------------------------------------------
    STRICTLY FIRMER THAN TieBreak.v
@@ -29,7 +29,7 @@
 
    Here there is NO such premise. The injective terminal key `key` (modeled below
    as the entry itself, `entry := nat`, standing for the canonical shortlex order
-   of `deploys_with_cost`) makes "distinct entries are orderable" hold BY
+   of the composite chain identity) makes "distinct entries are orderable" hold BY
    CONSTRUCTION: the reflexive closure of `ord` is antisymmetric with
        cmp a b = Eq  <->  key a = key b   (`keep_one_equal_impl_eq`),
    so leb-antisymmetry (`leb_antisym`) and leb-transitivity (`leb_trans`) are
@@ -54,9 +54,9 @@
    ---------------------------------------------------------------------------
    Rocq                        | Rust (deploy_chain_index.rs)
    ----------------------------+----------------------------------------------
-   entry (= injective key)     | DeployChainIndex identified by deploys_with_cost
+   entry (= injective key)     | composite DeployChainIndex Eq/Hash identity
    g1..g4 : entry -> nat       | Σcost, max cost, min deploy_id, post_state_hash
-   cmp / ord / ordb            | impl Ord::cmp (the 5-key tower)
+   cmp / ord / ordb            | impl Ord::cmp (four tiers + composite identity)
    keep_one_equal_impl_eq      | cmp==Equal => a==b (no distinct ties => no fork)
    keep_one_total_order        | strict total order (trichotomy), UNCONDITIONAL
    sort_total_order            | irreflexive+transitive+total (a<>b form)
@@ -77,8 +77,8 @@ From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Lia.
 Import ListNotations.
 
-(* An entry is identified by its injective Eq/Hash key (the canonical order of
-   the deploy set). We model it as a nat; keys 1-4 are FUNCTIONS of it. *)
+(* An entry is identified by its injective composite Eq/Hash key. We model it as
+   a nat; keys 1-4 are FUNCTIONS of it. *)
 Definition entry := nat.
 
 (* ===========================================================================
@@ -210,7 +210,7 @@ Proof.
 Qed.
 
 (* ===========================================================================
-   Section 3 - The 5-key comparator, assembled bottom-up, and its linearity.
+   Section 3 - The comparator, assembled bottom-up, and its linearity.
    =========================================================================== *)
 
 Section KeepOne.

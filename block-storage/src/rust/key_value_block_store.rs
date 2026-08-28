@@ -86,23 +86,56 @@ impl KeyValueBlockStore {
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
 
-    /// Fast path used by repeat-deploy checks to avoid full BlockMessage conversion.
+    /// Fast path used by deploy scans to avoid full BlockMessage conversion.
+    /// A block that is not stored reports `false` — callers that cannot treat
+    /// an unread block as an answer want `has_any_deploy_sig_strict`.
     pub fn has_any_deploy_sig(
         &self,
         block_hash: &BlockHash,
         deploy_sigs: &HashSet<Vec<u8>>,
     ) -> Result<bool, KvStoreError> {
+        Ok(self
+            .has_any_deploy_sig_opt(block_hash, deploy_sigs)?
+            .unwrap_or(false))
+    }
+
+    /// As `has_any_deploy_sig`, but a block whose body is absent is a storage
+    /// gap rather than a negative answer. The duplicate scan in
+    /// `Validate::repeat_deploy` reads a `false` as "this ancestor does not
+    /// carry the sig", so conflating the two admits the repeat it exists to
+    /// reject — and after an LFS restore the DAG legitimately knows about
+    /// blocks whose bodies were never downloaded.
+    pub fn has_any_deploy_sig_strict(
+        &self,
+        block_hash: &BlockHash,
+        deploy_sigs: &HashSet<Vec<u8>>,
+    ) -> Result<bool, KvStoreError> {
+        self.has_any_deploy_sig_opt(block_hash, deploy_sigs)?
+            .ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "BlockStore is missing hash: {}",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                ))
+            })
+    }
+
+    /// `None` when the block is not in the store; `Some(has_any)` otherwise.
+    fn has_any_deploy_sig_opt(
+        &self,
+        block_hash: &BlockHash,
+        deploy_sigs: &HashSet<Vec<u8>>,
+    ) -> Result<Option<bool>, KvStoreError> {
         if deploy_sigs.is_empty() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let key = block_hash.to_vec();
         if let Some(has_any) = Self::cached_has_any_deploy_sig(&key, deploy_sigs) {
-            return Ok(has_any);
+            return Ok(Some(has_any));
         }
 
         let bytes = match self.store.get_one(&key)? {
             Some(bytes) => bytes,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
         let body = Self::decode_block_deploy_sigs(&bytes)?;
@@ -128,7 +161,7 @@ impl KeyValueBlockStore {
             block_deploy_sigs.push(sig);
         }
         Self::cache_deploy_sigs(key, block_deploy_sigs);
-        Ok(has_any)
+        Ok(Some(has_any))
     }
 
     /// Fetch KEPT rejected deploy signatures for a block without decoding a
@@ -194,19 +227,6 @@ impl KeyValueBlockStore {
         Ok(Some(block_deploy_sigs))
     }
 
-    pub fn has_any_deploy_sig_unsafe(
-        &self,
-        block_hash: &BlockHash,
-        deploy_sigs: &HashSet<Vec<u8>>,
-    ) -> bool {
-        let err_msg = format!(
-            "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(block_hash),
-        );
-        self.has_any_deploy_sig(block_hash, deploy_sigs)
-            .expect(&err_msg)
-    }
-
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
         let block_proto = block.to_proto();
         let bytes = Self::block_proto_to_bytes(&block_proto);
@@ -223,6 +243,19 @@ impl KeyValueBlockStore {
             Ok(None) => Ok(false),
             Err(err) => Err(err),
         }
+    }
+
+    /// Key-existence check against the underlying store, skipping the
+    /// decompression and protobuf decode that `contains` (via `get`) pays.
+    /// The cheap availability probe for callers revalidating cached
+    /// per-block facts against THIS store.
+    pub fn contains_key(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self
+            .store
+            .contains(&vec![block_hash.to_vec()])?
+            .first()
+            .copied()
+            .unwrap_or(false))
     }
 
     fn error_approved_block(cause: String) -> String {
@@ -605,6 +638,7 @@ mod tests {
         ApprovedBlock {
             candidate,
             sigs: vec![],
+            floor_seed: None,
         }
     }
 

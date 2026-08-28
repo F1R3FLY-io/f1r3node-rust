@@ -1,7 +1,5 @@
 // See casper/src/test/scala/coop/rchain/casper/util/DagOperationsTest.scala
 
-use std::collections::{HashMap, HashSet};
-
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::util::dag_operations::DagOperations;
@@ -65,6 +63,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
             None,
+            None,
         );
         BlockMetadata::from_block(&block, false, None, None)
     }
@@ -90,6 +89,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             Some(seq_num),
             None,
+            None,
         );
         BlockMetadata::from_block(&block, false, None, None)
     }
@@ -111,6 +111,8 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             None,
             None,
         );
+
+        let genesis_meta = BlockMetadata::from_block(&genesis, false, None, None);
 
         // DAG Looks like this:
         //
@@ -186,67 +188,68 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
             .get_representation()
             .expect("dag representation");
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b1, &b5, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b3, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b3, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b2, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b2, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b6, &b7, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b6, &b7, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b2, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b2, &b2, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b2);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b10, &b9, &dag)
-            .await
-            .unwrap();
+        let result =
+            DagOperations::lowest_universal_common_ancestor(&b10, &b9, &dag, &genesis_meta)
+                .await
+                .unwrap();
         assert_eq!(result, b8);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b7, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b7, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b3);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b8, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b3, &b8, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b5, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b5, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b3);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b6, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b4, &b6, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b7, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b7, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b7);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b8, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b7, &b8, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b1);
 
-        let result = DagOperations::lowest_universal_common_ancestor(&b8, &b9, &dag)
+        let result = DagOperations::lowest_universal_common_ancestor(&b8, &b9, &dag, &genesis_meta)
             .await
             .unwrap();
         assert_eq!(result, b8);
@@ -254,6 +257,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         let result = DagOperations::lowest_universal_common_ancestor_many(
             &[b8.clone(), b9.clone(), b10.clone()],
             &dag,
+            &genesis_meta,
         )
         .await
         .unwrap();
@@ -262,6 +266,7 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
         let result = DagOperations::lowest_universal_common_ancestor_many(
             &[b2.clone(), b3.clone(), b4.clone()],
             &dag,
+            &genesis_meta,
         )
         .await
         .unwrap();
@@ -273,12 +278,17 @@ async fn lowest_common_universal_ancestor_should_be_computed_properly() {
     .expect("Test should complete successfully");
 }
 
+/// A DAG restored from LFS holds blocks whose parents were never downloaded:
+/// the node syncs a window below its approved block and stops. The LUCA walk
+/// descends by parent, so on a braided DAG — where a block's secondary parents
+/// reach below the approved block — it walks out of that window and asks for a
+/// block that is not there, which fails the whole snapshot.
+///
+/// The approved block is the floor: it is finalized, so no fork beneath it is
+/// live, and it is the oldest block the DAG is guaranteed to hold. Reaching it
+/// means the answer is it.
 #[tokio::test]
-async fn uncommon_ancestors_should_be_computed_properly() {
-    fn to_metadata(block: &BlockMessage) -> BlockMetadata {
-        BlockMetadata::from_block(block, false, None, None)
-    }
-
+async fn luca_stops_at_the_approved_block_when_the_dag_is_truncated() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let genesis = create_genesis_block(
             &mut block_store,
@@ -293,192 +303,69 @@ async fn uncommon_ancestors_should_be_computed_properly() {
             None,
         );
 
-        /*
-         *  DAG Looks like this:
-         *
-         *         b6   b7
-         *        |  \ / |
-         *        b4  b5 |
-         *          \ |  |
-         *            b3 |
-         *            |  |
-         *           b1  b2
-         *            |  /
-         *          genesis
-         */
+        // Never inserted: the history below the sync window.
+        let truncated = BlockHash::from(b"parent-below-the-lfs-frontier".to_vec());
 
-        let b1 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![genesis.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let (f1, f2, anchor, t1, t2) = {
+            let mut build = |parents: Vec<BlockHash>, number: i32| -> BlockMetadata {
+                let block = create_block(
+                    &mut block_store,
+                    &mut block_dag_storage,
+                    parents,
+                    &genesis,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(number),
+                    None,
+                    None,
+                );
+                BlockMetadata::from_block(&block, false, None, None)
+            };
 
-        let b2 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![genesis.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let b3 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![b1.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let b4 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![b3.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let b5 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![b3.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let b6 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![b4.block_hash.clone(), b5.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        let b7 = create_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            vec![b2.block_hash.clone(), b5.block_hash.clone()],
-            &genesis,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+            // Retained below the approved block, their own parents truncated away.
+            let f1 = build(vec![truncated.clone()], 5);
+            let f2 = build(vec![truncated.clone()], 5);
+            let anchor = build(vec![f1.block_hash.clone()], 10);
+            // Braided: each tip reaches the approved block AND a block under it,
+            // so the two tips do not converge until the walk is already below.
+            let t1 = build(vec![anchor.block_hash.clone(), f1.block_hash.clone()], 11);
+            let t2 = build(vec![anchor.block_hash.clone(), f2.block_hash.clone()], 11);
+            (f1, f2, anchor, t1, t2)
+        };
 
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
 
-        let b1_meta = to_metadata(&b1);
-        let b2_meta = to_metadata(&b2);
-        let b3_meta = to_metadata(&b3);
-        let b4_meta = to_metadata(&b4);
-        let b5_meta = to_metadata(&b5);
-        let b6_meta = to_metadata(&b6);
-        let b7_meta = to_metadata(&b7);
-
-        let result = DagOperations::uncommon_ancestors(&[b6_meta.clone(), b7_meta.clone()], &dag)
-            .await
-            .unwrap();
-
-        let expected = HashMap::from([
-            (b6_meta.clone(), HashSet::from_iter([0u8])),
-            (b4_meta.clone(), HashSet::from_iter([0u8])),
-            (b7_meta.clone(), HashSet::from_iter([1u8])),
-            (b2_meta.clone(), HashSet::from_iter([1u8])),
-        ]);
-
-        assert_eq!(result, expected);
-
-        let result = DagOperations::uncommon_ancestors(&[b6_meta.clone(), b3_meta.clone()], &dag)
-            .await
-            .unwrap();
-
-        let expected = HashMap::from([
-            (b6_meta.clone(), HashSet::from_iter([0u8])),
-            (b4_meta.clone(), HashSet::from_iter([0u8])),
-            (b5_meta.clone(), HashSet::from_iter([0u8])),
-        ]);
-
-        assert_eq!(result, expected);
-
-        let result = DagOperations::uncommon_ancestors(
-            &[b2_meta.clone(), b4_meta.clone(), b5_meta.clone()],
+        let result = DagOperations::lowest_universal_common_ancestor_many(
+            &[t1.clone(), t2.clone()],
             &dag,
+            &anchor,
         )
         .await
-        .unwrap();
+        .expect("the walk must stop at the approved block, not read past the sync window");
+        assert_eq!(
+            result, anchor,
+            "two tips that only converge below the approved block must resolve to it"
+        );
 
-        let expected = HashMap::from([
-            (b2_meta.clone(), HashSet::from_iter([0u8])),
-            (b4_meta.clone(), HashSet::from_iter([1u8])),
-            (b5_meta.clone(), HashSet::from_iter([2u8])),
-            (b3_meta.clone(), HashSet::from_iter([1u8, 2u8])),
-            (b1_meta.clone(), HashSet::from_iter([1u8, 2u8])),
-        ]);
+        // A stale input already below the floor carries no fork-choice information;
+        // the answer is still the floor, not the stale block the walk happened to end on.
+        let result = DagOperations::lowest_universal_common_ancestor_many(
+            &[t1.clone(), f2.clone()],
+            &dag,
+            &anchor,
+        )
+        .await
+        .expect("a below-floor input must not drag the walk past the sync window");
+        assert_eq!(result, anchor, "a below-floor input resolves to the floor");
 
-        assert_eq!(result, expected);
-
-        let result = DagOperations::uncommon_ancestors(std::slice::from_ref(&b1_meta), &dag)
-            .await
-            .unwrap();
-
-        let expected = HashMap::new();
-        assert_eq!(result, expected);
+        let _ = f1;
 
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     })

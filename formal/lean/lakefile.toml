@@ -1,0 +1,5 @@
+name = "f1r3_validator"
+defaultTargets = ["Validator"]
+
+[[lean_lib]]
+name = "Validator"

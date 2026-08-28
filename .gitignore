@@ -98,6 +98,9 @@ Makefile.coq.conf
 Makefile.coq.local
 Makefile.verify.*
 .Makefile.verify.*.d
+formal/rocq/*/Makefile.local
+formal/rocq/*/Makefile.local.conf
+formal/rocq/*/.Makefile.local.d
 
 # TLA+ / TLC
 ##############
@@ -126,5 +129,4 @@ MC_TE.out
 *~
 docs/discoveries/*.md
 .tmp/
-docs/work-logs/*.md
 .pi/

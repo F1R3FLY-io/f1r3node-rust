@@ -32,17 +32,8 @@ use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-/// Default for `CasperShardConf::finalizer_blocking_timeout`. The
-/// finalizer-run timeout was originally hardcoded at two call sites
-/// (`casper.rs::CasperShardConf::new` and
-/// `node/src/rust/runtime/setup.rs`). Centralizing prevents two-way
-/// drift. When `CasperConf` gains a corresponding field, the
-/// constant becomes the documented fallback.
-pub const FINALIZER_BLOCKING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15);
-
 /// Default for `CasperShardConf::active_validators_cache_max_entries`.
-/// Mirrors `FINALIZER_BLOCKING_TIMEOUT_DEFAULT`'s rationale — see
-/// commit centralizing Phase 13 hardcoded defaults.
+/// See the commit centralizing Phase 13 hardcoded defaults.
 pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
@@ -97,6 +88,11 @@ impl Display for DeployError {
 #[async_trait]
 pub trait Casper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError>;
+
+    /// Ask peers for one named block, honoring `BlockNotHeld`'s contract
+    /// ("naming the missing block lets the caller fetch it and retry").
+    /// Defaulted to a no-op so effect mocks need no retriever wiring.
+    async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
     fn contains(&self, hash: &BlockHash) -> bool;
 
@@ -172,6 +168,10 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
+    /// The shard's genesis block hash when this node holds or has learned it.
+    /// Defaulted to `None` so effect mocks need no genesis wiring.
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
     /// Read-only access to the shard configuration. Used by APIs that need
     /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
     /// finalization status.
@@ -197,6 +197,23 @@ pub trait MultiParentCasper: Casper + Send + Sync {
         _snapshot: &CasperSnapshot,
     ) -> Result<bool, CasperError> {
         self.has_pending_deploys_in_storage().await
+    }
+
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag
+    /// (`true` = recovery backlog, `false` = fresh).
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Default returns an empty Vec — used by `NoopEngine` and other
+    /// engine states where `with_casper()` returns `None`.
+    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+        Ok(Vec::new())
     }
 }
 
@@ -252,6 +269,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
     Ok(MultiParentCasperImpl {
+        divergence_monitor: std::sync::Arc::new(
+            crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+        ),
         block_retriever,
         event_publisher,
         runtime_manager,
@@ -260,6 +280,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
         rejected_deploy_buffer,
+        deploy_lifecycle: Arc::new(
+            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+        ),
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
@@ -389,7 +412,6 @@ pub struct CasperShardConf {
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
-    pub finalizer_conf: crate::rust::casper_conf::FinalizerConf,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -402,12 +424,6 @@ pub struct CasperShardConf {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
-    /// Phase 13 (TC-1): blocking timeout for `run_queued_finalizer`'s
-    /// `compute_last_finalized_block` call. Previously a hardcoded
-    /// 15-second constant in `engine/multi_parent_casper/finalization_runner.rs`;
-    /// lifted to configuration so operators can extend the budget for
-    /// deep-DAG finalization sweeps without recompiling.
-    pub finalizer_blocking_timeout: Duration,
     /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
     /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
     /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
@@ -442,7 +458,6 @@ impl CasperShardConf {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_depth_buffer: 10,
-            finalizer_conf: crate::rust::casper_conf::FinalizerConf::default(),
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,
@@ -452,7 +467,6 @@ impl CasperShardConf {
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
-            finalizer_blocking_timeout: FINALIZER_BLOCKING_TIMEOUT_DEFAULT,
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         }
     }
@@ -513,6 +527,14 @@ pub mod test_helpers {
             }
         }
 
+        /// Stage a block in the test block store (e.g. the validator's own
+        /// latest message, so timestamp-based pacing reads a real header).
+        pub fn insert_block(&self, block: &BlockMessage) {
+            self.block_store
+                .put_block_message(block)
+                .expect("insert test block");
+        }
+
         /// Create an empty CasperSnapshot for testing.
         pub fn create_empty_snapshot() -> CasperSnapshot {
             use std::sync::Arc;
@@ -539,11 +561,11 @@ pub mod test_helpers {
                 block_metadata_index: Arc::new(RwLock::new(BlockMetadataStore::new(
                     block_metadata_store,
                 ))),
-                deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-                    InMemoryKeyValueStore::new(),
-                )))),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+                lifecycle: Arc::new(RwLock::new(
+                    block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+                )),
             };
 
             CasperSnapshot::new(dag)
