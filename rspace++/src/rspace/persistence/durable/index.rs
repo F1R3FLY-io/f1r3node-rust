@@ -221,7 +221,10 @@ impl CommittedObjectIndexV1 {
     /// digest is non-canonical even when its bytes are equal; subsequent
     /// transactions must encode REUSE instead. Rejecting it gives recovery a
     /// unique, byte-identical index rebuild order.
-    pub(crate) fn insert(&mut self, record: ObjectIndexRecordV1) -> Result<(), IndexFormatError> {
+    pub(crate) fn validate_insert(
+        &self,
+        record: ObjectIndexRecordV1,
+    ) -> Result<(), IndexFormatError> {
         let digest = record.reference().digest();
         if let Some(existing) = self.get(digest) {
             if existing.reference() == record.reference() {
@@ -233,10 +236,19 @@ impl CommittedObjectIndexV1 {
                 candidate: record.reference(),
             });
         }
+        self.record_count
+            .checked_add(1)
+            .ok_or(IndexFormatError::RecordCountOverflow)?;
+        Ok(())
+    }
+
+    pub(crate) fn insert(&mut self, record: ObjectIndexRecordV1) -> Result<(), IndexFormatError> {
+        self.validate_insert(record)?;
+        let digest = record.reference().digest();
         self.record_count = self
             .record_count
             .checked_add(1)
-            .ok_or(IndexFormatError::RecordCountOverflow)?;
+            .expect("validated index record count has a successor");
         let replaced = self.records.insert(digest.as_bytes(), record);
         debug_assert!(replaced.is_none());
         Ok(())
@@ -318,6 +330,16 @@ impl ObjectIndexRecordV1 {
             .canonical_offset()
             .ok_or(IndexFormatError::InlineObjectMissingOffset(object.reference()))?;
         Self::from_relative(object.reference(), relative, pack_id, prepare_offset, sequence)
+    }
+
+    pub(crate) fn from_streamed_data(
+        pack_id: PackId,
+        prepare_offset: u64,
+        sequence: LogPackSequence,
+        reference: ObjectRefV1,
+        relative_canonical_offset: u64,
+    ) -> Result<Self, IndexFormatError> {
+        Self::from_relative(reference, relative_canonical_offset, pack_id, prepare_offset, sequence)
     }
 
     pub(crate) fn from_checkpoint_reference(
@@ -593,22 +615,29 @@ impl ObjectIndexPrefixVerifierV1 {
         expected: ObjectIndexRecordV1,
         bytes: &[u8],
     ) -> Result<(), IndexFormatError> {
+        let actual = ObjectIndexRecordV1::parse_exact(bytes)?;
+        if actual != expected {
+            return Err(IndexFormatError::RecordMismatch {
+                offset: self.stream.durable_tail(),
+                expected,
+                actual,
+            });
+        }
+        self.accept_next_record(actual)
+    }
+
+    pub(crate) fn accept_next_record(
+        &mut self,
+        record: ObjectIndexRecordV1,
+    ) -> Result<(), IndexFormatError> {
         if !self.header_verified {
             return Err(IndexFormatError::IndexHeaderNotVerified);
         }
-        let image = self.stream.next_record(expected)?;
+        let image = self.stream.next_record(record)?;
         if self.stream.durable_tail() > self.appointed_tail {
             return Err(IndexFormatError::DerivedRecordBeyondAppointedTail {
                 record_offset: image.offset(),
                 appointed_tail: self.appointed_tail,
-            });
-        }
-        let actual = ObjectIndexRecordV1::parse_exact(bytes)?;
-        if actual != expected {
-            return Err(IndexFormatError::RecordMismatch {
-                offset: image.offset(),
-                expected,
-                actual,
             });
         }
         Ok(())

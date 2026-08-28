@@ -63,8 +63,9 @@ pub(crate) use publication::{
     take_generation_checkpoint_publication_trace,
 };
 pub(crate) use recovery::{
-    CatalogPackProviderV1, DurableReadAt, RecoveryError, replay_catalog_authorized_pack_chain,
-    scan_catalog_authorized_pack_chain,
+    CatalogPackProviderV1, DurableReadAt, IncrementalLayoutTranscriptV1, RecoveryError,
+    replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
+    stage_catalog_verified_data_in_source_order,
 };
 #[cfg(test)]
 pub(crate) use startup::{

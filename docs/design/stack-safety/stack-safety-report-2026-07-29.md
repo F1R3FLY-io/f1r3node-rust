@@ -11155,12 +11155,13 @@ lease protocol.
 
 The first iterative pack scan constructs the only
 `PathMap<ObjectIndexRecordV1>` and compares any existing exact-length physical index record by
-record. Repairable shape or checksum damage never becomes semantic-state loss. Repair pre-admits
-three times the exact catalog-appointed pack span, streams the second pass directly into a fixed
-candidate, synchronizes its exact length, atomically replaces the generation, synchronizes the
-pinned directory, and verifies the installed file in a third pass. The second and third passes use
-constant-state sinks that require every DATA record to equal the first-pass PathMap location and
-every REUSE to resolve strictly backward; neither allocates another trie or a record vector.
+record. Repairable shape or checksum damage never becomes semantic-state loss. SS-C30 subsequently
+refined repair to pre-admit twice the exact catalog-appointed pack span, stream the second pass
+directly into a fixed candidate, synchronize its exact length, atomically replace the generation,
+synchronize the pinned directory, and verify the installed file directly against the first-pass
+PathMap. The second pass uses a constant-state sink that requires every DATA record to equal the
+first-pass PathMap location and every REUSE to resolve strictly backward; direct index verification
+allocates neither another trie nor a record vector.
 
 The authority sequence is:
 
@@ -11169,7 +11170,7 @@ exact catalog image
   -> bounded WAL scan + one PathMap + optional index probe
   -> exact catalog comparison
   -> [verify existing] or [stream candidate -> sync file -> replace -> sync directory]
-  -> replay WAL against installed index and first PathMap
+  -> parse installed index and verify directly against first PathMap
   -> exact catalog comparison
   -> IndexBoundPhysicalRecoveryV1
 ```
@@ -11181,8 +11182,8 @@ semantic closure, derive exact current and retained-union byte inventories, and 
 retention manifest before production code may treat the root as semantic RSpace authority.
 
 For catalog-appointed WAL bytes $`S`$ and distinct DATA records $`d`$, verified startup performs one
-$`\Theta(S+d)`$ pass. Repair performs $`\Theta(3S+2d)`$ physical work but retains one $`O(d)`$
-PathMap and $`O(1)`$ replay state. Native stack remains $`O(1)`$ in pack count, record count, key
+$`\Theta(S+d)`$ pass. Following SS-C30, repair performs $`\Theta(2S+2d)`$ physical work but retains
+one $`O(d)`$ PathMap and $`O(1)`$ replay state. Native stack remains $`O(1)`$ in pack count, record count, key
 depth, and term depth. `DurableStartupWorkV1` reports WAL passes and bytes, index bytes read and
 written, and synchronization counts; these are restart-work diagnostics, not persisted footprint
 or consensus charges.
@@ -11244,9 +11245,9 @@ readmission reproduce the same state and inventory.
 All traversal remains iterative and streaming. Native stack is constant in trie depth, logical path
 length, retained-state depth, and object count. Ordinary recovery retains one
 `PathMap<ObjectIndexRecordV1>` for distinct DATA objects and constant replay state; index repair
-pre-admits its three WAL passes and constructs no second trie. Resource retention is proportional
-only to authenticated inventories and explicitly bounded work certificates, never to an artificial
-traversal-depth ceiling.
+pre-admits its two WAL passes, verifies the installed index directly, and constructs no second trie.
+Resource retention is proportional only to authenticated inventories and explicitly bounded work
+certificates, never to an artificial traversal-depth ceiling.
 
 The parallel gate exposed a lifecycle refinement that isolated tests had hidden. A process spawn may
 briefly duplicate the writer-lock open file description before close-on-exec. Closing only the
@@ -11266,6 +11267,49 @@ zero progress, interruptions, synchronization uncertainty, or power-loss removal
 names. They also do not activate the backend beneath production RSpace, replace LMDB, finish
 compaction/reader-safe garbage collection, provide Windows-native authority handles, or constitute
 the required LMDB-versus-PathMap throughput and storage comparison.
+
+### 5.57 Formally refined kind-1 PREPARE streaming and fixed native-stack envelope [SS-C30]
+
+SS-C30 replaces ordinary incremental PREPARE recovery's record-sized buffer with a bounded,
+phase-split PDA. Formal verification preceded implementation. The two TLA+ models cover protocol
+authority and byte-codec behavior; Rocq closes 15 protocol and 20 codec capstones; Verus verifies
+15 and 16 respective obligations with `--no-cheating`; Z3 and mCRL2 corroborate the mode and process
+contracts. Eighty-nine stable invariants were exhaustively mapped to 35 named property families
+before production acceptance. The five refinement modules execute 53 non-ignored tests, all green.
+
+The primary scanner owns one reusable 64 KiB heap scratch region and boxed constant-size state. It
+streams the mutation grammar, positional prior-key comparisons, five canonical-object grammars,
+CRC32C, BLAKE2b, and a domain-separated layout transcript without retaining a complete record, key,
+or DATA body. I/O failure precedes CRC failure, which precedes the first deferred semantic failure;
+the declared authenticated extent is raw-drained after that first semantic error. COMMIT and the
+complete outer chain bind before a second complete source-authentication replay. Only an identical
+source replay permits a header-only layout pass to construct the private
+`PathMap<ObjectIndexRecordV1>`, and exact catalog verification remains the publication boundary.
+
+The pinned opt-level-0 Blake2 compression leaf reserved roughly 84 KiB of native stack, while the
+unoptimized recovery driver retained mutually exclusive checked-result temporaries. The accepted
+dev/test profile optimizes only `blake2` at level 3 and `rspace_plus_plus` at level 1, and the source
+driver is divided into non-inlined typed phases with a boxed state carrier. These are code-generation
+controls, not stack-size workarounds: the digest algorithm, wire bytes, debug information, debug
+assertions, and result semantics are unchanged. The unchanged 128/256 KiB subprocess matrix passes
+with zero input-dependent stack growth. The geometric decoder-owned allocation ladder is likewise
+flat apart from the fixed scratch and constant state. No `RUST_MIN_STACK`, `stacker`, recursion cap,
+or traversal-depth limit is present.
+
+Index repair now pre-admits two WAL scans rather than three. The first builds the sole committed-
+object PathMap; the second streams a canonical candidate against that authority. After synchronized
+atomic installation, the physical index is parsed iteratively and verified directly through PathMap
+lookups, monotone locations, and exact-tail validation. Startup physical-read accounting includes
+authenticated-source, prior-key, and layout rereads and therefore remains distinct from authorized
+logical pack extent. Focused durable recovery passes 15/15 and startup passes 12/12. The complete
+`rspace_plus_plus --lib` regression gate passes **452/452** in **26.35 s** under a 12 GiB hard
+memory cap, zero swap, and a ten-core quota. The complete package gate passes **877/877** across
+all library and integration binaries under the same resource scope.
+
+This remains a dormant persistence result. V1 PREPARE/COMMIT bytes, recovered semantic state,
+object locations, catalog authority, and semantic COMM accounting are unchanged. Production LMDB
+cutover, compaction, reader-safe garbage collection, Windows-native authority, migration policy,
+and comparative performance/storage evidence remain separate gates.
 
 ---
 

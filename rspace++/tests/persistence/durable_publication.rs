@@ -813,12 +813,13 @@ enum CheckpointResourceBoundary {
     Admission(AdmissionBoundary),
 }
 
-const CHECKPOINT_RESOURCE_BOUNDARIES: [CheckpointResourceBoundary; 34] = [
+const CHECKPOINT_RESOURCE_BOUNDARIES: [CheckpointResourceBoundary; 35] = [
     CheckpointResourceBoundary::Durable(DurableLimitKind::LivePacks),
     CheckpointResourceBoundary::Durable(DurableLimitKind::PackBytes),
     CheckpointResourceBoundary::Durable(DurableLimitKind::Transactions),
     CheckpointResourceBoundary::Durable(DurableLimitKind::ObjectRecords),
     CheckpointResourceBoundary::Durable(DurableLimitKind::TotalScanBytes),
+    CheckpointResourceBoundary::Durable(DurableLimitKind::TotalPhysicalReadBytes),
     CheckpointResourceBoundary::Durable(DurableLimitKind::IndexBytes),
     CheckpointResourceBoundary::Durable(DurableLimitKind::IndexRecords),
     CheckpointResourceBoundary::Durable(DurableLimitKind::FullByteComparisonBytes),
@@ -885,6 +886,7 @@ impl ExactCheckpointPublicationLimits {
                 max_transactions: 1,
                 max_object_records: objects,
                 max_total_scan_bytes: pack_bytes,
+                max_total_physical_read_bytes: pack_bytes,
                 max_index_bytes: index_bytes,
                 max_index_records: objects,
                 max_full_byte_comparison_bytes: 1,
@@ -947,6 +949,9 @@ impl ExactCheckpointPublicationLimits {
                 DurableLimitKind::Transactions => 0,
                 DurableLimitKind::ObjectRecords => self.durable.max_object_records,
                 DurableLimitKind::TotalScanBytes => self.durable.max_total_scan_bytes,
+                DurableLimitKind::TotalPhysicalReadBytes => {
+                    self.durable.max_total_physical_read_bytes
+                }
                 DurableLimitKind::IndexBytes => self.durable.max_index_bytes,
                 DurableLimitKind::IndexRecords => self.durable.max_index_records,
                 DurableLimitKind::FullByteComparisonBytes |
@@ -1084,6 +1089,9 @@ fn set_durable_limit(config: &mut DurableLimitConfig, resource: DurableLimitKind
         DurableLimitKind::Transactions => config.max_transactions = value,
         DurableLimitKind::ObjectRecords => config.max_object_records = value,
         DurableLimitKind::TotalScanBytes => config.max_total_scan_bytes = value,
+        DurableLimitKind::TotalPhysicalReadBytes => {
+            config.max_total_physical_read_bytes = value;
+        }
         DurableLimitKind::IndexBytes => config.max_index_bytes = value,
         DurableLimitKind::IndexRecords => config.max_index_records = value,
         DurableLimitKind::FullByteComparisonBytes => {
@@ -1231,7 +1239,7 @@ fn every_checkpoint_resource_boundary_refuses_one_below_and_accepts_exactly() {
         set_durable_limit(&mut invalid, resource, 0);
         assert_eq!(DurableLimits::new(invalid), Err(DurableLimitError::Zero { resource }),);
     }
-    assert_eq!(durable_below, 5, "all five constructible durable lower boundaries ran");
+    assert_eq!(durable_below, 6, "all six constructible durable lower boundaries ran");
     assert_eq!(wal_below, 4, "all four positive checkpoint-WAL lower boundaries ran");
     assert_eq!(admission_below, 18, "all eighteen admission lower boundaries ran");
     assert_eq!(wal_zero, 3, "all three zero-demand checkpoint-WAL axes stayed at zero");

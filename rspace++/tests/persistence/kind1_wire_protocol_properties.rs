@@ -346,7 +346,7 @@ fn scan(
     partition_width: usize,
     fail_at: Option<u64>,
     wal_limits: LogPackDecodeLimits,
-) -> (Result<ReadWorkSnapshot, RecoveryError<TraceReadError>>, Vec<ReadFragment>, usize) {
+) -> (Result<ReadWorkSnapshot, RecoveryError<TraceReadError>>, Vec<ReadFragment>) {
     let fragments = Arc::new(Mutex::new(Vec::new()));
     let mut provider = TraceProvider(TraceReader {
         bytes: Arc::clone(&fixture.pack),
@@ -354,16 +354,11 @@ fn scan(
         partition_width,
         fail_at,
     });
-    let mut callbacks = 0usize;
     let result = scan_catalog_authorized_pack_chain(
         &mut provider,
         &authority(fixture.catalog),
         durable_limits(64 * 1024 * 1024),
         wal_limits,
-        |_| {
-            callbacks += 1;
-            Ok(())
-        },
     )
     .map(|scanned| {
         let recovered = scanned
@@ -378,7 +373,7 @@ fn scan(
         }
     });
     let trace = fragments.lock().unwrap().clone();
-    (result, trace, callbacks)
+    (result, trace)
 }
 
 fn scan_with_physical_read_limit(
@@ -397,7 +392,6 @@ fn scan_with_physical_read_limit(
         &authority(fixture.catalog),
         durable_limits(physical_read_limit),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .map(|_| ());
     let trace = fragments.lock().unwrap().clone();
@@ -639,7 +633,7 @@ proptest! {
         partition_width in 1usize..1025,
     ) {
         let fixture = recovery_fixture(4);
-        let (result, trace, _) = scan(
+        let (result, trace) = scan(
             &fixture,
             partition_width,
             None,
@@ -735,8 +729,7 @@ fn kind1_discriminator_and_adjacent_pair_matrix_is_exact() {
 #[test]
 fn first_semantic_error_is_retained_while_declared_extent_is_raw_drained() {
     let fixture = semantic_fault_fixture(true);
-    let (result, trace, callbacks) = scan(&fixture, 37, None, LogPackDecodeLimits::UNBOUNDED);
-    assert_eq!(callbacks, 0);
+    let (result, trace) = scan(&fixture, 37, None, LogPackDecodeLimits::UNBOUNDED);
     assert!(matches!(
         result,
         Err(RecoveryError::Wal(LogPackFormatError::Mutation(MutationError::Canonical(
@@ -751,10 +744,13 @@ fn first_semantic_error_is_retained_while_declared_extent_is_raw_drained() {
 #[test]
 fn every_stream_transition_strictly_decreases_formal_progress_measure() {
     let fixture = recovery_fixture(5);
-    let (result, trace, _) = scan(&fixture, 29, None, LogPackDecodeLimits::UNBOUNDED);
+    let (result, trace) = scan(&fixture, 29, None, LogPackDecodeLimits::UNBOUNDED);
     let work = result.unwrap();
     let mut primary = work.authorized;
-    let mut auxiliary = work.prior_key + work.layout;
+    let mut auxiliary = work
+        .physical
+        .checked_sub(work.authorized)
+        .expect("physical work contains the authorized primary extent");
     let mut seen = BTreeSet::new();
     for fragment in trace {
         assert_ne!(fragment.len, 0);
@@ -832,8 +828,7 @@ fn kind1_variable_work_is_silent_until_header_pair_and_aggregate_preadmission() 
         pack: bad_header.into(),
         ..fixture.clone()
     };
-    let (_, reads, callbacks) = scan(&bad_header, 17, None, LogPackDecodeLimits::UNBOUNDED);
-    assert_eq!(callbacks, 0);
+    let (_, reads) = scan(&bad_header, 17, None, LogPackDecodeLimits::UNBOUNDED);
     assert!(reads.iter().all(|read| read.offset < prefix_end));
 
     let mut bad_pair = fixture.pack.to_vec();
@@ -843,8 +838,7 @@ fn kind1_variable_work_is_silent_until_header_pair_and_aggregate_preadmission() 
         pack: bad_pair.into(),
         ..fixture.clone()
     };
-    let (_, reads, callbacks) = scan(&bad_pair, 17, None, LogPackDecodeLimits::UNBOUNDED);
-    assert_eq!(callbacks, 0);
+    let (_, reads) = scan(&bad_pair, 17, None, LogPackDecodeLimits::UNBOUNDED);
     assert!(reads.iter().all(|read| {
         read.offset < prefix_end ||
             (prepare_end..prepare_end + COMMIT_DISCRIMINATOR_LEN_V1).contains(&read.offset)
@@ -854,11 +848,10 @@ fn kind1_variable_work_is_silent_until_header_pair_and_aggregate_preadmission() 
         max_objects: fixture.object_count - 1,
         ..LogPackDecodeLimits::UNBOUNDED
     };
-    let (_, reads, callbacks) = scan(&fixture, 17, None, limits);
-    assert_eq!(callbacks, 0);
+    let (_, reads) = scan(&fixture, 17, None, limits);
     assert!(reads.iter().all(|read| read.offset < prefix_end));
 
-    let (_, reads, _) = scan(&fixture, 17, None, LogPackDecodeLimits::UNBOUNDED);
+    let (_, reads) = scan(&fixture, 17, None, LogPackDecodeLimits::UNBOUNDED);
     let pair = reads
         .iter()
         .position(|read| read.offset == prepare_end)
@@ -922,9 +915,8 @@ fn every_kind1_limit_accepts_exact_and_rejects_minus_one_before_corresponding_wo
             demand - 1,
             demand,
         );
-        let (result, _, callbacks) = scan(&fixture, 61, None, limits);
+        let (result, _) = scan(&fixture, 61, None, limits);
         assert!(result.is_err(), "recovery accepted underprovisioned {resource}");
-        assert_eq!(callbacks, 0);
     }
 
     let demand = 4096;
@@ -961,7 +953,7 @@ fn recovery_read_work_separates_authorized_primary_prior_key_and_layout_bytes_ex
     let layout_application_replay_bytes = fixture.object_count * OBJECT_RECORD_HEADER_LEN;
     assert_eq!(
         authenticated_source_replay_bytes,
-        PREPARE_AUTH_HEADER_LEN as u64 +
+        TRANSACTION_PREPARE_HEADER_LEN_V1 +
             fixture.mutation_len +
             layout_application_replay_bytes +
             fixture.object_bytes,
@@ -979,7 +971,6 @@ fn recovery_read_work_separates_authorized_primary_prior_key_and_layout_bytes_ex
         &token,
         durable_limits(64 * 1024 * 1024),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     let work = scanned.verify_catalog(token).unwrap().read_work();

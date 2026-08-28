@@ -2,7 +2,7 @@
 
 Date: 2026-08-28
 
-Status: formal model verified; exhaustive executable property refinement in progress; production drafts are unaccepted until the property gate is complete
+Status: formal model, exhaustive invariant extraction, executable refinement, bounded production implementation, and package integration verified; workspace integration remains a separate gate
 
 Scope: bounded, stack-safe recovery of ordinary kind-1 RSpace WAL PREPARE/COMMIT records
 
@@ -25,6 +25,19 @@ codec tests instead of the new streaming machines. Any production source drafted
 being repaired is explicitly non-authoritative. It cannot be integrated or used as completion
 evidence until the 35 concrete property families below are compiled, non-ignored, and have first
 failed for the intended reason where they are red controls.
+
+That acceptance boundary is now closed. The 89 stable invariant IDs below map exhaustively to the
+35 named production properties; their five implementation-facing modules execute 53 non-ignored
+tests. The deliberate whole-record and incomplete-source-replay controls failed for their intended
+reasons before the bounded implementation replaced them. On 2026-08-28 all 53 refinement tests
+passed, including the unchanged 128/256 KiB native-stack subprocess matrix and the geometric
+decoder-owned-heap ladder. The integrated formal gate subsequently passed Rocq, Verus
+`--no-cheating`, Z3, both positive TLA+ models and their named mutation-kill configurations, and
+mCRL2. This closes the catalog's implementation-acceptance rule without promoting the dormant
+persistence backend into an active RSpace or consensus route. The enclosing
+`rspace_plus_plus --lib` regression gate passes **452/452** in **26.35 s** under a 12 GiB hard
+memory cap, zero swap, and a ten-core quota. The complete package gate passes **877/877** across
+all library and integration binaries under the same resource scope.
 
 ## Executable property families
 
@@ -319,3 +332,8 @@ The TLA+ gate reaches success plus each modeled rejection: header, resource, pai
 ## Completion rule
 
 This catalog becomes implementation-ready only when an executable manifest contains exactly the 89 `K1-*` IDs above, every ID names at least one non-ignored property, the formal/property ID equality gate passes, and the deliberate old-implementation memory control has failed for the intended reason. It becomes complete only after the bounded implementation makes every production property green, the whole-buffer control remains test-only, and the capped resource evidence demonstrates constant decoder-owned scratch and stack.
+
+The 2026-08-28 implementation coordinate satisfies that rule: the manifest has exact 89-ID set
+equality, all 35 property families are non-ignored, the 53 implementation-facing refinement tests
+are green, the whole-buffer path is test-only, retained scratch is fixed at 64 KiB plus constant
+state, and the 128/256 KiB subprocess matrix observes zero input-dependent native-stack growth.

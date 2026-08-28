@@ -92,8 +92,8 @@ fn checkpoint_index_is_rebuilt_byte_exactly_and_verified_on_reopen() {
     assert_eq!(rebuilt.recovered().terminal_address(), image.commit_address);
     assert_eq!(fs::read(&index_path).unwrap(), image.canonical_index);
     let rebuild_work = rebuilt.recovered().startup_work();
-    assert_eq!(rebuild_work.wal_scan_passes(), 3);
-    assert_eq!(rebuild_work.wal_bytes_read(), 3 * image.pack.len() as u64);
+    assert_eq!(rebuild_work.wal_scan_passes(), 2);
+    assert_eq!(rebuild_work.wal_bytes_read(), 2 * image.pack.len() as u64);
     assert_eq!(rebuild_work.index_bytes_written(), image.canonical_index.len() as u64,);
     drop(rebuilt);
 
@@ -260,8 +260,8 @@ fn missing_index_is_rebuilt_exactly_then_mandatorily_verified_on_reopen() {
     );
     assert_eq!(fs::metadata(&index_path).unwrap().len(), rebuilt.recovered().expected_index_tail());
     let rebuild_work = rebuilt.recovered().startup_work();
-    assert_eq!(rebuild_work.wal_scan_passes(), 3);
-    assert_eq!(rebuild_work.wal_bytes_read(), 3 * rebuilt.recovered().scanned_bytes());
+    assert_eq!(rebuild_work.wal_scan_passes(), 2);
+    assert!(rebuild_work.wal_bytes_read() >= 2 * rebuilt.recovered().scanned_bytes());
     assert_eq!(rebuild_work.index_bytes_read(), rebuilt.recovered().expected_index_tail());
     assert_eq!(rebuild_work.index_bytes_written(), rebuilt.recovered().expected_index_tail());
     assert_eq!(rebuild_work.file_syncs(), 1);
@@ -286,7 +286,11 @@ fn missing_index_is_rebuilt_exactly_then_mandatorily_verified_on_reopen() {
     assert_eq!(fs::read(&index_path).unwrap(), canonical);
     let verify_work = verified.recovered().startup_work();
     assert_eq!(verify_work.wal_scan_passes(), 1);
-    assert_eq!(verify_work.wal_bytes_read(), verified.recovered().scanned_bytes());
+    assert_eq!(
+        rebuild_work.wal_bytes_read(),
+        verify_work.wal_bytes_read().checked_mul(2).unwrap(),
+        "repair performs two identical physical recovery scans, including authenticated rereads",
+    );
     assert_eq!(verify_work.index_bytes_read(), verified.recovered().expected_index_tail());
     assert_eq!(verify_work.index_bytes_written(), 0);
     assert_eq!(verify_work.file_syncs(), 0);
@@ -373,7 +377,7 @@ fn unsafe_index_identity_is_fatal_and_never_reclassified_as_repairable_damage() 
 }
 
 #[test]
-fn three_pass_scan_budget_is_admitted_before_a_rebuild_file_is_created() {
+fn two_pass_scan_budget_is_admitted_before_a_rebuild_file_is_created() {
     let scratch = test_scratch::acquire("rspace-durable-startup-budget-");
     let (one_scan, _) = install_valid_store(scratch.path());
     let index_name = index_file_name(IndexGenerationV1::FIRST);
@@ -384,7 +388,8 @@ fn three_pass_scan_budget_is_admitted_before_a_rebuild_file_is_created() {
         max_pack_bytes: 16 * 1024 * 1024,
         max_transactions: 1024,
         max_object_records: 65_536,
-        max_total_scan_bytes: one_scan.checked_mul(3).unwrap() - 1,
+        max_total_scan_bytes: one_scan.checked_mul(2).unwrap() - 1,
+        max_total_physical_read_bytes: one_scan.checked_mul(6).unwrap(),
         max_index_bytes: 16 * 1024 * 1024,
         max_index_records: 65_536,
         max_full_byte_comparison_bytes: 16 * 1024 * 1024,
@@ -414,7 +419,8 @@ fn three_pass_scan_budget_is_admitted_before_a_rebuild_file_is_created() {
         max_pack_bytes: 16 * 1024 * 1024,
         max_transactions: 1024,
         max_object_records: 65_536,
-        max_total_scan_bytes: one_scan.checked_mul(3).unwrap(),
+        max_total_scan_bytes: one_scan.checked_mul(2).unwrap(),
+        max_total_physical_read_bytes: one_scan.checked_mul(6).unwrap(),
         max_index_bytes: 16 * 1024 * 1024,
         max_index_records: 65_536,
         max_full_byte_comparison_bytes: 16 * 1024 * 1024,

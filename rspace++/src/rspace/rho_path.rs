@@ -578,6 +578,280 @@ pub enum RhoPathError {
     TrailingBytes,
 }
 
+/// The three semantic namespaces whose keys use the `RhoPathV1` envelope.
+///
+/// This is deliberately independent of the persistence-layer namespace enum:
+/// the chunk validator lives beside, and is refined against, the contiguous
+/// `RhoPathV1` parsers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RhoPathNamespaceV1 {
+    Datum,
+    Continuation,
+    Join,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RhoPathFrameStateV1 {
+    Data,
+    Escape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RhoPathStreamStateV1 {
+    Magic {
+        matched: u8,
+    },
+    Kind,
+    CollectionVersion,
+    DatumFrame {
+        index: u8,
+        frame: RhoPathFrameStateV1,
+    },
+    DatumSuffix,
+    ContinuationBoundary {
+        channel_count: u64,
+    },
+    ContinuationBoundaryEscape {
+        channel_count: u64,
+    },
+    ContinuationChannelFrame {
+        channel_count: u64,
+        frame: RhoPathFrameStateV1,
+    },
+    ContinuationIdentityFrame {
+        frame: RhoPathFrameStateV1,
+    },
+    ContinuationDone,
+    JoinIndexedChannelFrame {
+        frame: RhoPathFrameStateV1,
+    },
+    JoinGroupFirst,
+    JoinGroupSecond,
+    JoinIdentityFirst,
+    JoinIdentity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RhoPathFrameStepV1 {
+    Pending(RhoPathFrameStateV1),
+    Complete,
+}
+
+fn rho_path_frame_step_v1(
+    state: RhoPathFrameStateV1,
+    byte: u8,
+) -> Result<RhoPathFrameStepV1, RhoPathError> {
+    match (state, byte) {
+        (RhoPathFrameStateV1::Data, ESCAPE) => {
+            Ok(RhoPathFrameStepV1::Pending(RhoPathFrameStateV1::Escape))
+        }
+        (RhoPathFrameStateV1::Data, _) => {
+            Ok(RhoPathFrameStepV1::Pending(RhoPathFrameStateV1::Data))
+        }
+        (RhoPathFrameStateV1::Escape, FRAME_END) => Ok(RhoPathFrameStepV1::Complete),
+        (RhoPathFrameStateV1::Escape, ESCAPED_ZERO) => {
+            Ok(RhoPathFrameStepV1::Pending(RhoPathFrameStateV1::Data))
+        }
+        (RhoPathFrameStateV1::Escape, byte) => Err(RhoPathError::InvalidEscape(byte)),
+    }
+}
+
+/// A constant-state, allocation-free validator for chunked `RhoPathV1` keys.
+///
+/// Chunk boundaries are semantically invisible, including boundaries between
+/// the two bytes of an escape or group terminator. The accepted language and
+/// first error are exactly those of `parse_datum`, `parse_continuation`, and
+/// `parse_join`; those contiguous parsers remain the independent oracle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RhoPathStreamValidatorV1 {
+    namespace: RhoPathNamespaceV1,
+    state: RhoPathStreamStateV1,
+    first_error: Option<RhoPathError>,
+}
+
+impl RhoPathStreamValidatorV1 {
+    pub(crate) const fn new(namespace: RhoPathNamespaceV1) -> Self {
+        Self {
+            namespace,
+            state: RhoPathStreamStateV1::Magic { matched: 0 },
+            first_error: None,
+        }
+    }
+
+    pub(crate) const fn datum() -> Self { Self::new(RhoPathNamespaceV1::Datum) }
+
+    pub(crate) const fn continuation() -> Self { Self::new(RhoPathNamespaceV1::Continuation) }
+
+    pub(crate) const fn join() -> Self { Self::new(RhoPathNamespaceV1::Join) }
+
+    /// Consume one consecutive key chunk.
+    ///
+    /// Once an error is observed it remains authoritative: later calls and
+    /// `finish` return the same first error without inspecting more bytes.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Result<(), RhoPathError> {
+        if let Some(error) = self.first_error {
+            return Err(error);
+        }
+        for &byte in chunk {
+            if let Err(error) = self.step(byte) {
+                self.first_error = Some(error);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Finish the key at end-of-stream.
+    pub(crate) fn finish(self) -> Result<(), RhoPathError> {
+        if let Some(error) = self.first_error {
+            return Err(error);
+        }
+        match self.state {
+            RhoPathStreamStateV1::DatumSuffix |
+            RhoPathStreamStateV1::ContinuationDone |
+            RhoPathStreamStateV1::JoinIdentity => Ok(()),
+            RhoPathStreamStateV1::Magic { .. } => Err(RhoPathError::InvalidMagic),
+            _ => Err(RhoPathError::TruncatedFrame),
+        }
+    }
+
+    fn step(&mut self, byte: u8) -> Result<(), RhoPathError> {
+        self.state = match self.state {
+            RhoPathStreamStateV1::Magic { matched } => {
+                if byte != MAGIC[matched as usize] {
+                    return Err(RhoPathError::InvalidMagic);
+                }
+                let matched = matched + 1;
+                if matched as usize == MAGIC.len() {
+                    RhoPathStreamStateV1::Kind
+                } else {
+                    RhoPathStreamStateV1::Magic { matched }
+                }
+            }
+            RhoPathStreamStateV1::Kind => {
+                let expected = match self.namespace {
+                    RhoPathNamespaceV1::Datum => DATUM_KIND,
+                    RhoPathNamespaceV1::Continuation => CONTINUATION_KIND,
+                    RhoPathNamespaceV1::Join => JOIN_KIND,
+                };
+                if byte != expected {
+                    return Err(RhoPathError::InvalidKind(byte));
+                }
+                match self.namespace {
+                    RhoPathNamespaceV1::Datum => RhoPathStreamStateV1::DatumFrame {
+                        index: 0,
+                        frame: RhoPathFrameStateV1::Data,
+                    },
+                    RhoPathNamespaceV1::Continuation | RhoPathNamespaceV1::Join => {
+                        RhoPathStreamStateV1::CollectionVersion
+                    }
+                }
+            }
+            RhoPathStreamStateV1::CollectionVersion => {
+                if byte != 1 {
+                    return Err(RhoPathError::InvalidCollectionVersion(byte));
+                }
+                match self.namespace {
+                    RhoPathNamespaceV1::Continuation => {
+                        RhoPathStreamStateV1::ContinuationBoundary { channel_count: 0 }
+                    }
+                    RhoPathNamespaceV1::Join => RhoPathStreamStateV1::JoinIndexedChannelFrame {
+                        frame: RhoPathFrameStateV1::Data,
+                    },
+                    RhoPathNamespaceV1::Datum => {
+                        unreachable!("datum keys do not contain a collection-version byte")
+                    }
+                }
+            }
+            RhoPathStreamStateV1::DatumFrame { index, frame } => {
+                match rho_path_frame_step_v1(frame, byte)? {
+                    RhoPathFrameStepV1::Pending(frame) => {
+                        RhoPathStreamStateV1::DatumFrame { index, frame }
+                    }
+                    RhoPathFrameStepV1::Complete if index == 2 => RhoPathStreamStateV1::DatumSuffix,
+                    RhoPathFrameStepV1::Complete => RhoPathStreamStateV1::DatumFrame {
+                        index: index + 1,
+                        frame: RhoPathFrameStateV1::Data,
+                    },
+                }
+            }
+            RhoPathStreamStateV1::DatumSuffix => RhoPathStreamStateV1::DatumSuffix,
+            RhoPathStreamStateV1::ContinuationBoundary { channel_count } => {
+                if byte == ESCAPE {
+                    RhoPathStreamStateV1::ContinuationBoundaryEscape { channel_count }
+                } else {
+                    RhoPathStreamStateV1::ContinuationChannelFrame {
+                        channel_count,
+                        frame: RhoPathFrameStateV1::Data,
+                    }
+                }
+            }
+            RhoPathStreamStateV1::ContinuationBoundaryEscape { channel_count } => match byte {
+                1 if channel_count == 0 => return Err(RhoPathError::EmptyChannelGroup),
+                1 => RhoPathStreamStateV1::ContinuationIdentityFrame {
+                    frame: RhoPathFrameStateV1::Data,
+                },
+                FRAME_END => RhoPathStreamStateV1::ContinuationBoundary {
+                    channel_count: channel_count + 1,
+                },
+                ESCAPED_ZERO => RhoPathStreamStateV1::ContinuationChannelFrame {
+                    channel_count,
+                    frame: RhoPathFrameStateV1::Data,
+                },
+                byte => return Err(RhoPathError::InvalidEscape(byte)),
+            },
+            RhoPathStreamStateV1::ContinuationChannelFrame {
+                channel_count,
+                frame,
+            } => match rho_path_frame_step_v1(frame, byte)? {
+                RhoPathFrameStepV1::Pending(frame) => {
+                    RhoPathStreamStateV1::ContinuationChannelFrame {
+                        channel_count,
+                        frame,
+                    }
+                }
+                RhoPathFrameStepV1::Complete => RhoPathStreamStateV1::ContinuationBoundary {
+                    channel_count: channel_count + 1,
+                },
+            },
+            RhoPathStreamStateV1::ContinuationIdentityFrame { frame } => {
+                match rho_path_frame_step_v1(frame, byte)? {
+                    RhoPathFrameStepV1::Pending(frame) => {
+                        RhoPathStreamStateV1::ContinuationIdentityFrame { frame }
+                    }
+                    RhoPathFrameStepV1::Complete => RhoPathStreamStateV1::ContinuationDone,
+                }
+            }
+            RhoPathStreamStateV1::ContinuationDone => {
+                return Err(RhoPathError::TrailingBytes);
+            }
+            RhoPathStreamStateV1::JoinIndexedChannelFrame { frame } => {
+                match rho_path_frame_step_v1(frame, byte)? {
+                    RhoPathFrameStepV1::Pending(frame) => {
+                        RhoPathStreamStateV1::JoinIndexedChannelFrame { frame }
+                    }
+                    RhoPathFrameStepV1::Complete => RhoPathStreamStateV1::JoinGroupFirst,
+                }
+            }
+            RhoPathStreamStateV1::JoinGroupFirst => {
+                if byte != GROUP_END[0] {
+                    return Err(RhoPathError::TruncatedFrame);
+                }
+                RhoPathStreamStateV1::JoinGroupSecond
+            }
+            RhoPathStreamStateV1::JoinGroupSecond => {
+                if byte != GROUP_END[1] {
+                    return Err(RhoPathError::TruncatedFrame);
+                }
+                RhoPathStreamStateV1::JoinIdentityFirst
+            }
+            RhoPathStreamStateV1::JoinIdentityFirst => RhoPathStreamStateV1::JoinIdentity,
+            RhoPathStreamStateV1::JoinIdentity => RhoPathStreamStateV1::JoinIdentity,
+        };
+        Ok(())
+    }
+}
+
 impl fmt::Display for RhoPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

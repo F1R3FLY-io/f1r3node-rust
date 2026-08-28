@@ -1,12 +1,13 @@
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use proptest::prelude::*;
 
 use super::support::{encode, synthetic_ref};
 use crate::rspace::persistence::mutation::{
-    MUTATION_STREAM_MAX_SCRATCH_BYTES_V1, MutationBatchReadAtV1, MutationStreamErrorV1,
-    StreamedMutationBatchV1, stream_mutation_batch_v1,
+    MUTATION_STREAM_MAX_SCRATCH_BYTES_V1, MutationBatchReadAtV1, MutationReadClassV1,
+    MutationStreamErrorV1, StreamedMutationBatchV1, stream_mutation_batch_v1,
 };
 use crate::rspace::persistence::{
     MutationBatchViewV1, MutationDecodeLimits, MutationError, ObjectDigest, RSpaceMutationBatchV1,
@@ -16,7 +17,7 @@ use crate::rspace::rho_path::RhoPathV1;
 
 struct SliceReader {
     bytes: RefCell<Vec<u8>>,
-    reads: RefCell<Vec<(u64, usize)>>,
+    reads: RefCell<Vec<(MutationReadClassV1, u64, usize)>>,
     mutate_on_read: Cell<Option<(usize, u8)>>,
 }
 
@@ -33,7 +34,12 @@ impl SliceReader {
 impl MutationBatchReadAtV1 for SliceReader {
     type Error = Infallible;
 
-    fn read_exact_at(&self, offset: u64, destination: &mut [u8]) -> Result<(), Self::Error> {
+    fn read_exact_at(
+        &mut self,
+        class: MutationReadClassV1,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> Result<(), Self::Error> {
         if let Some((read_index, replacement)) = self.mutate_on_read.get() {
             if self.reads.borrow().len() == read_index {
                 let index = usize::try_from(offset).unwrap();
@@ -43,7 +49,9 @@ impl MutationBatchReadAtV1 for SliceReader {
         }
         let start = usize::try_from(offset).unwrap();
         destination.copy_from_slice(&self.bytes.borrow()[start..start + destination.len()]);
-        self.reads.borrow_mut().push((offset, destination.len()));
+        self.reads
+            .borrow_mut()
+            .push((class, offset, destination.len()));
         Ok(())
     }
 }
@@ -129,10 +137,10 @@ fn streamed_metrics_with_limits(
     limits: MutationDecodeLimits,
     scratch_len: usize,
 ) -> Result<MutationIdentity, MutationError> {
-    let reader = SliceReader::new(bytes.to_vec());
+    let mut reader = SliceReader::new(bytes.to_vec());
     let mut scratch = vec![0; scratch_len];
     match stream_mutation_batch_v1(
-        &reader,
+        &mut reader,
         0,
         bytes.len() as u64,
         limits,
@@ -261,11 +269,11 @@ proptest! {
         let source_offset = source_prefix.len() as u64;
         let mut source = source_prefix;
         source.extend_from_slice(&bytes);
-        let reader = SliceReader::new(source);
+        let mut reader = SliceReader::new(source);
         let mut observed = Vec::new();
         let mut scratch = vec![0; scratch_len];
         let streamed = stream_mutation_batch_v1(
-            &reader,
+            &mut reader,
             source_offset,
             bytes.len() as u64,
             MutationDecodeLimits::UNBOUNDED,
@@ -279,6 +287,11 @@ proptest! {
         prop_assert_eq!(streamed.entry_count(), expected.2);
         prop_assert_eq!(streamed.key_bytes(), expected.3);
         prop_assert_eq!(streamed.payload_digest(), expected.4);
+        prop_assert_eq!(streamed.primary_read_bytes(), bytes.len() as u64);
+        prop_assert_eq!(
+            streamed.physical_read_bytes(),
+            streamed.primary_read_bytes() + streamed.prior_key_reread_bytes(),
+        );
         prop_assert!(streamed.physical_read_bytes() >= bytes.len() as u64);
     }
 
@@ -419,10 +432,10 @@ fn streamed_mutation_aggregate_counts_and_key_bytes_are_exactly_admitted() {
 #[test]
 fn streamed_prior_key_reread_proves_full_lexicographic_order_or_rejects_source_change() {
     let bytes = batch_bytes(&[1, 2, 3, 4]);
-    let stable_reader = SliceReader::new(bytes.clone());
+    let mut stable_reader = SliceReader::new(bytes.clone());
     let mut scratch = [0u8; 32];
     let stable = stream_mutation_batch_v1(
-        &stable_reader,
+        &mut stable_reader,
         0,
         bytes.len() as u64,
         MutationDecodeLimits::UNBOUNDED,
@@ -438,30 +451,53 @@ fn streamed_prior_key_reread_proves_full_lexicographic_order_or_rejects_source_c
         .flat_map(|section| section.entries.iter().rev().skip(1))
         .map(|entry| (entry.key_end - entry.key_start) as u64)
         .sum();
+    assert_eq!(stable.primary_read_bytes(), bytes.len() as u64);
+    assert_eq!(stable.prior_key_reread_bytes(), expected_reread_bytes);
     assert_eq!(stable.physical_read_bytes(), bytes.len() as u64 + expected_reread_bytes,);
-    let mut primary_frontier = 0u64;
-    let reread_index = reads
-        .iter()
-        .enumerate()
-        .find_map(|(index, (offset, len))| {
-            if *offset < primary_frontier {
-                Some(index)
-            } else {
-                primary_frontier = primary_frontier.max(*offset + *len as u64);
-                None
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|(class, _, _)| *class == MutationReadClassV1::Primary)
+            .map(|(_, _, len)| *len as u64)
+            .sum::<u64>(),
+        bytes.len() as u64,
+    );
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|(class, _, _)| *class == MutationReadClassV1::PriorKeyReread)
+            .map(|(_, _, len)| *len as u64)
+            .sum::<u64>(),
+        expected_reread_bytes,
+    );
+    let mut primary_seen = BTreeSet::new();
+    let mut reread_index = None;
+    for (index, (class, offset, len)) in reads.iter().copied().enumerate() {
+        let range = offset..offset + len as u64;
+        match class {
+            MutationReadClassV1::Primary => primary_seen.extend(range),
+            MutationReadClassV1::PriorKeyReread => {
+                assert!(
+                    range.clone().all(|byte| primary_seen.contains(&byte)),
+                    "prior-key validation may reread only bytes already authenticated by the \
+                     primary stream",
+                );
+                reread_index.get_or_insert(index);
             }
-        })
-        .expect("multiple keys require a prior-key reread");
-    let reread_offset = usize::try_from(reads[reread_index].0).unwrap();
+        }
+    }
+    let reread_index = reread_index.expect("multiple keys require a prior-key reread");
+    assert_eq!(primary_seen.len(), bytes.len());
+    let reread_offset = usize::try_from(reads[reread_index].1).unwrap();
     assert!(stable.physical_read_bytes() > bytes.len() as u64);
 
-    let unstable_reader = SliceReader::new(bytes.clone());
+    let mut unstable_reader = SliceReader::new(bytes.clone());
     unstable_reader
         .mutate_on_read
         .set(Some((reread_index, bytes[reread_offset] ^ 0x80)));
     let mut scratch = [0u8; 32];
     let failure = stream_mutation_batch_v1(
-        &unstable_reader,
+        &mut unstable_reader,
         0,
         bytes.len() as u64,
         MutationDecodeLimits::UNBOUNDED,
@@ -472,6 +508,12 @@ fn streamed_prior_key_reread_proves_full_lexicographic_order_or_rejects_source_c
     .unwrap_err();
     assert!(matches!(failure.error(), MutationStreamErrorV1::SourceChanged { .. }));
     assert_eq!(failure.source_cursor(), bytes.len() as u64);
+    assert_eq!(failure.primary_read_bytes(), bytes.len() as u64);
+    assert!(failure.prior_key_reread_bytes() > 0);
+    assert_eq!(
+        failure.physical_read_bytes(),
+        failure.primary_read_bytes() + failure.prior_key_reread_bytes(),
+    );
 
     let mut duplicate = bytes.clone();
     let layout = mutation_layout(&duplicate);
@@ -659,10 +701,10 @@ fn streamed_mutation_consumes_exact_declared_extent_and_preserves_precedence() {
 fn streamed_mutation_exact_physical_budget_accepts_and_minus_one_rejects_before_overread() {
     let bytes = batch_bytes(&[1, 2, 3, 4]);
     let run = |limit| {
-        let reader = SliceReader::new(bytes.clone());
+        let mut reader = SliceReader::new(bytes.clone());
         let mut scratch = [0u8; 128];
         let result = stream_mutation_batch_v1(
-            &reader,
+            &mut reader,
             0,
             bytes.len() as u64,
             MutationDecodeLimits::UNBOUNDED,
@@ -680,17 +722,17 @@ fn streamed_mutation_exact_physical_budget_accepts_and_minus_one_rejects_before_
         under.unwrap_err().error(),
         MutationStreamErrorV1::PhysicalReadLimit { limit, attempted } if *limit == exact - 1 && *attempted == exact
     ));
-    assert!(reads.iter().map(|(_, len)| *len as u64).sum::<u64>() < exact);
+    assert!(reads.iter().map(|(_, _, len)| *len as u64).sum::<u64>() < exact);
 }
 
 #[test]
 fn streamed_mutation_rejects_invalid_scratch_without_reading() {
     let bytes = batch_bytes(&[1]);
     for actual in [0, 1, MUTATION_STREAM_MAX_SCRATCH_BYTES_V1 + 1] {
-        let reader = SliceReader::new(bytes.clone());
+        let mut reader = SliceReader::new(bytes.clone());
         let mut scratch = vec![0; actual];
         let failure = stream_mutation_batch_v1(
-            &reader,
+            &mut reader,
             0,
             bytes.len() as u64,
             MutationDecodeLimits::UNBOUNDED,
@@ -710,11 +752,11 @@ fn streamed_mutation_rejects_invalid_scratch_without_reading() {
 fn streamed_mutation_semantic_failure_raw_drains_the_declared_extent() {
     let mut bytes = batch_bytes(&[1, 2]);
     bytes[32..40].copy_from_slice(&2_u64.to_le_bytes());
-    let reader = SliceReader::new(bytes.clone());
+    let mut reader = SliceReader::new(bytes.clone());
     let mut scratch = [0u8; 128];
     let mut observed = Vec::new();
     let failure = stream_mutation_batch_v1(
-        &reader,
+        &mut reader,
         0,
         bytes.len() as u64,
         MutationDecodeLimits::UNBOUNDED,
@@ -725,6 +767,16 @@ fn streamed_mutation_semantic_failure_raw_drains_the_declared_extent() {
     .unwrap_err();
     assert!(matches!(failure.error(), MutationStreamErrorV1::Mutation(_)));
     assert_eq!(failure.source_cursor(), bytes.len() as u64);
+    assert_eq!(failure.primary_read_bytes(), bytes.len() as u64);
+    assert_eq!(failure.prior_key_reread_bytes(), 0);
+    assert_eq!(failure.physical_read_bytes(), bytes.len() as u64);
+    assert!(
+        reader
+            .reads
+            .borrow()
+            .iter()
+            .all(|(class, _, _)| *class == MutationReadClassV1::Primary)
+    );
     assert_eq!(observed, bytes);
 }
 
@@ -741,11 +793,11 @@ fn streamed_mutation_retained_memory_is_independent_of_key_and_batch_extent() {
         batch_bytes_for_variable_identities(&[long_identity.as_slice()]),
         batch_bytes_for_variable_identities(&many_identity_slices),
     ] {
-        let reader = SliceReader::new(bytes.clone());
+        let mut reader = SliceReader::new(bytes.clone());
         let mut scratch = [0u8; 4096];
         assert!(
             stream_mutation_batch_v1(
-                &reader,
+                &mut reader,
                 0,
                 bytes.len() as u64,
                 MutationDecodeLimits::UNBOUNDED,

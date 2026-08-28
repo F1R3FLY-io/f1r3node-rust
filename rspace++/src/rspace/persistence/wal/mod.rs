@@ -35,7 +35,10 @@ pub use codec::{
     TransactionPrepareRecordViewV1, decode_commit_kind_v1, decode_prepare_kind_v1,
     preflight_prepare_record_len_v1, preflight_prepare_record_v1,
 };
-pub(crate) use codec::{PrepareRecordPreflightV1, PreparedObjectLayoutV1};
+pub(crate) use codec::{
+    LogPackObjectHeaderV1, OBJECT_RECORD_HEADER_LEN_V1, PrepareRecordPreflightV1,
+    PreparedObjectLayoutV1, validate_streamed_mutation_receipt_v1,
+};
 pub use disposition::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectDispositionV1,
     LogPackObjectPlanError, LogPackObjectPlanV1,

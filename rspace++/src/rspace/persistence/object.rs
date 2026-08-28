@@ -1,7 +1,10 @@
 use std::num::NonZeroU64;
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+
 use super::canonical::{
-    CanonicalEncode, CanonicalFormatError, CanonicalSink, OBJECT_DOMAIN_LEN,
+    CanonicalEncode, CanonicalFormatError, CanonicalSink, OBJECT_DIGEST_LEN, OBJECT_DOMAIN_LEN,
     OBJECT_ENVELOPE_HEADER_LEN, ObjectDigest, ObjectRefV1, ReadCursor, checked_len, checked_sum,
     parse_envelope, write_envelope_header, write_u64,
 };
@@ -766,6 +769,893 @@ impl CanonicalObjectKind {
         } else {
             Err(CanonicalFormatError::UnknownObjectDomain)
         }
+    }
+}
+
+/// The storage-independent result of bounded canonical-object validation.
+///
+/// Unlike [`CanonicalObjectView`], this identity does not borrow the encoded
+/// object.  It is intended for durable readers that already know the exact
+/// object extent and must validate it without retaining a whole-object buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CanonicalObjectStreamIdentityV1 {
+    kind: CanonicalObjectKind,
+    reference: ObjectRefV1,
+}
+
+impl CanonicalObjectStreamIdentityV1 {
+    pub(crate) const fn kind(self) -> CanonicalObjectKind { self.kind }
+
+    pub(crate) const fn reference(self) -> ObjectRefV1 { self.reference }
+}
+
+/// Progress reported by [`CanonicalObjectStreamValidatorV1::feed`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CanonicalObjectStreamProgressV1 {
+    NeedMore,
+    Complete(CanonicalObjectStreamIdentityV1),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StreamReferencePurpose {
+    DagEndpoint,
+    DagChild,
+    SemanticRoot,
+    AcceleratorSemantic,
+    AcceleratorArtifact,
+    RetentionCurrent,
+    RetentionHistorical,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CanonicalObjectStreamStateV1 {
+    ObjectDomain,
+    EnvelopeVersion(CanonicalObjectKind),
+    EnvelopeBodyLen(CanonicalObjectKind),
+
+    DagPrefixLen,
+    DagPrefixSkip,
+    DagEndpointTag,
+    DagEndpointMultiplicity,
+    DagBranchTag,
+    DagChildCount,
+    DagSmallEdge,
+    DagNode48Slots,
+    DagNode256Bitmap,
+    DagFinish,
+
+    BlobPayloadDomain,
+    BlobPayloadVersion,
+    BlobPayloadLen,
+    BlobPayloadSkip,
+    BlobFinish,
+
+    SemanticSchemaEpoch,
+    SemanticProfileId,
+    SemanticRootCount,
+    SemanticRootTag,
+    SemanticLegacyPresence,
+    SemanticLegacyDigest,
+    SemanticFinish,
+
+    AcceleratorEpoch,
+    AcceleratorCount,
+    AcceleratorArtifactKind,
+    AcceleratorFinish,
+
+    RetentionCurrentGeneration,
+    RetentionCurrentBytes(ObjectRefV1),
+    RetentionHistoricalCount,
+    RetentionHistoricalGeneration,
+    RetentionHistoricalBytes(ObjectRefV1),
+    RetentionFinish,
+
+    ReferenceDigest(StreamReferencePurpose),
+    ReferenceLen(StreamReferencePurpose, ObjectDigest),
+    Complete(CanonicalObjectKind),
+}
+
+/// Constant-state canonical-object validator for arbitrary input chunks.
+///
+/// `total_len` is the complete, addressable object extent (the same extent a
+/// contiguous `&[u8]` oracle would receive).  Calls to [`Self::feed`] must form
+/// an exact, ordered partition of that extent.  The validator retains only a
+/// 40-byte partial-field buffer, fixed counters/identities, and the digest
+/// state: prefixes, blob payloads, adaptive-node tables, artifact arrays, and
+/// retention histories are consumed without retention.
+pub(crate) struct CanonicalObjectStreamValidatorV1 {
+    total_len: usize,
+    consumed: usize,
+    body_len: usize,
+    state: CanonicalObjectStreamStateV1,
+    field: [u8; OBJECT_REF_LEN],
+    field_len: usize,
+    digest: Blake2b<U32>,
+
+    skip_remaining: usize,
+    remaining: usize,
+    index: usize,
+    present: usize,
+    previous_u8: Option<u8>,
+    previous_u64: Option<u64>,
+    pending_u64: u64,
+
+    dag_prefix_nonempty: bool,
+    dag_endpoint_absent: bool,
+    dag_branch_tag: u8,
+    dag_branch_kind: BranchKind,
+    dag_child_count: usize,
+
+    retention_current: Option<(u64, ObjectRefV1)>,
+    retention_previous: Option<(u64, ObjectRefV1)>,
+}
+
+impl CanonicalObjectStreamValidatorV1 {
+    pub(crate) fn new(total_len: usize) -> Self {
+        Self {
+            total_len,
+            consumed: 0,
+            body_len: 0,
+            state: CanonicalObjectStreamStateV1::ObjectDomain,
+            field: [0; OBJECT_REF_LEN],
+            field_len: 0,
+            digest: Blake2b::<U32>::new(),
+            skip_remaining: 0,
+            remaining: 0,
+            index: 0,
+            present: 0,
+            previous_u8: None,
+            previous_u64: None,
+            pending_u64: 0,
+            dag_prefix_nonempty: false,
+            dag_endpoint_absent: false,
+            dag_branch_tag: 0,
+            dag_branch_kind: BranchKind::Leaf,
+            dag_child_count: 0,
+            retention_current: None,
+            retention_previous: None,
+        }
+    }
+
+    pub(crate) fn feed(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<CanonicalObjectStreamProgressV1, CanonicalFormatError> {
+        let attempted = self.consumed.checked_add(bytes.len()).ok_or(
+            CanonicalFormatError::LengthOutOfRange {
+                field: "streaming canonical object",
+                value: u64::MAX,
+            },
+        )?;
+        if attempted > self.total_len {
+            return Err(CanonicalFormatError::TrailingBytes {
+                offset: self.total_len,
+                trailing: attempted - self.total_len,
+            });
+        }
+
+        let mut offset = 0;
+        while offset < bytes.len() {
+            self.drive_zero_width_states()?;
+            if matches!(self.state, CanonicalObjectStreamStateV1::Complete(_)) {
+                return Err(CanonicalFormatError::TrailingBytes {
+                    offset: self.consumed,
+                    trailing: bytes.len() - offset,
+                });
+            }
+
+            match self.state {
+                CanonicalObjectStreamStateV1::DagPrefixSkip |
+                CanonicalObjectStreamStateV1::BlobPayloadSkip => {
+                    let take = self.skip_remaining.min(bytes.len() - offset);
+                    self.consume(&bytes[offset..offset + take]);
+                    self.skip_remaining -= take;
+                    offset += take;
+                }
+                CanonicalObjectStreamStateV1::DagNode48Slots => {
+                    let byte = bytes[offset];
+                    self.consume(&bytes[offset..offset + 1]);
+                    offset += 1;
+                    if byte != ABSENT_NODE48_SLOT {
+                        if usize::from(byte) != self.present {
+                            return Err(CanonicalFormatError::ChildBitmapCount {
+                                declared: self.dag_child_count as u64,
+                                present: self.present as u64,
+                            });
+                        }
+                        self.present += 1;
+                    }
+                    self.index += 1;
+                    if self.index == NODE48_SLOT_TABLE_LEN {
+                        if self.present != self.dag_child_count {
+                            return Err(CanonicalFormatError::ChildBitmapCount {
+                                declared: self.dag_child_count as u64,
+                                present: self.present as u64,
+                            });
+                        }
+                        let reference_len = self
+                            .dag_child_count
+                            .checked_mul(OBJECT_REF_LEN)
+                            .ok_or(CanonicalFormatError::LengthOverflow {
+                                field: "node child references",
+                            })?;
+                        self.require_body_aggregate(reference_len)?;
+                        self.remaining = self.dag_child_count;
+                        self.state = if self.remaining == 0 {
+                            CanonicalObjectStreamStateV1::DagFinish
+                        } else {
+                            CanonicalObjectStreamStateV1::ReferenceDigest(
+                                StreamReferencePurpose::DagChild,
+                            )
+                        };
+                    }
+                }
+                CanonicalObjectStreamStateV1::DagNode256Bitmap => {
+                    let byte = bytes[offset];
+                    self.consume(&bytes[offset..offset + 1]);
+                    offset += 1;
+                    self.present += byte.count_ones() as usize;
+                    self.index += 1;
+                    if self.index == CHILD_BITMAP_LEN {
+                        if self.present != self.dag_child_count {
+                            return Err(CanonicalFormatError::ChildBitmapCount {
+                                declared: self.dag_child_count as u64,
+                                present: self.present as u64,
+                            });
+                        }
+                        let reference_len = self
+                            .dag_child_count
+                            .checked_mul(OBJECT_REF_LEN)
+                            .ok_or(CanonicalFormatError::LengthOverflow {
+                                field: "node child references",
+                            })?;
+                        self.require_body_aggregate(reference_len)?;
+                        self.remaining = self.dag_child_count;
+                        self.state = if self.remaining == 0 {
+                            CanonicalObjectStreamStateV1::DagFinish
+                        } else {
+                            CanonicalObjectStreamStateV1::ReferenceDigest(
+                                StreamReferencePurpose::DagChild,
+                            )
+                        };
+                    }
+                }
+                state => {
+                    let width = Self::field_width(state)
+                        .expect("every non-skip streaming state has a fixed field width");
+                    if self.field_len == 0 {
+                        self.require_field(width)?;
+                    }
+                    let take = (width - self.field_len).min(bytes.len() - offset);
+                    self.field[self.field_len..self.field_len + take]
+                        .copy_from_slice(&bytes[offset..offset + take]);
+                    self.consume(&bytes[offset..offset + take]);
+                    self.field_len += take;
+                    offset += take;
+                    if self.field_len == width {
+                        self.complete_field(state, width)?;
+                        self.field_len = 0;
+                    }
+                }
+            }
+        }
+        self.drive_zero_width_states()?;
+        Ok(match self.completed_identity()? {
+            Some(identity) => CanonicalObjectStreamProgressV1::Complete(identity),
+            None => CanonicalObjectStreamProgressV1::NeedMore,
+        })
+    }
+
+    pub(crate) fn finish(
+        mut self,
+    ) -> Result<CanonicalObjectStreamIdentityV1, CanonicalFormatError> {
+        self.drive_zero_width_states()?;
+        if let Some(identity) = self.completed_identity()? {
+            return Ok(identity);
+        }
+        if self.field_len == 0 {
+            if let Some(width) = Self::field_width(self.state) {
+                self.require_field(width)?;
+            }
+        }
+        Err(CanonicalFormatError::Truncated {
+            offset: self.error_offset(),
+            needed: self.total_len.saturating_sub(self.consumed),
+            available: 0,
+        })
+    }
+
+    fn consume(&mut self, bytes: &[u8]) {
+        self.digest.update(bytes);
+        self.consumed += bytes.len();
+    }
+
+    fn body_offset(&self) -> usize {
+        self.consumed
+            .saturating_sub(OBJECT_ENVELOPE_HEADER_LEN as usize)
+    }
+
+    fn body_remaining(&self) -> usize { self.body_len.saturating_sub(self.body_offset()) }
+
+    fn error_offset(&self) -> usize {
+        if self.consumed < OBJECT_ENVELOPE_HEADER_LEN as usize {
+            self.consumed.saturating_sub(self.field_len)
+        } else {
+            self.body_offset().saturating_sub(self.field_len)
+        }
+    }
+
+    fn require_field(&self, width: usize) -> Result<(), CanonicalFormatError> {
+        let (offset, available) = if self.consumed < OBJECT_ENVELOPE_HEADER_LEN as usize {
+            (self.consumed, self.total_len.saturating_sub(self.consumed))
+        } else {
+            (self.body_offset(), self.body_remaining())
+        };
+        if available < width {
+            return Err(CanonicalFormatError::Truncated {
+                offset,
+                needed: width,
+                available,
+            });
+        }
+        Ok(())
+    }
+
+    fn require_body_aggregate(&self, width: usize) -> Result<(), CanonicalFormatError> {
+        let available = self.body_remaining();
+        if available < width {
+            return Err(CanonicalFormatError::Truncated {
+                offset: self.body_offset(),
+                needed: width,
+                available,
+            });
+        }
+        Ok(())
+    }
+
+    fn require_exact_body_aggregate(&self, width: usize) -> Result<(), CanonicalFormatError> {
+        self.require_body_aggregate(width)?;
+        let available = self.body_remaining();
+        if available > width {
+            return Err(CanonicalFormatError::TrailingBytes {
+                offset: self.body_offset() + width,
+                trailing: available - width,
+            });
+        }
+        Ok(())
+    }
+
+    fn field_width(state: CanonicalObjectStreamStateV1) -> Option<usize> {
+        use CanonicalObjectStreamStateV1 as State;
+        Some(match state {
+            State::ObjectDomain | State::BlobPayloadDomain | State::SemanticProfileId => {
+                OBJECT_DOMAIN_LEN
+            }
+            State::ReferenceDigest(_) | State::SemanticLegacyDigest => OBJECT_DIGEST_LEN,
+            State::EnvelopeVersion(_) |
+            State::EnvelopeBodyLen(_) |
+            State::DagPrefixLen |
+            State::DagEndpointMultiplicity |
+            State::DagChildCount |
+            State::BlobPayloadVersion |
+            State::BlobPayloadLen |
+            State::SemanticSchemaEpoch |
+            State::SemanticRootCount |
+            State::SemanticRootTag |
+            State::AcceleratorEpoch |
+            State::AcceleratorCount |
+            State::AcceleratorArtifactKind |
+            State::RetentionCurrentGeneration |
+            State::RetentionCurrentBytes(_) |
+            State::RetentionHistoricalCount |
+            State::RetentionHistoricalGeneration |
+            State::RetentionHistoricalBytes(_) |
+            State::ReferenceLen(_, _) => 8,
+            State::DagEndpointTag |
+            State::DagBranchTag |
+            State::DagSmallEdge |
+            State::SemanticLegacyPresence => 1,
+            State::DagPrefixSkip |
+            State::DagNode48Slots |
+            State::DagNode256Bitmap |
+            State::DagFinish |
+            State::BlobPayloadSkip |
+            State::BlobFinish |
+            State::SemanticFinish |
+            State::AcceleratorFinish |
+            State::RetentionFinish |
+            State::Complete(_) => return None,
+        })
+    }
+
+    fn complete_field(
+        &mut self,
+        state: CanonicalObjectStreamStateV1,
+        width: usize,
+    ) -> Result<(), CanonicalFormatError> {
+        use CanonicalObjectStreamStateV1 as State;
+        match state {
+            State::ObjectDomain => {
+                let kind = CanonicalObjectKind::from_domain_prefix(&self.field[..width])?;
+                self.state = State::EnvelopeVersion(kind);
+            }
+            State::EnvelopeVersion(kind) => {
+                let version = self.field_u64();
+                if version != super::canonical::FORMAT_VERSION_V1 {
+                    return Err(CanonicalFormatError::UnsupportedVersion {
+                        domain: Self::object_envelope_name(kind),
+                        version,
+                    });
+                }
+                self.state = State::EnvelopeBodyLen(kind);
+            }
+            State::EnvelopeBodyLen(kind) => {
+                let body_len_u64 = self.field_u64();
+                let body_len = usize::try_from(body_len_u64).map_err(|_| {
+                    CanonicalFormatError::LengthOutOfRange {
+                        field: "object body",
+                        value: body_len_u64,
+                    }
+                })?;
+                let available = self.total_len - OBJECT_ENVELOPE_HEADER_LEN as usize;
+                if available < body_len {
+                    return Err(CanonicalFormatError::Truncated {
+                        offset: OBJECT_ENVELOPE_HEADER_LEN as usize,
+                        needed: body_len,
+                        available,
+                    });
+                }
+                if available > body_len {
+                    return Err(CanonicalFormatError::TrailingBytes {
+                        offset: OBJECT_ENVELOPE_HEADER_LEN as usize + body_len,
+                        trailing: available - body_len,
+                    });
+                }
+                self.body_len = body_len;
+                self.state = match kind {
+                    CanonicalObjectKind::DagNode => State::DagPrefixLen,
+                    CanonicalObjectKind::Blob => State::BlobPayloadDomain,
+                    CanonicalObjectKind::SemanticManifest => State::SemanticSchemaEpoch,
+                    CanonicalObjectKind::AcceleratorManifest => {
+                        State::ReferenceDigest(StreamReferencePurpose::AcceleratorSemantic)
+                    }
+                    CanonicalObjectKind::RetentionManifest => State::RetentionCurrentGeneration,
+                };
+            }
+            State::DagPrefixLen => {
+                let value = self.field_u64();
+                self.skip_remaining =
+                    usize::try_from(value).map_err(|_| CanonicalFormatError::LengthOutOfRange {
+                        field: "node prefix",
+                        value,
+                    })?;
+                self.require_body_aggregate(self.skip_remaining)?;
+                self.dag_prefix_nonempty = self.skip_remaining != 0;
+                self.state = State::DagPrefixSkip;
+            }
+            State::DagEndpointTag => match self.field[0] {
+                0 => {
+                    self.dag_endpoint_absent = true;
+                    self.state = State::DagBranchTag;
+                }
+                1 | 2 => {
+                    self.dag_endpoint_absent = false;
+                    self.state = State::DagBranchTag;
+                }
+                3 => {
+                    self.dag_endpoint_absent = false;
+                    self.state = State::DagEndpointMultiplicity;
+                }
+                4 => {
+                    self.dag_endpoint_absent = false;
+                    self.state = State::ReferenceDigest(StreamReferencePurpose::DagEndpoint);
+                }
+                tag => return Err(CanonicalFormatError::InvalidEndpointTag(tag)),
+            },
+            State::DagEndpointMultiplicity => {
+                if self.field_u64() == 0 {
+                    return Err(CanonicalFormatError::ZeroMultiplicity);
+                }
+                self.state = State::DagBranchTag;
+            }
+            State::DagBranchTag => {
+                self.dag_branch_tag = self.field[0];
+                self.dag_branch_kind = BranchKind::parse(self.dag_branch_tag)?;
+                self.state = State::DagChildCount;
+            }
+            State::DagChildCount => {
+                let count_u64 = self.field_u64();
+                let count = usize::try_from(count_u64).map_err(|_| {
+                    CanonicalFormatError::LengthOutOfRange {
+                        field: "node child count",
+                        value: count_u64,
+                    }
+                })?;
+                if count > 256 || self.dag_branch_kind != BranchKind::for_child_count(count) {
+                    return Err(CanonicalFormatError::NonCanonicalBranchClass {
+                        tag: self.dag_branch_tag,
+                        child_count: count_u64,
+                    });
+                }
+                self.dag_child_count = count;
+                self.remaining = count;
+                self.previous_u8 = None;
+                match self.dag_branch_kind {
+                    BranchKind::Leaf => self.state = State::DagFinish,
+                    BranchKind::Node4 | BranchKind::Node16 => {
+                        let pair_len = count.checked_mul(SMALL_CHILD_LEN).ok_or(
+                            CanonicalFormatError::LengthOverflow {
+                                field: "node child pairs",
+                            },
+                        )?;
+                        self.require_body_aggregate(pair_len)?;
+                        self.state = State::DagSmallEdge;
+                    }
+                    BranchKind::Node48 => {
+                        self.require_body_aggregate(NODE48_SLOT_TABLE_LEN)?;
+                        self.index = 0;
+                        self.present = 0;
+                        self.state = State::DagNode48Slots;
+                    }
+                    BranchKind::Node256 => {
+                        self.require_body_aggregate(CHILD_BITMAP_LEN)?;
+                        self.index = 0;
+                        self.present = 0;
+                        self.state = State::DagNode256Bitmap;
+                    }
+                }
+            }
+            State::DagSmallEdge => {
+                let edge = self.field[0];
+                if let Some(previous) = self.previous_u8 {
+                    if previous >= edge {
+                        return Err(CanonicalFormatError::ChildEdgesNotStrict {
+                            previous,
+                            current: edge,
+                        });
+                    }
+                }
+                self.previous_u8 = Some(edge);
+                self.state = State::ReferenceDigest(StreamReferencePurpose::DagChild);
+            }
+            State::BlobPayloadDomain => {
+                let _ = CanonicalBlobKind::parse_domain(&self.field[..width])?;
+                self.state = State::BlobPayloadVersion;
+            }
+            State::BlobPayloadVersion => {
+                let version = self.field_u64();
+                if version != 1 {
+                    return Err(CanonicalFormatError::UnsupportedVersion {
+                        domain: CanonicalBlobKind::ContinuationSourceV1.name(),
+                        version,
+                    });
+                }
+                self.state = State::BlobPayloadLen;
+            }
+            State::BlobPayloadLen => {
+                let value = self.field_u64();
+                self.skip_remaining =
+                    usize::try_from(value).map_err(|_| CanonicalFormatError::LengthOutOfRange {
+                        field: "blob payload",
+                        value,
+                    })?;
+                self.require_body_aggregate(self.skip_remaining)?;
+                self.state = State::BlobPayloadSkip;
+            }
+            State::SemanticSchemaEpoch => {
+                let version = self.field_u64();
+                if version != super::manifest::SEMANTIC_SCHEMA_EPOCH_V1 {
+                    return Err(CanonicalFormatError::UnsupportedVersion {
+                        domain: "RSpace semantic schema",
+                        version,
+                    });
+                }
+                self.state = State::SemanticProfileId;
+            }
+            State::SemanticProfileId => self.state = State::SemanticRootCount,
+            State::SemanticRootCount => {
+                let count = self.field_u64();
+                if count != 3 {
+                    return Err(CanonicalFormatError::SemanticRootCount(count));
+                }
+                self.index = 0;
+                self.state = State::SemanticRootTag;
+            }
+            State::SemanticRootTag => {
+                let actual = self.field_u64();
+                let expected = (self.index + 1) as u64;
+                if actual != expected {
+                    return Err(CanonicalFormatError::SemanticRootOrder { expected, actual });
+                }
+                self.state = State::ReferenceDigest(StreamReferencePurpose::SemanticRoot);
+            }
+            State::SemanticLegacyPresence => match self.field[0] {
+                0 => self.state = State::SemanticFinish,
+                1 => self.state = State::SemanticLegacyDigest,
+                tag => return Err(CanonicalFormatError::InvalidRootPresence(tag)),
+            },
+            State::SemanticLegacyDigest => self.state = State::SemanticFinish,
+            State::AcceleratorEpoch => self.state = State::AcceleratorCount,
+            State::AcceleratorCount => {
+                let value = self.field_u64();
+                let count =
+                    usize::try_from(value).map_err(|_| CanonicalFormatError::LengthOutOfRange {
+                        field: "accelerator artifact count",
+                        value,
+                    })?;
+                let encoded_len = count.checked_mul(8 + OBJECT_REF_LEN).ok_or(
+                    CanonicalFormatError::LengthOverflow {
+                        field: "accelerator artifacts",
+                    },
+                )?;
+                self.require_exact_body_aggregate(encoded_len)?;
+                self.remaining = count;
+                self.previous_u64 = None;
+                self.state = if count == 0 {
+                    State::AcceleratorFinish
+                } else {
+                    State::AcceleratorArtifactKind
+                };
+            }
+            State::AcceleratorArtifactKind => {
+                let tag = self.field_u64();
+                let _ = super::manifest::AcceleratorArtifactKind::parse(tag)?;
+                self.pending_u64 = tag;
+                self.state = State::ReferenceDigest(StreamReferencePurpose::AcceleratorArtifact);
+            }
+            State::RetentionCurrentGeneration => {
+                self.pending_u64 = self.field_u64();
+                self.state = State::ReferenceDigest(StreamReferencePurpose::RetentionCurrent);
+            }
+            State::RetentionCurrentBytes(reference) => {
+                let canonical_bytes = self.field_u64();
+                Self::require_retention_bytes(self.pending_u64, reference, canonical_bytes)?;
+                self.retention_current = Some((self.pending_u64, reference));
+                self.state = State::RetentionHistoricalCount;
+            }
+            State::RetentionHistoricalCount => {
+                let value = self.field_u64();
+                let count =
+                    usize::try_from(value).map_err(|_| CanonicalFormatError::LengthOutOfRange {
+                        field: "retained historical states",
+                        value,
+                    })?;
+                let encoded_len =
+                    count
+                        .checked_mul(56)
+                        .ok_or(CanonicalFormatError::LengthOverflow {
+                            field: "retained historical states",
+                        })?;
+                self.require_exact_body_aggregate(encoded_len)?;
+                self.remaining = count;
+                self.retention_previous = None;
+                self.state = if count == 0 {
+                    State::RetentionFinish
+                } else {
+                    State::RetentionHistoricalGeneration
+                };
+            }
+            State::RetentionHistoricalGeneration => {
+                self.pending_u64 = self.field_u64();
+                self.state = State::ReferenceDigest(StreamReferencePurpose::RetentionHistorical);
+            }
+            State::RetentionHistoricalBytes(reference) => {
+                let canonical_bytes = self.field_u64();
+                let current = (self.pending_u64, reference);
+                Self::require_retention_bytes(current.0, current.1, canonical_bytes)?;
+                if Some(current) == self.retention_current {
+                    return Err(CanonicalFormatError::RetentionContainsCurrent);
+                }
+                if self
+                    .retention_previous
+                    .is_some_and(|previous| previous >= current)
+                {
+                    return Err(CanonicalFormatError::RetainedStatesNotStrict);
+                }
+                self.retention_previous = Some(current);
+                self.remaining -= 1;
+                self.state = if self.remaining == 0 {
+                    State::RetentionFinish
+                } else {
+                    State::RetentionHistoricalGeneration
+                };
+            }
+            State::ReferenceDigest(purpose) => {
+                let digest = ObjectDigest::from_slice(&self.field[..width])?;
+                self.state = State::ReferenceLen(purpose, digest);
+            }
+            State::ReferenceLen(purpose, digest) => {
+                let reference = ObjectRefV1::new(digest, self.field_u64())?;
+                self.after_reference(purpose, reference)?;
+            }
+            State::DagPrefixSkip |
+            State::DagNode48Slots |
+            State::DagNode256Bitmap |
+            State::DagFinish |
+            State::BlobPayloadSkip |
+            State::BlobFinish |
+            State::SemanticFinish |
+            State::AcceleratorFinish |
+            State::RetentionFinish |
+            State::Complete(_) => unreachable!("non-field state reached fixed-field completion"),
+        }
+        Ok(())
+    }
+
+    fn after_reference(
+        &mut self,
+        purpose: StreamReferencePurpose,
+        reference: ObjectRefV1,
+    ) -> Result<(), CanonicalFormatError> {
+        use CanonicalObjectStreamStateV1 as State;
+        self.state = match purpose {
+            StreamReferencePurpose::DagEndpoint => State::DagBranchTag,
+            StreamReferencePurpose::DagChild => {
+                self.remaining -= 1;
+                if self.remaining == 0 {
+                    State::DagFinish
+                } else if matches!(self.dag_branch_kind, BranchKind::Node4 | BranchKind::Node16) {
+                    State::DagSmallEdge
+                } else {
+                    State::ReferenceDigest(StreamReferencePurpose::DagChild)
+                }
+            }
+            StreamReferencePurpose::SemanticRoot => {
+                self.index += 1;
+                if self.index == 3 {
+                    State::SemanticLegacyPresence
+                } else {
+                    State::SemanticRootTag
+                }
+            }
+            StreamReferencePurpose::AcceleratorSemantic => State::AcceleratorEpoch,
+            StreamReferencePurpose::AcceleratorArtifact => {
+                if let Some(previous) = self.previous_u64 {
+                    if previous >= self.pending_u64 {
+                        return Err(CanonicalFormatError::AcceleratorKindsNotStrict {
+                            previous,
+                            current: self.pending_u64,
+                        });
+                    }
+                }
+                self.previous_u64 = Some(self.pending_u64);
+                self.remaining -= 1;
+                if self.remaining == 0 {
+                    State::AcceleratorFinish
+                } else {
+                    State::AcceleratorArtifactKind
+                }
+            }
+            StreamReferencePurpose::RetentionCurrent => State::RetentionCurrentBytes(reference),
+            StreamReferencePurpose::RetentionHistorical => {
+                State::RetentionHistoricalBytes(reference)
+            }
+        };
+        Ok(())
+    }
+
+    fn drive_zero_width_states(&mut self) -> Result<(), CanonicalFormatError> {
+        use CanonicalObjectStreamStateV1 as State;
+        loop {
+            match self.state {
+                State::DagPrefixSkip if self.skip_remaining == 0 => {
+                    self.state = State::DagEndpointTag;
+                }
+                State::BlobPayloadSkip if self.skip_remaining == 0 => {
+                    self.state = State::BlobFinish;
+                }
+                State::DagFinish => {
+                    self.require_body_finished()?;
+                    if self.dag_endpoint_absent &&
+                        self.dag_child_count == 0 &&
+                        self.dag_prefix_nonempty
+                    {
+                        return Err(CanonicalFormatError::EmptyNode);
+                    }
+                    if self.dag_endpoint_absent && self.dag_child_count == 1 {
+                        return Err(CanonicalFormatError::CompressibleUnaryNode);
+                    }
+                    self.complete(CanonicalObjectKind::DagNode)?;
+                }
+                State::BlobFinish => {
+                    self.require_body_finished()?;
+                    self.complete(CanonicalObjectKind::Blob)?;
+                }
+                State::SemanticFinish => {
+                    self.require_body_finished()?;
+                    self.complete(CanonicalObjectKind::SemanticManifest)?;
+                }
+                State::AcceleratorFinish => {
+                    self.require_body_finished()?;
+                    self.complete(CanonicalObjectKind::AcceleratorManifest)?;
+                }
+                State::RetentionFinish => {
+                    self.require_body_finished()?;
+                    self.complete(CanonicalObjectKind::RetentionManifest)?;
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn require_body_finished(&self) -> Result<(), CanonicalFormatError> {
+        let offset = self.body_offset();
+        if offset != self.body_len {
+            return Err(CanonicalFormatError::TrailingBytes {
+                offset,
+                trailing: self.body_len - offset,
+            });
+        }
+        Ok(())
+    }
+
+    fn complete(&mut self, kind: CanonicalObjectKind) -> Result<(), CanonicalFormatError> {
+        if self.consumed != self.total_len {
+            return Err(CanonicalFormatError::Truncated {
+                offset: self.consumed,
+                needed: self.total_len - self.consumed,
+                available: 0,
+            });
+        }
+        let hash = self.digest.clone().finalize();
+        let mut digest = [0; OBJECT_DIGEST_LEN];
+        digest.copy_from_slice(&hash);
+        let reference = ObjectRefV1::new(ObjectDigest::from_array(digest), self.total_len as u64)?;
+        self.field[..OBJECT_DIGEST_LEN].copy_from_slice(reference.digest().as_bytes());
+        self.field[OBJECT_DIGEST_LEN..OBJECT_REF_LEN]
+            .copy_from_slice(&reference.encoded_len().to_le_bytes());
+        self.state = CanonicalObjectStreamStateV1::Complete(kind);
+        Ok(())
+    }
+
+    fn completed_identity(
+        &self,
+    ) -> Result<Option<CanonicalObjectStreamIdentityV1>, CanonicalFormatError> {
+        let CanonicalObjectStreamStateV1::Complete(kind) = self.state else {
+            return Ok(None);
+        };
+        let digest = ObjectDigest::from_slice(&self.field[..OBJECT_DIGEST_LEN])?;
+        let encoded_len = u64::from_le_bytes(
+            self.field[OBJECT_DIGEST_LEN..OBJECT_REF_LEN]
+                .try_into()
+                .expect("object reference length has eight bytes"),
+        );
+        let reference = ObjectRefV1::new(digest, encoded_len)?;
+        Ok(Some(CanonicalObjectStreamIdentityV1 { kind, reference }))
+    }
+
+    fn field_u64(&self) -> u64 {
+        u64::from_le_bytes(
+            self.field[..8]
+                .try_into()
+                .expect("u64 field has eight bytes"),
+        )
+    }
+
+    fn object_envelope_name(kind: CanonicalObjectKind) -> &'static str {
+        match kind {
+            CanonicalObjectKind::DagNode => "RSpace DAG node",
+            CanonicalObjectKind::Blob => "RSpace DAG blob",
+            CanonicalObjectKind::SemanticManifest => "RSpace semantic manifest",
+            CanonicalObjectKind::AcceleratorManifest => "RSpace accelerator manifest",
+            CanonicalObjectKind::RetentionManifest => "RSpace retention manifest",
+        }
+    }
+
+    fn require_retention_bytes(
+        generation: u64,
+        reference: ObjectRefV1,
+        actual: u64,
+    ) -> Result<(), CanonicalFormatError> {
+        if actual < reference.encoded_len() {
+            return Err(CanonicalFormatError::RetentionStateBytes {
+                generation,
+                minimum: reference.encoded_len(),
+                actual,
+            });
+        }
+        Ok(())
     }
 }
 

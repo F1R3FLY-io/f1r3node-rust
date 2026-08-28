@@ -8,6 +8,7 @@ pub enum DurableLimitKind {
     Transactions,
     ObjectRecords,
     TotalScanBytes,
+    TotalPhysicalReadBytes,
     IndexBytes,
     IndexRecords,
     FullByteComparisonBytes,
@@ -15,12 +16,13 @@ pub enum DurableLimitKind {
 }
 
 impl DurableLimitKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::LivePacks,
         Self::PackBytes,
         Self::Transactions,
         Self::ObjectRecords,
         Self::TotalScanBytes,
+        Self::TotalPhysicalReadBytes,
         Self::IndexBytes,
         Self::IndexRecords,
         Self::FullByteComparisonBytes,
@@ -34,6 +36,7 @@ impl DurableLimitKind {
             Self::Transactions => "transactions",
             Self::ObjectRecords => "object records",
             Self::TotalScanBytes => "total scan bytes",
+            Self::TotalPhysicalReadBytes => "total physical read bytes",
             Self::IndexBytes => "index bytes",
             Self::IndexRecords => "index records",
             Self::FullByteComparisonBytes => "individual full-byte comparison bytes",
@@ -96,6 +99,7 @@ pub struct DurableLimitConfig {
     pub max_transactions: u64,
     pub max_object_records: u64,
     pub max_total_scan_bytes: u64,
+    pub max_total_physical_read_bytes: u64,
     pub max_index_bytes: u64,
     pub max_index_records: u64,
     pub max_full_byte_comparison_bytes: u64,
@@ -109,6 +113,7 @@ pub struct DurableLimits {
     transactions: NonZeroU64,
     object_records: NonZeroU64,
     total_scan_bytes: NonZeroU64,
+    total_physical_read_bytes: NonZeroU64,
     index_bytes: NonZeroU64,
     index_records: NonZeroU64,
     full_byte_comparison_bytes: NonZeroU64,
@@ -125,6 +130,10 @@ impl DurableLimits {
             total_scan_bytes: nonzero(
                 DurableLimitKind::TotalScanBytes,
                 config.max_total_scan_bytes,
+            )?,
+            total_physical_read_bytes: nonzero(
+                DurableLimitKind::TotalPhysicalReadBytes,
+                config.max_total_physical_read_bytes,
             )?,
             index_bytes: nonzero(DurableLimitKind::IndexBytes, config.max_index_bytes)?,
             index_records: nonzero(DurableLimitKind::IndexRecords, config.max_index_records)?,
@@ -146,6 +155,7 @@ impl DurableLimits {
             DurableLimitKind::Transactions => self.transactions,
             DurableLimitKind::ObjectRecords => self.object_records,
             DurableLimitKind::TotalScanBytes => self.total_scan_bytes,
+            DurableLimitKind::TotalPhysicalReadBytes => self.total_physical_read_bytes,
             DurableLimitKind::IndexBytes => self.index_bytes,
             DurableLimitKind::IndexRecords => self.index_records,
             DurableLimitKind::FullByteComparisonBytes => self.full_byte_comparison_bytes,
@@ -219,6 +229,7 @@ mod tests {
             max_transactions: value,
             max_object_records: value,
             max_total_scan_bytes: value,
+            max_total_physical_read_bytes: value,
             max_index_bytes: value,
             max_index_records: value,
             max_full_byte_comparison_bytes: value,
@@ -233,6 +244,9 @@ mod tests {
             DurableLimitKind::Transactions => config.max_transactions = value,
             DurableLimitKind::ObjectRecords => config.max_object_records = value,
             DurableLimitKind::TotalScanBytes => config.max_total_scan_bytes = value,
+            DurableLimitKind::TotalPhysicalReadBytes => {
+                config.max_total_physical_read_bytes = value;
+            }
             DurableLimitKind::IndexBytes => config.max_index_bytes = value,
             DurableLimitKind::IndexRecords => config.max_index_records = value,
             DurableLimitKind::FullByteComparisonBytes => {

@@ -642,6 +642,7 @@ fn limit_config() -> DurableLimitConfig {
         max_transactions: 1024,
         max_object_records: 65_536,
         max_total_scan_bytes: 64 * 1024 * 1024,
+        max_total_physical_read_bytes: 128 * 1024 * 1024,
         max_index_bytes: 16 * 1024 * 1024,
         max_index_records: 65_536,
         max_full_byte_comparison_bytes: 16 * 1024 * 1024,
@@ -731,16 +732,11 @@ fn exact_pack_chain_scans_iteratively_and_consumes_the_catalog_tip() {
     let (bytes, catalog, data_count) = image_with_lookup(&MissingLookup);
     let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&bytes));
     let token = token_with_slot(catalog, false);
-    let mut observed = Vec::new();
     let scanned = scan_catalog_authorized_pack_chain(
         &mut provider,
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |record| {
-            observed.push(record);
-            Ok(())
-        },
     )
     .unwrap();
     let recovered = scanned.verify_catalog(token).unwrap();
@@ -748,7 +744,6 @@ fn exact_pack_chain_scans_iteratively_and_consumes_the_catalog_tip() {
     assert_eq!(recovered.transactions(), 1);
     assert_eq!(recovered.object_records(), data_count);
     assert_eq!(recovered.object_index().record_count(), data_count);
-    assert_eq!(observed.len() as u64, data_count);
     assert_eq!(recovered.expected_index_tail(), catalog.durable_index_tail());
     assert_eq!(recovered.scanned_bytes(), bytes.len() as u64);
 }
@@ -759,16 +754,11 @@ fn checkpoint_pack_streams_once_and_rebuilds_the_exact_fresh_index() {
     let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
     let reads = Arc::clone(&provider.reader.reads);
     let token = token_with_slot(image.catalog, false);
-    let mut observed = Vec::new();
     let scanned = scan_catalog_authorized_pack_chain(
         &mut provider,
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |record| {
-            observed.push(record);
-            Ok(())
-        },
     )
     .unwrap();
     let recovered = scanned.verify_catalog(token).unwrap();
@@ -778,7 +768,9 @@ fn checkpoint_pack_streams_once_and_rebuilds_the_exact_fresh_index() {
     assert_eq!(recovered.checkpoints(), 1);
     assert_eq!(recovered.object_records(), image.records.len() as u64);
     assert_eq!(recovered.object_index().record_count(), image.records.len() as u64);
-    assert_eq!(observed, image.records);
+    for record in image.records.iter().copied() {
+        assert_eq!(recovered.object_index().get(record.reference().digest()), Some(record));
+    }
     assert_eq!(recovered.state(), image.catalog.state());
     assert_eq!(recovered.terminal_address(), image.commit_address);
     assert_eq!(recovered.expected_index_tail(), image.canonical_index.len() as u64);
@@ -830,21 +822,15 @@ fn run_checkpoint_cardinality_recovery_case(retained_union_objects: usize) {
             let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
             let reads = Arc::clone(&provider.reader.reads);
             let token = token_with_slot(image.catalog, false);
-            let mut observed = 0_u64;
             let scanned = scan_catalog_authorized_pack_chain(
                 &mut provider,
                 &token,
                 limits(),
                 LogPackDecodeLimits::UNBOUNDED,
-                |_| {
-                    observed += 1;
-                    Ok(())
-                },
             )
             .unwrap();
             let recovered = scanned.verify_catalog(token).unwrap();
             assert_eq!(provider.opens, 1);
-            assert_eq!(observed, expected_records);
             assert_eq!(recovered.object_records(), expected_records);
             assert_eq!(recovered.object_index().record_count(), expected_records);
             assert!(
@@ -910,16 +896,11 @@ fn incremental_history_continues_from_checkpoint_state_and_index() {
     let image = checkpoint_then_incremental_image();
     let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
     let token = token_with_slot(image.catalog, false);
-    let mut observed = Vec::new();
     let scanned = scan_catalog_authorized_pack_chain(
         &mut provider,
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |record| {
-            observed.push(record);
-            Ok(())
-        },
     )
     .unwrap();
     let recovered = scanned.verify_catalog(token).unwrap();
@@ -930,7 +911,9 @@ fn incremental_history_continues_from_checkpoint_state_and_index() {
     assert_eq!(recovered.terminal_address(), image.catalog.commit_address());
     assert_eq!(recovered.object_records(), image.object_records);
     assert_eq!(recovered.object_index().record_count(), image.records.len() as u64);
-    assert_eq!(observed, image.records);
+    for record in image.records.iter().copied() {
+        assert_eq!(recovered.object_index().get(record.reference().digest()), Some(record));
+    }
     assert_eq!(recovered.expected_index_tail(), image.canonical_index.len() as u64);
     assert_eq!(recovered.scanned_bytes(), image.pack.len() as u64);
 }
@@ -946,7 +929,6 @@ fn incremental_prepare_recovery_never_requests_a_record_sized_buffer() {
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap()
     .verify_catalog(token)
@@ -976,16 +958,11 @@ proptest! {
         let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
         let reads = Arc::clone(&provider.reader.reads);
         let token = token_with_slot(image.catalog, false);
-        let mut observed = Vec::new();
         let recovered = scan_catalog_authorized_pack_chain(
             &mut provider,
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |record| {
-                observed.push(record);
-                Ok(())
-            },
         )
         .unwrap()
         .verify_catalog(token)
@@ -999,7 +976,9 @@ proptest! {
             .max()
             .unwrap();
         prop_assert!(maximum_read <= 64 * 1024);
-        prop_assert_eq!(observed, image.records);
+        for record in image.records.iter().copied() {
+            prop_assert_eq!(recovered.object_index().get(record.reference().digest()), Some(record));
+        }
         prop_assert_eq!(recovered.transactions(), 1);
         prop_assert_eq!(recovered.checkpoints(), 1);
         prop_assert_eq!(recovered.state(), image.catalog.state());
@@ -1024,7 +1003,6 @@ fn checkpoint_corruption_and_kind_pairing_fail_before_authority() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::Wal(LogPackFormatError::ObjectReference { .. }))
     ));
@@ -1038,7 +1016,6 @@ fn checkpoint_corruption_and_kind_pairing_fail_before_authority() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::Wal(LogPackFormatError::RecordChecksum { .. }))
     ));
@@ -1058,7 +1035,6 @@ fn checkpoint_corruption_and_kind_pairing_fail_before_authority() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::CommitPairing {
             prepare: PrepareRecordKindV1::GenerationCheckpoint,
@@ -1086,7 +1062,6 @@ fn checkpoint_corruption_and_kind_pairing_fail_before_authority() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::GenerationCheckpointPosition {
             actual_pack,
@@ -1117,21 +1092,15 @@ fn checkpoint_aggregate_limits_reject_before_object_reads_or_index_emission() {
         let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
         let reads = Arc::clone(&provider.reader.reads);
         let token = token_with_slot(image.catalog, false);
-        let mut emitted = 0u64;
         assert!(matches!(
             scan_catalog_authorized_pack_chain(
                 &mut provider,
                 &token,
                 DurableLimits::new(config).unwrap(),
                 LogPackDecodeLimits::UNBOUNDED,
-                |_| {
-                    emitted += 1;
-                    Ok(())
-                },
             ),
             Err(RecoveryError::Limit(_))
         ));
-        assert_eq!(emitted, 0);
         assert!(reads.lock().unwrap().iter().all(|(offset, length)| {
             let end = offset.checked_add(*length as u64).unwrap();
             end <= object_stream || *offset >= image.prepare_address.end()
@@ -1150,7 +1119,6 @@ fn generation_checkpoint_reuse_and_short_physical_pack_fail_closed() {
             &reuse_token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::GenerationCheckpointReuse(_))
     ));
@@ -1166,7 +1134,6 @@ fn generation_checkpoint_reuse_and_short_physical_pack_fail_closed() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::DurableTail {
             pack: PackId::GENESIS,
@@ -1186,7 +1153,6 @@ fn exact_catalog_image_is_consumed_before_recovered_authority_is_exposed() {
         &scan_token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     assert!(matches!(
@@ -1232,7 +1198,6 @@ fn range_and_object_work_are_admitted_before_open_or_variable_body_read() {
             &wide_token,
             DurableLimits::new(config).unwrap(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::Limit(error))
             if error == crate::rspace::persistence::DurableLimitError::Exceeded {
@@ -1254,7 +1219,6 @@ fn range_and_object_work_are_admitted_before_open_or_variable_body_read() {
             &token,
             DurableLimits::new(config).unwrap(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::Limit(_))
     ));
@@ -1282,7 +1246,6 @@ fn two_pack_chain_preserves_exact_linkage_and_holds_one_reader_at_a_time() {
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     let recovered = scanned.verify_catalog(token).unwrap();
@@ -1312,7 +1275,6 @@ fn predecessor_suffix_is_refused_but_active_crash_suffix_is_excluded() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         ),
         Err(RecoveryError::AuthorizedTailCutsRecord {
             pack: PackId::GENESIS,
@@ -1334,7 +1296,6 @@ fn predecessor_suffix_is_refused_but_active_crash_suffix_is_excluded() {
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     let recovered = scanned.verify_catalog(token).unwrap();
@@ -1382,7 +1343,6 @@ fn terminal_publication_digest_and_address_mismatches_fail_before_authority() {
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     assert!(matches!(
@@ -1411,7 +1371,6 @@ fn terminal_publication_digest_and_address_mismatches_fail_before_authority() {
         &token,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     assert!(matches!(
@@ -1457,7 +1416,6 @@ fn cross_pack_sequence_state_and_previous_commit_discontinuities_fail_closed() {
             &token,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         );
         match fault {
             SecondPackFault::HeaderSequence => {

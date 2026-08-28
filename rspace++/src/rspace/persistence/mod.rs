@@ -97,6 +97,7 @@ pub use wal::{
     TransactionPrepareRecordViewV1, decode_commit_kind_v1, decode_prepare_kind_v1,
     preflight_prepare_record_len_v1, preflight_prepare_record_v1,
 };
+pub(crate) use wal::{LogPackObjectHeaderV1, OBJECT_RECORD_HEADER_LEN_V1};
 
 #[cfg(test)]
 #[path = "../../../tests/persistence/mod.rs"]

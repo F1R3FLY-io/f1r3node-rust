@@ -3096,15 +3096,17 @@ existing exact-length index. Missing, truncated, extended, reordered, checksum-d
 wrong-identity index bytes are repairable accelerator failures. Unsafe file types, links,
 ownership, permissions, and unrelated I/O errors remain fatal.
 
-Repair pre-admits exactly three copies of the catalog-appointed WAL span before creating a
-candidate. The second pass streams a canonical 64-byte header and 72-byte DATA records directly to
-one generation-specific candidate; the first PathMap is the oracle for DATA identity and strictly
-backward REUSE. After exact truncation and full-file synchronization, a consuming typestate permits
-atomic replacement and pinned-directory synchronization. The third pass reopens the installed
-file, verifies every record in WAL order, and compares the complete 672-byte catalog image again.
-Both replay passes retain constant index state, so exactly one full PathMap is constructed. The
-returned type is deliberately named `IndexBoundPhysicalRecoveryV1`; raw mutation consumes it before
-the lease can be recovered, preventing stale catalog/index authority from coexisting with writes.
+The original repair design pre-admitted exactly three copies of the catalog-appointed WAL span and
+used two source replays after the authority-building scan. This paragraph and the pseudocode below
+are retained as the historical design record; J-045 supersedes that cost without weakening its
+authority boundary. The accepted implementation needs two WAL passes: the second pass streams a
+canonical 64-byte header and 72-byte DATA records directly to one generation-specific candidate,
+using the first PathMap as the oracle for DATA identity and strictly backward REUSE. After exact
+truncation, synchronization, atomic replacement, and directory synchronization, the installed
+index is reopened and verified directly against that authoritative PathMap. The complete 672-byte
+catalog image is checked again. No third WAL replay and no second full PathMap are required. The
+returned type remains `IndexBoundPhysicalRecoveryV1`; raw mutation consumes it before the lease can
+be recovered, preventing stale catalog/index authority from coexisting with writes.
 
 In literate pseudocode, where `scan` is the stack-constant pack PDA and `A` is the exact catalog
 image:
@@ -3114,25 +3116,26 @@ A := select_exact_catalog_image()
 (S, H, probe) := scan(A, BuildPathMapAndProbeIndex)
 require catalog_image() = A
 if probe is exact then return PhysicallyRecovered(H, one_pass_work)
-require 3 * S <= aggregate_scan_budget
+require 2 * S <= aggregate_scan_budget
 scan(A, StreamCandidateAgainst(H))
 require catalog_image() = A
 sync_exact_candidate(); atomic_replace(); sync_directory()
-scan(A, VerifyInstalledIndexAgainst(H))
+verify_installed_index_directly_against(H)
 require catalog_image() = A
-return PhysicallyRecovered(H, three_pass_work)
+return PhysicallyRecovered(H, two_pass_work)
 ```
 
 **COMPLEXITY.** Let $`S`$ be the catalog-authorized pack bytes and $`d`$ the number of distinct
 DATA records in the live generation. Ordinary verified startup takes $`\Theta(S+d)`$ time and one
-$`O(d)`$ PathMap. Repair takes $`\Theta(3S+2d)`$ I/O work but still one $`O(d)`$ PathMap; replay
-state and native stack are $`O(1)`$ in pack count, record count, digest depth, and Rholang term
-depth. Required ceilings bound total work, never traversal depth.
+$`O(d)`$ PathMap. Repair takes two linear WAL scans plus one linear physical-index verification,
+still with one $`O(d)`$ PathMap; replay state and native stack are $`O(1)`$ in pack count, record
+count, digest depth, and Rholang term depth. Required ceilings bound total work, never traversal
+depth.
 
 **EVIDENCE.** Eleven durable-I/O tests cover pinned identity, exclusive leasing, exact positional
 progress, nontruncating creation, permissions, symlink, hard-link, FIFO, directory-symlink, and
 fixed-length catalog behavior. Seven startup tests cover missing and exact indexes, all recoverable
-damage classes, one-PathMap construction, exact `3S` admission and `3S-1` pre-mutation refusal,
+damage classes, one-PathMap construction, exact `2S` admission and `2S-1` pre-mutation refusal,
 fatal unsafe identity, injected write/truncate/file-sync/replace/directory-sync failures, catalog
 interleavings, and post-install damage. Pre-replacement failures leave the official index
 byte-identical; post-replacement failures leave a complete image that the next startup verifies.
@@ -3233,8 +3236,9 @@ key length, retained-state depth, and object count. Publication performs linear 
 canonical bytes and distinct objects, with constant streaming writer state beyond authenticated
 source/closure evidence. Ordinary recovery retains one `O(d)`
 `PathMap<ObjectIndexRecordV1>` for `d` distinct DATA records and constant replay state. Repair
-performs three pre-admitted WAL passes but still constructs exactly one PathMap. All other retained
-work is named by total-resource certificates rather than a traversal-depth ceiling.
+performs two pre-admitted WAL passes plus direct verification of the installed physical index and
+still constructs exactly one PathMap. All other retained work is named by total-resource
+certificates rather than a traversal-depth ceiling. This two-pass refinement is detailed in J-045.
 
 **EVIDENCE.** The integrated proof gate passes Rocq, Verus, Z3, TLC, and mCRL2. Rocq closes 17
 capstones; the TLA+ base explores 7,896 distinct states; 28 mutants are rejected and all 14
@@ -3255,6 +3259,83 @@ substituted into COMM or storage charges by this layer.
 cutover. Bounded compaction, reader-safe garbage collection, Windows-native authority handles,
 migration/version activation, REPL/startup wiring, and the preregistered LMDB time/space control
 remain separate work. No PathMap fork or upstream modification was required.
+
+### J-045 — 2026-08-28: authenticate kind-1 PREPARE streams before constructing private index state
+
+**QUESTION.** Can ordinary incremental PREPARE recovery preserve the frozen V1 bytes and exact
+contiguous-parser result while removing record-, key-, and object-sized retained buffers, preventing
+an unstable source from influencing a derived PathMap index, and reducing repair from three WAL
+passes to two?
+
+**HYPOTHESIS.** A typed streaming PDA can authenticate the fixed prefix, mutation batch, object
+records, and DATA bodies with fixed scratch; retain only a domain-separated structural transcript;
+bind the adjacent COMMIT and outer chain; replay the complete authenticated source before any
+private index construction; and then apply only authenticated object headers to a private
+`PathMap<ObjectIndexRecordV1>`. Exact catalog verification remains the sole publication boundary.
+Once the first PathMap is authoritative, a rebuilt physical index can be verified directly against
+it instead of replaying the WAL a third time.
+
+**METHOD.** Formal verification preceded production changes. Two TLA+ models specify protocol and
+byte-level state, error precedence, resource admission, source stability, private/public authority,
+and constant retained state. Rocq proves 15 protocol and 20 byte-codec capstones. Verus proves 15
+protocol and 16 byte-codec obligations with `--no-cheating`; Z3 and mCRL2 provide independent mode
+and process-algebra checks. The complete model surface was extracted into 89 stable `K1-*`
+invariants and exactly 35 named executable property families before the bounded Rust path was
+accepted. Deliberate whole-record and header-only-replay controls first failed for the intended
+memory and source-stability reasons.
+
+**OBSERVATION 1 — authentication requires two different bounded replays.** The primary pass covers
+every PREPARE CRC byte once, preserves I/O $`\succ`$ CRC $`\succ`$ first-semantic-error precedence,
+and drains the declared extent after a deferred semantic error. After exact COMMIT and nine-field
+chain binding, a source replay covers the complete CRC domain again, including DATA bodies. Only an
+identical replay permits private index work. A following header-only layout application checks the
+domain-separated ordinal/disposition/reference/offset/final-extent transcript and inserts DATA
+locations; REUSE resolves to a strictly prior exact reference and emits no location.
+
+**OBSERVATION 2 — constant asymptotic stack still requires controlling debug lowering.** The
+source PDA uses a boxed constant-size state and phase-split, non-inlined drivers. On the pinned
+toolchain, opt-level-0 Blake2 compression alone reserves roughly 84 KiB of native stack, and
+unoptimized lowering retained mutually exclusive `Result` temporaries in the driver. Dev/test now
+optimizes only `blake2` at level 3 and `rspace_plus_plus` at level 1. This changes neither digest
+algorithm nor wire/result bytes; it enables ordinary stack-slot reuse while retaining debug
+information and assertions. The unchanged 128/256 KiB subprocess matrix passes with zero
+input-dependent stack growth. No `RUST_MIN_STACK`, `stacker`, recursion limit, or traversal-depth
+limit is used.
+
+**OBSERVATION 3 — repair needs two WAL scans, not three.** The first scan constructs the sole
+authoritative committed-object PathMap. If the physical index is repairable, the second scan streams
+the canonical candidate in source order against that authority. After synchronization and atomic
+replacement, an iterative physical-index reader parses each 72-byte record and looks it up directly
+in the first PathMap, checks monotone locations and the exact tail, and rereads the catalog token.
+The obsolete third WAL scan is eliminated. Aggregate scan and physical-read budgets are pre-admitted
+for both passes before a candidate file exists; physical accounting includes authenticated-source,
+prior-key, and layout rereads rather than conflating them with authorized logical extent.
+
+**COMPLEXITY.** Recovery retains one 64 KiB scratch buffer, constant parser/transcript state, and one
+$`O(d)`$ committed-object PathMap for $`d`$ distinct DATA objects. Mutation keys and canonical DATA
+bodies are validated chunkwise and are never retained as whole-field buffers. Successful repair is
+two linear WAL scans plus one linear index verification; native stack and decoder-owned auxiliary
+heap have zero slope in record length, key length, object length/count, and Rholang nesting depth.
+
+**EVIDENCE.** The integrated Rocq/Verus/Z3/TLC/mCRL2 gate passes. The 89-ID catalog maps to 35
+production properties executed by 53 non-ignored refinement tests across wire, mutation, RhoPath,
+canonical-object, recovery, authority, heap, and stack modules; all pass. Focused durable recovery
+passes 15/15 and startup passes 12/12. The complete `rspace_plus_plus --lib` gate passes
+**452/452** in **26.35 s** under a 12 GiB hard memory cap, zero swap, and a ten-core quota. Exact
+The complete package gate passes **877/877** across all library and integration binaries under the
+same resource scope. Exact traceability is maintained in
+`docs/design/pathmap/incremental-prepare-streaming-invariant-catalog-2026-08-28.md`.
+
+**ACCOUNTING.** `RecoveryReadWorkV1` separates authorized pack extent, primary authenticated reads,
+prior-key rereads, complete source replay, header-only layout replay, and their physical sum. These
+are diagnostic I/O quantities and do not alter semantic COMM accounting. V1 PREPARE/COMMIT bytes,
+CRC domains, BLAKE2b identities, recovered state, object locations, and catalog authority remain
+byte/result equivalent to the frozen oracle.
+
+**BOUNDARY.** This accepts the dormant kind-1 recovery implementation, not production LMDB
+replacement or a mixed-version activation policy. Compaction, reader-safe garbage collection,
+Windows-native authority, migration/cutover, and LMDB comparison remain separately tracked. No
+PathMap source or fork was modified.
 
 ## Upstream PathMap integration request register
 

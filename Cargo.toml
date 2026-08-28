@@ -56,6 +56,23 @@ num-integer = "0.1"
 [profile.dev]
 debug = true
 
+# The unoptimized portable Blake2 compression function has an ~84 KiB native
+# frame on the pinned Rust/LLVM toolchain.  Recovery composes hashing with its
+# iterative protocol PDA, so optimizing this leaf dependency is required to
+# keep the formally specified fixed-stack bound meaningful in dev/test builds;
+# it does not change the digest algorithm or any consensus-visible bytes.
+[profile.dev.package.blake2]
+opt-level = 3
+
+# Recovery is deliberately exercised on 128 KiB native stacks.  LLVM's
+# opt-level-0 lowering reserves a distinct full-sized Result temporary for
+# nearly every checked PDA transition, obscuring the source-level constant
+# state bound with toolchain-generated frame inflation.  Minimal optimization
+# performs ordinary stack-slot reuse while preserving debug information and
+# debug assertions.
+[profile.dev.package.rspace_plus_plus]
+opt-level = 1
+
 # Local integration override. Mirrors the base `feature/cost-accounted-rho` worktree's parser
 # patch (see f1r3node-rust/Cargo.toml): points the rholang-rs parser crates at the local
 # cost-accounted-grammar worktree carrying Proc::SignedTerm, TokenStack, and Bind::Signed, which

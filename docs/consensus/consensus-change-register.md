@@ -5908,12 +5908,13 @@ protect a store from a deliberately noncooperating process with equal filesystem
 
 The first bounded WAL pass constructs one `PathMap<ObjectIndexRecordV1>` and either verifies every
 byte of the exact physical index or classifies shape/checksum/identity damage as rebuildable
-accelerator loss. Repair pre-admits all three catalog-appointed WAL scans before candidate
-creation. The second and third scans replay against the first PathMap, requiring exact DATA
-locations and strictly backward REUSE, so repair builds one trie total and no record vector. A
-candidate must pass exact truncation and full-file synchronization before its typestate permits
-atomic replacement; the pinned directory is then synchronized and the installed index is reopened
-and verified. The complete 672-byte catalog image is compared at every authority boundary.
+accelerator loss. Repair now pre-admits two catalog-appointed WAL scans before candidate creation.
+The second scan replays against the first PathMap, requiring exact DATA locations and strictly
+backward REUSE, so repair builds one trie total and no record vector. A candidate must pass exact
+truncation and full-file synchronization before its typestate permits atomic replacement; the
+pinned directory is then synchronized and the installed index is reopened, parsed iteratively, and
+verified directly against the first PathMap. The complete 672-byte catalog image is compared at
+every authority boundary.
 
 The returned type is explicitly `IndexBoundPhysicalRecoveryV1`, not semantic RSpace authority. It
 owns the writer lease, and exposing a raw mutable lease consumes the physical snapshot first. A
@@ -5980,6 +5981,45 @@ Production activation still requires an explicit version/migration decision, bou
 reader-safe garbage collection, Windows authority handling if Windows remains supported, and the
 scientific LMDB control comparison. Activation must re-enter this register; this dormant refinement
 does not silently authorize it.
+
+**CBR-053 living continuation (2026-08-28, formally verified incremental PREPARE
+streaming).** Formal verification preceded the ordinary kind-1 recovery implementation. Separate
+TLA+ protocol-authority and byte-codec models, 15 protocol plus 20 codec Rocq capstones, 15 protocol
+plus 16 codec Verus obligations with `--no-cheating`, and corroborating Z3 and mCRL2 checks define
+the refinement boundary. Eighty-nine stable invariant identifiers were extracted from those models
+and exhaustively assigned to 35 named, non-ignored property families before production acceptance;
+the five implementation-facing property modules execute 53 tests, all green.
+
+The primary scanner is now a bounded, phase-split PDA with one reusable 64 KiB heap scratch region
+and boxed constant-size state. It streams the mutation grammar, positional prior-key comparisons,
+five canonical-object grammars, CRC32C, BLAKE2b, and a domain-separated layout transcript without
+retaining a complete record, key, DATA body, or flattened object vector. The failure precedence is
+I/O, then CRC, then the first deferred semantic error, and the declared authenticated extent is
+raw-drained after that semantic failure. COMMIT and the complete outer chain must bind before a
+second complete source-authentication replay; only an identical replay may construct the private
+object-index PathMap. Exact catalog verification remains the publication boundary.
+
+Repair pre-admits two WAL scans. The first creates the sole authoritative
+`PathMap<ObjectIndexRecordV1>`; the second streams the candidate in source order against it. After
+synchronized atomic installation, recovery parses the installed physical index iteratively and
+verifies its records through PathMap lookups, monotone locations, and exact-tail validation instead
+of performing a third WAL scan or constructing a second trie. Physical-read accounting includes
+authenticated-source, prior-key, and layout rereads and is intentionally distinct from authorized
+logical pack extent. The unchanged 128/256 KiB subprocess matrix proves zero input-dependent native
+stack growth, while the geometric allocation ladder remains flat apart from the fixed scratch and
+constant state. No stack-size override, recursive traversal cap, or stack-growth shim is used.
+
+Focused durable recovery passes **15/15**, focused startup passes **12/12**, the enclosing library
+gate passes **452/452** in **26.35 s**, and the complete package gate passes **877/877** across all
+library and integration binaries. Both enclosing gates ran under a 12 GiB hard memory cap, zero
+swap, and a ten-core quota.
+
+This refinement preserves V1 PREPARE and COMMIT bytes, checksums, digests, recovered semantic state,
+object locations, catalog authority, match/COMM behavior, and the active compute/storage accounting
+rules. It is `NO_PRODUCTION_CHANGE_DERIVED`: the backend remains dormant and has no current
+consensus observer. Activation, LMDB migration, bounded compaction and reader-safe garbage
+collection, Windows-native authority, and the comparative LMDB performance/storage study remain
+separate gates and must re-enter this register.
 
 ### B.2 The original commit-level exemptions
 

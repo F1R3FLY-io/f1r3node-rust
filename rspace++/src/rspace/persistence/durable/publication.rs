@@ -649,6 +649,7 @@ fn preflight_recovery_limits(
     limits.require(DurableLimitKind::LivePacks, 1)?;
     limits.require(DurableLimitKind::PackBytes, pack_tail)?;
     limits.require(DurableLimitKind::TotalScanBytes, pack_tail)?;
+    limits.require(DurableLimitKind::TotalPhysicalReadBytes, pack_tail)?;
     limits.require(DurableLimitKind::ObjectRecords, object_records)?;
     limits.require(DurableLimitKind::IndexRecords, object_records)?;
     limits.require(DurableLimitKind::IndexBytes, index_tail)?;

@@ -82,7 +82,7 @@ impl SemanticNamespace {
         }
     }
 
-    fn parse(tag: u64) -> Result<Self, CanonicalFormatError> {
+    pub(crate) fn parse(tag: u64) -> Result<Self, CanonicalFormatError> {
         match tag {
             1 => Ok(Self::DataBag),
             2 => Ok(Self::ContinuationMap),
@@ -292,7 +292,7 @@ pub enum AcceleratorArtifactKind {
 }
 
 impl AcceleratorArtifactKind {
-    fn parse(tag: u64) -> Result<Self, CanonicalFormatError> {
+    pub(crate) fn parse(tag: u64) -> Result<Self, CanonicalFormatError> {
         match tag {
             1 => Ok(Self::ChannelReceives),
             2 => Ok(Self::ContinuationIdentity),

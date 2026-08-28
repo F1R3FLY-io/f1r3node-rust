@@ -3,10 +3,11 @@ use std::convert::Infallible;
 use super::support::{TestSemanticProfile, synthetic_ref};
 use super::transaction_sealing::{base_state, data_batch, seal_data};
 use crate::rspace::persistence::{
-    CanonicalObjectStore, CanonicalSink, CommitPublicationV1, CommittedObjectComparison,
-    CommittedObjectLookup, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
-    LogPackObjectPlanV1, LogPackSequence, LogPackWriteError, ObjectRefV1, PACK_HEADER_LEN_V1,
-    PREPARE_DISCRIMINATOR_LEN_V1, PhysicalDigest, PrepareRecordKindV1,
+    CanonicalFormatError, CanonicalObjectStore, CanonicalSink, CommitPublicationV1,
+    CommittedObjectComparison, CommittedObjectLookup, LogPackAddress, LogPackDecodeLimits,
+    LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectHeaderV1, LogPackObjectPlanV1,
+    LogPackSequence, LogPackWriteError, OBJECT_RECORD_HEADER_LEN_V1, ObjectRefV1,
+    PACK_HEADER_LEN_V1, PREPARE_DISCRIMINATOR_LEN_V1, PhysicalDigest, PrepareRecordKindV1,
     PreparedLogPackTransactionV1, StoreId, TRANSACTION_PREPARE_HEADER_LEN_V1,
     TransactionCommitRecordV1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
     decode_prepare_kind_v1, preflight_prepare_record_len_v1,
@@ -85,6 +86,12 @@ fn encoded_prepare() -> (Vec<u8>, crate::rspace::persistence::SealedTransitionV1
     (bytes, receipt, store_id)
 }
 
+fn repair_prepare_record_crc(bytes: &mut [u8]) {
+    let payload_end = bytes.len() - 8;
+    let crc = crate::rspace::persistence::checksum::crc32c(&bytes[..payload_end]);
+    bytes[payload_end..].copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(crc));
+}
+
 #[test]
 fn prepare_stream_round_trips_without_projecting_objects() {
     let (bytes, receipt, store_id) = encoded_prepare();
@@ -114,6 +121,69 @@ fn prepare_stream_round_trips_without_projecting_objects() {
     }
     assert_eq!(next_record_offset + 8, view.record_len());
     assert_eq!(view.record_len(), bytes.len() as u64);
+}
+
+#[test]
+fn fixed_object_header_parser_is_exact_and_matches_contiguous_errors() {
+    let (bytes, _, _) = encoded_prepare();
+    let view =
+        TransactionPrepareRecordViewV1::parse(&bytes, LogPackDecodeLimits::UNBOUNDED).unwrap();
+    let object = view.objects().next().unwrap();
+    let start = object.record_offset() as usize;
+    let end = start + OBJECT_RECORD_HEADER_LEN_V1 as usize;
+    let header = LogPackObjectHeaderV1::parse_exact(&bytes[start..end]).unwrap();
+    assert_eq!(header.disposition(), object.disposition());
+    assert_eq!(header.reference(), object.reference());
+    assert!(matches!(
+        LogPackObjectHeaderV1::parse_exact(&bytes[start..end - 1]),
+        Err(LogPackFormatError::LengthMismatch {
+            declared: OBJECT_RECORD_HEADER_LEN_V1,
+            actual,
+        }) if actual == OBJECT_RECORD_HEADER_LEN_V1 - 1
+    ));
+    let mut extended = bytes[start..end].to_vec();
+    extended.push(0);
+    assert!(matches!(
+        LogPackObjectHeaderV1::parse_exact(&extended),
+        Err(LogPackFormatError::LengthMismatch {
+            declared: OBJECT_RECORD_HEADER_LEN_V1,
+            actual,
+        }) if actual == OBJECT_RECORD_HEADER_LEN_V1 + 1
+    ));
+
+    let mut invalid_tag_header = bytes[start..end].to_vec();
+    invalid_tag_header[..8].copy_from_slice(&3u64.to_le_bytes());
+    let tag_error = LogPackObjectHeaderV1::parse_exact(&invalid_tag_header).unwrap_err();
+    assert_eq!(tag_error, LogPackFormatError::UnsupportedObjectDisposition(3));
+    let mut invalid_tag_record = bytes.clone();
+    invalid_tag_record[start..end].copy_from_slice(&invalid_tag_header);
+    repair_prepare_record_crc(&mut invalid_tag_record);
+    assert_eq!(
+        TransactionPrepareRecordViewV1::parse(&invalid_tag_record, LogPackDecodeLimits::UNBOUNDED,)
+            .unwrap_err(),
+        tag_error,
+    );
+
+    let mut invalid_reference_header = bytes[start..end].to_vec();
+    invalid_reference_header[40..48].copy_from_slice(&0u64.to_le_bytes());
+    let reference_error =
+        LogPackObjectHeaderV1::parse_exact(&invalid_reference_header).unwrap_err();
+    assert_eq!(
+        reference_error,
+        LogPackFormatError::Canonical(CanonicalFormatError::ObjectLengthTooSmall(0)),
+    );
+    let mut invalid_reference_record = bytes.clone();
+    invalid_reference_record[start..end].copy_from_slice(&invalid_reference_header);
+    repair_prepare_record_crc(&mut invalid_reference_record);
+    assert_eq!(
+        TransactionPrepareRecordViewV1::parse(
+            &invalid_reference_record,
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap_err(),
+        reference_error,
+    );
+    assert_eq!(object.disposition(), LogPackObjectDispositionV1::Data);
 }
 
 #[test]

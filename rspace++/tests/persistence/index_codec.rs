@@ -65,6 +65,35 @@ fn record() -> ObjectIndexRecordV1 {
 }
 
 #[test]
+fn index_preflight_matches_insert_errors_without_publishing_state() {
+    let mut index = CommittedObjectIndexV1::new();
+    let candidate = record();
+    index.validate_insert(candidate).unwrap();
+    assert_eq!(index.record_count(), 0);
+    assert_eq!(index.get(candidate.reference().digest()), None);
+
+    index.insert(candidate).unwrap();
+    let before = index.record_count();
+    assert_eq!(
+        index.validate_insert(candidate),
+        Err(IndexFormatError::DuplicateData(candidate.reference()))
+    );
+    assert_eq!(index.record_count(), before);
+    assert_eq!(index.get(candidate.reference().digest()), Some(candidate));
+
+    let conflicting_reference =
+        ObjectRefV1::new(candidate.reference().digest(), candidate.reference().encoded_len() + 1)
+            .unwrap();
+    let conflict = ObjectIndexRecordV1::new(conflicting_reference, candidate.location()).unwrap();
+    assert!(matches!(
+        index.validate_insert(conflict),
+        Err(IndexFormatError::DigestReferenceConflict { .. })
+    ));
+    assert_eq!(index.record_count(), before);
+    assert_eq!(index.get(candidate.reference().digest()), Some(candidate));
+}
+
+#[test]
 fn index_header_and_record_round_trip_with_frozen_portable_images() {
     let header = ObjectIndexHeaderV1::new(
         StoreId::from_array([0x11; 16]),
@@ -205,6 +234,17 @@ fn prepared_data_layouts_create_exact_locations_while_reuse_creates_none() {
                 let record =
                     ObjectIndexRecordV1::from_inline(pack_id, prepare_offset, sequence, layout)
                         .unwrap();
+                assert_eq!(
+                    ObjectIndexRecordV1::from_streamed_data(
+                        pack_id,
+                        prepare_offset,
+                        sequence,
+                        layout.reference(),
+                        relative,
+                    )
+                    .unwrap(),
+                    record,
+                );
                 assert_eq!(record.reference(), layout.reference());
                 assert_eq!(record.location().canonical_offset(), prepare_offset + relative);
                 assert_eq!(record.location().pack_id(), pack_id);
@@ -230,6 +270,16 @@ fn prepared_data_layouts_create_exact_locations_while_reuse_creates_none() {
     let layout = cold.object_layouts().next().unwrap();
     assert!(matches!(
         ObjectIndexRecordV1::from_inline(pack_id, u64::MAX, sequence, layout),
+        Err(IndexFormatError::AbsoluteOffsetOverflow { .. })
+    ));
+    assert!(matches!(
+        ObjectIndexRecordV1::from_streamed_data(
+            pack_id,
+            u64::MAX,
+            sequence,
+            layout.reference(),
+            layout.canonical_offset().unwrap(),
+        ),
         Err(IndexFormatError::AbsoluteOffsetOverflow { .. })
     ));
 

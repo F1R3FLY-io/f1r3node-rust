@@ -12,7 +12,7 @@ use super::index::{CanonicalIndexStreamV1, ObjectIndexPrefixVerifierV1};
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
 use super::recovery::{
     CatalogPackProviderV1, CatalogVerifiedRecoveryV1, RecoveryError, ScannedPackChainV1,
-    replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
+    scan_catalog_authorized_pack_chain, stage_catalog_verified_data_in_source_order,
 };
 use super::{
     CommittedObjectIndexV1, DurableFormatError, DurableLimitConfig, DurableLimitError,
@@ -355,55 +355,77 @@ impl PhysicalIndexProbeV1 {
         })
     }
 
-    fn observe(
-        &mut self,
-        record: ObjectIndexRecordV1,
-    ) -> Result<(), RecoveryError<DurableIoError>> {
-        let Self::Verifying {
-            file,
-            verifier,
-            bytes_read,
-        } = self
-        else {
-            return Ok(());
-        };
-        let offset = verifier.next_record_offset();
-        let mut bytes = [0u8; INDEX_RECORD_LEN_V1 as usize];
-        match file.read_exact_at(offset, &mut bytes) {
-            Ok(()) => {}
-            Err(error) if error.is_missing_or_short_file() => {
-                *self = Self::Rebuild {
-                    bytes_read: *bytes_read,
-                };
-                return Ok(());
-            }
-            Err(error) => return Err(RecoveryError::Read(error)),
-        }
-        *bytes_read = bytes_read
-            .checked_add(INDEX_RECORD_LEN_V1)
-            .ok_or(RecoveryError::Arithmetic("physical index bytes read"))?;
-        if verifier.verify_next_record(record, &bytes).is_err() {
-            *self = Self::Rebuild {
-                bytes_read: *bytes_read,
-            };
-        }
-        Ok(())
-    }
-
-    fn finish(self) -> PhysicalIndexProbeOutcomeV1 {
+    fn verify_against_authority(
+        self,
+        authority: &CommittedObjectIndexV1,
+    ) -> Result<PhysicalIndexProbeOutcomeV1, RecoveryError<DurableIoError>> {
         match self {
-            Self::Rebuild { bytes_read } => PhysicalIndexProbeOutcomeV1 {
+            Self::Rebuild { bytes_read } => Ok(PhysicalIndexProbeOutcomeV1 {
                 valid: false,
                 bytes_read,
-            },
+            }),
             Self::Verifying {
-                verifier,
-                bytes_read,
-                ..
-            } => PhysicalIndexProbeOutcomeV1 {
-                valid: verifier.finish().is_ok(),
-                bytes_read,
-            },
+                file,
+                mut verifier,
+                mut bytes_read,
+            } => {
+                let mut previous_position = None;
+                let mut records_seen = 0u64;
+                while records_seen < authority.record_count() {
+                    let offset = verifier.next_record_offset();
+                    let mut bytes = [0u8; INDEX_RECORD_LEN_V1 as usize];
+                    match file.read_exact_at(offset, &mut bytes) {
+                        Ok(()) => {}
+                        Err(error) if error.is_missing_or_short_file() => {
+                            return Ok(PhysicalIndexProbeOutcomeV1 {
+                                valid: false,
+                                bytes_read,
+                            });
+                        }
+                        Err(error) => return Err(RecoveryError::Read(error)),
+                    }
+                    bytes_read = bytes_read
+                        .checked_add(INDEX_RECORD_LEN_V1)
+                        .ok_or(RecoveryError::Arithmetic("physical index bytes read"))?;
+                    let record = match ObjectIndexRecordV1::parse_exact(&bytes) {
+                        Ok(record) => record,
+                        Err(_) => {
+                            return Ok(PhysicalIndexProbeOutcomeV1 {
+                                valid: false,
+                                bytes_read,
+                            });
+                        }
+                    };
+                    if authority.get(record.reference().digest()) != Some(record) {
+                        return Ok(PhysicalIndexProbeOutcomeV1 {
+                            valid: false,
+                            bytes_read,
+                        });
+                    }
+                    let position =
+                        (record.location().pack_id().get(), record.location().canonical_offset());
+                    if previous_position.is_some_and(|previous| previous >= position) {
+                        return Ok(PhysicalIndexProbeOutcomeV1 {
+                            valid: false,
+                            bytes_read,
+                        });
+                    }
+                    previous_position = Some(position);
+                    if verifier.accept_next_record(record).is_err() {
+                        return Ok(PhysicalIndexProbeOutcomeV1 {
+                            valid: false,
+                            bytes_read,
+                        });
+                    }
+                    records_seen = records_seen
+                        .checked_add(1)
+                        .ok_or(RecoveryError::Arithmetic("physical index records read"))?;
+                }
+                Ok(PhysicalIndexProbeOutcomeV1 {
+                    valid: verifier.finish().is_ok(),
+                    bytes_read,
+                })
+            }
         }
     }
 }
@@ -455,39 +477,49 @@ fn verify_catalog_scan<I>(
         .map_err(DurableStartupErrorV1::CatalogVerification)
 }
 
-fn scan_with_probe(
+fn scan_authorized_chain(
     directory: &DurableDirectoryV1,
     authority: &CatalogAuthorityTokenV1,
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
-    probe: &mut PhysicalIndexProbeV1,
 ) -> Result<ScannedPackChainV1, DurableStartupErrorV1> {
     let mut provider = DirectoryPackProviderV1(directory);
-    scan_catalog_authorized_pack_chain(&mut provider, authority, limits, wal_limits, |record| {
-        probe.observe(record)
-    })
-    .map_err(DurableStartupErrorV1::Recovery)
+    scan_catalog_authorized_pack_chain(&mut provider, authority, limits, wal_limits)
+        .map_err(DurableStartupErrorV1::Recovery)
 }
 
 fn remaining_scan_limits(
     limits: DurableLimits,
-    consumed: u64,
+    consumed_scan: u64,
+    consumed_physical: u64,
 ) -> Result<DurableLimits, DurableStartupErrorV1> {
-    let maximum = limits.maximum(DurableLimitKind::TotalScanBytes).get();
-    let remaining = maximum
-        .checked_sub(consumed)
+    let scan_maximum = limits.maximum(DurableLimitKind::TotalScanBytes).get();
+    let remaining_scan = scan_maximum
+        .checked_sub(consumed_scan)
         .filter(|remaining| *remaining != 0)
         .ok_or(DurableLimitError::Exceeded {
             resource: DurableLimitKind::TotalScanBytes,
-            limit: maximum,
-            attempted: consumed.saturating_add(1),
+            limit: scan_maximum,
+            attempted: consumed_scan.saturating_add(1),
+        })?;
+    let physical_maximum = limits
+        .maximum(DurableLimitKind::TotalPhysicalReadBytes)
+        .get();
+    let remaining_physical = physical_maximum
+        .checked_sub(consumed_physical)
+        .filter(|remaining| *remaining != 0)
+        .ok_or(DurableLimitError::Exceeded {
+            resource: DurableLimitKind::TotalPhysicalReadBytes,
+            limit: physical_maximum,
+            attempted: consumed_physical.saturating_add(1),
         })?;
     DurableLimits::new(DurableLimitConfig {
         max_live_packs: limits.maximum(DurableLimitKind::LivePacks).get(),
         max_pack_bytes: limits.maximum(DurableLimitKind::PackBytes).get(),
         max_transactions: limits.maximum(DurableLimitKind::Transactions).get(),
         max_object_records: limits.maximum(DurableLimitKind::ObjectRecords).get(),
-        max_total_scan_bytes: remaining,
+        max_total_scan_bytes: remaining_scan,
+        max_total_physical_read_bytes: remaining_physical,
         max_index_bytes: limits.maximum(DurableLimitKind::IndexBytes).get(),
         max_index_records: limits.maximum(DurableLimitKind::IndexRecords).get(),
         max_full_byte_comparison_bytes: limits
@@ -503,8 +535,7 @@ fn remaining_scan_limits(
 fn rebuild_index_pass(
     directory: &DurableDirectoryV1,
     lease: &mut DurableWriterLeaseV1,
-    authority: &CatalogAuthorityTokenV1,
-    authoritative_index: &CommittedObjectIndexV1,
+    authoritative_recovery: &CatalogVerifiedRecoveryV1,
     header: ObjectIndexHeaderV1,
     appointed_tail: u64,
     limits: DurableLimits,
@@ -514,10 +545,9 @@ fn rebuild_index_pass(
     let mut stream = CanonicalIndexStreamV1::new(header);
     candidate.write_all_at(0, &stream.header_image())?;
     let mut provider = DirectoryPackProviderV1(directory);
-    let scan = replay_catalog_authorized_pack_chain(
+    let scan = stage_catalog_verified_data_in_source_order(
         &mut provider,
-        authority,
-        authoritative_index,
+        authoritative_recovery,
         limits,
         wal_limits,
         |record| {
@@ -532,7 +562,10 @@ fn rebuild_index_pass(
     #[cfg(test)]
     run_durable_startup_hook(DurableStartupHookPointV1::BeforeSecondCatalogVerification);
     let recovery = verify_catalog_scan(directory, scan)?;
-    if !recovery.authority().matches_exactly(authority.image()) {
+    if !recovery
+        .authority()
+        .matches_exactly(authoritative_recovery.authority().image())
+    {
         return Err(DurableStartupErrorV1::CatalogVerification(
             RecoveryError::CatalogAuthorityChanged,
         ));
@@ -552,9 +585,7 @@ fn recover_index_bound_v1(
     let generation = IndexGenerationV1::new(catalog.pack().index_generation())?;
     let header = ObjectIndexHeaderV1::new(catalog.store_id(), generation);
     let appointed_tail = catalog.durable_index_tail();
-    let mut probe = PhysicalIndexProbeV1::open(directory, header, appointed_tail)?;
-    let first_scan = scan_with_probe(directory, &authority, limits, wal_limits, &mut probe)?;
-    let first_probe = probe.finish();
+    let first_scan = scan_authorized_chain(directory, &authority, limits, wal_limits)?;
     #[cfg(test)]
     run_durable_startup_hook(DurableStartupHookPointV1::BeforeFirstCatalogVerification);
     let first = verify_catalog_scan(directory, first_scan)?;
@@ -563,8 +594,11 @@ fn recover_index_bound_v1(
             RecoveryError::CatalogAuthorityChanged,
         ));
     }
+    let first_probe = PhysicalIndexProbeV1::open(directory, header, appointed_tail)?
+        .verify_against_authority(first.object_index())
+        .map_err(DurableStartupErrorV1::Recovery)?;
     if first_probe.valid {
-        let wal_bytes_read = first.scanned_bytes();
+        let wal_bytes_read = first.read_work().physical_read_bytes();
         return Ok(IndexBoundPhysicalRecoveryV1 {
             recovery: first,
             disposition: IndexBindingDispositionV1::VerifiedExisting,
@@ -579,27 +613,36 @@ fn recover_index_bound_v1(
         });
     }
 
-    // Index repair requires exactly two additional scans of the same
-    // catalog-appointed pack extents. Admit their aggregate I/O before the
+    // Index repair requires one additional source-order scan of the same
+    // catalog-appointed pack extents. Admit both scans' aggregate I/O before the
     // temporary index is created, so a resource-limit refusal cannot mutate
     // durable state or replace the official accelerator halfway through.
     let repair_scan_bytes =
         first
             .scanned_bytes()
-            .checked_mul(3)
+            .checked_mul(2)
             .ok_or(DurableStartupErrorV1::Recovery(RecoveryError::Arithmetic(
-                "three-pass repair scan bytes",
+                "two-pass repair scan bytes",
             )))?;
     limits.require(DurableLimitKind::TotalScanBytes, repair_scan_bytes)?;
+    let projected_physical_read_bytes = first
+        .read_work()
+        .physical_read_bytes()
+        .checked_mul(2)
+        .ok_or(DurableStartupErrorV1::Recovery(RecoveryError::Arithmetic(
+            "two-pass physical read bytes",
+        )))?;
+    limits.require(DurableLimitKind::TotalPhysicalReadBytes, projected_physical_read_bytes)?;
 
     let expected = RecoverySummaryV1::of(&first);
-    let mut consumed_scan_bytes = first.scanned_bytes();
-    let second_limits = remaining_scan_limits(limits, consumed_scan_bytes)?;
+    let consumed_scan_bytes = first.scanned_bytes();
+    let consumed_physical_read_bytes = first.read_work().physical_read_bytes();
+    let second_limits =
+        remaining_scan_limits(limits, consumed_scan_bytes, consumed_physical_read_bytes)?;
     let (second, installed) = rebuild_index_pass(
         directory,
         lease,
-        &authority,
-        first.object_index(),
+        &first,
         header,
         appointed_tail,
         second_limits,
@@ -608,45 +651,26 @@ fn recover_index_bound_v1(
     if RecoverySummaryV1::of(&second) != expected {
         return Err(DurableStartupErrorV1::ReplayMismatch);
     }
-    consumed_scan_bytes = limits.checked_charge(
+    let _total_scan_bytes = limits.checked_charge(
         DurableLimitKind::TotalScanBytes,
         consumed_scan_bytes,
         second.scanned_bytes(),
     )?;
+    let total_physical_read_bytes = limits.checked_charge(
+        DurableLimitKind::TotalPhysicalReadBytes,
+        consumed_physical_read_bytes,
+        second.read_work().physical_read_bytes(),
+    )?;
     drop(second);
     drop(installed);
 
-    let third_limits = remaining_scan_limits(limits, consumed_scan_bytes)?;
     #[cfg(test)]
     run_durable_startup_hook(DurableStartupHookPointV1::BeforePostInstallIndexVerification);
-    let mut post_install_probe = PhysicalIndexProbeV1::open(directory, header, appointed_tail)?;
-    let mut provider = DirectoryPackProviderV1(directory);
-    let third_scan = replay_catalog_authorized_pack_chain(
-        &mut provider,
-        &authority,
-        first.object_index(),
-        third_limits,
-        wal_limits,
-        |record| post_install_probe.observe(record),
-    )
-    .map_err(DurableStartupErrorV1::Recovery)?;
-    let post_install_probe = post_install_probe.finish();
+    let post_install_probe = PhysicalIndexProbeV1::open(directory, header, appointed_tail)?
+        .verify_against_authority(first.object_index())
+        .map_err(DurableStartupErrorV1::Recovery)?;
     if !post_install_probe.valid {
         return Err(DurableStartupErrorV1::PostInstallIndexMismatch);
-    }
-    let third = verify_catalog_scan(directory, third_scan)?;
-    if RecoverySummaryV1::of(&third) != expected {
-        return Err(DurableStartupErrorV1::ReplayMismatch);
-    }
-    limits.checked_charge(
-        DurableLimitKind::TotalScanBytes,
-        consumed_scan_bytes,
-        third.scanned_bytes(),
-    )?;
-    if !third.authority().matches_exactly(authority.image()) {
-        return Err(DurableStartupErrorV1::CatalogVerification(
-            RecoveryError::CatalogAuthorityChanged,
-        ));
     }
     #[cfg(test)]
     run_durable_startup_hook(DurableStartupHookPointV1::BeforeFinalCatalogVerification);
@@ -666,8 +690,8 @@ fn recover_index_bound_v1(
         recovery: first,
         disposition: IndexBindingDispositionV1::RebuiltAndVerified,
         work: DurableStartupWorkV1 {
-            wal_scan_passes: 3,
-            wal_bytes_read: repair_scan_bytes,
+            wal_scan_passes: 2,
+            wal_bytes_read: total_physical_read_bytes,
             index_bytes_read,
             index_bytes_written: appointed_tail,
             file_syncs: 1,

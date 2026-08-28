@@ -1,5 +1,6 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::process::Command;
 use std::sync::Arc;
@@ -19,11 +20,11 @@ use crate::rspace::persistence::{
     CatalogPackStateV1, CatalogSlotV1, CommitPublicationV1, CommittedObjectComparison,
     CommittedObjectLookup, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexGenerationV1,
     LogPackAddress, LogPackDecodeLimits, LogPackFormatError, LogPackObjectDispositionV1,
-    LogPackObjectPlanV1, LogPackSequence, ObjectDigest, ObjectIndexRecordV1, ObjectLocationV1,
-    ObjectRefV1, PACK_HEADER_LEN_V1, PackHeaderV1, PackId, PhysicalDigest, RSpaceMutationBatchV1,
-    StateVersionV1, StoreId, TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1,
-    TransactionCommitRecordV1, TransactionCommitViewV1, TransactionPrepareRecordViewV1,
-    preflight_prepare_record_v1,
+    LogPackObjectPlanV1, LogPackSequence, MutableObjectStore, ObjectAdmission, ObjectDigest,
+    ObjectIndexRecordV1, ObjectLocationV1, ObjectRefV1, PACK_HEADER_LEN_V1, PackHeaderV1, PackId,
+    PhysicalDigest, RSpaceMutationBatchV1, StateVersionV1, StoreId,
+    TRANSACTION_COMMIT_RECORD_LEN_V1, TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1,
+    TransactionCommitViewV1, TransactionPrepareRecordViewV1, preflight_prepare_record_v1,
 };
 
 const PREPARE_AUTH_LEN: usize = 232;
@@ -160,32 +161,22 @@ impl CommittedObjectLookup for EqualLookup {
     }
 }
 
-struct AlternatingLookup {
-    ordinal: Cell<u64>,
-}
+struct KnownObjects(BTreeMap<ObjectDigest, Arc<[u8]>>);
 
-impl AlternatingLookup {
-    fn new() -> Self {
-        Self {
-            ordinal: Cell::new(0),
-        }
-    }
-}
-
-impl CommittedObjectLookup for AlternatingLookup {
+impl CommittedObjectLookup for KnownObjects {
     type Error = Infallible;
 
     fn compare_committed_object(
         &self,
-        _reference: ObjectRefV1,
-        _sealed_canonical_bytes: &[u8],
+        reference: ObjectRefV1,
+        sealed_canonical_bytes: &[u8],
     ) -> Result<CommittedObjectComparison, Self::Error> {
-        let ordinal = self.ordinal.get();
-        self.ordinal.set(ordinal + 1);
-        Ok(if ordinal % 2 == 0 {
-            CommittedObjectComparison::Equal
-        } else {
-            CommittedObjectComparison::Missing
+        Ok(match self.0.get(&reference.digest()) {
+            None => CommittedObjectComparison::Missing,
+            Some(committed) if committed.as_ref() == sealed_canonical_bytes => {
+                CommittedObjectComparison::Equal
+            }
+            Some(_) => CommittedObjectComparison::Collision,
         })
     }
 }
@@ -228,6 +219,7 @@ struct Kind1Image {
     catalog: CatalogSlotV1,
     first_prepare_offset: usize,
     first_commit_offset: usize,
+    middle_prepare_offset: usize,
     second_prepare_offset: usize,
     second_commit_offset: usize,
 }
@@ -344,11 +336,7 @@ fn data_batch_with_cardinality(
 fn kind1_image_with_cardinality(identity: &str, cardinality: usize) -> Kind1Image {
     let object_store = CanonicalObjectStore::new();
     let base = base_state(&object_store, 17, None);
-    let mutation = if cardinality == 1 {
-        data_batch(base, identity)
-    } else {
-        data_batch_with_cardinality(base, identity, cardinality)
-    };
+    let mutation = data_batch_with_cardinality(base, identity, cardinality + 1);
     let sealed = seal_data(&object_store, &mutation);
     let store_id = StoreId::from_array([0x4b; 16]);
     let first_sequence = LogPackSequence::FIRST;
@@ -392,11 +380,94 @@ fn kind1_image_with_cardinality(identity: &str, cardinality: usize) -> Kind1Imag
     let first_commit_offset = pack.len();
     pack.extend_from_slice(first_commit.canonical_bytes());
 
-    let second_sequence = first_sequence.successor().unwrap();
+    let mut known = BTreeMap::new();
+    for object in sealed.objects() {
+        let bytes: Arc<[u8]> = object.canonical_bytes().into();
+        assert!(matches!(
+            object_store
+                .put_if_absent_or_equal(object.reference(), Arc::clone(&bytes))
+                .unwrap(),
+            ObjectAdmission::Inserted | ObjectAdmission::AlreadyPresent
+        ));
+        known.insert(object.reference().digest(), bytes);
+    }
+    let channel = "channel".to_owned();
+    let removed = Datum::create(&channel, format!("{identity}-{cardinality:08}"), false);
+    let removed_path = RSpaceDataIndex::datum_path(&channel, &removed);
+    let mut second_batch = RSpaceMutationBatchV1::new(sealed.receipt().target()).unwrap();
+    second_batch.record_data(&removed_path, 1, 0).unwrap();
+    let second_mutation = encode(&second_batch.plan().unwrap());
+    let second_sealed = seal_data(&object_store, &second_mutation);
+    let second_plan =
+        LogPackObjectPlanV1::classify(&second_sealed, &KnownObjects(known.clone())).unwrap();
+    assert!(second_plan.inline_count() > 0);
+    for object in second_sealed.objects() {
+        let bytes: Arc<[u8]> = object.canonical_bytes().into();
+        let _ = object_store
+            .put_if_absent_or_equal(object.reference(), Arc::clone(&bytes))
+            .unwrap();
+        known.insert(object.reference().digest(), bytes);
+    }
+    let mut third_batch = RSpaceMutationBatchV1::new(second_sealed.receipt().target()).unwrap();
+    third_batch.record_data(&removed_path, 0, 1).unwrap();
+    let successor = Datum::create(&channel, format!("{identity}-successor"), false);
+    let successor_path = RSpaceDataIndex::datum_path(&channel, &successor);
+    third_batch.record_data(&successor_path, 0, 1).unwrap();
+    let third_mutation = encode(&third_batch.plan().unwrap());
+    let third_sealed = seal_data(&object_store, &third_mutation);
+    let third_plan = LogPackObjectPlanV1::classify(&third_sealed, &KnownObjects(known)).unwrap();
+    assert!(third_plan.inline_count() > 0);
+    assert!(
+        third_plan.inline_count() < third_plan.len() as u64,
+        "third plan inline {} of {}",
+        third_plan.inline_count(),
+        third_plan.len()
+    );
+
+    let middle_sequence = first_sequence.successor().unwrap();
+    let middle =
+        crate::rspace::persistence::PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
+            &second_sealed,
+            second_plan,
+            store_id,
+            middle_sequence,
+            LogPackDecodeLimits::UNBOUNDED,
+        )
+        .unwrap();
+    let middle_prepare_offset = pack.len();
+    let middle_identity = middle.write_to(&mut pack).unwrap();
+    let middle_prepare_address = LogPackAddress::from_pack(
+        PackId::GENESIS,
+        middle_prepare_offset as u64,
+        middle_identity.record_len(),
+    )
+    .unwrap();
+    let middle_index_tail = first_index_tail + middle.inline_count() * INDEX_RECORD_LEN_V1;
+    let middle_publication = CommitPublicationV1::new(
+        PackId::GENESIS.get(),
+        IndexGenerationV1::FIRST.get(),
+        middle_index_tail,
+        synthetic_ref(0xa2),
+        4096,
+        8192,
+    )
+    .unwrap();
+    let middle_commit = TransactionCommitRecordV1::new(
+        second_sealed.receipt(),
+        store_id,
+        first_commit.digest(),
+        middle_prepare_address,
+        middle_identity,
+        middle_publication,
+    )
+    .unwrap();
+    pack.extend_from_slice(middle_commit.canonical_bytes());
+
+    let second_sequence = middle_sequence.successor().unwrap();
     let second =
         crate::rspace::persistence::PreparedLogPackTransactionV1::<TestSemanticProfile>::new(
-            &sealed,
-            LogPackObjectPlanV1::classify(&sealed, &AlternatingLookup::new()).unwrap(),
+            &third_sealed,
+            third_plan,
             store_id,
             second_sequence,
             LogPackDecodeLimits::UNBOUNDED,
@@ -410,20 +481,20 @@ fn kind1_image_with_cardinality(identity: &str, cardinality: usize) -> Kind1Imag
         second_identity.record_len(),
     )
     .unwrap();
-    let second_index_tail = first_index_tail + second.inline_count() * INDEX_RECORD_LEN_V1;
+    let second_index_tail = middle_index_tail + second.inline_count() * INDEX_RECORD_LEN_V1;
     let second_publication = CommitPublicationV1::new(
         PackId::GENESIS.get(),
         IndexGenerationV1::FIRST.get(),
         second_index_tail,
-        synthetic_ref(0xa2),
+        synthetic_ref(0xa3),
         4096,
         8192,
     )
     .unwrap();
     let second_commit = TransactionCommitRecordV1::new(
-        sealed.receipt(),
+        third_sealed.receipt(),
         store_id,
-        first_commit.digest(),
+        middle_commit.digest(),
         second_prepare_address,
         second_identity,
         second_publication,
@@ -432,41 +503,6 @@ fn kind1_image_with_cardinality(identity: &str, cardinality: usize) -> Kind1Imag
     let second_commit_offset = pack.len();
     pack.extend_from_slice(second_commit.canonical_bytes());
 
-    let original_target = sealed.receipt().target();
-    let provisional = Kind1Image {
-        pack: Arc::from([]),
-        catalog: CatalogSlotV1::new(
-            store_id,
-            1,
-            original_target,
-            TEST_SEMANTIC_PROFILE_ID,
-            second_commit.digest(),
-            second_sequence,
-            LogPackAddress::from_pack(
-                PackId::GENESIS,
-                second_commit_offset as u64,
-                TRANSACTION_COMMIT_RECORD_LEN_V1,
-            )
-            .unwrap(),
-            CatalogPackStateV1::new(
-                1,
-                1,
-                pack.len() as u64,
-                1,
-                second_index_tail,
-                synthetic_ref(0xa2),
-                4096,
-                8192,
-            )
-            .unwrap(),
-        )
-        .unwrap(),
-        first_prepare_offset,
-        first_commit_offset,
-        second_prepare_offset,
-        second_commit_offset,
-    };
-    patch_second_transition_base(&mut pack, &provisional, original_target);
     let terminal = TransactionCommitViewV1::parse(
         &pack[second_commit_offset..
             second_commit_offset + TRANSACTION_COMMIT_RECORD_LEN_V1 as usize],
@@ -503,7 +539,11 @@ fn kind1_image_with_cardinality(identity: &str, cardinality: usize) -> Kind1Imag
     Kind1Image {
         pack: pack.into(),
         catalog,
-        ..provisional
+        first_prepare_offset,
+        first_commit_offset,
+        middle_prepare_offset,
+        second_prepare_offset,
+        second_commit_offset,
     }
 }
 
@@ -581,19 +621,13 @@ fn prepare_view(pack: &[u8], offset: usize) -> TransactionPrepareRecordViewV1<'_
 }
 
 fn recovery_error(pack: Arc<[u8]>, catalog: CatalogSlotV1) -> RecoveryError<Infallible> {
-    let observed = Cell::new(0u64);
     let mut provider = MemoryProvider { bytes: pack };
     let result = scan_catalog_authorized_pack_chain(
         &mut provider,
         &token(catalog, false),
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| {
-            observed.set(observed.get() + 1);
-            Ok(())
-        },
     );
-    assert_eq!(observed.get(), 0, "a rejected candidate exposed a DATA observation");
     match result {
         Err(error) => error,
         Ok(_) => panic!("malformed kind-1 image was accepted"),
@@ -668,23 +702,17 @@ fn streamed_mutation_identity_matches_receipt_or_rejects_each_binding() {
             image.first_prepare_offset,
             image.first_commit_offset,
         );
-        let observed = Cell::new(0u64);
         let mut provider = MemoryProvider { bytes: pack.into() };
         let result = scan_catalog_authorized_pack_chain(
             &mut provider,
             &token(image.catalog, false),
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| {
-                observed.set(observed.get() + 1);
-                Ok(())
-            },
         );
         let error = match result {
             Err(error) => error,
             Ok(_) => panic!("mismatched streamed mutation identity was accepted"),
         };
-        assert_eq!(observed.get(), 0);
         if prepare_field == PREPARE_MUTATION_DIGEST_OFFSET {
             assert!(matches!(error, RecoveryError::Wal(LogPackFormatError::MutationDigest { .. })));
         } else {
@@ -1174,7 +1202,7 @@ fn outer_chain_binding_rejects_each_of_nine_fields_before_replay() {
 }
 
 fn expected_data_records(image: &Kind1Image) -> Vec<ObjectIndexRecordV1> {
-    [image.first_prepare_offset, image.second_prepare_offset]
+    [image.first_prepare_offset, image.middle_prepare_offset, image.second_prepare_offset]
         .into_iter()
         .flat_map(|offset| {
             let prepare = prepare_view(&image.pack, offset);
@@ -1202,21 +1230,15 @@ fn authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rule
     let mut provider = MemoryProvider {
         bytes: Arc::clone(&image.pack),
     };
-    let mut observed = Vec::new();
     let recovered = scan_catalog_authorized_pack_chain(
         &mut provider,
         &authority,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |record| {
-            observed.push(record);
-            Ok(())
-        },
     )
     .unwrap()
     .verify_catalog(authority)
     .unwrap();
-    assert_eq!(observed, expected);
     assert_eq!(recovered.object_index().record_count(), expected.len() as u64);
     for record in expected.iter().copied() {
         assert_eq!(recovered.object_index().get(record.reference().digest()), Some(record));
@@ -1239,13 +1261,17 @@ fn authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rule
         .objects()
         .filter(|object| object.disposition() == LogPackObjectDispositionV1::Data)
         .count();
+    let middle_data = prepare_view(&image.pack, image.middle_prepare_offset)
+        .objects()
+        .filter(|object| object.disposition() == LogPackObjectDispositionV1::Data)
+        .count();
     let second_data = objects
         .iter()
         .filter(|object| object.disposition() == LogPackObjectDispositionV1::Data)
         .count();
     assert_eq!(
         recovered.object_index().record_count(),
-        (first_data + second_data) as u64,
+        (first_data + middle_data + second_data) as u64,
         "REUSE must emit no private index location",
     );
 
@@ -1301,18 +1327,12 @@ fn authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rule
     }
     let same_generation_record = ObjectIndexRecordV1::new(
         replacement,
-        ObjectLocationV1::new(
-            PackId::GENESIS,
-            PACK_HEADER_LEN_V1,
-            LogPackSequence::FIRST.successor().unwrap(),
-        )
-        .unwrap(),
+        ObjectLocationV1::new(PackId::GENESIS, PACK_HEADER_LEN_V1, second.sequence()).unwrap(),
     )
     .unwrap();
     same_generation_authority
         .insert(same_generation_record)
         .unwrap();
-    let observed = Cell::new(0u64);
     let mut provider = MemoryProvider {
         bytes: same_generation_pack.into(),
     };
@@ -1322,15 +1342,10 @@ fn authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rule
         &same_generation_authority,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| {
-            observed.set(observed.get() + 1);
-            Ok(())
-        },
     ) {
         Err(error) => error,
         Ok(_) => panic!("same-generation REUSE was accepted"),
     };
-    assert_eq!(observed.get(), 0);
     assert!(matches!(
         error,
         RecoveryError::ReuseNotPrior {
@@ -1338,8 +1353,8 @@ fn authenticated_layout_replay_emits_exact_private_index_and_enforces_reuse_rule
             indexed_sequence,
             current_sequence,
         } if reference == replacement &&
-            indexed_sequence == LogPackSequence::FIRST.successor().unwrap() &&
-            current_sequence == LogPackSequence::FIRST.successor().unwrap()
+            indexed_sequence == second.sequence() &&
+            current_sequence == second.sequence()
     ));
 
     let (reuse_pack, reuse_catalog) = generation_start_reuse_image("generation-start-reuse");
@@ -1445,7 +1460,6 @@ fn layout_transcript_and_replay_accept_iff_structurally_identical() {
             &authority,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| Ok(()),
         )
         .unwrap()
         .verify_catalog(authority.clone())
@@ -1476,21 +1490,15 @@ fn layout_transcript_and_replay_accept_iff_structurally_identical() {
                 primary_seen: Arc::new(Cell::new(false)),
             },
         };
-        let observed = Cell::new(0u64);
         let error = match scan_catalog_authorized_pack_chain(
             &mut provider,
             &authority,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |_| {
-                observed.set(observed.get() + 1);
-                Ok(())
-            },
         ) {
             Err(error) => error,
             Ok(_) => panic!("typed replay mutation was accepted"),
         };
-        assert_eq!(observed.get(), 0);
         assert!(matches!(
             error,
             RecoveryError::IncrementalReplayTranscript { .. } |
@@ -1507,7 +1515,6 @@ fn layout_transcript_and_replay_accept_iff_structurally_identical() {
     let body_offset = image.second_prepare_offset + data.canonical_offset().unwrap() as usize;
     let mut changed_byte = image.pack[body_offset];
     changed_byte ^= 1;
-    let observed = Cell::new(0u64);
     let mut provider = UnstableLayoutProvider {
         reader: UnstableLayoutReader {
             bytes: Arc::clone(&image.pack),
@@ -1522,15 +1529,10 @@ fn layout_transcript_and_replay_accept_iff_structurally_identical() {
         &authority,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| {
-            observed.set(observed.get() + 1);
-            Ok(())
-        },
     ) {
         Err(error) => error,
         Ok(_) => panic!("DATA-body-only source instability was accepted"),
     };
-    assert_eq!(observed.get(), 0);
     assert!(matches!(error, RecoveryError::IncrementalReplaySourceChanged { .. }));
 }
 
@@ -1546,7 +1548,6 @@ fn no_validation_failure_exposes_recovery_authority_or_mutates_durable_index() {
         &authority,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap()
     .verify_catalog(authority.clone())
@@ -1647,7 +1648,6 @@ fn no_validation_failure_exposes_recovery_authority_or_mutates_durable_index() {
     let mut commit_fault = image.pack.to_vec();
     commit_fault[image.first_commit_offset + COMMIT_PREPARE_DIGEST_OFFSET] ^= 1;
     repair_commit_crc(&mut commit_fault, image.first_commit_offset);
-    let replayed = Cell::new(0u64);
     let mut provider = MemoryProvider {
         bytes: commit_fault.into(),
     };
@@ -1657,18 +1657,12 @@ fn no_validation_failure_exposes_recovery_authority_or_mutates_durable_index() {
         recovered.object_index(),
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| {
-            replayed.set(replayed.get() + 1);
-            Ok(())
-        },
     );
     assert!(replay_result.is_err());
-    assert_eq!(replayed.get(), 0);
     assert_eq!(recovered.object_index().record_count(), record_count);
 
-    // Catalog failure is the final gate. Even a completely valid private scan
-    // must not expose its callback/index candidate when that gate rejects.
-    let observed = Cell::new(0u64);
+    // Catalog failure is the final gate. The initial scan API has no observer
+    // or durable publication capability, so a rejected candidate stays private.
     let mut provider = MemoryProvider {
         bytes: Arc::clone(&image.pack),
     };
@@ -1677,17 +1671,12 @@ fn no_validation_failure_exposes_recovery_authority_or_mutates_durable_index() {
         &authority,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| {
-            observed.set(observed.get() + 1);
-            Ok(())
-        },
     )
     .unwrap();
     assert!(matches!(
         scanned.verify_catalog(token(image.catalog, true)),
         Err(RecoveryError::CatalogAuthorityChanged)
     ));
-    assert_eq!(observed.get(), 0, "catalog rejection exposed a candidate index callback");
 }
 
 struct StructuredOracle {
@@ -1762,21 +1751,18 @@ fn kind1_streaming_recovery_is_a_complete_structured_differential_of_contiguous_
         let mut provider = MemoryProvider {
             bytes: Arc::clone(&image.pack),
         };
-        let mut observed = Vec::new();
         let recovered = scan_catalog_authorized_pack_chain(
             &mut provider,
             &authority,
             limits(),
             LogPackDecodeLimits::UNBOUNDED,
-            |record| {
-                observed.push(record);
-                Ok(())
-            },
         )
         .unwrap()
         .verify_catalog(authority)
         .unwrap();
-        assert_eq!(observed, oracle.records);
+        for record in oracle.records.iter().copied() {
+            assert_eq!(recovered.object_index().get(record.reference().digest()), Some(record));
+        }
         assert_eq!(recovered.transactions(), oracle.transactions);
         assert_eq!(recovered.checkpoints(), 0);
         assert_eq!(recovered.state(), oracle.state);
@@ -1930,7 +1916,6 @@ fn measured_recovery_allocations(image: &Kind1Image) -> AllocationMeasurement {
         &authority,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap()
     .verify_catalog(authority.clone())
@@ -1944,7 +1929,6 @@ fn measured_recovery_allocations(image: &Kind1Image) -> AllocationMeasurement {
         authoritative.object_index(),
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     )
     .unwrap();
     reset_allocation_measurement();
@@ -1958,7 +1942,6 @@ fn measured_recovery_allocations(image: &Kind1Image) -> AllocationMeasurement {
         authoritative.object_index(),
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
-        |_| Ok(()),
     );
     COUNT_ALLOCATIONS.with(|enabled| enabled.set(false));
     result.unwrap();
@@ -2063,12 +2046,11 @@ fn kind1_native_stack_high_water_has_zero_input_slope() {
                     &authority,
                     limits(),
                     LogPackDecodeLimits::UNBOUNDED,
-                    |_| Ok(()),
                 )
                 .unwrap()
                 .verify_catalog(authority)
                 .unwrap();
-                assert_eq!(recovered.transactions(), 2);
+                assert_eq!(recovered.transactions(), 3);
             })
             .unwrap()
             .join()

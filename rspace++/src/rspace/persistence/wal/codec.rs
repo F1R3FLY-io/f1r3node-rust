@@ -42,7 +42,7 @@ pub(super) const GENERATION_CHECKPOINT_COMMIT_KIND_V1: u64 = 4;
 pub const PREPARE_DISCRIMINATOR_LEN_V1: u64 = (OBJECT_DOMAIN_LEN + 8 + 8) as u64;
 pub const COMMIT_DISCRIMINATOR_LEN_V1: u64 = (OBJECT_DOMAIN_LEN + 8 + 8) as u64;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
-const OBJECT_RECORD_HEADER_LEN: u64 = 8 + OBJECT_REF_LEN;
+pub(crate) const OBJECT_RECORD_HEADER_LEN_V1: u64 = 8 + OBJECT_REF_LEN;
 const PREPARE_AUTH_HEADER_LEN: usize = 232;
 pub const TRANSACTION_PREPARE_HEADER_LEN_V1: u64 =
     PREPARE_AUTH_HEADER_LEN as u64 + CHECKSUM_FIELD_LEN as u64;
@@ -265,7 +265,7 @@ impl Iterator for PreparedObjectLayoutIter<'_> {
             .expect("validated object plan has one disposition per sealed object");
         let record_offset = self.next_record_offset;
         let body_offset = record_offset
-            .checked_add(OBJECT_RECORD_HEADER_LEN)
+            .checked_add(OBJECT_RECORD_HEADER_LEN_V1)
             .expect("preflighted object record offset cannot overflow");
         let canonical_offset = match disposition {
             LogPackObjectDispositionV1::Data => Some(body_offset),
@@ -378,11 +378,11 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         }
         require_limit("canonical object bytes", limits.max_object_bytes, object_bytes)?;
         let object_record_bytes = checked_sum(
-            object_count.checked_mul(OBJECT_RECORD_HEADER_LEN).ok_or(
-                CanonicalFormatError::LengthOverflow {
+            object_count
+                .checked_mul(OBJECT_RECORD_HEADER_LEN_V1)
+                .ok_or(CanonicalFormatError::LengthOverflow {
                     field: "WAL object record headers",
-                },
-            )?,
+                })?,
             inline_object_bytes,
             "WAL object records",
         )?;
@@ -512,6 +512,36 @@ pub struct LogPackObjectView<'a> {
     canonical_offset: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LogPackObjectHeaderV1 {
+    disposition: LogPackObjectDispositionV1,
+    reference: ObjectRefV1,
+}
+
+impl LogPackObjectHeaderV1 {
+    pub(crate) fn parse_exact(bytes: &[u8]) -> Result<Self, LogPackFormatError> {
+        let actual = checked_len(bytes.len(), "WAL object record header")?;
+        if actual != OBJECT_RECORD_HEADER_LEN_V1 {
+            return Err(LogPackFormatError::LengthMismatch {
+                declared: OBJECT_RECORD_HEADER_LEN_V1,
+                actual,
+            });
+        }
+        let mut cursor = ReadCursor::new(bytes);
+        let disposition = read_object_disposition(&mut cursor)?;
+        let reference = ObjectRefV1::parse(&mut cursor)?;
+        cursor.finish()?;
+        Ok(Self {
+            disposition,
+            reference,
+        })
+    }
+
+    pub(crate) const fn disposition(self) -> LogPackObjectDispositionV1 { self.disposition }
+
+    pub(crate) const fn reference(self) -> ObjectRefV1 { self.reference }
+}
+
 impl<'a> LogPackObjectView<'a> {
     pub const fn disposition(self) -> LogPackObjectDispositionV1 { self.disposition }
 
@@ -546,10 +576,14 @@ impl<'a> Iterator for LogPackObjectIter<'a> {
             .base_record_offset
             .checked_add(self.cursor.offset() as u64)
             .expect("validated prepare record offsets fit u64");
-        let disposition = read_object_disposition(&mut self.cursor)
-            .expect("the prepare view validated each object disposition");
-        let reference = ObjectRefV1::parse(&mut self.cursor)
-            .expect("the prepare view validated each object reference");
+        let header_bytes = self
+            .cursor
+            .read_exact(OBJECT_RECORD_HEADER_LEN_V1 as usize)
+            .expect("the prepare view validated each object header extent");
+        let header = LogPackObjectHeaderV1::parse_exact(header_bytes)
+            .expect("the prepare view validated each object header");
+        let disposition = header.disposition();
+        let reference = header.reference();
         let (canonical_offset, canonical_bytes) = match disposition {
             LogPackObjectDispositionV1::Data => {
                 let canonical_offset = self
@@ -845,8 +879,10 @@ impl<'a> TransactionPrepareRecordViewV1<'a> {
         let mut observed_object_bytes = 0u64;
         let mut previous = None;
         for _ in 0..header.object_count {
-            let disposition = read_object_disposition(&mut payload_cursor)?;
-            let reference = ObjectRefV1::parse(&mut payload_cursor)?;
+            let object_header = payload_cursor.read_exact(OBJECT_RECORD_HEADER_LEN_V1 as usize)?;
+            let object_header = LogPackObjectHeaderV1::parse_exact(object_header)?;
+            let disposition = object_header.disposition();
+            let reference = object_header.reference();
             if let Some(previous) = previous {
                 if previous >= reference.digest() {
                     return Err(LogPackFormatError::ObjectsNotStrict {
@@ -1193,22 +1229,36 @@ fn validate_mutation_receipt(
     mutation: MutationBatchViewV1<'_>,
     receipt: SealedTransitionV1,
 ) -> Result<(), LogPackFormatError> {
-    if mutation.payload_digest() != receipt.mutation_digest() {
+    validate_streamed_mutation_receipt_v1(
+        mutation.payload_digest(),
+        mutation.base(),
+        mutation.target_generation(),
+        receipt,
+    )
+}
+
+pub(crate) fn validate_streamed_mutation_receipt_v1(
+    payload_digest: ObjectDigest,
+    base: StateVersionV1,
+    target_generation: u64,
+    receipt: SealedTransitionV1,
+) -> Result<(), LogPackFormatError> {
+    if payload_digest != receipt.mutation_digest() {
         return Err(LogPackFormatError::MutationDigest {
             expected: receipt.mutation_digest(),
-            actual: mutation.payload_digest(),
+            actual: payload_digest,
         });
     }
-    if mutation.base() != receipt.base() {
+    if base != receipt.base() {
         return Err(LogPackFormatError::MutationReceipt {
             expected: receipt.base(),
-            actual: mutation.base(),
+            actual: base,
         });
     }
-    if mutation.target_generation() != receipt.target().generation() {
+    if target_generation != receipt.target().generation() {
         return Err(LogPackFormatError::MutationReceipt {
             expected: receipt.target(),
-            actual: StateVersionV1::new(mutation.target_generation(), receipt.target().manifest()),
+            actual: StateVersionV1::new(target_generation, receipt.target().manifest()),
         });
     }
     Ok(())

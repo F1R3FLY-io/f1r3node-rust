@@ -8,23 +8,850 @@
 //! committed target without accepting mixed endpoint states. The live CoW and
 //! persistent-DAG applicators therefore consume one transition language.
 
+use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 use pathmap::PathMap;
 use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 
 use super::canonical::{
-    CanonicalEncode, CanonicalFormatError, CanonicalSink, OBJECT_DOMAIN_LEN,
-    OBJECT_ENVELOPE_HEADER_LEN, ObjectDigest, ObjectRefV1, ReadCursor, checked_len, checked_sum,
-    parse_envelope, write_envelope_header, write_u64,
+    CanonicalEncode, CanonicalFormatError, CanonicalSink, FORMAT_VERSION_V1, OBJECT_DIGEST_LEN,
+    OBJECT_DOMAIN_LEN, OBJECT_ENVELOPE_HEADER_LEN, ObjectDigest, ObjectRefV1, ReadCursor,
+    checked_len, checked_sum, parse_envelope, write_envelope_header, write_u64,
 };
 use super::manifest::SemanticNamespace;
-use crate::rspace::rho_path::{RhoPathError, RhoPathV1};
+use crate::rspace::rho_path::{RhoPathError, RhoPathStreamValidatorV1, RhoPathV1};
 
 const MUTATION_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Mut\0\0\0";
 const MUTATION_SCHEMA_VERSION_V1: u64 = 1;
 const MUTATION_SECTION_COUNT: u64 = 3;
 const OBJECT_REF_LEN: u64 = 32 + 8;
+
+/// Maximum caller-owned scratch admitted by the bounded mutation scanner.
+///
+/// The allocation is split into equal primary and prior-key-reread lanes.
+/// Fixed-width fields remain in small stack arrays, so retained heap does not
+/// depend on mutation, key, or entry cardinality.
+pub(crate) const MUTATION_STREAM_MAX_SCRATCH_BYTES_V1: usize = 64 * 1024;
+
+/// Positional byte source used by the bounded mutation scanner.
+///
+/// Production implementations must keep the addressed image stable for the
+/// scanner's lifetime. The scanner nevertheless re-hashes every prior key it
+/// rereads, so mutation of ordering evidence is detected before acceptance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MutationReadClassV1 {
+    /// A byte in the mutation's exact, contiguous authenticated extent.
+    Primary,
+    /// A byte reread solely to prove the previous key's ordering identity.
+    PriorKeyReread,
+}
+
+pub(crate) trait MutationBatchReadAtV1 {
+    type Error;
+
+    fn read_exact_at(
+        &mut self,
+        class: MutationReadClassV1,
+        offset: u64,
+        destination: &mut [u8],
+    ) -> Result<(), Self::Error>;
+}
+
+/// Exact, owned result of one accepted streamed mutation image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StreamedMutationBatchV1 {
+    payload_digest: ObjectDigest,
+    base: StateVersionV1,
+    target_generation: u64,
+    entry_count: u64,
+    key_bytes: u64,
+    primary_read_bytes: u64,
+    prior_key_reread_bytes: u64,
+    physical_read_bytes: u64,
+}
+
+impl StreamedMutationBatchV1 {
+    pub(crate) const fn payload_digest(self) -> ObjectDigest { self.payload_digest }
+
+    pub(crate) const fn base(self) -> StateVersionV1 { self.base }
+
+    pub(crate) const fn target_generation(self) -> u64 { self.target_generation }
+
+    pub(crate) const fn entry_count(self) -> u64 { self.entry_count }
+
+    pub(crate) const fn key_bytes(self) -> u64 { self.key_bytes }
+
+    /// Exact bytes read from the mutation's contiguous primary extent.
+    pub(crate) const fn primary_read_bytes(self) -> u64 { self.primary_read_bytes }
+
+    /// Exact bytes reread to validate prior-key identity and ordering.
+    pub(crate) const fn prior_key_reread_bytes(self) -> u64 { self.prior_key_reread_bytes }
+
+    /// Successful primary bytes plus exact prior-key reread bytes.
+    pub(crate) const fn physical_read_bytes(self) -> u64 { self.physical_read_bytes }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MutationStreamErrorV1<E> {
+    Read(E),
+    Mutation(MutationError),
+    ScratchBytes {
+        maximum: usize,
+        actual: usize,
+    },
+    PhysicalReadLimit {
+        limit: u64,
+        attempted: u64,
+    },
+    SourceChanged {
+        offset: u64,
+        length: u64,
+        expected: ObjectDigest,
+        actual: ObjectDigest,
+    },
+}
+
+impl<E> From<MutationError> for MutationStreamErrorV1<E> {
+    fn from(error: MutationError) -> Self { Self::Mutation(error) }
+}
+
+/// A failed scan reports exactly where the primary cursor stopped and how
+/// much physical work completed. Semantic failures normally report
+/// `source_cursor == mutation_len` because the scanner raw-drains the declared
+/// extent; only I/O or resource refusal may stop it earlier.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MutationStreamFailureV1<E> {
+    error: MutationStreamErrorV1<E>,
+    source_cursor: u64,
+    primary_read_bytes: u64,
+    prior_key_reread_bytes: u64,
+    physical_read_bytes: u64,
+}
+
+impl<E> MutationStreamFailureV1<E> {
+    pub(crate) const fn error(&self) -> &MutationStreamErrorV1<E> { &self.error }
+
+    pub(crate) const fn source_cursor(&self) -> u64 { self.source_cursor }
+
+    pub(crate) const fn primary_read_bytes(&self) -> u64 { self.primary_read_bytes }
+
+    pub(crate) const fn prior_key_reread_bytes(&self) -> u64 { self.prior_key_reread_bytes }
+
+    pub(crate) const fn physical_read_bytes(&self) -> u64 { self.physical_read_bytes }
+
+    pub(crate) fn into_error(self) -> MutationStreamErrorV1<E> { self.error }
+}
+
+#[derive(Clone, Copy)]
+struct StreamedKeyIdentityV1 {
+    offset: u64,
+    len: u64,
+    digest: ObjectDigest,
+}
+
+struct MutationStreamCursorV1<'source, 'observer, R, F> {
+    source: &'source mut R,
+    source_offset: u64,
+    mutation_len: u64,
+    cursor: u64,
+    primary_read_bytes: u64,
+    reread_read_bytes: u64,
+    reread_admitted_bytes: u64,
+    max_physical_read_bytes: u64,
+    payload_hasher: Blake2b<U32>,
+    observe_primary: &'observer mut F,
+}
+
+impl<'source, 'observer, R, F> MutationStreamCursorV1<'source, 'observer, R, F>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    fn canonical_error(error: CanonicalFormatError) -> MutationStreamErrorV1<R::Error> {
+        MutationStreamErrorV1::Mutation(error.into())
+    }
+
+    fn body_offset(&self, body_start: u64) -> Result<usize, MutationStreamErrorV1<R::Error>> {
+        let relative = self.cursor.checked_sub(body_start).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::LengthOverflow {
+                field: "mutation body cursor",
+            })
+        })?;
+        usize::try_from(relative).map_err(|_| {
+            Self::canonical_error(CanonicalFormatError::LengthOutOfRange {
+                field: "mutation body cursor",
+                value: relative,
+            })
+        })
+    }
+
+    fn available_usize(&self) -> Result<usize, MutationStreamErrorV1<R::Error>> {
+        let available = self.mutation_len.checked_sub(self.cursor).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::LengthOverflow {
+                field: "mutation stream cursor",
+            })
+        })?;
+        usize::try_from(available).map_err(|_| {
+            Self::canonical_error(CanonicalFormatError::LengthOutOfRange {
+                field: "mutation stream available bytes",
+                value: available,
+            })
+        })
+    }
+
+    fn require_primary_extent(
+        &self,
+        len: usize,
+        error_base: u64,
+    ) -> Result<(), MutationStreamErrorV1<R::Error>> {
+        let len_u64 = u64::try_from(len).map_err(|_| {
+            Self::canonical_error(CanonicalFormatError::LengthOverflow {
+                field: "mutation stream read",
+            })
+        })?;
+        let end = self.cursor.checked_add(len_u64).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::LengthOutOfRange {
+                field: "cursor extent",
+                value: u64::MAX,
+            })
+        })?;
+        if end > self.mutation_len {
+            let offset = self.body_offset(error_base)?;
+            return Err(Self::canonical_error(CanonicalFormatError::Truncated {
+                offset,
+                needed: len,
+                available: self.available_usize()?,
+            }));
+        }
+        Ok(())
+    }
+
+    fn read_primary_exact(
+        &mut self,
+        destination: &mut [u8],
+        error_base: u64,
+    ) -> Result<(), MutationStreamErrorV1<R::Error>> {
+        self.require_primary_extent(destination.len(), error_base)?;
+        let absolute = self.source_offset.checked_add(self.cursor).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::LengthOverflow {
+                field: "mutation source offset",
+            })
+        })?;
+        self.source
+            .read_exact_at(MutationReadClassV1::Primary, absolute, destination)
+            .map_err(MutationStreamErrorV1::Read)?;
+        (self.observe_primary)(destination);
+        self.payload_hasher.update(&*destination);
+        let read = u64::try_from(destination.len()).expect("slice length fits u64");
+        self.cursor = self.cursor.checked_add(read).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::LengthOverflow {
+                field: "mutation primary cursor",
+            })
+        })?;
+        self.primary_read_bytes = self.primary_read_bytes.checked_add(read).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::CounterOverflow(
+                "mutation primary read bytes",
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn read_u64(&mut self, error_base: u64) -> Result<u64, MutationStreamErrorV1<R::Error>> {
+        let mut bytes = [0u8; 8];
+        self.read_primary_exact(&mut bytes, error_base)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn read_u8(&mut self, error_base: u64) -> Result<u8, MutationStreamErrorV1<R::Error>> {
+        let mut byte = [0u8; 1];
+        self.read_primary_exact(&mut byte, error_base)?;
+        Ok(byte[0])
+    }
+
+    fn read_reference(
+        &mut self,
+        error_base: u64,
+    ) -> Result<ObjectRefV1, MutationStreamErrorV1<R::Error>> {
+        let mut bytes = [0u8; OBJECT_REF_LEN as usize];
+        self.read_primary_exact(&mut bytes, error_base)?;
+        let mut cursor = ReadCursor::new(&bytes);
+        let reference = ObjectRefV1::parse(&mut cursor).map_err(Self::canonical_error)?;
+        cursor.finish().map_err(Self::canonical_error)?;
+        Ok(reference)
+    }
+
+    fn admit_reread(&mut self, bytes: u64) -> Result<(), MutationStreamErrorV1<R::Error>> {
+        let reread = self
+            .reread_admitted_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| {
+                Self::canonical_error(CanonicalFormatError::CounterOverflow(
+                    "mutation prior-key reread bytes",
+                ))
+            })?;
+        let attempted = self.mutation_len.checked_add(reread).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::CounterOverflow(
+                "mutation physical read bytes",
+            ))
+        })?;
+        if attempted > self.max_physical_read_bytes {
+            return Err(MutationStreamErrorV1::PhysicalReadLimit {
+                limit: self.max_physical_read_bytes,
+                attempted,
+            });
+        }
+        self.reread_admitted_bytes = reread;
+        Ok(())
+    }
+
+    fn read_reread_exact(
+        &mut self,
+        relative_offset: u64,
+        destination: &mut [u8],
+    ) -> Result<(), MutationStreamErrorV1<R::Error>> {
+        let absolute = self
+            .source_offset
+            .checked_add(relative_offset)
+            .ok_or_else(|| {
+                Self::canonical_error(CanonicalFormatError::LengthOverflow {
+                    field: "mutation reread source offset",
+                })
+            })?;
+        self.source
+            .read_exact_at(MutationReadClassV1::PriorKeyReread, absolute, destination)
+            .map_err(MutationStreamErrorV1::Read)?;
+        let read = u64::try_from(destination.len()).expect("slice length fits u64");
+        self.reread_read_bytes = self.reread_read_bytes.checked_add(read).ok_or_else(|| {
+            Self::canonical_error(CanonicalFormatError::CounterOverflow(
+                "mutation prior-key reread bytes",
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn raw_drain(
+        &mut self,
+        primary_lane: &mut [u8],
+    ) -> Result<(), MutationStreamErrorV1<R::Error>> {
+        while self.cursor < self.mutation_len {
+            let remaining = self.mutation_len - self.cursor;
+            let take = usize::try_from(remaining.min(primary_lane.len() as u64))
+                .expect("bounded primary lane length fits usize");
+            self.read_primary_exact(&mut primary_lane[..take], 0)?;
+        }
+        Ok(())
+    }
+
+    fn physical_read_bytes(&self) -> u64 {
+        self.primary_read_bytes
+            .checked_add(self.reread_read_bytes)
+            .expect("physical reads were checked as they accumulated")
+    }
+
+    fn primary_read_bytes(&self) -> u64 { self.primary_read_bytes }
+
+    fn prior_key_reread_bytes(&self) -> u64 { self.reread_read_bytes }
+}
+
+/// Validate one canonical mutation directly from a positional source.
+///
+/// Every primary byte is sent to `observe_primary` exactly once, including a
+/// raw drain after the first semantic error. Prior-key rereads are excluded
+/// from that observer. `max_physical_read_bytes` admits the complete primary
+/// extent before the first read and each exact prior-key reread before it is
+/// issued.
+pub(crate) fn stream_mutation_batch_v1<R, F>(
+    source: &mut R,
+    source_offset: u64,
+    mutation_len: u64,
+    limits: MutationDecodeLimits,
+    max_physical_read_bytes: u64,
+    scratch: &mut [u8],
+    mut observe_primary: F,
+) -> Result<StreamedMutationBatchV1, MutationStreamFailureV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    let invalid_scratch = scratch.len() < 2 || scratch.len() > MUTATION_STREAM_MAX_SCRATCH_BYTES_V1;
+    if invalid_scratch {
+        return Err(MutationStreamFailureV1 {
+            error: MutationStreamErrorV1::ScratchBytes {
+                maximum: MUTATION_STREAM_MAX_SCRATCH_BYTES_V1,
+                actual: scratch.len(),
+            },
+            source_cursor: 0,
+            primary_read_bytes: 0,
+            prior_key_reread_bytes: 0,
+            physical_read_bytes: 0,
+        });
+    }
+    if mutation_len > max_physical_read_bytes {
+        return Err(MutationStreamFailureV1 {
+            error: MutationStreamErrorV1::PhysicalReadLimit {
+                limit: max_physical_read_bytes,
+                attempted: mutation_len,
+            },
+            source_cursor: 0,
+            primary_read_bytes: 0,
+            prior_key_reread_bytes: 0,
+            physical_read_bytes: 0,
+        });
+    }
+
+    let lane_len = scratch.len() / 2;
+    let (primary_lane, remainder) = scratch.split_at_mut(lane_len);
+    let reread_lane = &mut remainder[..lane_len];
+    let mut cursor = MutationStreamCursorV1 {
+        source,
+        source_offset,
+        mutation_len,
+        cursor: 0,
+        primary_read_bytes: 0,
+        reread_read_bytes: 0,
+        reread_admitted_bytes: 0,
+        max_physical_read_bytes,
+        payload_hasher: Blake2b::<U32>::new(),
+        observe_primary: &mut observe_primary,
+    };
+
+    let parsed = stream_mutation_inner(&mut cursor, limits, primary_lane, reread_lane);
+    let parsed = match parsed {
+        Ok(parsed) => Ok(parsed),
+        Err(
+            error @ (MutationStreamErrorV1::Mutation(_) |
+            MutationStreamErrorV1::SourceChanged { .. }),
+        ) => match cursor.raw_drain(primary_lane) {
+            Ok(()) => Err(error),
+            Err(drain_error) => Err(drain_error),
+        },
+        Err(error) => Err(error),
+    };
+
+    match parsed {
+        Ok((base, target_generation, entry_count, key_bytes)) => {
+            debug_assert_eq!(cursor.cursor, mutation_len);
+            let primary_read_bytes = cursor.primary_read_bytes();
+            let prior_key_reread_bytes = cursor.prior_key_reread_bytes();
+            let physical_read_bytes = cursor.physical_read_bytes();
+            let payload_digest = finish_stream_digest(cursor.payload_hasher);
+            Ok(StreamedMutationBatchV1 {
+                payload_digest,
+                base,
+                target_generation,
+                entry_count,
+                key_bytes,
+                primary_read_bytes,
+                prior_key_reread_bytes,
+                physical_read_bytes,
+            })
+        }
+        Err(error) => {
+            let primary_read_bytes = cursor.primary_read_bytes();
+            let prior_key_reread_bytes = cursor.prior_key_reread_bytes();
+            Err(MutationStreamFailureV1 {
+                error,
+                source_cursor: cursor.cursor,
+                primary_read_bytes,
+                prior_key_reread_bytes,
+                physical_read_bytes: cursor.physical_read_bytes(),
+            })
+        }
+    }
+}
+
+fn stream_mutation_inner<R, F>(
+    cursor: &mut MutationStreamCursorV1<'_, '_, R, F>,
+    limits: MutationDecodeLimits,
+    primary_lane: &mut [u8],
+    reread_lane: &mut [u8],
+) -> Result<(StateVersionV1, u64, u64, u64), MutationStreamErrorV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    let mut domain = [0u8; OBJECT_DOMAIN_LEN];
+    cursor.read_primary_exact(&mut domain, 0)?;
+    if &domain != MUTATION_DOMAIN {
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::InvalidDomain {
+                expected: MUTATION_DOMAIN,
+            },
+        ));
+    }
+    let version = cursor.read_u64(0)?;
+    if version != FORMAT_VERSION_V1 {
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::UnsupportedVersion {
+                domain: "RSpace mutation batch",
+                version,
+            },
+        ));
+    }
+    let body_len = cursor.read_u64(0)?;
+    let body_len_usize = usize::try_from(body_len).map_err(|_| {
+        MutationStreamCursorV1::<R, F>::canonical_error(CanonicalFormatError::LengthOutOfRange {
+            field: "object body",
+            value: body_len,
+        })
+    })?;
+    let body_start = OBJECT_ENVELOPE_HEADER_LEN;
+    let expected_end = body_start.checked_add(body_len).ok_or_else(|| {
+        MutationStreamCursorV1::<R, F>::canonical_error(CanonicalFormatError::LengthOutOfRange {
+            field: "cursor extent",
+            value: u64::MAX,
+        })
+    })?;
+    if expected_end > cursor.mutation_len {
+        let available =
+            usize::try_from(cursor.mutation_len.saturating_sub(body_start)).map_err(|_| {
+                MutationStreamCursorV1::<R, F>::canonical_error(
+                    CanonicalFormatError::LengthOutOfRange {
+                        field: "mutation stream available bytes",
+                        value: cursor.mutation_len.saturating_sub(body_start),
+                    },
+                )
+            })?;
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::Truncated {
+                offset: body_start as usize,
+                needed: body_len_usize,
+                available,
+            },
+        ));
+    }
+    if expected_end < cursor.mutation_len {
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::TrailingBytes {
+                offset: usize::try_from(expected_end).map_err(|_| {
+                    MutationStreamCursorV1::<R, F>::canonical_error(
+                        CanonicalFormatError::LengthOutOfRange {
+                            field: "mutation envelope end",
+                            value: expected_end,
+                        },
+                    )
+                })?,
+                trailing: usize::try_from(cursor.mutation_len - expected_end).map_err(|_| {
+                    MutationStreamCursorV1::<R, F>::canonical_error(
+                        CanonicalFormatError::LengthOutOfRange {
+                            field: "mutation trailing bytes",
+                            value: cursor.mutation_len - expected_end,
+                        },
+                    )
+                })?,
+            },
+        ));
+    }
+
+    let schema_version = cursor.read_u64(body_start)?;
+    if schema_version != MUTATION_SCHEMA_VERSION_V1 {
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::UnsupportedVersion {
+                domain: "RSpace mutation schema",
+                version: schema_version,
+            },
+        ));
+    }
+    let base_generation = cursor.read_u64(body_start)?;
+    let target_generation = cursor.read_u64(body_start)?;
+    let base_manifest = cursor.read_reference(body_start)?;
+    let section_count = cursor.read_u64(body_start)?;
+    if section_count != MUTATION_SECTION_COUNT {
+        return Err(MutationError::SectionCount(section_count).into());
+    }
+    let base = StateVersionV1::new(base_generation, base_manifest);
+    require_contiguous_generation(base_generation, target_generation)?;
+
+    let mut total_entries = 0u64;
+    let mut total_key_bytes = 0u64;
+    stream_count_section(
+        cursor,
+        body_start,
+        SemanticNamespace::DataBag,
+        limits,
+        &mut total_entries,
+        &mut total_key_bytes,
+        primary_lane,
+        reread_lane,
+    )?;
+    stream_content_section(
+        cursor,
+        body_start,
+        limits,
+        &mut total_entries,
+        &mut total_key_bytes,
+        primary_lane,
+        reread_lane,
+    )?;
+    stream_count_section(
+        cursor,
+        body_start,
+        SemanticNamespace::JoinBag,
+        limits,
+        &mut total_entries,
+        &mut total_key_bytes,
+        primary_lane,
+        reread_lane,
+    )?;
+
+    if cursor.cursor != expected_end {
+        let offset = cursor.body_offset(body_start)?;
+        let trailing = usize::try_from(expected_end - cursor.cursor).map_err(|_| {
+            MutationStreamCursorV1::<R, F>::canonical_error(
+                CanonicalFormatError::LengthOutOfRange {
+                    field: "mutation body trailing bytes",
+                    value: expected_end - cursor.cursor,
+                },
+            )
+        })?;
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::TrailingBytes { offset, trailing },
+        ));
+    }
+    if total_entries == 0 {
+        return Err(MutationError::EmptyBatch.into());
+    }
+    Ok((base, target_generation, total_entries, total_key_bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_count_section<R, F>(
+    cursor: &mut MutationStreamCursorV1<'_, '_, R, F>,
+    body_start: u64,
+    namespace: SemanticNamespace,
+    limits: MutationDecodeLimits,
+    total_entries: &mut u64,
+    total_key_bytes: &mut u64,
+    primary_lane: &mut [u8],
+    reread_lane: &mut [u8],
+) -> Result<(), MutationStreamErrorV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    let entry_count = stream_section_header(cursor, body_start, namespace, limits, total_entries)?;
+    let mut previous = None;
+    for _ in 0..entry_count {
+        let current = stream_key(
+            cursor,
+            body_start,
+            namespace,
+            limits,
+            total_key_bytes,
+            previous,
+            primary_lane,
+            reread_lane,
+        )?;
+        previous = Some(current);
+        CountTransition::new(cursor.read_u64(body_start)?, cursor.read_u64(body_start)?)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_content_section<R, F>(
+    cursor: &mut MutationStreamCursorV1<'_, '_, R, F>,
+    body_start: u64,
+    limits: MutationDecodeLimits,
+    total_entries: &mut u64,
+    total_key_bytes: &mut u64,
+    primary_lane: &mut [u8],
+    reread_lane: &mut [u8],
+) -> Result<(), MutationStreamErrorV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    let namespace = SemanticNamespace::ContinuationMap;
+    let entry_count = stream_section_header(cursor, body_start, namespace, limits, total_entries)?;
+    let mut previous = None;
+    for _ in 0..entry_count {
+        let current = stream_key(
+            cursor,
+            body_start,
+            namespace,
+            limits,
+            total_key_bytes,
+            previous,
+            primary_lane,
+            reread_lane,
+        )?;
+        previous = Some(current);
+        ContentTransition::new(
+            stream_optional_reference(cursor, body_start)?,
+            stream_optional_reference(cursor, body_start)?,
+        )?;
+    }
+    Ok(())
+}
+
+fn stream_section_header<R, F>(
+    cursor: &mut MutationStreamCursorV1<'_, '_, R, F>,
+    body_start: u64,
+    namespace: SemanticNamespace,
+    limits: MutationDecodeLimits,
+    total_entries: &mut u64,
+) -> Result<u64, MutationStreamErrorV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    let actual = cursor.read_u64(body_start)?;
+    if actual != namespace as u64 {
+        return Err(MutationError::SectionOrder {
+            expected: namespace as u64,
+            actual,
+        }
+        .into());
+    }
+    let entry_count = cursor.read_u64(body_start)?;
+    account_entries(entry_count, limits, total_entries)?;
+    Ok(entry_count)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_key<R, F>(
+    cursor: &mut MutationStreamCursorV1<'_, '_, R, F>,
+    body_start: u64,
+    namespace: SemanticNamespace,
+    limits: MutationDecodeLimits,
+    total_key_bytes: &mut u64,
+    previous: Option<StreamedKeyIdentityV1>,
+    primary_lane: &mut [u8],
+    reread_lane: &mut [u8],
+) -> Result<StreamedKeyIdentityV1, MutationStreamErrorV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    let len = cursor.read_u64(body_start)?;
+    let len_usize = usize::try_from(len).map_err(|_| {
+        MutationStreamCursorV1::<R, F>::canonical_error(CanonicalFormatError::LengthOutOfRange {
+            field: "mutation key",
+            value: len,
+        })
+    })?;
+    let attempted = total_key_bytes.checked_add(len).ok_or_else(|| {
+        MutationStreamCursorV1::<R, F>::canonical_error(CanonicalFormatError::CounterOverflow(
+            "mutation key bytes",
+        ))
+    })?;
+    if attempted > limits.max_key_bytes {
+        return Err(MutationStreamCursorV1::<R, F>::canonical_error(
+            CanonicalFormatError::ResourceLimit {
+                resource: "mutation key bytes",
+                limit: limits.max_key_bytes,
+                attempted,
+            },
+        ));
+    }
+    cursor.require_primary_extent(len_usize, body_start)?;
+
+    if let Some(previous) = previous {
+        cursor.admit_reread(previous.len)?;
+    }
+    let offset = cursor.cursor;
+    let mut validator = match namespace {
+        SemanticNamespace::DataBag => RhoPathStreamValidatorV1::datum(),
+        SemanticNamespace::ContinuationMap => RhoPathStreamValidatorV1::continuation(),
+        SemanticNamespace::JoinBag => RhoPathStreamValidatorV1::join(),
+    };
+    let mut current_hasher = Blake2b::<U32>::new();
+    let mut previous_hasher = Blake2b::<U32>::new();
+    let mut current_read = 0u64;
+    let mut previous_read = 0u64;
+    let mut ordering = Ordering::Equal;
+
+    while current_read < len {
+        let take = usize::try_from((len - current_read).min(primary_lane.len() as u64))
+            .expect("bounded primary lane length fits usize");
+        let current_chunk = &mut primary_lane[..take];
+        cursor.read_primary_exact(current_chunk, body_start)?;
+        validator.push(current_chunk).map_err(|source| {
+            MutationStreamErrorV1::Mutation(MutationError::InvalidKey { namespace, source })
+        })?;
+        current_hasher.update(&*current_chunk);
+
+        if let Some(previous) = previous {
+            let remaining = previous.len.saturating_sub(previous_read);
+            let compare_len = take.min(usize::try_from(remaining).unwrap_or(usize::MAX));
+            if compare_len != 0 {
+                let prior_chunk = &mut reread_lane[..compare_len];
+                cursor.read_reread_exact(previous.offset + previous_read, prior_chunk)?;
+                previous_hasher.update(&*prior_chunk);
+                if ordering == Ordering::Equal {
+                    ordering = prior_chunk
+                        .iter()
+                        .zip(current_chunk.iter())
+                        .find_map(|(prior, current)| (prior != current).then(|| prior.cmp(current)))
+                        .unwrap_or(Ordering::Equal);
+                }
+                previous_read += compare_len as u64;
+            }
+        }
+        current_read += take as u64;
+    }
+    validator.finish().map_err(|source| {
+        MutationStreamErrorV1::Mutation(MutationError::InvalidKey { namespace, source })
+    })?;
+
+    if let Some(previous) = previous {
+        while previous_read < previous.len {
+            let take =
+                usize::try_from((previous.len - previous_read).min(reread_lane.len() as u64))
+                    .expect("bounded reread lane length fits usize");
+            let prior_chunk = &mut reread_lane[..take];
+            cursor.read_reread_exact(previous.offset + previous_read, prior_chunk)?;
+            previous_hasher.update(&*prior_chunk);
+            previous_read += take as u64;
+        }
+        let actual = finish_stream_digest(previous_hasher);
+        if actual != previous.digest {
+            return Err(MutationStreamErrorV1::SourceChanged {
+                offset: previous.offset,
+                length: previous.len,
+                expected: previous.digest,
+                actual,
+            });
+        }
+        if ordering == Ordering::Equal {
+            ordering = previous.len.cmp(&len);
+        }
+        if ordering != Ordering::Less {
+            return Err(MutationError::KeysNotStrict { namespace }.into());
+        }
+    }
+
+    *total_key_bytes = attempted;
+    Ok(StreamedKeyIdentityV1 {
+        offset,
+        len,
+        digest: finish_stream_digest(current_hasher),
+    })
+}
+
+fn stream_optional_reference<R, F>(
+    cursor: &mut MutationStreamCursorV1<'_, '_, R, F>,
+    body_start: u64,
+) -> Result<Option<ObjectRefV1>, MutationStreamErrorV1<R::Error>>
+where
+    R: MutationBatchReadAtV1,
+    F: FnMut(&[u8]),
+{
+    match cursor.read_u8(body_start)? {
+        0 => Ok(None),
+        1 => Ok(Some(cursor.read_reference(body_start)?)),
+        tag => Err(MutationError::InvalidPresenceTag(tag).into()),
+    }
+}
+
+fn finish_stream_digest(hasher: Blake2b<U32>) -> ObjectDigest {
+    let bytes: [u8; OBJECT_DIGEST_LEN] = hasher.finalize().into();
+    ObjectDigest::from_array(bytes)
+}
 
 /// A catalog authority at one committed generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
