@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub struct FinalizationSchedule {
@@ -13,6 +14,7 @@ pub struct FinalizationSchedule {
     dispatcher_running: AtomicBool,
     retry_ready: AtomicBool,
     consecutive_failures: AtomicU32,
+    parked_revision: Mutex<Option<u64>>,
     workers: Arc<Semaphore>,
     worker_limit: usize,
 }
@@ -32,6 +34,7 @@ impl FinalizationSchedule {
             dispatcher_running: AtomicBool::new(false),
             retry_ready: AtomicBool::new(false),
             consecutive_failures: AtomicU32::new(0),
+            parked_revision: Mutex::new(None),
             workers: Arc::new(Semaphore::new(worker_limit)),
             worker_limit,
         }
@@ -135,6 +138,29 @@ impl FinalizationSchedule {
     }
 
     pub fn worker_limit(&self) -> usize { self.worker_limit }
+
+    pub fn park_certificate_carrier(&self, revision: u64) {
+        let mut parked = self.parked_revision.lock();
+        if parked.is_none_or(|current| current <= revision) {
+            *parked = Some(revision);
+        }
+    }
+
+    pub fn take_parked_certificate_carrier(&self, revision: u64) -> bool {
+        let mut parked = self.parked_revision.lock();
+        if *parked != Some(revision) {
+            return false;
+        }
+        *parked = None;
+        true
+    }
+
+    pub fn clear_parked_certificate_carrier(&self, revision: u64) {
+        let mut parked = self.parked_revision.lock();
+        if *parked == Some(revision) {
+            *parked = None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -206,5 +232,26 @@ mod tests {
         assert!(!schedule.make_retry_ready(1));
         assert_eq!(schedule.next_coverage(), None);
         assert!(schedule.is_quiescent());
+    }
+
+    #[test]
+    fn certificate_carrier_parking_is_monotonic_and_wakes_once() {
+        let schedule = Arc::new(FinalizationSchedule::new(2));
+        schedule.park_certificate_carrier(7);
+        schedule.park_certificate_carrier(6);
+        let wakes = (0..8)
+            .map(|_| {
+                let schedule = schedule.clone();
+                std::thread::spawn(move || schedule.take_parked_certificate_carrier(7))
+            })
+            .map(|thread| thread.join().unwrap())
+            .filter(|woke| *woke)
+            .count();
+        assert_eq!(wakes, 1);
+        assert!(!schedule.take_parked_certificate_carrier(7));
+
+        schedule.park_certificate_carrier(8);
+        schedule.clear_parked_certificate_carrier(7);
+        assert!(schedule.take_parked_certificate_carrier(8));
     }
 }

@@ -243,6 +243,14 @@ does not create authenticated pre-state REV capacity. Therefore both purses
 must be funded in a prior certified state before continuation activation. This
 is the concrete native realization of the papers' local sufficiency rule.
 
+The component-wise maximum is also the minimum safe reservation under this
+isolation rule. A smaller first-branch or expected reservation can underfund a
+reachable branch; a pooled scalar can hide an individual purse deficit; summing
+every branch is safe but rejects executions that the component maxima fund.
+The path-correlation and capital-feasible concurrency consequences are derived
+in [Correctness-constrained reservation optimization](end-to-end-authority-settlement.md#correctness-constrained-reservation-optimization)
+and exhaustively cross-checked by the licensed, opt-in Wolfram exploration.
+
 ## Reservation, top-up, and settlement
 
 Admission reads the authenticated merged pre-state, derives physical authority
@@ -384,6 +392,7 @@ The proof boundary is intentionally end to end:
 | physical authority remains distinct from COMM count | existing n-ary authority proofs; Rocq `byte_trace_refines_single_comm_execution` and `single_cell_authority_settlement_matches_processed_trace`; TLA+ `PhysicalAuthorityIsTrackedSeparately` | matched/unmatched and multi-region cost regressions |
 | stack introduction is failure-atomic across physical, RSpace, and enclosing-deployment effects | Rocq `StackIntroductionAtomicity.v`; TLA+ and Apalache `StackIntroductionAtomicity` plus six unsafe controls | RAII unit/proptest coverage, Loom rejection/pre-mutation-cancellation/competition/deployment-rollback interleavings, matched-produce extraction, deploy-abort, and Casper stack play/replay regressions |
 | parser, reducer, play validation, replay validation, and derived-evidence publication share one state-and-witness transaction | Rocq `EvaluationTransactionIsolation.v`; TLA+ and Apalache `EvaluationTransactionIsolation` plus five unsafe controls | parser-after-paid-deploy, reducer-attempt-retention, deploy-stack-rollback, forged replay post-state active-root, and rejected-final-state no-evidence regressions |
+| component-wise branch maximum is the minimum isolated-purse reservation and does not serialize disjoint purses | Wolfram `reservation_admission_regions.wl` is an optional optimization cross-witness over the authoritative local-sufficiency premises | `delta_sigma` alternative-maximum tests, state-bound exact-boundary properties, cross-group shared-component contention, and Loom independent-purse reservation interleavings |
 
 The TLA+ unsafe controls independently refute mutation-before-charge,
 arrival-side-only introduction charging, omitted join participants, persistent

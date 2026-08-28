@@ -1,77 +1,147 @@
 (* ::Package:: *)
 
-(* delta_ratchet.wl - Finality-lag ratchet model for the finalized-floor multi-parent merge.
+(* delta_ratchet.wl - Finality-lag service-rate exploration.
 
-   Models: casper/src/rust/finality/floor.rs (parent_frontier, uncached per-merge floor walk)
-           casper/src/rust/util/rholang/interpreter_util.rs:746-748,1114-1179
-             (MAX_FLOOR_DISTANCE_BLOCKS=256, MAX_PARENT_MERGE_SCOPE_BLOCKS=512, and the
-              silent single-parent fallback that drops sibling-parent writes once the lag
-              crosses the cap).
+   The model separates arrival rate r from finalization service rate a. The
+   historical lag-dependent floor walk reduces service as lag grows and creates
+   positive feedback on its smooth branch. Constant-overhead floor discovery
+   removes that lag-dependent feedback, but it does not by itself guarantee
+   liveness: lag drains only when service exceeds arrivals, remains constant at
+   equality, and grows when service is lower.
 
-   Claim: the O(Delta^2) uncached floor walk makes the finalization-lag dynamics
-   STRUCTURALLY UNSTABLE (every equilibrium is a repeller), so under sustained load the
-   lag Delta = num(tip) - num(floor) inevitably runs away past the 256 cliff, which fires
-   the write-dropping fallback (the "~400 blocks" symptom). Making the floor walk O(1)
-   (cached / incremental) removes the destabilizing feedback and the system is stable.
+   This is a supporting exploratory witness. Rocq and TLA+/Apalache remain the
+   correctness authorities. Run only when the licensed tier is selected:
+     RUN_WOLFRAM=1 scripts/check-finalized-floor-ALL.sh
+*)
 
-   This is a SUPPORTING witness (not proof authority - see README). The exact,
-   parameter-free safety violation is in formal/tlaplus/finalized_floor and the Rocq
-   theories. Run:  wolfram -script formal/wolfram/finalized_floor/delta_ratchet.wl
-                   (or: math -script ...); pass the flag  --self-test  is implicit (always
-   prints PASS/FAIL and exits nonzero on FAIL). *)
+ClearAll["Global`*"];
 
-(* ---- Model -------------------------------------------------------------------------- *)
-(* Per round: tip advances by 1. The finalizer has per-round work budget B. The propose
-   re-derives the floor at cost overhead(Delta); finality receives (B - overhead) work and
-   advances the floor by advance(Delta) = (B - overhead(Delta))/w blocks (w = per-block
-   certification cost). Delta_{n+1} = max(0, Delta_n + 1 - advance(Delta_n)). *)
+aBuggy[d_, budget_, work_, coefficient_] :=
+  Max[0, (budget - coefficient d^2)/work];
+aFixed[budget_, work_, constant_] := Max[0, (budget - constant)/work];
+stepBuggy[d_, arrivals_, budget_, work_, coefficient_] :=
+  Max[0, d + arrivals - aBuggy[d, budget, work, coefficient]];
+stepFixed[d_, arrivals_, budget_, work_, constant_] :=
+  Max[0, d + arrivals - aFixed[budget, work, constant]];
 
-ClearAll[aBuggy, aFixed, stepBuggy, stepFixed, fBuggy];
-aBuggy[d_, B_, w_, k_] := Max[0, (B - k*d^2)/w];   (* uncached: overhead = k Delta^2 *)
-aFixed[d_, B_, w_, c_] := Max[0, (B - c)/w];        (* cached O(1): overhead = const c  *)
-stepBuggy[d_, B_, w_, k_] := Max[0, d + 1 - aBuggy[d, B, w, k]];
-stepFixed[d_, B_, w_, c_] := Max[0, d + 1 - aFixed[d, B, w, c]];
+ClearAll[budget, work, coefficient, constant, lag, arrivals, service];
+advanceBuggySmooth[lag_] := (budget - coefficient lag^2)/work;
+returnBuggySmooth[lag_] := lag + arrivals - advanceBuggySmooth[lag];
 
-(* ---- Parameter-INDEPENDENT structural instability (decided over the reals) ---------- *)
-ClearAll[Ba, wa, ka, ca, da];
-advanceBuggySym[da_] := (Ba - ka*da^2)/wa;          (* smooth advance, before the Max clamp *)
-advanceFixedSym[da_] := (Ba - ca)/wa;
-fBuggySym[da_] := da + 1 - advanceBuggySym[da];      (* the return map, smooth branch *)
+buggyPositiveFeedback = Resolve[
+  ForAll[{budget, work, coefficient, lag},
+    Implies[work > 0 && coefficient > 0 && lag > 0,
+      D[advanceBuggySmooth[lag], lag] < 0]],
+  Reals
+];
+buggySmoothSlopeGreaterThanOne = Resolve[
+  ForAll[{budget, work, coefficient, lag, arrivals},
+    Implies[work > 0 && coefficient > 0 && lag > 0,
+      D[returnBuggySmooth[lag], lag] > 1]],
+  Reals
+];
+fixedZeroLagFeedback = Resolve[
+  ForAll[{service, lag}, D[service, lag] == 0],
+  Reals
+];
 
-buggyPositiveFeedback =
-  Resolve[ForAll[{Ba, wa, ka, da},
-    Implies[wa > 0 && ka > 0 && da > 0, D[advanceBuggySym[da], da] < 0]], Reals];
-buggyEveryFixedPointUnstable =
-  Resolve[ForAll[{Ba, wa, ka, da},
-    Implies[wa > 0 && ka > 0 && da > 0, D[fBuggySym[da], da] > 1]], Reals];
-fixedZeroFeedback =
-  Resolve[ForAll[{Ba, wa, ca, da}, D[advanceFixedSym[da], da] == 0], Reals];
+fixedOverprovisionedDrains = Resolve[
+  ForAll[{service, lag, arrivals},
+    Implies[
+      lag > 0 && arrivals >= 0 && service >= 0 && service > arrivals,
+      Max[0, lag + arrivals - service] < lag]],
+  Reals
+];
+fixedBalancedHolds = Resolve[
+  ForAll[{service, lag, arrivals},
+    Implies[
+      lag >= 0 && arrivals >= 0 && service == arrivals,
+      Max[0, lag + arrivals - service] == lag]],
+  Reals
+];
+fixedUnderprovisionedGrows = Resolve[
+  ForAll[{service, lag, arrivals},
+    Implies[
+      lag >= 0 && arrivals >= 0 && service >= 0 && service < arrivals,
+      Max[0, lag + arrivals - service] > lag]],
+  Reals
+];
 
-(* ---- Numeric demonstration (illustrative parameters; the dichotomy above is general) - *)
-B0 = 5000.; w0 = 10.; k0 = 0.1; c0 = 10.; cliff = 256;
-dStar = da /. Solve[(B0 - k0*da^2)/w0 == 1 && da > 0, da][[1]];   (* unstable tipping pt *)
-transient = Ceiling[dStar] + 5;                                    (* a load spike above it *)
-buggyTraj = NestList[stepBuggy[#, B0, w0, k0] &, N[transient], 600];
-fixedTraj = NestList[stepFixed[#, B0, w0, c0] &, N[transient], 600];
-roundsToBreach = First[FirstPosition[buggyTraj, x_ /; x > cliff]] - 1;
-buggyDeltaAt400 = buggyTraj[[400]];
-fixedMaxDelta = Max[fixedTraj];
-fixedFinalDelta = Round[Last[fixedTraj], 0.01];
+healthyBudget = 5000;
+healthyWork = 10;
+quadraticCoefficient = 1/10;
+constantOverhead = 10;
+arrivalRate = 1;
+cliff = 256;
+tippingPoint = lag /. First[Solve[
+  (healthyBudget - quadraticCoefficient lag^2)/healthyWork == arrivalRate &&
+    lag > 0,
+  lag,
+  Reals
+]];
+transient = Ceiling[tippingPoint] + 5;
+buggyTrajectory = NestList[
+  stepBuggy[#, arrivalRate, healthyBudget, healthyWork,
+    quadraticCoefficient] &,
+  transient,
+  600
+];
+healthyFixedTrajectory = NestList[
+  stepFixed[#, arrivalRate, healthyBudget, healthyWork, constantOverhead] &,
+  transient,
+  600
+];
+balancedConstant = healthyBudget - healthyWork arrivalRate;
+balancedFixedTrajectory = NestList[
+  stepFixed[#, arrivalRate, healthyBudget, healthyWork, balancedConstant] &,
+  transient,
+  40
+];
+overloadedBudget = 20;
+overloadedWork = 20;
+overloadedConstant = 10;
+overloadedFixedTrajectory = NestList[
+  stepFixed[#, arrivalRate, overloadedBudget, overloadedWork,
+    overloadedConstant] &,
+  0,
+  40
+];
 
-(* ---- Report + self-test ------------------------------------------------------------- *)
-Print["[delta_ratchet] structural results (parameter-independent, Resolve over Reals):"];
-Print["  buggy advance strictly decreasing in Delta (positive feedback): ", buggyPositiveFeedback];
-Print["  buggy every equilibrium unstable (return-map slope > 1):        ", buggyEveryFixedPointUnstable];
-Print["  fixed (O(1) floor) zero Delta-feedback (stable):                ", fixedZeroFeedback];
-Print["[delta_ratchet] numeric demonstration (B=", B0, ", w=", w0, ", k=", k0, "):"];
-Print["  unstable tipping point Delta* = ", dStar];
-Print["  BUGGY: from transient ", transient, " -> breaches 256 in ", roundsToBreach,
-      " rounds; Delta at round 400 = ", buggyDeltaAt400];
-Print["  FIXED: from same transient -> max Delta = ", fixedMaxDelta,
-      ", converges to ", fixedFinalDelta];
+roundsToBreach = First[FirstPosition[buggyTrajectory, value_ /; value > cliff]] - 1;
+buggyLagAt400 = buggyTrajectory[[401]];
+healthyFixedFinalLag = Last[healthyFixedTrajectory];
+balancedFixedFinalLag = Last[balancedFixedTrajectory];
+overloadedFixedFinalLag = Last[overloadedFixedTrajectory];
 
-pass =
-  TrueQ[buggyPositiveFeedback] && TrueQ[buggyEveryFixedPointUnstable] &&
-  TrueQ[fixedZeroFeedback] && (buggyDeltaAt400 > cliff) && (fixedFinalDelta == 0.);
+Print["[delta_ratchet] buggy service decreases with lag: ",
+  buggyPositiveFeedback];
+Print["[delta_ratchet] buggy smooth return slope exceeds one: ",
+  buggySmoothSlopeGreaterThanOne];
+Print["[delta_ratchet] constant overhead removes lag feedback: ",
+  fixedZeroLagFeedback];
+Print["[delta_ratchet] service > arrivals drains positive lag: ",
+  fixedOverprovisionedDrains];
+Print["[delta_ratchet] service = arrivals preserves lag: ",
+  fixedBalancedHolds];
+Print["[delta_ratchet] service < arrivals grows lag: ",
+  fixedUnderprovisionedGrows];
+Print["[delta_ratchet] tipping point: ", tippingPoint];
+Print["[delta_ratchet] buggy transient ", transient,
+  " breaches ", cliff, " after ", roundsToBreach,
+  " rounds; lag at round 400 = ", buggyLagAt400];
+Print["[delta_ratchet] overprovisioned constant-overhead final lag: ",
+  healthyFixedFinalLag];
+Print["[delta_ratchet] balanced constant-overhead final lag: ",
+  balancedFixedFinalLag];
+Print["[delta_ratchet] underprovisioned constant-overhead final lag: ",
+  overloadedFixedFinalLag];
+
+pass = TrueQ[buggyPositiveFeedback] &&
+  TrueQ[buggySmoothSlopeGreaterThanOne] &&
+  TrueQ[fixedZeroLagFeedback] &&
+  TrueQ[fixedOverprovisionedDrains] && TrueQ[fixedBalancedHolds] &&
+  TrueQ[fixedUnderprovisionedGrows] && roundsToBreach > 0 &&
+  buggyLagAt400 > cliff && healthyFixedFinalLag == 0 &&
+  balancedFixedFinalLag == transient && overloadedFixedFinalLag > 0;
 Print["[delta_ratchet] SELF-TEST: ", If[pass, "PASS", "FAIL"]];
 If[! pass, Exit[1]];

@@ -4213,6 +4213,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                         models::rust::bond_generation::BondGeneration::GENESIS,
                     ),
                     objective_equivocation_evidence_delta: Vec::new(),
+                    finalized_floor: None,
                 },
                 body: Body {
                     state: F1r3flyState {
@@ -4236,6 +4237,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                 sig_algorithm: String::new(),
                 shard_id: genesis_block.shard_id.clone(),
                 extra_bytes: Vec::<u8>::new().into(),
+                finalized_floor_certificate: None,
             };
             let replay_post = runtime_manager
                 .replay_block_from_consensus_data(&seeded_state, &block, None)
@@ -6537,6 +6539,7 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                         models::rust::bond_generation::BondGeneration::GENESIS,
                     ),
                     objective_equivocation_evidence_delta: Vec::new(),
+                    finalized_floor: None,
                 },
                 body: Body {
                     state: F1r3flyState {
@@ -6560,6 +6563,7 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                 sig_algorithm: String::new(),
                 shard_id: genesis_block.shard_id,
                 extra_bytes: Vec::<u8>::new().into(),
+                finalized_floor_certificate: None,
             };
 
             assert!(runtime_manager

@@ -61,6 +61,9 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         finalization_schedule: std::sync::Arc::new(
             casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
         ),
+        certificate_verification_schedule: std::sync::Arc::new(
+            casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
+        ),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(

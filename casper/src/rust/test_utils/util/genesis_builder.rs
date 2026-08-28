@@ -140,6 +140,7 @@ impl GenesisBuilder {
             extra_bytes: bytes::Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: Vec::new(),
+            finalized_floor: None,
         };
 
         BlockMessage {
@@ -153,6 +154,7 @@ impl GenesisBuilder {
             sig_algorithm: "secp256k1".to_string(),
             shard_id: "root".to_string(), // Using "root" like in GenesisBuilder
             extra_bytes: bytes::Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 

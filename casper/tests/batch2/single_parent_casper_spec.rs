@@ -52,20 +52,8 @@ async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
         deploy_datas.push(deploy);
     }
 
-    let _b1 = nodes[0]
+    let b1 = nodes[0]
         .add_block_from_deploys(&[deploy_datas[0].clone()])
-        .await
-        .unwrap();
-
-    let _b2 = nodes[1]
-        .add_block_from_deploys(&[deploy_datas[1].clone()])
-        .await
-        .unwrap();
-
-    // Note: To work around borrow checker, we need to split nodes array
-    let (first_part, second_part) = nodes.split_at_mut(1);
-    first_part[0]
-        .sync_with_one(&mut second_part[0])
         .await
         .unwrap();
 
@@ -75,16 +63,24 @@ async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
         .await
         .unwrap();
 
+    let b2 = nodes[1]
+        .add_block_from_deploys(&[deploy_datas[1].clone()])
+        .await
+        .unwrap();
+
+    let (first_part, second_part) = nodes.split_at_mut(1);
+    first_part[0]
+        .sync_with_one(&mut second_part[0])
+        .await
+        .unwrap();
+
     let b3 = nodes[0]
         .add_block_from_deploys(&[deploy_datas[2].clone()])
         .await
         .unwrap();
 
-    assert_eq!(
-        b3.header.parents_hash_list.len(),
-        1,
-        "Block should have exactly one parent"
-    );
+    assert_eq!(b2.header.parents_hash_list, vec![b1.block_hash]);
+    assert_eq!(b3.header.parents_hash_list, vec![b2.block_hash]);
 }
 
 // NOTE: Storage isolation in test nodes
@@ -118,6 +114,12 @@ async fn should_reject_multi_parent_blocks() {
         .await
         .unwrap();
 
+    let (first_part, second_part) = nodes.split_at_mut(1);
+    second_part[0]
+        .sync_with_one(&mut first_part[0])
+        .await
+        .unwrap();
+
     let b2 = nodes[1]
         .add_block_from_deploys(&[deploy_datas[1].clone()])
         .await
@@ -129,16 +131,13 @@ async fn should_reject_multi_parent_blocks() {
         .await
         .unwrap();
 
-    let (first_part, second_part) = nodes.split_at_mut(1);
-    second_part[0]
-        .sync_with_one(&mut first_part[0])
-        .await
-        .unwrap();
-
-    let b3 = nodes[1]
+    let b3 = nodes[0]
         .add_block_from_deploys(&[deploy_datas[2].clone()])
         .await
         .unwrap();
+
+    assert_eq!(b2.header.parents_hash_list, vec![b1.block_hash.clone()]);
+    assert_eq!(b3.header.parents_hash_list, vec![b2.block_hash.clone()]);
 
     let two_parents = vec![b2.block_hash.clone(), b1.block_hash.clone()];
 

@@ -269,11 +269,15 @@ instances explored by TLC and Apalache.
 ## Finite-state search coverage
 
 `ParallelValidatorConsensus.tla` uses three validators with stakes
-$`60/20/15`$, two sequential effect-bearing candidates, independently delivered
-support, node-local floors and roots, and split replay phases. TLC exhausts the
-baseline schedule graph through eight non-stuttering actions: 12,921 generated
-states, 3,427 distinct states, and search depth 9. A second safe configuration
-enables crashes after capture or replay and restart from a fresh capture. Eight
+$`40/35/25`$, two sequential effect-bearing candidates, independently delivered
+support, node-local floors and roots, and split replay phases. No validator has
+enough weight to certify a candidate alone. TLC exhausts the baseline schedule
+graph through eight non-stuttering actions: 12,877 generated states, 3,411
+distinct states, and search depth 9. A second safe configuration enables crashes
+after capture or replay and restart from a fresh capture. A third starts from a
+history-consistent cut in which a candidate was accepted before a newer floor was
+published; its 150 generated / 58 distinct states prove the old candidate cannot
+erase the new floor's effect. Eight
 single-defect models must violate their named invariant:
 
 - causal-only acceptance;
@@ -286,8 +290,10 @@ single-defect models must violate their named invariant:
 - deletion of a locally replayed root during task failure.
 
 Apalache independently checks every baseline and crash-enabled safe invariant
-through bound 6 in the routine gate and the baseline through bound 8 in the
-deep gate. Its crash-root-deletion negative control must independently violate
+through bound 6 in the routine gate, the baseline through bound 8 in the deep
+gate, and the stale-window pre-state through bound 2. Removing only the
+current-floor preservation guard loses a committed effect in one step. Its
+crash-root-deletion negative control must independently violate
 local root retention through bound 5. The depth-8 symbolic run is intentionally
 a deep gate because it explores the same split transition system with SMT
 rather than TLC's explicit finite-state representation.

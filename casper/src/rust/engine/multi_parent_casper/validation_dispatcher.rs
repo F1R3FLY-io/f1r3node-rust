@@ -98,16 +98,92 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         ));
     }
 
+    let resolved_certificate;
+    let committed_floor = if block.header.version
+        >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+    {
+        let Some(commitment) = block.header.finalized_floor.as_ref() else {
+            return Ok(CertifiedBlockValidation::unattributable(
+                InvalidBlock::InvalidFormat,
+            ));
+        };
+        let certificate = match block.finalized_floor_certificate.as_ref() {
+            Some(certificate) => certificate,
+            None => match this
+                .block_store
+                .get_finalization_certificate(&commitment.certificate_digest)?
+            {
+                Some(certificate) => {
+                    resolved_certificate = certificate;
+                    &resolved_certificate
+                }
+                None => return Ok(CertifiedBlockValidation::MissingDependency),
+            },
+        };
+        if certificate.validate_commitment(commitment).is_err() {
+            return Ok(CertifiedBlockValidation::unattributable(
+                InvalidBlock::InvalidFormat,
+            ));
+        }
+        Some((commitment, certificate))
+    } else {
+        if block.header.finalized_floor.is_some() || block.finalized_floor_certificate.is_some() {
+            return Ok(CertifiedBlockValidation::unattributable(
+                InvalidBlock::InvalidFormat,
+            ));
+        }
+        None
+    };
+
+    if let Some((commitment, certificate)) = committed_floor {
+        match crate::rust::finality::certificate::verify(
+            block,
+            commitment,
+            certificate,
+            &snapshot.dag,
+            &this.block_store,
+            &this.approved_block,
+            this.casper_shard_conf.casper_version,
+            &this.casper_shard_conf.shard_name,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                this.casper_shard_conf.fault_tolerance_threshold_ppm,
+            ),
+            &this.casper_shard_conf.finalizer_conf,
+            &this.certificate_verification_schedule,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(crate::rust::finality::certificate::FinalizationCertificateError::Invalid(_)) => {
+                return Ok(CertifiedBlockValidation::unattributable(
+                    InvalidBlock::InvalidFollows,
+                ));
+            }
+            Err(
+                crate::rust::finality::certificate::FinalizationCertificateError::MissingDependency(
+                    _,
+                ),
+            ) => return Ok(CertifiedBlockValidation::MissingDependency),
+            Err(crate::rust::finality::certificate::FinalizationCertificateError::Local(error)) => {
+                return Ok(CertifiedBlockValidation::local_fault(error))
+            }
+        }
+    }
+
     let (baseline_authority_result, t_authority_baseline) = timed_step(
         "authority-baseline",
         BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC,
         async {
-            let authority_floor =
-                crate::rust::causal_equivocation::incoming_finalized_floor(
-                    &snapshot.dag,
-                    &block.header.parents_hash_list,
-                )
-                .unwrap_or_else(|_| snapshot.dag.last_finalized_block_hash.clone());
+            let authority_floor = committed_floor
+                .as_ref()
+                .map(|(commitment, _)| commitment.floor_hash.clone())
+                .unwrap_or_else(|| {
+                    crate::rust::causal_equivocation::incoming_finalized_floor(
+                        &snapshot.dag,
+                        &block.header.parents_hash_list,
+                    )
+                    .unwrap_or_else(|_| snapshot.dag.last_finalized_block_hash.clone())
+                });
             let context = match crate::rust::causal_equivocation::CertifiedConsensusContext::for_authority_floor_baseline(
                 &snapshot.dag,
                 authority_floor,
@@ -184,8 +260,14 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                     InvalidBlock::InvalidFollows,
                 )));
             }
-            let context =
-                match crate::rust::causal_equivocation::CertifiedConsensusContext::for_candidate(
+            let context_result = if let Some(commitment) = block.header.finalized_floor.as_ref() {
+                crate::rust::causal_equivocation::CertifiedConsensusContext::for_frozen_floor(
+                    &snapshot.dag,
+                    commitment.floor_hash.clone(),
+                    &exact_latest_messages,
+                )
+            } else {
+                crate::rust::causal_equivocation::CertifiedConsensusContext::for_candidate(
                     &snapshot.dag,
                     &block.header.parents_hash_list,
                     &exact_latest_messages,
@@ -197,13 +279,24 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                     ),
                 )
                 .await
-                {
-                    Ok(context) => context,
-                    Err(error) => {
-                        return Ok(Either::Left(BlockError::BlockException(error)));
-                    }
-                };
+            };
+            let context = match context_result {
+                Ok(context) => context,
+                Err(error) => {
+                    return Ok(Either::Left(BlockError::BlockException(error)));
+                }
+            };
             if !context.has_complete_latest_message_slots() {
+                return Ok(Either::Left(BlockError::Invalid(
+                    InvalidBlock::InvalidFollows,
+                )));
+            }
+            if block
+                .header
+                .finalized_floor
+                .as_ref()
+                .is_some_and(|commitment| commitment.authority_context_digest != *context.digest())
+            {
                 return Ok(Either::Left(BlockError::Invalid(
                     InvalidBlock::InvalidFollows,
                 )));

@@ -240,6 +240,10 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
                 e
             ))
         })?;
+    tracing::info!(
+        event = "casper_running_state_published",
+        "Casper Running state published after startup validation"
+    );
 
     let running = Running::new(
         block_processing_queue_tx,

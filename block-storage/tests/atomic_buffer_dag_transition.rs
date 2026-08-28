@@ -22,11 +22,13 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use block_storage::rust::dag::buffer_dag_transition::{
     atomic_insert_then_buffer, reconcile_buffer_against_dag, BufferTransition,
 };
-use models::rust::block_hash::BlockHashSerde;
+use models::rust::block_hash::{self, BlockHashSerde};
 use models::rust::block_implicits::get_random_block;
-use models::rust::block_metadata::AdmissionRejectionReason;
+use models::rust::block_metadata::{
+    AdmissionRejectionReason, CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+};
 use models::rust::bond_generation::BondGeneration;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizedFloorCommitment};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -48,8 +50,14 @@ fn make_block() -> BlockMessage {
         None,
         None,
     );
-    block.header.version = 5;
+    block.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
     block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+    block.header.finalized_floor = Some(FinalizedFloorCommitment {
+        floor_hash: prost::bytes::Bytes::from(vec![3; block_hash::LENGTH]),
+        floor_post_state_hash: block.body.state.pre_state_hash.clone(),
+        certificate_digest: prost::bytes::Bytes::from(vec![5; block_hash::LENGTH]),
+        authority_context_digest: prost::bytes::Bytes::from(vec![4; block_hash::LENGTH]),
+    });
     block
 }
 
@@ -61,9 +69,9 @@ fn certificate(block: &BlockMessage) -> CertifiedSenderAuthority {
             .parents_hash_list
             .first()
             .cloned()
-            .unwrap_or_else(|| prost::bytes::Bytes::from(vec![3; 32])),
+            .unwrap_or_else(|| prost::bytes::Bytes::from(vec![3; block_hash::LENGTH])),
         block.body.state.pre_state_hash.clone(),
-        prost::bytes::Bytes::from(vec![4; 32]),
+        prost::bytes::Bytes::from(vec![4; block_hash::LENGTH]),
         BondGeneration::GENESIS,
         1,
     )
@@ -86,7 +94,7 @@ fn rejected_outcome(block: &BlockMessage) -> CertifiedAdmissionOutcome {
 async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage) {
     let mut dag_kvm = InMemoryStoreManager::new();
     let dag = BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap();
-    let genesis = get_random_block(
+    let mut genesis = get_random_block(
         Some(0),
         None,
         None,
@@ -102,6 +110,7 @@ async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage
         None,
         None,
     );
+    genesis.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
     dag.insert(&genesis, InsertMode::ApprovedGenesis).unwrap();
 
     let mut buf_kvm = InMemoryStoreManager::new();

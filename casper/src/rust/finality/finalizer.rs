@@ -11,8 +11,8 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::{
-    is_state_preserved, latest_message_coverage_above, materialize_finalized_floor,
-    state_witnessed_exact,
+    is_state_preserved, latest_message_coverage_above, latest_message_coverage_above_bounded,
+    materialize_finalized_floor, state_witnessed_exact,
 };
 use crate::rust::safety::clique_oracle::{ft_decides_exact, CliqueOracle, FtThreshold};
 
@@ -172,8 +172,35 @@ impl Finalizer {
         curr_lfb_hash: &BlockHash,
         curr_lfb_height: i64,
         context: &crate::rust::causal_equivocation::CertifiedConsensusContext,
+        new_lfb_found_effect: F,
+        finalizer_conf: &crate::rust::casper_conf::FinalizerConf,
+    ) -> Result<Option<(BlockHash, f32)>, CasperError>
+    where
+        F: FnMut((BlockHash, f32)) -> Fut,
+        Fut: std::future::Future<Output = Result<(), KvStoreError>>,
+    {
+        Self::run_with_context_bounded(
+            dag,
+            ftt,
+            curr_lfb_hash,
+            curr_lfb_height,
+            context,
+            new_lfb_found_effect,
+            finalizer_conf,
+            None,
+        )
+        .await
+    }
+
+    pub async fn run_with_context_bounded<F, Fut>(
+        dag: &KeyValueDagRepresentation,
+        ftt: FtThreshold,
+        curr_lfb_hash: &BlockHash,
+        curr_lfb_height: i64,
+        context: &crate::rust::causal_equivocation::CertifiedConsensusContext,
         mut new_lfb_found_effect: F,
         finalizer_conf: &crate::rust::casper_conf::FinalizerConf,
+        maximum_coverage_blocks: Option<usize>,
     ) -> Result<Option<(BlockHash, f32)>, CasperError>
     where
         F: FnMut((BlockHash, f32)) -> Fut,
@@ -220,8 +247,16 @@ impl Finalizer {
         }
 
         let coverage_started = std::time::Instant::now();
-        let latest_coverage =
-            latest_message_coverage_above(dag, &latest_messages_snapshot, curr_lfb_height)?;
+        let latest_coverage = if let Some(maximum) = maximum_coverage_blocks {
+            latest_message_coverage_above_bounded(
+                dag,
+                &latest_messages_snapshot,
+                curr_lfb_height,
+                maximum,
+            )?
+        } else {
+            latest_message_coverage_above(dag, &latest_messages_snapshot, curr_lfb_height)?
+        };
         let coverage_ms = coverage_started.elapsed().as_millis();
         let coverage_blocks = latest_coverage.len();
         let mut aggregated_agreements: HashMap<

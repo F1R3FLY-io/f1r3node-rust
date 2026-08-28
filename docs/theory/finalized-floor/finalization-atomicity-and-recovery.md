@@ -1,6 +1,6 @@
 # Atomic finalization and crash recovery
 
-**Status:** protocol-v5 implementation and verification contract  
+**Status:** protocol-6 implementation and verification contract
 **Audience:** consensus engineers, node operators, reviewers, and formal-methods maintainers  
 **Scope:** the transition from an independently computed Casper finality result to durable node state and externally visible effects
 
@@ -297,15 +297,23 @@ may legitimately have different local round histories. Cold or pruned-state
 checkpoint synchronization would require a separately versioned canonical
 proof and is not implemented by this live recovery path.
 
+Different local histories can also yield different content-addressed
+certificate digests for the same finalized floor and replay state. A subsequent
+round may use any accepted causal carrier for that exact semantic predecessor,
+but it must persist the carrier block hash and that block's committed digest as
+one proof pair. Admission wakes a parked finalizer by exact floor and state, not
+by receiver-local witness identity. This boundary is specified and verified in
+[Witness-equivalent certificate carriers](certificate-carrier-equivalence.md).
+
 Block admission remains concurrent with finalization evaluation. The global DAG write lock is held only while projecting a committed immutable manifest into metadata; it is not held while computing clique support, scanning candidates, replaying contracts, or waiting for a worker permit.
 
 ## 7. Schema and operations
 
-Protocol-v5 admission schema version `9` commits the atomically rooted
-hash-chain ledger rule. Version `9` adds the immutable `Genesis` record and
-requires atomic bootstrap of that record, the revision-zero head, and all
-cursors. Existing data with schema `8`, without a ledger, or with a partial or
-unrooted ledger is rejected; the node requires a fresh protocol-v5 genesis or
+Protocol-6 admission schema version `12` commits the certified admission and
+atomically rooted hash-chain ledger rules. The immutable `Genesis` record
+requires atomic bootstrap of that anchor, the revision-zero head, and all
+cursors. Existing data with an older schema, without a ledger, or with a partial
+or unrooted ledger is rejected; the node requires a fresh protocol-6 genesis or
 an explicit verified migration. Silent synthesis of a genesis anchor or ledger
 history from mutable block metadata is forbidden.
 

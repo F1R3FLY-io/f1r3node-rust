@@ -94,6 +94,7 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
                     extra_bytes: Vec::<u8>::new().into(),
                     sender_bond_generation: genesis_block.header.sender_bond_generation,
                     objective_equivocation_evidence_delta: Vec::new(),
+                    finalized_floor: None,
                 },
                 body: Body {
                     state: F1r3flyState {
@@ -117,6 +118,7 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
                 sig_algorithm: String::new(),
                 shard_id: genesis_block.shard_id,
                 extra_bytes: Vec::<u8>::new().into(),
+                finalized_floor_certificate: None,
             };
 
             let mergeable_channels = runtime_manager.load_mergeable_channels(&block).unwrap();

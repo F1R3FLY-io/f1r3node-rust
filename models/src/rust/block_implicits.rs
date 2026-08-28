@@ -1,5 +1,6 @@
 // See models/src/test/scala/coop/rchain/models/blockImplicits.scala
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
@@ -10,14 +11,69 @@ use prost::bytes::Bytes as ByteString;
 use rand::prelude::*;
 
 use super::block::state_hash::{self, StateHash};
-use super::block_hash::{self, BlockHash};
+use super::block_hash::{self, BlockHash, BlockHashSerde};
+use super::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
 use super::bond_generation::BondGeneration;
 use super::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, ValidatorBondGeneration,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, FinalizationCertificate, Header,
+    Justification, ProcessedDeploy, ProcessedSystemDeploy, ValidatorBondGeneration,
 };
-use super::validator::{self, Validator};
+use super::validator::{self, Validator, ValidatorSerde};
 use crate::rhoapi::PCost;
+
+const CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION: i64 = 5;
+
+fn ensure_certified_floor_commitment(block: &mut BlockMessage) {
+    if block.header.version < CERTIFIED_ADMISSION_PROTOCOL_VERSION
+        || block.body.state.block_number == 0
+        || block.header.finalized_floor.is_some()
+    {
+        return;
+    }
+    let floor_hash = block
+        .header
+        .parents_hash_list
+        .first()
+        .cloned()
+        .unwrap_or_else(|| block.block_hash.clone());
+    let floor_post_state_hash = block.body.state.pre_state_hash.clone();
+    let mut authority_preimage = b"f1r3fly-test-certified-consensus-context-v1".to_vec();
+    authority_preimage.extend_from_slice(&floor_hash);
+    authority_preimage.extend_from_slice(&floor_post_state_hash);
+    let authority_context_digest: ByteString = Blake2b256::hash(authority_preimage).into();
+    let manifest = std::collections::BTreeSet::from([BlockHashSerde(floor_hash.clone())]);
+    let certificate = FinalizationCertificate {
+        schema_version: FinalizationCertificate::SCHEMA_VERSION,
+        protocol_version: block.header.version,
+        shard_id: block.shard_id.clone(),
+        genesis_hash: BlockHashSerde(floor_hash.clone()),
+        predecessor_floor_hash: BlockHashSerde(floor_hash.clone()),
+        predecessor_certificate_digest: BlockHashSerde(ByteString::from(vec![
+            0;
+            block_hash::LENGTH
+        ])),
+        predecessor_certificate_block_hash: BlockHashSerde(ByteString::from(vec![
+            0;
+            block_hash::LENGTH
+        ])),
+        target_floor_hash: BlockHashSerde(floor_hash),
+        target_post_state_hash: BlockHashSerde(floor_post_state_hash),
+        target_block_number: block.body.state.block_number.saturating_sub(1),
+        fault_tolerance_numerator: 0,
+        fault_tolerance_denominator: 1,
+        exact_latest_messages: std::collections::BTreeMap::from([(
+            ValidatorSerde(block.sender.clone()),
+            BlockHashSerde(block.block_hash.clone()),
+        )]),
+        authority_context_digest: BlockHashSerde(authority_context_digest.clone()),
+        supporting_manifest_digest: FinalizationCertificate::supporting_digest(&manifest),
+        finalized_manifest_digest: FinalizationCertificate::finalized_digest(&manifest),
+        supporting_block_count: 1,
+        finalized_block_count: 1,
+    };
+    block.header.finalized_floor = Some(certificate.commitment(authority_context_digest));
+    block.finalized_floor_certificate = Some(certificate);
+}
 
 pub fn block_hash_gen() -> impl Strategy<Value = BlockHash> {
     prop::collection::vec(any::<u8>(), block_hash::LENGTH)
@@ -166,7 +222,7 @@ pub fn block_element_gen(
             .boxed(),
     };
 
-    let version = set_version.unwrap_or(5);
+    let version = set_version.unwrap_or(CERTIFIED_ADMISSION_PROTOCOL_VERSION);
     let timestamp_gen = match set_timestamp {
         Some(t) => Just(t).boxed(),
         None => any::<i64>().boxed(),
@@ -196,17 +252,18 @@ pub fn block_element_gen(
                 validator,
                 timestamp,
             )| {
-                let mut bond_generations = if version == 5 {
-                    bonds
-                        .iter()
-                        .map(|bond| ValidatorBondGeneration {
-                            validator: bond.validator.clone(),
-                            generation: BondGeneration::GENESIS,
-                        })
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
+                let mut bond_generations =
+                    if version >= CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION {
+                        bonds
+                            .iter()
+                            .map(|bond| ValidatorBondGeneration {
+                                validator: bond.validator.clone(),
+                                generation: BondGeneration::GENESIS,
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
                 bond_generations.sort_by(|left, right| left.validator.cmp(&right.validator));
                 bond_generations.dedup_by(|left, right| left.validator == right.validator);
                 let active_validators = bond_generations
@@ -220,8 +277,11 @@ pub fn block_element_gen(
                         timestamp,
                         version,
                         extra_bytes: prost::bytes::Bytes::new(),
-                        sender_bond_generation: (version == 5).then_some(BondGeneration::GENESIS),
+                        sender_bond_generation: (version
+                            >= CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION)
+                            .then_some(BondGeneration::GENESIS),
                         objective_equivocation_evidence_delta: Vec::new(),
+                        finalized_floor: None,
                     },
                     body: Body {
                         state: F1r3flyState {
@@ -245,6 +305,7 @@ pub fn block_element_gen(
                     sig_algorithm: String::new(),
                     shard_id: shard_id.clone(),
                     extra_bytes: prost::bytes::Bytes::new(),
+                    finalized_floor_certificate: None,
                 };
 
                 // Apply custom hash function if provided, otherwise generate random hash
@@ -256,10 +317,12 @@ pub fn block_element_gen(
                         .current(),
                 };
 
-                BlockMessage {
+                let mut block = BlockMessage {
                     block_hash: block_hash.into(),
                     ..block
-                }
+                };
+                ensure_certified_floor_commitment(&mut block);
+                block
             },
         )
 }
@@ -318,6 +381,9 @@ pub fn block_elements_with_parents_gen(
                 .max()
                 .unwrap_or(genesis.body.state.block_number)
                 + 1;
+            block.header.finalized_floor = None;
+            block.finalized_floor_certificate = None;
+            ensure_certified_floor_commitment(&mut block);
             blocks.push(block);
         }
         blocks
@@ -380,4 +446,45 @@ pub fn get_random_block_default() -> BlockMessage {
     get_random_block(
         None, None, None, None, None, None, None, None, None, None, None, None, None, None,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validator_incarnation_fields_persist_in_later_protocol_versions() {
+        let validator = ByteString::from(vec![3; validator::LENGTH]);
+        let block = get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            Some(validator.clone()),
+            Some(6),
+            Some(0),
+            Some(vec![ByteString::from(vec![4; block_hash::LENGTH])]),
+            None,
+            None,
+            None,
+            Some(vec![Bond {
+                validator: validator.clone(),
+                stake: 1,
+            }]),
+            Some("root".to_string()),
+            None,
+        );
+
+        assert_eq!(
+            block.header.sender_bond_generation,
+            Some(BondGeneration::GENESIS)
+        );
+        assert_eq!(block.body.state.active_validators, vec![validator.clone()]);
+        assert_eq!(block.body.state.bond_generations.len(), 1);
+        assert_eq!(block.body.state.bond_generations[0].validator, validator);
+        assert_eq!(
+            block.body.state.bond_generations[0].generation,
+            BondGeneration::GENESIS
+        );
+    }
 }

@@ -2356,13 +2356,15 @@ reconstruction.
 
 **Formal verification.** Rocq proves non-empty causal inputs, retention of every
 valid latest input, exact LFB fallback, and preservation of all non-rejected floor
-effects through the rebased merge. TLC exhausts 1,860,017 generated / 163,216
-distinct asynchronous states to depth 17. It checks direct-parent causal coverage,
+effects through the rebased merge. TLC exhausts 17,169 generated / 808 distinct
+local asynchronous states to depth 10. It checks direct-parent causal coverage,
 exact causal-input retention, floor rebasing, and finalized-effect preservation.
+The axiom-free Rocq product lifting proves arbitrary-node invariant preservation,
+distinct-node commutation, and local enablement framing, while the explicit
+three-validator transition system checks interacting validation and promotion races.
 The floor-unprotected control violates
 `Inv_ProposalPreservesSnapshotFloor`; Apalache checks the same safe and unsafe
-boundaries through a node-local symmetry projection while TLC retains the complete
-two-node interleaving space.
+boundaries through the same node-local transition relation.
 
 **Implementation verification.** The Rust snapshot regressions prove that
 reachability-covered tips are compacted without dropping independent siblings,

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -127,19 +128,37 @@ pub mod test_network {
 #[derive(Clone)]
 pub struct TransportLayerTestImpl {
     test_network: test_network::TestNetwork,
+    fail_sends: Arc<AtomicBool>,
+    send_attempts: Arc<Mutex<Vec<Protocol>>>,
 }
 
 impl TransportLayerTestImpl {
     /// Create a new test transport layer with the given test network
-    pub fn new(test_network: test_network::TestNetwork) -> Self { Self { test_network } }
+    pub fn new(test_network: test_network::TestNetwork) -> Self {
+        Self {
+            test_network,
+            fail_sends: Arc::new(AtomicBool::new(false)),
+            send_attempts: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
 
     /// Get access to the underlying test network for test setup
     pub fn test_network(&self) -> &test_network::TestNetwork { &self.test_network }
+
+    pub fn set_fail_sends(&self, fail: bool) { self.fail_sends.store(fail, Ordering::Release); }
+
+    pub fn clear_send_attempts(&self) { self.send_attempts.lock().unwrap().clear(); }
+
+    pub fn send_attempts(&self) -> Vec<Protocol> { self.send_attempts.lock().unwrap().clone() }
 }
 
 #[async_trait]
 impl TransportLayer for TransportLayerTestImpl {
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
+        self.send_attempts.lock().unwrap().push(msg.clone());
+        if self.fail_sends.load(Ordering::Acquire) {
+            return Err(CommError::TimeOut);
+        }
         // Add the peer if it doesn't exist
         let _ = self.test_network.add_peer(peer);
 

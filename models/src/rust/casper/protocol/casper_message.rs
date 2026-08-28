@@ -1,5 +1,6 @@
 // See models/src/main/scala/coop/rchain/casper/protocol/CasperMessage.scala
 
+use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
@@ -11,9 +12,10 @@ use shared::rust::{Byte, ByteVector};
 use crate::casper::system_deploy_data_proto::SystemDeploy;
 use crate::casper::*;
 use crate::rhoapi::PCost;
-use crate::rust::block_hash::BlockHash;
+use crate::rust::block_hash::{BlockHash, BlockHashSerde};
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::rust::validator::ValidatorSerde;
 use crate::rust::{block_hash, validator};
 
 // TODO: Use type ByteString from models crate
@@ -28,6 +30,8 @@ pub enum CasperMessage {
     ApprovedBlockRequest(ApprovedBlockRequest),
     BlockApproval(BlockApproval),
     BlockRequest(BlockRequest),
+    FinalizationCertificateRequest(FinalizationCertificateRequest),
+    FinalizationCertificateResponse(FinalizationCertificateResponse),
     ForkChoiceTipRequest(ForkChoiceTipRequest),
     HasBlock(HasBlock),
     HasBlockRequest(HasBlockRequest),
@@ -79,6 +83,22 @@ impl CasperMessage {
 
     pub fn from_block_request(proto: BlockRequestProto) -> Self {
         CasperMessage::BlockRequest(BlockRequest::from_proto(proto))
+    }
+
+    pub fn from_finalization_certificate_request(
+        proto: FinalizationCertificateRequestProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::FinalizationCertificateRequest(
+            FinalizationCertificateRequest::from_proto(proto)?,
+        ))
+    }
+
+    pub fn from_finalization_certificate_response(
+        proto: FinalizationCertificateResponseProto,
+    ) -> Result<Self, String> {
+        Ok(CasperMessage::FinalizationCertificateResponse(
+            FinalizationCertificateResponse::from_proto(proto)?,
+        ))
     }
 
     pub fn from_fork_choice_tip_request(_proto: ForkChoiceTipRequestProto) -> Self {
@@ -152,6 +172,70 @@ impl BlockRequest {
     pub fn from_proto(proto: BlockRequestProto) -> Self { Self { hash: proto.hash } }
 
     pub fn to_proto(self) -> BlockRequestProto { BlockRequestProto { hash: self.hash } }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizationCertificateRequest {
+    pub digest: ByteString,
+}
+
+impl FinalizationCertificateRequest {
+    pub const MAX_ENCODED_BYTES: usize = 64;
+
+    pub fn from_proto(proto: FinalizationCertificateRequestProto) -> Result<Self, String> {
+        if proto.digest.len() != block_hash::LENGTH {
+            return Err(format!(
+                "finalization certificate request digest must be {} bytes",
+                block_hash::LENGTH
+            ));
+        }
+        Ok(Self {
+            digest: proto.digest,
+        })
+    }
+
+    pub fn to_proto(self) -> FinalizationCertificateRequestProto {
+        FinalizationCertificateRequestProto {
+            digest: self.digest,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizationCertificateResponse {
+    pub digest: ByteString,
+    pub certificate: FinalizationCertificate,
+}
+
+impl FinalizationCertificateResponse {
+    pub const MAX_ENCODED_BYTES: usize = FinalizationCertificate::MAX_ENCODED_BYTES + 128;
+
+    pub fn from_proto(proto: FinalizationCertificateResponseProto) -> Result<Self, String> {
+        if proto.digest.len() != block_hash::LENGTH {
+            return Err(format!(
+                "finalization certificate response digest must be {} bytes",
+                block_hash::LENGTH
+            ));
+        }
+        let certificate =
+            FinalizationCertificate::from_proto(proto.certificate.ok_or_else(|| {
+                "finalization certificate response is missing proof".to_string()
+            })?)?;
+        if certificate.digest() != proto.digest {
+            return Err("finalization certificate response digest mismatch".to_string());
+        }
+        Ok(Self {
+            digest: proto.digest,
+            certificate,
+        })
+    }
+
+    pub fn to_proto(self) -> FinalizationCertificateResponseProto {
+        FinalizationCertificateResponseProto {
+            digest: self.digest,
+            certificate: Some(self.certificate.to_proto()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -346,6 +430,7 @@ pub struct BlockMessage {
     pub sig_algorithm: String,
     pub shard_id: String,
     pub extra_bytes: ByteString,
+    pub finalized_floor_certificate: Option<FinalizationCertificate>,
 }
 
 impl BlockMessage {
@@ -369,6 +454,10 @@ impl BlockMessage {
             sig_algorithm: proto.sig_algorithm,
             shard_id: proto.shard_id,
             extra_bytes: proto.extra_bytes,
+            finalized_floor_certificate: proto
+                .finalized_floor_certificate
+                .map(FinalizationCertificate::from_proto)
+                .transpose()?,
         })
     }
 
@@ -389,6 +478,10 @@ impl BlockMessage {
             sig_algorithm: self.sig_algorithm.clone(),
             shard_id: self.shard_id.clone(),
             extra_bytes: self.extra_bytes.clone(),
+            finalized_floor_certificate: self
+                .finalized_floor_certificate
+                .as_ref()
+                .map(FinalizationCertificate::to_proto),
         }
     }
 
@@ -405,6 +498,7 @@ pub struct Header {
     pub extra_bytes: ByteString,
     pub sender_bond_generation: Option<BondGeneration>,
     pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
+    pub finalized_floor: Option<FinalizedFloorCommitment>,
 }
 
 impl Header {
@@ -435,6 +529,10 @@ impl Header {
             extra_bytes: proto.extra_bytes,
             sender_bond_generation,
             objective_equivocation_evidence_delta,
+            finalized_floor: proto
+                .finalized_floor
+                .map(FinalizedFloorCommitment::from_proto)
+                .transpose()?,
         })
     }
 
@@ -450,8 +548,369 @@ impl Header {
                 .iter()
                 .map(ObjectiveEquivocationEvidence::to_proto)
                 .collect(),
+            finalized_floor: self
+                .finalized_floor
+                .as_ref()
+                .map(FinalizedFloorCommitment::to_proto),
         }
     }
+}
+
+#[derive(
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub struct FinalizedFloorCommitment {
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub floor_hash: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub floor_post_state_hash: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub certificate_digest: ByteString,
+    #[serde(with = "shared::rust::serde_bytes")]
+    pub authority_context_digest: ByteString,
+}
+
+impl FinalizedFloorCommitment {
+    pub fn from_proto(proto: FinalizedFloorCommitmentProto) -> Result<Self, String> {
+        let commitment = Self {
+            floor_hash: proto.floor_hash,
+            floor_post_state_hash: proto.floor_post_state_hash,
+            certificate_digest: proto.certificate_digest,
+            authority_context_digest: proto.authority_context_digest,
+        };
+        commitment.validate_shape()?;
+        Ok(commitment)
+    }
+
+    pub fn to_proto(&self) -> FinalizedFloorCommitmentProto {
+        FinalizedFloorCommitmentProto {
+            floor_hash: self.floor_hash.clone(),
+            floor_post_state_hash: self.floor_post_state_hash.clone(),
+            certificate_digest: self.certificate_digest.clone(),
+            authority_context_digest: self.authority_context_digest.clone(),
+        }
+    }
+
+    pub fn validate_shape(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("floor hash", &self.floor_hash),
+            ("floor post-state hash", &self.floor_post_state_hash),
+            ("certificate digest", &self.certificate_digest),
+            ("authority-context digest", &self.authority_context_digest),
+        ] {
+            if value.len() != block_hash::LENGTH {
+                return Err(format!(
+                    "finalized-floor commitment {name} must be {} bytes, got {}",
+                    block_hash::LENGTH,
+                    value.len()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FinalizationCertificate {
+    pub schema_version: u32,
+    pub protocol_version: i64,
+    pub shard_id: String,
+    pub genesis_hash: BlockHashSerde,
+    pub predecessor_floor_hash: BlockHashSerde,
+    pub predecessor_certificate_digest: BlockHashSerde,
+    pub predecessor_certificate_block_hash: BlockHashSerde,
+    pub target_floor_hash: BlockHashSerde,
+    pub target_post_state_hash: BlockHashSerde,
+    pub target_block_number: i64,
+    pub fault_tolerance_numerator: i64,
+    pub fault_tolerance_denominator: i64,
+    pub exact_latest_messages: std::collections::BTreeMap<ValidatorSerde, BlockHashSerde>,
+    pub authority_context_digest: BlockHashSerde,
+    pub supporting_manifest_digest: BlockHashSerde,
+    pub finalized_manifest_digest: BlockHashSerde,
+    pub supporting_block_count: u32,
+    pub finalized_block_count: u32,
+}
+
+impl FinalizationCertificate {
+    pub const SCHEMA_VERSION: u32 = 4;
+    pub const MAX_ENCODED_BYTES: usize = 2 * 1024 * 1024;
+    pub const MAX_EXACT_LATEST_MESSAGES: usize = 10_000;
+    pub const MAX_SUPPORTING_BLOCKS: usize = 262_144;
+    pub const MAX_FINALIZED_BLOCKS: usize = 262_144;
+    pub const MAX_DAG_VISITS_PER_VERIFICATION: usize = 1_048_576;
+    pub const MAX_SHARD_ID_BYTES: usize = 256;
+
+    pub fn from_proto(proto: FinalizationCertificateProto) -> Result<Self, String> {
+        if proto.encoded_len() > Self::MAX_ENCODED_BYTES {
+            return Err(format!(
+                "finalization certificate exceeds {} encoded bytes",
+                Self::MAX_ENCODED_BYTES
+            ));
+        }
+        if proto.exact_latest_messages.len() > Self::MAX_EXACT_LATEST_MESSAGES {
+            return Err(format!(
+                "finalization certificate has more than {} latest messages",
+                Self::MAX_EXACT_LATEST_MESSAGES
+            ));
+        }
+        let mut exact_latest_messages = std::collections::BTreeMap::new();
+        for justification in proto.exact_latest_messages {
+            let justification = Justification::from_proto(justification);
+            if exact_latest_messages
+                .insert(
+                    ValidatorSerde(justification.validator),
+                    BlockHashSerde(justification.latest_block_hash),
+                )
+                .is_some()
+            {
+                return Err(
+                    "finalization certificate exact latest messages contain duplicate validators"
+                        .to_string(),
+                );
+            }
+        }
+        let certificate = Self {
+            schema_version: proto.schema_version,
+            protocol_version: proto.protocol_version,
+            shard_id: proto.shard_id,
+            genesis_hash: BlockHashSerde(proto.genesis_hash),
+            predecessor_floor_hash: BlockHashSerde(proto.predecessor_floor_hash),
+            predecessor_certificate_digest: BlockHashSerde(proto.predecessor_certificate_digest),
+            predecessor_certificate_block_hash: BlockHashSerde(
+                proto.predecessor_certificate_block_hash,
+            ),
+            target_floor_hash: BlockHashSerde(proto.target_floor_hash),
+            target_post_state_hash: BlockHashSerde(proto.target_post_state_hash),
+            target_block_number: proto.target_block_number,
+            fault_tolerance_numerator: proto.fault_tolerance_numerator,
+            fault_tolerance_denominator: proto.fault_tolerance_denominator,
+            exact_latest_messages,
+            authority_context_digest: BlockHashSerde(proto.authority_context_digest),
+            supporting_manifest_digest: BlockHashSerde(proto.supporting_manifest_digest),
+            finalized_manifest_digest: BlockHashSerde(proto.finalized_manifest_digest),
+            supporting_block_count: proto.supporting_block_count,
+            finalized_block_count: proto.finalized_block_count,
+        };
+        certificate.validate_shape()?;
+        Ok(certificate)
+    }
+
+    pub fn to_proto(&self) -> FinalizationCertificateProto {
+        FinalizationCertificateProto {
+            schema_version: self.schema_version,
+            protocol_version: self.protocol_version,
+            shard_id: self.shard_id.clone(),
+            genesis_hash: self.genesis_hash.0.clone(),
+            predecessor_floor_hash: self.predecessor_floor_hash.0.clone(),
+            predecessor_certificate_digest: self.predecessor_certificate_digest.0.clone(),
+            predecessor_certificate_block_hash: self.predecessor_certificate_block_hash.0.clone(),
+            target_floor_hash: self.target_floor_hash.0.clone(),
+            target_post_state_hash: self.target_post_state_hash.0.clone(),
+            target_block_number: self.target_block_number,
+            fault_tolerance_numerator: self.fault_tolerance_numerator,
+            fault_tolerance_denominator: self.fault_tolerance_denominator,
+            exact_latest_messages: self
+                .exact_latest_messages
+                .iter()
+                .map(|(validator, block_hash)| JustificationProto {
+                    validator: validator.0.clone(),
+                    latest_block_hash: block_hash.0.clone(),
+                })
+                .collect(),
+            authority_context_digest: self.authority_context_digest.0.clone(),
+            supporting_manifest_digest: self.supporting_manifest_digest.0.clone(),
+            finalized_manifest_digest: self.finalized_manifest_digest.0.clone(),
+            supporting_block_count: self.supporting_block_count,
+            finalized_block_count: self.finalized_block_count,
+        }
+    }
+
+    pub fn digest(&self) -> BlockHash {
+        let mut bytes = Vec::new();
+        append_certificate_bytes(&mut bytes, b"f1r3fly-finalization-certificate-v4");
+        bytes.extend_from_slice(&self.schema_version.to_be_bytes());
+        bytes.extend_from_slice(&self.protocol_version.to_be_bytes());
+        append_certificate_bytes(&mut bytes, self.shard_id.as_bytes());
+        append_certificate_bytes(&mut bytes, &self.genesis_hash.0);
+        append_certificate_bytes(&mut bytes, &self.predecessor_floor_hash.0);
+        append_certificate_bytes(&mut bytes, &self.predecessor_certificate_digest.0);
+        append_certificate_bytes(&mut bytes, &self.predecessor_certificate_block_hash.0);
+        append_certificate_bytes(&mut bytes, &self.target_floor_hash.0);
+        append_certificate_bytes(&mut bytes, &self.target_post_state_hash.0);
+        bytes.extend_from_slice(&self.target_block_number.to_be_bytes());
+        bytes.extend_from_slice(&self.fault_tolerance_numerator.to_be_bytes());
+        bytes.extend_from_slice(&self.fault_tolerance_denominator.to_be_bytes());
+        bytes.extend_from_slice(&(self.exact_latest_messages.len() as u64).to_be_bytes());
+        for (validator, block_hash) in &self.exact_latest_messages {
+            append_certificate_bytes(&mut bytes, &validator.0);
+            append_certificate_bytes(&mut bytes, &block_hash.0);
+        }
+        append_certificate_bytes(&mut bytes, &self.authority_context_digest.0);
+        append_certificate_bytes(&mut bytes, &self.supporting_manifest_digest.0);
+        append_certificate_bytes(&mut bytes, &self.finalized_manifest_digest.0);
+        bytes.extend_from_slice(&self.supporting_block_count.to_be_bytes());
+        bytes.extend_from_slice(&self.finalized_block_count.to_be_bytes());
+        Blake2b256::hash(bytes).into()
+    }
+
+    pub fn manifest_digest(
+        domain: &[u8],
+        hashes: &std::collections::BTreeSet<BlockHashSerde>,
+    ) -> BlockHashSerde {
+        let mut bytes = Vec::with_capacity(
+            domain.len() + 16 + hashes.len().saturating_mul(block_hash::LENGTH + 8),
+        );
+        append_certificate_bytes(&mut bytes, b"f1r3fly-finalization-manifest-v1");
+        append_certificate_bytes(&mut bytes, domain);
+        bytes.extend_from_slice(&(hashes.len() as u64).to_be_bytes());
+        for hash in hashes {
+            append_certificate_bytes(&mut bytes, &hash.0);
+        }
+        BlockHashSerde(Blake2b256::hash(bytes).into())
+    }
+
+    pub fn supporting_digest(
+        hashes: &std::collections::BTreeSet<BlockHashSerde>,
+    ) -> BlockHashSerde {
+        Self::manifest_digest(b"supporting", hashes)
+    }
+
+    pub fn finalized_digest(hashes: &std::collections::BTreeSet<BlockHashSerde>) -> BlockHashSerde {
+        Self::manifest_digest(b"finalized", hashes)
+    }
+
+    pub fn commitment(
+        &self,
+        candidate_authority_context_digest: ByteString,
+    ) -> FinalizedFloorCommitment {
+        FinalizedFloorCommitment {
+            floor_hash: self.target_floor_hash.0.clone(),
+            floor_post_state_hash: self.target_post_state_hash.0.clone(),
+            certificate_digest: self.digest(),
+            authority_context_digest: candidate_authority_context_digest,
+        }
+    }
+
+    pub fn validate_shape(&self) -> Result<(), String> {
+        if self.schema_version != Self::SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported finalization certificate schema {}; expected {}",
+                self.schema_version,
+                Self::SCHEMA_VERSION
+            ));
+        }
+        if self.protocol_version <= 0
+            || self.shard_id.is_empty()
+            || self.shard_id.len() > Self::MAX_SHARD_ID_BYTES
+        {
+            return Err("finalization certificate protocol and shard must be present".to_string());
+        }
+        if self.exact_latest_messages.len() > Self::MAX_EXACT_LATEST_MESSAGES {
+            return Err(format!(
+                "finalization certificate has more than {} latest messages",
+                Self::MAX_EXACT_LATEST_MESSAGES
+            ));
+        }
+        if self.supporting_block_count == 0
+            || !usize::try_from(self.supporting_block_count)
+                .is_ok_and(|count| count <= Self::MAX_SUPPORTING_BLOCKS)
+            || self.finalized_block_count == 0
+            || !usize::try_from(self.finalized_block_count)
+                .is_ok_and(|count| count <= Self::MAX_FINALIZED_BLOCKS)
+            || self.finalized_block_count > self.supporting_block_count
+        {
+            return Err("finalization certificate manifest counts are invalid".to_string());
+        }
+        if self.target_block_number < 0
+            || self.fault_tolerance_denominator <= 0
+            || self.fault_tolerance_numerator < -self.fault_tolerance_denominator
+            || self.fault_tolerance_numerator > self.fault_tolerance_denominator
+        {
+            return Err("finalization certificate numeric domain is invalid".to_string());
+        }
+        for (name, value) in [
+            ("genesis hash", &self.genesis_hash.0),
+            ("predecessor floor hash", &self.predecessor_floor_hash.0),
+            (
+                "predecessor certificate digest",
+                &self.predecessor_certificate_digest.0,
+            ),
+            (
+                "predecessor certificate block hash",
+                &self.predecessor_certificate_block_hash.0,
+            ),
+            ("target floor hash", &self.target_floor_hash.0),
+            ("target post-state hash", &self.target_post_state_hash.0),
+            ("authority-context digest", &self.authority_context_digest.0),
+            (
+                "supporting-manifest digest",
+                &self.supporting_manifest_digest.0,
+            ),
+            (
+                "finalized-manifest digest",
+                &self.finalized_manifest_digest.0,
+            ),
+        ] {
+            if value.len() != block_hash::LENGTH {
+                return Err(format!(
+                    "finalization certificate {name} must be {} bytes, got {}",
+                    block_hash::LENGTH,
+                    value.len()
+                ));
+            }
+        }
+        if self.exact_latest_messages.is_empty()
+            || self.exact_latest_messages.iter().any(|(validator, hash)| {
+                validator.0.len() != validator::LENGTH || hash.0.len() != block_hash::LENGTH
+            })
+            || (self
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0)
+                != self
+                    .predecessor_certificate_block_hash
+                    .0
+                    .iter()
+                    .all(|byte| *byte == 0))
+            || (!self
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0)
+                && self.predecessor_certificate_block_hash.0 == self.target_floor_hash.0)
+            || self.to_proto().encoded_len() > Self::MAX_ENCODED_BYTES
+        {
+            return Err("finalization certificate structure is invalid".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn validate_commitment(&self, commitment: &FinalizedFloorCommitment) -> Result<(), String> {
+        commitment.validate_shape()?;
+        self.validate_shape()?;
+        if commitment.floor_hash != self.target_floor_hash.0
+            || commitment.floor_post_state_hash != self.target_post_state_hash.0
+            || commitment.certificate_digest != self.digest()
+        {
+            return Err(
+                "finalization certificate does not match the signed floor commitment".to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+fn append_certificate_bytes(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 #[derive(
@@ -969,7 +1428,7 @@ impl ProcessedDeploy {
         }
     }
 
-    /// Construct an empty processed-deploy stub from a `Cosigned<DeployData>`
+    /// Construct an empty processed-deploy record from a `Cosigned<DeployData>`
     /// envelope, preserving the full cosigner list. Used by error-envelope
     /// construction paths in the multi-sig runtime fan-out where a deploy
     /// fails BEFORE evaluation begins.
@@ -2373,6 +2832,218 @@ mod tests {
 
     use super::*;
 
+    fn finalization_certificate() -> FinalizationCertificate {
+        let target = BlockHashSerde(Bytes::from(vec![3; block_hash::LENGTH]));
+        let latest = BlockHashSerde(Bytes::from(vec![4; block_hash::LENGTH]));
+        let carrier = BlockHashSerde(Bytes::from(vec![9; block_hash::LENGTH]));
+        FinalizationCertificate {
+            schema_version: FinalizationCertificate::SCHEMA_VERSION,
+            protocol_version: 6,
+            shard_id: "root".to_string(),
+            genesis_hash: BlockHashSerde(Bytes::from(vec![1; block_hash::LENGTH])),
+            predecessor_floor_hash: BlockHashSerde(Bytes::from(vec![2; block_hash::LENGTH])),
+            predecessor_certificate_digest: BlockHashSerde(Bytes::from(vec![
+                5;
+                block_hash::LENGTH
+            ])),
+            predecessor_certificate_block_hash: carrier.clone(),
+            target_floor_hash: target.clone(),
+            target_post_state_hash: BlockHashSerde(Bytes::from(vec![6; block_hash::LENGTH])),
+            target_block_number: 9,
+            fault_tolerance_numerator: 100_000,
+            fault_tolerance_denominator: 1_000_000,
+            exact_latest_messages: std::collections::BTreeMap::from([(
+                ValidatorSerde(Bytes::from(vec![7; validator::LENGTH])),
+                latest.clone(),
+            )]),
+            authority_context_digest: BlockHashSerde(Bytes::from(vec![8; block_hash::LENGTH])),
+            supporting_manifest_digest: FinalizationCertificate::supporting_digest(
+                &std::collections::BTreeSet::from([target.clone(), latest, carrier]),
+            ),
+            finalized_manifest_digest: FinalizationCertificate::finalized_digest(
+                &std::collections::BTreeSet::from([target]),
+            ),
+            supporting_block_count: 3,
+            finalized_block_count: 1,
+        }
+    }
+
+    #[test]
+    fn finalization_certificate_round_trip_preserves_canonical_digest() {
+        let certificate = finalization_certificate();
+        let decoded = FinalizationCertificate::from_proto(certificate.to_proto())
+            .expect("canonical finalization certificate");
+        assert_eq!(decoded, certificate);
+        assert_eq!(decoded.digest(), certificate.digest());
+        assert!(certificate.to_proto().encoded_len() <= FinalizationCertificate::MAX_ENCODED_BYTES);
+    }
+
+    #[test]
+    fn finalization_certificate_request_and_response_are_content_addressed() {
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        let request = FinalizationCertificateRequest::from_proto(
+            FinalizationCertificateRequest {
+                digest: digest.clone(),
+            }
+            .to_proto(),
+        )
+        .expect("valid certificate request");
+        assert_eq!(request.digest, digest);
+
+        let response = FinalizationCertificateResponse {
+            digest: digest.clone(),
+            certificate: certificate.clone(),
+        };
+        let proto = response.clone().to_proto();
+        assert!(proto.encoded_len() <= FinalizationCertificateResponse::MAX_ENCODED_BYTES);
+        assert_eq!(
+            FinalizationCertificateResponse::from_proto(proto).expect("valid certificate response"),
+            response
+        );
+
+        let mut mismatched = response.to_proto();
+        mismatched.digest = Bytes::from(vec![11; block_hash::LENGTH]);
+        assert!(FinalizationCertificateResponse::from_proto(mismatched).is_err());
+    }
+
+    #[test]
+    fn finalization_certificate_requests_reject_non_digest_identifiers() {
+        for digest in [Bytes::new(), Bytes::from(vec![0; block_hash::LENGTH + 1])] {
+            assert!(FinalizationCertificateRequest::from_proto(
+                FinalizationCertificateRequestProto { digest }
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn finalization_certificate_manifest_commitments_are_domain_separated_and_binding() {
+        let certificate = finalization_certificate();
+        let singleton = std::collections::BTreeSet::from([certificate.target_floor_hash.clone()]);
+        assert_ne!(
+            FinalizationCertificate::supporting_digest(&singleton),
+            FinalizationCertificate::finalized_digest(&singleton)
+        );
+
+        let commitment = certificate.commitment(certificate.authority_context_digest.0.clone());
+        let mut tampered = certificate;
+        tampered.supporting_manifest_digest =
+            BlockHashSerde(Bytes::from(vec![10; block_hash::LENGTH]));
+        assert_ne!(tampered.digest(), commitment.certificate_digest);
+        assert!(tampered.validate_commitment(&commitment).is_err());
+    }
+
+    #[test]
+    fn finalization_certificate_manifest_counts_are_digest_bound_and_bounded() {
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        let mut tampered = certificate.clone();
+        tampered.supporting_block_count += 1;
+        assert_ne!(tampered.digest(), digest);
+
+        for (supporting, finalized) in [
+            (0, 1),
+            (1, 0),
+            (1, 2),
+            (
+                u32::try_from(FinalizationCertificate::MAX_SUPPORTING_BLOCKS).unwrap() + 1,
+                1,
+            ),
+            (
+                2,
+                u32::try_from(FinalizationCertificate::MAX_FINALIZED_BLOCKS).unwrap() + 1,
+            ),
+        ] {
+            let mut invalid = certificate.clone();
+            invalid.supporting_block_count = supporting;
+            invalid.finalized_block_count = finalized;
+            assert!(invalid.validate_shape().is_err());
+        }
+    }
+
+    #[test]
+    fn finalization_certificate_rejects_latest_message_count_before_canonicalization() {
+        let mut proto = finalization_certificate().to_proto();
+        proto.exact_latest_messages = vec![
+            JustificationProto {
+                validator: Bytes::from(vec![7; validator::LENGTH]),
+                latest_block_hash: Bytes::from(vec![4; block_hash::LENGTH]),
+            };
+            FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES + 1
+        ];
+        let error = FinalizationCertificate::from_proto(proto).unwrap_err();
+        assert!(error.contains("latest messages"));
+    }
+
+    #[test]
+    fn maximum_supported_finalization_committee_fits_the_wire_budget() {
+        let mut certificate = finalization_certificate();
+        certificate.exact_latest_messages = (0..FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES)
+            .map(|index| {
+                let index = u32::try_from(index).unwrap().to_be_bytes();
+                let mut validator_bytes = vec![0; validator::LENGTH];
+                validator_bytes[validator::LENGTH - index.len()..].copy_from_slice(&index);
+                let mut hash_bytes = vec![0; block_hash::LENGTH];
+                hash_bytes[block_hash::LENGTH - index.len()..].copy_from_slice(&index);
+                (
+                    ValidatorSerde(Bytes::from(validator_bytes)),
+                    BlockHashSerde(Bytes::from(hash_bytes)),
+                )
+            })
+            .collect();
+        certificate.validate_shape().unwrap();
+        assert!(certificate.to_proto().encoded_len() <= FinalizationCertificate::MAX_ENCODED_BYTES);
+    }
+
+    #[test]
+    fn finalization_certificate_rejects_oversized_shard_identity() {
+        let mut certificate = finalization_certificate();
+        certificate.shard_id = "s".repeat(FinalizationCertificate::MAX_SHARD_ID_BYTES + 1);
+        assert!(certificate.validate_shape().is_err());
+    }
+
+    #[test]
+    fn finalization_certificate_binds_floor_state_and_certificate_digest() {
+        let certificate = finalization_certificate();
+        let commitment = FinalizedFloorCommitment {
+            floor_hash: certificate.target_floor_hash.0.clone(),
+            floor_post_state_hash: certificate.target_post_state_hash.0.clone(),
+            certificate_digest: certificate.digest(),
+            authority_context_digest: certificate.authority_context_digest.0.clone(),
+        };
+        certificate
+            .validate_commitment(&commitment)
+            .expect("matching commitment");
+
+        for tampered in [
+            FinalizedFloorCommitment {
+                floor_hash: Bytes::from(vec![9; block_hash::LENGTH]),
+                ..commitment.clone()
+            },
+            FinalizedFloorCommitment {
+                floor_post_state_hash: Bytes::from(vec![9; block_hash::LENGTH]),
+                ..commitment.clone()
+            },
+            FinalizedFloorCommitment {
+                certificate_digest: Bytes::from(vec![9; block_hash::LENGTH]),
+                ..commitment.clone()
+            },
+        ] {
+            assert!(certificate.validate_commitment(&tampered).is_err());
+        }
+
+        let candidate_specific_context = FinalizedFloorCommitment {
+            authority_context_digest: Bytes::from(vec![9; block_hash::LENGTH]),
+            ..commitment
+        };
+        certificate
+            .validate_commitment(&candidate_specific_context)
+            .expect(
+                "candidate authority context is bound by the signed block, not the certificate",
+            );
+    }
+
     #[test]
     fn equivocation_slash_canonicalizes_and_round_trips_both_hashes() {
         let first = Bytes::from_static(b"block-a");
@@ -2412,6 +3083,23 @@ mod tests {
         let decoded_proto = SystemDeployDataProto::decode(encoded.as_slice()).expect("slash proto");
         let decoded = SystemDeployData::from_proto(decoded_proto).expect("unary slash");
         assert_eq!(decoded, slash);
+        assert!(matches!(decoded, SystemDeployData::Slash {
+            equivocation_block_hash: None,
+            ..
+        }));
+    }
+
+    #[test]
+    fn slash_proto_canonicalizes_empty_equivocation_hash_to_absence() {
+        let slash = SystemDeployData::Slash {
+            invalid_block_hash: Bytes::from_static(b"invalid"),
+            equivocation_block_hash: Some(Bytes::new()),
+            issuer_public_key: PublicKey::from_bytes(b"issuer"),
+            target_activation_epoch: 9,
+            target_bond_generation: BondGeneration::GENESIS,
+        };
+        let decoded =
+            SystemDeployData::from_proto(SystemDeployData::to_proto(slash)).expect("slash proto");
         assert!(matches!(decoded, SystemDeployData::Slash {
             equivocation_block_hash: None,
             ..

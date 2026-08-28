@@ -4,10 +4,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use models::casper::{ApprovedBlockProto, BlockMessageProto};
+use models::casper::{ApprovedBlockProto, BlockMessageProto, FinalizationCertificateProto};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
+use models::rust::casper::protocol::casper_message::{
+    ApprovedBlock, BlockMessage, FinalizationCertificate,
+};
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
@@ -16,6 +18,8 @@ use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 pub struct KeyValueBlockStore {
     store: Arc<dyn KeyValueStore>,
     store_approved_block: Arc<dyn KeyValueStore>,
+    store_finalization_certificates: Option<Arc<dyn KeyValueStore>>,
+    verified_finalization_certificates: Arc<Mutex<(HashSet<BlockHash>, VecDeque<BlockHash>)>>,
     approved_block_key: [u8; 1],
 }
 
@@ -28,6 +32,7 @@ impl KeyValueBlockStore {
     // Keep a small bounded decompression scratch buffer per thread to prevent
     // long-lived memory retention from repeatedly decoding block payloads.
     const DECOMPRESS_BUFFER_RETAIN_BYTES: usize = 65_536;
+    const MAX_STORED_BLOCK_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
     const DEPLOY_SIG_CACHE_MAX_ENTRIES: usize = 1_024;
     const MIN_DEPLOY_SIG_BYTES: usize = 32;
 
@@ -35,9 +40,22 @@ impl KeyValueBlockStore {
         store: Arc<dyn KeyValueStore>,
         store_approved_block: Arc<dyn KeyValueStore>,
     ) -> Self {
+        Self::new_with_finalization_certificate_store(store, store_approved_block, None)
+    }
+
+    pub fn new_with_finalization_certificate_store(
+        store: Arc<dyn KeyValueStore>,
+        store_approved_block: Arc<dyn KeyValueStore>,
+        store_finalization_certificates: Option<Arc<dyn KeyValueStore>>,
+    ) -> Self {
         Self {
             store,
             store_approved_block,
+            store_finalization_certificates,
+            verified_finalization_certificates: Arc::new(Mutex::new((
+                HashSet::new(),
+                VecDeque::new(),
+            ))),
             approved_block_key: [42],
         }
     }
@@ -45,7 +63,18 @@ impl KeyValueBlockStore {
     pub async fn create_from_kvm(kvm: &mut dyn KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let store = kvm.store("blocks".to_string()).await?;
         let store_approved_block = kvm.store("blocks-approved".to_string()).await?;
-        Ok(Self::new(store, store_approved_block))
+        let store_finalization_certificates =
+            kvm.store("finalization-certificates".to_string()).await?;
+        Ok(Self {
+            store,
+            store_approved_block,
+            store_finalization_certificates: Some(store_finalization_certificates),
+            verified_finalization_certificates: Arc::new(Mutex::new((
+                HashSet::new(),
+                VecDeque::new(),
+            ))),
+            approved_block_key: [42],
+        })
     }
 
     fn error_block(hash: BlockHash, cause: String) -> String {
@@ -57,6 +86,17 @@ impl KeyValueBlockStore {
     }
 
     pub fn get(&self, block_hash: &BlockHash) -> Result<Option<BlockMessage>, KvStoreError> {
+        let Some(mut block) = self.get_detached(block_hash)? else {
+            return Ok(None);
+        };
+        self.reattach_finalization_certificate(&mut block)?;
+        Ok(Some(block))
+    }
+
+    pub fn get_detached(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<BlockMessage>, KvStoreError> {
         let bytes = self.store.get_one(&block_hash.to_vec())?;
         if bytes.is_none() {
             return Ok(None);
@@ -200,13 +240,210 @@ impl KeyValueBlockStore {
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
-        let block_proto = block.to_proto();
+        let mut stored_block = block.clone();
+        self.persist_finalization_certificate(&mut stored_block)?;
+        let block_proto = stored_block.to_proto();
         let bytes = Self::block_proto_to_bytes(&block_proto);
         self.store.put_one(block_hash.to_vec(), bytes)
     }
 
+    pub fn put_block_message_awaiting_certificate(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<(), KvStoreError> {
+        let commitment = block.header.finalized_floor.as_ref().ok_or_else(|| {
+            KvStoreError::SerializationError(
+                "detached block must carry a finalized-floor commitment".to_string(),
+            )
+        })?;
+        if block.finalized_floor_certificate.is_some() {
+            return Err(KvStoreError::SerializationError(
+                "detached block must not carry a finalization certificate".to_string(),
+            ));
+        }
+        commitment
+            .validate_shape()
+            .map_err(KvStoreError::SerializationError)?;
+        let bytes = Self::block_proto_to_bytes(&block.to_proto());
+        self.store.put_one(block.block_hash.to_vec(), bytes)
+    }
+
+    fn persist_finalization_certificate(
+        &self,
+        block: &mut BlockMessage,
+    ) -> Result<(), KvStoreError> {
+        match (
+            block.header.finalized_floor.as_ref(),
+            block.finalized_floor_certificate.as_ref(),
+        ) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(KvStoreError::SerializationError(
+                "block carries a finalization certificate without a signed floor commitment"
+                    .to_string(),
+            )),
+            (Some(_), None) => Err(KvStoreError::SerializationError(
+                "block carries a signed floor commitment without its finalization certificate"
+                    .to_string(),
+            )),
+            (Some(commitment), Some(certificate)) => {
+                certificate
+                    .validate_commitment(commitment)
+                    .map_err(KvStoreError::SerializationError)?;
+                if self.store_finalization_certificates.is_some() {
+                    let digest = certificate.digest();
+                    self.put_finalization_certificate(&digest, certificate)?;
+                    block.finalized_floor_certificate = None;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn reattach_finalization_certificate(
+        &self,
+        block: &mut BlockMessage,
+    ) -> Result<(), KvStoreError> {
+        let Some(commitment) = block.header.finalized_floor.as_ref() else {
+            if block.finalized_floor_certificate.is_some() {
+                return Err(KvStoreError::SerializationError(
+                    "stored block carries a finalization certificate without a signed floor commitment"
+                        .to_string(),
+                ));
+            }
+            return Ok(());
+        };
+
+        if block.finalized_floor_certificate.is_none() {
+            block.finalized_floor_certificate = Some(
+                self.get_finalization_certificate(&commitment.certificate_digest)?
+                    .ok_or_else(|| {
+                        KvStoreError::SerializationError(
+                            "committed finalization certificate is unavailable".to_string(),
+                        )
+                    })?,
+            );
+        }
+
+        block
+            .finalized_floor_certificate
+            .as_ref()
+            .expect("certificate was attached")
+            .validate_commitment(commitment)
+            .map_err(KvStoreError::SerializationError)
+    }
+
+    pub fn get_finalization_certificate(
+        &self,
+        digest: &BlockHash,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        if digest.len() != models::rust::block_hash::LENGTH {
+            return Err(KvStoreError::SerializationError(format!(
+                "finalization certificate digest must be {} bytes",
+                models::rust::block_hash::LENGTH
+            )));
+        }
+        let Some(store) = &self.store_finalization_certificates else {
+            return Ok(None);
+        };
+        let Some(bytes) = store.get_one(&digest.to_vec())? else {
+            return Ok(None);
+        };
+        if bytes.len() > FinalizationCertificate::MAX_ENCODED_BYTES {
+            return Err(KvStoreError::SerializationError(format!(
+                "stored finalization certificate exceeds {} encoded bytes",
+                FinalizationCertificate::MAX_ENCODED_BYTES
+            )));
+        }
+        let proto = FinalizationCertificateProto::decode(bytes.as_slice()).map_err(|error| {
+            KvStoreError::SerializationError(format!(
+                "finalization certificate decoding error: {error}"
+            ))
+        })?;
+        let certificate =
+            FinalizationCertificate::from_proto(proto).map_err(KvStoreError::SerializationError)?;
+        if certificate.digest() != *digest {
+            return Err(KvStoreError::SerializationError(
+                "content-addressed finalization certificate digest mismatch".to_string(),
+            ));
+        }
+        Ok(Some(certificate))
+    }
+
+    pub fn put_finalization_certificate(
+        &self,
+        digest: &BlockHash,
+        certificate: &FinalizationCertificate,
+    ) -> Result<(), KvStoreError> {
+        if digest.len() != models::rust::block_hash::LENGTH {
+            return Err(KvStoreError::SerializationError(format!(
+                "finalization certificate digest must be {} bytes",
+                models::rust::block_hash::LENGTH
+            )));
+        }
+        certificate
+            .validate_shape()
+            .map_err(KvStoreError::SerializationError)?;
+        if certificate.digest() != *digest {
+            return Err(KvStoreError::SerializationError(
+                "content-addressed finalization certificate digest mismatch".to_string(),
+            ));
+        }
+        let bytes = certificate.to_proto().encode_to_vec();
+        if bytes.len() > FinalizationCertificate::MAX_ENCODED_BYTES {
+            return Err(KvStoreError::SerializationError(format!(
+                "finalization certificate exceeds {} encoded bytes",
+                FinalizationCertificate::MAX_ENCODED_BYTES
+            )));
+        }
+        let Some(store) = &self.store_finalization_certificates else {
+            return Err(KvStoreError::InvalidArgument(
+                "finalization certificate sidecar storage is unavailable".to_string(),
+            ));
+        };
+        if let Some(existing) = self.get_finalization_certificate(digest)? {
+            if existing != *certificate {
+                return Err(KvStoreError::SerializationError(
+                    "content-addressed finalization certificate collision".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        store.put_if_absent(vec![(digest.to_vec(), bytes)])
+    }
+
     pub fn put_block_message(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
         self.put(block.block_hash.clone(), block)
+    }
+
+    pub fn contains_stored_block(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self.store.get_one(&block_hash.to_vec())?.is_some())
+    }
+
+    pub fn is_finalization_certificate_verified(&self, digest: &BlockHash) -> bool {
+        self.verified_finalization_certificates
+            .lock()
+            .map(|cache| cache.0.contains(digest))
+            .unwrap_or(false)
+    }
+
+    pub fn mark_finalization_certificate_verified(
+        &self,
+        digest: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        const MAX_VERIFIED_CERTIFICATES: usize = 4_096;
+        let mut cache = self
+            .verified_finalization_certificates
+            .lock()
+            .map_err(|error| KvStoreError::LockError(error.to_string()))?;
+        if cache.0.insert(digest.clone()) {
+            cache.1.push_back(digest);
+        }
+        while cache.1.len() > MAX_VERIFIED_CERTIFICATES {
+            if let Some(evicted) = cache.1.pop_front() {
+                cache.0.remove(&evicted);
+            }
+        }
+        Ok(())
     }
 
     pub fn contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
@@ -257,7 +494,18 @@ impl KeyValueBlockStore {
             KvStoreError::SerializationError(format!(
                 "Failed to decode varint length prefix: {err}"
             ))
-        })? as usize;
+        })?;
+        let decompressed_length = usize::try_from(decompressed_length).map_err(|_| {
+            KvStoreError::SerializationError(
+                "Stored block decompressed length does not fit this platform".to_string(),
+            )
+        })?;
+        if decompressed_length > Self::MAX_STORED_BLOCK_DECOMPRESSED_BYTES {
+            return Err(KvStoreError::SerializationError(format!(
+                "Stored block declares {decompressed_length} decompressed bytes, exceeding the protocol limit {}",
+                Self::MAX_STORED_BLOCK_DECOMPRESSED_BYTES
+            )));
+        }
 
         let compressed_data = &bytes[cursor.position() as usize..];
         let max_retain_bytes = Self::decode_buffer_retain_bytes();
@@ -295,7 +543,19 @@ impl KeyValueBlockStore {
             KvStoreError::SerializationError(format!(
                 "Failed to decode varint length prefix: {err}"
             ))
-        })? as usize;
+        })?;
+        let decompressed_length = usize::try_from(decompressed_length).map_err(|_| {
+            KvStoreError::SerializationError(
+                "Stored deploy-signature index decompressed length does not fit this platform"
+                    .to_string(),
+            )
+        })?;
+        if decompressed_length > Self::MAX_STORED_BLOCK_DECOMPRESSED_BYTES {
+            return Err(KvStoreError::SerializationError(format!(
+                "Stored deploy-signature index declares {decompressed_length} decompressed bytes, exceeding the protocol limit {}",
+                Self::MAX_STORED_BLOCK_DECOMPRESSED_BYTES
+            )));
+        }
 
         let compressed_data = &bytes[cursor.position() as usize..];
         let max_retain_bytes = Self::decode_buffer_retain_bytes();
@@ -437,14 +697,21 @@ struct BlockDeploySigsRejectedDeploy {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use models::rust::block_hash::BlockHashSerde;
     use models::rust::block_implicits::{block_element_gen, processed_deploy_gen};
-    use models::rust::casper::protocol::casper_message::ApprovedBlockCandidate;
+    use models::rust::casper::protocol::casper_message::{
+        ApprovedBlockCandidate, FinalizationCertificate,
+    };
+    use models::rust::validator::ValidatorSerde;
     use proptest::prelude::*;
     use proptest::strategy::ValueTree;
     use proptest::test_runner::TestRunner;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use shared::rust::{ByteBuffer, ByteString};
 
     use super::*;
+    use crate::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 
     struct MockKeyValueStore {
         get_result: Option<ByteString>,
@@ -584,6 +851,268 @@ mod tests {
     }
 
     fn kb_to_mib(kb: usize) -> f64 { kb as f64 / 1024.0 }
+
+    fn finalization_certificate() -> FinalizationCertificate {
+        let target = BlockHashSerde(Bytes::from(vec![3; 32]));
+        let latest = BlockHashSerde(Bytes::from(vec![4; 32]));
+        let carrier = BlockHashSerde(Bytes::from(vec![5; 32]));
+        FinalizationCertificate {
+            schema_version: FinalizationCertificate::SCHEMA_VERSION,
+            protocol_version: 6,
+            shard_id: "root".to_string(),
+            genesis_hash: BlockHashSerde(Bytes::from(vec![1; 32])),
+            predecessor_floor_hash: BlockHashSerde(Bytes::from(vec![2; 32])),
+            predecessor_certificate_digest: BlockHashSerde(Bytes::from(vec![6; 32])),
+            predecessor_certificate_block_hash: carrier.clone(),
+            target_floor_hash: target.clone(),
+            target_post_state_hash: BlockHashSerde(Bytes::from(vec![7; 32])),
+            target_block_number: 3,
+            fault_tolerance_numerator: 100_000,
+            fault_tolerance_denominator: 1_000_000,
+            exact_latest_messages: std::collections::BTreeMap::from([(
+                ValidatorSerde(Bytes::from(vec![8; 65])),
+                latest.clone(),
+            )]),
+            authority_context_digest: BlockHashSerde(Bytes::from(vec![9; 32])),
+            supporting_manifest_digest: FinalizationCertificate::supporting_digest(
+                &std::collections::BTreeSet::from([target.clone(), latest, carrier]),
+            ),
+            finalized_manifest_digest: FinalizationCertificate::finalized_digest(
+                &std::collections::BTreeSet::from([target]),
+            ),
+            supporting_block_count: 3,
+            finalized_block_count: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn finalization_certificates_are_deduplicated_and_reattached() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let mut runner = TestRunner::default();
+        let mut first = block_element_gen(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .new_tree(&mut runner)
+        .unwrap()
+        .current();
+        let certificate = finalization_certificate();
+        first.header.finalized_floor =
+            Some(certificate.commitment(certificate.authority_context_digest.0.clone()));
+        first.finalized_floor_certificate = Some(certificate.clone());
+        store.put_block_message(&first).unwrap();
+
+        let mut second = first.clone();
+        second.block_hash = Bytes::from(vec![11; 32]);
+        store.put_block_message(&second).unwrap();
+
+        assert_eq!(store.get(&first.block_hash).unwrap(), Some(first));
+        assert_eq!(store.get(&second.block_hash).unwrap(), Some(second));
+        assert_eq!(
+            store
+                .get_finalization_certificate(&certificate.digest())
+                .unwrap(),
+            Some(certificate)
+        );
+        assert_eq!(
+            manager
+                .store("finalization-certificates".to_string())
+                .await
+                .unwrap()
+                .to_map()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_certificate_storage_fails_closed_on_missing_or_tampered_proof() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let mut runner = TestRunner::default();
+        let mut block = block_element_gen(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .new_tree(&mut runner)
+        .unwrap()
+        .current();
+        let certificate = finalization_certificate();
+        block.header.finalized_floor =
+            Some(certificate.commitment(certificate.authority_context_digest.0.clone()));
+        assert!(store.put_block_message(&block).is_err());
+
+        let mut tampered = certificate;
+        tampered.target_post_state_hash = BlockHashSerde(Bytes::from(vec![12; 32]));
+        block.finalized_floor_certificate = Some(tampered);
+        assert!(store.put_block_message(&block).is_err());
+    }
+
+    #[tokio::test]
+    async fn content_addressed_certificate_load_rejects_digest_mismatch() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        let mut tampered = certificate;
+        tampered.target_block_number += 1;
+        manager
+            .store("finalization-certificates".to_string())
+            .await
+            .unwrap()
+            .put_one(digest.to_vec(), tampered.to_proto().encode_to_vec())
+            .unwrap();
+        assert!(store.get_finalization_certificate(&digest).is_err());
+    }
+
+    #[tokio::test]
+    async fn content_addressed_certificate_load_rejects_oversized_value_before_decode() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let digest = Bytes::from(vec![13; models::rust::block_hash::LENGTH]);
+        manager
+            .store("finalization-certificates".to_string())
+            .await
+            .unwrap()
+            .put_one(digest.to_vec(), vec![
+                0;
+                FinalizationCertificate::MAX_ENCODED_BYTES
+                    + 1
+            ])
+            .unwrap();
+        assert!(store.get_finalization_certificate(&digest).is_err());
+    }
+
+    #[tokio::test]
+    async fn detached_block_remains_unavailable_until_its_certificate_is_stored() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let mut runner = TestRunner::default();
+        let mut block = block_element_gen(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .new_tree(&mut runner)
+        .unwrap()
+        .current();
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        block.header.finalized_floor =
+            Some(certificate.commitment(certificate.authority_context_digest.0.clone()));
+
+        store
+            .put_block_message_awaiting_certificate(&block)
+            .unwrap();
+        assert!(store.contains_stored_block(&block.block_hash).unwrap());
+        assert_eq!(
+            store.get_detached(&block.block_hash).unwrap(),
+            Some(block.clone())
+        );
+        assert!(store.get(&block.block_hash).is_err());
+
+        store
+            .put_finalization_certificate(&digest, &certificate)
+            .unwrap();
+        let mut expected = block;
+        expected.finalized_floor_certificate = Some(certificate);
+        assert_eq!(store.get(&expected.block_hash).unwrap(), Some(expected));
+        assert!(!store.is_finalization_certificate_verified(&digest));
+    }
+
+    #[tokio::test]
+    async fn detached_block_and_certificate_obligation_survive_store_recreation() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let mut runner = TestRunner::default();
+        let mut block = block_element_gen(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .new_tree(&mut runner)
+        .unwrap()
+        .current();
+        let certificate = finalization_certificate();
+        let digest = certificate.digest();
+        block.header.finalized_floor =
+            Some(certificate.commitment(certificate.authority_context_digest.0.clone()));
+        let block_hash = BlockHashSerde(block.block_hash.clone());
+
+        store
+            .put_block_message_awaiting_certificate(&block)
+            .unwrap();
+        buffer
+            .add_certificate_relation(BlockHashSerde(digest.clone()), block_hash.clone())
+            .unwrap();
+        drop(store);
+        drop(buffer);
+
+        let restored_store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let restored_buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored_buffer.get_missing_certificate_dependencies(),
+            HashSet::from([BlockHashSerde(digest.clone())])
+        );
+        assert!(restored_buffer.is_waiting_on_certificate(&block_hash));
+        assert_eq!(
+            restored_store.get_detached(&block.block_hash).unwrap(),
+            Some(block.clone())
+        );
+        assert!(restored_store.get(&block.block_hash).is_err());
+
+        restored_store
+            .put_finalization_certificate(&digest, &certificate)
+            .unwrap();
+        restored_buffer
+            .resolve_certificate_dependency(BlockHashSerde(digest))
+            .unwrap();
+        assert_eq!(restored_buffer.get_pendants(), HashSet::from([block_hash]));
+        let restored = restored_store
+            .get(&block.block_hash)
+            .unwrap()
+            .expect("restored block");
+        assert_eq!(restored.finalized_floor_certificate, Some(certificate));
+    }
+
+    #[tokio::test]
+    async fn certificate_sidecar_rejects_a_digest_mismatch_without_persisting() {
+        let mut manager = InMemoryStoreManager::new();
+        let store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let certificate = finalization_certificate();
+        let wrong_digest = Bytes::from(vec![14; models::rust::block_hash::LENGTH]);
+
+        assert!(store
+            .put_finalization_certificate(&wrong_digest, &certificate)
+            .is_err());
+        assert_eq!(
+            manager
+                .store("finalization-certificates".to_string())
+                .await
+                .unwrap()
+                .to_map()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
 
     fn delta_kb_to_mib(delta_kb: isize) -> f64 { delta_kb as f64 / 1024.0 }
 
@@ -807,5 +1336,32 @@ mod tests {
             retained_capacity,
             retain_limit
         );
+    }
+
+    #[test]
+    fn stored_block_length_is_rejected_before_decompression_allocation() {
+        let capacity_before = KeyValueBlockStore::block_proto_decode_buffer_capacity_for_test();
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(
+            (KeyValueBlockStore::MAX_STORED_BLOCK_DECOMPRESSED_BYTES as u64) + 1,
+            &mut bytes,
+        );
+        let error = KeyValueBlockStore::bytes_to_block_proto(&bytes).unwrap_err();
+        assert!(error.to_string().contains("exceeding the protocol limit"));
+        assert_eq!(
+            KeyValueBlockStore::block_proto_decode_buffer_capacity_for_test(),
+            capacity_before
+        );
+    }
+
+    #[test]
+    fn deploy_signature_index_length_is_rejected_before_decompression_allocation() {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(
+            (KeyValueBlockStore::MAX_STORED_BLOCK_DECOMPRESSED_BYTES as u64) + 1,
+            &mut bytes,
+        );
+        let error = KeyValueBlockStore::decode_block_deploy_sigs(&bytes).unwrap_err();
+        assert!(error.to_string().contains("exceeding the protocol limit"));
     }
 }

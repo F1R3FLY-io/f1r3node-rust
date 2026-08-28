@@ -342,6 +342,7 @@ pub async fn equivocate_block(
             ))
             .copied(),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor: None,
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -482,6 +483,7 @@ pub async fn propose_with_explicit_justifications(
             ))
             .copied(),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor: None,
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -659,6 +661,7 @@ pub async fn propose_with_block_mutation(
             ))
             .copied(),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor: None,
     };
     let mut unsigned = proto_util::unsigned_block_proto(
         body,
@@ -811,6 +814,7 @@ pub async fn propose_neglecting_block(
             ))
             .copied(),
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor: None,
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,

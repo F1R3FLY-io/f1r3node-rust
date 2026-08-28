@@ -28,6 +28,8 @@
 # Overridable knobs (environment):
 #   TLC_HEAP=4g          JVM -Xmx (use a JVM size suffix: g/m)
 #   TLC_WORKERS=4        TLC worker threads (a number; never `auto`)
+#   TLC_FP=0             TLC fingerprint polynomial index
+#   TLC_SEED=0           TLC fingerprint seed
 #   TLC_RSS=12G          cgroup MemoryMax (systemd size suffix: G/M)
 #   TLC_METADIR_ROOT=<repo>/target/tlc-metadir
 #   TLC_JAR=/usr/share/java/tla2tools.jar
@@ -36,6 +38,10 @@
 # API:
 #   tlc_bounded <cmd...>                        run cmd under the cgroup ceiling
 #   tlc_metadir <name>                          echo an on-disk metadir (mkdir -p'd)
+#   tlc_source_hash <config> <module>            hash the complete local TLA input set
+#   tlc_recovery_identity <source-hash>          bind checker and fingerprint identity
+#   tlc_require_recovery_binding <identity>      reject unbound checkpoint recovery
+#   tlc_require_unchanged_identity <before> <after>
 #   tlc_run <metadir> <config> <module> [args]  run TLC: bounded heap+workers+disk
 #
 # This file is SOURCED, not executed; it defines functions and defaults and
@@ -43,6 +49,8 @@
 
 TLC_HEAP="${TLC_HEAP:-4g}"
 TLC_WORKERS="${TLC_WORKERS:-4}"
+TLC_FP="${TLC_FP:-0}"
+TLC_SEED="${TLC_SEED:-0}"
 TLC_RSS="${TLC_RSS:-12G}"
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 
@@ -115,28 +123,84 @@ tlc_metadir() {
   printf '%s' "$dir"
 }
 
+tlc_source_hash() {
+  local config="$1" module="$2" module_dir
+  local -a tla_sources=()
+  module_dir="$(cd "$(dirname "$module")" && pwd)"
+  mapfile -t tla_sources < <(find "$module_dir" -maxdepth 1 -type f -name '*.tla' -print | sort)
+  sha256sum "$config" "${tla_sources[@]}" | sha256sum | awk '{print $1}'
+}
+
+tlc_recovery_identity() {
+  local source_hash="$1" checker_hash checker_path
+  if [[ -f "$TLC_JAR" ]]; then
+    checker_hash="$(sha256sum "$TLC_JAR" | awk '{print $1}')" || return 1
+  else
+    checker_path="$(command -v tlc)" || return 1
+    checker_hash="$(sha256sum "$checker_path" | awk '{print $1}')" || return 1
+  fi
+  printf '%s\n' "$source_hash" "$checker_hash" "$TLC_FP" "$TLC_SEED" "$TLC_WORKERS" |
+    sha256sum | awk '{print $1}'
+}
+
+tlc_require_recovery_binding() {
+  local recovery_identity="$1" arg recovery=false
+  shift
+  for arg in "$@"; do
+    [[ "$arg" == "-recover" ]] && recovery=true
+  done
+  if [[ "$recovery" == true && "${TLC_RECOVER_IDENTITY:-}" != "$recovery_identity" ]]; then
+    echo "tlc-run: checkpoint recovery requires TLC_RECOVER_IDENTITY=$recovery_identity" >&2
+    return 2
+  fi
+}
+
+tlc_require_unchanged_identity() {
+  if [[ "$1" != "$2" ]]; then
+    echo "tlc-run: checker or formal inputs changed while TLC was running" >&2
+    return 75
+  fi
+}
+
 # tlc_run <metadir> <config> <module> [extra tlc args...]
 # Run TLC with a bounded heap, bounded workers, and the given ON-DISK
 # metadir, all under the cgroup ceiling. Forwards TLC's stdout/stderr and
 # propagates its exit code, so callers may `out=$(tlc_run ... 2>&1)` or
 # `tlc_run ... >log 2>&1`.
 tlc_run() {
-  local metadir="$1" config="$2" module="$3"
+  local metadir="$1" config="$2" module="$3" source_hash recovery_identity
+  local post_source_hash post_recovery_identity rc
   shift 3
   mkdir -p "$metadir"
+  source_hash="$(tlc_source_hash "$config" "$module")" || return 1
+  recovery_identity="$(tlc_recovery_identity "$source_hash")" || return 1
+  echo "+ TLC_SOURCE_HASH=$source_hash" >&2
+  echo "+ TLC_RECOVERY_IDENTITY=$recovery_identity" >&2
+  tlc_require_recovery_binding "$recovery_identity" "$@" || return $?
   if [[ -f "$TLC_JAR" ]]; then
-    # Preferred: java with an explicit -Xmx (no env-var gymnastics).
-    tlc_bounded java "-Xmx$TLC_HEAP" -XX:+UseParallelGC -cp "$TLC_JAR" tlc2.TLC \
-      -workers "$TLC_WORKERS" -metadir "$metadir" -config "$config" "$@" "$module"
+    if tlc_bounded java "-Xmx$TLC_HEAP" -XX:+UseParallelGC -cp "$TLC_JAR" tlc2.TLC \
+        -fp "$TLC_FP" -seed "$TLC_SEED" -workers "$TLC_WORKERS" \
+        -metadir "$metadir" -config "$config" "$@" "$module"; then
+      rc=0
+    else
+      rc=$?
+    fi
   elif command -v tlc >/dev/null 2>&1; then
-    # Fallback: the `tlc` wrapper honours TLC_JAVA_OPTS for the JVM heap.
-    # Export inside a subshell so the assignment reaches the wrapped java.
-    (
+    if (
       export TLC_JAVA_OPTS="-Xmx$TLC_HEAP ${TLC_JAVA_OPTS:-}"
-      tlc_bounded tlc -workers "$TLC_WORKERS" -metadir "$metadir" -config "$config" "$@" "$module"
-    )
+      tlc_bounded tlc -fp "$TLC_FP" -seed "$TLC_SEED" -workers "$TLC_WORKERS" \
+        -metadir "$metadir" -config "$config" "$@" "$module"
+    ); then
+      rc=0
+    else
+      rc=$?
+    fi
   else
     echo "tlc-run: no TLC jar at $TLC_JAR and no 'tlc' on PATH" >&2
     return 3
   fi
+  post_source_hash="$(tlc_source_hash "$config" "$module")" || return 1
+  post_recovery_identity="$(tlc_recovery_identity "$post_source_hash")" || return 1
+  tlc_require_unchanged_identity "$recovery_identity" "$post_recovery_identity" || return $?
+  return "$rc"
 }

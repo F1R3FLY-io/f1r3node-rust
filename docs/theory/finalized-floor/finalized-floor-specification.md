@@ -342,7 +342,59 @@ The intent decides only whether an empty body is authorized. Deploy admission,
 execution, state-bound cost certification, settlement, replay, validation, and
 publication remain the same ordinary block pipeline for every non-empty body.
 
-### 2.1.2 Atomic publication and crash recovery
+### 2.1.2 Exact target-deploy observation
+
+Deploy finalization polling is an observer contract, not a second finalizer. The
+client MUST consume `deploy_finalization_status` as the authority for the exact
+target occurrence. It MUST NOT infer target success merely because the LFB moved,
+because an intermediate finalized block can advance the state floor while the
+target still lacks the later mutual-knowledge layer needed for terminal status.
+
+- **R-TARGET-EXACT.** Success MUST require the target deploy's exact
+  `Finalized` status. An LFB advance, target-block inclusion, a finalized
+  descendant, or an unrelated certificate MUST NOT be substituted for that
+  status. Exact `Failed` and `Expired` statuses observed before both deadlines
+  remain terminal errors. A terminal response returned at or after an expired
+  boundary is retained for diagnostics but MUST NOT convert the already-expired
+  wait into success or a target rejection.
+- **R-TARGET-STALL.** A progress-aware observer MAY renew its no-progress budget
+  only after a strict increase in the observed LFB block number. Same-height
+  hash changes, latest-message churn, request retries, and successful RPCs MUST
+  NOT renew it. The first successful LFB observation establishes the comparison
+  baseline and MUST NOT renew it. This differs intentionally from
+  R-HEARTBEAT-PROGRESS: the
+  heartbeat owns recovery rounds for an exact LFB identity, while the external
+  observer is deciding only whether useful finality height continues to advance.
+- **R-TARGET-HISTORY.** A lower LFB height or a different hash at the same LFB
+  height is a finalized-history anomaly. The observer MUST fail loudly rather
+  than treating it as progress or hiding it as a transient request error.
+- **R-TARGET-ABSOLUTE.** A separate monotonic absolute deadline MUST bound the
+  complete observation. No amount of LFB progress may renew that deadline. Each
+  blocking status or LFB request MUST receive a deadline no greater than the
+  remaining observation budget, assuming the transport honors its deadline.
+  Budget expiry MUST be evaluated immediately after each blocking request and
+  before interpreting that request's response or renewing progress.
+- **R-TARGET-TIMEOUT.** Exhausting either budget reports an inconclusive timeout,
+  not target rejection and not a consensus decision. The diagnostic SHOULD
+  include the exhausted budget, elapsed duration, strict progress count, last
+  observed LFB height/hash, exact target state, rejection count, and last RPC
+  error.
+- **R-TARGET-CLOCK.** Both budgets MUST use a monotonic clock. Wall-clock
+  adjustment MUST NOT shorten or extend either bound.
+- **R-TARGET-DURATION.** Poll, stall, and absolute durations MUST be positive
+  and finite, and the absolute duration MUST be at least the stall duration.
+  Invalid configuration MUST fail before the first status or LFB request.
+
+For the integration harness, `finalization = 45s` is the no-progress budget and
+`deploy_finalization_absolute = 135s` is the non-renewable execution bound. These
+are operational test headroom (the latter is three no-progress intervals), not a
+protocol-derived bound and not a claim that asynchronous Casper has a universal
+45-second or 135-second finality guarantee. The reproduced bridge trace took
+approximately 49 seconds: the target was valid and included, a genuine
+intermediate LFB advance reset recovery cadence, and later support produced exact
+terminal status. A fixed 45-second total deadline rejected that valid trace.
+
+### 2.1.3 Atomic publication and crash recovery
 
 Finalizer evaluations MAY overlap over immutable snapshots. Their durable
 publication MUST satisfy all of the following requirements:
@@ -403,7 +455,7 @@ These requirements refine local materialization only. They MUST NOT change
 clique membership, stake weights, the exact fault-tolerance threshold, or which
 candidate the Casper finalizer certifies.
 
-### 2.1.3 Live minority-fork recovery
+### 2.1.4 Live minority-fork recovery
 
 An approved genesis is the immutable ceremony-authenticated trust root at block
 height zero. A running node's finalization ledger records that node's local
@@ -648,11 +700,15 @@ either certificate.
   projection is the degenerate instance of the same backstop rule. Parent
   construction MUST NOT fall back to genesis.
 
-  Reachability compaction MUST run before bounds. A finite parent-count cap MUST
-  be at least `number-of-active-validators + 1`, reserving capacity for every
-  distinct active-validator latest message plus an independent floor backstop;
-  startup rejects a smaller cap, and proposal construction MUST NOT silently
-  truncate an uncovered live tip. Finite depth expires a secondary causal tip
+  Reachability compaction MUST run before bounds. For a finite parent-count cap,
+  proposal construction MUST admit the complete frozen frontier exactly when its
+  cardinality fits and otherwise return a typed, non-signing deferral. It MUST NOT
+  silently truncate an uncovered live tip. `number-of-active-validators + 1`
+  remains a sufficient worst-case provisioning bound, reserving capacity for one
+  distinct tip per configured validator slot plus an independent floor backstop;
+  falling below that bound produces a startup warning rather than rejection because
+  the configured maximum is not the live committee or the compacted frontier.
+  Finite depth expires a secondary causal tip
   only through the deterministic block-height horizon shared by all validators.
   The selected GHOST head is unconditional, and exact latest messages remain
   evidence roots even after their proposal dependency expires.
@@ -678,9 +734,12 @@ either certificate.
   validity is block-structural; LFB eligibility is evaluated separately when the
   finalizer considers promotion.
 - **R-PROVENANCE-ACTIVATION.** Exact state-effect provenance begins with the
-  protocol-3 consensus encoding. This release supports only protocol 4 and MUST
-  start from a protocol-4 genesis or resynchronize complete current metadata; it
-  MUST NOT infer missing provenance for legacy persisted blocks.
+  protocol-3 consensus encoding, vault-backed quantitative byte evidence with
+  protocol 4, certified validator incarnations with protocol 5, and certified
+  finalized-floor commitments and admission outcomes with protocol 6. This
+  release supports only protocol 6 and MUST start from a protocol-6 genesis or
+  resynchronize complete current metadata; it MUST NOT infer missing consensus
+  fields for legacy persisted blocks.
 
 ## 3. Determinism (normative)
 
@@ -717,6 +776,48 @@ either certificate.
   closure. Neither a mutable receiver-local equivocation tracker nor the
   derived invalid-block index may satisfy any dependency. Rejected blocks still
   satisfy readiness through their persisted certified DAG metadata.
+- **R-CERTIFICATE-DEPENDENCY.** A protocol-6 block whose signed finalized-floor
+  commitment names an unavailable certificate MUST be persisted as a detached
+  block and buffered on a typed certificate dependency. Certificate dependency
+  keys MUST be disjoint from every 32-byte block hash and MUST round-trip to one
+  exact 32-byte certificate digest.
+- **R-CERTIFICATE-REQUEST.** Certificate requests MUST be content-addressed,
+  deduplicated per digest, bounded in count and peer fanout, and retried with a
+  monotonic bounded backoff. A transport failure MUST retain the live proof
+  obligation. Failure for one digest MUST NOT prevent eligible retries for other
+  digests in the same maintenance pass.
+- **R-CERTIFICATE-RESPONSE.** A certificate response MAY mutate storage only
+  when its digest is a live persistent obligation, its encoding and shape are
+  bounded, and its canonical certificate digest equals the requested digest.
+  Unsolicited, malformed, oversized, or mismatched responses MUST NOT resolve a
+  dependency or complete a tracker entry.
+- **R-CERTIFICATE-WAKE.** Content-addressed certificate persistence MUST precede
+  dependency resolution. Concurrent duplicate responses MUST converge to one
+  sidecar, one resolution, and at most one queue insertion for each block.
+  Temporary queue backpressure MUST leave the block discoverable by a later
+  dependency-free scan.
+- **R-CERTIFICATE-RESTART.** Detached blocks, certificate sidecars, and typed
+  dependency edges MUST be durable. After restart, the node MUST reconstruct
+  bounded volatile requests from the persistent dependency set, resolve already
+  stored sidecars, and retry every remaining eligible obligation. Volatile
+  cooldown or tracker loss MUST NOT change admission safety.
+- **R-CARRIER-EQUIVALENCE.** A non-genesis predecessor certificate carrier MUST
+  be an accepted, causal, protocol-compatible member of the bounded certified
+  support closure whose signed commitment names the exact predecessor floor and
+  replayed post-state. Eligibility MUST NOT require equality with the receiver's
+  node-local witness digest, ledger revision, or record digest. Honest proofs
+  with different evidence identities but the same certified state are
+  semantically interchangeable only as complete proofs.
+- **R-CARRIER-PAIR.** Selection MUST return the carrier block hash and the digest
+  committed by that block as one pair. The next local witness and durable append
+  MUST preserve that pair exactly. Storage and receiver validation MUST reject a
+  carrier hash combined with a digest from another carrier, even when both
+  carriers separately certify the same floor and post-state.
+- **R-CARRIER-WAKE.** A parked predecessor-carrier obligation MUST wake after
+  admission of an accepted commitment for the current local head's exact floor
+  and post-state. A different local witness digest MUST NOT suppress the wake. A
+  floor match with a different post-state MUST NOT wake or satisfy the
+  obligation; final selection MUST rerun from a fresh bounded support closure.
 - **R-EVIDENCE-TRAVERSAL.** Certified causal-evidence discovery MUST traverse
   the structural parents and justifications of both accepted and rejected
   blocks. Rejection is not an ancestry barrier. An accepted block's certified
@@ -866,8 +967,8 @@ authorization for an in-place protocol upgrade.
   signing.
 - **R-APPROVED-SUPPORT.** Approved-block validation MUST reject every version
   outside the binary's explicit supported set before Casper starts. This release's
-  supported set is exactly protocol 4; protocols 1 through 3 and unknown future versions
-  MUST fail closed without mutating the running shard configuration.
+  supported set is exactly protocol 6; protocols 1 through 5 and unknown future
+  versions MUST fail closed without mutating the running shard configuration.
 - **R-VERSION-ADOPTION.** After approved-block validation, every node MUST adopt
   that approved version into the authoritative running shard configuration.
   Recovery and initialization contexts MUST retain the adopted configuration,
@@ -878,10 +979,11 @@ authorization for an in-place protocol upgrade.
 - **R-VERSION-RECEPTION.** Peer-interest filtering and block validation MUST
   compare incoming blocks with the authoritative running version. They MUST NOT
   consult a second version source whose value can drift from proposal.
-- **R-FRESH-GENESIS.** Cost-accounted protocol 4 MUST activate through a fresh
-  protocol-4 genesis approved by every validator. There MUST NOT be a node-local
-  accounting switch, an A/B mode, or a block-height window in which this binary
-  accepts both externalized and internalized charging semantics.
+- **R-FRESH-GENESIS.** Protocol 6 MUST activate through a fresh protocol-6
+  genesis approved by every validator. There MUST NOT be a node-local accounting
+  switch, an A/B mode, or a block-height window in which this binary accepts both
+  externalized and internalized charging, validator-incarnation, or certified-
+  floor semantics.
 
 ### 5.3 Approved-state replay and local validation recovery
 
@@ -973,6 +1075,7 @@ authorization for an in-place protocol upgrade.
 | **S39** | Peer activity or an ambient flag authorizes an empty block, a stale recovery permit executes, stored but inadmissible work masks recovery, selected recovery suppresses admissible deploys, or a pending collision loses its one required follow-up (violates R-PROPOSAL-INTENT/R-RECOVERY-PERMIT/R-HEARTBEAT-WORK/R-PENDING-ADMISSIBILITY/R-PENDING-RECOVERY-COMPOSITION/R-PROPOSER-COALESCING). |
 | **S40** | Recovery treats a peer's local ledger revision, digest, witness, or advertised head as state authority; bypasses ordinary dependency admission; publishes outside the local frozen-context Casper finalizer; loses a finalization retry after concurrent admission; replaces genesis; or globally pauses validators or shards (violates R-RECOVERY-*). |
 | **S41** | Per-block floor derivation can defer on a dual-certified secondary-parent target that the durable finalizer cannot discover, or materialization substitutes evidence for a different target (violates R-FINALIZER-CLOSURE/R-FINALIZER-ORDER/R-FINALIZATION-BASE). |
+| **S42** | An honest node permanently parks because an admitted predecessor carrier commits a different honest local witness digest for the same floor/state; accepts the same floor with a different state; or splices a carrier block and foreign digest (violates R-CARRIER-EQUIVALENCE/R-CARRIER-PAIR/R-CARRIER-WAKE). |
 
 ## 7. Liveness invariants — MUST eventually happen
 
@@ -994,6 +1097,7 @@ authorization for an in-place protocol upgrade.
 | **L14** | Under fair local execution and support delivery, independently scheduled honest validators that accept the same state-preserving candidate eventually publish its identical block/root/effect tuple regardless of unrelated runtime resets. |
 | **L15** | Under fair proposer execution, a finite burst of pending-deploy requests colliding with one active proposal produces exactly one forced fresh-snapshot follow-up, while a busy or deferred selected recovery leaves its local round available for retry. |
 | **L16** | If a stable frozen view contains an all-parent-reachable candidate above the current LFB that passes its own exact causal certificate, exact state certificate, and current-LFB preservation check, the finalizer eventually materializes the deterministic greatest eligible `(block_number, block_hash)` candidate. |
+| **L17** | Once an accepted causal carrier for the current predecessor floor/state enters the bounded support closure, every parked honest finalizer is woken and may extend through that complete proof regardless of its own local witness digest. |
 
 ## 8. Conformance
 

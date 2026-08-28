@@ -4,7 +4,9 @@
 # mandatory by default; CA_ENFORCE_PROOFS=0 is an explicit local diagnostic mode.
 #
 # Env: SKIP_HEAVY=1 omits the slow legs (Rocq proofs, Lean) for a quick
-# cross-witness sweep. Default runs every gate found.
+# cross-witness sweep. Default runs every unlicensed gate found.
+# RUN_WOLFRAM=1 explicitly adds the licensed optimization-exploration tier;
+# the default never discovers a kernel or acquires a license.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,6 +39,7 @@ done
 for gate in "$ROOT"/scripts/check-cost-accounted-rho-*.sh; do
   base="$(basename "$gate")"
   [ "$base" = "$SELF" ] && continue
+  [ "$base" = "check-cost-accounted-rho-wolfram.sh" ] && continue
   if [ "${SKIP_HEAVY:-0}" = "1" ] && [[ "$base" =~ $heavy_re ]]; then
     names+=("$base")
     if [ "$strict" = "1" ]; then
@@ -62,6 +65,19 @@ for gate in "$ROOT"/scripts/check-cost-accounted-rho-*.sh; do
   fi
   names+=("$base"); verdicts+=("$verdict")
 done
+
+if [ "${RUN_WOLFRAM:-0}" = "1" ]; then
+  gate="$ROOT/scripts/check-cost-accounted-rho-wolfram.sh"
+  base="$(basename "$gate")"
+  out="$(bash "$gate" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    verdict="FAIL"; overall=1
+    printf '\n--- %s failure output ---\n%s\n' "$base" "$out" >&2
+  else
+    verdict="PASS"
+  fi
+  names+=("$base"); verdicts+=("$verdict")
+fi
 
 echo ""
 echo "════════ cost-accounted-rho verification matrix ════════"

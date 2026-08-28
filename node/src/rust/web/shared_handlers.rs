@@ -309,6 +309,14 @@ fn classify_casper_error(err: &CasperError) -> (StatusCode, &'static str, String
             "invalid_cost_settlement",
             err.to_string(),
         ),
+        ParentFrontierCapacityExceeded { .. } => (
+            S::SERVICE_UNAVAILABLE,
+            "parent_frontier_capacity_exceeded",
+            err.to_string(),
+        ),
+        CertificateVerificationWorkExceeded { .. } => {
+            internal("certificate_verification_work_exceeded")
+        }
         UnsupportedProtocolVersion { .. } => internal("unsupported_protocol_version"),
 
         SigningError(_) => internal("signing_error"),
@@ -624,5 +632,22 @@ mod tests {
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(kind, "unsupported_protocol_version");
         assert!(detail.contains("Unsupported Casper protocol version: 1"));
+    }
+
+    #[test]
+    fn parent_frontier_capacity_is_a_service_deferral() {
+        let error = CasperError::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+            effective_committee: 3,
+            unique_causal_tips: 3,
+            floor_backstop_added: false,
+            expired_tip_count: 0,
+        };
+        let (status, kind, detail) = classify_casper_error(&error);
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(kind, "parent_frontier_capacity_exceeded");
+        assert!(detail.contains("requires 3 parents"));
     }
 }

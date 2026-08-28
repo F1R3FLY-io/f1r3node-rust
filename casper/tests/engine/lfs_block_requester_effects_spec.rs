@@ -221,6 +221,8 @@ pub struct MockBlockRequesterOps {
 
     /// Channel sender to capture block save operations
     save_sender: mpsc::UnboundedSender<(BlockHash, BlockMessage)>,
+
+    request_failures: HashSet<BlockHash>,
 }
 
 impl MockBlockRequesterOps {
@@ -233,7 +235,13 @@ impl MockBlockRequesterOps {
             test_state,
             request_sender,
             save_sender,
+            request_failures: HashSet::new(),
         }
+    }
+
+    pub fn with_request_failures(mut self, request_failures: HashSet<BlockHash>) -> Self {
+        self.request_failures = request_failures;
+        self
     }
 }
 
@@ -244,7 +252,13 @@ impl BlockRequesterOps for MockBlockRequesterOps {
         self.request_sender
             .send(block_hash.clone())
             .map_err(|_| CasperError::StreamError("Request channel closed".to_string()))?;
-        Ok(())
+        if self.request_failures.contains(block_hash) {
+            Err(CasperError::StreamError(
+                "injected block request failure".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// Checks if block exists in the mock test state
@@ -295,6 +309,27 @@ where
     F: FnOnce(Mock) -> Fut,
     Fut: std::future::Future<Output = Result<(), TestError>>,
 {
+    dag_from_block_with_request_failures(
+        start_block,
+        run_processing_stream,
+        request_timeout,
+        HashSet::new(),
+        test_fn,
+    )
+    .await
+}
+
+async fn dag_from_block_with_request_failures<F, Fut>(
+    start_block: BlockMessage,
+    run_processing_stream: bool,
+    request_timeout: std::time::Duration,
+    request_failures: HashSet<BlockHash>,
+    test_fn: F,
+) -> Result<(), TestError>
+where
+    F: FnOnce(Mock) -> Fut,
+    Fut: std::future::Future<Output = Result<(), TestError>>,
+{
     let approved_block = create_approved_block(start_block.clone());
 
     let mut saved_blocks = HashMap::new();
@@ -319,7 +354,8 @@ where
         test_fn(mock).await
     } else {
         // Create mock operations implementation
-        let mut mock_ops = MockBlockRequesterOps::new(test_state, request_tx, save_tx);
+        let mut mock_ops = MockBlockRequesterOps::new(test_state, request_tx, save_tx)
+            .with_request_failures(request_failures);
 
         let empty_queue = std::collections::VecDeque::new();
         let response_queue_pending = Arc::new(AtomicUsize::new(0));
@@ -400,6 +436,31 @@ mod tests {
         )
         .await
         .expect("Test should complete successfully");
+    }
+
+    #[tokio::test]
+    async fn failed_request_does_not_cancel_independent_lfs_requests() {
+        init_logger();
+        let (_, b8, _, _, _, _, _, _, _) = get_blocks();
+        let (_, _, hash7, _, hash5, _, _, _, _) = get_hashes();
+
+        dag_from_block_with_request_failures(
+            b8,
+            true,
+            std::time::Duration::from_secs(10 * 24 * 3600),
+            HashSet::from([hash7.clone()]),
+            |mut mock| async move {
+                let mut requests = Vec::new();
+                for _ in 0..2 {
+                    requests.push(mock.next_request().await.expect("independent LFS request"));
+                }
+                reverse_lexicographic_sort(&mut requests);
+                assert_eq!(requests, vec![hash7, hash5]);
+                Ok(())
+            },
+        )
+        .await
+        .expect("request round");
     }
 
     /// Tests that blocks already in storage are not re-requested, verifying correct dependency resolution with pre-existing blocks

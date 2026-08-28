@@ -76,6 +76,12 @@ fn recoverable_propose_failure_message(status: &ProposeStatus) -> Option<String>
         ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(reason)) => {
             Some(format!("Proposal deferred: {}.", reason))
         }
+        ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+            configured_cap,
+            required_parents,
+        }) => Some(format!(
+            "Proposal deferred: exact parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap}."
+        )),
         ProposeStatus::Failure(ProposeFailure::CheckConstraintsFailure(
             CheckProposeConstraintsFailure::NotEnoughNewBlocks,
         )) => Some("No new blocks from peers yet; synchronize with network first.".to_string()),
@@ -2084,5 +2090,26 @@ impl BlockAPI {
             tracing::warn!("{}", error_message);
             Err(eyre::eyre!("Error: {}", error_message))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_frontier_capacity_is_reported_as_recoverable_without_immediate_retry() {
+        let status = ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+        });
+
+        assert_eq!(
+            recoverable_propose_failure_message(&status).as_deref(),
+            Some(
+                "Proposal deferred: exact parent frontier requires 3 parents but max-number-of-parents is 2."
+            )
+        );
+        assert!(!should_retry_deploy_propose(&status));
     }
 }

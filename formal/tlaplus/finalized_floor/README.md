@@ -18,13 +18,18 @@ and the proof and execution evidence is cataloged in
 | `StateLineageFinality.tla` | causal certificate, state certificate, and committed-effect lineage |
 | `StateEffectProvenance.tla` | exact accepted/rejected effect recurrence and arrival-order convergence |
 | `StatePreservingForkChoice.tla` | distinct causal-parent/vote projections, exact floor backstop and evidence roots, GHOST-head preservation, maximal-antichain compaction, recovery coverage, deterministic depth expiry, finite-cap liveness, and protected-floor replay after LFB advancement |
+| `StaleSiblingRecovery.tla` | asynchronous accepted-sibling delivery, exact-frontier settlement, source-bound tombstone propagation, rejected-occurrence buffering, unique recovery ownership, and converged rehome finalization |
 | `ParallelValidatorConsensus.tla` | split node-local receive, capture, replay, validation, support, crash/restart, and atomic promotion transitions |
 | `CertifiedFloorPromotion.tla` | complete causal discovery of dual-certified off-main floors |
+| `CertifiedFloorCommitment.tla` | signed target-bound causal/state certificates committed by protocol-6 block headers |
+| `FinalizationCertificateRetrieval.tla` | typed bounded sidecar retrieval, response validation, crash reconstruction, and one-time wakeup |
+| `DependencyMaintenanceRound.tla` | frozen mixed block/certificate maintenance snapshots, all-obligation dispatch, and deferred first-error return |
 | `LatestMessageCoverage.tla` | exact worklist refinement of pairwise supporter reachability |
 | `FinalizerFloorMaterialization.tla` | proposal deferral, complete all-parent durable-finalizer discovery, exact target-bound dual certification, and local materialization |
 | `SnapshotFloorMaterialization.tla` | complete provenance closure before snapshot selection |
 | `HeartbeatFinalityBackpressure.tla` | bounded validator-local recovery, explicit ancestry/latest-message views, mutual causal/state cliques, and rotating leadership |
 | `HeartbeatRecoveryCadence.tla` | one-time stall timeout followed by per-`check_interval` local recovery rounds |
+| `TargetDeployTerminality.tla` | exact target-status observation with deadline-consuming RPCs, strict-height stall renewal, fail-loud finalized-history anomalies, and a non-renewable absolute bound |
 | `PendingDeployHeartbeatComposition.tla` | concurrent pending-deploy ingress composed with selected recovery, retryable outcomes, terminal evidence, and deterministic occurrence disposition |
 | `ProposerAdmissionCoalescing.tla` | serialized manual, pending-deploy, and finality-recovery proposal intents with one latched pending follow-up and fresh recovery permits |
 | `RecoveryCommitteeTransition.tla` | separation of accepted post-state bond registration from finalized-floor authorization, justification, sequence, and synchrony-weight authority |
@@ -40,6 +45,7 @@ and the proof and execution evidence is cataloged in
 | `FinalizationGenesisIdentity.tla` | atomic pristine bootstrap, immutable genesis identity, write-free duplicate assertion after arbitrary head advancement, and rooted restart integrity |
 | `GenesisApprovalTrust.tla` | local-minimum ceremony policy, candidate-declared threshold enforcement, distinct bonded-signature sufficiency, and write-free rejection |
 | `DivergentFinalizationHistories.tla` | same-target convergence with node-local ledger revisions and record digests, and rejection of remote ledger identity as state authority |
+| `WitnessEquivalentCarrier.tla` | semantic predecessor proof equivalence across divergent honest witness digests, exact carrier block/digest pairing, and state-bound park/wake behavior |
 | `LiveMinorityForkRecovery.tla` | multi-peer tip discovery, dependency-first ordinary admission, local finalizer publication, retry after concurrent admission, and validator/shard-local framing |
 
 ## State-preserving fork choice
@@ -53,11 +59,14 @@ zero, roots evidence at both the floor and every exact latest message, applies
 deterministic depth expiry, and permits recovery narrowing only after causal coverage
 and floor ancestry are both established.
 
-The safe two-node configuration checks cross-node arrival schedules. The zero-depth
-configuration is the constructive liveness witness: a permanently old disjoint tip
-expires from the live proposal frontier while remaining an evidence root. Its paired
-no-expiry control violates proposal liveness. The remaining controls isolate the
-boundaries rather than combining defects:
+The safe configuration exhausts every local ordering of certificate delivery,
+latest-message delivery, floor promotion, recovery observation, and proposal
+capture. It generates 17,169 states, finds 808 distinct states, reaches depth 10,
+and checks both temporal properties. The zero-depth configuration is the
+constructive liveness witness: a permanently old disjoint tip expires from the
+live proposal frontier while remaining an evidence root. Its paired no-expiry
+control violates proposal liveness. The remaining controls isolate the boundaries
+rather than combining defects:
 
 | Configuration suffix | Expected result | Defect isolated |
 |---|---|---|
@@ -80,6 +89,46 @@ then checks each safety counterexample symbolically. The Apalache configurations
 certified `F` and reuse the model's unchanged latest-message, recovery, and proposal
 actions; certificate delivery and promotion remain in the exhaustive TLC instance.
 TLC remains the authority for the two temporal negative controls.
+
+The detailed transition relation is node-local: every mutable component is indexed
+by node, one transition changes one index, and another node's update cannot affect
+local enablement or a reached local goal. The axiom-free Rocq module
+`NodeLocalProductLifting.v` lifts any locally preserved invariant through an
+arbitrary finite schedule over an arbitrary node type, proves that distinct-node
+updates commute pointwise, proves adjacent independent schedule steps equivalent,
+and proves that another node cannot disable local work or erase a reached goal.
+`ParallelValidatorConsensus.tla` separately exhausts the interacting three-validator
+receive, replay, support, crash, and promotion transitions. This compositional
+product proof replaces redundant Cartesian-product enumeration without serializing
+validators or removing any local transition.
+
+## Stale-sibling settlement and recovery
+
+`StaleSiblingRecovery.tla` composes the lifecycle seam between causal parent
+selection and occurrence recovery. Three validators independently receive
+accepted siblings `A` and `B`; after `B` becomes the floor, `A` remains a causal
+input but ceases to be a finality vote. An exact `{A, B}` settlement emits a
+source-bound tombstone for `A`, every observer records that occurrence in the
+rejected buffer, and only the committed-view recovery leader may publish the
+fresh rehome. Finalization must preserve `B` and converge on the effects of
+`A`, `B`, and the fresh work.
+
+TLC exhausts 1,508 generated / 451 distinct states to depth 20 and checks
+`RecoveryCompletes` under weak fairness. Apalache checks every safety invariant
+through bound 14, which reaches a complete settlement, rehome, and finalization
+path. Seven controls independently drop the accepted stale sibling, truncate
+the settlement frontier, replace the source identity with a signature-only
+tombstone, omit rejected buffering, suppress selected recovery, regress the
+floor effect, or permit a nonleader retry. TLC and Apalache reject every control
+for its designated invariant.
+
+The executable refinements are the staged Rust regression
+`resolved_asymmetric_frontier_rehomes_excluded_local_deploy` and
+`loom_consensus_projection_freeze::parallel_stale_sibling_settlement_authorizes_exactly_one_recovery`.
+The former uses a real initialized map cell, observes settlement before retry,
+and requires all nodes to finalize the same one-datum map. The latter explores
+parallel floor publication, settlement observation, buffering, and competing
+leader/nonleader recovery attempts.
 
 ## Atomic publication and recovery
 
@@ -185,6 +234,18 @@ required remote-ledger control violates safety when one node treats another
 node's local ledger identity as authority. Apalache checks the safe projection
 through length 5 and reproduces the same control.
 
+`WitnessEquivalentCarrier.tla` closes the next induction boundary. A portable
+proof is eligible by accepted causal membership, protocol, predecessor floor,
+and predecessor post-state—not by equality with the receiver's local witness
+digest. The selected carrier hash and its committed digest remain an inseparable
+pair. TLC exhausts 961 reachable two-node states. Apalache checks the safe model
+through length 5. Exact-local-digest gating, floor-only matching, local-digest
+copying, and missed semantic wakeup each violate their named invariant under both
+checkers. The axiom-free unbounded refinement is
+`formal/rocq/finalized_floor/theories/WitnessEquivalentCarrier.v`; executable
+coverage includes the selector property test, the exact asymmetric-frontier
+integration regression, and `casper/tests/loom_finalization_carrier_wakeup.rs`.
+
 `LiveMinorityForkRecovery.tla` keeps a stale validator in `Running`. Peers send
 ordinary fork-choice tips, missing parents and justifications pass through the
 normal bounded block-retrieval and certified-admission path, and only the local
@@ -252,6 +313,26 @@ Apalache checks the same invariants through bound 10.
 `MC_HeartbeatRecoveryCadence_collapsed_unsafe.cfg` instead reuses the stall
 timeout for every round and violates `Inv_CadenceMatchesContract`, reproducing
 delayed post-stall recovery under an immediate elapsed-time jump.
+
+## Exact target-deploy observation
+
+`TargetDeployTerminality.tla` treats the node's exact deploy status as an opaque
+consensus result and verifies only the external observer policy. Status and LFB
+requests may advance the monotonic clock by an arbitrary bounded amount in one
+transition. The safe model resolves an expired stall or absolute budget before
+interpreting a boundary response, renews the stall budget only for a strict LFB
+height increase after the first baseline, fails on finalized-height regression
+or same-height revision, and succeeds only on the target's exact `Finalized`
+status.
+
+TLC exhausts 19,444 generated / 1,155 distinct states to depth 5. Apalache
+checks the same invariant set through length 8. Five independent controls expose
+a fixed total timeout during useful progress, hidden finalized-history anomaly,
+LFB progress substituted for target success, a terminal response bypassing an
+expired boundary, and first-baseline renewal. The late-terminal control is the
+deadline-ordering witness: with interpretation before expiry, a blocking status
+request can report success at the stall boundary; the safe model reports only an
+inconclusive timeout.
 
 ## Proposal scheduling and pending-work composition
 
@@ -400,6 +481,27 @@ and the axiom-free Rocq capstone supplies the unbounded deductive obligations.
 This separation is part of the verification contract: component exhaustiveness,
 symbolic integration, and deductive composition must all pass.
 
+## Protocol-6 composition
+
+Protocol 6 preserves the `ProtocolV5EndToEnd.tla` cost, validator-incarnation,
+admission, and finality core and adds three consensus-visible boundaries. The
+signed block header commits the exact finalized-floor certificate through
+`CertifiedFloorCommitment.tla`; an unavailable committed certificate is then
+resolved through `FinalizationCertificateRetrieval.tla`. The latter separates
+block and certificate dependency namespaces, retains bounded obligations across
+failed sends and restart, accepts only requested shape-valid content-addressed
+responses, and wakes each detached block at most once.
+`DependencyMaintenanceRound.tla` closes the production caller boundary by
+requiring one maintenance invocation to attempt its entire frozen mixture of
+ordinary block and certificate work before returning the first dispatch error.
+
+This is a deliberate compositional proof rather than a renamed or duplicated
+version-5 model. TLC exhausts the finite retrieval transition graph and each
+component model, Apalache checks their bounded symbolic products and isolated
+unsafe controls, Rocq proves the unbounded contracts and capstone composition,
+and Rust/Loom regressions bind the modeled transitions to production storage,
+retrieval, parsing, restart, and concurrent response paths.
+
 | Configuration suffix | Violated boundary |
 |---|---|
 | `post_state_certificate_unsafe` | exact proposal-pre-state certificate |
@@ -414,6 +516,60 @@ symbolic integration, and deductive composition must all pass.
 | `lost_receipt_unsafe` | idempotent resolution receipt |
 | `replay_drift_unsafe` | canonical replica replay cost |
 | `split_settlement_unsafe` | replay/settlement charge equality |
+
+### Finalization-certificate retrieval refinement
+
+`FinalizationCertificateRetrieval.tla` gives two detached blocks distinct
+certificate obligations while allowing only one live tracker entry. It separates
+tracking, failed and successful sends, malformed, mismatched, unsolicited, and
+duplicate responses, dependency resolution, queue wakeup, one crash, and restart
+reconstruction. Retry attempts use the finite control abstraction `{0, 1, 2+}`;
+the abstraction preserves whether an attempt is new, retried, or saturated while
+keeping the exhaustive graph finite. Weak fairness covers every transition that
+can make a fetchable persistent obligation progress.
+
+TLC exhausts 58,184 generated / 11,879 distinct states to depth 18 and proves
+the safety invariants and `AllDetachedBlocksEventuallyQueue`. Apalache checks the
+same safety boundary through symbolic length 12. The controls are isolated so
+each checker must report one named failure:
+
+| Configuration suffix | Expected invariant violation |
+|---|---|
+| `untyped_unsafe` | `TypedDependencyNamespaceIsDisjoint` |
+| `validation_unsafe` | `OnlyValidResponsesPersist` |
+| `unsolicited_unsafe` | `UnsolicitedResponsesDoNotMutate` |
+| `failed_send_unsafe` | `FailedSendsRetainObligations` |
+| `restart_unsafe` | `RestartNeverStrandsPersistentObligations` |
+| `duplicate_wake_unsafe` | `EveryBlockIsQueuedAtMostOnce` |
+
+The axiom-free unbounded contract is
+`FinalizationCertificateRetrieval.v`. Production conformance is checked by the
+block-store and parser properties, retriever failure/all-digest tests, restart
+reconstruction test, async request/response tests, and the Loom duplicate-
+response schedule model.
+
+### Dependency-maintenance round refinement
+
+`DependencyMaintenanceRound.tla` freezes two ordinary block obligations and two
+certificate obligations, then explores every success/failure and attempt order.
+The safe transition removes each attempted obligation from the pending set,
+records the first failure, and completes only after the snapshot is exhausted.
+This is the caller-level property that the leaf certificate retriever alone
+cannot establish: a failed ordinary block send must not prevent certificate
+maintenance later in the same production invocation.
+
+TLC exhausts 348 generated / 158 distinct states to depth 7 and proves the full
+snapshot partition, complete-attempt, first-error provenance, cross-type
+non-starvation, and eventual-completion properties. Apalache checks the same
+safety boundary through symbolic length 8. The `abort_unsafe` configuration
+returns on the first failed send; TLC and Apalache both violate
+`FailureNeverDiscardsUnattemptedObligations` by depth 3.
+
+The axiom-free unbounded list induction is `DependencyMaintenanceRound.v`.
+Production conformance is exercised in the block processor's ordinary and stale
+maintenance paths, the block retriever's mixed retry path, and the LFS
+requester's await-all regression. Sequential per-obligation dispatch remains
+bounded and local; the LFS requester retains its existing parallel request set.
 
 ## Objective equivocation convergence
 
@@ -549,10 +705,15 @@ history current-root pointer is explicitly modeled so the invariants can prove
 that capture and publication depend on the node-local floor root instead.
 
 The safe TLC configurations use three validators, two candidates, exact
-$`60/20/15`$ weights, strict majority, and `FTT=0.1`. The baseline exhausts the
-finite schedule graph through eight actions without task failure. A second safe
-configuration enables capture/replay crashes and restarts over the same bound.
-Its eight unsafe configurations each enable one defect and must fail:
+$`40/35/25`$ weights, strict majority, and `FTT=0.1`; no validator can certify a
+candidate alone. The baseline exhausts 12,877 generated / 3,411 distinct states
+through eight actions to depth 9 without task failure. A second safe configuration
+enables capture/replay crashes and restarts over the same bound. A third starts
+from a history-consistent concurrency cut in which candidate 1 was accepted before
+candidate 2 became the current floor; it exhausts 150 generated / 58 distinct
+states to depth 3 and proves that candidate 1 cannot later erase candidate 2's
+committed effect. Its eight unsafe configurations each enable one defect and must
+fail:
 
 | Configuration | Required violation |
 |---|---|
@@ -566,8 +727,11 @@ Its eight unsafe configurations each enable one defect and must fail:
 | `MC_ParallelValidatorConsensus_crash_root_unsafe.cfg` | `ReplayRootsRemainLocallyRecorded` |
 
 The baseline and crash-enabled Apalache configurations check all safe invariants
-through routine bound 6. The crash-root-deletion configuration must also produce
-the `ReplayRootsRemainLocallyRecorded` counterexample through bound 5. The
+through routine bound 6. The stale-window safe configuration checks the same
+pre-state through bound 2, while removing only the current-floor preservation
+guard violates `CommittedEffectsRemainInFloor` in one step. The
+crash-root-deletion configuration must also produce the
+`ReplayRootsRemainLocallyRecorded` counterexample through bound 5. The
 crash-safe routine receives a 600-second process allowance because its measured
 bound-6 symbolic run takes more than five minutes on the reference workstation;
 this changes neither its bound nor its invariant set. Bound 8 is retained as a
@@ -596,3 +760,12 @@ scripts/check-finalized-floor-ALL.sh
 The runner places state graphs under `target/verification`, uses one TLC worker,
 and enforces explicit JVM and process memory ceilings. `/tmp` must not contain
 retained model state after either command.
+
+The shared runner emits a source/configuration hash and a recovery identity that
+also binds the TLC binary, fingerprint polynomial, fingerprint seed, and worker
+count. Checkpoint recovery requires the exact originating identity through
+`TLC_RECOVER_IDENTITY`; missing or mismatched bindings are rejected before TLC
+starts. This prevents a checkpoint created by one checker/source/fingerprint
+instance from being mistaken for exhaustive evidence about another instance.
+The same identity is recomputed after each run; concurrent input edits invalidate
+the result.

@@ -86,10 +86,12 @@ Genesis creates the first block containing:
 
 The cost-accounted D3 rejected-deploy format begins at Casper protocol version 2.
 Exact per-execution state-effect provenance begins at version 3. Vault-backed
-quantitative byte evidence begins at version 4. This binary's supported running
-set is exactly `{4}`. Versions 1 through 3 remain recognizable as historical
-encoding metadata, but any historical approved genesis is rejected before Casper
-starts; an unknown future version is rejected identically.
+quantitative byte evidence begins at version 4, certified validator incarnation
+identity at version 5, and signed finalized-floor commitments with detachable
+certificate sidecars at version 6. This binary's supported running set is exactly
+`{6}`. Versions 1 through 5 remain recognizable as historical encoding metadata,
+but any historical approved genesis is rejected before Casper starts; an unknown
+future version is rejected identically.
 
 The genesis master writes the configured protocol version into the candidate.
 Every genesis validator checks that version before signing. Approved-block
@@ -104,7 +106,7 @@ version 2, and receivers compared proposals with the version-1 approved header.
 Honest protocol-2 proposals were discarded before validation. The repaired
 lifecycle has no independent receiver-side version source.
 
-Protocol 4 activates through a fresh protocol-4 genesis. There is no
+Protocol 6 activates through a fresh protocol-6 genesis. There is no
 block-height activation, node-local accounting switch, A/B mode, or mixed-version
 running interval. The TLA+ and Rocq models are cataloged in
 [`docs/formal-verification.md`](../formal-verification.md); the normative rules
@@ -175,10 +177,13 @@ recovery therefore keeps its round open and retries on a later tick.
 4. **Select declared parents** from the causal-parent projection. LMD-GHOST's
    selected vote tip is ordered first; an otherwise valid stale tip remains a
    secondary causal parent. A tip may be compacted only when another retained
-   parent reaches it through all-parent DAG ancestry. Configured parent-count or
-   depth limits fail snapshot construction if they would omit an uncovered
-   causal tip. If no causal tip exists, the captured finalized floor is the
-   parent.
+   parent reaches it through all-parent DAG ancestry. Depth expiry and
+   reachability compaction run before the exact parent-count check. If the
+   resulting frozen frontier exceeds `max-number-of-parents`, proposal returns a
+   typed deferred result without creating or signing a block; no parent is
+   truncated. `number-of-active-validators + 1` is sufficient worst-case
+   provisioning, not a startup admission rule. If no causal tip exists, the
+   captured finalized floor is the parent.
 5. **Compute LCA** (Lowest Common Ancestor) of selected parents — bounds the [merge scope](#6-state-merging-multi-parent)
 6. **Build justifications**: the exact positive finalized-floor authority set,
    using each member's registered latest-message hash, including invalid latest
@@ -271,6 +276,18 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - Implements retry budgets, cooldowns, and quarantine for stuck requests
 - Deduplicates requests to avoid flooding
 
+Protocol-6 finalized-floor certificates use a distinct content-addressed sidecar
+path. A block that names an unavailable certificate is stored as detached and
+waits on a typed certificate dependency rather than being treated as invalid or
+as a missing block. The certificate retriever bounds tracked obligations and
+peer fanout, retries every eligible digest with monotonic backoff, and retains an
+obligation after a transport failure or restart. A response is persisted only
+when it satisfies a live request, parses with canonical bounded shape, and hashes
+to the requested digest. Concurrent duplicate responses converge on the same
+content-addressed record and schedule the waiting block at most once. The full
+state machine and implementation mapping are in
+[`finalization-certificate-retrieval.md`](../theory/finalized-floor/finalization-certificate-retrieval.md).
+
 ---
 
 ## 4. Block Validation
@@ -290,6 +307,9 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - All parent blocks must be in the DAG
 - If missing: store block in **casper buffer** (max ~16K entries), request missing parents from peers
 - Casper buffer tracks retry attempts per dependency and quarantines blocks after budget exhaustion
+- A missing protocol-6 finalized-floor certificate is a typed sidecar dependency:
+  retain the detached block, request the exact committed digest, and resume
+  validation only after the sidecar passes shape and content-address validation
 
 ### Step 4: Snapshot Computation
 - Recompute `CasperSnapshot` with the block's actual parents as tips
@@ -485,6 +505,31 @@ independent evaluation remain concurrent.
    receipts. Restart resumes the unfinished suffix. A certified stale-state
    candidate remains a valid speculative block; a later proposal rebases on the
    certified floor and restores progress.
+
+### Witness-equivalent predecessor certificates
+
+Two honest nodes can certify the same finalized block and replay state from
+different sufficient latest-message snapshots. Their content-addressed
+certificate digests may therefore differ without any disagreement about the
+state transition. A predecessor carrier is eligible by accepted causal
+membership, running protocol version, exact floor hash, and exact floor
+post-state—not by equality with the receiver's local witness digest.
+
+Selection always retains the carrier block hash and the certificate digest
+signed by that block as one proof pair. Substituting a digest from another
+witness-equivalent carrier is invalid. A finalizer parked for a predecessor
+proof wakes when an eligible carrier for that exact floor and state is admitted,
+independent of its digest. These rules preserve asynchronous validator
+concurrency without adding a vote, changing clique weight, or canonicalizing
+node-local evidence. The complete rule and verification evidence are in
+[Witness-equivalent certificate carriers](../theory/finalized-floor/certificate-carrier-equivalence.md).
+
+Dependency maintenance is not a consensus vote and does not impose a validator
+ordering. Each local maintenance invocation freezes its visible ordinary-block
+and certificate obligations, attempts every member, and only then returns the
+first transport error. This prevents a failed request near the front of one
+node's local iteration order from suppressing unrelated proof retrieval while
+leaving replay, validation, and voting parallel across validators.
 
 ### "Never Eventually See Disagreement"
 

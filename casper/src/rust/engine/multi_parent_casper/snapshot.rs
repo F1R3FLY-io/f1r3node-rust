@@ -31,6 +31,7 @@ use crate::rust::metrics_constants::{
     CASPER_METRICS_SOURCE, DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC,
     DAG_FINALIZED_BLOCKS_SIZE_METRIC, DAG_HEIGHTS_SIZE_METRIC,
     DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
+    PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util;
@@ -188,6 +189,50 @@ fn causal_tips_covered_by_parents(
     Ok(covered)
 }
 
+fn validate_exact_parent_frontier_capacity(
+    max_number_of_parents: i32,
+    required_parents: usize,
+    effective_committee: usize,
+    unique_causal_tips: usize,
+    floor_backstop_added: bool,
+    expired_tip_count: usize,
+) -> Result<(), CasperError> {
+    if max_number_of_parents == crate::rust::casper::UNLIMITED_PARENTS {
+        return Ok(());
+    }
+    let configured_cap = usize::try_from(max_number_of_parents).map_err(|_| {
+        CasperError::RuntimeError(format!(
+            "invalid max-number-of-parents at snapshot construction: {max_number_of_parents}"
+        ))
+    })?;
+    if required_parents <= configured_cap {
+        return Ok(());
+    }
+    metrics::counter!(
+        PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC,
+        "source" => CASPER_METRICS_SOURCE
+    )
+    .increment(1);
+    tracing::warn!(
+        target: "f1r3fly.casper.parent_selection",
+        configured_cap,
+        required_parents,
+        effective_committee,
+        unique_causal_tips,
+        floor_backstop_added,
+        expired_tip_count,
+        "Proposal deferred because the exact frozen parent frontier exceeds the configured cap"
+    );
+    Err(CasperError::ParentFrontierCapacityExceeded {
+        configured_cap,
+        required_parents,
+        effective_committee,
+        unique_causal_tips,
+        floor_backstop_added,
+        expired_tip_count,
+    })
+}
+
 /// Snapshot-time approximation of buffer recoverability, used only to decide
 /// whether `compute_snapshot` enters a recovery context (which narrows parent
 /// selection). Runs BEFORE the snapshot's `deploys_in_scope` /
@@ -325,7 +370,9 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         );
     }
 
-    let dag = this.block_dag_storage.get_representation()?;
+    let finalization_base = this.block_dag_storage.capture_finalization_base()?;
+    let snapshot_finalization_head = finalization_base.head;
+    let dag = finalization_base.dag;
 
     // Parent selection: Use latest block from EACH bonded validator.
     // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
@@ -356,6 +403,42 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             &dag,
             snapshot_lfb_hash.clone(),
         )?;
+    let finalized_floor_certificate = match this
+        .block_dag_storage
+        .finalized_floor_certificate_for_head(&snapshot_finalization_head)?
+    {
+        Some(certificate) => certificate,
+        None if snapshot_lfb_hash == this.approved_block.block_hash
+            && snapshot_lfb.body.state.block_number == 0 =>
+        {
+            crate::rust::finality::certificate::genesis_finalization_certificate(
+                &dag,
+                &snapshot_lfb,
+                this.casper_shard_conf.casper_version,
+                this.casper_shard_conf.shard_name.clone(),
+                this.casper_shard_conf.fault_tolerance_threshold_ppm,
+                1_000_000,
+            )?
+        }
+        None => {
+            return Err(CasperError::RuntimeError(
+                "non-genesis finalized floor has no durable finalization certificate".to_string(),
+            ));
+        }
+    };
+    if finalized_floor_certificate.protocol_version != this.casper_shard_conf.casper_version
+        || finalized_floor_certificate.shard_id != this.casper_shard_conf.shard_name
+        || finalized_floor_certificate.target_floor_hash.0 != snapshot_lfb_hash
+        || finalized_floor_certificate.target_block_number
+            != snapshot_finalization_head.block_number
+        || finalized_floor_certificate.target_post_state_hash.0
+            != snapshot_lfb.body.state.post_state_hash
+    {
+        return Err(CasperError::RuntimeError(
+            "durable finalization certificate does not bind the snapshot finalized floor"
+                .to_string(),
+        ));
+    }
     let causal_parent_latest_msgs = consensus_context
         .causal_parent_projection()
         .eligible_latest_messages()
@@ -389,11 +472,11 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             break;
         }
     }
-    if !parent_descends_from_floor
+    let floor_backstop_added = !parent_descends_from_floor
         && !parent_blocks_list
             .iter()
-            .any(|parent| parent.block_hash == snapshot_lfb_hash)
-    {
+            .any(|parent| parent.block_hash == snapshot_lfb_hash);
+    if floor_backstop_added {
         parent_blocks_list.push(snapshot_lfb.clone());
     }
 
@@ -553,14 +636,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         );
     }
 
-    if this.casper_shard_conf.max_number_of_parents != crate::rust::casper::UNLIMITED_PARENTS
-        && parents.len() > this.casper_shard_conf.max_number_of_parents as usize
-    {
-        return Err(CasperError::RuntimeError(format!(
-            "live causal-parent frontier has {} parents, exceeding configured max-number-of-parents={}; increase the cap to at least the shard's maximum active-validator count plus one finalized-floor backstop",
-            parents.len(), this.casper_shard_conf.max_number_of_parents
-        )));
-    }
+    validate_exact_parent_frontier_capacity(
+        this.casper_shard_conf.max_number_of_parents,
+        parents.len(),
+        finalized_floor_bonds.len(),
+        causal_tips.len(),
+        floor_backstop_added,
+        expired_causal_tips,
+    )?;
     validate_causal_parent_coverage(&dag, &snapshot_lfb_hash, &live_causal_tips, &parents)?;
 
     // C13 / Perf-3: hoist the parent-metadata lookup. Previously this
@@ -744,6 +827,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         finalized_floor_bonds,
         on_chain_state,
         consensus_context,
+        finalized_floor_certificate: Some(finalized_floor_certificate),
     })
 }
 
@@ -808,7 +892,9 @@ mod tests {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
     use models::rust::block_metadata::BlockMetadata;
-    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeploy};
+    use models::rust::casper::protocol::casper_message::{
+        FinalizedFloorCommitment, ProcessedDeploy, RejectedDeploy,
+    };
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
@@ -818,7 +904,9 @@ mod tests {
         local_rejected_buffer_has_recoverable_deploys, order_parents_by_ghost_head,
         prune_dag_covered_parents, reachability_maximal_indices,
         recovery_main_covers_floor_and_causal_tips, validate_causal_parent_coverage,
+        validate_exact_parent_frontier_capacity,
     };
+    use crate::rust::errors::CasperError;
 
     #[test]
     fn sequence_snapshot_includes_invalid_latest_messages() {
@@ -935,7 +1023,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(0),
             Some(Vec::new()),
             Some(Vec::new()),
@@ -945,13 +1033,28 @@ mod tests {
             Some("test".to_string()),
             None,
         );
-        let left = block_implicits::get_random_block(
+        let bind_genesis_floor =
+            |mut block: models::rust::casper::protocol::casper_message::BlockMessage| {
+                block.header.finalized_floor = Some(FinalizedFloorCommitment {
+                    floor_hash: genesis.block_hash.clone(),
+                    floor_post_state_hash: genesis.body.state.post_state_hash.clone(),
+                    certificate_digest: prost::bytes::Bytes::from(
+                        vec![1; models::rust::block_hash::LENGTH],
+                    ),
+                    authority_context_digest: prost::bytes::Bytes::from(
+                        vec![2; models::rust::block_hash::LENGTH],
+                    ),
+                });
+                block.block_hash = crate::rust::util::proto_util::hash_block(&block);
+                block
+            };
+        let left = bind_genesis_floor(block_implicits::get_random_block(
             Some(1),
             Some(1),
             None,
             None,
             None,
-            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(1),
             Some(vec![genesis.block_hash.clone()]),
             Some(Vec::new()),
@@ -960,14 +1063,14 @@ mod tests {
             None,
             Some("test".to_string()),
             None,
-        );
-        let right = block_implicits::get_random_block(
+        ));
+        let right = bind_genesis_floor(block_implicits::get_random_block(
             Some(1),
             Some(2),
             None,
             None,
             None,
-            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(1),
             Some(vec![genesis.block_hash.clone()]),
             Some(Vec::new()),
@@ -976,14 +1079,14 @@ mod tests {
             None,
             Some("test".to_string()),
             None,
-        );
-        let seal = block_implicits::get_random_block(
+        ));
+        let seal = bind_genesis_floor(block_implicits::get_random_block(
             Some(2),
             Some(3),
             None,
             None,
             None,
-            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(2),
             Some(vec![left.block_hash.clone(), right.block_hash.clone()]),
             Some(Vec::new()),
@@ -992,14 +1095,14 @@ mod tests {
             None,
             Some("test".to_string()),
             None,
-        );
-        let left_child = block_implicits::get_random_block(
+        ));
+        let left_child = bind_genesis_floor(block_implicits::get_random_block(
             Some(3),
             Some(4),
             None,
             None,
             None,
-            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(3),
             Some(vec![seal.block_hash.clone()]),
             Some(Vec::new()),
@@ -1008,14 +1111,14 @@ mod tests {
             None,
             Some("test".to_string()),
             None,
-        );
-        let right_child = block_implicits::get_random_block(
+        ));
+        let right_child = bind_genesis_floor(block_implicits::get_random_block(
             Some(3),
             Some(5),
             None,
             None,
             None,
-            None,
+            Some(crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
             Some(3),
             Some(vec![seal.block_hash.clone()]),
             Some(Vec::new()),
@@ -1024,7 +1127,7 @@ mod tests {
             None,
             Some("test".to_string()),
             None,
-        );
+        ));
 
         dag_storage
             .insert(&genesis, InsertMode::ApprovedGenesis)
@@ -1104,6 +1207,24 @@ mod tests {
         assert_eq!(live_after_depth, HashSet::from([left_child.block_hash]));
     }
 
+    #[test]
+    fn exact_parent_frontier_capacity_uses_the_frozen_frontier() {
+        assert!(validate_exact_parent_frontier_capacity(101, 1, 0, 0, true, 0).is_ok());
+        assert!(validate_exact_parent_frontier_capacity(101, 4, 3, 3, true, 0).is_ok());
+        assert!(validate_exact_parent_frontier_capacity(3, 3, 10_000, 3, false, 0).is_ok());
+
+        let error = validate_exact_parent_frontier_capacity(2, 3, 3, 3, false, 0)
+            .expect_err("an actual frontier wider than the cap must defer");
+        assert_eq!(error, CasperError::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+            effective_committee: 3,
+            unique_causal_tips: 3,
+            floor_backstop_added: false,
+            expired_tip_count: 0,
+        });
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
@@ -1128,6 +1249,26 @@ mod tests {
                 });
                 prop_assert!(covered);
             }
+        }
+
+        #[test]
+        fn exact_parent_frontier_capacity_matches_the_cardinality_oracle(
+            required in 1usize..128,
+            cap in 1i32..128,
+            committee in 0usize..256,
+            unique_tips in 0usize..256,
+            floor_backstop_added in any::<bool>(),
+            expired_tip_count in 0usize..256,
+        ) {
+            let result = validate_exact_parent_frontier_capacity(
+                cap,
+                required,
+                committee,
+                unique_tips,
+                floor_backstop_added,
+                expired_tip_count,
+            );
+            prop_assert_eq!(result.is_ok(), required <= cap as usize);
         }
 
         #[test]

@@ -69,4 +69,7 @@ name = "loom_equivocations_tracker"
 [[test]]
 name = "loom_frontier_floor_cache"
 
+[[test]]
+name = "loom_certificate_dependency_resolution"
+
 [build-dependencies]

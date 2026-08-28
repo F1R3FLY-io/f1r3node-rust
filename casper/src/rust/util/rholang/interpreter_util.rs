@@ -652,6 +652,11 @@ pub async fn validate_block_pre_state(
         s,
         runtime_manager,
         &latest_messages,
+        block
+            .header
+            .finalized_floor
+            .as_ref()
+            .map(|commitment| &commitment.floor_hash),
         None,
         rejected_deploy_buffer,
     )
@@ -1232,6 +1237,7 @@ async fn compute_deploys_checkpoint_cosigned_internal(
         s,
         runtime_manager,
         &latest_messages,
+        Some(&s.last_finalized_block),
         None,
         rejected_deploy_buffer,
     )
@@ -1373,6 +1379,7 @@ pub async fn compute_deploys_checkpoint_with_effects(
         s,
         runtime_manager,
         &latest_messages,
+        Some(&s.last_finalized_block),
         None,
         rejected_deploy_buffer,
     )
@@ -1521,6 +1528,31 @@ pub async fn compute_parents_post_state(
         s,
         runtime_manager,
         latest_messages,
+        None,
+        disable_late_block_filtering_override,
+        rejected_deploy_buffer,
+    )
+    .await?;
+    Ok((state, rejected_deploys))
+}
+
+pub async fn compute_parents_post_state_at_certified_floor(
+    block_store: &KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    certified_floor: &BlockHash,
+    disable_late_block_filtering_override: Option<bool>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+) -> Result<(StateHash, Vec<RejectedDeploy>), CasperError> {
+    let (state, rejected_deploys, _) = compute_parents_post_state_with_effects(
+        block_store,
+        parents,
+        s,
+        runtime_manager,
+        latest_messages,
+        Some(certified_floor),
         disable_late_block_filtering_override,
         rejected_deploy_buffer,
     )
@@ -1542,6 +1574,7 @@ pub async fn compute_parents_post_state_with_effects(
     // propose, the block's recorded justifications at validate) — NEVER the live
     // DAG view. The finalized floor is derived from this so it is node-identical.
     latest_messages: &BTreeMap<Validator, BlockHash>,
+    certified_floor: Option<&BlockHash>,
     disable_late_block_filtering_override: Option<bool>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
 ) -> Result<(StateHash, Vec<RejectedDeploy>, Vec<StateEffectId>), CasperError> {
@@ -1585,7 +1618,9 @@ pub async fn compute_parents_post_state_with_effects(
                 .unwrap_or(s.on_chain_state.shard_conf.disable_late_block_filtering);
             let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
                 sorted_parent_hashes: parent_hashes_for_key,
-                snapshot_lfb_hash: s.last_finalized_block.clone(),
+                snapshot_lfb_hash: certified_floor
+                    .cloned()
+                    .unwrap_or_else(|| s.last_finalized_block.clone()),
                 // BTreeMap iteration is key-ordered, so this is deterministic.
                 sorted_latest_messages: latest_messages
                     .iter()
@@ -1659,17 +1694,30 @@ pub async fn compute_parents_post_state_with_effects(
             // merged state is MONOTONE, where the LCA base let it churn
             // (path-dependent FS).
             let floor_derive_started = std::time::Instant::now();
-            let floor = crate::rust::finality::floor::finalized_floor(
-                &s.dag,
-                &parent_hashes,
-                latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
-                ),
-            )
-            .await?;
+            let derived_floor = if certified_floor.is_none() {
+                Some(
+                    crate::rust::finality::floor::finalized_floor(
+                        &s.dag,
+                        &parent_hashes,
+                        latest_messages,
+                        crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                            s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                        ),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
             let floor_derive_ms = floor_derive_started.elapsed().as_millis();
-            let floor_hash = floor.hash.clone();
+            let floor_hash = certified_floor
+                .cloned()
+                .or_else(|| derived_floor.map(|floor| floor.hash))
+                .ok_or_else(|| {
+                    CasperError::RuntimeError(
+                        "merge has neither a certified nor derived finalized floor".to_string(),
+                    )
+                })?;
 
             // The floor block's committed post-state is FS(floor) — the merge base.
             // The floor is an ancestor of the parents (which are stored), so this is

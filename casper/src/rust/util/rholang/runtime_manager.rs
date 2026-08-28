@@ -1965,6 +1965,7 @@ mod tests {
                     models::rust::bond_generation::BondGeneration::GENESIS,
                 ),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: None,
             },
             body: Body {
                 state: F1r3flyState {
@@ -1988,6 +1989,7 @@ mod tests {
             sig_algorithm: "secp256k1".to_string(),
             shard_id: "root".to_string(),
             extra_bytes: Vec::<u8>::new().into(),
+            finalized_floor_certificate: None,
         }
     }
 

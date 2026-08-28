@@ -27,6 +27,27 @@ make them correct.
 
 ### 1.2 Finalization & the clique oracle
 
+**Exact target-deploy terminality.** The node-reported terminal disposition of
+one deploy occurrence: `Finalized`, `Failed`, or `Expired`. Block inclusion and
+LFB movement are observations about the surrounding DAG; neither substitutes for
+the exact target status.
+
+**Progress-aware deploy wait.** A bounded external observation policy with two
+monotonic budgets. A strict increase in LFB block number renews the stall budget;
+the first successful LFB sample establishes the comparison baseline without a
+renewal, and the absolute budget is never renewed. Success still requires exact
+target-deploy terminality. LFB regression or a different hash at the same height
+is a finalized-history anomaly and fails loudly. Deadline expiry is evaluated
+before a response returned on the boundary, so a late terminal response remains
+diagnostic evidence rather than changing the bounded observer outcome.
+
+**Stall budget.** Maximum monotonic duration permitted without a strict LFB-height
+advance while the target remains pending.
+
+**Absolute budget.** Non-renewable maximum monotonic duration for the entire
+target-deploy observation. It prevents unrelated continued chain progress from
+turning the observer into an unbounded wait.
+
 | Term | Definition |
 |---|---|
 | **committee** | A set of bonded validators and their weights. The protocol distinguishes the authorization committee from the post-state bond cache; they coincide only when no bond transition lies between the finalized floor and the block's post-state. |
@@ -60,6 +81,14 @@ make them correct.
 | **proposal intent** | The explicit reason carried into the serialized proposer: `Manual` for an operator/API request, `PendingDeploy` for ordinary stored work, or `FinalityRecovery(permit)` for heartbeat liveness. Intent is authority, not a diagnostic label: only a fresh authorized recovery intent may permit an empty block. |
 | **recovery deferral reason** | A typed reason that block creation cannot proceed from its captured snapshot. `FinalizedFloorMaterializationPending` means the candidate's certified context is ahead of the durable materialized context; it retains deploys and issues an idempotent finalization request. `IncompleteCandidateCommitteeSlots`, `InactiveCandidateValidator`, and `StaleRecoveryPermit` are distinct authority failures and do not trigger finalizer retries. Live DAG synchronization does not add a proposal pause. |
 | **local finalization witness** | The immutable audit input retained beside one local finalization record: exact local predecessor, target block and state, frozen eligible latest messages, supporting closure, exact FTT, authority-context digest, and deterministic witness digest. It proves what one node evaluated and supports crash recovery, but its ledger revision and digest are node-local and cannot authorize another node's state transition. |
+| **finalization certificate** | Portable protocol-6 evidence binding one predecessor certificate carrier, exact target floor and post-state, frozen latest messages, exact FTT, authority context, and supporting/finalized manifest digests. Its canonical Blake2b-256 digest is committed by signed blocks and is independent of a node-local finalization-ledger revision. |
+| **certificate sidecar** | A finalization certificate stored once under its canonical digest and reattached to any block whose signed floor commitment names that digest. Sidecar availability is required for validation but does not change the signed block identity. |
+| **detached block** | A durable protocol-6 block with a signed finalized-floor commitment but without its locally available certificate sidecar. It remains unavailable to strict validation reads and buffered on a typed certificate dependency. |
+| **typed certificate dependency** | The 33-byte Casper-buffer key `0xFF || digest`. Its length and prefix make it disjoint from every ordinary 32-byte block-hash dependency, so block arrival cannot accidentally satisfy a proof obligation. |
+| **certificate retrieval tracker** | The bounded volatile per-digest request state used for fanout and monotonic retry backoff. It is reconstructed from persistent buffer obligations after restart and is never consensus authority. |
+| **predecessor certificate carrier** | An accepted causal protocol-6 block whose signed commitment names the exact predecessor finalized-floor hash, its replayed post-state hash, and one certificate digest. A valid carrier is selected from the bounded certified support closure; an ambient or target block cannot satisfy the obligation. |
+| **carrier proof pair** | The inseparable `(carrier block hash, committed certificate digest)` copied into the next local certificate. Equivalent proofs for the same floor/state may have different pairs, but the block from one pair cannot be combined with another pair's digest. |
+| **witness equivalence** | Equality of certified predecessor semantics—floor hash, replay post-state, protocol, causal admission, and acceptance—without requiring equality of node-local witness digests or ledger histories. |
 | **live minority-fork recovery** | Validator-local synchronization that requests ordinary fork-choice tips from connected peers, admits every missing dependency through normal bounded certified admission, and asks the existing local finalizer to recompute from a frozen context. Peer tips are discovery evidence, not votes, checkpoints, or state authority. |
 | **local ledger identity** | A finalization record's revision and digest within one node's durable audit history. Two honest nodes can share the same finalized block and replay state while having different local ledger identities because they published different intermediate rounds. |
 | **finality-recovery permit** | A capability value binding one observed LFB hash, that LFB's metadata height, and one validator-local recovery round. The proposer revalidates the hash and LFB height against a fresh snapshot, then uses the captured round only to recompute deterministic leadership over the canonical committee derived from that LFB's post-state. There is no independent current-round comparison. If the LFB changed or the floor committee cannot be reconstructed while the request waited, the permit is stale and the proposal is deferred; advancing only the unfinalized DAG head does not stale it. |
@@ -115,6 +144,7 @@ make them correct.
 | **T-COMMITTEE-TRANSITION** | A transition in `B.post_state` cannot authorize `B`; accepted registration plus later floor promotion enables the new committee, while invalid-block registration, post-state self-authorization, head-filtered justifications, head-local synchrony weights, and premature promotion are rejected by proof or executable negative controls. |
 | **T-EFFECT-PROVENANCE** | Exact active effects follow the accepted-input union-minus-rejections recurrence; parent order and redundant covered parents are irrelevant, direct rejection removes only its named identity, and the complete candidate scan decides preservation exactly (safety **S28**). |
 | **T-STATE-PARENT** | Every valid latest message remains a causal parent, an empty valid-tip set selects the LFB, and the resulting merge state preserves the certified floor even when a parent delta does not (safety **S29**). |
+| **T-STALE-SIBLING-RECOVERY** | A floor-stale but accepted sibling remains a causal input until complete-frontier settlement names its exact source occurrence; observers buffer that rejection atomically, one committed-view leader rehomes it, and the finalized rehome preserves both the floor and recovered effects (safety **S29**). |
 | **T-CERTIFIED-FLOOR-PROMOTION** | Complete all-parent causal discovery promotes the highest dual-certified universal state floor independently of parent order; restricting discovery to main-parent spines starves an off-main committed state. |
 | **T-COVERAGE-TRANSPARENCY** | Propagated latest-message coverage equals pairwise DAG ancestry for every candidate and validator; therefore supporter filtering and the existing exact clique decision are unchanged. Linear-snapshot reuse preserves the eligible ancestor set only under its one-predecessor and older-snapshot premises. |
 | **T-FINALIZER-MATERIALIZATION** | Durable-finalizer all-parent coverage is extensionally equal to exhaustive per-target causal support, and deterministic greatest-eligible selection cannot substitute a causal-only rejected-state sibling for the requested dual-certified target. |

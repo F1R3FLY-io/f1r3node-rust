@@ -66,7 +66,7 @@ The targets live in [`fuzz/fuzz_targets/`](../../../../../fuzz/fuzz_targets/):
 | Target                           | What it drives                                                            | Why it exists                                                                                                                                |
 |----------------------------------|---------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `slashing_arithmetic.rs`         | `checked_base_seq`, `checked_next_seq`, `epoch_for_block_number`          | Extends the Kani harnesses to compositional paths libFuzzer can find that Kani's bound misses                                                |
-| `slash_deploy_roundtrip.rs`      | `SystemDeployData::Slash` proto round-trip                                | The narrow surface lets the fuzzer isolate hash-length, public-key-length, and epoch-`i64` edges that `block_message_roundtrip` would buffer |
+| `slash_deploy_roundtrip.rs`      | `SystemDeployData::Slash` proto round-trip                                | The narrow surface isolates primary-hash length, public-key length, epoch-`i64`, and optional full-hash presence edges while respecting the legacy empty-bytes absence sentinel |
 | `block_message_roundtrip.rs`     | Full `BlockMessage` proto round-trip                                      | Catch-all for proto field-encoding regressions                                                                                               |
 | `slash_authorization_paths.rs`   | `validate_received_slash_deploys` with structured `Block` + `SlashDeploy` | Drives the authorization predicate Theorem T-9.8 covers; finds adversarial inputs that exercise each authorization clause                    |
 | `equivocation_detector_paths.rs` | `EquivocationDetector::dispatch` with structured DAG                      | Drives the detector classification logic Bug #11 changed; the structured input exercises latest-message projection edge cases                |
@@ -74,6 +74,13 @@ The targets live in [`fuzz/fuzz_targets/`](../../../../../fuzz/fuzz_targets/):
 
 Plus `support.rs` for shared input-decoding helpers (parsing the
 `Arbitrary`-derived structures into well-formed slashing inputs).
+
+The optional equivocation hash follows the wire-level semantic domain:
+`None` is encoded as empty proto3 bytes, while `Some` always carries the
+complete 32-byte block hash. Generating `Some(empty)` would ask an
+absence-sentinel encoding to preserve an unrepresentable in-memory state;
+the models unit suite instead verifies that this legacy sentinel
+canonicalizes to `None`.
 
 Two design rules govern this set:
 

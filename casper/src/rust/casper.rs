@@ -41,7 +41,8 @@ pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 =
     models::rust::block_metadata::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION;
 pub const VAULT_BACKED_BYTE_ACCOUNTING_PROTOCOL_VERSION: i64 = 4;
 pub const CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION: i64 = 5;
-pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION;
+pub const CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION: i64 = 6;
+pub const CURRENT_CASPER_PROTOCOL_VERSION: i64 = CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 pub fn is_supported_casper_protocol_version(version: i64) -> bool {
@@ -199,6 +200,17 @@ pub trait Casper {
     }
 
     fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError>;
+
+    fn resolve_finalization_certificate_dependency(
+        &self,
+        _digest: &BlockHash,
+    ) -> Result<(), CasperError> {
+        Err(CasperError::RuntimeError(
+            "finalization certificate dependency resolution is unavailable".to_string(),
+        ))
+    }
+
+    fn remove_buffered_hash(&self, _hash: &BlockHash) -> Result<(), CasperError> { Ok(()) }
 }
 
 #[async_trait]
@@ -337,6 +349,11 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
                 finalization_worker_limit,
             ),
         ),
+        certificate_verification_schedule: Arc::new(
+            crate::rust::finality::certificate::CertificateVerificationSchedule::new(
+                finalization_worker_limit,
+            ),
+        ),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -378,6 +395,8 @@ pub struct CasperSnapshot {
     pub finalized_floor_bonds: Vec<Bond>,
     pub on_chain_state: OnChainCasperState,
     pub consensus_context: crate::rust::causal_equivocation::CertifiedConsensusContext,
+    pub finalized_floor_certificate:
+        Option<models::rust::casper::protocol::casper_message::FinalizationCertificate>,
 }
 
 impl CasperSnapshot {
@@ -398,6 +417,7 @@ impl CasperSnapshot {
             on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
             consensus_context:
                 crate::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
+            finalized_floor_certificate: None,
         }
     }
 

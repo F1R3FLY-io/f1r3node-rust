@@ -197,6 +197,7 @@ impl TestFixture {
         // We simulate this by creating separate shared HashMaps for each "database name"
         let kvm_blockstorage = Arc::new(Mutex::new(HashMap::new()));
         let kvm_approved_block = Arc::new(Mutex::new(HashMap::new()));
+        let kvm_finalization_certificates = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_metadata = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_deploy_index = Arc::new(Mutex::new(HashMap::new()));
         let kvm_dagstorage_latest_messages = Arc::new(Mutex::new(HashMap::new()));
@@ -212,7 +213,14 @@ impl TestFixture {
         let store_approved_block = Arc::new(MockKeyValueStore::with_shared_data(
             kvm_approved_block.clone(),
         ));
-        let block_store = KeyValueBlockStore::new(store, store_approved_block);
+        let store_finalization_certificates = Arc::new(MockKeyValueStore::with_shared_data(
+            kvm_finalization_certificates,
+        ));
+        let block_store = KeyValueBlockStore::new_with_finalization_certificate_store(
+            store,
+            store_approved_block,
+            Some(store_finalization_certificates),
+        );
 
         // Scala: implicit val blockDagStorage = BlockDagKeyValueStorage.create(kvm).unsafeRunSync(...)
         // NOTE: Changed from KeyValueDagRepresentation to BlockDagKeyValueStorage because:

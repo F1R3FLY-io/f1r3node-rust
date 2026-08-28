@@ -146,7 +146,7 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
                                     }
                                 }
                                 None if propose_result.is_no_new_deploys()
-                                    || propose_result.is_recovery_deferred() =>
+                                    || propose_result.is_deferred() =>
                                 {
                                     tracing::info!(status = %propose_result.propose_status, "Propose finished")
                                 }

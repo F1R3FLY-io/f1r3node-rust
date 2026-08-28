@@ -725,7 +725,31 @@ mod ft_decides_exact_tests {
     //! and the `FtThreshold` newtype. The exact test replaces the imprecise `f32`
     //! comparison `(2q−S)/S > θ`; these confirm it matches `f32` where `f32` is
     //! exact, rejects exact threshold ties, and never overflows.
+    use proptest::prelude::*;
+
     use super::{ft_decides_exact, FtThreshold, FT_PPM_DEN};
+
+    fn threshold_case() -> impl Strategy<Value = (i64, i64, i64)> {
+        (1i64..257, 1i64..65)
+            .prop_flat_map(|(stake, den)| (-den..=den).prop_map(move |num| (stake, num, den)))
+    }
+
+    fn hard_gate_case() -> impl Strategy<Value = (i64, i64, i64, i64, i64)> {
+        threshold_case().prop_flat_map(|(stake, num, den)| {
+            (0i64..=stake, 0i64..=(stake / 2))
+                .prop_map(move |(clique, agreeing)| (agreeing, clique, stake, num, den))
+        })
+    }
+
+    fn two_certificate_case() -> impl Strategy<Value = (i64, i64, i64, i64, i64)> {
+        (1i64..257, 1i64..65)
+            .prop_flat_map(|(stake, den)| (-den..den).prop_map(move |num| (stake, num, den)))
+            .prop_flat_map(|(stake, num, den)| {
+                let q_min = ((stake as i128 * (den + num) as i128) / (2 * den) as i128 + 1) as i64;
+                (q_min..=stake, q_min..=stake)
+                    .prop_map(move |(left, right)| (stake, num, den, left, right))
+            })
+    }
 
     /// On small stakes the exact rule matches the naive `f32` comparison
     /// `(2q−S)/S > θ` at every grid point where `f32` is exact (dyadic S and θ),
@@ -835,5 +859,46 @@ mod ft_decides_exact_tests {
         assert_eq!(FtThreshold::from_f32_lossy(0.5).num, 500_000);
         assert_eq!(FtThreshold::from_f32_lossy(-1.0).num, -1_000_000);
         assert_eq!(FtThreshold::from_f32_lossy(-1.0).den, FT_PPM_DEN);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn strict_clique_minimum_matches_the_exact_integer_region(
+            (stake, num, den) in threshold_case(),
+        ) {
+            let q_min = ((stake as i128 * (den + num) as i128) / (2 * den) as i128
+                + 1) as i64;
+            for clique in 0..=stake {
+                prop_assert_eq!(
+                    ft_decides_exact(stake, clique, stake, num, den),
+                    clique >= q_min,
+                );
+            }
+        }
+
+        #[test]
+        fn independent_agreeing_majority_gate_rejects_half_or_less(
+            (agreeing, clique, stake, num, den) in hard_gate_case(),
+        ) {
+            prop_assert!(!ft_decides_exact(
+                agreeing,
+                clique,
+                stake,
+                num,
+                den,
+            ));
+        }
+
+        #[test]
+        fn two_strict_certificates_force_overlap_above_the_fault_budget(
+            (stake, num, den, left, right) in two_certificate_case(),
+        ) {
+            prop_assert!(ft_decides_exact(stake, left, stake, num, den));
+            prop_assert!(ft_decides_exact(stake, right, stake, num, den));
+            let overlap = (left + right - stake).max(0);
+            prop_assert!(overlap as i128 * den as i128 > stake as i128 * num as i128);
+        }
     }
 }

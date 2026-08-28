@@ -197,6 +197,7 @@ pub fn block(
             extra_bytes: Bytes::new(),
             sender_bond_generation: Some(BondGeneration::GENESIS),
             objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
@@ -226,6 +227,7 @@ pub fn block(
         sig_algorithm: String::new(),
         shard_id: "root".to_string(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     }
 }
 

@@ -79,6 +79,11 @@ pub enum KvStoreError {
         expected_revision: u64,
         actual_revision: u64,
     },
+    FinalizationCertificateCarrierPending {
+        expected_revision: u64,
+        floor_hash: Vec<u8>,
+        certificate_digest: Vec<u8>,
+    },
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
@@ -98,6 +103,16 @@ impl std::fmt::Display for KvStoreError {
             } => write!(
                 f,
                 "stale finalization base revision {expected_revision}; durable head is revision {actual_revision}"
+            ),
+            KvStoreError::FinalizationCertificateCarrierPending {
+                expected_revision,
+                floor_hash,
+                certificate_digest,
+            } => write!(
+                f,
+                "finalization base revision {expected_revision} is waiting for a causal certificate carrier for floor {} and certificate {}",
+                hex::encode(floor_hash),
+                hex::encode(certificate_digest)
             ),
             KvStoreError::LastFinalizedBlockUninitialized => write!(
                 f,

@@ -4514,7 +4514,12 @@ The local pgmcp formal-verification catalog identifies TLC, Apalache, Rocq, and
 SageMath as installed complementary tools. TLC exhausts bounded interleavings;
 Apalache independently type-checks and symbolically searches selected safe and
 unsafe models; Rocq proves unbounded algebraic laws; SageMath cross-checks finite
-arithmetic. They divide the obligations as follows:
+arithmetic. Licensed Wolfram exploration is deliberately not a duplicate
+settlement proof: it is reserved for symbolic parameter regions, recurrences,
+graph enumeration, and eventually calibrated Pareto analysis over the exact
+formulas and Rust measurements. Any correctness discovery must be promoted into
+the authoritative layers and a production regression. The default gates never
+acquire a Wolfram license. The proof obligations divide as follows:
 
 | Layer | Artifact | Obligation |
 | --- | --- | --- |
@@ -4524,12 +4529,66 @@ arithmetic. They divide the obligations as follows:
 | Distributed required counterexamples | `StateBoundValidatorConvergence{Context,Order,Schedule}Unsafe.cfg` | Unbound certificate context, unchecked arrival order, and accepting a scheduler-local trace instead of the certified witness violate context integrity, canonical ordering, or exact reproduction |
 | Unbounded arithmetic and lists | `EndToEndAuthority.v` | Capacity iff funding, exhaustion non-certifiability, certificate-funded commit, root-chain continuity, funded admitted lists, exact settlement conservation |
 | Finite arithmetic cross-check | `settlement_model.sage` | Fixed-point termination in at most $`n+1`$ passes, admitted/rejected disjointness, capacity completion, exact cost-plus-fee funding |
+| Licensed optimization exploration | `formal/wolfram/cost_accounted_rho/reservation_admission_regions.wl` | Correctness-constrained reservation-policy comparison, path-correlation headroom, priced resource envelopes, exact reserve minimization, and maximum capital-feasible parallel admission |
 | Concrete refinement | Rust example, property, and integration tests | Resident-continuation cost, root/envelope substitution, exact boundary, commit/replay equality, registry/vault/bridge/slashing/merge behavior |
 
 The TLA+ safe instance explores 162 distinct states. The three negative controls
 must produce counterexamples; a clean exit without the named violation is a
 failed regression check. Rocq proof output must report `Closed under the global
 context` for every new headline theorem.
+
+#### B.2.1 Licensed reservation and admission optimization
+
+The Wolfram artifact consumes, rather than restates, the local-sufficiency and
+settlement premises proved elsewhere. Its feasible region requires complete
+pre-funding for every reachable branch, component-wise located-purse isolation,
+nonnegative refund, and nonnegative physical/byte/fee tariffs. Optimization is
+permitted only inside that region.
+
+The finite exploration covers all 4,096 three-branch demand matrices with two
+purses and every supply vector from zero through nine in each component. The
+resulting 409,600 decisions per policy produced:
+
+| Reservation policy | Unsafe acceptances | Safe rejections | Interpretation |
+| --- | ---: | ---: | --- |
+| first reachable branch | 61,680 | 0 | underfunds another reachable branch |
+| pooled scalar maximum | 125,266 | 0 | hides a deficit in an isolated purse |
+| sum of every path per purse | 0 | 110,352 | safe but needlessly locks capital and rejects funding |
+| component-wise per-purse maximum | 0 | 0 | exact isolated-purse acceptance boundary |
+
+Exhaustive enumeration found no reservation vector that covered all paths while
+placing any component below the per-purse maximum. `Minimize` independently
+returned the same minimum for a representative matrix. `Maximize` independently
+matched the enumerated maximum admission set for a shared-purse workload.
+
+The model also separates two kinds of headroom:
+
+1. A scalar pooled maximum can be smaller than the sum of purse maxima when
+   mutually exclusive branches peak at different purses. That difference cannot
+   be spent across purses without violating lollipop ownership.
+2. Pricing the complete path before taking its maximum can be smaller than
+   pricing a component-wise resource envelope. Across 1,048,576 exact positive
+   price/resource cases, the component envelope never underbounded a path, but
+   770,880 cases had strict headroom. A tighter production certificate must bind
+   the tariff version and preserve the authenticated path correlation.
+
+The concurrency calculation enumerates 2,401 four-deploy workloads over three
+unit-capacity purses. Purse-local admission allowed more than one simultaneous
+reservation in 1,620 cases and reached three for disjoint-purse workloads. This
+is a resource-feasibility result, not a claim about measured node throughput.
+No numeric tariff or storage-rent policy is inferred without production
+measurements and a paper-level rent specification.
+
+The default verification suite does not discover a Wolfram kernel or acquire a
+license. The explicitly selected tier is:
+
+```bash
+RUN_WOLFRAM=1 scripts/check-cost-accounted-rho-ALL.sh
+```
+
+If selected, model failure, a missing kernel, or a missing `SELF-TEST: PASS`
+marker fails the tier. Release correctness remains independently established by
+the unlicensed authoritative proof and executable layers.
 
 ### B.3 End-to-end invariants
 
@@ -4725,7 +4784,7 @@ test-only consensus path is part of the repair.
 | Physical allocation is stack-safe and semantically identical | 4,096-event allocator regression and unchanged high-fanout play/replay stress test | mixed-event exact-debit/order proptest; Rocq `worklist_solutions_refine_recursive` and canonical-first theorem; TLA+ independent allocator interleavings | `PhysicalSettlementWorklistRecursiveUnsafe.cfg` must violate `NativeStackBound` |
 | Same-configuration located authority exists before sibling reduction, but future continuation authority does not | paired multi-threaded RSpace-order regressions plus the one-core Casper same-deploy transfer reproducer | TLC checks safety and liveness; Apalache symbolically checks the complete eight-step play/replay horizon; Rocq proves phase conservation, causality guards, scheduler-preference independence, and replay equality | `ParallelStackMaterializationUnsafe.cfg` must schedule the sibling first and violate `CausallyFundedProgramIsAccepted` |
 | Certified promotion preserves every committed state transition while distinguishing causal and state support | `finalizer_rejects_dag_descendant_without_state_lineage` proves a stale candidate passes both exact certificates before the current-LFB gate rejects it; `causal_merge_vote_cannot_certify_a_rejected_parent_state` and `finalizer_rejects_causal_certificate_without_state_support` prove a rejected parent passes the original causal certificate but fails the state certificate; exact metadata/wire tamper tests and the real conflicting-deploy replay regression prove the successor retains the finalized value | arbitrary reject/restore recurrence, state-frontier, and state-support proptests; all six three-parent orders and repeated majority rounds; Rocq `finalized_floor_state_effect_provenance_correct`, `finalized_floor_state_lineage_correct`, and `finalized_floor_state_support_refines_causal_certificate`; complete TLC state spaces; Apalache safe checks through bound 8 | state-lineage controls must reproduce stale/rejected-parent promotion; the single-base effect-provenance controls must reproduce accepted-source loss |
-| Causal parent selection cannot build below its captured LFB state | `empty_valid_parent_set_falls_back_to_last_finalized_block`, `parent_selection_prunes_dag_covered_parents`, and the merge-rebase regressions | Rocq `finalized_floor_rebased_parent_selection_correct`; TLC exhausts 1,860,017 generated / 163,216 distinct two-node asynchronous states to depth 17 while checking causal coverage, input retention, and liveness; the node-local Apalache symmetry projection checks every invariant through bound 10 | floor-unprotected TLC and Apalache configurations must violate `Inv_ProposalPreservesSnapshotFloor` after certificate-driven LFB advancement |
+| Causal parent selection cannot build below its captured LFB state | `empty_valid_parent_set_falls_back_to_last_finalized_block`, `parent_selection_prunes_dag_covered_parents`, and the merge-rebase regressions | Rocq `finalized_floor_rebased_parent_selection_correct` plus `finalized_floor_node_local_product_lifting_correct`; TLC exhausts 17,169 generated / 808 distinct local asynchronous states to depth 10 while checking causal coverage, input retention, and liveness; Rocq lifts preservation, independent-action commutation, and enablement framing to arbitrary node schedules; the explicit three-validator model covers interacting races; the node-local Apalache projection checks every invariant through bound 10 | floor-unprotected TLC and Apalache configurations must violate `Inv_ProposalPreservesSnapshotFloor` after certificate-driven LFB advancement |
 | A dual-certified state is discoverable even when secondary to every parent | exact-`FTT=0.1` promotion example, all six parent orders, state-rejection control, and unchanged complete 132-block finalizer regression | generated branch/post-merge depth and parent-order property; Rocq `finalized_floor_certified_promotion_correct`; TLC/Apalache `CertifiedFloorPromotion` safe model | main-spine-only TLC/Apalache configurations must violate complete-evidence promotion |
 | Optimized latest-message coverage preserves the exact clique decision | malformed non-descending edge rejection and linear/multi-parent/changed-snapshot reuse examples | generated pairwise coverage, supporter, corresponding-weight, and clique-verdict equivalence; Rocq `finalized_floor_latest_message_coverage_correct` and `finalized_floor_linear_snapshot_reuse_correct`; TLC/Apalache `LatestMessageCoverage` | unordered worklist must violate `Inv_NoLateCoverage`; broad reuse across a multi-parent parent must remain disabled |
 | Durable finalizer materialization agrees with the all-parent proposal floor | strict 8-of-16 rejection, state-rejected sibling exclusion, state-certified secondary-parent selection, split/reconverged tips, advancement from the selected floor, and the complete finalizer group | exhaustive pairwise candidate oracle; Rocq `FinalizerFloorMaterialization.v` and `finalized_floor_materialization_target_alignment_correct`; TLC/Apalache `FinalizerFloorMaterialization`; frozen-target/latest-message Loom interleaving | main-parent-only discovery must violate `Inv_FinalizerDiscoversCandidate`; causal-only target substitution must violate `Inv_SelectedTargetBindsRequestedCertificate` |

@@ -299,6 +299,101 @@ Proposal and replay derive this evidence independently. Arbitrary proof bytes ar
 not trusted evidence. A future GSLT or MeTTaIL certificate must pass its registered
 checker before it can authorize reservation.
 
+### Correctness-constrained reservation optimization
+
+The papers' located-purse decomposition determines the optimization domain; it
+is not one objective among several. Let $`\mathcal B`$ be the finite set of
+statically reachable branches, let $`\mathcal P`$ be the set of isolated purses,
+and let $`d_{b,p}`$ be the nonnegative token demand of branch $`b\in\mathcal B`$
+at purse $`p\in\mathcal P`$. A reservation vector is safe exactly when every
+component covers every branch:
+
+```math
+\forall b\in\mathcal B,\;\forall p\in\mathcal P:\quad r_p\geq d_{b,p}.
+```
+
+The unique component-wise minimum is therefore:
+
+```math
+r_p^*=\max_{b\in\mathcal B} d_{b,p}.
+```
+
+The validator computes that vector compositionally:
+
+```text
+for each isolated purse p:
+    reserve[p] := maximum demand at p over every reachable branch
+admit only if supply[p] >= reserve[p] for every p
+after the selected branch completes:
+    refund[p] := reserve[p] - realized[p]
+```
+
+This is the optimization justified by *Cost-Accounted Rho Calculus*,
+§“Data-Dependent Interaction: Overcharge and Refund,” and *Continued Interactive
+GSLTs and the Cost Endofunctor*, §“Located purses as an optimisation.” It is also
+the behavior implemented by `delta_sigma`: parallel obligations add, exclusive
+alternatives take their component-wise maximum, and unresolved state-dependent
+behavior moves to authenticated state-bound evaluation instead of receiving a
+guessed margin.
+
+A fungible scalar pool would need only:
+
+```math
+R_{\mathrm{pool}}=\max_{b\in\mathcal B}\sum_{p\in\mathcal P}d_{b,p},
+```
+
+whereas isolated located purses reserve:
+
+```math
+R_{\mathrm{located}}=\sum_{p\in\mathcal P}\max_{b\in\mathcal B}d_{b,p}.
+```
+
+Consequently:
+
+```math
+R_{\mathrm{pool}}\leq R_{\mathrm{located}}.
+```
+
+The difference is a **path-correlation gap**: different branches may peak at
+different purses. It is not available for an optimization that permits one
+purse's surplus to rescue another purse's deficit. Such cross-subsidy would
+erase the ownership and capability boundary that the lollipop operator creates.
+When data dependence is confined to one surface and every other surface has a
+fixed exact demand, the gap is zero, which is precisely the quarantine case
+described by the papers. When several isolated surfaces peak on mutually
+exclusive branches, the unused per-purse amount remains refundable custody; it
+is never burned as realized cost.
+
+The same distinction applies to the five native resource components: physical
+authority, introduction bytes, delivered payload bytes, committed trace bytes,
+and the proposer fee. For a nonnegative price vector $`q`$ and a branch resource
+vector $`v_b`$:
+
+```math
+\max_b(q\mathbin{\cdot}v_b)
+\leq
+q\mathbin{\cdot}\left(\max_b v_b\right),
+```
+
+where the maximum on the right is component-wise. The right-hand side is a safe
+schedule-independent resource envelope; the left-hand side preserves branch
+correlation for one certificate-bound schedule and can lock less REV. Production
+may use the tighter bound only when proposal and replay bind the same branch
+space, tariff version, and authenticated pre-state. Storage rent is intentionally
+absent: neither governing paper specifies a rent lifecycle or rate.
+
+The licensed, opt-in Wolfram model
+`formal/wolfram/cost_accounted_rho/reservation_admission_regions.wl` explores
+these trade-offs before benchmarking. Over 409,600 exact two-purse admission
+decisions, component-wise maximum was the only tested policy with neither an
+unsafe acceptance nor a safe rejection. A solver independently minimized a
+representative reservation to the same vector. The model also treats purse
+locality as a capital-feasible concurrency bound: among 2,401 four-deploy,
+three-purse incidence workloads, 1,620 admitted more than one deploy when a
+global singleton reservation would admit only one. This is an admission upper
+bound, not a throughput measurement; production latency, allocator contention,
+RSpace service time, and storage bandwidth must still be calibrated by profiling.
+
 ## Native admission workflow
 
 1. Verify every deploy signature and derive each signer's canonical vault address.

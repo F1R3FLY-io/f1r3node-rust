@@ -451,10 +451,33 @@ where
 
         // get snapshot to serve as a base for propose
         let snapshot_start = std::time::Instant::now();
-        let mut casper_snapshot = self
+        let snapshot_result = self
             .casper_snapshot_provider
             .get_casper_snapshot(casper.clone())
-            .await?;
+            .await;
+        let mut casper_snapshot = match snapshot_result {
+            Ok(snapshot) => snapshot,
+            Err(CasperError::ParentFrontierCapacityExceeded {
+                configured_cap,
+                required_parents,
+                ..
+            }) => {
+                let propose_result =
+                    ProposeResult::failure(ProposeFailure::ParentFrontierCapacityExceeded {
+                        configured_cap,
+                        required_parents,
+                    });
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        propose_result.propose_status.clone(),
+                        -1,
+                    ),
+                    propose_result,
+                    block_message_opt: None,
+                });
+            }
+            Err(error) => return Err(error),
+        };
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         let elapsed = start_time.elapsed();
@@ -840,6 +863,24 @@ mod proposal_intent_tests {
         }
     }
 
+    struct CapacityExceededSnapshotProvider;
+
+    impl CasperSnapshotProvider for CapacityExceededSnapshotProvider {
+        async fn get_casper_snapshot(
+            &self,
+            _casper: Arc<dyn Casper + Send + Sync + 'static>,
+        ) -> Result<CasperSnapshot, CasperError> {
+            Err(CasperError::ParentFrontierCapacityExceeded {
+                configured_cap: 2,
+                required_parents: 3,
+                effective_committee: 3,
+                unique_causal_tips: 3,
+                floor_backstop_added: false,
+                expired_tip_count: 0,
+            })
+        }
+    }
+
     struct AllowActiveValidator;
 
     impl ActiveValidatorChecker for AllowActiveValidator {
@@ -1011,6 +1052,43 @@ mod proposal_intent_tests {
         }
     }
 
+    #[tokio::test]
+    async fn exact_parent_frontier_over_cap_is_a_non_signing_deferral() {
+        use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let lfb = models::rust::block_implicits::get_random_block_default();
+        let casper = Arc::new(TestCasperWithSnapshot::new(snapshot, lfb));
+        let validator = Arc::new(ValidatorIdentity::new(&PrivateKey::from_bytes(&[1; 32])));
+        let mut proposer = Proposer::new(
+            validator,
+            None,
+            CapacityExceededSnapshotProvider,
+            AllowActiveValidator,
+            AllowStake,
+            AllowHeight,
+            DeferredBlockCreator(RecoveryDeferralReason::CandidateFloorConflict),
+            UnusedBlockValidator,
+            UnusedEffectHandler,
+            false,
+        );
+
+        let result = proposer
+            .propose(casper.clone(), ProposeRequestKind::Manual)
+            .await
+            .expect("capacity failure must be represented as a proposal result");
+
+        assert!(result.block_message_opt.is_none());
+        assert!(matches!(
+            result.propose_result.propose_status,
+            ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+                configured_cap: 2,
+                required_parents: 3,
+            })
+        ));
+        assert_eq!(casper.finalization_request_count(), 0);
+    }
+
     #[test]
     fn recovery_leader_fails_closed_without_valid_height_or_committee() {
         assert_eq!(finality_recovery_leader(Vec::new(), 0, 0), None);
@@ -1110,6 +1188,7 @@ mod proposal_intent_tests {
                     protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                     objective_equivocation_evidence_delta: Vec::new(),
                     sender_authority: None,
+                    finalized_floor_commitment: None,
                     admission_schema_version:
                         models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                     approved_genesis: false,

@@ -10,6 +10,7 @@ Helper scripts intended to be run from the repository root.
 | `scripts/check-cost-accounted-rho-ALL.sh` | Runs every discovered local cost-accounting verification gate and fails on any missing or skipped mandatory witness |
 | `scripts/check-cost-accounted-rho-coverage.sh` | Runs release package coverage with two jobs by default, matches dense raw profiles to exact ELF build identities, contains LLVM branch-mapping failures, and writes per-source line/branch evidence under `target/verification/cost-accounted-rho-coverage/` |
 | `scripts/check-cost-accounted-rho-documentation.sh` | Checks the cost-accounting, Casper, Rholang, finality, fork-choice, and slashing documentation for pgmcp-compatible GFM math delimiters and balanced fenced blocks |
+| `scripts/check-uptime-documentation.sh` | Checks permanent uptime documentation for pgmcp-compatible GFM math, balanced fenced blocks, and current rendered diagrams |
 | `scripts/check-parallel-validator-consensus.sh` | Exhausts independent-validator replay, support, atomic floor publication, and crash/restart schedules with TLC and requires every named defective control to reproduce its invariant violation |
 | `scripts/check-finalized-floor-ALL.sh` | Runs the complete Rocq, TLC, Apalache, property, integration, and negative-control gate for finalized-floor semantics |
 | `scripts/delete_data.sh` | Deletes `.log` and `.mdb` files under `docker/` |

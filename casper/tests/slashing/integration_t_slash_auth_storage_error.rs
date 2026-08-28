@@ -45,6 +45,7 @@ fn fixture_block() -> BlockMessage {
             extra_bytes: Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
@@ -68,6 +69,7 @@ fn fixture_block() -> BlockMessage {
         sig_algorithm: "secp256k1".to_string(),
         shard_id: "root".to_string(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     }
 }
 

@@ -38,8 +38,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-#[cfg(any(test, feature = "test-internals"))]
-use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 #[cfg(any(test, feature = "test-internals"))]
 use models::rust::block_metadata::AdmissionRejectionReason;
@@ -47,7 +45,7 @@ use models::rust::block_metadata::{BlockMetadata, ADMISSION_SCHEMA_VERSION};
 pub use models::rust::block_metadata::{CertifiedAdmissionOutcome, CertifiedSenderAuthority};
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizationCertificate};
 #[cfg(any(test, feature = "test-internals"))]
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::equivocation_record::SequenceNumber;
@@ -58,6 +56,7 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 // `access_equivocations_tracker` RMW contract is preserved by holding
 // `global_lock` for the duration of the critical section.
 use parking_lot::RwLock as PlRwLock;
+use prost::bytes::Bytes;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -80,27 +79,19 @@ fn test_sender_authority_certificate(
     generation: BondGeneration,
     stake: i64,
 ) -> Result<CertifiedSenderAuthority, KvStoreError> {
-    let authority_floor_hash = block
-        .header
-        .parents_hash_list
-        .first()
-        .cloned()
-        .or_else(|| (block.body.state.block_number == 0).then(|| block.block_hash.clone()))
-        .ok_or_else(|| {
-            KvStoreError::InvalidArgument(
-                "a non-genesis test block requires an authority-floor parent".to_string(),
-            )
-        })?;
-    let authority_floor_post_state_hash = block.body.state.pre_state_hash.clone();
-    let mut preimage = b"f1r3fly-test-certified-consensus-context-v1".to_vec();
-    preimage.extend_from_slice(&authority_floor_hash);
-    preimage.extend_from_slice(&authority_floor_post_state_hash);
-    let context_digest = Blake2b256::hash(preimage).into();
+    let commitment = block.header.finalized_floor.as_ref().ok_or_else(|| {
+        KvStoreError::InvalidArgument(
+            "a non-genesis test block requires a finalized-floor commitment".to_string(),
+        )
+    })?;
+    commitment
+        .validate_shape()
+        .map_err(KvStoreError::InvalidArgument)?;
     CertifiedSenderAuthority::new(
         block,
-        authority_floor_hash,
-        authority_floor_post_state_hash,
-        context_digest,
+        commitment.floor_hash.clone(),
+        commitment.floor_post_state_hash.clone(),
+        commitment.authority_context_digest.clone(),
         generation,
         stake,
     )
@@ -700,6 +691,186 @@ impl KeyValueDagRepresentation {
         Ok(false)
     }
 
+    fn consume_certified_support_work(remaining: &mut usize) -> Result<(), KvStoreError> {
+        *remaining = remaining.checked_sub(1).ok_or_else(|| {
+            KvStoreError::InvalidArgument(format!(
+                "finalization certificate exceeds the deterministic DAG-visit limit {}",
+                FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn is_dag_ancestor_certified_support(
+        &self,
+        ancestor: &BlockHash,
+        descendant: &BlockHash,
+        remaining: &mut usize,
+    ) -> Result<bool, KvStoreError> {
+        if ancestor == descendant {
+            return Ok(true);
+        }
+        let stop_height = self.block_number_unsafe(ancestor)?;
+        let mut visited = HashSet::from([descendant.clone()]);
+        let mut pending = BTreeSet::from([descendant.clone()]);
+        while let Some(hash) = pending.pop_first() {
+            Self::consume_certified_support_work(remaining)?;
+            if hash == *ancestor {
+                return Ok(true);
+            }
+            let metadata = self.lookup_unsafe(&hash)?;
+            if metadata.block_number <= stop_height {
+                continue;
+            }
+            for parent in metadata.parents {
+                if visited.insert(parent.clone()) {
+                    pending.insert(parent);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    fn is_predecessor_history_certified_support(
+        &self,
+        hash: &BlockHash,
+        block_number: i64,
+        predecessor: &BlockHash,
+        predecessor_block_number: i64,
+        remaining_work: &mut usize,
+        predecessor_cache: &mut HashMap<BlockHash, bool>,
+    ) -> Result<bool, KvStoreError> {
+        if hash == predecessor {
+            return Ok(true);
+        }
+        if block_number > predecessor_block_number {
+            return Ok(false);
+        }
+        if let Some(result) = predecessor_cache.get(hash) {
+            return Ok(*result);
+        }
+        let result = self.is_dag_ancestor_certified_support(hash, predecessor, remaining_work)?;
+        predecessor_cache.insert(hash.clone(), result);
+        Ok(result)
+    }
+
+    pub fn certified_finalized_delta(
+        &self,
+        predecessor: &BlockHash,
+        target: &BlockHash,
+        maximum_finalized_blocks: usize,
+        remaining_work: &mut usize,
+    ) -> Result<BTreeSet<BlockHashSerde>, KvStoreError> {
+        if maximum_finalized_blocks == 0
+            || maximum_finalized_blocks > FinalizationCertificate::MAX_FINALIZED_BLOCKS
+        {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "finalization delta limit must be between 1 and {}",
+                FinalizationCertificate::MAX_FINALIZED_BLOCKS
+            )));
+        }
+        let predecessor_block_number = self.block_number_unsafe(predecessor)?;
+        let mut finalized = BTreeSet::new();
+        let mut queued = HashSet::from([target.clone()]);
+        let mut pending = BTreeSet::from([target.clone()]);
+        let mut predecessor_cache = HashMap::new();
+        while let Some(hash) = pending.pop_first() {
+            Self::consume_certified_support_work(remaining_work)?;
+            let metadata = self.lookup_unsafe(&hash)?;
+            if self.is_predecessor_history_certified_support(
+                &hash,
+                metadata.block_number,
+                predecessor,
+                predecessor_block_number,
+                remaining_work,
+                &mut predecessor_cache,
+            )? {
+                continue;
+            }
+            if finalized.insert(BlockHashSerde(hash.clone()))
+                && finalized.len() > maximum_finalized_blocks
+            {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "finalization ancestry delta exceeds the protocol limit {}",
+                    maximum_finalized_blocks
+                )));
+            }
+            for parent in metadata.parents {
+                if queued.insert(parent.clone()) {
+                    pending.insert(parent);
+                }
+            }
+        }
+        Ok(finalized)
+    }
+
+    pub fn certified_support_closure(
+        &self,
+        predecessor: &BlockHash,
+        roots: impl IntoIterator<Item = BlockHash>,
+        maximum_supporting_blocks: usize,
+        remaining_work: &mut usize,
+    ) -> Result<BTreeSet<BlockHashSerde>, KvStoreError> {
+        if maximum_supporting_blocks == 0
+            || maximum_supporting_blocks > FinalizationCertificate::MAX_SUPPORTING_BLOCKS
+        {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "finalization support limit must be between 1 and {}",
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS
+            )));
+        }
+        let predecessor_block_number = self.block_number_unsafe(predecessor)?;
+        let mut support = BTreeSet::new();
+        let mut queued = HashSet::new();
+        let mut pending = BTreeSet::new();
+        let mut predecessor_cache = HashMap::new();
+        for hash in roots {
+            if queued.insert(hash.clone()) {
+                pending.insert(hash);
+            }
+        }
+        while let Some(hash) = pending.pop_first() {
+            Self::consume_certified_support_work(remaining_work)?;
+            if !support.insert(BlockHashSerde(hash.clone())) {
+                continue;
+            }
+            if support.len() > maximum_supporting_blocks {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "finalization support closure exceeds the protocol limit {}",
+                    maximum_supporting_blocks
+                )));
+            }
+            let metadata = self.lookup_unsafe(&hash)?;
+            let predecessor_history = self.is_predecessor_history_certified_support(
+                &hash,
+                metadata.block_number,
+                predecessor,
+                predecessor_block_number,
+                remaining_work,
+                &mut predecessor_cache,
+            )?;
+            if predecessor_history {
+                continue;
+            }
+            let dependencies = metadata
+                .parents
+                .into_iter()
+                .chain(
+                    metadata
+                        .justifications
+                        .into_iter()
+                        .map(|justification| justification.latest_block_hash),
+                )
+                .collect::<BTreeSet<_>>();
+            for dependency in dependencies {
+                if queued.insert(dependency.clone()) {
+                    pending.insert(dependency);
+                }
+            }
+        }
+        Ok(support)
+    }
+
     pub fn parents_unsafe(&self, block_hash: &BlockHash) -> Result<Vec<BlockHash>, KvStoreError> {
         let metadata = self.lookup_unsafe(block_hash)?;
         Ok(metadata.parents)
@@ -852,14 +1023,47 @@ pub struct BlockDagKeyValueStorage {
 pub struct FinalizationBase {
     pub head: FinalizationHead,
     pub dag: KeyValueDagRepresentation,
+    pub dag_generation: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalizationWitnessInputs {
+    pub protocol_version: i64,
+    pub shard_id: String,
+    pub predecessor_certificate_digest: BlockHashSerde,
+    pub predecessor_certificate_block_hash: BlockHashSerde,
     pub fault_tolerance_numerator: i64,
     pub fault_tolerance_denominator: i64,
     pub latest_messages: BTreeMap<ValidatorSerde, BlockHashSerde>,
     pub authority_context_digest: BlockHashSerde,
+}
+
+fn predecessor_certificate_carrier_digest(
+    dag: &KeyValueDagRepresentation,
+    carrier: &BlockHash,
+    predecessor_floor: &BlockHash,
+    predecessor_post_state: &BlockHash,
+    protocol_version: i64,
+) -> Result<Option<BlockHash>, KvStoreError> {
+    let metadata = dag.lookup_unsafe(carrier)?;
+    metadata
+        .validate()
+        .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+    if metadata.approved_genesis
+        || !metadata.is_accepted()
+        || metadata.protocol_version != protocol_version
+    {
+        return Ok(None);
+    }
+    let Some(commitment) = metadata.finalized_floor_commitment.as_ref() else {
+        return Ok(None);
+    };
+    commitment
+        .validate_shape()
+        .map_err(KvStoreError::InvalidArgument)?;
+    Ok((commitment.floor_hash == *predecessor_floor
+        && commitment.floor_post_state_hash == *predecessor_post_state)
+        .then(|| commitment.certificate_digest.clone()))
 }
 
 impl BlockDagKeyValueStorage {
@@ -884,7 +1088,7 @@ impl BlockDagKeyValueStorage {
             .store(FinalizationLedger::STORE_NAME.to_string())
             .await?;
 
-        let schema_key = "casper-v5".to_string();
+        let schema_key = "casper-v6".to_string();
         match admission_schema_db.get_one(&schema_key)? {
             Some(version) if version == ADMISSION_SCHEMA_VERSION => {}
             Some(version) => {
@@ -912,7 +1116,7 @@ impl BlockDagKeyValueStorage {
                 for (name, store) in existing_indices {
                     if store.non_empty()? {
                         return Err(KvStoreError::InvalidArgument(format!(
-                            "DAG index {name} contains data without a protocol-v5 admission schema; start from a fresh protocol-v5 genesis or run an explicit verified migration"
+                            "DAG index {name} contains data without a protocol-v6 admission schema; start from a fresh protocol-v6 genesis or run an explicit verified migration"
                         )));
                     }
                 }
@@ -952,7 +1156,7 @@ impl BlockDagKeyValueStorage {
             }
         } else if !block_metadata_store.dag_set().is_empty() {
             return Err(KvStoreError::InvalidArgument(
-                "protocol-v5 DAG metadata exists without a finalization ledger; start from a fresh genesis or run an explicit verified migration"
+                "protocol-v6 DAG metadata exists without a finalization ledger; start from a fresh genesis or run an explicit verified migration"
                     .to_string(),
             ));
         }
@@ -1999,13 +2203,55 @@ impl BlockDagKeyValueStorage {
         self.finalization_ledger.head()
     }
 
+    pub fn finalized_floor_certificate(
+        &self,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        let Some(head) = self.finalization_ledger.head()? else {
+            return Ok(None);
+        };
+        self.finalized_floor_certificate_for_head(&head)
+    }
+
+    pub fn finalized_floor_certificate_for_head(
+        &self,
+        head: &FinalizationHead,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        if head.revision == 0 {
+            return Ok(None);
+        }
+        let witness = self
+            .finalization_ledger
+            .witness(&head.certificate_digest)?
+            .ok_or_else(|| {
+                KvStoreError::SerializationError(
+                    "durable finalized head has no matching certificate witness".to_string(),
+                )
+            })?;
+        let certificate = witness.to_certificate();
+        if certificate.digest() != head.certificate_digest.0 {
+            return Err(KvStoreError::SerializationError(
+                "durable finalized head certificate digest does not match its witness".to_string(),
+            ));
+        }
+        if certificate.target_floor_hash != head.block_hash
+            || certificate.target_block_number != head.block_number
+        {
+            return Err(KvStoreError::SerializationError(
+                "durable finalized head does not match its certificate target".to_string(),
+            ));
+        }
+        Ok(Some(certificate))
+    }
+
     pub fn capture_finalization_base(&self) -> Result<FinalizationBase, KvStoreError> {
         self.reconcile_finalization_projection()?;
+        let _lock_guard = self.global_lock.read();
         let before = self
             .finalization_ledger
             .head()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
-        let dag = self.get_representation()?;
+        let dag = self.get_representation_internal()?;
+        let dag_generation = self.dag_generation.load(Ordering::Acquire);
         let after = self
             .finalization_ledger
             .head()?
@@ -2022,7 +2268,11 @@ impl BlockDagKeyValueStorage {
                     .to_string(),
             ));
         }
-        Ok(FinalizationBase { head: before, dag })
+        Ok(FinalizationBase {
+            head: before,
+            dag,
+            dag_generation,
+        })
     }
 
     pub fn committed_finalization_records(&self) -> Result<Vec<FinalizationRecord>, KvStoreError> {
@@ -2098,6 +2348,7 @@ impl BlockDagKeyValueStorage {
         self.record_directly_finalized_atomic(
             &base.head,
             directly_finalized_hash,
+            "root".to_string(),
             ft_value,
             move |_revision, finalized| finalization_effect(finalized),
         )
@@ -2109,6 +2360,7 @@ impl BlockDagKeyValueStorage {
         &self,
         expected: &FinalizationHead,
         directly_finalized_hash: BlockHash,
+        shard_id: String,
         ft_value: f32,
         finalization_effect: F,
     ) -> Result<FinalizationAppendOutcome, KvStoreError>
@@ -2117,7 +2369,10 @@ impl BlockDagKeyValueStorage {
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
         let dag = self.get_representation()?;
-        let latest_messages = dag
+        let protocol_version = dag
+            .lookup_unsafe(&directly_finalized_hash)?
+            .protocol_version;
+        let latest_messages: BTreeMap<ValidatorSerde, BlockHashSerde> = dag
             .latest_messages_map
             .iter()
             .map(|(validator, block_hash)| {
@@ -2127,11 +2382,56 @@ impl BlockDagKeyValueStorage {
                 )
             })
             .collect();
+        let zero = Bytes::from(vec![0; block_hash::LENGTH]);
+        let (predecessor_certificate_digest, predecessor_certificate_block_hash) =
+            if expected.revision == 0 {
+                (BlockHashSerde(zero.clone()), BlockHashSerde(zero))
+            } else {
+                let predecessor_post_state =
+                    dag.lookup_unsafe(&expected.block_hash.0)?.post_state_hash;
+                let roots = latest_messages
+                    .values()
+                    .map(|hash| hash.0.clone())
+                    .chain(std::iter::once(directly_finalized_hash.clone()))
+                    .collect::<Vec<_>>();
+                let mut remaining_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+                let support = dag.certified_support_closure(
+                    &expected.block_hash.0,
+                    roots,
+                    FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                    &mut remaining_work,
+                )?;
+                let mut selected = None;
+                for carrier in support {
+                    if carrier.0 == directly_finalized_hash {
+                        continue;
+                    }
+                    if let Some(digest) = predecessor_certificate_carrier_digest(
+                        &dag,
+                        &carrier.0,
+                        &expected.block_hash.0,
+                        &predecessor_post_state,
+                        protocol_version,
+                    )? {
+                        selected = Some((BlockHashSerde(digest), carrier));
+                        break;
+                    }
+                }
+                selected.ok_or_else(|| KvStoreError::FinalizationCertificateCarrierPending {
+                    expected_revision: expected.revision,
+                    floor_hash: expected.block_hash.0.to_vec(),
+                    certificate_digest: expected.certificate_digest.0.to_vec(),
+                })?
+            };
         self.record_directly_finalized_certified_atomic(
             expected,
             directly_finalized_hash,
             ft_value,
             FinalizationWitnessInputs {
+                protocol_version,
+                shard_id,
+                predecessor_certificate_digest,
+                predecessor_certificate_block_hash,
                 fault_tolerance_numerator: 0,
                 fault_tolerance_denominator: 1,
                 latest_messages,
@@ -2224,33 +2524,76 @@ impl BlockDagKeyValueStorage {
                         .to_string(),
                 ));
             }
-            let mut finalized = dag.ancestors(directly_finalized_hash.clone(), |hash| {
-                !dag.is_finalized(hash)
-            })?;
-            finalized.insert(directly_finalized_hash.clone());
-            let mut supporting = BTreeSet::new();
-            let mut pending = VecDeque::from_iter(
-                witness_inputs
-                    .latest_messages
-                    .values()
-                    .map(|hash| hash.0.clone())
-                    .chain(std::iter::once(directly_finalized_hash.clone())),
-            );
-            while let Some(hash) = pending.pop_front() {
-                if !supporting.insert(BlockHashSerde(hash.clone())) {
-                    continue;
+            let mut remaining_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+            let finalized = dag
+                .certified_finalized_delta(
+                    &expected.block_hash.0,
+                    &directly_finalized_hash,
+                    FinalizationCertificate::MAX_FINALIZED_BLOCKS,
+                    &mut remaining_work,
+                )?
+                .into_iter()
+                .map(|hash| hash.0)
+                .collect::<HashSet<_>>();
+            let supporting_roots = witness_inputs
+                .latest_messages
+                .values()
+                .map(|hash| hash.0.clone())
+                .chain(std::iter::once(directly_finalized_hash.clone()))
+                .collect::<Vec<_>>();
+            let supporting = dag.certified_support_closure(
+                &expected.block_hash.0,
+                supporting_roots,
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut remaining_work,
+            )?;
+            let predecessor_digest_is_zero = witness_inputs
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0);
+            let predecessor_carrier_is_zero = witness_inputs
+                .predecessor_certificate_block_hash
+                .0
+                .iter()
+                .all(|byte| *byte == 0);
+            if expected.revision == 0 {
+                if !predecessor_digest_is_zero || !predecessor_carrier_is_zero {
+                    return Err(KvStoreError::InvalidArgument(
+                        "genesis predecessor must use the zero certificate carrier".to_string(),
+                    ));
                 }
-                if hash == expected.block_hash.0 || dag.is_finalized(&hash) {
-                    continue;
+            } else {
+                if predecessor_digest_is_zero
+                    || predecessor_carrier_is_zero
+                    || !supporting.contains(&witness_inputs.predecessor_certificate_block_hash)
+                {
+                    return Err(KvStoreError::InvalidArgument(
+                        "non-genesis predecessor requires a supported certificate carrier"
+                            .to_string(),
+                    ));
                 }
-                let metadata = dag.lookup_unsafe(&hash)?;
-                pending.extend(metadata.parents.iter().cloned());
-                pending.extend(
-                    metadata
-                        .justifications
-                        .iter()
-                        .map(|justification| justification.latest_block_hash.clone()),
-                );
+                let predecessor_post_state =
+                    dag.lookup_unsafe(&expected.block_hash.0)?.post_state_hash;
+                let committed_digest = predecessor_certificate_carrier_digest(
+                    &dag,
+                    &witness_inputs.predecessor_certificate_block_hash.0,
+                    &expected.block_hash.0,
+                    &predecessor_post_state,
+                    witness_inputs.protocol_version,
+                )?
+                .ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "predecessor certificate carrier does not commit to the expected floor state"
+                            .to_string(),
+                    )
+                })?;
+                if committed_digest != witness_inputs.predecessor_certificate_digest.0 {
+                    return Err(KvStoreError::InvalidArgument(
+                        "predecessor certificate carrier and digest are not the same proof"
+                            .to_string(),
+                    ));
+                }
             }
             (
                 block_number,
@@ -2266,9 +2609,13 @@ impl BlockDagKeyValueStorage {
             .genesis_anchor()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
         let witness = FinalizationLedger::prepare_witness(
+            witness_inputs.protocol_version,
+            witness_inputs.shard_id,
             genesis.block_hash.0,
             expected,
             directly_finalized_hash.clone(),
+            witness_inputs.predecessor_certificate_digest.0,
+            witness_inputs.predecessor_certificate_block_hash.0,
             block_number,
             target_post_state_hash,
             witness_inputs.fault_tolerance_numerator,
@@ -2316,5 +2663,185 @@ impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorag
         f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
     ) -> Result<A, KvStoreError> {
         BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
+    }
+}
+
+#[cfg(test)]
+mod certified_closure_tests {
+    use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
+    use models::rust::block_implicits;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Bond, FinalizationCertificate, FinalizedFloorCommitment,
+    };
+    use models::rust::validator::{self, Validator};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::{BlockDagKeyValueStorage, InsertMode};
+    use crate::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+
+    fn rank(value: u8) -> BlockHash { Bytes::from(vec![value; block_hash::LENGTH]) }
+
+    fn validator() -> Validator { Bytes::from(vec![7; validator::LENGTH]) }
+
+    fn make_block(
+        hash: u8,
+        height: i64,
+        parents: Vec<BlockHash>,
+        floor: Option<(BlockHash, BlockHash, BlockHash)>,
+    ) -> BlockMessage {
+        let validator = validator();
+        let mut block = block_implicits::get_random_block(
+            Some(height),
+            Some(i32::try_from(height).unwrap()),
+            Some(rank(hash.saturating_add(20))),
+            Some(rank(hash.saturating_add(40))),
+            Some(validator.clone()),
+            Some(models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+            Some(height),
+            Some(parents),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![Bond {
+                validator,
+                stake: 1,
+            }]),
+            Some("root".to_string()),
+            None,
+        );
+        block.block_hash = rank(hash);
+        block.header.finalized_floor =
+            floor.map(|(floor_hash, floor_post_state_hash, certificate_digest)| {
+                FinalizedFloorCommitment {
+                    floor_hash,
+                    floor_post_state_hash,
+                    certificate_digest,
+                    authority_context_digest: rank(99),
+                }
+            });
+        block
+    }
+
+    async fn fixture(include_ambient: bool) -> (KeyValueDagRepresentation, Vec<BlockHash>) {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let genesis = make_block(0, 0, Vec::new(), None);
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+        let predecessor = make_block(1, 1, vec![rank(0)], Some((rank(0), rank(40), rank(90))));
+        let carrier = make_block(2, 2, vec![rank(1)], Some((rank(1), rank(41), rank(91))));
+        let descendant = make_block(3, 3, vec![rank(2)], Some((rank(1), rank(41), rank(91))));
+        let target = make_block(4, 4, vec![rank(3)], Some((rank(1), rank(41), rank(91))));
+        for block in [&predecessor, &carrier, &descendant, &target] {
+            storage.insert(block, InsertMode::Normal).unwrap();
+        }
+        if include_ambient {
+            let ambient = make_block(5, 2, vec![rank(1)], Some((rank(1), rank(41), rank(91))));
+            storage.insert(&ambient, InsertMode::Normal).unwrap();
+        }
+        (storage.get_representation().unwrap(), vec![
+            rank(1),
+            rank(2),
+            rank(3),
+            rank(4),
+        ])
+    }
+
+    #[tokio::test]
+    async fn certified_closures_use_objective_predecessor_history_and_ignore_ambient_blocks() {
+        let (base, expected) = fixture(false).await;
+        let (extended, _) = fixture(true).await;
+        let mut base_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let mut extended_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let base_support = base
+            .certified_support_closure(
+                &rank(1),
+                [rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut base_work,
+            )
+            .unwrap();
+        let extended_support = extended
+            .certified_support_closure(
+                &rank(1),
+                [rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut extended_work,
+            )
+            .unwrap();
+        assert_eq!(base_support, extended_support);
+        assert_eq!(
+            base_support,
+            expected.into_iter().map(BlockHashSerde).collect()
+        );
+        assert!(!base_support.contains(&BlockHashSerde(rank(0))));
+        assert!(!extended_support.contains(&BlockHashSerde(rank(5))));
+
+        let mut finalized_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let finalized = extended
+            .certified_finalized_delta(
+                &rank(1),
+                &rank(4),
+                FinalizationCertificate::MAX_FINALIZED_BLOCKS,
+                &mut finalized_work,
+            )
+            .unwrap();
+        assert_eq!(
+            finalized,
+            [rank(2), rank(3), rank(4)]
+                .into_iter()
+                .map(BlockHashSerde)
+                .collect()
+        );
+    }
+
+    #[tokio::test]
+    async fn certified_support_is_invariant_under_root_order_and_duplication() {
+        let (dag, _) = fixture(true).await;
+        let mut oracle_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let oracle = dag
+            .certified_support_closure(
+                &rank(1),
+                [rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut oracle_work,
+            )
+            .unwrap();
+        let strategy = proptest::collection::vec(0usize..4, 0..32);
+        let mut runner = TestRunner::new(Config::with_cases(256));
+        runner
+            .run(&strategy, |indices| {
+                let mut roots = vec![rank(4)];
+                roots.extend(indices.into_iter().map(|index| rank(index as u8 + 1)));
+                let mut remaining = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+                let actual = dag
+                    .certified_support_closure(
+                        &rank(1),
+                        roots,
+                        FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                        &mut remaining,
+                    )
+                    .unwrap();
+                prop_assert_eq!(&actual, &oracle);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn certified_closure_limits_fail_closed() {
+        let (dag, _) = fixture(false).await;
+        let mut no_work = 0;
+        assert!(dag
+            .certified_support_closure(&rank(1), [rank(4)], 4, &mut no_work)
+            .is_err());
+        let mut bounded_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        assert!(dag
+            .certified_support_closure(&rank(1), [rank(4)], 3, &mut bounded_work)
+            .is_err());
     }
 }

@@ -312,6 +312,31 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     "Inv_ApprovedVersionSupported is violated" \
     "unsupported approved protocol admission"
 
+  if tlc_run "$(tlc_metadir startup_metadata_preflight_post_gate)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_post.log" 2>&1; then
+    pass "TLA+ startup metadata preflight verifies before Running and supervises asynchronous rejection"
+    rm -f "$LOG_DIR/startup_metadata_preflight_post.log"
+  else
+    fail "TLA+ startup metadata preflight did NOT pass (see $LOG_DIR/startup_metadata_preflight_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir startup_metadata_preflight_publish_unsafe)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight_publish_unsafe.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_publish_unsafe.log" 2>&1; then
+    fail "publish-before-verification should violate Inv_RunningImpliesVerified but passed"
+  elif grep -q "Inv_RunningImpliesVerified is violated" "$LOG_DIR/startup_metadata_preflight_publish_unsafe.log"; then
+    pass "TLA+ publish-before-verification control reproduces observable unverified Running state"
+    rm -f "$LOG_DIR/startup_metadata_preflight_publish_unsafe.log"
+  else
+    fail "publish-before-verification control failed for the wrong reason (see $LOG_DIR/startup_metadata_preflight_publish_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir startup_metadata_preflight_supervisor_unsafe)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight_supervisor_unsafe.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log" 2>&1; then
+    fail "unsupervised asynchronous rejection should violate termination liveness but passed"
+  elif grep -q "Temporal properties were violated" "$LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log"; then
+    pass "TLA+ unsupervised rejection control reproduces a live process stranded outside Running"
+    rm -f "$LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log"
+  else
+    fail "unsupervised rejection control failed for the wrong reason (see $LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log)"
+  fi
+
   if tlc_run "$(tlc_metadir approved_state_replay_post_gate)" "$RECOVERY_TLA_DIR/MC_ApprovedStateReplay.cfg" "$RECOVERY_TLA_DIR/MC_ApprovedStateReplay.tla" >"$LOG_DIR/approved_state_replay_post.log" 2>&1; then
     pass "TLA+ approved-state bootstrap replays every historical block from its own consensus data"
     rm -f "$LOG_DIR/approved_state_replay_post.log"

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://f1r3fly.io/schemas/uptime-calibrated-profile-v1.json",
+  "title": "F1R3node calibrated uptime projection profile",
+  "type": "object",
+  "required": ["schema_version", "profile_id", "evidence_class", "calibration", "constants", "parameters"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "profile_id": {"type": "string", "minLength": 1},
+    "evidence_class": {"const": "calibrated_projection"},
+    "calibration": {
+      "type": "object",
+      "required": [
+        "status",
+        "source_commit",
+        "implementation_hash",
+        "model_hash",
+        "formal_authority_hash",
+        "topology_hash",
+        "configuration_hash",
+        "workload_hash",
+        "raw_artifact_sha256",
+        "valid_until",
+        "continuous_shard_hours",
+        "telemetry_complete",
+        "right_censoring_recorded",
+        "confidence_level"
+      ],
+      "properties": {
+        "status": {"const": "calibrated"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "implementation_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "model_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "formal_authority_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "topology_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "configuration_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "workload_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "raw_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "valid_until": {"type": "string", "format": "date"},
+        "continuous_shard_hours": {"type": "number", "minimum": 60},
+        "telemetry_complete": {"const": true},
+        "right_censoring_recorded": {"const": true},
+        "confidence_level": {"type": "number", "minimum": 0.95, "maximum": 1}
+      },
+      "additionalProperties": true
+    },
+    "constants": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "parameters": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["unit", "source", "estimator", "lower", "estimate", "upper"],
+        "properties": {
+          "unit": {"type": "string", "minLength": 1},
+          "source": {"type": "string", "minLength": 1},
+          "estimator": {"type": "string", "minLength": 1},
+          "lower": {},
+          "estimate": {},
+          "upper": {}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

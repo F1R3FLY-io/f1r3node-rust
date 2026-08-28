@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "evidence_id": "merge-recovery-preflight-33099406770",
+  "evidence_class": "preflight_transient_observation",
+  "github_run_id": 33099406770,
+  "workflow": ".github/workflows/merge-recovery-soak.yml",
+  "event": "workflow_dispatch",
+  "control_revision": "af1e5209d0924c49e96bca912fda35b2c7c0c82b",
+  "node_revision": "af1e5209d0924c49e96bca912fda35b2c7c0c82b",
+  "system_integration_revision": "8b4da0f9395fc951b68af1be8ae023fb1aeb9d09",
+  "run_started_at": "2026-08-27T17:38:08Z",
+  "run_completed_at": "2026-08-27T20:15:26Z",
+  "job": {
+    "id": 98613433243,
+    "runner_name": "ci-eph-f1r3node-rust-amd64-20260827-173914-31922d",
+    "labels": ["self-hosted", "linux", "x64", "f1r3fly-rust-soak", "oracle-cloud"],
+    "started_at": "2026-08-27T17:40:24Z",
+    "completed_at": "2026-08-27T20:14:28Z",
+    "conclusion": "failure"
+  },
+  "artifact": {
+    "id": 9663034814,
+    "name": "merge-recovery-soak-216000s-33099406770-1",
+    "compressed_size_bytes": 94748535,
+    "sha256": "d7e448adfa3cd65d6e44df44086bbde5010010755f0bcb5fedc150b6d1ac7cb6",
+    "expires_at": "2026-09-10T20:14:13Z",
+    "retained_in_repository": false
+  },
+  "host": {
+    "provider": "Oracle Cloud Infrastructure",
+    "shape": "VM.Standard.E6.Flex",
+    "architecture": "x86_64",
+    "ocpus": 16,
+    "memory_mb": 65536,
+    "node_rss_ceiling_mb": 45056,
+    "host_free_floor_mb": 8192
+  },
+  "preflight": {
+    "provider": "docker",
+    "suite_roots": 3,
+    "collected_tests": 124,
+    "elapsed_seconds": 8954,
+    "passed_tests": 123,
+    "failed_tests": 1,
+    "failed_test": "integration-tests/test/tests/custom/test_load.py::test_deploy_throughput_and_finalization",
+    "failure": {
+      "deploys_not_finalized_within_deadline": 604,
+      "finalization_deadline_seconds": 45,
+      "drain_lfb_minimum_height": 75,
+      "drain_lfb_maximum_height": 82,
+      "drain_lfb_spread_blocks": 7
+    },
+    "failed_test_topology": {
+      "validators": 4,
+      "stake_per_validator": 100,
+      "bootstrap_is_validator": false,
+      "readonly_is_validator": false,
+      "network_nodes": 6
+    },
+    "resource_archive": {
+      "peak_total_node_rss_mb": 7118,
+      "peak_observed_node_count": 8,
+      "samples": 189
+    }
+  },
+  "soak": {
+    "requested_seconds": 216000,
+    "scheduled_segments": 6,
+    "completed_segments": 0,
+    "continuous_shard_exposure_seconds": 0,
+    "aggregate_report_generated": false
+  },
+  "statistical_treatment": {
+    "shard_lifetime_observation": false,
+    "deploy_lifetimes_right_censored_at_deadline": true,
+    "current_three_validator_profile_compatible": false,
+    "uptime_rate_identifiable": false,
+    "admissible_uses": [
+      "preflight failure classification",
+      "short-load deploy-age and finality-response evidence",
+      "host and resource-guard provenance",
+      "telemetry-schema validation"
+    ],
+    "prohibited_uses": [
+      "continuous shard lifetime exposure",
+      "30-day survival calibration",
+      "three-validator Storm transition-rate fitting",
+      "month-scale memory growth or reclamation fitting",
+      "cause-specific rare-event hazard fitting"
+    ]
+  }
+}

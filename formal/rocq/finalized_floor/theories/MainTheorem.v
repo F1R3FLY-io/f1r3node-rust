@@ -45,6 +45,7 @@ From FinalizedFloor Require Import MergeRecoveryCoherence.
 From FinalizedFloor Require Import AdmissionEffectAlignment.
 From FinalizedFloor Require Import RejectionReasonConfluence.
 From FinalizedFloor Require Import ProtocolVersionLifecycle.
+From FinalizedFloor Require Import StartupMetadataPreflight.
 From FinalizedFloor Require Import ProtocolActivationCoherence.
 From FinalizedFloor Require Import Selection.
 From FinalizedFloor Require Import IntegerAdd.
@@ -68,6 +69,9 @@ From FinalizedFloor Require Import CertifiedObjectiveEquivocation.
 From FinalizedFloor Require Import CertifiedCausalAdmission.
 From FinalizedFloor Require Import CausalFinalityProjection.
 From FinalizedFloor Require Import HeartbeatFinalityBackpressure.
+From FinalizedFloor Require Import TargetDeployTerminality.
+From FinalizedFloor Require Import NodeLocalProductLifting.
+From FinalizedFloor Require Import NodeLocalTemporalLifting.
 From FinalizedFloor Require Import ParallelValidatorConsensus.
 From FinalizedFloor Require Import FinalizationAtomicity.
 From FinalizedFloor Require Import ProposalFloorReadiness.
@@ -75,6 +79,11 @@ From FinalizedFloor Require Import FinalizerFloorMaterialization.
 From FinalizedFloor Require Import DivergentFinalizationHistories.
 From FinalizedFloor Require Import MinorityForkRecovery.
 From FinalizedFloor Require Import CandidateScopeDeployRehome.
+From FinalizedFloor Require Import StaleSiblingRecovery.
+From FinalizedFloor Require Import CertifiedFloorCommitment.
+From FinalizedFloor Require Import FinalizationCertificateRetrieval.
+From FinalizedFloor Require Import DependencyMaintenanceRound.
+From FinalizedFloor Require Import WitnessEquivalentCarrier.
 From FinalizedFloor Require Import ObjectiveEvidenceSequenceEligibility.
 
 Theorem finalized_floor_merge_correct :
@@ -138,6 +147,43 @@ Proof.
     + split.
       * exact selected_recovery_preserves_authorization.
       * exact only_active_candidate_duplicate_is_suppressed.
+Qed.
+
+Theorem finalized_floor_stale_sibling_recovery_correct :
+  In SourceA (causal_sources (finalize_majority_b accepted_siblings)) /\
+  publish_elected_recovery (finalize_majority_b accepted_siblings) = None /\
+  let settled := settle_exact_frontier (finalize_majority_b accepted_siblings) in
+  has_exact_a_tombstone settled = true /\
+  has_buffered_a settled = true /\
+  exists recovered,
+    publish_elected_recovery settled = Some recovered /\
+    selected_recovery recovered = [StaleA; FreshWork] /\
+    committed_effects recovered = [StaleA; FloorB; FreshWork].
+Proof.
+  exact stale_sibling_recovery_end_to_end_correct.
+Qed.
+
+Theorem finalized_floor_startup_metadata_preflight_correct :
+  (forall path,
+    running_event_published (complete_startup path false) = false /\
+    engine_running (complete_startup path false) = false)
+  /\
+  (forall path,
+    process_alive (complete_startup path false) = false /\
+    exit_nonzero (complete_startup path false) = true)
+  /\
+  (forall path,
+    metadata_verified (complete_startup path true) = true /\
+    running_event_published (complete_startup path true) = true /\
+    engine_running (complete_startup path true) = true /\
+    process_alive (complete_startup path true) = true /\
+    exit_nonzero (complete_startup path true) = false).
+Proof.
+  split.
+  - exact mismatch_never_publishes_running.
+  - split.
+    + exact mismatch_exits_nonzero.
+    + exact matching_startup_runs_only_after_verification.
 Qed.
 
 Theorem finalized_floor_objective_evidence_sequence_boundary_correct :
@@ -1246,7 +1292,7 @@ Theorem bootstrap_replay_and_local_fault_recovery_correct :
   /\
   (forall state,
     regular_parent_satisfied state = true ->
-    validation_disposition state = Accepted).
+    validation_disposition state = LocalFaultDeferral.Accepted).
 Proof.
   split.
   - intros Context Root replay history.
@@ -1815,3 +1861,131 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_materialization_target_alignment_correct.
+
+Theorem finalized_floor_target_deploy_wait_correct :
+  (forall status now last_progress_at stall_timeout absolute_timeout,
+    classify_deploy_wait
+      status now last_progress_at stall_timeout absolute_timeout =
+      WaitSucceeded ->
+    status = StatusFinalized)
+  /\
+  (forall status now last_progress_at stall_timeout absolute_timeout,
+    progress_deadline_expired
+      now last_progress_at stall_timeout absolute_timeout = false ->
+    status = StatusFailed \/ status = StatusExpired ->
+    classify_deploy_wait
+      status now last_progress_at stall_timeout absolute_timeout =
+      WaitTerminalError)
+  /\
+  (forall observation observed_at previous_progress_at,
+    observation <> ObservationStrictProgress ->
+    progress_time_after_observation
+      observation observed_at previous_progress_at = previous_progress_at)
+  /\
+  (forall observed_at previous_progress_at,
+    progress_time_after_observation
+      ObservationStrictProgress observed_at previous_progress_at = observed_at)
+  /\
+  (forall previous_height previous_hash next_height next_hash observed_at
+    previous_progress_at,
+    classify_lfb_observation
+      false previous_height previous_hash next_height next_hash =
+      ObservationBaseline /\
+    progress_time_after_observation
+      ObservationBaseline observed_at previous_progress_at = previous_progress_at)
+  /\
+  (history_corruption ObservationRegression = true /\
+   history_corruption ObservationRevision = true /\
+   history_corruption ObservationBaseline = false /\
+   history_corruption ObservationStable = false /\
+   history_corruption ObservationStrictProgress = false)
+  /\
+  (classify_lfb_wait_observation ObservationRegression =
+     WaitHistoryCorruption /\
+   classify_lfb_wait_observation ObservationRevision =
+     WaitHistoryCorruption)
+  /\
+  (classify_lfb_observation true 6 10 6 11 = ObservationRevision /\
+   classify_lfb_observation true 6 10 5 9 = ObservationRegression)
+  /\
+  (forall now last_progress_at stall_timeout absolute_timeout,
+    absolute_timeout <= now ->
+    progress_deadline_expired
+      now last_progress_at stall_timeout absolute_timeout = true)
+  /\
+  (forall status now last_progress_at stall_timeout absolute_timeout,
+    absolute_timeout <= now ->
+    classify_deploy_wait
+      status now last_progress_at stall_timeout absolute_timeout =
+      WaitTimedOut)
+  /\
+  (classify_deploy_wait StatusFinalized 8 5 3 8 = WaitTimedOut /\
+   classify_deploy_wait StatusFailed 8 5 3 8 = WaitTimedOut /\
+   classify_deploy_wait StatusExpired 8 5 3 8 = WaitTimedOut)
+  /\
+  (fixed_deadline_expired 45 45 = true /\
+   progress_deadline_expired 45 43 45 135 = false)
+  /\
+  (classify_deploy_wait StatusPending 45 43 45 135 = WaitPending /\
+   classify_deploy_wait StatusFinalized 49 43 45 135 = WaitSucceeded)
+  /\
+  (forall start stall_timeout absolute_timeout,
+    stall_timeout <= absolute_timeout ->
+    progress_deadline_expired
+      (start + stall_timeout) start stall_timeout absolute_timeout = true).
+Proof.
+  exact
+    (conj exact_success_requires_exact_finalized_status
+      (conj in_budget_failed_or_expired_is_terminal_error
+        (conj only_strict_height_progress_renews_stall_budget
+          (conj strict_height_progress_renews_stall_budget
+            (conj first_observation_establishes_baseline_without_renewal
+              (conj finalized_history_anomalies_fail_loudly
+                (conj finalized_history_anomalies_are_terminal_observer_errors
+                  (conj concrete_revision_and_regression_are_detected
+                    (conj absolute_deadline_cannot_be_renewed
+                      (conj expired_observation_cannot_report_terminal_success
+                        (conj terminal_response_at_deadline_is_timeout
+                          (conj fixed_deadline_rejects_valid_intermediate_progress_trace
+                            (conj reproduced_trace_succeeds_only_at_exact_terminality
+                                  no_progress_trace_is_stall_bounded))))))))))))).
+Qed.
+
+Print Assumptions finalized_floor_target_deploy_wait_correct.
+
+Theorem finalized_floor_node_local_product_lifting_correct :
+  forall
+    (Node LocalState Action : Type)
+    (node_eq_dec : forall left right : Node, {left = right} + {left <> right})
+    (local_step : Action -> LocalState -> LocalState)
+    (local_invariant local_goal : LocalState -> Prop)
+    (local_enabled : Action -> LocalState -> Prop),
+    node_local_product_contract
+      node_eq_dec local_step local_invariant local_goal local_enabled.
+Proof.
+  intros Node LocalState Action node_eq_dec local_step local_invariant
+    local_goal local_enabled.
+  apply node_local_product_lifting_correct.
+Qed.
+
+Print Assumptions finalized_floor_node_local_product_lifting_correct.
+
+Definition finalized_floor_node_local_temporal_lifting_correct :=
+  @node_local_temporal_product_lifting_correct.
+
+Print Assumptions finalized_floor_node_local_temporal_lifting_correct.
+
+Definition finalized_floor_certificate_retrieval_correct :=
+  @finalization_certificate_retrieval_contract.
+
+Print Assumptions finalized_floor_certificate_retrieval_correct.
+
+Definition finalized_floor_dependency_maintenance_correct :=
+  @dependency_maintenance_round_contract.
+
+Print Assumptions finalized_floor_dependency_maintenance_correct.
+
+Definition finalized_floor_witness_equivalent_carrier_correct :=
+  @witness_equivalent_carrier_contract.
+
+Print Assumptions finalized_floor_witness_equivalent_carrier_correct.

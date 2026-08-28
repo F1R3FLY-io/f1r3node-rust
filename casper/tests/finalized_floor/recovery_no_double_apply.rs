@@ -28,6 +28,7 @@ use std::collections::HashSet;
 
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::interpreter_util::canonical_won_sigs;
+use models::rust::casper::protocol::casper_message::Bond;
 use prost::bytes::Bytes;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -60,11 +61,16 @@ async fn recovery_effect_is_applied_at_most_once() {
 
         // Merge scope: genesis (no deploys) <- b1 (includes `sig_won` in body.deploys — a
         // WIN, i.e. the recovered effect has been applied ONCE and is now in the base).
+        let validator = Bytes::from(vec![2; models::rust::validator::LENGTH]);
+        let bonds = vec![Bond {
+            validator: validator.clone(),
+            stake: 1,
+        }];
         let genesis = create_genesis_block(
             &mut block_store,
             &mut block_dag_storage,
-            None,
-            None,
+            Some(validator.clone()),
+            Some(bonds.clone()),
             None,
             None,
             None,
@@ -77,8 +83,8 @@ async fn recovery_effect_is_applied_at_most_once() {
             &mut block_dag_storage,
             vec![genesis.block_hash.clone()],
             &genesis,
-            None,
-            None,
+            Some(validator.clone()),
+            Some(bonds.clone()),
             None,
             Some(vec![won_deploy.clone()]),
             None,
@@ -145,8 +151,8 @@ async fn recovery_effect_is_applied_at_most_once() {
             &mut block_dag_storage,
             vec![b1.block_hash.clone()],
             &genesis,
-            None,
-            None,
+            Some(validator),
+            Some(bonds),
             None,
             Some(vec![loser_deploy.clone()]),
             None,

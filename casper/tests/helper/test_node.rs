@@ -7,7 +7,9 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
-use casper::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
+use casper::rust::blocks::block_processing_queue::{
+    BlockProcessingQueueReceiver, BlockProcessingQueueSender,
+};
 use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -62,6 +64,8 @@ pub struct TestNode {
     pub validator_id_opt: Option<ValidatorIdentity>,
     // Note: blockProcessingPipe implemented as method process_block_through_pipe
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
+    pub block_processing_queue_rx:
+        Arc<tokio::sync::Mutex<BlockProcessingQueueReceiver>>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
@@ -1085,7 +1089,7 @@ impl TestNode {
         // Creates an unbounded tokio channel for processing (Casper, BlockMessage) tuples
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
         // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
-        let (block_processor_queue_tx, _block_processor_queue_rx) =
+        let (block_processor_queue_tx, block_processor_queue_rx) =
             BlockProcessingQueueSender::channel(1024, 64 * 1024 * 1024)
                 .expect("block processing queue");
 
@@ -1147,6 +1151,9 @@ impl TestNode {
             finalization_schedule: std::sync::Arc::new(
                 casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
             ),
+            certificate_verification_schedule: std::sync::Arc::new(
+                casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
+            ),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -1169,15 +1176,15 @@ impl TestNode {
         let engine_cell = EngineCell::init();
 
         let running_engine = Running::new(
-            block_processor_queue_tx, // block_processing_queue_tx
-            Arc::new(DashSet::new()), // blocks_in_processing
+            block_processor_queue_tx.clone(), // block_processing_queue_tx
+            Arc::new(DashSet::new()),         // blocks_in_processing
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
-            _approved_block.clone(),  // approved_block
-            the_init,                 // the_init
-            true,                     // disable_state_exporter
-            tle.clone(),              // transport
-            rp_conf.clone(),          // conf
-            block_retriever.clone(),  // block_retriever
+            _approved_block.clone(),          // approved_block
+            the_init,                         // the_init
+            true,                             // disable_state_exporter
+            tle.clone(),                      // transport
+            rp_conf.clone(),                  // conf
+            block_retriever.clone(),          // block_retriever
             Some(RunningRecoveryContext {
                 connections_cell: connections_cell.clone(),
             }),
@@ -1195,6 +1202,7 @@ impl TestNode {
             genesis,
             validator_id_opt,
             block_processor,
+            block_processing_queue_rx: Arc::new(tokio::sync::Mutex::new(block_processor_queue_rx)),
             block_store,
             block_dag_storage,
             deploy_storage,

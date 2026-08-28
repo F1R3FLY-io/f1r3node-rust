@@ -15,7 +15,8 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    self, ApprovedBlock, BlockHashMessage, BlockRequest, CasperMessage, HasBlock, HasBlockRequest,
+    self, ApprovedBlock, BlockHashMessage, BlockRequest, CasperMessage,
+    FinalizationCertificateRequest, FinalizationCertificateResponse, HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
@@ -99,6 +100,37 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
         }
     }
 
+    Ok(())
+}
+
+pub async fn enqueue_dependency_free_blocks<T: TransportLayer + Send + Sync>(
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+    block_processing_queue_tx: &BlockProcessingQueueSender,
+    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    block_retriever: &BlockRetriever<T>,
+) -> Result<(), CasperError> {
+    let _scan_guard = block_processing_queue_tx.acquire_dependency_scan().await;
+    for block in casper.get_dependency_free_from_buffer()? {
+        let hash = block.block_hash.clone();
+        if casper.dag_contains(&hash) {
+            casper.remove_buffered_hash(&hash)?;
+            block_retriever.forget_hash_tracking(&hash)?;
+            continue;
+        }
+        if !blocks_in_processing.insert(hash.clone()) {
+            continue;
+        }
+        match block_processing_queue_tx.try_enqueue(casper.clone(), block) {
+            Ok(()) => block_retriever.ack_receive(hash).await?,
+            Err(error) if error.failure.is_temporary() => {
+                blocks_in_processing.remove(&hash);
+            }
+            Err(error) => {
+                blocks_in_processing.remove(&hash);
+                return Err(CasperError::Other(error.to_string()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -197,6 +229,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             CasperMessage::BlockRequest(br) => {
                 metrics::counter!(BLOCK_REQUEST_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE).increment(1);
                 self.handle_block_request(peer, br).await
+            }
+            CasperMessage::FinalizationCertificateRequest(request) => {
+                self.handle_finalization_certificate_request(peer, request)
+                    .await
+            }
+            CasperMessage::FinalizationCertificateResponse(response) => {
+                self.handle_finalization_certificate_response(peer, response)
+                    .await
             }
 
             CasperMessage::HasBlockRequest(hbr) => {
@@ -487,6 +527,65 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             );
         }
         Ok(())
+    }
+
+    pub async fn handle_finalization_certificate_request(
+        &self,
+        peer: PeerNode,
+        request: FinalizationCertificateRequest,
+    ) -> Result<(), CasperError> {
+        if let Some(certificate) = self
+            .casper
+            .block_store()
+            .get_finalization_certificate(&request.digest)?
+        {
+            self.transport
+                .stream_message_to_peer(
+                    &self.conf,
+                    &peer,
+                    Arc::new(
+                        FinalizationCertificateResponse {
+                            digest: request.digest,
+                            certificate,
+                        }
+                        .to_proto(),
+                    ),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn handle_finalization_certificate_response(
+        &self,
+        peer: PeerNode,
+        response: FinalizationCertificateResponse,
+    ) -> Result<(), CasperError> {
+        if !self
+            .block_retriever
+            .finalization_certificate_response_is_expected(&response.digest)?
+        {
+            tracing::debug!(
+                peer = %peer,
+                digest = %PrettyPrinter::build_string_bytes(&response.digest),
+                "Ignoring unsolicited finalization certificate response"
+            );
+            return Ok(());
+        }
+        self.casper
+            .block_store()
+            .put_finalization_certificate(&response.digest, &response.certificate)?;
+        self.casper
+            .resolve_finalization_certificate_dependency(&response.digest)?;
+        self.block_retriever
+            .complete_finalization_certificate_request(&response.digest)?;
+        enqueue_dependency_free_blocks(
+            self.casper.clone(),
+            &self.block_processing_queue_tx,
+            &self.blocks_in_processing,
+            &self.block_retriever,
+        )
+        .await
     }
 
     pub async fn handle_has_block_request(

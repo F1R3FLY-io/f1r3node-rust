@@ -1567,19 +1567,19 @@ See DR-51 and
 
 Backward compatibility is at the Rholang source level, not at the active wire
 protocol boundary. This release implements the D3 fresh-genesis design:
-protocol 4 is the only supported running protocol, and all ordinary non-genesis
+protocol 6 is the only supported running protocol, and all ordinary non-genesis
 user execution uses the internalized cost model. A protocol-1 or protocol-2
-approved genesis, or an unknown approved version, fails closed before Casper
-starts. There is no
+approved genesis, any other historical approved version, or an unknown approved
+version fails closed before Casper starts. There is no
 `H_activation`, accounting enable/disable flag, A/B mode, or retained
 externalized charging engine in the user-deploy path.
 
-The network migration therefore creates and approves a fresh protocol-4 genesis.
+The network migration therefore creates and approves a fresh protocol-6 genesis.
 Required balances, bonds, client fuel allocations, and shard parameters are
-committed through the protocol-4 genesis inputs. Validators do not run the
-protocol-4 binary on top of a protocol-1, protocol-2, or protocol-3 approved
+committed through the protocol-6 genesis inputs. Validators do not run the
+protocol-6 binary on top of a protocol-1 through protocol-5 approved
 block, and old pending deploy envelopes are not reinterpreted under the new wire
-contract; clients resubmit source-compatible programs in protocol-4 envelopes.
+contract; clients resubmit source-compatible programs in protocol-6 envelopes.
 
 Historical version-1 disposition encodings remain modeled so state reducers and
 offline validation fail deterministically if such metadata is presented. The
@@ -1587,8 +1587,8 @@ active-version-over-legacy-floor result in
 `ProtocolActivationCoherence.tla` is a defensive composition theorem, not an
 authorized in-place upgrade path. The actual startup path is checked by
 `ProtocolVersionLifecycle.tla`: current ceremony, approval, adoption, proposal,
-and reception must agree on version 3; historical and unknown approved versions must
-stop before running. The matching axiom-free Rocq capstones are
+and reception must agree on version 6; historical and unknown approved versions
+must stop before running. The matching axiom-free Rocq capstones are
 `finalized_floor_protocol_activation_correct` and
 `finalized_floor_protocol_lifecycle_correct`.
 

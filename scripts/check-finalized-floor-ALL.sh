@@ -22,9 +22,10 @@
 #      its jar is unavailable.
 #   3. Z3    (fail-soft)     — ft_algebra + BitVec-64 IntegerAdd launder witnesses.
 #   4. Sage  (fail-soft)     — FT-algebra identity + finalization-margin monotonicity.
-#   5. Wolfram (fail-soft)   — delta_ratchet.wl (ratchet instability). SKIPPED only
-#      when no kernel is on PATH. A discovered kernel must bind the configured
-#      license and complete the model successfully.
+#   5. Wolfram (optional, fail-soft) — service-rate stability, exact weighted-
+#      quorum regions, and pre-benchmark repair-family optimization. SKIPPED
+#      unless RUN_WOLFRAM=1; the default gate never starts a kernel or acquires
+#      a license.
 #   6. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts
 #      a populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is absent.
 #   7. Rust  (fail-soft)     — `cargo test -p casper` the finalized-floor proptests
@@ -45,6 +46,7 @@
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
 #   RUN_SOAK=1        also run the long-running 400+-block Rust soak
+#   RUN_WOLFRAM=1     opt into the licensed Wolfram exploration tier
 #   PENDING_HEARTBEAT_APALACHE_SAFE_LENGTH=6
 #   PENDING_HEARTBEAT_APALACHE_UNSAFE_LENGTH=6
 #   PENDING_HEARTBEAT_APALACHE_TYPEOK_LENGTH=2
@@ -70,6 +72,17 @@
 #   CERTIFIED_CONTEXT_APALACHE_SAFE_LENGTH=10
 #   CERTIFIED_CONTEXT_APALACHE_UNSAFE_LENGTH=1
 #   CERTIFIED_CONTEXT_APALACHE_STALE_LENGTH=10
+#   CERTIFIED_FLOOR_APALACHE_SAFE_LENGTH=8
+#   CERTIFIED_FLOOR_APALACHE_UNSAFE_LENGTH=6
+#   CERTIFIED_FLOOR_APALACHE_CONTEXT_UNSAFE_LENGTH=8
+#   CERTIFICATE_RETRIEVAL_APALACHE_SAFE_LENGTH=12
+#   CERTIFICATE_RETRIEVAL_APALACHE_UNSAFE_LENGTH=6
+#   DEPENDENCY_MAINTENANCE_APALACHE_SAFE_LENGTH=8
+#   DEPENDENCY_MAINTENANCE_APALACHE_UNSAFE_LENGTH=3
+#   CERTIFIED_SNAPSHOT_APALACHE_SAFE_LENGTH=6
+#   CERTIFIED_SNAPSHOT_APALACHE_UNSAFE_LENGTH=4
+#   WITNESS_CARRIER_APALACHE_SAFE_LENGTH=5
+#   WITNESS_CARRIER_APALACHE_UNSAFE_LENGTH=3
 #   PROTOCOL_V5_APALACHE_SAFE_LENGTH=5
 #   PROPOSER_COALESCING_APALACHE_SAFE_LENGTH=6
 #   PROPOSER_COALESCING_APALACHE_UNSAFE_LENGTH=6
@@ -118,6 +131,12 @@ all_markers_present() {
   done
 }
 
+if "$REPO_ROOT/scripts/check-tlc-source-binding.sh" >"$LOG_DIR/ff_tlc_source_binding.log" 2>&1; then
+  pass "TLC checkpoint recovery is bound to source, checker, fingerprint, seed, and worker identity"
+else
+  fail "TLC source-binding regression failed (see $LOG_DIR/ff_tlc_source_binding.log)"
+fi
+
 # --- memory-capped runner (systemd-run scope, else prlimit, else bare) ----------
 capped() {
   if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope true >/dev/null 2>&1; then
@@ -158,6 +177,9 @@ From FinalizedFloor Require Import CertifiedCausalAdmission.
 From FinalizedFloor Require Import ProposalFloorReadiness.
 From FinalizedFloor Require Import FinalizerFloorMaterialization.
 From FinalizedFloor Require Import GenesisApprovalTrust.
+From FinalizedFloor Require Import FinalizationCertificateRetrieval.
+From FinalizedFloor Require Import WitnessEquivalentCarrier.
+From FinalizedFloor Require Import DependencyMaintenanceRound.
 Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_candidate_scope_rehome_correct.
 Print Assumptions finalized_floor_objective_evidence_sequence_boundary_correct.
@@ -203,6 +225,8 @@ Print Assumptions finalized_floor_accountable_safety_correct.
 Print Assumptions finalized_floor_strict_accountable_safety_correct.
 Print Assumptions finalized_floor_parallel_validator_consensus_correct.
 Print Assumptions finalized_floor_parallel_accountable_promotion_correct.
+Print Assumptions finalized_floor_node_local_product_lifting_correct.
+Print Assumptions finalized_floor_node_local_temporal_lifting_correct.
 Print Assumptions finalized_floor_atomic_commit_correct.
 Print Assumptions finalized_floor_worker_retry_correct.
 Print Assumptions finalized_floor_proposal_readiness_correct.
@@ -235,6 +259,11 @@ Print Assumptions validated_materialization_is_exact_and_dual_certified.
 Print Assumptions finalizer_discovery_matches_pairwise_certificate.
 Print Assumptions highest_exact_candidate_is_unique.
 Print Assumptions finalized_floor_materialization_target_alignment_correct.
+Print Assumptions finalized_floor_target_deploy_wait_correct.
+Print Assumptions finalized_floor_stale_sibling_recovery_correct.
+Print Assumptions finalized_floor_certificate_retrieval_correct.
+Print Assumptions finalized_floor_dependency_maintenance_correct.
+Print Assumptions finalized_floor_witness_equivalent_carrier_correct.
 EOF
     expected_closed=$(grep -c '^Print Assumptions ' "$chk")
     out=$(coqc -Q "$ROCQ_DIR/theories" FinalizedFloor "$chk" 2>&1)
@@ -376,6 +405,27 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "TLA+ heartbeat recovery-cadence model failed (see $LOG_DIR/ff_tlc_heartbeat_cadence.log)"
   fi
+  if tlc_run "$(tlc_metadir ff_target_deploy_terminality)" "$TLA_DIR/MC_TargetDeployTerminality.cfg" "$TLA_DIR/TargetDeployTerminality.tla" >"$LOG_DIR/ff_tlc_target_deploy_terminality.log" 2>&1; then
+    pass "TLA+ parallel target-deploy observer preserves exact success, strict-height progress renewal, stall detection, and the absolute bound"
+  else
+    fail "TLA+ target-deploy terminality model failed (see $LOG_DIR/ff_tlc_target_deploy_terminality.log)"
+  fi
+  for target_control in \
+      'fixed_timeout_unsafe:Inv_WithinProgressBudgetRemainsLive:a fixed deadline rejecting a live intermediate-floor trace' \
+      'history_anomaly_unsafe:Inv_HistoryAnomalyDetected:a finalized-history revision being silently accepted' \
+      'inexact_success_unsafe:Inv_SuccessRequiresExactFinalizedStatus:an intermediate LFB advance masquerading as target terminality' \
+      'late_terminal_unsafe:Inv_TerminalOutcomeWithinBudget:a deadline-consuming terminal response bypassing the expired observation budget' \
+      'baseline_renewal_unsafe:Inv_FirstObservationDoesNotRenew:a delayed first LFB sample falsely renewing the stall budget'; do
+    IFS=: read -r target_suffix target_invariant target_description <<<"$target_control"
+    target_log="$LOG_DIR/ff_tlc_target_deploy_${target_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_target_deploy_${target_suffix}")" "$TLA_DIR/MC_TargetDeployTerminality_${target_suffix}.cfg" "$TLA_DIR/TargetDeployTerminality.tla" >"$target_log" 2>&1; then
+      fail "TLA+ target-deploy control should reproduce ${target_description} but passed"
+    elif grep -Fq "Invariant ${target_invariant} is violated" "$target_log"; then
+      pass "TLA+ target-deploy control reproduces ${target_description}"
+    else
+      fail "TLA+ target-deploy control failed for the wrong reason (see $target_log)"
+    fi
+  done
   if tlc_run "$(tlc_metadir ff_heartbeat_collapsed_cadence_unsafe)" "$TLA_DIR/MC_HeartbeatRecoveryCadence_collapsed_unsafe.cfg" "$TLA_DIR/HeartbeatRecoveryCadence.tla" >"$LOG_DIR/ff_tlc_heartbeat_collapsed_cadence_unsafe.log" 2>&1; then
     fail "TLA+ collapsed-timeout cadence control should delay later recovery rounds but passed"
   elif grep -q "Inv_CadenceMatchesContract is violated" "$LOG_DIR/ff_tlc_heartbeat_collapsed_cadence_unsafe.log"; then
@@ -697,6 +747,86 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ certified-context control failed for the wrong reason (see $context_log)"
     fi
   done
+  if tlc_run "$(tlc_metadir ff_certified_floor_commitment)" "$TLA_DIR/MC_CertifiedFloorCommitment.cfg" "$TLA_DIR/CertifiedFloorCommitment.tla" >"$LOG_DIR/ff_tlc_certified_floor_commitment.log" 2>&1; then
+    pass "TLA+ certified-floor commitments preserve every durable parent floor, bind candidate authority, remain cache-transparent, and converge after dependency fetch"
+  else
+    fail "TLA+ certified-floor commitment model failed (see $LOG_DIR/ff_tlc_certified_floor_commitment.log)"
+  fi
+  for floor_commitment_control in \
+      'no_verification_unsafe:AcceptedCertifiedRebasesHaveEvidence:accepting an unverified finalization certificate' \
+      'cached_use_unsafe:AcceptedCandidatesPreserveEveryParentFloor:reusing a verified certificate without candidate-specific parent-floor admission' \
+      'parent_floor_unsafe:AcceptedCandidatesPreserveEveryParentFloor:admitting a historical certificate over a newer parent floor' \
+      'context_unsafe:AcceptedCandidatesBindAuthorityContext:omitting the signed candidate authority-context binding' \
+      'receiver_lfb_unsafe:ReceiverLocalFloorDoesNotChangeCompatibility:using a receiver-local LFB in deterministic candidate admission'; do
+    IFS=: read -r floor_commitment_suffix floor_commitment_invariant floor_commitment_description <<<"$floor_commitment_control"
+    floor_commitment_log="$LOG_DIR/ff_tlc_certified_floor_commitment_${floor_commitment_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_certified_floor_commitment_${floor_commitment_suffix}")" "$TLA_DIR/MC_CertifiedFloorCommitment_${floor_commitment_suffix}.cfg" "$TLA_DIR/CertifiedFloorCommitment.tla" >"$floor_commitment_log" 2>&1; then
+      fail "TLA+ certified-floor control should reproduce ${floor_commitment_description} but passed"
+    elif grep -Eq "The invariant of ${floor_commitment_invariant} is equal to FALSE|Invariant ${floor_commitment_invariant} is violated" "$floor_commitment_log"; then
+      pass "TLA+ certified-floor control reproduces ${floor_commitment_description}"
+    else
+      fail "TLA+ certified-floor control failed for the wrong reason (see $floor_commitment_log)"
+    fi
+  done
+  for floor_liveness_control in \
+      'no_commitment_unsafe:proposal floor not committed on the wire' \
+      'no_fetch_unsafe:missing certificate dependency never fetched'; do
+    IFS=: read -r floor_liveness_suffix floor_liveness_description <<<"$floor_liveness_control"
+    floor_liveness_log="$LOG_DIR/ff_tlc_certified_floor_commitment_${floor_liveness_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_certified_floor_commitment_${floor_liveness_suffix}")" "$TLA_DIR/MC_CertifiedFloorCommitment_${floor_liveness_suffix}.cfg" "$TLA_DIR/CertifiedFloorCommitment.tla" >"$floor_liveness_log" 2>&1; then
+      fail "TLA+ certified-floor liveness control should reproduce ${floor_liveness_description} but passed"
+    elif grep -Eq 'Temporal properties were violated|Property .* is violated' "$floor_liveness_log"; then
+      pass "TLA+ certified-floor liveness control reproduces ${floor_liveness_description}"
+    else
+      fail "TLA+ certified-floor liveness control failed for the wrong reason (see $floor_liveness_log)"
+    fi
+  done
+  if tlc_run "$(tlc_metadir ff_finalization_certificate_retrieval)" "$TLA_DIR/MC_FinalizationCertificateRetrieval.cfg" "$TLA_DIR/FinalizationCertificateRetrieval.tla" >"$LOG_DIR/ff_tlc_finalization_certificate_retrieval.log" 2>&1; then
+    pass "TLA+ typed finalization-certificate retrieval is bounded, restart-stable, duplicate-safe, and eventually wakes every detached block"
+  else
+    fail "TLA+ finalization-certificate retrieval model failed (see $LOG_DIR/ff_tlc_finalization_certificate_retrieval.log)"
+  fi
+  for certificate_retrieval_control in \
+      'untyped_unsafe:TypedDependencyNamespaceIsDisjoint:block hashes satisfying certificate dependencies' \
+      'validation_unsafe:OnlyValidResponsesPersist:invalid or digest-mismatched certificate persistence' \
+      'unsolicited_unsafe:UnsolicitedResponsesDoNotMutate:unsolicited certificate responses mutating durable state' \
+      'failed_send_unsafe:FailedSendsRetainObligations:transport failure dropping a live proof obligation' \
+      'restart_unsafe:RestartNeverStrandsPersistentObligations:restart losing a persistent detached-block obligation' \
+      'duplicate_wake_unsafe:EveryBlockIsQueuedAtMostOnce:duplicate responses enqueueing one block more than once'; do
+    IFS=: read -r certificate_retrieval_suffix certificate_retrieval_invariant certificate_retrieval_description <<<"$certificate_retrieval_control"
+    certificate_retrieval_log="$LOG_DIR/ff_tlc_finalization_certificate_retrieval_${certificate_retrieval_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_finalization_certificate_retrieval_${certificate_retrieval_suffix}")" "$TLA_DIR/MC_FinalizationCertificateRetrieval_${certificate_retrieval_suffix}.cfg" "$TLA_DIR/FinalizationCertificateRetrieval.tla" >"$certificate_retrieval_log" 2>&1; then
+      fail "TLA+ certificate-retrieval control should reproduce ${certificate_retrieval_description} but passed"
+    elif grep -Eq "The invariant of ${certificate_retrieval_invariant} is equal to FALSE|Invariant ${certificate_retrieval_invariant} is violated" "$certificate_retrieval_log"; then
+      pass "TLA+ certificate-retrieval control reproduces ${certificate_retrieval_description}"
+    else
+      fail "TLA+ certificate-retrieval control failed for the wrong reason (see $certificate_retrieval_log)"
+    fi
+  done
+  if tlc_run "$(tlc_metadir ff_dependency_maintenance_round)" "$TLA_DIR/MC_DependencyMaintenanceRound.cfg" "$TLA_DIR/DependencyMaintenanceRound.tla" >"$LOG_DIR/ff_tlc_dependency_maintenance_round.log" 2>&1; then
+    pass "TLA+ mixed block/certificate maintenance attempts the full round snapshot before returning its first dispatch error"
+  else
+    fail "TLA+ dependency-maintenance round failed (see $LOG_DIR/ff_tlc_dependency_maintenance_round.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_dependency_maintenance_round_abort_unsafe)" "$TLA_DIR/MC_DependencyMaintenanceRound_abort_unsafe.cfg" "$TLA_DIR/DependencyMaintenanceRound.tla" >"$LOG_DIR/ff_tlc_dependency_maintenance_round_abort_unsafe.log" 2>&1; then
+    fail "TLA+ abort-on-first-failure maintenance control should discard an unattempted obligation but passed"
+  elif grep -Eq 'The invariant of FailureNeverDiscardsUnattemptedObligations is equal to FALSE|Invariant FailureNeverDiscardsUnattemptedObligations is violated' "$LOG_DIR/ff_tlc_dependency_maintenance_round_abort_unsafe.log"; then
+    pass "TLA+ abort-on-first-failure control reproduces caller-level dependency starvation"
+  else
+    fail "TLA+ abort-on-first-failure maintenance control failed for the wrong reason (see $LOG_DIR/ff_tlc_dependency_maintenance_round_abort_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_certified_snapshot_capture)" "$TLA_DIR/MC_CertifiedSnapshotCapture.cfg" "$TLA_DIR/CertifiedSnapshotCapture.tla" >"$LOG_DIR/ff_tlc_certified_snapshot_capture.log" 2>&1; then
+    pass "TLA+ concurrent proposers capture a single durable DAG/floor/certificate revision or retry"
+  else
+    fail "TLA+ certified snapshot-capture model failed (see $LOG_DIR/ff_tlc_certified_snapshot_capture.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_certified_snapshot_capture_torn_unsafe)" "$TLA_DIR/MC_CertifiedSnapshotCapture_torn_unsafe.cfg" "$TLA_DIR/CertifiedSnapshotCapture.tla" >"$LOG_DIR/ff_tlc_certified_snapshot_capture_torn_unsafe.log" 2>&1; then
+    fail "TLA+ torn snapshot control should violate revision coherence but passed"
+  elif grep -Fq 'Invariant CompletedSnapshotsBindOneRevision is violated' "$LOG_DIR/ff_tlc_certified_snapshot_capture_torn_unsafe.log"; then
+    pass "TLA+ torn snapshot control reproduces mixed durable DAG/floor/certificate revisions"
+  else
+    fail "TLA+ torn snapshot control failed for the wrong reason (see $LOG_DIR/ff_tlc_certified_snapshot_capture_torn_unsafe.log)"
+  fi
   if tla2sany "$TLA_DIR/ProtocolV5EndToEnd.tla" >"$LOG_DIR/ff_sany_protocol_v5_end_to_end.log" 2>&1; then
     pass "TLA+ composed protocol-v5 refinement is well formed; exhaustive component models and bounded symbolic composition provide its executable evidence"
   else
@@ -848,6 +978,29 @@ EOF
 parent_cap_liveness_unsafe|undersized parent capacity
 parent_depth_liveness_unsafe|depth bound without causal expiry
 EOF
+  if tlc_run "$(tlc_metadir ff_stale_sibling_recovery)" "$TLA_DIR/MC_StaleSiblingRecovery.cfg" "$TLA_DIR/StaleSiblingRecovery.tla" >"$LOG_DIR/ff_tlc_stale_sibling_recovery.log" 2>&1; then
+    pass "TLA+ asynchronous stale-sibling settlement preserves the floor, emits an exact source tombstone, buffers the rejected occurrence, and elects one recovery owner"
+  else
+    fail "TLA+ stale-sibling recovery lifecycle failed (see $LOG_DIR/ff_tlc_stale_sibling_recovery.log)"
+  fi
+  while IFS='|' read -r suffix invariant label; do
+    control_log="$LOG_DIR/ff_tlc_stale_sibling_recovery_${suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_stale_sibling_recovery_${suffix}")" "$TLA_DIR/MC_StaleSiblingRecovery_${suffix}.cfg" "$TLA_DIR/StaleSiblingRecovery.tla" >"$control_log" 2>&1; then
+      fail "TLA+ $label control should violate $invariant but passed"
+    elif grep -q "$invariant is violated" "$control_log"; then
+      pass "TLA+ $label control reproduces the designated stale-sibling lifecycle violation"
+    else
+      fail "TLA+ $label control failed for the wrong reason (see $control_log)"
+    fi
+  done <<'EOF'
+drop_stale_unsafe|Inv_AcceptedStaleRemainsCausal|premature stale-sibling removal
+signature_tombstone_unsafe|Inv_TombstoneNamesExactSource|signature-only tombstone
+missing_buffer_unsafe|Inv_ObservedRejectionIsBuffered|non-atomic rejected-occurrence buffering
+suppress_recovery_unsafe|Inv_SelectedRecoveryIsNotSelfChainSuppressed|self-chain recovery suppression
+truncated_frontier_unsafe|Inv_SettlementUsesCompleteFrontier|truncated settlement frontier
+floor_regression_unsafe|Inv_FinalizedEffectNeverRegresses|finalized-effect regression
+nonleader_unsafe|Inv_OnlyCommittedViewLeaderRetries|nonleader recovery ownership
+EOF
   if tlc_run "$(tlc_metadir ff_certified_floor_promotion)" "$TLA_DIR/MC_CertifiedFloorPromotion.cfg" "$TLA_DIR/CertifiedFloorPromotion.tla" >"$LOG_DIR/ff_tlc_certified_floor_promotion.log" 2>&1; then
     pass "TLA+ dual-certified universal causal floor promotion is arrival-order independent and live"
   else
@@ -934,6 +1087,26 @@ EOF
   else
     fail "TLA+ main-chain-only occurrence-status control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_status_unsafe.log)"
   fi
+  if tlc_run "$(tlc_metadir ff_witness_equivalent_carrier)" "$TLA_DIR/MC_WitnessEquivalentCarrier.cfg" "$TLA_DIR/WitnessEquivalentCarrier.tla" >"$LOG_DIR/ff_tlc_witness_equivalent_carrier.log" 2>&1; then
+    pass "TLA+ semantic predecessor carriers preserve exact state and block/digest pairing across divergent local witnesses"
+  else
+    fail "TLA+ witness-equivalent carrier model failed (see $LOG_DIR/ff_tlc_witness_equivalent_carrier.log)"
+  fi
+  for witness_carrier_control in \
+      'exact_digest_unsafe:SemanticCarrierCannotRemainParked:exact local witness identity parks an honest node' \
+      'floor_only_unsafe:SelectedCarrierHasExactSemanticState:floor-only matching accepts a different replay state' \
+      'copy_digest_unsafe:SelectedCarrierDigestIsPaired:local digest copying splices two proof identities' \
+      'wake_unsafe:SemanticCarrierCannotRemainParked:semantic carrier admission fails to wake a parked finalizer'; do
+    IFS=: read -r witness_carrier_suffix witness_carrier_invariant witness_carrier_description <<<"$witness_carrier_control"
+    witness_carrier_log="$LOG_DIR/ff_tlc_witness_equivalent_carrier_${witness_carrier_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_witness_equivalent_carrier_${witness_carrier_suffix}")" "$TLA_DIR/MC_WitnessEquivalentCarrier_${witness_carrier_suffix}.cfg" "$TLA_DIR/WitnessEquivalentCarrier.tla" >"$witness_carrier_log" 2>&1; then
+      fail "TLA+ witness-carrier control should reproduce ${witness_carrier_description} but passed"
+    elif grep -Fq "Invariant ${witness_carrier_invariant} is violated" "$witness_carrier_log"; then
+      pass "TLA+ witness-carrier control reproduces ${witness_carrier_description}"
+    else
+      fail "TLA+ witness-carrier control failed for the wrong reason (see $witness_carrier_log)"
+    fi
+  done
   if "$REPO_ROOT/scripts/check-parallel-validator-consensus.sh" >"$LOG_DIR/ff_tlc_parallel_validator.log" 2>&1; then
     pass "TLA+ independent validator replay, support delivery, crash, and floor-publication interleavings preserve state lineage; all eight defect controls are detected"
   else
@@ -970,6 +1143,17 @@ if command -v apalache-mc >/dev/null 2>&1; then
   CERTIFIED_CONTEXT_APALACHE_SAFE_LENGTH="${CERTIFIED_CONTEXT_APALACHE_SAFE_LENGTH:-10}"
   CERTIFIED_CONTEXT_APALACHE_UNSAFE_LENGTH="${CERTIFIED_CONTEXT_APALACHE_UNSAFE_LENGTH:-1}"
   CERTIFIED_CONTEXT_APALACHE_STALE_LENGTH="${CERTIFIED_CONTEXT_APALACHE_STALE_LENGTH:-10}"
+  CERTIFIED_FLOOR_APALACHE_SAFE_LENGTH="${CERTIFIED_FLOOR_APALACHE_SAFE_LENGTH:-8}"
+  CERTIFIED_FLOOR_APALACHE_UNSAFE_LENGTH="${CERTIFIED_FLOOR_APALACHE_UNSAFE_LENGTH:-6}"
+  CERTIFIED_FLOOR_APALACHE_CONTEXT_UNSAFE_LENGTH="${CERTIFIED_FLOOR_APALACHE_CONTEXT_UNSAFE_LENGTH:-8}"
+  CERTIFICATE_RETRIEVAL_APALACHE_SAFE_LENGTH="${CERTIFICATE_RETRIEVAL_APALACHE_SAFE_LENGTH:-12}"
+  CERTIFICATE_RETRIEVAL_APALACHE_UNSAFE_LENGTH="${CERTIFICATE_RETRIEVAL_APALACHE_UNSAFE_LENGTH:-6}"
+  DEPENDENCY_MAINTENANCE_APALACHE_SAFE_LENGTH="${DEPENDENCY_MAINTENANCE_APALACHE_SAFE_LENGTH:-8}"
+  DEPENDENCY_MAINTENANCE_APALACHE_UNSAFE_LENGTH="${DEPENDENCY_MAINTENANCE_APALACHE_UNSAFE_LENGTH:-3}"
+  CERTIFIED_SNAPSHOT_APALACHE_SAFE_LENGTH="${CERTIFIED_SNAPSHOT_APALACHE_SAFE_LENGTH:-6}"
+  CERTIFIED_SNAPSHOT_APALACHE_UNSAFE_LENGTH="${CERTIFIED_SNAPSHOT_APALACHE_UNSAFE_LENGTH:-4}"
+  WITNESS_CARRIER_APALACHE_SAFE_LENGTH="${WITNESS_CARRIER_APALACHE_SAFE_LENGTH:-5}"
+  WITNESS_CARRIER_APALACHE_UNSAFE_LENGTH="${WITNESS_CARRIER_APALACHE_UNSAFE_LENGTH:-3}"
   PROTOCOL_V5_APALACHE_SAFE_LENGTH="${PROTOCOL_V5_APALACHE_SAFE_LENGTH:-5}"
   PROPOSER_COALESCING_APALACHE_SAFE_LENGTH="${PROPOSER_COALESCING_APALACHE_SAFE_LENGTH:-6}"
   PROPOSER_COALESCING_APALACHE_UNSAFE_LENGTH="${PROPOSER_COALESCING_APALACHE_UNSAFE_LENGTH:-6}"
@@ -977,6 +1161,37 @@ if command -v apalache-mc >/dev/null 2>&1; then
   LIVE_RECOVERY_APALACHE_UNSAFE_LENGTH="${LIVE_RECOVERY_APALACHE_UNSAFE_LENGTH:-5}"
   FINALIZER_MATERIALIZATION_APALACHE_SAFE_LENGTH="${FINALIZER_MATERIALIZATION_APALACHE_SAFE_LENGTH:-8}"
   FINALIZER_MATERIALIZATION_APALACHE_UNSAFE_LENGTH="${FINALIZER_MATERIALIZATION_APALACHE_UNSAFE_LENGTH:-6}"
+  STALE_SIBLING_APALACHE_SAFE_LENGTH="${STALE_SIBLING_APALACHE_SAFE_LENGTH:-14}"
+  STALE_SIBLING_APALACHE_UNSAFE_LENGTH="${STALE_SIBLING_APALACHE_UNSAFE_LENGTH:-14}"
+  stale_sibling_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/stale-sibling-safe" check --config=StaleSiblingRecoveryApalache.cfg --length="$STALE_SIBLING_APALACHE_SAFE_LENGTH" --no-deadlock StaleSiblingRecovery.tla 2>&1)"
+  stale_sibling_rc=$?
+  printf '%s\n' "$stale_sibling_output" >"$LOG_DIR/ff_apalache_stale_sibling_recovery.log"
+  if [[ $stale_sibling_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_stale_sibling_recovery.log"; then
+    pass "Apalache asynchronous stale-sibling recovery invariants through bound $STALE_SIBLING_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache stale-sibling recovery model failed (see $LOG_DIR/ff_apalache_stale_sibling_recovery.log)"
+  fi
+  for stale_sibling_control in \
+      'drop-stale:StaleSiblingRecoveryDropStaleUnsafeApalache.cfg' \
+      'signature-tombstone:StaleSiblingRecoverySignatureUnsafeApalache.cfg' \
+      'missing-buffer:StaleSiblingRecoveryBufferUnsafeApalache.cfg' \
+      'suppress-recovery:StaleSiblingRecoverySuppressionUnsafeApalache.cfg' \
+      'truncated-frontier:StaleSiblingRecoveryFrontierUnsafeApalache.cfg' \
+      'floor-regression:StaleSiblingRecoveryFloorUnsafeApalache.cfg' \
+      'nonleader:StaleSiblingRecoveryLeaderUnsafeApalache.cfg'; do
+    IFS=: read -r stale_sibling_name stale_sibling_cfg <<<"$stale_sibling_control"
+    stale_sibling_control_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/stale-sibling-$stale_sibling_name" check --config="$stale_sibling_cfg" --length="$STALE_SIBLING_APALACHE_UNSAFE_LENGTH" --no-deadlock StaleSiblingRecovery.tla 2>&1)"
+    stale_sibling_control_rc=$?
+    stale_sibling_control_log="$LOG_DIR/ff_apalache_stale_sibling_${stale_sibling_name}.log"
+    printf '%s\n' "$stale_sibling_control_output" >"$stale_sibling_control_log"
+    if [[ $stale_sibling_control_rc -ne 0 ]] \
+         && grep -qE 'state invariant [0-9]+ violated' "$stale_sibling_control_log" \
+         && grep -q 'The outcome is: Error' "$stale_sibling_control_log"; then
+      pass "Apalache $stale_sibling_name control reproduces the stale-sibling lifecycle defect"
+    else
+      fail "Apalache $stale_sibling_name control did not reproduce the expected counterexample (see $stale_sibling_control_log)"
+    fi
+  done
   divergent_history_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/divergent-history-safe" check --config=MC_DivergentFinalizationHistoriesApalache.cfg --length=5 --no-deadlock DivergentFinalizationHistories.tla 2>&1)"
   divergent_history_rc=$?
   printf '%s\n' "$divergent_history_output" >"$LOG_DIR/ff_apalache_divergent_history.log"
@@ -1018,6 +1233,24 @@ if command -v apalache-mc >/dev/null 2>&1; then
     pass "Apalache independent-validator replay, support, and floor-publication invariants through bound 6"
   else
     fail "Apalache parallel-validator consensus model failed (see $LOG_DIR/ff_apalache_parallel_validator.log)"
+  fi
+  parallel_validator_stale_window_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/parallel-validator-stale-window-safe" check --config=MC_ParallelValidatorConsensusStaleWindowApalache.cfg --length=2 ParallelValidatorConsensus.tla 2>&1)"
+  parallel_validator_stale_window_rc=$?
+  printf '%s\n' "$parallel_validator_stale_window_output" >"$LOG_DIR/ff_apalache_parallel_validator_stale_window.log"
+  if [[ $parallel_validator_stale_window_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_parallel_validator_stale_window.log"; then
+    pass "Apalache rejects stale promotion from a concurrently accepted predecessor through bound 2"
+  else
+    fail "Apalache parallel-validator stale-window model failed (see $LOG_DIR/ff_apalache_parallel_validator_stale_window.log)"
+  fi
+  parallel_validator_stale_window_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/parallel-validator-stale-window-unsafe" check --config=MC_ParallelValidatorConsensus_stale_floor_unsafe.cfg --length=1 ParallelValidatorConsensus.tla 2>&1)"
+  parallel_validator_stale_window_unsafe_rc=$?
+  printf '%s\n' "$parallel_validator_stale_window_unsafe_output" >"$LOG_DIR/ff_apalache_parallel_validator_stale_window_unsafe.log"
+  if [[ $parallel_validator_stale_window_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_parallel_validator_stale_window_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_parallel_validator_stale_window_unsafe.log"; then
+    pass "Apalache stale-promotion control finds loss of already committed effects"
+  else
+    fail "Apalache stale-promotion control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_parallel_validator_stale_window_unsafe.log)"
   fi
   parallel_validator_crash_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/parallel-validator-crash-safe" check --config=MC_ParallelValidatorConsensusCrashApalache.cfg --length=6 ParallelValidatorConsensus.tla 2>&1)"
   parallel_validator_crash_rc=$?
@@ -1090,6 +1323,33 @@ if command -v apalache-mc >/dev/null 2>&1; then
   else
     fail "Apalache heartbeat recovery-cadence model failed (see $LOG_DIR/ff_apalache_heartbeat_cadence.log)"
   fi
+  target_terminality_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/target-deploy-terminality-safe" check --config=TargetDeployTerminalityApalache.cfg --length=8 --no-deadlock TargetDeployTerminality.tla 2>&1)"
+  target_terminality_rc=$?
+  printf '%s\n' "$target_terminality_output" >"$LOG_DIR/ff_apalache_target_deploy_terminality.log"
+  if [[ $target_terminality_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_target_deploy_terminality.log"; then
+    pass "Apalache target-deploy observer preserves exact terminality and both deadline bounds through bound 8"
+  else
+    fail "Apalache target-deploy terminality model failed (see $LOG_DIR/ff_apalache_target_deploy_terminality.log)"
+  fi
+  for target_control in \
+      'fixed:TargetDeployTerminalityFixedUnsafeApalache.cfg:Inv_WithinProgressBudgetRemainsLive' \
+      'history:TargetDeployTerminalityHistoryUnsafeApalache.cfg:Inv_HistoryAnomalyDetected' \
+      'inexact:TargetDeployTerminalityInexactUnsafeApalache.cfg:Inv_SuccessRequiresExactFinalizedStatus' \
+      'late:TargetDeployTerminalityLateTerminalUnsafeApalache.cfg:Inv_TerminalOutcomeWithinBudget' \
+      'baseline:TargetDeployTerminalityBaselineUnsafeApalache.cfg:Inv_FirstObservationDoesNotRenew'; do
+    IFS=: read -r target_name target_cfg target_invariant <<<"$target_control"
+    target_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/target-deploy-${target_name}-unsafe" check --config="$target_cfg" --inv="$target_invariant" --length=8 --no-deadlock TargetDeployTerminality.tla 2>&1)"
+    target_rc=$?
+    target_log="$LOG_DIR/ff_apalache_target_deploy_${target_name}_unsafe.log"
+    printf '%s\n' "$target_output" >"$target_log"
+    if [[ $target_rc -ne 0 ]] \
+         && grep -qE 'state invariant [0-9]+ violated' "$target_log" \
+         && grep -q 'The outcome is: Error' "$target_log"; then
+      pass "Apalache target-deploy ${target_name} control reproduces its observer-contract violation"
+    else
+      fail "Apalache target-deploy ${target_name} control did not reproduce the expected counterexample (see $target_log)"
+    fi
+  done
   heartbeat_collapsed_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/heartbeat-cadence-collapsed-unsafe" check --config=HeartbeatRecoveryCadenceCollapsedUnsafeApalache.cfg --inv=Inv_CadenceMatchesContract --length=2 HeartbeatRecoveryCadence.tla 2>&1)"
   heartbeat_collapsed_rc=$?
   printf '%s\n' "$heartbeat_collapsed_output" >"$LOG_DIR/ff_apalache_heartbeat_collapsed_cadence_unsafe.log"
@@ -1473,6 +1733,131 @@ if command -v apalache-mc >/dev/null 2>&1; then
       fail "Apalache certified-context control did not reproduce ${context_description} (see $context_log)"
     fi
   done
+  certified_floor_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/certified-floor-safe" check --config=MC_CertifiedFloorCommitmentApalache.cfg --length="$CERTIFIED_FLOOR_APALACHE_SAFE_LENGTH" CertifiedFloorCommitment.tla 2>&1)"
+  certified_floor_rc=$?
+  printf '%s\n' "$certified_floor_output" >"$LOG_DIR/ff_apalache_certified_floor_commitment.log"
+  if [[ $certified_floor_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_certified_floor_commitment.log"; then
+    pass "Apalache certified-floor commitment invariants through bound $CERTIFIED_FLOOR_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache certified-floor commitment refinement failed (see $LOG_DIR/ff_apalache_certified_floor_commitment.log)"
+  fi
+  for certified_floor_apalache_control in \
+      'cached_use_unsafe:AcceptedCandidatesPreserveEveryParentFloor:cached certificate bypass of candidate-specific admission' \
+      'parent_floor_unsafe:AcceptedCandidatesPreserveEveryParentFloor:historical certificate reuse over a newer parent floor' \
+      'context_unsafe:AcceptedCandidatesBindAuthorityContext:missing signed candidate authority context' \
+      'receiver_lfb_unsafe:ReceiverLocalFloorDoesNotChangeCompatibility:receiver-local LFB admission'; do
+    IFS=: read -r certified_floor_suffix certified_floor_invariant certified_floor_description <<<"$certified_floor_apalache_control"
+    certified_floor_log="$LOG_DIR/ff_apalache_certified_floor_${certified_floor_suffix}.log"
+    certified_floor_control_length="$CERTIFIED_FLOOR_APALACHE_UNSAFE_LENGTH"
+    if [[ "$certified_floor_suffix" == context_unsafe ]]; then
+      certified_floor_control_length="$CERTIFIED_FLOOR_APALACHE_CONTEXT_UNSAFE_LENGTH"
+    fi
+    certified_floor_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/certified-floor-${certified_floor_suffix}" check --config="MC_CertifiedFloorCommitment_${certified_floor_suffix}_Apalache.cfg" --length="$certified_floor_control_length" CertifiedFloorCommitment.tla 2>&1)"
+    certified_floor_rc=$?
+    printf '%s\n' "$certified_floor_output" >"$certified_floor_log"
+    if [[ $certified_floor_rc -ne 0 ]] \
+         && grep -Fq "Using inv predicate(s) ${certified_floor_invariant}" "$certified_floor_log" \
+         && grep -qE 'state invariant [0-9]+ violated' "$certified_floor_log" \
+         && grep -q 'The outcome is: Error' "$certified_floor_log"; then
+      pass "Apalache certified-floor control finds ${certified_floor_description} by bound $certified_floor_control_length"
+    else
+      fail "Apalache certified-floor control did not reproduce ${certified_floor_description} (see $certified_floor_log)"
+    fi
+  done
+  witness_carrier_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/witness-equivalent-carrier-safe" check --config=MC_WitnessEquivalentCarrierApalache.cfg --length="$WITNESS_CARRIER_APALACHE_SAFE_LENGTH" --no-deadlock WitnessEquivalentCarrier.tla 2>&1)"
+  witness_carrier_rc=$?
+  printf '%s\n' "$witness_carrier_output" >"$LOG_DIR/ff_apalache_witness_equivalent_carrier.log"
+  if [[ $witness_carrier_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_witness_equivalent_carrier.log"; then
+    pass "Apalache semantic witness-carrier invariants through bound $WITNESS_CARRIER_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache witness-equivalent carrier refinement failed (see $LOG_DIR/ff_apalache_witness_equivalent_carrier.log)"
+  fi
+  for witness_carrier_apalache_control in \
+      'exact_digest_unsafe:SemanticCarrierCannotRemainParked:exact local witness identity parking' \
+      'floor_only_unsafe:SelectedCarrierHasExactSemanticState:floor-only state substitution' \
+      'copy_digest_unsafe:SelectedCarrierDigestIsPaired:block/digest proof splicing' \
+      'wake_unsafe:SemanticCarrierCannotRemainParked:missed semantic carrier wakeup'; do
+    IFS=: read -r witness_carrier_suffix witness_carrier_invariant witness_carrier_description <<<"$witness_carrier_apalache_control"
+    witness_carrier_log="$LOG_DIR/ff_apalache_witness_equivalent_carrier_${witness_carrier_suffix}.log"
+    witness_carrier_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/witness-equivalent-carrier-${witness_carrier_suffix}" check --config="MC_WitnessEquivalentCarrier_${witness_carrier_suffix}.cfg" --inv="$witness_carrier_invariant" --length="$WITNESS_CARRIER_APALACHE_UNSAFE_LENGTH" --no-deadlock WitnessEquivalentCarrier.tla 2>&1)"
+    witness_carrier_rc=$?
+    printf '%s\n' "$witness_carrier_output" >"$witness_carrier_log"
+    if [[ $witness_carrier_rc -ne 0 ]] \
+         && grep -Fq "Producing verification conditions from the invariant ${witness_carrier_invariant}" "$witness_carrier_log" \
+         && grep -qE 'state invariant [0-9]+ violated' "$witness_carrier_log" \
+         && grep -q 'The outcome is: Error' "$witness_carrier_log"; then
+      pass "Apalache witness-carrier control finds ${witness_carrier_description} by bound $WITNESS_CARRIER_APALACHE_UNSAFE_LENGTH"
+    else
+      fail "Apalache witness-carrier control did not reproduce ${witness_carrier_description} (see $witness_carrier_log)"
+    fi
+  done
+  certificate_retrieval_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/certificate-retrieval-safe" check --config=MC_FinalizationCertificateRetrievalApalache.cfg --length="$CERTIFICATE_RETRIEVAL_APALACHE_SAFE_LENGTH" --no-deadlock FinalizationCertificateRetrieval.tla 2>&1)"
+  certificate_retrieval_rc=$?
+  printf '%s\n' "$certificate_retrieval_output" >"$LOG_DIR/ff_apalache_finalization_certificate_retrieval.log"
+  if [[ $certificate_retrieval_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_finalization_certificate_retrieval.log"; then
+    pass "Apalache typed certificate-retrieval invariants through bound $CERTIFICATE_RETRIEVAL_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache finalization-certificate retrieval refinement failed (see $LOG_DIR/ff_apalache_finalization_certificate_retrieval.log)"
+  fi
+  for certificate_retrieval_apalache_control in \
+      'untyped_unsafe:TypedDependencyNamespaceIsDisjoint:block/certificate namespace aliasing' \
+      'validation_unsafe:OnlyValidResponsesPersist:invalid response persistence' \
+      'unsolicited_unsafe:UnsolicitedResponsesDoNotMutate:unsolicited response mutation' \
+      'failed_send_unsafe:FailedSendsRetainObligations:failed-send obligation loss' \
+      'restart_unsafe:RestartNeverStrandsPersistentObligations:restart obligation loss' \
+      'duplicate_wake_unsafe:EveryBlockIsQueuedAtMostOnce:duplicate queue wakeup'; do
+    IFS=: read -r certificate_retrieval_suffix certificate_retrieval_invariant certificate_retrieval_description <<<"$certificate_retrieval_apalache_control"
+    certificate_retrieval_log="$LOG_DIR/ff_apalache_finalization_certificate_retrieval_${certificate_retrieval_suffix}.log"
+    certificate_retrieval_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/certificate-retrieval-${certificate_retrieval_suffix}" check --config="MC_FinalizationCertificateRetrieval_${certificate_retrieval_suffix}.cfg" --length="$CERTIFICATE_RETRIEVAL_APALACHE_UNSAFE_LENGTH" --no-deadlock FinalizationCertificateRetrieval.tla 2>&1)"
+    certificate_retrieval_rc=$?
+    printf '%s\n' "$certificate_retrieval_output" >"$certificate_retrieval_log"
+    if [[ $certificate_retrieval_rc -ne 0 ]] \
+         && grep -Fq "Using inv predicate(s) ${certificate_retrieval_invariant}" "$certificate_retrieval_log" \
+         && grep -qE 'state invariant [0-9]+ violated' "$certificate_retrieval_log" \
+         && grep -q 'The outcome is: Error' "$certificate_retrieval_log"; then
+      pass "Apalache certificate-retrieval control finds ${certificate_retrieval_description} by bound $CERTIFICATE_RETRIEVAL_APALACHE_UNSAFE_LENGTH"
+    else
+      fail "Apalache certificate-retrieval control did not reproduce ${certificate_retrieval_description} (see $certificate_retrieval_log)"
+    fi
+  done
+  dependency_maintenance_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/dependency-maintenance-safe" check --config=MC_DependencyMaintenanceRoundApalache.cfg --length="$DEPENDENCY_MAINTENANCE_APALACHE_SAFE_LENGTH" --no-deadlock DependencyMaintenanceRound.tla 2>&1)"
+  dependency_maintenance_rc=$?
+  printf '%s\n' "$dependency_maintenance_output" >"$LOG_DIR/ff_apalache_dependency_maintenance_round.log"
+  if [[ $dependency_maintenance_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_dependency_maintenance_round.log"; then
+    pass "Apalache mixed dependency-maintenance invariants through bound $DEPENDENCY_MAINTENANCE_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache dependency-maintenance refinement failed (see $LOG_DIR/ff_apalache_dependency_maintenance_round.log)"
+  fi
+  dependency_maintenance_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/dependency-maintenance-abort-unsafe" check --config=MC_DependencyMaintenanceRound_abort_unsafe.cfg --length="$DEPENDENCY_MAINTENANCE_APALACHE_UNSAFE_LENGTH" --no-deadlock DependencyMaintenanceRound.tla 2>&1)"
+  dependency_maintenance_rc=$?
+  printf '%s\n' "$dependency_maintenance_output" >"$LOG_DIR/ff_apalache_dependency_maintenance_round_abort_unsafe.log"
+  if [[ $dependency_maintenance_rc -ne 0 ]] \
+       && grep -Fq 'Using inv predicate(s) FailureNeverDiscardsUnattemptedObligations' "$LOG_DIR/ff_apalache_dependency_maintenance_round_abort_unsafe.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_dependency_maintenance_round_abort_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_dependency_maintenance_round_abort_unsafe.log"; then
+    pass "Apalache abort-on-first-failure control finds caller-level dependency starvation by bound $DEPENDENCY_MAINTENANCE_APALACHE_UNSAFE_LENGTH"
+  else
+    fail "Apalache abort-on-first-failure maintenance control did not reproduce dependency starvation (see $LOG_DIR/ff_apalache_dependency_maintenance_round_abort_unsafe.log)"
+  fi
+  certified_snapshot_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/certified-snapshot-safe" check --config=MC_CertifiedSnapshotCaptureApalache.cfg --length="$CERTIFIED_SNAPSHOT_APALACHE_SAFE_LENGTH" CertifiedSnapshotCapture.tla 2>&1)"
+  certified_snapshot_rc=$?
+  printf '%s\n' "$certified_snapshot_output" >"$LOG_DIR/ff_apalache_certified_snapshot_capture.log"
+  if [[ $certified_snapshot_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_certified_snapshot_capture.log"; then
+    pass "Apalache coherent concurrent snapshot capture through bound $CERTIFIED_SNAPSHOT_APALACHE_SAFE_LENGTH"
+  else
+    fail "Apalache certified snapshot-capture refinement failed (see $LOG_DIR/ff_apalache_certified_snapshot_capture.log)"
+  fi
+  certified_snapshot_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/certified-snapshot-torn-unsafe" check --config=MC_CertifiedSnapshotCapture_torn_unsafe_Apalache.cfg --length="$CERTIFIED_SNAPSHOT_APALACHE_UNSAFE_LENGTH" CertifiedSnapshotCapture.tla 2>&1)"
+  certified_snapshot_rc=$?
+  printf '%s\n' "$certified_snapshot_output" >"$LOG_DIR/ff_apalache_certified_snapshot_capture_torn_unsafe.log"
+  if [[ $certified_snapshot_rc -ne 0 ]] \
+       && grep -Fq 'Using inv predicate(s) CompletedSnapshotsBindOneRevision' "$LOG_DIR/ff_apalache_certified_snapshot_capture_torn_unsafe.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_certified_snapshot_capture_torn_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_certified_snapshot_capture_torn_unsafe.log"; then
+    pass "Apalache torn snapshot control finds a mixed durable DAG/floor/certificate revision by bound $CERTIFIED_SNAPSHOT_APALACHE_UNSAFE_LENGTH"
+  else
+    fail "Apalache torn snapshot control did not reproduce revision incoherence (see $LOG_DIR/ff_apalache_certified_snapshot_capture_torn_unsafe.log)"
+  fi
   protocol_v5_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/protocol-v5-safe" check --config=MC_ProtocolV5EndToEndApalache.cfg --length="$PROTOCOL_V5_APALACHE_SAFE_LENGTH" ProtocolV5EndToEnd.tla 2>&1)"
   protocol_v5_rc=$?
   printf '%s\n' "$protocol_v5_output" >"$LOG_DIR/ff_apalache_protocol_v5_end_to_end.log"
@@ -1839,30 +2224,42 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [5/8] Wolfram (fail-soft) =="
-# Prefer wolframscript (WolframID/cloud licensing), then the classic `math`
-# kernel (reads $UserBaseDirectory/Licensing/mathpass), then `wolfram`.
-WL_BIN=""; WL_RUN=()
-if command -v wolframscript >/dev/null 2>&1; then WL_BIN=wolframscript; WL_RUN=(wolframscript -file)
-elif command -v math >/dev/null 2>&1;       then WL_BIN=math;          WL_RUN=(math -script)
-elif command -v wolfram >/dev/null 2>&1;    then WL_BIN=wolfram;       WL_RUN=(wolfram -script)
-fi
-if [[ -n "$WL_BIN" && -f "$WL_DIR/delta_ratchet.wl" ]]; then
-  wlout=$(env \
-    WOLFRAM_BASE="${WOLFRAM_BASE:-/usr/share/Wolfram}" \
-    WOLFRAM_LOCALBASE="${WOLFRAM_LOCALBASE:-${HOME}/.Wolfram/Objects}" \
-    WOLFRAM_USERBASE="${WOLFRAM_USERBASE:-${HOME}/.Wolfram}" \
-    "${WL_RUN[@]}" "$WL_DIR/delta_ratchet.wl" 2>&1); wlrc=$?
-  echo "$wlout" >"$LOG_DIR/ff_wolfram.log"
-  if grep -qiE 'no valid password|cannot find a valid password' <<<"$wlout"; then
-    fail "Wolfram CLI kernel ($WL_BIN) could not bind its configured license (details: $LOG_DIR/ff_wolfram.log)"
-  elif [[ $wlrc -eq 0 ]]; then
-    pass "Wolfram delta_ratchet.wl via $WL_BIN (buggy advance unstable, fixed advance stable)"
-  else
-    fail "Wolfram delta_ratchet.wl errored under $WL_BIN (see $LOG_DIR/ff_wolfram.log)"
-  fi
+echo "== [5/8] Wolfram (optional, fail-soft) =="
+if [[ "${RUN_WOLFRAM:-0}" != "1" ]]; then
+  skip "licensed Wolfram exploration tier is opt-in; set RUN_WOLFRAM=1 to run it"
 else
-  skip "no wolframscript/math/wolfram kernel on PATH"
+  WL_BIN=""; WL_RUN=()
+  if command -v wolframscript >/dev/null 2>&1; then WL_BIN=wolframscript; WL_RUN=(wolframscript -file)
+  elif command -v math >/dev/null 2>&1;       then WL_BIN=math;          WL_RUN=(math -script)
+  elif command -v wolfram >/dev/null 2>&1;    then WL_BIN=wolfram;       WL_RUN=(wolfram -script)
+  fi
+  if [[ -z "$WL_BIN" ]]; then
+    skip "no wolframscript/math/wolfram kernel on PATH"
+  elif [[ ! -f "$WL_DIR/delta_ratchet.wl" || ! -f "$WL_DIR/weighted_quorum_regions.wl" || ! -f "$WL_DIR/repair_design_regions.wl" ]]; then
+    fail "selected Wolfram exploration tier is missing a required model"
+  else
+    wolfram_ok=1
+    : >"$LOG_DIR/ff_wolfram.log"
+    for wolfram_model in delta_ratchet weighted_quorum_regions repair_design_regions; do
+      wlout=$(env \
+        WOLFRAM_BASE="${WOLFRAM_BASE:-/usr/share/Wolfram}" \
+        WOLFRAM_LOCALBASE="${WOLFRAM_LOCALBASE:-${HOME}/.Wolfram/Objects}" \
+        WOLFRAM_USERBASE="${WOLFRAM_USERBASE:-${HOME}/.Wolfram}" \
+        "${WL_RUN[@]}" "$WL_DIR/${wolfram_model}.wl" 2>&1); wlrc=$?
+      printf '%s\n' "$wlout" >>"$LOG_DIR/ff_wolfram.log"
+      if grep -qiE 'no valid password|cannot find a valid password' <<<"$wlout"; then
+        fail "Wolfram CLI kernel ($WL_BIN) could not bind its configured license (details: $LOG_DIR/ff_wolfram.log)"
+        wolfram_ok=0
+        break
+      elif [[ $wlrc -ne 0 ]] || ! grep -Fq "[$wolfram_model] SELF-TEST: PASS" <<<"$wlout"; then
+        fail "Wolfram ${wolfram_model}.wl errored or omitted its PASS marker under $WL_BIN (see $LOG_DIR/ff_wolfram.log)"
+        wolfram_ok=0
+      fi
+    done
+    if [[ $wolfram_ok -eq 1 ]]; then
+      pass "Wolfram service-rate, exact weighted-quorum, and repair-design exploration via $WL_BIN"
+    fi
+  fi
 fi
 
 echo "== [6/8] PlantUML diagrams (fail-soft) =="
@@ -1986,6 +2383,23 @@ if command -v cargo >/dev/null 2>&1; then
   else
     fail "Rust live minority-fork recovery regressions failed (see $LOG_DIR/ff_rust_live_recovery.log)"; tail -20 "$LOG_DIR/ff_rust_live_recovery.log" | sed 's/^/      /'
   fi
+  if cargo test -p casper --test mod -- batch2::map_cell_convergence_spec::resolved_asymmetric_frontier_rehomes_excluded_local_deploy --exact >"$LOG_DIR/ff_rust_stale_sibling_recovery.log" 2>&1 \
+       && grep -Fq "test batch2::map_cell_convergence_spec::resolved_asymmetric_frontier_rehomes_excluded_local_deploy ... ok" "$LOG_DIR/ff_rust_stale_sibling_recovery.log" \
+       && grep -qE "test result: ok\. 1 passed; 0 failed;" "$LOG_DIR/ff_rust_stale_sibling_recovery.log"; then
+    pass "Rust exact-frontier stale-sibling lifecycle regression (source tombstone, rejected buffer, elected rehome, and converged final state)"
+  else
+    fail "Rust stale-sibling lifecycle regression failed (see $LOG_DIR/ff_rust_stale_sibling_recovery.log)"; tail -20 "$LOG_DIR/ff_rust_stale_sibling_recovery.log" | sed 's/^/      /'
+  fi
+  witness_carrier_markers=(
+    "semantically_equivalent_witness_carriers_preserve_the_selected_proof_pair ... ok"
+    "carrier_selection_is_permutation_invariant_and_preserves_digest_pairing ... ok"
+  )
+  if cargo test -p casper carrier --lib >"$LOG_DIR/ff_rust_witness_equivalent_carrier.log" 2>&1 \
+       && all_markers_present "$LOG_DIR/ff_rust_witness_equivalent_carrier.log" "${witness_carrier_markers[@]}"; then
+    pass "Rust semantic witness-carrier example/property regressions (proof equivalence, deterministic selection, and exact pair binding)"
+  else
+    fail "Rust witness-equivalent carrier regressions failed (see $LOG_DIR/ff_rust_witness_equivalent_carrier.log)"; tail -20 "$LOG_DIR/ff_rust_witness_equivalent_carrier.log" | sed 's/^/      /'
+  fi
   heartbeat_markers=(
     "finality_progress_opens_each_recovery_round_once_and_resets_on_progress ... ok"
     "finality_progress_rejects_out_of_order_completion ... ok"
@@ -2080,6 +2494,12 @@ if command -v cargo >/dev/null 2>&1; then
       tail -20 "$loom_protocol_log" | sed 's/^/      /'
     fi
   done
+  if cargo test -p casper --test loom_finalization_carrier_wakeup >"$LOG_DIR/ff_loom_witness_carrier_wakeup.log" 2>&1 \
+       && grep -qE "test result: ok\. 3 passed" "$LOG_DIR/ff_loom_witness_carrier_wakeup.log"; then
+    pass "Loom semantic witness-carrier wakeup (divergent digest, exact state, and duplicate-admission coalescing)"
+  else
+    fail "Loom semantic witness-carrier wakeup failed (see $LOG_DIR/ff_loom_witness_carrier_wakeup.log)"
+  fi
 else
   skip "no cargo on PATH"
 fi

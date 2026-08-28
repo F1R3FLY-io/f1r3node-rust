@@ -383,6 +383,8 @@ impl NodeRuntime {
         heartbeat_signal_ref: casper::rust::heartbeat_signal::HeartbeatSignalRef,
         mergeable_channels_gc_loop: Option<CasperLoop>,
     ) -> eyre::Result<()> {
+        let mut startup_failure_rx = engine_cell_for_heartbeat.subscribe_startup_failure();
+
         // Display node startup info
         if self.node_conf.standalone {
             info!("Starting stand-alone node.");
@@ -759,8 +761,30 @@ impl NodeRuntime {
         // Supportive tasks: Failures are logged as warnings, node continues
         info!("All tasks started. Node is now running.");
 
+        let mut shutdown_error = None;
+
         loop {
             tokio::select! {
+                startup_failure = startup_failure_rx.changed() => {
+                    match startup_failure {
+                        Ok(()) => {
+                            if let Some(error) = startup_failure_rx.borrow().clone() {
+                                tracing::error!(error = %error, "startup validation failed");
+                                shutdown_error = Some(eyre::eyre!("Startup validation failed: {}", error));
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(error = %error, "startup failure supervisor closed unexpectedly");
+                            shutdown_error = Some(eyre::eyre!(
+                                "Startup failure supervisor closed unexpectedly: {}",
+                                error
+                            ));
+                            break;
+                        }
+                    }
+                }
+
                 // Monitor critical tasks - any failure is fatal
                 Some(result) = critical_tasks.join_next() => {
                     match result {
@@ -857,7 +881,10 @@ impl NodeRuntime {
         }
 
         info!("Node shutdown complete");
-        Ok(())
+        match shutdown_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Perform shutdown cleanup

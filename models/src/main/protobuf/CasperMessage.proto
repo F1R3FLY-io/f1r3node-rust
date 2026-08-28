@@ -36,6 +36,17 @@ message BlockRequestProto {
   bytes  hash = 1;
 }
 
+message FinalizationCertificateRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes digest = 1;
+}
+
+message FinalizationCertificateResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes digest = 1;
+  FinalizationCertificateProto certificate = 2;
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }
@@ -99,6 +110,7 @@ message BlockMessageProto {
   string                      sigAlgorithm   = 8; // name of the algorithm used to sign
   string                      shardId        = 9; // identifier of the shard where the block was created
   bytes                       extraBytes     = 10;
+  optional FinalizationCertificateProto finalizedFloorCertificate = 11;
 }
 
 message BlockHashMessageProto {
@@ -136,6 +148,7 @@ message BlockMetadataInternal {
   repeated bytes activeValidators = 21;
   bytes postStateHash = 22;
   optional CertifiedAdmissionOutcomeProto admissionOutcome = 23;
+  optional FinalizedFloorCommitmentProto finalizedFloorCommitment = 24;
 }
 
 message CertifiedSenderAuthorityProto {
@@ -169,6 +182,37 @@ message HeaderProto {
   bytes extraBytes = 7;
   optional int64 senderBondGeneration = 8;
   repeated ObjectiveEquivocationEvidenceProto objectiveEquivocationEvidenceDelta = 9;
+  optional FinalizedFloorCommitmentProto finalizedFloor = 10;
+}
+
+message FinalizedFloorCommitmentProto {
+  bytes floorHash = 1;
+  bytes floorPostStateHash = 2;
+  bytes certificateDigest = 3;
+  bytes authorityContextDigest = 4;
+}
+
+message FinalizationCertificateProto {
+  uint32 schemaVersion = 1;
+  int64 protocolVersion = 2;
+  string shardId = 3;
+  bytes genesisHash = 4;
+  bytes predecessorFloorHash = 5;
+  bytes predecessorCertificateDigest = 6;
+  bytes targetFloorHash = 7;
+  bytes targetPostStateHash = 8;
+  int64 targetBlockNumber = 9;
+  int64 faultToleranceNumerator = 10;
+  int64 faultToleranceDenominator = 11;
+  repeated JustificationProto exactLatestMessages = 12;
+  bytes authorityContextDigest = 13;
+  reserved 14, 15;
+  reserved "supportingBlockHashes", "finalizedBlockHashes";
+  bytes predecessorCertificateBlockHash = 16;
+  bytes supportingManifestDigest = 17;
+  bytes finalizedManifestDigest = 18;
+  uint32 supportingBlockCount = 19;
+  uint32 finalizedBlockCount = 20;
 }
 
 message ObjectiveEquivocationEvidenceProto {

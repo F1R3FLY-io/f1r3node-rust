@@ -136,7 +136,6 @@ impl TransportLayer for TransportLayerStub {
     }
 
     async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
-        // Add all requests to the list
         {
             let mut requests = self.requests.lock().unwrap();
             for peer in peers {
@@ -146,8 +145,12 @@ impl TransportLayer for TransportLayerStub {
                 });
             }
         }
-
-        // For broadcast, we return success for all peers in the stub
+        let response = self.reqresp.lock().unwrap().clone();
+        if let Some(response) = response {
+            for peer in peers {
+                response(peer, msg)?;
+            }
+        }
         Ok(())
     }
 

@@ -1,25 +1,30 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
-use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, BlockProcessorDependencies, CasperDependency,
+};
 use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
 use casper::rust::casper::{
     Casper, CURRENT_CASPER_PROTOCOL_VERSION, LEGACY_CASPER_PROTOCOL_VERSION,
 };
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::engine::block_retriever::BlockRetriever;
 use comm::rust::errors::CommError;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
+use comm::rust::rp::protocol_helper;
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Header, ObjectiveEquivocationEvidence, ProcessedSystemDeploy,
-    SystemDeployData,
+    BlockMessage, Bond, CasperMessage, FinalizationCertificateResponse, Header,
+    ObjectiveEquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
+use prost::Message;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -33,6 +38,7 @@ use crate::util::genesis_builder::GenesisBuilder;
 
 struct TestFixture {
     dependencies: BlockProcessorDependencies<TransportLayerStub>,
+    block_retriever: BlockRetriever<TransportLayerStub>,
     genesis: BlockMessage,
     test_block: BlockMessage,
 }
@@ -99,6 +105,15 @@ impl TestFixture {
             None,
             None,
         );
+        let dependency_dag = block_dag_storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .expect("dependency DAG genesis");
+        dependency_dag
+            .put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
+            .expect("dependency DAG genesis floor");
+        dependency_dag
+            .put_cached_frontier(genesis.block_hash.clone(), genesis.block_hash.clone())
+            .expect("dependency DAG genesis frontier");
 
         // Create test block
         let test_block = crate::helper::block_generator::create_block(
@@ -122,7 +137,7 @@ impl TestFixture {
             block_store,
             casper_buffer,
             block_dag_storage,
-            block_retriever,
+            block_retriever.clone(),
             transport_layer,
             connections_cell,
             rp_conf,
@@ -130,12 +145,58 @@ impl TestFixture {
 
         Self {
             dependencies,
+            block_retriever,
             genesis,
             test_block,
         }
     }
 
     fn reset_transport(&self) { self.dependencies.transport().reset(); }
+}
+
+fn bind_genesis_floor(node: &TestNode, block: &mut BlockMessage) {
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("DAG representation");
+    dag.put_cached_floor(
+        node.genesis.block_hash.clone(),
+        node.genesis.block_hash.clone(),
+    )
+    .expect("genesis floor cache");
+    dag.put_cached_frontier(
+        node.genesis.block_hash.clone(),
+        node.genesis.block_hash.clone(),
+    )
+    .expect("genesis frontier cache");
+    let certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
+        &dag,
+        &node.genesis,
+        node.casper.casper_shard_conf.casper_version,
+        node.casper.casper_shard_conf.shard_name.clone(),
+        node.casper.casper_shard_conf.fault_tolerance_threshold_ppm,
+        1_000_000,
+    )
+    .expect("genesis finalization certificate");
+    let exact_latest_messages = certificate
+        .exact_latest_messages
+        .iter()
+        .map(|(validator, hash)| (validator.0.clone(), hash.0.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let context = CertifiedConsensusContext::for_parents(
+        &dag,
+        &block.header.parents_hash_list,
+        &exact_latest_messages,
+    )
+    .expect("candidate consensus context");
+    block.header.sender_bond_generation = Some(
+        block
+            .header
+            .sender_bond_generation
+            .unwrap_or(models::rust::bond_generation::BondGeneration::GENESIS),
+    );
+    block.header.finalized_floor = Some(certificate.commitment(context.digest().clone()));
+    block.finalized_floor_certificate = Some(certificate);
 }
 
 #[tokio::test]
@@ -167,7 +228,10 @@ async fn request_missing_dependencies_should_call_admit_hash_for_each_dependency
     // Create test dependencies
     let dep1 = BlockHash::from(b"dependency1".to_vec());
     let dep2 = BlockHash::from(b"dependency2".to_vec());
-    let deps = HashSet::from([dep1.clone(), dep2.clone()]);
+    let deps = HashSet::from([
+        CasperDependency::Block(dep1.clone()),
+        CasperDependency::Block(dep2.clone()),
+    ]);
 
     // Call request_missing_dependencies using new architecture
     let result = fixture
@@ -206,6 +270,238 @@ async fn request_missing_dependencies_should_handle_empty_set() {
 }
 
 #[tokio::test]
+async fn request_missing_dependencies_attempts_every_type_after_send_failures() {
+    let fixture = TestFixture::new().await;
+    fixture.reset_transport();
+    fixture
+        .dependencies
+        .transport()
+        .set_responses(|_, _| Err(CommError::TimeOut));
+    let block = Bytes::from(vec![1; models::rust::block_hash::LENGTH]);
+    let certificate = Bytes::from(vec![2; models::rust::block_hash::LENGTH]);
+    let dependencies = HashSet::from([
+        CasperDependency::Block(block.clone()),
+        CasperDependency::FinalizationCertificate(certificate.clone()),
+    ]);
+
+    assert!(fixture
+        .dependencies
+        .request_missing_dependencies(&dependencies)
+        .await
+        .is_err());
+    let packet_types = fixture
+        .dependencies
+        .transport()
+        .get_all_requests()
+        .into_iter()
+        .map(|request| protocol_helper::to_packet(&request.msg).unwrap().type_id)
+        .collect::<HashSet<_>>();
+    assert!(packet_types.contains("BlockRequest"), "{packet_types:?}");
+    assert!(packet_types.contains("FinalizationCertificateRequest"));
+    assert!(fixture
+        .block_retriever
+        .finalization_certificate_response_is_expected(&certificate)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn stale_dependency_recovery_attempts_every_type_after_send_failures() {
+    let fixture = TestFixture::new().await;
+    fixture.reset_transport();
+    fixture
+        .dependencies
+        .transport()
+        .set_responses(|_, _| Err(CommError::TimeOut));
+    let block = Bytes::from(vec![3; models::rust::block_hash::LENGTH]);
+    let certificate = Bytes::from(vec![4; models::rust::block_hash::LENGTH]);
+    let dependencies = HashSet::from([
+        CasperDependency::Block(block),
+        CasperDependency::FinalizationCertificate(certificate.clone()),
+    ]);
+
+    assert!(fixture
+        .dependencies
+        .recover_stale_buffer_dependencies(&dependencies)
+        .await
+        .is_err());
+    let packet_types = fixture
+        .dependencies
+        .transport()
+        .get_all_requests()
+        .into_iter()
+        .map(|request| protocol_helper::to_packet(&request.msg).unwrap().type_id)
+        .collect::<HashSet<_>>();
+    assert!(packet_types.contains("BlockRequest"), "{packet_types:?}");
+    assert!(packet_types.contains("FinalizationCertificateRequest"));
+    assert!(fixture
+        .block_retriever
+        .finalization_certificate_response_is_expected(&certificate)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn detached_floor_certificate_is_requested_as_a_typed_dependency() {
+    let fixture = TestFixture::new().await;
+    fixture.reset_transport();
+    let mut detached = fixture.test_block.clone();
+    let mut certificate = detached
+        .finalized_floor_certificate
+        .take()
+        .expect("fixture certificate");
+    certificate.fault_tolerance_numerator = 1;
+    certificate.validate_shape().expect("certificate shape");
+    let context_digest = detached
+        .header
+        .finalized_floor
+        .as_ref()
+        .expect("fixture commitment")
+        .authority_context_digest
+        .clone();
+    let digest = certificate.digest();
+    detached.header.finalized_floor = Some(certificate.commitment(context_digest));
+    detached.block_hash = casper::rust::util::proto_util::hash_block(&detached);
+
+    let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+    snapshot.on_chain_state.shard_conf.casper_version = CURRENT_CASPER_PROTOCOL_VERSION;
+    let casper = Arc::new(TestCasperWithSnapshot::new(
+        snapshot,
+        fixture.genesis.clone(),
+    ));
+    let (ready, to_fetch, already_buffered) = fixture
+        .dependencies
+        .get_non_validated_dependencies(casper, &detached)
+        .await
+        .expect("dependency analysis");
+
+    assert!(!ready);
+    assert!(already_buffered.is_empty());
+    assert_eq!(
+        to_fetch,
+        HashSet::from([CasperDependency::FinalizationCertificate(digest.clone())])
+    );
+
+    fixture
+        .dependencies
+        .store_block(&detached)
+        .await
+        .expect("store detached block");
+    fixture
+        .dependencies
+        .commit_to_buffer(&detached, Some(to_fetch.clone()))
+        .await
+        .expect("buffer detached block");
+    fixture
+        .dependencies
+        .request_missing_dependencies(&to_fetch)
+        .await
+        .expect("request certificate");
+
+    assert!(fixture
+        .dependencies
+        .casper_buffer()
+        .is_waiting_on_certificate(&models::rust::block_hash::BlockHashSerde(
+            detached.block_hash.clone()
+        )));
+    assert!(fixture
+        .block_retriever
+        .finalization_certificate_response_is_expected(&digest)
+        .expect("request tracker"));
+    assert_eq!(fixture.dependencies.transport().request_count(), 1);
+    let (_, protocol) = fixture
+        .dependencies
+        .transport()
+        .get_request(0)
+        .expect("certificate request packet");
+    let packet = protocol_helper::to_packet(&protocol).expect("packet");
+    assert_eq!(packet.type_id, "FinalizationCertificateRequest");
+    let request =
+        models::casper::FinalizationCertificateRequestProto::decode(packet.content.as_ref())
+            .expect("request payload");
+    assert_eq!(request.digest, digest);
+}
+
+#[tokio::test]
+async fn certificate_response_persists_resolves_and_wakes_the_detached_block() {
+    let mut genesis_builder = GenesisBuilder::new();
+    let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let genesis = genesis_builder
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis");
+    let mut node = TestNode::standalone(genesis).await.expect("node");
+    node.allow_empty_blocks = true;
+    let mut detached = node
+        .create_block_unsafe(&[])
+        .await
+        .expect("heartbeat block");
+    let certificate = detached
+        .finalized_floor_certificate
+        .take()
+        .expect("block certificate");
+    let digest = certificate.digest();
+
+    assert!(node
+        .block_store
+        .get_finalization_certificate(&digest)
+        .expect("certificate lookup")
+        .is_none());
+    node.block_store
+        .put_block_message_awaiting_certificate(&detached)
+        .expect("store detached block");
+    assert!(!node
+        .block_processor
+        .check_dependencies_with_effects(node.casper.clone(), &detached)
+        .await
+        .expect("dependency check"));
+    assert!(node.casper.casper_buffer_storage.is_waiting_on_certificate(
+        &models::rust::block_hash::BlockHashSerde(detached.block_hash.clone())
+    ));
+    assert!(node
+        .casper
+        .block_retriever
+        .finalization_certificate_response_is_expected(&digest)
+        .expect("request tracker"));
+
+    node.engine_cell
+        .get()
+        .await
+        .handle(
+            node.local.clone(),
+            CasperMessage::FinalizationCertificateResponse(FinalizationCertificateResponse {
+                digest: digest.clone(),
+                certificate: certificate.clone(),
+            }),
+        )
+        .await
+        .expect("certificate response");
+
+    assert_eq!(
+        node.block_store
+            .get_finalization_certificate(&digest)
+            .expect("stored certificate"),
+        Some(certificate)
+    );
+    assert!(
+        !node.casper.casper_buffer_storage.is_waiting_on_certificate(
+            &models::rust::block_hash::BlockHashSerde(detached.block_hash.clone())
+        )
+    );
+    assert!(!node
+        .casper
+        .block_retriever
+        .finalization_certificate_response_is_expected(&digest)
+        .expect("completed request tracker"));
+    let item = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        node.block_processing_queue_rx.lock().await.recv(),
+    )
+    .await
+    .expect("woken block timeout")
+    .expect("woken block");
+    assert_eq!(item.block.block_hash, detached.block_hash);
+}
+
+#[tokio::test]
 async fn commit_to_buffer_should_add_pendant_when_no_dependencies() {
     let fixture = TestFixture::new().await;
 
@@ -232,7 +528,7 @@ async fn commit_to_buffer_should_add_relations_when_dependencies_provided() {
     let fixture = TestFixture::new().await;
 
     // Create dependency set
-    let deps = HashSet::from([fixture.genesis.block_hash.clone()]);
+    let deps = HashSet::from([CasperDependency::Block(fixture.genesis.block_hash.clone())]);
 
     // Commit block with dependencies
     let result = fixture
@@ -450,6 +746,7 @@ async fn block_processor_components_should_work_together() {
             extra_bytes: prost::bytes::Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: fixture.test_block.body.clone(), // Use same body as test block
         justifications: vec![],
@@ -459,9 +756,12 @@ async fn block_processor_components_should_work_together() {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: prost::bytes::Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
-    let deps = HashSet::from([fixture.test_block.block_hash.clone()]);
+    let deps = HashSet::from([CasperDependency::Block(
+        fixture.test_block.block_hash.clone(),
+    )]);
     let result = fixture
         .dependencies
         .commit_to_buffer(&dependent_block, Some(deps))
@@ -476,7 +776,7 @@ async fn block_processor_components_should_work_together() {
     assert!(result.is_ok());
 
     // 4. Test other operations
-    let deps = HashSet::from([fixture.genesis.block_hash.clone()]);
+    let deps = HashSet::from([CasperDependency::Block(fixture.genesis.block_hash.clone())]);
     let result = fixture
         .dependencies
         .request_missing_dependencies(&deps)
@@ -519,6 +819,7 @@ async fn slash_evidence_is_fetched_before_block_validation() {
         pre_state_hash: Bytes::new(),
         post_state_hash: Bytes::new(),
     }];
+    bind_genesis_floor(&node, &mut incoming);
     node.block_dag_storage
         .access_equivocations_tracker(|tracker| {
             tracker.add(EquivocationRecord::new(
@@ -553,6 +854,7 @@ async fn slash_evidence_is_fetched_before_block_validation() {
         validator: evidence.sender.clone(),
         stake: 1,
     }];
+    bind_genesis_floor(&node, &mut evidence);
     node.block_store
         .put_block_message(&evidence)
         .expect("store evidence");
@@ -672,6 +974,7 @@ async fn objective_pair_requires_both_admitted_metadata_records() {
             second_hash.clone(),
         )
         .expect("objective evidence")];
+    bind_genesis_floor(&node, &mut incoming);
 
     let mut first = node.genesis.clone();
     first.block_hash = first_hash.clone();
@@ -684,6 +987,7 @@ async fn objective_pair_requires_both_admitted_metadata_records() {
         validator: evidence_validator.clone(),
         stake: 1,
     }];
+    bind_genesis_floor(&node, &mut first);
     node.block_store
         .put_block_message(&first)
         .expect("store first evidence block");
@@ -724,6 +1028,7 @@ async fn objective_pair_requires_both_admitted_metadata_records() {
         validator: second.sender.clone(),
         stake: 1,
     }];
+    bind_genesis_floor(&node, &mut second);
     node.block_store
         .put_block_message(&second)
         .expect("store second evidence block");

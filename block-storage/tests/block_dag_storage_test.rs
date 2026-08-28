@@ -18,7 +18,8 @@ use models::rust::block_metadata::{
 };
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Justification, ProcessedDeploy, ProcessedSystemDeploy, StateEffectId,
+    BlockMessage, Bond, FinalizedFloorCommitment, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy, StateEffectId,
 };
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
@@ -86,6 +87,25 @@ fn genesis_block() -> BlockMessage {
         None,
         None,
     )
+}
+
+fn finalized_floor_commitment(
+    floor: &BlockMessage,
+    certificate_label: &[u8],
+) -> FinalizedFloorCommitment {
+    FinalizedFloorCommitment {
+        floor_hash: floor.block_hash.clone(),
+        floor_post_state_hash: floor.body.state.post_state_hash.clone(),
+        certificate_digest: Blake2b256::hash(certificate_label.to_vec()).into(),
+        authority_context_digest: Blake2b256::hash(
+            [
+                b"f1r3fly-test-authority-context-v1".as_slice(),
+                certificate_label,
+            ]
+            .concat(),
+        )
+        .into(),
+    }
 }
 
 fn certified_sender_authority(block: &BlockMessage) -> CertifiedSenderAuthority {
@@ -1126,6 +1146,10 @@ fn accepted_transition_uses_canonical_genesis_despite_invalid_height_zero_junk()
         None,
     );
     junk.block_hash = Bytes::from(vec![0; models::rust::block_hash::LENGTH]);
+    junk.header.finalized_floor = Some(finalized_floor_commitment(
+        &genesis,
+        b"invalid-height-zero-certificate",
+    ));
     dag_storage
         .insert(
             &junk,
@@ -1170,9 +1194,13 @@ fn accepted_transition_uses_canonical_genesis_despite_invalid_height_zero_junk()
 }
 
 #[test]
-fn protocol_v5_metadata_without_finalization_ledger_fails_closed() {
+fn protocol_v6_metadata_without_finalization_ledger_fails_closed() {
     RUNTIME.block_on(async {
-        let genesis = genesis_block();
+        let mut genesis = genesis_block();
+        genesis.header.finalized_floor = Some(finalized_floor_commitment(
+            &genesis,
+            b"unrooted-protocol-v6-metadata-certificate",
+        ));
         let mut kvm = InMemoryStoreManager::new();
         let pre_upgrade = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
         pre_upgrade
@@ -1185,12 +1213,12 @@ fn protocol_v5_metadata_without_finalization_ledger_fails_closed() {
         drop(pre_upgrade);
 
         let error = match BlockDagKeyValueStorage::new(&mut kvm).await {
-            Ok(_) => panic!("protocol-v5 metadata without a ledger must fail closed"),
+            Ok(_) => panic!("protocol-v6 metadata without a ledger must fail closed"),
             Err(error) => error,
         };
         assert!(error
             .to_string()
-            .contains("protocol-v5 DAG metadata exists without a finalization ledger"));
+            .contains("protocol-v6 DAG metadata exists without a finalization ledger"));
     });
 }
 
@@ -1643,6 +1671,10 @@ fn dag_storage_should_be_able_to_handle_blocks_with_invalid_numbers() {
         let mut invalid_block = block.clone();
         invalid_block.body.state.block_number = 1000;
         invalid_block.header.parents_hash_list = vec![genesis.block_hash.clone()];
+        invalid_block.header.finalized_floor = Some(finalized_floor_commitment(
+            &genesis,
+            b"invalid-block-number-certificate",
+        ));
         dag_storage.insert(&invalid_block, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid).unwrap();
     });
 }
@@ -1846,6 +1878,10 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         None,
     );
     finalized_effect_source.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    finalized_effect_source.header.finalized_floor = Some(finalized_floor_commitment(
+        &genesis,
+        b"finalized-effect-source-certificate",
+    ));
     dag_storage
         .insert(
             &finalized_effect_source,
@@ -1870,6 +1906,10 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         None,
     );
     drops_finalized_effect.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    drops_finalized_effect.header.finalized_floor = Some(finalized_floor_commitment(
+        &finalized_effect_source,
+        b"dropping-descendant-certificate",
+    ));
     dag_storage
         .insert(
             &drops_finalized_effect,
@@ -1894,6 +1934,10 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         None,
     );
     preserves_finalized_effect.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    preserves_finalized_effect.header.finalized_floor = Some(finalized_floor_commitment(
+        &finalized_effect_source,
+        b"preserving-descendant-certificate",
+    ));
     dag_storage
         .insert(
             &preserves_finalized_effect,
@@ -1955,6 +1999,7 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         .record_directly_finalized_atomic(
             &initial_base.head,
             finalized_effect_source.block_hash.clone(),
+            "root".to_string(),
             1.0,
             |_, _| async { Ok(()) },
         )
@@ -1967,6 +2012,7 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         .record_directly_finalized_atomic(
             &initial_base.head,
             drops_finalized_effect.block_hash.clone(),
+            "root".to_string(),
             1.0,
             move |_, _| {
                 let invocation_counter = invocation_counter.clone();
@@ -1998,6 +2044,7 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         .record_directly_finalized_atomic(
             &current_base.head,
             drops_finalized_effect.block_hash.clone(),
+            "root".to_string(),
             1.0,
             |_, _| async { Ok(()) },
         )
@@ -2020,6 +2067,7 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         .record_directly_finalized_atomic(
             &initial_base.head,
             preserves_finalized_effect.block_hash.clone(),
+            "root".to_string(),
             1.0,
             |_, _| async { Ok(()) },
         )
@@ -2033,6 +2081,7 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         .record_directly_finalized_atomic(
             &current_base.head,
             preserves_finalized_effect.block_hash.clone(),
+            "root".to_string(),
             1.0,
             |_, _| async { Ok(()) },
         )

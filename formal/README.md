@@ -23,10 +23,11 @@ claim identifiers and their proof/test artifacts are indexed in
 | [`iris/`](iris) | Separation-logic reconciliation witness |
 | [`loom/`](loom) | Exhaustive Rust concurrency shadow models tied to named production transitions |
 | [`mcrl2/`](mcrl2) | Finite process-algebra cross-witnesses |
+| [`storm/`](storm) | Parametric and finite-state stochastic reliability projections over declared implementation envelopes |
 | [`rewriting/`](rewriting) | Term-rewriting confluence and conservation witnesses |
 | [`sage/`](sage) | Bounded scenario enumeration, adversarial search, and hypothesis falsification |
 | [`z3/`](z3) | SMT refinements and bounded counterexample searches |
-| [`wolfram/`](wolfram) | Independent symbolic algebra witnesses |
+| [`wolfram/`](wolfram) | Licensed, opt-in symbolic-region, graph, recurrence, and optimization exploration; discoveries are promoted to authoritative proof and implementation layers |
 
 ## TLA+ file layout
 
@@ -65,6 +66,32 @@ and the implementation-level interleavings are in
 The local and CI entry point is
 [`scripts/check-finalized-floor-ALL.sh`](../scripts/check-finalized-floor-ALL.sh).
 
+Protocol-6 finalized-floor evidence is split into four refinement boundaries.
+[`tlaplus/finalized_floor/CertifiedFloorCommitment.tla`](tlaplus/finalized_floor/CertifiedFloorCommitment.tla)
+checks target-bound signed commitment and receiver admission, while
+[`tlaplus/finalized_floor/FinalizationCertificateRetrieval.tla`](tlaplus/finalized_floor/FinalizationCertificateRetrieval.tla)
+checks typed bounded sidecar retrieval, failed-send retention, validated
+content-addressed persistence, crash reconstruction, and one-time wakeup.
+[`tlaplus/finalized_floor/DependencyMaintenanceRound.tla`](tlaplus/finalized_floor/DependencyMaintenanceRound.tla)
+checks the production caller boundary: every block and certificate obligation in
+one frozen maintenance snapshot is attempted before the caller returns its first
+dispatch error. Their
+unbounded contracts are
+[`rocq/finalized_floor/theories/CertifiedFloorCommitment.v`](rocq/finalized_floor/theories/CertifiedFloorCommitment.v)
+and
+[`rocq/finalized_floor/theories/FinalizationCertificateRetrieval.v`](rocq/finalized_floor/theories/FinalizationCertificateRetrieval.v),
+with the caller-level induction in
+[`rocq/finalized_floor/theories/DependencyMaintenanceRound.v`](rocq/finalized_floor/theories/DependencyMaintenanceRound.v).
+[`tlaplus/finalized_floor/WitnessEquivalentCarrier.tla`](tlaplus/finalized_floor/WitnessEquivalentCarrier.tla)
+separately verifies that divergent honest witness digests remain interoperable
+only when the accepted carrier commits the exact predecessor floor and replay
+state, and that selection preserves the carrier block/digest pair. Its unbounded
+refinement is
+[`rocq/finalized_floor/theories/WitnessEquivalentCarrier.v`](rocq/finalized_floor/theories/WitnessEquivalentCarrier.v).
+Together with the protocol-5 cost and validator-incarnation core, these artifacts
+form the protocol-6 proof portfolio without duplicating the established core
+transition system.
+
 [`tlaplus/finalized_floor/ObjectiveEvidenceAuthorization.tla`](tlaplus/finalized_floor/ObjectiveEvidenceAuthorization.tla)
 isolates the authorization boundary that the broader convergence model does
 not abstract faithfully enough to prove on its own. It gives replicas opposite
@@ -101,6 +128,18 @@ classifier in
 [`rocq/finalized_floor/theories/CandidateScopeDeployRehome.v`](rocq/finalized_floor/theories/CandidateScopeDeployRehome.v),
 and three memory-order refinements live in
 [`loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs`](loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs).
+
+[`tlaplus/finalized_floor/StaleSiblingRecovery.tla`](tlaplus/finalized_floor/StaleSiblingRecovery.tla)
+composes the boundary that the parent-projection and occurrence-recovery models
+previously checked separately. It interleaves three validators from accepted
+siblings through floor advancement, exact-frontier settlement, source-bound
+tombstone observation, rejected-occurrence buffering, elected recovery, and
+converged finalization. TLC exhausts the complete fair state graph; Apalache
+checks the end-to-end safe path and seven defect controls. Rocq proves the
+unbounded sequential refinement in
+[`rocq/finalized_floor/theories/StaleSiblingRecovery.v`](rocq/finalized_floor/theories/StaleSiblingRecovery.v),
+and the weak-memory refinement is part of
+[`loom/cost_accounting/tests/loom_consensus_projection_freeze.rs`](loom/cost_accounting/tests/loom_consensus_projection_freeze.rs).
 
 [`tlaplus/finalized_floor/FinalizerFloorMaterialization.tla`](tlaplus/finalized_floor/FinalizerFloorMaterialization.tla)
 closes the durable-finalizer discovery seam exposed when the proposal floor is
@@ -139,6 +178,36 @@ and production-backed randomized, pinned, and diamond regressions live in
 [`casper/tests/fork_choice/prop_ghost_argmax.rs`](../casper/tests/fork_choice/prop_ghost_argmax.rs).
 The local entry point is
 [`scripts/check-fork-choice-ALL.sh`](../scripts/check-fork-choice-ALL.sh).
+
+## Long-horizon uptime evidence
+
+[`storm/uptime/`](storm/uptime) evaluates a 720-hour service-live predicate
+around the hard consensus, replay, accounting, admission, and ownership
+authorities. Checked-in engineering profiles expose every assumption and never
+substitute validator count for unequal stake. A historical backtest binds the
+last reconstructable long daily soak to its workflow, node, and
+system-integration revisions, then holds its aggregate outcome out from the
+preceding observations. Because that soak rebuilt each shard and its detailed
+artifact expired, it cannot calibrate continuous lifetime rates; the gate
+records that non-identifiability rather than filling it with a point estimate.
+
+[`mcrl2/uptime/`](mcrl2/uptime) verifies that independent shard replay and
+validation can overlap and that the safe service interface is deadlock-free.
+The global-mutex control must fail the overlap property. Optional
+[`wolfram/uptime/`](wolfram/uptime) exploration minimizes only over exported
+Storm results and cannot strengthen a proof or certify a release.
+[`tlaplus/uptime/UptimeEnvelopeDominance.tla`](tlaplus/uptime/UptimeEnvelopeDominance.tla)
+proves the event-coupling order that makes the adverse and favorable Storm
+corners genuine bounds within the declared rate box; its unsafe control adds a
+favorable-only failure and must violate the order.
+
+[`scripts/check-uptime-ALL.sh`](../scripts/check-uptime-ALL.sh) is the local
+entry point. It writes a machine-readable engineering envelope and a
+human-facing report below `target/verification/uptime/`, with exact Git,
+implementation, model, and profile identities. Any relevant change produces a
+different identity. A calibrated release projection additionally requires a
+clean implementation and a current profile conforming to
+[`storm/uptime/profiles/calibrated-profile.schema.json`](storm/uptime/profiles/calibrated-profile.schema.json).
 
 ## Generated files
 

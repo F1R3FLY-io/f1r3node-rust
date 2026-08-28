@@ -175,16 +175,28 @@ value below `-1` are invalid configuration. The implementation MUST NOT rely on
 signed-to-unsigned wrapping.
 
 The ranked vote frontier may cap secondary estimator results while retaining its head.
-The proposal's causal-parent antichain MUST NOT be silently truncated. A finite
-`max-number-of-parents` MUST satisfy:
+The proposal's causal-parent antichain MUST NOT be silently truncated. Let $`P`$
+be the complete, depth-expired, reachability-maximal parent frontier derived from
+one frozen proposal snapshot, including the finalized-floor backstop when needed.
+A finite `max-number-of-parents` value $`c`$ admits that snapshot exactly when:
 
 ```math
-maxParents \geq maxActiveValidators + 1
+|P| \le c
 ```
 
-The extra slot is the independent finalized-floor backstop. Startup MUST reject a
-smaller finite cap, and proposal construction MUST return a typed diagnostic if the
-live frontier nevertheless exceeds the configured capacity.
+If $`|P| > c`$, proposal construction MUST return a typed deferred result before
+block creation or signing. It MUST retain the complete evidence and pending work,
+and MUST NOT truncate $`P`$ or select a receiver-local subset.
+
+Let $`M`$ be `number-of-active-validators`. The provisioning rule
+$`c \ge M + 1`$ is a sufficient worst-case bound: it reserves one distinct tip per
+configured active-validator slot plus an independent floor backstop. It is not a
+necessary admission condition because $`M`$ is a future committee ceiling while
+the current committee may be smaller, validators may share a latest block, and
+reachability compaction may cover multiple tips with one parent. Startup SHOULD
+warn when a finite cap is below this worst-case bound, but MUST reject only
+syntactically invalid bounds. Runtime admission is authoritative because it checks
+the exact frozen frontier.
 
 ### R-DEPTH
 

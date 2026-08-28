@@ -17,7 +17,7 @@
 // run as part of the normal `cargo test -p casper` suite (CI gate). They pass on the
 // floor-based merge with the channel_change netting fix.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -669,6 +669,34 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
     let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
         .await
         .expect("network");
+    for node in &mut nodes {
+        node.allow_empty_blocks = true;
+    }
+    let init = construct_deploy::source_deploy_now_full(
+        r#"@"m"!({})"#.to_string(),
+        None,
+        None,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard.clone()),
+    )
+    .expect("map initialization");
+    let init_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&init))
+        .await
+        .expect("initialized map block");
+    let init_status = nodes[1]
+        .process_block(init_block.clone())
+        .await
+        .expect("process map initialization");
+    assert!(matches!(init_status, Either::Right(_)));
+    for node in &nodes {
+        assert_eq!(
+            map_cell_datums(node, &init_block.body.state.post_state_hash).await,
+            vec![BTreeMap::new()]
+        );
+    }
+
     let first = map_set_deploy("minority", 1, &signer_key(0), 0, &shard);
     let second = map_set_deploy("majority", 2, &signer_key(1), 0, &shard);
     let block_a = nodes[0]
@@ -685,7 +713,7 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .expect("process majority sibling");
     assert!(matches!(status_b_on_a, Either::Right(_)));
     let status_a_on_b = nodes[1]
-        .process_block(block_a)
+        .process_block(block_a.clone())
         .await
         .expect("process minority sibling");
     assert!(matches!(status_a_on_b, Either::Right(_)));
@@ -709,24 +737,230 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .get_snapshot()
         .await
         .expect("resolved snapshot");
-    assert!(!snapshot.deploys_in_scope.contains(&first.sig));
+    let parent_hashes = snapshot
+        .parents
+        .iter()
+        .map(|parent| parent.block_hash.clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        parent_hashes,
+        HashSet::from([block_a.block_hash.clone(), block_b.block_hash.clone()])
+    );
+    assert!(snapshot.deploys_in_scope.contains(&first.sig));
     assert!(snapshot.deploys_in_scope.contains(&second.sig));
+    assert!(!snapshot.rejected_in_scope.contains(&first.sig));
+    assert!(!snapshot.rejected_in_scope.contains(&second.sig));
+
+    let settlement = nodes[0]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("exact sibling settlement block");
+    assert!(settlement.body.deploys.is_empty());
+    let first_rejections = settlement
+        .body
+        .rejected_deploys
+        .iter()
+        .filter(|rejected| rejected.sig == first.sig)
+        .collect::<Vec<_>>();
+    assert_eq!(first_rejections.len(), 1);
+    assert_eq!(first_rejections[0].source_block_hash, block_a.block_hash);
+    assert!(first_rejections[0].has_provenance());
+    assert!(settlement
+        .body
+        .rejected_deploys
+        .iter()
+        .all(|rejected| rejected.sig != second.sig));
+    let settlement_status = nodes[1]
+        .process_block(settlement.clone())
+        .await
+        .expect("process exact sibling settlement");
+    assert!(matches!(settlement_status, Either::Right(_)));
+
+    for (index, node) in nodes.iter().enumerate() {
+        assert!(
+            node.rejected_deploy_buffer
+                .lock()
+                .expect("rejected deploy buffer")
+                .contains_sig(&first.sig)
+                .expect("buffer lookup"),
+            "validator {index} did not retain the exact rejected occurrence"
+        );
+        let recovery_snapshot = node.casper.get_snapshot().await.expect("recovery snapshot");
+        assert!(recovery_snapshot.rejected_in_scope.contains(&first.sig));
+        assert!(!recovery_snapshot.rejected_in_scope.contains(&second.sig));
+    }
+
+    let recovery_snapshot = nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("committed recovery view");
+    let finalized_height = recovery_snapshot
+        .dag
+        .lookup_unsafe(&recovery_snapshot.last_finalized_block)
+        .expect("finalized metadata")
+        .block_number
+        .max(0) as usize;
+    let finalized_validators = recovery_snapshot.finalized_floor_validators();
+    let recovery_key = finalized_validators
+        .get(finalized_height % finalized_validators.len())
+        .expect("finalized-view recovery leader");
+    let recovery_leader = nodes
+        .iter()
+        .position(|node| {
+            node.validator_id_opt
+                .as_ref()
+                .is_some_and(|identity| identity.public_key.bytes == recovery_key)
+        })
+        .expect("recovery leader is local");
 
     let fresh = map_set_deploy("fresh", 3, &signer_key(0), 0, &shard);
-    nodes[0].casper.deploy(fresh.clone()).expect("fresh deploy");
-    let proposal = create_allow_empty(&mut nodes[0]).await;
-    let BlockCreatorResult::Created(block, ..) = proposal else {
-        panic!("expected a proposal containing rehomed and fresh deploys: {proposal:?}");
-    };
-    let selected = block
+    let recovery_block = nodes[recovery_leader]
+        .add_block_from_deploys(std::slice::from_ref(&fresh))
+        .await
+        .expect("rehome and fresh block");
+    let selected = recovery_block
         .body
         .deploys
         .iter()
         .map(|deploy| deploy.deploy.sig.clone())
-        .collect::<Vec<_>>();
-    assert!(selected.contains(&first.sig));
-    assert!(selected.contains(&fresh.sig));
-    assert!(!selected.contains(&second.sig));
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        selected,
+        HashSet::from([first.sig.clone(), fresh.sig.clone()])
+    );
+    assert!(recovery_block
+        .body
+        .rejected_deploys
+        .iter()
+        .all(|rejected| rejected.sig != first.sig && rejected.sig != fresh.sig));
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != recovery_leader {
+            let status = node
+                .process_block(recovery_block.clone())
+                .await
+                .expect("process recovery block");
+            assert!(matches!(status, Either::Right(_)));
+        }
+    }
+
+    let support_proposer = (recovery_leader + 1) % nodes.len();
+    let support = nodes[support_proposer]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("recovery support block");
+    assert!(
+        nodes[support_proposer]
+            .block_dag_storage
+            .get_representation()
+            .expect("support proposer DAG")
+            .is_dag_ancestor(&recovery_block.block_hash, &support.block_hash)
+            .expect("support ancestry"),
+        "support {} at height {} with parents {:?} does not causally support recovery {} at height {}",
+        hex::encode(&support.block_hash),
+        support.body.state.block_number,
+        support
+            .header
+            .parents_hash_list
+            .iter()
+            .map(hex::encode)
+            .collect::<Vec<_>>(),
+        hex::encode(&recovery_block.block_hash),
+        recovery_block.body.state.block_number,
+    );
+    assert!(
+        casper::rust::finality::floor::is_state_preserved(
+            &nodes[support_proposer]
+                .block_dag_storage
+                .get_representation()
+                .expect("support proposer DAG"),
+            &recovery_block.block_hash,
+            &support.block_hash,
+        )
+        .expect("support state preservation"),
+        "support {} at height {} causally descends from recovery {} at height {} but does not preserve its state effects",
+        hex::encode(&support.block_hash),
+        support.body.state.block_number,
+        hex::encode(&recovery_block.block_hash),
+        recovery_block.body.state.block_number,
+    );
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != support_proposer {
+            let status = node
+                .process_block(support.clone())
+                .await
+                .expect("process recovery support");
+            assert!(matches!(status, Either::Right(_)));
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for (index, node) in nodes.iter().enumerate() {
+        node.wait_for_finalizer_quiescence(deadline)
+            .await
+            .expect("recovery finalizer quiescence");
+        let dag = node.block_dag_storage.get_representation().expect("DAG");
+        let lfb = node
+            .casper
+            .last_finalized_block()
+            .await
+            .expect("recovery LFB");
+        let recovery_metadata = dag
+            .lookup_unsafe(&recovery_block.block_hash)
+            .expect("recovery metadata");
+        let recovery_parent_weights = recovery_metadata
+            .parents
+            .iter()
+            .map(|parent| {
+                dag.lookup_unsafe(parent)
+                    .map(|metadata| (hex::encode(parent), metadata.weight_map))
+                    .expect("recovery parent metadata")
+            })
+            .collect::<Vec<_>>();
+        let vote_context =
+            casper::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+                &dag,
+                lfb.block_hash.clone(),
+            )
+            .expect("finalized vote context");
+        let eligible_latest_messages = vote_context
+            .vote_projection()
+            .eligible_latest_messages()
+            .iter()
+            .map(|(validator, hash)| (hex::encode(validator), hex::encode(hash)))
+            .collect::<Vec<_>>();
+        assert!(
+            dag.is_dag_ancestor(&recovery_block.block_hash, &lfb.block_hash)
+                .expect("recovery ancestry"),
+            "validator {index} finalized {} at height {} without recovery {} from {} at height {} in its ancestry; support is {} from {} at height {}; recovery parents are {:?}; recovery weights are {:?}; recovery-parent weights are {:?}; eligible latest messages are {:?}",
+            hex::encode(&lfb.block_hash),
+            lfb.body.state.block_number,
+            hex::encode(&recovery_block.block_hash),
+            hex::encode(&recovery_block.sender),
+            recovery_block.body.state.block_number,
+            hex::encode(&support.block_hash),
+            hex::encode(&support.sender),
+            support.body.state.block_number,
+            recovery_metadata
+                .parents
+                .iter()
+                .map(hex::encode)
+                .collect::<Vec<_>>(),
+            recovery_metadata.weight_map,
+            recovery_parent_weights,
+            eligible_latest_messages,
+        );
+    }
+    let writes = BTreeMap::from([
+        ("fresh".to_string(), 3),
+        ("majority".to_string(), 2),
+        ("minority".to_string(), 1),
+    ]);
+    let (_, finalized_keys) = finalized_keys_all_nodes(&nodes, &writes).await;
+    assert_eq!(finalized_keys, vec![
+        "fresh".to_string(),
+        "majority".to_string(),
+        "minority".to_string(),
+    ]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

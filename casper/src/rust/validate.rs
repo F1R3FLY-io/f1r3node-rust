@@ -1739,6 +1739,7 @@ mod merge_recovery_validation_tests {
             protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             objective_equivocation_evidence_delta: Vec::new(),
             sender_authority: None,
+            finalized_floor_commitment: None,
             admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
         };
@@ -1795,6 +1796,7 @@ mod merge_recovery_validation_tests {
                     models::rust::bond_generation::BondGeneration::GENESIS,
                 ),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: None,
             },
             body: Body {
                 state: F1r3flyState {
@@ -1830,6 +1832,7 @@ mod merge_recovery_validation_tests {
             sig_algorithm: "test".to_string(),
             shard_id: "test".to_string(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 

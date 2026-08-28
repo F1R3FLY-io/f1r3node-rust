@@ -30,6 +30,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::ValidatorSerde;
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex;
+use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -108,8 +109,12 @@ pub(crate) struct FinalizationContext {
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicU64>,
     pub(crate) enable_mergeable_channel_gc: bool,
+    pub(crate) protocol_version: i64,
+    pub(crate) shard_id: String,
     pub(crate) ftt: FtThreshold,
     pub(crate) finalizer_conf: crate::rust::casper_conf::FinalizerConf,
+    pub(crate) approved_block: BlockMessage,
+    pub(crate) finalization_schedule: Arc<FinalizationSchedule>,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -132,9 +137,13 @@ pub(crate) fn build_finalization_context<
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
         enable_mergeable_channel_gc: this.casper_shard_conf.enable_mergeable_channel_gc,
+        protocol_version: this.casper_shard_conf.casper_version,
+        shard_id: this.casper_shard_conf.shard_name.clone(),
         // Exact ppm from the shard conf — the source of truth for the DECISION.
         ftt: FtThreshold::from_ppm(this.casper_shard_conf.fault_tolerance_threshold_ppm),
         finalizer_conf: this.casper_shard_conf.finalizer_conf.clone(),
+        approved_block: this.approved_block.clone(),
+        finalization_schedule: this.finalization_schedule.clone(),
     }
 }
 
@@ -393,11 +402,17 @@ async fn compute_last_finalized_block_once(
 ) -> Result<BlockMessage, CasperError> {
     reconcile_finalization_effects(&ctx).await?;
     let evaluation_base = ctx.block_dag_storage.capture_finalization_base()?;
+    let evaluation_generation = evaluation_base.dag_generation;
     let effect_ctx = ctx.clone();
+    let wake_ctx = ctx.clone();
     let FinalizationContext {
         block_store,
         ftt,
         finalizer_conf,
+        protocol_version,
+        shard_id,
+        approved_block,
+        finalization_schedule,
         ..
     } = ctx;
     let finalizer_conf = &finalizer_conf;
@@ -411,7 +426,20 @@ async fn compute_last_finalized_block_once(
             &dag,
             last_finalized_block_hash.clone(),
         )?;
+    let predecessor_post_state = dag
+        .lookup_unsafe(&evaluation_head.block_hash.0)?
+        .post_state_hash;
     let witness_inputs = FinalizationWitnessInputs {
+        protocol_version,
+        shard_id,
+        predecessor_certificate_digest: BlockHashSerde(Bytes::from(vec![
+            0;
+            models::rust::block_hash::LENGTH
+        ])),
+        predecessor_certificate_block_hash: BlockHashSerde(Bytes::from(vec![
+            0;
+            models::rust::block_hash::LENGTH
+        ])),
         fault_tolerance_numerator: ftt.num,
         fault_tolerance_denominator: ftt.den,
         authority_context_digest: BlockHashSerde(certificate_context.digest().clone()),
@@ -427,12 +455,54 @@ async fn compute_last_finalized_block_once(
             })
             .collect(),
     };
+    let evaluation_revision = evaluation_head.revision;
+    let carrier_dag = dag.clone();
     let new_lfb_found_effect = move |(new_lfb, ft_value): (BlockHash, f32)| {
         let effect_ctx = effect_ctx.clone();
         let evaluation_head = evaluation_head.clone();
-        let witness_inputs = witness_inputs.clone();
+        let mut witness_inputs = witness_inputs.clone();
+        let carrier_dag = carrier_dag.clone();
+        let predecessor_post_state = predecessor_post_state.clone();
+        let approved_block = approved_block.clone();
         async move {
             let effect_started = std::time::Instant::now();
+            if evaluation_head.revision > 0 {
+                let roots = witness_inputs
+                    .latest_messages
+                    .values()
+                    .map(|hash| hash.0.clone())
+                    .chain(std::iter::once(new_lfb.clone()))
+                    .collect::<Vec<_>>();
+                let mut remaining_work = models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+                let support = carrier_dag.certified_support_closure(
+                    &evaluation_head.block_hash.0,
+                    roots,
+                    models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                    &mut remaining_work,
+                )?;
+                let carrier =
+                    crate::rust::finality::certificate::select_predecessor_certificate_carrier(
+                        &support,
+                        &new_lfb,
+                        &evaluation_head.block_hash.0,
+                        &predecessor_post_state,
+                        witness_inputs.protocol_version,
+                        &carrier_dag,
+                        &approved_block,
+                    )
+                    .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?
+                    .ok_or_else(|| {
+                        KvStoreError::FinalizationCertificateCarrierPending {
+                            expected_revision: evaluation_head.revision,
+                            floor_hash: evaluation_head.block_hash.0.to_vec(),
+                            certificate_digest: evaluation_head.certificate_digest.0.to_vec(),
+                        }
+                    })?;
+                witness_inputs.predecessor_certificate_digest =
+                    BlockHashSerde(carrier.certificate_digest);
+                witness_inputs.predecessor_certificate_block_hash =
+                    BlockHashSerde(carrier.block_hash);
+            }
             let callback_ctx = effect_ctx.clone();
             effect_ctx
                 .block_dag_storage
@@ -462,7 +532,7 @@ async fn compute_last_finalized_block_once(
 
     // Run finalizer
     let finalizer_started = std::time::Instant::now();
-    let new_finalized_hash_opt = Finalizer::run_with_context(
+    let new_finalized_hash_opt = match Finalizer::run_with_context(
         &dag,
         ftt,
         &last_finalized_block_hash,
@@ -471,9 +541,31 @@ async fn compute_last_finalized_block_once(
         new_lfb_found_effect,
         finalizer_conf,
     )
-    .await?;
+    .await
+    {
+        Err(CasperError::KvStoreError(KvStoreError::FinalizationCertificateCarrierPending {
+            expected_revision,
+            ..
+        })) if expected_revision == evaluation_revision => {
+            finalization_schedule.park_certificate_carrier(evaluation_revision);
+            let current_head = wake_ctx.block_dag_storage.finalization_head()?;
+            let base_changed = wake_ctx.block_dag_storage.current_generation()
+                != evaluation_generation
+                || current_head.as_ref().map(|head| head.revision) != Some(evaluation_revision);
+            if base_changed
+                && finalization_schedule.take_parked_certificate_carrier(evaluation_revision)
+            {
+                publish_finalization_request(wake_ctx, finalization_schedule.clone())?;
+            }
+            None
+        }
+        result => result?,
+    };
     let finalizer_ms = finalizer_started.elapsed().as_millis();
     let new_lfb_found = new_finalized_hash_opt.is_some();
+    if new_lfb_found {
+        finalization_schedule.clear_parked_certificate_carrier(evaluation_revision);
+    }
 
     // Get the final LFB hash (either new or existing)
     let final_lfb_hash = new_finalized_hash_opt
@@ -512,13 +604,39 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
     this: &MultiParentCasperImpl<T>,
     new_block: &BlockMessage,
 ) -> Result<(), CasperError> {
-    if finalization_due(
+    let parked_revision = if let (Some(head), Some(commitment)) = (
+        this.block_dag_storage.finalization_head()?,
+        new_block.header.finalized_floor.as_ref(),
+    ) {
+        let head_post_state = this
+            .block_dag_storage
+            .get_representation()?
+            .lookup_unsafe(&head.block_hash.0)?
+            .post_state_hash;
+        (commitment.floor_hash == head.block_hash.0
+            && commitment.floor_post_state_hash == head_post_state)
+            .then_some(head.revision)
+            .filter(|revision| {
+                this.finalization_schedule
+                    .take_parked_certificate_carrier(*revision)
+            })
+    } else {
+        None
+    };
+    let due = finalization_due(
         this.casper_shard_conf.finalization_rate,
         new_block.body.state.block_number,
         this.recovery_sync_active
             .load(std::sync::atomic::Ordering::Acquire),
-    ) {
-        request_finalization(this)?;
+    );
+    if due || parked_revision.is_some() {
+        if let Err(error) = request_finalization(this) {
+            if let Some(revision) = parked_revision {
+                this.finalization_schedule
+                    .park_certificate_carrier(revision);
+            }
+            return Err(error);
+        }
     }
     Ok(())
 }
@@ -530,11 +648,20 @@ fn finalization_due(finalization_rate: i32, block_number: i64, recovery_active: 
 pub(crate) fn request_finalization<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<(), CasperError> {
-    let ticket = this.finalization_schedule.request().ok_or_else(|| {
+    publish_finalization_request(
+        build_finalization_context(this),
+        this.finalization_schedule.clone(),
+    )
+}
+
+fn publish_finalization_request(
+    ctx: FinalizationContext,
+    schedule: Arc<FinalizationSchedule>,
+) -> Result<(), CasperError> {
+    let ticket = schedule.request().ok_or_else(|| {
         CasperError::RuntimeError("finalization request sequence exhausted".to_string())
     })?;
-    let ctx = build_finalization_context(this);
-    start_finalization_dispatcher(ctx, this.finalization_schedule.clone());
+    start_finalization_dispatcher(ctx, schedule);
     tracing::debug!(ticket, "published finalization request");
     Ok(())
 }

@@ -33,6 +33,8 @@
 #   ObjectiveEquivocation          (bond-incarnation evidence, pre-state authority, and durable repair)
 #   CandidateScopeDeployRehome     (candidate-relative duplicate suppression and excluded-branch rehome)
 #   ObjectiveEvidenceSequenceEligibility (signed sequence boundary for durable invalid metadata and pair evidence)
+#   NodeLocalProductLifting      (arbitrary-node safety and independent-action commutation)
+#   NodeLocalTemporalLifting     (finite-node weak-fairness projection and stable liveness suffix)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
@@ -50,6 +52,7 @@ theories/MergeRecoveryCoherence.v
 theories/AdmissionEffectAlignment.v
 theories/RejectionReasonConfluence.v
 theories/ProtocolVersionLifecycle.v
+theories/StartupMetadataPreflight.v
 theories/ProtocolActivationCoherence.v
 theories/Selection.v
 theories/IntegerAdd.v
@@ -73,6 +76,9 @@ theories/CertifiedObjectiveEquivocation.v
 theories/CertifiedCausalAdmission.v
 theories/CausalFinalityProjection.v
 theories/HeartbeatFinalityBackpressure.v
+theories/TargetDeployTerminality.v
+theories/NodeLocalProductLifting.v
+theories/NodeLocalTemporalLifting.v
 theories/ParallelValidatorConsensus.v
 theories/FinalizationAtomicity.v
 theories/ProposalFloorReadiness.v
@@ -80,5 +86,10 @@ theories/FinalizerFloorMaterialization.v
 theories/DivergentFinalizationHistories.v
 theories/MinorityForkRecovery.v
 theories/CandidateScopeDeployRehome.v
+theories/StaleSiblingRecovery.v
+theories/CertifiedFloorCommitment.v
+theories/FinalizationCertificateRetrieval.v
+theories/DependencyMaintenanceRound.v
+theories/WitnessEquivalentCarrier.v
 theories/ObjectiveEvidenceSequenceEligibility.v
 theories/MainTheorem.v

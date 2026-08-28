@@ -157,6 +157,16 @@ pub mod builder {
             .casper
             .validate_parent_bounds()
             .map_err(|e| eyre::eyre!("parent-bound config invalid: {}", e))?;
+        node_conf
+            .casper
+            .validate_finalization_certificate_capacity()
+            .map_err(|e| eyre::eyre!("finalization-certificate config invalid: {}", e))?;
+        if let Some(warning) = node_conf
+            .casper
+            .parent_frontier_worst_case_capacity_warning()
+        {
+            warnings.push(warning);
+        }
 
         // The proposer computes its recovery cap as
         // `max(pending_deploy_max_lag, deploy_recovery_max_lag)`. When

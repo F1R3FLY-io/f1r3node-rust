@@ -42,6 +42,9 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         finalization_schedule: Arc::new(
             casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
         ),
+        certificate_verification_schedule: Arc::new(
+            casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
+        ),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

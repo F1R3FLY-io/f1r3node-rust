@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::casper::protocol::casper_message::FinalizationCertificate;
 use models::rust::validator::ValidatorSerde;
 use parking_lot::Mutex;
 use prost::bytes::Bytes;
@@ -44,6 +45,7 @@ pub struct FinalizationHead {
     pub block_hash: BlockHashSerde,
     pub block_number: i64,
     pub record_digest: BlockHashSerde,
+    pub certificate_digest: BlockHashSerde,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -51,6 +53,7 @@ pub struct FinalizationGenesisAnchor {
     pub block_hash: BlockHashSerde,
     pub block_number: i64,
     pub record_digest: BlockHashSerde,
+    pub certificate_digest: BlockHashSerde,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,9 +79,13 @@ pub struct FinalizationRecord {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LocalFinalizationWitness {
     pub schema_version: u32,
+    pub protocol_version: i64,
+    pub shard_id: String,
     pub genesis_hash: BlockHashSerde,
     pub predecessor_hash: BlockHashSerde,
     pub predecessor_digest: BlockHashSerde,
+    pub predecessor_certificate_digest: BlockHashSerde,
+    pub predecessor_certificate_block_hash: BlockHashSerde,
     pub target_block_hash: BlockHashSerde,
     pub target_block_number: i64,
     pub target_post_state_hash: BlockHashSerde,
@@ -89,6 +96,34 @@ pub struct LocalFinalizationWitness {
     pub authority_context_digest: BlockHashSerde,
     pub finalized: BTreeSet<BlockHashSerde>,
     pub witness_digest: BlockHashSerde,
+}
+
+impl LocalFinalizationWitness {
+    pub fn to_certificate(&self) -> FinalizationCertificate {
+        FinalizationCertificate {
+            schema_version: self.schema_version,
+            protocol_version: self.protocol_version,
+            shard_id: self.shard_id.clone(),
+            genesis_hash: self.genesis_hash.clone(),
+            predecessor_floor_hash: self.predecessor_hash.clone(),
+            predecessor_certificate_digest: self.predecessor_certificate_digest.clone(),
+            predecessor_certificate_block_hash: self.predecessor_certificate_block_hash.clone(),
+            target_floor_hash: self.target_block_hash.clone(),
+            target_post_state_hash: self.target_post_state_hash.clone(),
+            target_block_number: self.target_block_number,
+            fault_tolerance_numerator: self.fault_tolerance_numerator,
+            fault_tolerance_denominator: self.fault_tolerance_denominator,
+            exact_latest_messages: self.latest_messages.clone(),
+            authority_context_digest: self.authority_context_digest.clone(),
+            supporting_manifest_digest: FinalizationCertificate::supporting_digest(
+                &self.supporting_block_hashes,
+            ),
+            finalized_manifest_digest: FinalizationCertificate::finalized_digest(&self.finalized),
+            supporting_block_count: u32::try_from(self.supporting_block_hashes.len())
+                .unwrap_or(u32::MAX),
+            finalized_block_count: u32::try_from(self.finalized.len()).unwrap_or(u32::MAX),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -129,8 +164,8 @@ pub struct FinalizationLedger {
 }
 
 impl FinalizationLedger {
-    pub const STORE_NAME: &'static str = "finalization-ledger-v6";
-    pub const WITNESS_SCHEMA_VERSION: u32 = 1;
+    pub const STORE_NAME: &'static str = "finalization-ledger-v7";
+    pub const WITNESS_SCHEMA_VERSION: u32 = FinalizationCertificate::SCHEMA_VERSION;
 
     pub async fn create_from_kvm(
         kvm: &mut impl KeyValueStoreManager,
@@ -159,7 +194,7 @@ impl FinalizationLedger {
 
     fn genesis_digest(block_hash: &BlockHash, block_number: i64) -> BlockHashSerde {
         Self::digest([
-            b"f1r3-finalization-genesis-v6".to_vec(),
+            b"f1r3-finalization-genesis-v7".to_vec(),
             block_hash.to_vec(),
             block_number.to_be_bytes().to_vec(),
         ])
@@ -167,7 +202,7 @@ impl FinalizationLedger {
 
     fn manifest_digest(finalized: &BTreeSet<BlockHashSerde>) -> BlockHashSerde {
         let mut parts = Vec::with_capacity(finalized.len() + 2);
-        parts.push(b"f1r3-finalization-manifest-v6".to_vec());
+        parts.push(b"f1r3-finalization-manifest-v7".to_vec());
         parts.push((finalized.len() as u64).to_be_bytes().to_vec());
         parts.extend(finalized.iter().map(|hash| hash.0.to_vec()));
         Self::digest(parts)
@@ -175,7 +210,7 @@ impl FinalizationLedger {
 
     fn record_digest(record: &FinalizationRecord) -> BlockHashSerde {
         let mut parts = Vec::with_capacity(record.finalized.len() + 11);
-        parts.push(b"f1r3-finalization-record-v6".to_vec());
+        parts.push(b"f1r3-finalization-record-v7".to_vec());
         parts.push(record.revision.to_be_bytes().to_vec());
         parts.push(record.predecessor_hash.0.to_vec());
         parts.push(record.predecessor_digest.0.to_vec());
@@ -189,52 +224,17 @@ impl FinalizationLedger {
     }
 
     fn witness_digest(witness: &LocalFinalizationWitness) -> BlockHashSerde {
-        let mut parts = Vec::with_capacity(
-            witness.latest_messages.len()
-                + witness.supporting_block_hashes.len()
-                + witness.finalized.len()
-                + 16,
-        );
-        parts.push(b"f1r3-local-finalization-witness-v1".to_vec());
-        parts.push(witness.schema_version.to_be_bytes().to_vec());
-        parts.push(witness.genesis_hash.0.to_vec());
-        parts.push(witness.predecessor_hash.0.to_vec());
-        parts.push(witness.predecessor_digest.0.to_vec());
-        parts.push(witness.target_block_hash.0.to_vec());
-        parts.push(witness.target_block_number.to_be_bytes().to_vec());
-        parts.push(witness.target_post_state_hash.0.to_vec());
-        parts.push(witness.fault_tolerance_numerator.to_be_bytes().to_vec());
-        parts.push(witness.fault_tolerance_denominator.to_be_bytes().to_vec());
-        parts.push(
-            (witness.latest_messages.len() as u64)
-                .to_be_bytes()
-                .to_vec(),
-        );
-        for (validator, block_hash) in &witness.latest_messages {
-            parts.push(validator.0.to_vec());
-            parts.push(block_hash.0.to_vec());
-        }
-        parts.push(
-            (witness.supporting_block_hashes.len() as u64)
-                .to_be_bytes()
-                .to_vec(),
-        );
-        parts.extend(
-            witness
-                .supporting_block_hashes
-                .iter()
-                .map(|hash| hash.0.to_vec()),
-        );
-        parts.push(witness.authority_context_digest.0.to_vec());
-        parts.push((witness.finalized.len() as u64).to_be_bytes().to_vec());
-        parts.extend(witness.finalized.iter().map(|hash| hash.0.to_vec()));
-        Self::digest(parts)
+        BlockHashSerde(witness.to_certificate().digest())
     }
 
     pub fn prepare_witness(
+        protocol_version: i64,
+        shard_id: String,
         genesis_hash: BlockHash,
         expected: &FinalizationHead,
         target_block_hash: BlockHash,
+        predecessor_certificate_digest: BlockHash,
+        predecessor_certificate_block_hash: BlockHash,
         target_block_number: i64,
         target_post_state_hash: BlockHash,
         fault_tolerance_numerator: i64,
@@ -245,6 +245,8 @@ impl FinalizationLedger {
         finalized: BTreeSet<BlockHashSerde>,
     ) -> Result<LocalFinalizationWitness, KvStoreError> {
         if target_block_number <= expected.block_number
+            || protocol_version <= 0
+            || shard_id.is_empty()
             || fault_tolerance_denominator <= 0
             || !supporting_block_hashes.contains(&BlockHashSerde(target_block_hash.clone()))
             || !finalized.contains(&BlockHashSerde(target_block_hash.clone()))
@@ -254,6 +256,17 @@ impl FinalizationLedger {
             || latest_messages
                 .values()
                 .any(|hash| !supporting_block_hashes.contains(hash))
+            || ((expected.revision == 0)
+                != predecessor_certificate_digest.iter().all(|byte| *byte == 0))
+            || (predecessor_certificate_digest.iter().all(|byte| *byte == 0)
+                != predecessor_certificate_block_hash
+                    .iter()
+                    .all(|byte| *byte == 0))
+            || (!predecessor_certificate_digest.iter().all(|byte| *byte == 0)
+                && !supporting_block_hashes
+                    .contains(&BlockHashSerde(predecessor_certificate_block_hash.clone())))
+            || supporting_block_hashes.len() > FinalizationCertificate::MAX_SUPPORTING_BLOCKS
+            || finalized.len() > FinalizationCertificate::MAX_FINALIZED_BLOCKS
             || authority_context_digest.0.len() != models::rust::block_hash::LENGTH
         {
             return Err(KvStoreError::InvalidArgument(
@@ -262,9 +275,13 @@ impl FinalizationLedger {
         }
         let mut witness = LocalFinalizationWitness {
             schema_version: Self::WITNESS_SCHEMA_VERSION,
+            protocol_version,
+            shard_id,
             genesis_hash: BlockHashSerde(genesis_hash),
             predecessor_hash: expected.block_hash.clone(),
             predecessor_digest: expected.record_digest.clone(),
+            predecessor_certificate_digest: BlockHashSerde(predecessor_certificate_digest),
+            predecessor_certificate_block_hash: BlockHashSerde(predecessor_certificate_block_hash),
             target_block_hash: BlockHashSerde(target_block_hash),
             target_block_number,
             target_post_state_hash: BlockHashSerde(target_post_state_hash),
@@ -277,6 +294,7 @@ impl FinalizationLedger {
             witness_digest: BlockHashSerde(Bytes::new()),
         };
         witness.witness_digest = Self::witness_digest(&witness);
+        Self::validate_witness_standalone(&witness)?;
         Ok(witness)
     }
 
@@ -301,9 +319,13 @@ impl FinalizationLedger {
     ) -> Result<(), KvStoreError> {
         let hash_length = models::rust::block_hash::LENGTH;
         if witness.schema_version != Self::WITNESS_SCHEMA_VERSION
+            || witness.protocol_version <= 0
+            || witness.shard_id.is_empty()
             || witness.genesis_hash.0.len() != hash_length
             || witness.predecessor_hash.0.len() != hash_length
             || witness.predecessor_digest.0.len() != hash_length
+            || witness.predecessor_certificate_digest.0.len() != hash_length
+            || witness.predecessor_certificate_block_hash.0.len() != hash_length
             || witness.target_block_hash.0.len() != hash_length
             || witness.target_post_state_hash.0.len() != hash_length
             || witness.authority_context_digest.0.len() != hash_length
@@ -321,12 +343,40 @@ impl FinalizationLedger {
                 .latest_messages
                 .values()
                 .any(|hash| !witness.supporting_block_hashes.contains(hash))
+            || ((witness.predecessor_hash == witness.genesis_hash)
+                != witness
+                    .predecessor_certificate_digest
+                    .0
+                    .iter()
+                    .all(|byte| *byte == 0))
+            || (witness
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0)
+                != witness
+                    .predecessor_certificate_block_hash
+                    .0
+                    .iter()
+                    .all(|byte| *byte == 0))
+            || (!witness
+                .predecessor_certificate_digest
+                .0
+                .iter()
+                .all(|byte| *byte == 0)
+                && !witness
+                    .supporting_block_hashes
+                    .contains(&witness.predecessor_certificate_block_hash))
             || witness
                 .supporting_block_hashes
                 .iter()
                 .chain(witness.finalized.iter())
                 .any(|hash| hash.0.len() != hash_length)
+            || witness.supporting_block_hashes.len()
+                > FinalizationCertificate::MAX_SUPPORTING_BLOCKS
+            || witness.finalized.len() > FinalizationCertificate::MAX_FINALIZED_BLOCKS
             || witness.witness_digest != Self::witness_digest(witness)
+            || witness.to_certificate().validate_shape().is_err()
         {
             return Err(KvStoreError::InvalidArgument(
                 "local finalization witness standalone validation failed".to_string(),
@@ -409,6 +459,10 @@ impl FinalizationLedger {
             record_digest: Self::genesis_digest(&block_hash, block_number),
             block_hash: BlockHashSerde(block_hash),
             block_number,
+            certificate_digest: BlockHashSerde(Bytes::from(vec![
+                0;
+                models::rust::block_hash::LENGTH
+            ])),
         }
     }
 
@@ -418,6 +472,7 @@ impl FinalizationLedger {
             block_hash: genesis.block_hash.clone(),
             block_number: genesis.block_number,
             record_digest: genesis.record_digest.clone(),
+            certificate_digest: genesis.certificate_digest.clone(),
         }
     }
 
@@ -427,6 +482,7 @@ impl FinalizationLedger {
             block_hash: record.directly_finalized.clone(),
             block_number: record.block_number,
             record_digest: record.record_digest.clone(),
+            certificate_digest: record.witness_digest.clone(),
         }
     }
 
@@ -689,6 +745,7 @@ impl FinalizationLedger {
                 block_hash: record.directly_finalized.clone(),
                 block_number: record.block_number,
                 record_digest: record.record_digest.clone(),
+                certificate_digest: record.witness_digest.clone(),
             };
             self.store.put(vec![
                 (
@@ -1041,16 +1098,33 @@ mod tests {
         finalized: BTreeSet<BlockHashSerde>,
     ) -> Result<FinalizationRecord, KvStoreError> {
         let genesis = ledger.genesis_anchor()?.unwrap();
+        let carrier = if expected.revision == 0 {
+            hash(0)
+        } else {
+            expected.block_hash.0.clone()
+        };
+        let mut supporting = BTreeSet::from([BlockHashSerde(directly_finalized.clone())]);
+        if expected.revision > 0 {
+            supporting.insert(BlockHashSerde(carrier.clone()));
+        }
+        let latest_messages = BTreeMap::from([(
+            ValidatorSerde(Bytes::from(vec![1; models::rust::validator::LENGTH])),
+            BlockHashSerde(directly_finalized.clone()),
+        )]);
         let witness = FinalizationLedger::prepare_witness(
+            6,
+            "root".to_string(),
             genesis.block_hash.0,
             expected,
             directly_finalized.clone(),
+            expected.certificate_digest.0.clone(),
+            carrier,
             block_number,
             hash(200),
             1,
             1,
-            BTreeMap::new(),
-            BTreeSet::from([BlockHashSerde(directly_finalized.clone())]),
+            latest_messages,
+            supporting,
             BlockHashSerde(hash(201)),
             finalized.clone(),
         )?;
@@ -1071,9 +1145,13 @@ mod tests {
         let genesis = initialize(&ledger, hash(0), 0);
         let target = BlockHashSerde(hash(1));
         assert!(FinalizationLedger::prepare_witness(
+            6,
+            "root".to_string(),
             hash(0),
             &genesis,
             target.0.clone(),
+            hash(0),
+            hash(0),
             1,
             hash(2),
             1,
@@ -1085,9 +1163,13 @@ mod tests {
         )
         .is_err());
         assert!(FinalizationLedger::prepare_witness(
+            6,
+            "root".to_string(),
             hash(0),
             &genesis,
             target.0,
+            hash(0),
+            hash(0),
             1,
             hash(2),
             1,
@@ -1096,6 +1178,65 @@ mod tests {
             BTreeSet::from([BlockHashSerde(hash(1))]),
             BlockHashSerde(hash(3)),
             BTreeSet::from([BlockHashSerde(hash(1)), BlockHashSerde(hash(3))]),
+        )
+        .is_err());
+        assert!(FinalizationLedger::prepare_witness(
+            6,
+            "root".to_string(),
+            hash(0),
+            &genesis,
+            hash(1),
+            hash(0),
+            hash(0),
+            1,
+            hash(2),
+            1,
+            10,
+            BTreeMap::new(),
+            BTreeSet::from([BlockHashSerde(hash(1))]),
+            BlockHashSerde(hash(3)),
+            BTreeSet::from([BlockHashSerde(hash(1))]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn non_genesis_predecessor_carrier_must_be_in_the_support_manifest() {
+        let ledger = ledger();
+        let genesis = initialize(&ledger, hash(0), 0);
+        let first = prepare_record(
+            &ledger,
+            &genesis,
+            hash(1),
+            1,
+            1.0,
+            BTreeSet::from([BlockHashSerde(hash(1))]),
+        )
+        .unwrap();
+        let head = match ledger.try_append(&genesis, &first).unwrap() {
+            FinalizationAppendOutcome::Committed(head) => head,
+            outcome => panic!("unexpected append outcome: {outcome:?}"),
+        };
+        let target = BlockHashSerde(hash(2));
+        assert!(FinalizationLedger::prepare_witness(
+            6,
+            "root".to_string(),
+            hash(0),
+            &head,
+            target.0.clone(),
+            head.certificate_digest.0.clone(),
+            head.block_hash.0.clone(),
+            2,
+            hash(3),
+            1,
+            10,
+            BTreeMap::from([(
+                ValidatorSerde(Bytes::from(vec![1; models::rust::validator::LENGTH])),
+                target.clone(),
+            )]),
+            BTreeSet::from([target.clone()]),
+            BlockHashSerde(hash(4)),
+            BTreeSet::from([target]),
         )
         .is_err());
     }
@@ -1405,6 +1546,7 @@ mod tests {
                     block_hash: BlockHashSerde(hash(1)),
                     block_number: 1,
                     record_digest: BlockHashSerde(hash(2)),
+                    certificate_digest: BlockHashSerde(hash(3)),
                 }),
             )
             .unwrap();

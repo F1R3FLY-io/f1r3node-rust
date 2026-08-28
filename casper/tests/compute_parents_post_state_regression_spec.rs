@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
@@ -8,6 +8,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{
     CasperShardConf, CasperSnapshot, OnChainCasperState, CURRENT_CASPER_PROTOCOL_VERSION,
 };
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
@@ -100,6 +101,16 @@ fn build_empty_block(
     )
 }
 
+fn bind_cached_genesis_floor(dag_storage: &BlockDagKeyValueStorage, genesis: &BlockMessage) {
+    let dag = dag_storage
+        .get_representation()
+        .expect("genesis DAG representation");
+    dag.put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
+        .expect("genesis floor cache");
+    dag.put_cached_frontier(genesis.block_hash.clone(), genesis.block_hash.clone())
+        .expect("genesis frontier cache");
+}
+
 async fn step_block(
     block_store: &mut KeyValueBlockStore,
     dag_storage: &BlockDagKeyValueStorage,
@@ -114,8 +125,8 @@ async fn step_block(
             .get_representation()
             .expect("dag representation"),
         validator,
-        shard_name,
-        last_finalized_block,
+        shard_name.clone(),
+        last_finalized_block.clone(),
     );
 
     let parents = proto_util::get_parents(block_store, block);
@@ -154,6 +165,38 @@ async fn step_block(
     updated.body.system_deploys = processed_system_deploys;
     updated.body.state.bonds = bonds;
 
+    let dag = dag_storage
+        .get_representation()
+        .map_err(CasperError::from)?;
+    let finalized = block_store
+        .get(&last_finalized_block)
+        .map_err(CasperError::from)?
+        .ok_or_else(|| CasperError::RuntimeError("missing finalized test block".to_string()))?;
+    let certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
+        &dag,
+        &finalized,
+        CURRENT_CASPER_PROTOCOL_VERSION,
+        shard_name,
+        0,
+        1_000_000,
+    )?;
+    let exact_latest_messages =
+        CertifiedConsensusContext::for_finalized_floor(&dag, last_finalized_block)?
+            .vote_projection()
+            .exact_latest_messages()
+            .iter()
+            .map(|(validator, hash)| (validator.clone(), hash.clone()))
+            .collect::<BTreeMap<_, _>>();
+    let candidate_context = CertifiedConsensusContext::for_parents(
+        &dag,
+        &updated.header.parents_hash_list,
+        &exact_latest_messages,
+    )?;
+    updated.header.finalized_floor =
+        Some(certificate.commitment(candidate_context.digest().clone()));
+    updated.finalized_floor_certificate = Some(certificate);
+    updated.block_hash = proto_util::hash_block(&updated);
+
     block_store
         .put_block_message(&updated)
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
@@ -163,6 +206,15 @@ async fn step_block(
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
         )
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+    let inserted_dag = dag_storage
+        .get_representation()
+        .map_err(CasperError::from)?;
+    inserted_dag
+        .put_cached_floor(updated.block_hash.clone(), finalized.block_hash.clone())
+        .map_err(CasperError::from)?;
+    inserted_dag
+        .put_cached_frontier(updated.block_hash.clone(), finalized.block_hash)
+        .map_err(CasperError::from)?;
 
     Ok(updated)
 }
@@ -265,6 +317,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let b1_raw = build_empty_block(
         1,
@@ -551,6 +604,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_state = proto_util::post_state_hash(&genesis_block);
@@ -799,6 +853,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             &latest_messages,
             None,
             None,
+            None,
         )
         .await
         .expect("Failed to rebase the stale merge on its finalized state floor");
@@ -927,6 +982,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis in DAG");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let b1_raw = build_empty_block(
         1,
@@ -1157,6 +1213,7 @@ async fn run_visible_blocks_scope_test() {
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .expect("Failed to insert genesis");
+    bind_cached_genesis_floor(&dag_storage, &genesis_block);
 
     let genesis_hash = genesis_block.block_hash.clone();
     let genesis_post_state = proto_util::post_state_hash(&genesis_block);

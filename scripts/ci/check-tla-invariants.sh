@@ -93,6 +93,7 @@ POST_FIX_CONFIGS=(
     deploy_recovery/MC_ProtocolVersionLifecycle
     deploy_recovery/MC_ProtocolVersionLifecycle_legacy_rejected
     deploy_recovery/MC_ProtocolVersionLifecycle_unsupported_rejected
+    'deploy_recovery/MC_StartupMetadataPreflight|StartupMetadataPreflight'
     'finalized_floor/MC_PendingDeployHeartbeatComposition|PendingDeployHeartbeatComposition'
     'finalized_floor/MC_PendingDeployHeartbeatComposition_ingress_safety|PendingDeployHeartbeatComposition'
     'finalized_floor/MC_ProposerAdmissionCoalescing|ProposerAdmissionCoalescing'

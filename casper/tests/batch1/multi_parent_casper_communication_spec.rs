@@ -2,8 +2,11 @@
 
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
+use comm::rust::rp::protocol_helper;
 use crypto::rust::signatures::signed::Signed;
+use models::rust::block_hash::BlockHashSerde;
 use models::rust::casper::protocol::casper_message::DeployData;
+use prost::bytes::Bytes;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -61,6 +64,83 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
         is_requested,
         "signedBlock1 should be in requestedBlocks of node(2)"
     );
+}
+
+#[tokio::test]
+async fn dependency_maintenance_attempts_certificates_after_block_dispatch_failure() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("genesis");
+    let nodes = TestNode::create_network(genesis, 2, None, None, None, None)
+        .await
+        .expect("network");
+    let node = &nodes[0];
+    let unseen_block = BlockHashSerde(Bytes::from(vec![1; 32]));
+    let missing_digest = BlockHashSerde(Bytes::from(vec![2; 32]));
+    let missing_child = BlockHashSerde(Bytes::from(vec![3; 32]));
+    let dag = node
+        .block_dag_storage
+        .get_representation()
+        .expect("DAG representation");
+    let stored_certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
+        &dag,
+        &node.genesis,
+        node.casper.casper_shard_conf.casper_version,
+        node.casper.casper_shard_conf.shard_name.clone(),
+        node.casper.casper_shard_conf.fault_tolerance_threshold_ppm,
+        1_000_000,
+    )
+    .expect("genesis certificate");
+    let stored_digest = BlockHashSerde(stored_certificate.digest());
+    let stored_child = BlockHashSerde(Bytes::from(vec![4; 32]));
+
+    node.casper
+        .casper_buffer_storage
+        .put_pendant(unseen_block)
+        .expect("unseen block pendant");
+    node.casper
+        .casper_buffer_storage
+        .add_certificate_relation(missing_digest.clone(), missing_child)
+        .expect("missing certificate relation");
+    node.casper
+        .casper_buffer_storage
+        .add_certificate_relation(stored_digest.clone(), stored_child)
+        .expect("stored certificate relation");
+    node.block_store
+        .put_finalization_certificate(&stored_digest.0, &stored_certificate)
+        .expect("stored certificate");
+
+    node.tle.clear_send_attempts();
+    node.tle.set_fail_sends(true);
+    let result = node.casper.fetch_dependencies().await;
+    node.tle.set_fail_sends(false);
+
+    assert!(result.is_err());
+    let packet_types = node
+        .tle
+        .send_attempts()
+        .into_iter()
+        .map(|message| {
+            protocol_helper::to_packet(&message)
+                .expect("packet")
+                .type_id
+        })
+        .collect::<std::collections::HashSet<_>>();
+    assert!(packet_types.contains("BlockRequest"), "{packet_types:?}");
+    assert!(
+        packet_types.contains("FinalizationCertificateRequest"),
+        "{packet_types:?}"
+    );
+    assert!(node
+        .casper
+        .block_retriever
+        .finalization_certificate_response_is_expected(&missing_digest.0)
+        .expect("missing certificate tracker"));
+    assert!(!node
+        .casper
+        .casper_buffer_storage
+        .requested_as_certificate_dependency(&stored_digest));
 }
 
 /*

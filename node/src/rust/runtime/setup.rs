@@ -11,6 +11,7 @@ use casper::rust::blocks::block_processor::BlockProcessor;
 use casper::rust::blocks::proposer::proposer::{ProductionProposer, ProposerResult};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::engine::casper_launch::CasperLaunch;
+use casper::rust::engine::running::enqueue_dependency_free_blocks;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
     PROPOSER_QUEUE_PENDING_METRIC, PROPOSER_QUEUE_REJECTED_TOTAL_METRIC, VALIDATOR_METRICS_SOURCE,
@@ -635,12 +636,16 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         trace!("Casper loop tick");
         let engine_cell_clone = engine_cell.clone();
         let block_retriever_clone = block_retriever.clone();
+        let block_processing_queue_tx_clone = block_processor_queue_tx.clone();
+        let blocks_in_processing_clone = block_processor_state_ref.clone();
         let requested_blocks_timeout = conf.casper.requested_blocks_timeout;
         let casper_loop_interval = conf.casper.casper_loop_interval;
 
         move || -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> {
             let engine_cell = engine_cell_clone.clone();
             let block_retriever = block_retriever_clone.clone();
+            let block_processing_queue_tx = block_processing_queue_tx_clone.clone();
+            let blocks_in_processing = blocks_in_processing_clone.clone();
 
             Box::pin(async move {
                 // Read the engine from engine cell
@@ -651,6 +656,16 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                     trace!("Fetching Casper dependencies");
                     if let Err(err) = casper.fetch_dependencies().await {
                         tracing::warn!("Casper dependency fetch failed: {}", err);
+                    }
+                    if let Err(err) = enqueue_dependency_free_blocks(
+                        casper,
+                        &block_processing_queue_tx,
+                        &blocks_in_processing,
+                        &block_retriever,
+                    )
+                    .await
+                    {
+                        tracing::warn!("Casper dependency wakeup failed: {}", err);
                     }
                 } else {
                     warn!("Casper engine present but Casper not initialized yet");

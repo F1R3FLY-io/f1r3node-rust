@@ -8,8 +8,8 @@ use prost::bytes::Bytes;
 use prost::Message;
 
 use super::casper::protocol::casper_message::{
-    BlockMessage, F1r3flyState, Justification, ObjectiveEquivocationEvidence,
-    ProcessedSystemDeploy, StateEffectId,
+    BlockMessage, F1r3flyState, FinalizedFloorCommitment, Justification,
+    ObjectiveEquivocationEvidence, ProcessedSystemDeploy, StateEffectId,
 };
 use crate::casper::{
     BlockMetadataInternal, BondProto, CertifiedAdmissionOutcomeProto, CertifiedSenderAuthorityProto,
@@ -17,10 +17,10 @@ use crate::casper::{
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::{block_hash, validator};
 
-pub const ADMISSION_SCHEMA_VERSION: u32 = 9;
-pub const CERTIFIED_ADMISSION_PROTOCOL_VERSION: i64 = 5;
+pub const ADMISSION_SCHEMA_VERSION: u32 = 12;
+pub const CERTIFIED_ADMISSION_PROTOCOL_VERSION: i64 = 6;
 pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
-pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v9|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2";
+pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v12|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2|finalized-floor:durable-parent-effective-floor-v1|certificate-cache:candidate-transparent-v1|candidate-authority-context:signed-exact-v1|certificate-sidecar:manifest-digests-and-counts-v2";
 
 pub fn admission_ruleset_digest() -> Bytes {
     Blake2b256::hash(ADMISSION_RULESET_MANIFEST.as_bytes().to_vec()).into()
@@ -644,6 +644,7 @@ pub struct BlockMetadata {
     pub protocol_version: i64,
     pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
     pub sender_authority: Option<CertifiedSenderAuthority>,
+    pub finalized_floor_commitment: Option<FinalizedFloorCommitment>,
     pub admission_schema_version: u32,
     pub approved_genesis: bool,
 }
@@ -668,16 +669,24 @@ pub enum BlockMetadataError {
     InvalidAuthorityCertificate(#[from] CertifiedSenderAuthorityError),
     #[error("block metadata contains an invalid admission outcome: {0}")]
     InvalidAdmissionOutcome(#[from] CertifiedAdmissionOutcomeError),
+    #[error("block metadata contains an invalid finalized-floor commitment: {0}")]
+    InvalidFinalizedFloorCommitment(String),
     #[error("non-genesis block metadata is missing its authority certificate")]
     MissingAuthorityCertificate,
     #[error("non-genesis block metadata is missing its admission outcome")]
     MissingAdmissionOutcome,
+    #[error("non-genesis block metadata is missing its finalized-floor commitment")]
+    MissingFinalizedFloorCommitment,
     #[error("genesis block metadata must not contain a sender authority certificate")]
     UnexpectedGenesisAuthorityCertificate,
     #[error("genesis block metadata must not contain an admission outcome")]
     UnexpectedGenesisAdmissionOutcome,
+    #[error("genesis block metadata must not contain a finalized-floor commitment")]
+    UnexpectedGenesisFinalizedFloorCommitment,
     #[error("authority certificate does not match block metadata")]
     AuthorityCertificateMismatch,
+    #[error("finalized-floor commitment does not match accepted sender authority")]
+    FinalizedFloorAuthorityMismatch,
     #[error("rejected certified block metadata cannot be finalized")]
     InvalidBlockFinalized,
     #[error("approved genesis metadata has an invalid shape")]
@@ -765,6 +774,7 @@ impl PartialEq for BlockMetadata {
             && self.objective_equivocation_evidence_delta
                 == other.objective_equivocation_evidence_delta
             && self.sender_authority == other.sender_authority
+            && self.finalized_floor_commitment == other.finalized_floor_commitment
             && self.admission_schema_version == other.admission_schema_version
             && self.approved_genesis == other.approved_genesis
     }
@@ -798,6 +808,7 @@ impl std::hash::Hash for BlockMetadata {
         self.protocol_version.hash(state);
         self.objective_equivocation_evidence_delta.hash(state);
         self.sender_authority.hash(state);
+        self.finalized_floor_commitment.hash(state);
         self.admission_schema_version.hash(state);
         self.approved_genesis.hash(state);
     }
@@ -845,6 +856,11 @@ impl BlockMetadata {
             .admission_outcome
             .map(CertifiedAdmissionOutcome::from_proto)
             .transpose()?;
+        let finalized_floor_commitment = proto
+            .finalized_floor_commitment
+            .map(FinalizedFloorCommitment::from_proto)
+            .transpose()
+            .map_err(BlockMetadataError::InvalidFinalizedFloorCommitment)?;
         if sender_generation_claim != sender_authority.as_ref().map(|cert| cert.generation()) {
             return Err(BlockMetadataError::AuthorityCertificateMismatch);
         }
@@ -883,6 +899,7 @@ impl BlockMetadata {
             protocol_version: proto.protocol_version,
             objective_equivocation_evidence_delta,
             sender_authority,
+            finalized_floor_commitment,
             admission_schema_version: proto.admission_schema_version,
             approved_genesis: proto.approved_genesis,
         };
@@ -948,6 +965,10 @@ impl BlockMetadata {
                 .admission_outcome
                 .as_ref()
                 .map(CertifiedAdmissionOutcome::to_proto),
+            finalized_floor_commitment: self
+                .finalized_floor_commitment
+                .as_ref()
+                .map(FinalizedFloorCommitment::to_proto),
         }
     }
 
@@ -1032,6 +1053,7 @@ impl BlockMetadata {
                 .objective_equivocation_evidence_delta
                 .clone(),
             sender_authority: None,
+            finalized_floor_commitment: b.header.finalized_floor.clone(),
             admission_schema_version: ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
         }
@@ -1100,6 +1122,9 @@ impl BlockMetadata {
         if self.is_rejected() && (self.directly_finalized || self.finalized) {
             return Err(BlockMetadataError::InvalidBlockFinalized);
         }
+        if self.approved_genesis && self.finalized_floor_commitment.is_some() {
+            return Err(BlockMetadataError::UnexpectedGenesisFinalizedFloorCommitment);
+        }
         if self.approved_genesis
             && (!self.parents.is_empty()
                 || self.block_number != 0
@@ -1119,6 +1144,13 @@ impl BlockMetadata {
             (None, _, false) => Err(BlockMetadataError::MissingAuthorityCertificate),
             (_, None, false) => Err(BlockMetadataError::MissingAdmissionOutcome),
             (Some(certificate), Some(outcome), false) => {
+                let commitment = self
+                    .finalized_floor_commitment
+                    .as_ref()
+                    .ok_or(BlockMetadataError::MissingFinalizedFloorCommitment)?;
+                commitment
+                    .validate_shape()
+                    .map_err(BlockMetadataError::InvalidFinalizedFloorCommitment)?;
                 certificate.validate_shape()?;
                 if certificate.block_hash() != &self.block_hash
                     || certificate.protocol_version() != self.protocol_version
@@ -1127,6 +1159,14 @@ impl BlockMetadata {
                     return Err(BlockMetadataError::AuthorityCertificateMismatch);
                 }
                 outcome.validate_metadata(&self.block_hash, self.protocol_version, certificate)?;
+                if outcome.is_accepted()
+                    && (certificate.authority_floor_hash() != &commitment.floor_hash
+                        || certificate.authority_floor_post_state_hash()
+                            != &commitment.floor_post_state_hash
+                        || certificate.context_digest() != &commitment.authority_context_digest)
+                {
+                    return Err(BlockMetadataError::FinalizedFloorAuthorityMismatch);
+                }
                 Ok(())
             }
         }
@@ -1183,10 +1223,16 @@ mod tests {
             header: Header {
                 parents_hash_list: vec![Bytes::from(vec![3; block_hash::LENGTH])],
                 timestamp: 0,
-                version: 5,
+                version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
                 extra_bytes: Bytes::new(),
                 sender_bond_generation: Some(BondGeneration::GENESIS),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: Some(FinalizedFloorCommitment {
+                    floor_hash: Bytes::from(vec![10; block_hash::LENGTH]),
+                    floor_post_state_hash: Bytes::from(vec![11; block_hash::LENGTH]),
+                    certificate_digest: Bytes::from(vec![13; block_hash::LENGTH]),
+                    authority_context_digest: Bytes::from(vec![12; block_hash::LENGTH]),
+                }),
             },
             body: Body {
                 state: F1r3flyState {
@@ -1210,6 +1256,7 @@ mod tests {
             sig_algorithm: String::new(),
             shard_id: "root".to_string(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 
@@ -1238,10 +1285,16 @@ mod tests {
             header: Header {
                 parents_hash_list: vec![Bytes::from_static(b"parent")],
                 timestamp: 0,
-                version: 5,
+                version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
                 extra_bytes: Bytes::new(),
                 sender_bond_generation: Some(BondGeneration::GENESIS),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: Some(FinalizedFloorCommitment {
+                    floor_hash: Bytes::from(vec![10; block_hash::LENGTH]),
+                    floor_post_state_hash: Bytes::from(vec![11; block_hash::LENGTH]),
+                    certificate_digest: Bytes::from(vec![13; block_hash::LENGTH]),
+                    authority_context_digest: Bytes::from(vec![12; block_hash::LENGTH]),
+                }),
             },
             body: Body {
                 state: F1r3flyState {
@@ -1278,6 +1331,7 @@ mod tests {
             sig_algorithm: String::new(),
             shard_id: "root".to_string(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         };
 
         let certificate = authority_certificate(&block, 1).unwrap();
@@ -1295,7 +1349,10 @@ mod tests {
             BTreeSet::from([0, 2])
         );
         assert_eq!(metadata.rejected_state_effects, BTreeSet::from([rejected]));
-        assert_eq!(metadata.protocol_version, 5);
+        assert_eq!(
+            metadata.protocol_version,
+            CERTIFIED_ADMISSION_PROTOCOL_VERSION
+        );
         assert_eq!(
             BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
             metadata
@@ -1320,6 +1377,62 @@ mod tests {
         assert_eq!(metadata.sender_authority, Some(certificate));
         assert_eq!(metadata.admission_outcome, Some(outcome));
         assert_eq!(metadata.validate(), Ok(()));
+    }
+
+    #[test]
+    fn accepted_metadata_binds_the_exact_signed_floor_authority_context() {
+        let block = authority_block();
+        let certificate = authority_certificate(&block, 10).unwrap();
+        let outcome = CertifiedAdmissionOutcome::accepted(&block, &certificate).unwrap();
+        let metadata =
+            BlockMetadata::from_certified_block(&block, None, None, &certificate, &outcome)
+                .unwrap();
+
+        for (index, mut tampered) in [metadata.clone(), metadata.clone(), metadata.clone()]
+            .into_iter()
+            .enumerate()
+        {
+            let commitment = tampered.finalized_floor_commitment.as_mut().unwrap();
+            match index {
+                0 => commitment.floor_hash = Bytes::from(vec![20; block_hash::LENGTH]),
+                1 => commitment.floor_post_state_hash = Bytes::from(vec![21; block_hash::LENGTH]),
+                2 => {
+                    commitment.authority_context_digest = Bytes::from(vec![22; block_hash::LENGTH])
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                tampered.validate(),
+                Err(BlockMetadataError::FinalizedFloorAuthorityMismatch)
+            );
+        }
+
+        let mut missing = metadata;
+        missing.finalized_floor_commitment = None;
+        assert_eq!(
+            missing.validate(),
+            Err(BlockMetadataError::MissingFinalizedFloorCommitment)
+        );
+    }
+
+    #[test]
+    fn approved_genesis_rejects_a_finalized_floor_commitment_explicitly() {
+        let mut block = authority_block();
+        block.header.parents_hash_list.clear();
+        block.header.finalized_floor = None;
+        block.body.state.block_number = 0;
+        block.seq_num = 0;
+        let mut metadata = BlockMetadata::from_approved_genesis(&block).unwrap();
+        metadata.finalized_floor_commitment = Some(FinalizedFloorCommitment {
+            floor_hash: Bytes::from(vec![1; block_hash::LENGTH]),
+            floor_post_state_hash: Bytes::from(vec![2; block_hash::LENGTH]),
+            certificate_digest: Bytes::from(vec![3; block_hash::LENGTH]),
+            authority_context_digest: Bytes::from(vec![4; block_hash::LENGTH]),
+        });
+        assert_eq!(
+            metadata.validate(),
+            Err(BlockMetadataError::UnexpectedGenesisFinalizedFloorCommitment)
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ pub const CASPER_METRICS_SOURCE: &str = "f1r3fly.casper";
 pub const MERGING_METRICS_SOURCE: &str = "f1r3fly.casper.merging";
 pub const RUNNING_METRICS_SOURCE: &str = "f1r3fly.casper.running";
 pub const BLOCK_RETRIEVER_METRICS_SOURCE: &str = "f1r3fly.casper.block-retriever";
+pub const FINALIZATION_METRICS_SOURCE: &str = "f1r3fly.casper.finalization";
 pub const APPROVE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.casper.approve-block";
 pub const REPORT_REPLAY_METRICS_SOURCE: &str = "f1r3fly.casper.report-replay";
 pub const ESTIMATOR_METRICS_SOURCE: &str = "f1r3fly.casper.estimator";
@@ -27,6 +28,14 @@ pub const BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
 pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
+pub const FINALIZATION_CERTIFICATE_REQUESTS_TOTAL_METRIC: &str =
+    "finalization.certificate.requests.total";
+pub const FINALIZATION_CERTIFICATE_REQUESTS_RETRIES_METRIC: &str =
+    "finalization.certificate.requests.retries";
+pub const FINALIZATION_CERTIFICATE_REQUESTS_CAPACITY_DEFERRED_METRIC: &str =
+    "finalization.certificate.requests.capacity-deferred";
+pub const FINALIZATION_CERTIFICATE_RETRIEVER_TRACKED_METRIC: &str =
+    "finalization.certificate.retriever.tracked";
 pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
     "block.retriever.dep-recovery-tracking.size";
 pub const BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC: &str =
@@ -42,6 +51,8 @@ pub const DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC: &str = "deploys-in-scope.s
 pub const BLOCK_INDEX_CACHE_SIZE_METRIC: &str = "block-index-cache.size";
 pub const BLOCK_INDEX_CACHE_RETAINED_BYTES_METRIC: &str = "block-index-cache.retained-bytes";
 pub const PARENTS_POST_STATE_CACHE_SIZE_METRIC: &str = "parents-post-state-cache.size";
+pub const PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
+    "parent-frontier.capacity-deferred.total";
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";

@@ -42,6 +42,17 @@ pub enum CasperError {
     DuplicateCosignerCharge {
         pk_hex: String,
     },
+    ParentFrontierCapacityExceeded {
+        configured_cap: usize,
+        required_parents: usize,
+        effective_committee: usize,
+        unique_causal_tips: usize,
+        floor_backstop_added: bool,
+        expired_tip_count: usize,
+    },
+    CertificateVerificationWorkExceeded {
+        limit: usize,
+    },
     UnsupportedProtocolVersion {
         version: i64,
     },
@@ -79,6 +90,21 @@ impl fmt::Display for CasperError {
                 "Duplicate cosigner charge attempted for pk={} \
                  (Cosigned envelope dedup invariant violated)",
                 pk_hex
+            ),
+            CasperError::ParentFrontierCapacityExceeded {
+                configured_cap,
+                required_parents,
+                effective_committee,
+                unique_causal_tips,
+                floor_backstop_added,
+                expired_tip_count,
+            } => write!(
+                f,
+                "Parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap} (effective committee={effective_committee}, unique causal tips={unique_causal_tips}, floor backstop added={floor_backstop_added}, expired tips={expired_tip_count})"
+            ),
+            CasperError::CertificateVerificationWorkExceeded { limit } => write!(
+                f,
+                "Finalization certificate verification exceeds the deterministic DAG coverage limit {limit}"
             ),
             CasperError::UnsupportedProtocolVersion { version } => {
                 write!(f, "Unsupported Casper protocol version: {}", version)

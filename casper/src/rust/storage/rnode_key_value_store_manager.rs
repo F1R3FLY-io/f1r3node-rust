@@ -76,6 +76,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("finalization-certificates".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("block-metadata".to_string(), None),
             dag_storage_env_config(),
         ),

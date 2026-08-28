@@ -1,0 +1,36 @@
+@startuml
+title Exact target-deploy terminality under intermediate LFB progress
+
+skinparam backgroundColor #FCFCFC
+skinparam sequence {
+  ArrowColor #29434E
+  LifeLineBorderColor #546E7A
+  ParticipantBorderColor #37474F
+  ParticipantBackgroundColor #ECEFF1
+}
+
+participant "Integration observer" as O
+participant "Node status API" as A
+participant "Casper finalizer" as F
+participant "Parallel validators" as V
+
+O -> A: exact status(target)
+A --> O: Pending; LFB #4
+V -> F: support for intermediate floor
+F --> A: publish LFB #6
+O -> A: exact status(target) + LFB
+A --> O: Pending; strict height progress
+note right of O
+Renew 45s stall budget.
+Do not report success.
+135s absolute budget is unchanged.
+end note
+V -> F: later mutual-knowledge support
+F --> A: publish target-bearing finalized closure
+O -> A: exact status(target)
+A --> O: Finalized
+note right of O
+Success is target-bound.
+Same-height churn never renews a budget.
+end note
+@enduml

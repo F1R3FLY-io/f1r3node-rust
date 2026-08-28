@@ -355,6 +355,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
 
+        crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
+            &self.runtime_manager,
+            &genesis_post_state_hash,
+            &self.conf.genesis_block_data.native_token_name,
+            &self.conf.genesis_block_data.native_token_symbol,
+            self.conf.genesis_block_data.native_token_decimals,
+        )
+        .await?;
+
         let casper = self.create_casper(validator_id.clone(), ab).await?;
         let casper_arc = Arc::new(casper);
 
@@ -428,20 +437,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             }),
             &self.engine_cell,
             &self.event_publisher,
-        )
-        .await?;
-
-        // Guard against config drift: a joiner's local native-token-* values
-        // must match what this network actually baked into the TokenMetadata
-        // contract at genesis. If they disagree, the node's /api/status would
-        // advertise values that contradict on-chain state, which misleads
-        // block explorers and wallets.
-        crate::rust::util::token_metadata_check::verify_token_metadata_matches_config(
-            &self.runtime_manager,
-            &genesis_post_state_hash,
-            &self.conf.genesis_block_data.native_token_name,
-            &self.conf.genesis_block_data.native_token_symbol,
-            self.conf.genesis_block_data.native_token_decimals,
         )
         .await?;
 

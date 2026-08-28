@@ -364,6 +364,7 @@ pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64
         extra_bytes: prost::bytes::Bytes::new(),
         sender_bond_generation: None,
         objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor: None,
     }
 }
 
@@ -386,6 +387,7 @@ pub fn unsigned_block_proto(
         sig_algorithm: "".to_string(),
         shard_id,
         extra_bytes: prost::bytes::Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     let hash = hash_block(&block);
@@ -461,6 +463,22 @@ pub fn dependencies_hashes_of(b: &BlockMessage) -> Vec<BlockHash> {
                         evidence.first_block_hash.clone(),
                         evidence.second_block_hash.clone(),
                     ]
+                }),
+        )
+        .chain(
+            b.finalized_floor_certificate
+                .iter()
+                .flat_map(|certificate| {
+                    certificate
+                        .exact_latest_messages
+                        .values()
+                        .map(|hash| hash.0.clone())
+                        .chain([
+                            certificate.predecessor_floor_hash.0.clone(),
+                            certificate.predecessor_certificate_block_hash.0.clone(),
+                            certificate.target_floor_hash.0.clone(),
+                        ])
+                        .filter(|hash| hash.iter().any(|byte| *byte != 0))
                 }),
         )
         .collect::<std::collections::BTreeSet<_>>()
@@ -774,6 +792,7 @@ mod fork_choice_b1_repro_tests {
                 protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: None,
+                finalized_floor_commitment: None,
                 admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
             },

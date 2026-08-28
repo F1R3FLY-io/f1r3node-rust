@@ -35,6 +35,10 @@ pub struct ProposeSuccess {
 pub enum ProposeFailure {
     NoNewDeploys,
     RecoveryDeferred(RecoveryDeferralReason),
+    ParentFrontierCapacityExceeded {
+        configured_cap: usize,
+        required_parents: usize,
+    },
     InternalDeployError,
     BugError,
     CheckConstraintsFailure(CheckProposeConstraintsFailure),
@@ -157,6 +161,14 @@ impl ProposeResult {
             ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
         )
     }
+
+    pub fn is_deferred(&self) -> bool {
+        matches!(
+            self.propose_status,
+            ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(_))
+                | ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded { .. })
+        )
+    }
 }
 
 impl BlockCreatorResult {
@@ -180,6 +192,13 @@ impl fmt::Display for ProposeStatus {
                 ProposeFailure::RecoveryDeferred(reason) => {
                     write!(f, "Proposal deferred: {}", reason)
                 }
+                ProposeFailure::ParentFrontierCapacityExceeded {
+                    configured_cap,
+                    required_parents,
+                } => write!(
+                    f,
+                    "Proposal deferred: exact parent frontier requires {required_parents} parents but max-number-of-parents is {configured_cap}"
+                ),
                 ProposeFailure::InternalDeployError => {
                     write!(f, "Proposal failed: internal deploy error")
                 }
@@ -264,5 +283,19 @@ mod tests {
             .requires_finalization_request());
         assert!(!RecoveryDeferralReason::InactiveCandidateValidator.requires_finalization_request());
         assert!(!RecoveryDeferralReason::StaleRecoveryPermit.requires_finalization_request());
+    }
+
+    #[test]
+    fn parent_frontier_capacity_is_a_non_recovery_deferral() {
+        let result = ProposeResult::failure(ProposeFailure::ParentFrontierCapacityExceeded {
+            configured_cap: 2,
+            required_parents: 3,
+        });
+        assert!(result.is_deferred());
+        assert!(!result.is_recovery_deferred());
+        assert_eq!(
+            result.propose_status.to_string(),
+            "Proposal deferred: exact parent frontier requires 3 parents but max-number-of-parents is 2"
+        );
     }
 }

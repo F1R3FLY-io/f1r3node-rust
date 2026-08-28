@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
 use super::engine::{noop, Engine};
+use crate::rust::errors::CasperError;
 
 /// EngineCell is a concurrency-safe mutable container for the current Engine instance.
 ///
@@ -19,14 +20,17 @@ use super::engine::{noop, Engine};
 #[derive(Clone)]
 pub struct EngineCell {
     inner: Arc<RwLock<Arc<dyn Engine>>>,
+    startup_failure: watch::Sender<Option<CasperError>>,
 }
 
 impl EngineCell {
     /// Initialize EngineCell with NoopEngine (equivalent to Cell.mvarCell[F, Engine[F]](Engine.noop))
     pub fn init() -> Self {
         let engine = Arc::new(noop());
+        let (startup_failure, _) = watch::channel(None);
         EngineCell {
             inner: Arc::new(RwLock::new(engine)),
+            startup_failure,
         }
     }
 
@@ -38,4 +42,19 @@ impl EngineCell {
     /// Set the engine to a new instance (equivalent to Cell.set(s: Engine[F]): F[Unit])
     #[inline]
     pub async fn set(&self, engine: Arc<dyn Engine>) { *self.inner.write().await = engine; }
+
+    pub fn subscribe_startup_failure(&self) -> watch::Receiver<Option<CasperError>> {
+        self.startup_failure.subscribe()
+    }
+
+    pub fn report_startup_failure(&self, error: CasperError) -> bool {
+        self.startup_failure.send_if_modified(|current| {
+            if current.is_some() {
+                false
+            } else {
+                *current = Some(error);
+                true
+            }
+        })
+    }
 }

@@ -27,6 +27,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             extra_bytes: Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
@@ -50,6 +51,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     let block2 = BlockMessage {
@@ -61,6 +63,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             extra_bytes: Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
@@ -84,6 +87,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     let block3 = BlockMessage {
@@ -95,6 +99,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             extra_bytes: Bytes::new(),
             sender_bond_generation: None,
             objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
@@ -121,6 +126,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     // Add blocks to store

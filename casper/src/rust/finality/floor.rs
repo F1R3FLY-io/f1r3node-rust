@@ -275,6 +275,22 @@ pub(crate) fn latest_message_coverage_above(
         latest_messages,
         Some(minimum_exclusive_height),
         &mut StateProvenanceCache::default(),
+        None,
+    )
+}
+
+pub(crate) fn latest_message_coverage_above_bounded(
+    dag: &KeyValueDagRepresentation,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    minimum_exclusive_height: i64,
+    maximum_blocks: usize,
+) -> Result<HashMap<BlockHash, BTreeSet<Validator>>, CasperError> {
+    latest_message_coverage_with_cache(
+        dag,
+        latest_messages,
+        Some(minimum_exclusive_height),
+        &mut StateProvenanceCache::default(),
+        Some(maximum_blocks),
     )
 }
 
@@ -283,6 +299,7 @@ fn latest_message_coverage_with_cache(
     latest_messages: &BTreeMap<Validator, BlockHash>,
     minimum_exclusive_height: Option<i64>,
     provenance_cache: &mut StateProvenanceCache,
+    maximum_blocks: Option<usize>,
 ) -> Result<HashMap<BlockHash, BTreeSet<Validator>>, CasperError> {
     let mut queue = BinaryHeap::new();
     let mut queued = HashSet::new();
@@ -302,6 +319,11 @@ fn latest_message_coverage_with_cache(
     while let Some((_, hash)) = queue.pop() {
         if !queued.remove(&hash) || !processed.insert(hash.clone()) {
             continue;
+        }
+        if let Some(maximum) = maximum_blocks {
+            if processed.len() > maximum {
+                return Err(CasperError::CertificateVerificationWorkExceeded { limit: maximum });
+            }
         }
         let metadata = metadata_with_cache(dag, &hash, provenance_cache)?;
         let current_coverage = coverage.get(&hash).cloned().unwrap_or_default();
@@ -384,7 +406,7 @@ async fn dual_certified_universal_frontier(
     let mut processed = HashSet::new();
     let mut coverage: HashMap<BlockHash, BTreeSet<usize>> = HashMap::new();
     let latest_coverage =
-        latest_message_coverage_with_cache(dag, latest_messages, None, provenance_cache)?;
+        latest_message_coverage_with_cache(dag, latest_messages, None, provenance_cache, None)?;
     let mut clique_cache = CliqueOracle::new_run_cache();
     for (index, parent) in parents.iter().enumerate() {
         let metadata = metadata_with_cache(dag, parent, provenance_cache)?;
@@ -1358,6 +1380,7 @@ mod frontier_determinism_tests {
                 protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: None,
+                finalized_floor_commitment: None,
                 admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
             },
@@ -1972,6 +1995,7 @@ mod frontier_determinism_tests {
                 protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: None,
+                finalized_floor_commitment: None,
                 admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
             },
@@ -2063,6 +2087,37 @@ mod frontier_determinism_tests {
             Err(CasperError::Other(message))
                 if message.contains("non-descending causal edge")
         ));
+    }
+
+    #[test]
+    fn bounded_latest_message_coverage_fails_at_the_exact_visit_boundary() {
+        let validator = val();
+        let genesis = h(0);
+        let middle = h(1);
+        let tip = h(2);
+        let weights = vec![(validator.clone(), 1)];
+        let dag = build_dag(vec![
+            md_wm(genesis.clone(), Vec::new(), 0, &validator, weights.clone()),
+            md_wm(
+                middle.clone(),
+                vec![genesis],
+                1,
+                &validator,
+                weights.clone(),
+            ),
+            md_wm(tip.clone(), vec![middle], 2, &validator, weights),
+        ]);
+        let latest_messages = BTreeMap::from([(validator, tip)]);
+        assert!(matches!(
+            latest_message_coverage_above_bounded(&dag, &latest_messages, i64::MIN, 2),
+            Err(CasperError::CertificateVerificationWorkExceeded { limit: 2 })
+        ));
+        assert_eq!(
+            latest_message_coverage_above_bounded(&dag, &latest_messages, i64::MIN, 3)
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[test]

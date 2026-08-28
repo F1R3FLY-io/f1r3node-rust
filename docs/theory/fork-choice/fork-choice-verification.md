@@ -172,7 +172,7 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-COMPOSE** | result is the GHOST head followed by the totally ordered remainder of the exact terminal frontier | Rocq `ranked_ghost_frontier_correct`, `ranked_tips_tail_exact`, `ranked_tips_tail_sorted`; Rust randomized independent two-lane oracle |
 | **T-TERM** | greedy and terminal-frontier traversals terminate or return a typed malformed-edge error | Rocq `Rank.rank_terminates`, `TerminalFrontier.anc_ofb_complete_height`; TLA⁺ strict finite-work descent; Wolfram monotone bounded measures; Rust height checks in both production paths |
 | **T-LCA** | LCA is a common ancestor of all certified eligible messages and is receiver-local-state independent | Rocq `Lca.lca_is_common_ancestor`, `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic`, `Inv_AllCertifiedMessagesRetained`; Rust `prop_lca.rs` against the real LCUA fold |
-| **T-BOUND** | depth expiry keeps the head; finite causal-parent capacity covers the active committee plus a floor backstop; invalid bounds fail closed | Rocq `Bound.{head_preserved,configured_parent_capacity_prevents_frontier_truncation,undersized_parent_capacity_has_a_blocked_frontier_witness}`; TLA+ `StatePreservingForkChoice` safe depth-expiry witness plus cap/depth liveness controls; Rust `retained_parent_indices`, configuration boundary properties, and snapshot coverage tests |
+| **T-BOUND** | depth expiry keeps the head; exact finite-cap admission is equivalent to the complete frozen frontier fitting; over-cap frontiers defer without signing or truncation; the configured committee maximum is only a sufficient worst-case advisory | Rocq `Bound.{head_preserved,configured_parent_capacity_prevents_frontier_truncation,undersized_parent_capacity_has_a_blocked_frontier_witness,exact_frontier_admission_some_iff_fits,exact_frontier_admission_none_iff_over_cap,underprovisioned_worst_case_can_fit_actual_frontier}`; TLA⁺/Apalache `ParentFrontierCapacity` safe fit and over-cap models plus the static-maximum-gate control; TLA⁺ `StatePreservingForkChoice` depth-expiry witness; Loom `parallel_capacity_decisions_use_one_exact_frozen_frontier`; Rust exact-capacity unit/property tests, non-signing proposer deferral, HTTP diagnostic, and configuration warning boundary properties |
 | **B1** | missing metadata ⟹ typed error, not panic (S4) | Rust `weight_from_validator_missing_parent_is_typed_err`; bridged by `GuardBridge.weight_block_structural` |
 | **B3** | score overflow ⟹ typed error, not wrap (S5) | Rust (`checked_add`); Z3 `score_supply_cap_bitvec.py` |
 | **T-MP** | the honest proposal's first parent is the GHOST head, invariant under parent enumeration; deploy policy cannot override it | Rocq `GuardBridge.{consensus_parent_pipeline_deterministic,consensus_parent_pipeline_preserves_ghost_head}`; TLA+ `Inv_GhostHeadIsMainParent` plus the deploy-promotion negative control; Rust `ghost_parent_order_is_permutation_invariant_and_preserves_the_head` and `main_parent_is_ghost_head_deterministic` |
@@ -205,7 +205,7 @@ each round (no effect-application/idempotence concern).
 | `Lca.v` | Foundation | `lcua_many` fold + `reduce_converges` (lex-measure termination); `lca_is_common_ancestor` (from the fold, no circular premise), `lca_is_lowest`, `lca_depth_filter_deterministic`, `lca_empty_is_genesis` |
 | `Rank.v` | Foundation, Score, TieBreak | `rank_terminates`, `rank_selects_heaviest`, `still_same_fixpoint` |
 | `TerminalFrontier.v` | Foundation, Rank, TieBreak | `terminal_frontier_exact`, `terminal_frontier_nodup`, `ghost_head_in_terminal_frontier`, `terminal_frontier_confluent`, `ranked_ghost_frontier_correct` |
-| `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err`, finite frontier-capacity sufficiency and undersized-cap witness |
+| `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err`, worst-case frontier-capacity sufficiency and undersized witness, exact runtime fit/no-truncation equivalence, and the underprovisioned-but-live-fit witness |
 | `ParentAntichain.v` | Foundation | executable reachability-maximal compaction, pairwise maximality, and causal-tip coverage preservation |
 | `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: `validation_implies_wf_dag`, `validation_implies_single_root`, `weight_block_structural`, `honest_forkchoice_parents_validate`, deterministic canonical parent order, and `consensus_parent_pipeline_preserves_ghost_head`; the old deploy promotion remains only as an unsafe executable witness |
 | `MainTheorem.v` | all | seven capstones covering determinism, certified context, causal-parent antichain, greedy GHOST, exact terminal-frontier composition, parent bounds, and the Rust validation bridge |
@@ -236,6 +236,18 @@ systemd-run --user --scope -p MemoryMax=16G -p CPUQuota=1800% -p TasksMax=200 \
   shared-child deduplication, and retention of the greedy head.
   `MC_GhostTerminalFrontier_global_leaf_unsafe.cfg` reproduces
   `Inv_HeadIsGreedyGhost` failure for the former global-terminal rule.
+- **`ParentDepthBounds.tla`** — finite depth preserves the GHOST head, filters
+  only secondary parents, and stays within the receiver's buffered horizon. Its
+  controls refute head filtering and invalid zero/negative configuration.
+- **`ParentFrontierCapacity.tla`** — two validators evaluate the same frozen
+  frontier in either order. The safe fit model sets
+  `ConfiguredActiveMaximum = 10000`, `ParentCap = 101`, and four exact parents;
+  all evaluators admit the full frontier. The safe over-cap model proves that a
+  three-parent frontier with cap two defers everywhere and publishes no partial
+  list. The `UseStaticMaximumGate = TRUE` control independently reproduces the
+  false deferral caused by treating the future committee ceiling as current
+  frontier cardinality. TLC exhausts all four states of each safe schedule;
+  Apalache checks both evaluation steps and reproduces the same unsafe trace.
 
 Run under the bounded envelope (never tmpfs/`auto`):
 
@@ -246,6 +258,9 @@ tlc_run "$(tlc_metadir fc_det)"  "$FC/MC_ForkChoice.cfg"          "$FC/ForkChoic
 tlc_run "$(tlc_metadir fc_nt)"   "$FC/MC_ForkChoice_nontotal.cfg" "$FC/ForkChoice.tla"       # counterexample
 tlc_run "$(tlc_metadir fc_tf)"   "$FC/MC_GhostTerminalFrontier.cfg" "$FC/GhostTerminalFrontier.tla" # PASS
 tlc_run "$(tlc_metadir fc_old)"  "$FC/MC_GhostTerminalFrontier_global_leaf_unsafe.cfg" "$FC/GhostTerminalFrontier.tla" # counterexample
+tlc_run "$(tlc_metadir fc_cap)"  "$FC/MC_ParentFrontierCapacity.cfg" "$FC/ParentFrontierCapacity.tla" # PASS
+tlc_run "$(tlc_metadir fc_cap_over)" "$FC/MC_ParentFrontierCapacity_over_cap.cfg" "$FC/ParentFrontierCapacity.tla" # PASS
+tlc_run "$(tlc_metadir fc_cap_static)" "$FC/MC_ParentFrontierCapacity_static_maximum_unsafe.cfg" "$FC/ParentFrontierCapacity.tla" # counterexample
 ```
 
 ### 5.3 Z3 / Sage / Wolfram cross-witnesses
@@ -260,9 +275,22 @@ tlc_run "$(tlc_metadir fc_old)"  "$FC/MC_GhostTerminalFrontier_global_leaf_unsaf
 - **Wolfram** `formal/wolfram/fork_choice/ghost_heaviest_subtree.wl` — independently
   calculates greedy descent, enumerates every asynchronous frontier expansion order,
   checks shared-child deduplication, constructs the head-first ranked result, and
-  reproduces the unsafe global-terminal counterexample. The gate supplies the same
+  reproduces the unsafe global-terminal counterexample. This licensed defense-in-depth
+  tier is opt-in: `RUN_WOLFRAM=1 scripts/check-fork-choice-ALL.sh`. The default gate
+  skips it without acquiring a license. When selected, the gate supplies the same
   Wolfram base directories as the licensed MCP service; a discovered kernel must bind
   that license and pass its self-test.
+- **Wolfram** `formal/wolfram/fork_choice/parent_frontier_capacity.wl` — independently
+  enumerates all 315 rooted five-block DAGs, every candidate finalized floor, and every
+  unique causal-latest-message subset for up to three validators. It derives the
+  finality-vote subset by exact floor reachability and requires the designated GHOST
+  head to be maximal in that subset, or the floor when the subset is empty. Across
+  40,950 exact frontier constructions, 43,774 valid head-order cases, and 245,700 cap
+  decisions, it checks exact maximal-set equality, pairwise antichain structure,
+  causal-tip and floor coverage, canonical head-first ordering, permutation invariance,
+  the committee-plus-one cardinality bound, exact admission, and empty publication on
+  deferral. Required controls witness unsafe static rejection, omitted floor backstop,
+  truncation, and skipped reachability compaction.
 
 ### 5.4 Rust tests
 
@@ -440,16 +468,20 @@ selection consumes `C`.
 The selected floor is always an evidence root, even when every exact latest message is
 stale relative to it. Parent compaction retains the full reachability-maximal antichain.
 Recovery narrows to one parent only when that parent both descends from the floor and
-covers every live causal tip. A finite parent cap must hold the maximum active committee
-plus one floor backstop; depth expiry supplies deterministic liveness for permanently old,
-disjoint unfinalized tips without deleting their exact evidence roots.
+covers every live causal tip. A finite parent cap equal to the configured active-validator
+maximum plus one floor backstop guarantees worst-case capacity without deferral, but is
+not necessary for a particular snapshot. Proposal admits the complete frozen frontier
+when its exact cardinality fits and otherwise defers before signing. Depth expiry supplies
+deterministic liveness for permanently old, disjoint unfinalized tips without deleting
+their exact evidence roots.
 
 ---
 
 ## 7. Verification status
 
 Run the whole suite with `scripts/check-fork-choice-ALL.sh` (Rocq authoritative;
-TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL GATES OK**.
+TLA⁺/Z3/Sage fail-soft; licensed Wolfram opt-in with `RUN_WOLFRAM=1`; PlantUML render
+check). Target result: **ALL GATES OK**.
 
 | Layer | Result |
 |---|---|
@@ -457,12 +489,12 @@ TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL G
 | Rust unit/regression | tie-break totality, B1 typed-error, fork-choice bisim (5), uc_16, convergence — all pass |
 | Rocq | full build passes; **29 named results axiom-free**, including seven capstones and the exact/confluent terminal-frontier results |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
-| TLA⁺ | total-order, certified-message retention, asynchronous terminal-frontier, and parent-bound models pass; non-total order, receiver-local projection, global-terminal head, all-entry head loss, and invalid configurations reproduce their designated counterexamples |
-| Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
+| TLA⁺ | total-order, certified-message retention, asynchronous terminal-frontier, parent-depth, and exact parent-capacity models pass; both safe capacity schedules exhaust 6 generated / 4 distinct states to depth 3. Non-total order, receiver-local projection, global-terminal head, all-entry head loss, invalid configurations, and the static configured-maximum admission gate reproduce their designated counterexamples. |
+| Apalache | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`). The exact-frontier model independently passes through both parallel evaluations, while its static-maximum control violates `Inv_ExactFitIsAdmitted` after one evaluation. The GHOST induction is horizon-free; the capacity refinement is deliberately bounded to both nodes because the protocol action is one-shot per frozen snapshot. |
 | Rust proptest | 25 fork-choice integration tests pass, including randomized author-bound two-level GHOST, the pinned aggregate-subtree counterexample, multi-parent shared-child deduplication, context noninterference, LCA properties, and parent bounds; 7 tie-break, 10 proposal-parent, 6 estimator-bound, and the receive-side depth test also pass |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
-| Wolfram | greedy GHOST, all-order frontier confluence, head-first composition, unsafe global-leaf counterexample, and context noninterference all report `True`; self-test passes under the licensed `wolfram` launcher |
+| Wolfram (optional) | with `RUN_WOLFRAM=1`, greedy GHOST, all-order frontier confluence, head-first composition, unsafe global-leaf counterexample, context noninterference, 40,950 exact frontier constructions, 43,774 valid head-order cases, and 245,700 exact-parent-capacity decisions pass under the licensed launcher; the default gate does not acquire a license |
 | Diagrams | 6 updated PlantUML diagrams render clean (populated SVG, no stderr) |
 
 **Coverage matrix (§4).** Every catalog item maps to a concrete Rocq/TLA⁺/Z3/Sage/Wolfram

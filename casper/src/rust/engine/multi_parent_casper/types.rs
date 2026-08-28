@@ -42,6 +42,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::estimator::Estimator;
+use crate::rust::finality::certificate::CertificateVerificationSchedule;
 use crate::rust::finality::finalization_schedule::FinalizationSchedule;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
@@ -122,6 +123,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub finalization_in_progress: Arc<AtomicU64>,
     pub recovery_sync_active: Arc<AtomicBool>,
     pub finalization_schedule: Arc<FinalizationSchedule>,
+    pub certificate_verification_schedule: Arc<CertificateVerificationSchedule>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.

@@ -83,7 +83,7 @@ package "Ranking / tie-break  (S1 core)" <<TieBreak>> {
 }
 
 package "Bounds / truncation layer" <<Bound>> {
-  component "Depth expiry + frontier capacity\n──────────────────────────────────────\nspec  keep GHOST head; expire deep causal\n      tips deterministically; never silently\n      truncate the live antichain\nRocq  Bound.v + ParentAntichain.v\nTLA⁺  StatePreservingForkChoice.tla\nRust  estimator.rs (depth)\n      snapshot.rs (antichain + coverage)\n      casper_conf.rs (active + floor cap)" as BND #D7CCC8
+  component "Depth expiry + frontier capacity\n──────────────────────────────────────\nspec  keep GHOST head; expire deep causal\n      tips deterministically; exact frontier\n      fits or defers without signing\nRocq  Bound.v + ParentAntichain.v\nTLA⁺  StatePreservingForkChoice.tla\n      ParentFrontierCapacity.tla\nRust  estimator.rs (depth)\n      snapshot.rs (exact cap + coverage)\n      casper_conf.rs (worst-case advisory)" as BND #D7CCC8
 }
 
 package "Main-parent + validation bridge" <<Bridge>> {

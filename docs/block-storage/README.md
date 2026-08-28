@@ -1,4 +1,4 @@
-> Last updated: 2026-04-19
+> Last updated: 2026-08-28
 
 # Crate: block-storage
 
@@ -9,8 +9,10 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 ## Block Store
 
 **`KeyValueBlockStore`**:
-- Two stores: blocks and approved_blocks
+- Stores blocks, approved blocks, and content-addressed protocol-6 finalization-certificate sidecars
 - LZ4 compression with varint length prefix (Java-compatible)
+- Validates encoded-size ceilings before decompression or protobuf allocation
+- Persists a sidecar only when its canonical digest and signed floor commitment agree; detached blocks remain unavailable until their exact certificate arrives
 - `get(hash)`, `put(hash, block)`, `contains(hash)`
 - `get_approved_block()` / `put_approved_block()` -- Singleton approved block
 
@@ -36,6 +38,10 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
   binding the exact local predecessor, target state, frozen eligible
   latest-message map, supporting closure, authority-context digest, exact FTT,
   and finalized manifest
+- For a non-genesis predecessor, binds the selected accepted causal carrier
+  block and the exact certificate digest committed by that block as one proof
+  pair; witness-equivalent digests for the same floor and state remain valid
+  local alternatives but cannot be spliced
 - Atomically stores an immutable successor round and its durable head, with the
   record bound to the persisted witness digest
 - Hash-chains exact sorted finalized manifests and rejects stale, unrelated, equal-height, and regressive successors
@@ -45,10 +51,11 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 - Treats revision, record digest, and witness digest as node-local audit
   identity; live synchronization never imports them as consensus authority
 
-Admission schema version `9` is the first schema with the rooted finalization
-ledger. Schema `8` stores are not silently upgraded because an inferred root
-would not be independently auditable. Start from a fresh protocol-v5 genesis or
-use an explicit verified migration.
+Admission schema version `12` is the protocol-6 schema for certified admission,
+content-addressed finalized-floor evidence, and the rooted
+`finalization-ledger-v7` history. Older stores are not silently upgraded because
+an inferred root or certificate history would not be independently auditable.
+Start from a fresh protocol-6 genesis or use an explicit verified migration.
 
 **`BlockMetadataStore`** -- Per-block metadata with in-memory DAG state:
 - Uses `imbl` persistent collections (HashSet, OrdMap, HashMap) for structural sharing
@@ -67,6 +74,7 @@ use an explicit verified migration.
 - Two `DashMap`s: child_to_parent, parent_to_child adjacency lists
 - `BlockDependencyDag` (doubly-linked DAG) rebuilt from persistent store on startup
 - `add_relation(parent, child)`, `put_pendant(block)`, `remove(hash)`, `get_pendants()`
+- Persists typed certificate-digest dependencies separately from block-hash dependencies and resolves a waiting block atomically at most once
 
 ## Finality Storage
 

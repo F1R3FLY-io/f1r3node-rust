@@ -99,6 +99,15 @@ impl CertifiedConsensusContext {
         authority_stakes: BTreeMap<Validator, i64>,
         authority_generations: BTreeMap<Validator, BondGeneration>,
     ) -> Result<Self, CasperError> {
+        if active_validators.len()
+            > models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES
+        {
+            return Err(CasperError::RuntimeError(format!(
+                "certified consensus context has {} active validators, exceeding finalization-certificate capacity {}",
+                active_validators.len(),
+                models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES
+            )));
+        }
         if incoming_finalized_floor.len() != models::rust::block_hash::LENGTH
             || incoming_finalized_floor_post_state_hash.len() != models::rust::block_hash::LENGTH
         {
@@ -1062,6 +1071,7 @@ mod tests {
             protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             objective_equivocation_evidence_delta: evidence_delta,
             sender_authority: None,
+            finalized_floor_commitment: None,
             admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
         };
@@ -1129,6 +1139,7 @@ mod tests {
                 extra_bytes: Bytes::new(),
                 sender_bond_generation: Some(generation),
                 objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: None,
             },
             body: Body {
                 state: F1r3flyState {
@@ -1152,6 +1163,7 @@ mod tests {
             sig_algorithm: String::new(),
             shard_id: "root".to_string(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 

@@ -97,9 +97,19 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .genesis_block
         .block_hash
         .clone()]);
-    // With multi-parent merging, all validators' latest blocks are included as parents
-    // (block0 from node0, block1 from node1, genesis from node2 who hasn't created a block yet)
-    assert_eq!(multiparent_block.header.parents_hash_list.len(), 3);
+    assert_eq!(multiparent_block.header.parents_hash_list.len(), 2);
+    assert!(multiparent_block
+        .header
+        .parents_hash_list
+        .contains(&block0.block_hash));
+    assert!(multiparent_block
+        .header
+        .parents_hash_list
+        .contains(&block1.block_hash));
+    assert!(!multiparent_block
+        .header
+        .parents_hash_list
+        .contains(&genesis.genesis_block.block_hash));
     assert!(nodes[0].contains(&multiparent_block.block_hash));
     assert!(nodes[1].contains(&multiparent_block.block_hash));
     assert_eq!(multiparent_block.body.rejected_deploys.len(), 0);
@@ -376,12 +386,7 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
 
     nodes[1].handle_receive().await.unwrap();
 
-    // Under multi-parent merging, a proposed block links the latest message of
-    // every bonded validator as a parent. The genesis is bonded to three
-    // validators but only two nodes exist, so the parents are block0
-    // (validator 0), block1 (validator 1) and — for the third bonded-but-absent
-    // validator — the genesis block itself.
-    assert_eq!(single_parent_block.header.parents_hash_list.len(), 3);
+    assert_eq!(single_parent_block.header.parents_hash_list.len(), 2);
     assert!(single_parent_block
         .header
         .parents_hash_list
@@ -390,6 +395,10 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
         .header
         .parents_hash_list
         .contains(&block1.block_hash));
+    assert!(!single_parent_block
+        .header
+        .parents_hash_list
+        .contains(&genesis.genesis_block.block_hash));
 
     // block0 (`@1!(47)`) produces on channel @1, while block1
     // (`for(@x <- @1 & @y <- @2){ @1!(x) }`) consumes from @1 through a join.

@@ -4,7 +4,8 @@ use prost::Message;
 
 use crate::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, ForkChoiceTipRequestProto, HasBlockProto,
+    BlockMessageProto, BlockRequestProto, FinalizationCertificateRequestProto,
+    FinalizationCertificateResponseProto, ForkChoiceTipRequestProto, HasBlockProto,
     HasBlockRequestProto, MergeableEntryRequestProto, MergeableEntryResponseProto,
     NoApprovedBlockAvailableProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
     UnapprovedBlockProto,
@@ -43,6 +44,14 @@ impl_packet!(UnapprovedBlockProto, "UnapprovedBlock");
 impl_packet!(BlockApprovalProto, "BlockApproval");
 impl_packet!(NoApprovedBlockAvailableProto, "NoApprovedBlockAvailable");
 impl_packet!(BlockRequestProto, "BlockRequest");
+impl_packet!(
+    FinalizationCertificateRequestProto,
+    "FinalizationCertificateRequest"
+);
+impl_packet!(
+    FinalizationCertificateResponseProto,
+    "FinalizationCertificateResponse"
+);
 impl_packet!(ApprovedBlockRequestProto, "ApprovedBlockRequest");
 impl_packet!(HasBlockRequestProto, "HasBlockRequest");
 impl_packet!(HasBlockProto, "HasBlock");

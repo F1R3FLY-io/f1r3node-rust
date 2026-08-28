@@ -1222,6 +1222,9 @@ impl TestNode {
             finalization_schedule: Arc::new(
                 crate::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
             ),
+            certificate_verification_schedule: Arc::new(
+                crate::rust::finality::certificate::CertificateVerificationSchedule::new(2),
+            ),
             heartbeat_signal_ref: crate::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(
                 None::<(
@@ -1259,6 +1262,9 @@ impl TestNode {
                 finalization_in_progress: casper_guard.finalization_in_progress.clone(),
                 recovery_sync_active: casper_guard.recovery_sync_active.clone(),
                 finalization_schedule: casper_guard.finalization_schedule.clone(),
+                certificate_verification_schedule: casper_guard
+                    .certificate_verification_schedule
+                    .clone(),
                 heartbeat_signal_ref: casper_guard.heartbeat_signal_ref.clone(),
                 deploys_in_scope_cache: casper_guard.deploys_in_scope_cache.clone(),
                 active_validators_cache: casper_guard.active_validators_cache.clone(),

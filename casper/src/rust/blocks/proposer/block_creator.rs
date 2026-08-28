@@ -19,9 +19,9 @@ use models::rust::block_hash::BlockHash;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification,
-    ObjectiveEquivocationEvidence, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    StateEffectId, ValidatorBondGeneration,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, FinalizationCertificate, Header,
+    Justification, ObjectiveEquivocationEvidence, ProcessedDeploy, ProcessedSystemDeploy,
+    RejectedDeploy, StateEffectId, ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -2627,6 +2627,14 @@ pub async fn create(
     allow_empty_blocks: bool,
 ) -> Result<BlockCreatorResult, CasperError> {
     let _heap_boundary = BlockCreationHeapBoundary;
+    if casper_snapshot.on_chain_state.shard_conf.casper_version
+        >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+        && casper_snapshot.finalized_floor_certificate.is_none()
+    {
+        return Err(CasperError::RuntimeError(
+            "protocol-v6 proposal snapshot has no finalized-floor certificate".to_string(),
+        ));
+    }
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
         BLOCK_CREATOR_COMPUTE_PARENTS_POST_STATE_TIME_METRIC,
@@ -2677,10 +2685,6 @@ pub async fn create(
     let parents = &casper_snapshot.parents;
     let justifications = &casper_snapshot.justifications;
     if !parents.is_empty() {
-        let parent_hashes = parents
-            .iter()
-            .map(|parent| parent.block_hash.clone())
-            .collect::<Vec<_>>();
         let latest_messages = justifications
             .iter()
             .map(|justification| {
@@ -2691,18 +2695,11 @@ pub async fn create(
             })
             .collect::<BTreeMap<_, _>>();
         let candidate_context =
-            crate::rust::causal_equivocation::CertifiedConsensusContext::for_candidate(
+            crate::rust::causal_equivocation::CertifiedConsensusContext::for_frozen_floor(
                 &casper_snapshot.dag,
-                &parent_hashes,
+                casper_snapshot.last_finalized_block.clone(),
                 &latest_messages,
-                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                    casper_snapshot
-                        .on_chain_state
-                        .shard_conf
-                        .fault_tolerance_threshold_ppm,
-                ),
-            )
-            .await?;
+            )?;
         let context_comparison = compare_certified_contexts(
             &casper_snapshot.dag,
             &casper_snapshot.consensus_context,
@@ -2959,12 +2956,13 @@ pub async fn create(
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let merge_pre_info = interpreter_util::compute_parents_post_state(
+    let merge_pre_info = interpreter_util::compute_parents_post_state_at_certified_floor(
         block_store,
         parents.clone(),
         casper_snapshot,
         runtime_manager,
         &latest_messages,
+        &casper_snapshot.last_finalized_block,
         None,
         Some(&rejected_deploy_buffer),
     )
@@ -3362,6 +3360,8 @@ pub async fn create(
         active_validators,
         sender_bond_generation,
         objective_equivocation_evidence_delta,
+        casper_snapshot.consensus_context.digest().clone(),
+        casper_snapshot.finalized_floor_certificate.clone(),
         shard_id,
         casper_version,
     );
@@ -3443,6 +3443,8 @@ fn package_block(
     active_validators: Vec<Validator>,
     sender_bond_generation: BondGeneration,
     objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
+    candidate_authority_context_digest: Bytes,
+    finalized_floor_certificate: Option<FinalizationCertificate>,
     shard_id: String,
     version: i64,
 ) -> BlockMessage {
@@ -3464,6 +3466,9 @@ fn package_block(
         extra_bytes: Bytes::new(),
     };
 
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(candidate_authority_context_digest));
     let header = Header {
         parents_hash_list: parents,
         timestamp: block_data.time_stamp,
@@ -3471,15 +3476,17 @@ fn package_block(
         extra_bytes: Bytes::new(),
         sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta,
+        finalized_floor,
     };
-
-    proto_util::unsigned_block_proto(
+    let mut block = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
-    )
+    );
+    block.finalized_floor_certificate = finalized_floor_certificate;
+    block
 }
 
 fn not_expired_deploy(earliest_block_number: i64, deploy_data: &DeployData) -> bool {
@@ -3619,6 +3626,7 @@ mod tests {
                     protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                     objective_equivocation_evidence_delta: Vec::new(),
                     sender_authority: None,
+                    finalized_floor_commitment: None,
                     admission_schema_version:
                         models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
                     approved_genesis: false,
@@ -3673,6 +3681,8 @@ mod tests {
             Vec::new(),
             BondGeneration::GENESIS,
             Vec::new(),
+            Bytes::from(vec![0; models::rust::block_hash::LENGTH]),
+            None,
             "test".to_string(),
             1,
         );

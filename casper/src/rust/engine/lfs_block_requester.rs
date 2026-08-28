@@ -638,8 +638,16 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
             let request_count = request_futures.len();
 
-            // Execute all requests in parallel, short-circuit on first error
-            futures::future::try_join_all(request_futures).await?;
+            let results = futures::future::join_all(request_futures).await;
+            let mut first_error = None;
+            for result in results {
+                if let Err(error) = result {
+                    first_error.get_or_insert(error);
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
 
             let request_duration = request_start.elapsed();
             tracing::info!(

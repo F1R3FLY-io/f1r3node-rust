@@ -69,7 +69,8 @@ score(b) = \sum_{v : b \preceq lm(v)} A(v)
 | depth horizon `D` | Maximum permitted value of `H - height(p)` for a secondary parent. |
 | depth buffer | Receive-side and history-retention safety margin added to `D`. |
 | unlimited count | Exactly configuration value `-1`, or the estimator's `i32::MAX` sentinel. |
-| frontier-capacity invariant | A finite proposal-parent cap is at least the maximum active-validator count plus one independent finalized-floor backstop. |
+| exact frontier-capacity rule | A finite proposal-parent cap admits a frozen proposal snapshot exactly when the complete depth-expired, reachability-maximal frontier, including any required floor backstop, fits without truncation. |
+| worst-case capacity advisory | `number-of-active-validators + 1` is sufficient to carry one distinct tip per configured validator slot plus an independent floor backstop. It is a provisioning warning boundary, not a necessary runtime admission condition. |
 
 For `R = [g] ++ S`, finite-depth filtering returns the head followed by exactly the
 eligible tail:
@@ -142,7 +143,7 @@ leaf and implement a different protocol.
 | TLA+ and TLC | Concurrent replica/interleaving model plus explicit negative controls for local-state projection, global-terminal head selection, incomplete slots, outside-floor votes, mutable weights, and head loss. |
 | Apalache | Symbolic bounded checking of the same transition invariants. |
 | Z3 and Sage | Independent arithmetic and total-order witnesses. |
-| Wolfram Language | Independent greedy-GHOST, asynchronous frontier confluence, unsafe global-leaf counterexample, termination, frozen-authority, and receiver-state witness. |
+| Wolfram Language | Independent greedy-GHOST, asynchronous frontier confluence, unsafe global-leaf counterexample, termination, frozen-authority, receiver-state, and exhaustive exact-parent-capacity witness. |
 | Rust example/property tests | Executable refinement evidence against production helpers and real DAG/storage paths. |
 
 The [verification dossier](./fork-choice-verification.md) gives exact theorem, model,

@@ -28,9 +28,9 @@
 #      SKIPPED if apalache-mc is absent (mirrors the Wolfram fail-soft tier).
 #   4. Z3    (fail-soft) — tiebreak_total_order + score_supply_cap BitVec witnesses.
 #   5. Sage  (fail-soft) — fork-choice algebra (score monoid + argmax uniqueness).
-#   6. Wolfram (fail-soft) — ghost_heaviest_subtree.wl (greedy head, asynchronous
+#   6. Wolfram (optional, fail-soft) — ghost_heaviest_subtree.wl (greedy head, asynchronous
 #      frontier confluence, unsafe global-terminal counterexample, bounded measures).
-#      SKIPPED if no kernel is on PATH;
+#      SKIPPED unless RUN_WOLFRAM=1 and a kernel is on PATH;
 #      a discovered kernel must bind its configured license and pass the self-test.
 #   7. Diagrams (fail-soft) — renders the dossier's PlantUML diagram set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is absent.
@@ -46,6 +46,7 @@
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
 #   RUN_SOAK=1        also run the (slow) multi-writer fork-choice churn Rust soak
+#   RUN_WOLFRAM=1     opt into the licensed Wolfram cross-witness tier
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -217,6 +218,23 @@ elif [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ ${parent_config_control} parent-bound control failed for the wrong reason (see $parent_config_log)"
     fi
   done
+  if tlc_run "$(tlc_metadir fc_parent_frontier_capacity)" "$TLA_DIR/MC_ParentFrontierCapacity.cfg" "$TLA_DIR/ParentFrontierCapacity.tla" >"$LOG_DIR/fc_tlc_parent_frontier_capacity.log" 2>&1; then
+    pass "TLA+ exact live frontier fits despite a larger configured validator maximum, and parallel evaluators preserve the complete frontier"
+  else
+    fail "TLA+ MC_ParentFrontierCapacity.cfg did NOT pass (see $LOG_DIR/fc_tlc_parent_frontier_capacity.log)"
+  fi
+  if tlc_run "$(tlc_metadir fc_parent_frontier_over_cap)" "$TLA_DIR/MC_ParentFrontierCapacity_over_cap.cfg" "$TLA_DIR/ParentFrontierCapacity.tla" >"$LOG_DIR/fc_tlc_parent_frontier_over_cap.log" 2>&1; then
+    pass "TLA+ an exact over-cap frontier defers on every evaluator without publishing a truncated parent list"
+  else
+    fail "TLA+ MC_ParentFrontierCapacity_over_cap.cfg did NOT pass (see $LOG_DIR/fc_tlc_parent_frontier_over_cap.log)"
+  fi
+  if tlc_run "$(tlc_metadir fc_parent_frontier_static_unsafe)" "$TLA_DIR/MC_ParentFrontierCapacity_static_maximum_unsafe.cfg" "$TLA_DIR/ParentFrontierCapacity.tla" >"$LOG_DIR/fc_tlc_parent_frontier_static_unsafe.log" 2>&1; then
+    fail "TLA+ static maximum gate should violate Inv_ExactFitIsAdmitted but passed"
+  elif grep -Eq "The invariant of Inv_ExactFitIsAdmitted is equal to FALSE|Invariant Inv_ExactFitIsAdmitted is violated" "$LOG_DIR/fc_tlc_parent_frontier_static_unsafe.log"; then
+    pass "TLA+ static configured-maximum gate reproduces false deferral of an exact frontier that fits"
+  else
+    fail "TLA+ static configured-maximum control failed for the wrong reason (see $LOG_DIR/fc_tlc_parent_frontier_static_unsafe.log)"
+  fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
@@ -260,6 +278,27 @@ else
   fi
 fi
 
+CAPACITY_APALACHE_OUT="$REPO_ROOT/target/apalache-parent-frontier-capacity"
+if command -v apalache-mc >/dev/null 2>&1; then
+  rm -rf "$CAPACITY_APALACHE_OUT" 2>/dev/null || true
+  mkdir -p "$CAPACITY_APALACHE_OUT"
+  if capped apalache-mc check --config="$TLA_DIR/MC_ParentFrontierCapacityApalache.cfg" --length=2 \
+       --out-dir="$CAPACITY_APALACHE_OUT/safe" "$TLA_DIR/ParentFrontierCapacity.tla" >"$LOG_DIR/fc_apalache_parent_frontier_capacity.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found|EXITCODE: OK" "$LOG_DIR/fc_apalache_parent_frontier_capacity.log"; then
+    pass "Apalache exact-frontier admission and non-signing deferral invariants hold through both parallel evaluations"
+  else
+    fail "Apalache exact-frontier capacity model did NOT report NoError (see $LOG_DIR/fc_apalache_parent_frontier_capacity.log)"
+  fi
+  if capped apalache-mc check --config="$TLA_DIR/MC_ParentFrontierCapacityStaticMaximumUnsafeApalache.cfg" --length=1 \
+       --out-dir="$CAPACITY_APALACHE_OUT/static-unsafe" "$TLA_DIR/ParentFrontierCapacity.tla" >"$LOG_DIR/fc_apalache_parent_frontier_static_unsafe.log" 2>&1; then
+    fail "Apalache static configured-maximum gate should violate Inv_ExactFitIsAdmitted but passed"
+  elif grep -qE "state invariant [0-9]+ violated|Invariant Inv_ExactFitIsAdmitted is violated" "$LOG_DIR/fc_apalache_parent_frontier_static_unsafe.log"; then
+    pass "Apalache independently reproduces false deferral from the static configured-maximum gate"
+  else
+    fail "Apalache static configured-maximum control failed for the wrong reason (see $LOG_DIR/fc_apalache_parent_frontier_static_unsafe.log)"
+  fi
+fi
+
 echo "== [4/8] Z3 cross-witness (fail-soft) =="
 if ! ls "$Z3_DIR"/*.py >/dev/null 2>&1; then
   skip "no Z3 scripts yet"
@@ -291,27 +330,41 @@ else
   skip "no sage on PATH"
 fi
 
-echo "== [6/8] Wolfram (fail-soft) =="
+echo "== [6/8] Wolfram (optional, fail-soft) =="
 WL_BIN=""; WL_RUN=()
 if command -v wolframscript >/dev/null 2>&1; then WL_BIN=wolframscript; WL_RUN=(wolframscript -file)
 elif command -v wolfram >/dev/null 2>&1;    then WL_BIN=wolfram;       WL_RUN=(wolfram -script)
 elif command -v math >/dev/null 2>&1;       then WL_BIN=math;          WL_RUN=(math -script)
 fi
-if [[ -z "$WL_BIN" || ! -f "$WL_DIR/ghost_heaviest_subtree.wl" ]]; then
-  skip "no wolframscript/math/wolfram kernel on PATH, or no ghost_heaviest_subtree.wl yet"
+if [[ "${RUN_WOLFRAM:-0}" != "1" ]]; then
+  skip "licensed Wolfram cross-witness tier is opt-in; set RUN_WOLFRAM=1 to run it"
+elif [[ -z "$WL_BIN" || ! -f "$WL_DIR/ghost_heaviest_subtree.wl" || ! -f "$WL_DIR/parent_frontier_capacity.wl" ]]; then
+  skip "no wolframscript/math/wolfram kernel on PATH, or a fork-choice Wolfram witness is absent"
 else
-  wlout=$(env \
-    WOLFRAM_BASE="${WOLFRAM_BASE:-/usr/share/Wolfram}" \
-    WOLFRAM_LOCALBASE="${WOLFRAM_LOCALBASE:-${HOME}/.Wolfram/Objects}" \
-    WOLFRAM_USERBASE="${WOLFRAM_USERBASE:-${HOME}/.Wolfram}" \
-    "${WL_RUN[@]}" "$WL_DIR/ghost_heaviest_subtree.wl" 2>&1); wlrc=$?
-  echo "$wlout" >"$LOG_DIR/fc_wolfram.log"
-  if grep -qiE 'no valid password|cannot find a valid password' <<<"$wlout"; then
+  wolfram_ok=1
+  wolfram_license_unavailable=0
+  : >"$LOG_DIR/fc_wolfram.log"
+  for wolfram_witness in ghost_heaviest_subtree parent_frontier_capacity; do
+    wlout=$(env \
+      WOLFRAM_BASE="${WOLFRAM_BASE:-/usr/share/Wolfram}" \
+      WOLFRAM_LOCALBASE="${WOLFRAM_LOCALBASE:-${HOME}/.Wolfram/Objects}" \
+      WOLFRAM_USERBASE="${WOLFRAM_USERBASE:-${HOME}/.Wolfram}" \
+      "${WL_RUN[@]}" "$WL_DIR/${wolfram_witness}.wl" 2>&1); wlrc=$?
+    printf '== %s ==\n%s\n' "$wolfram_witness" "$wlout" >>"$LOG_DIR/fc_wolfram.log"
+    if grep -qiE 'no valid password|cannot find a valid password' <<<"$wlout"; then
+      wolfram_license_unavailable=1
+      break
+    elif [[ $wlrc -ne 0 ]] || ! grep -q "SELF-TEST: PASS" <<<"$wlout"; then
+      wolfram_ok=0
+      break
+    fi
+  done
+  if [[ "$wolfram_license_unavailable" == "1" ]]; then
     skip "Wolfram CLI kernel ($WL_BIN) license is currently unavailable (details: $LOG_DIR/fc_wolfram.log)"
-  elif [[ $wlrc -eq 0 ]]; then
-    pass "Wolfram ghost_heaviest_subtree.wl via $WL_BIN (greedy head + exact concurrent frontier; unsafe global-leaf rule rejected)"
+  elif [[ "$wolfram_ok" == "1" ]]; then
+    pass "Wolfram fork-choice witnesses via $WL_BIN (greedy GHOST, asynchronous terminal frontier, and 245700 exact-capacity decisions)"
   else
-    fail "Wolfram ghost_heaviest_subtree.wl errored under $WL_BIN (see $LOG_DIR/fc_wolfram.log)"
+    fail "Wolfram fork-choice witness errored or omitted its PASS marker under $WL_BIN (see $LOG_DIR/fc_wolfram.log)"
   fi
 fi
 

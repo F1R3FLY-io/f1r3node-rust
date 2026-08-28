@@ -18,7 +18,8 @@ use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, Justification, ProcessedDeploy, ProcessedSystemDeploy,
+    BlockMessage, Bond, FinalizationCertificate, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -27,6 +28,63 @@ use shared::rust::store::key_value_store::KvStoreError;
 fn default_state_hash() -> StateHash { vec![0; models::rust::block_hash::LENGTH].into() }
 
 fn default_validator() -> Validator { vec![2; models::rust::validator::LENGTH].into() }
+
+fn generated_genesis_certificate(
+    genesis: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+) -> FinalizationCertificate {
+    casper::rust::finality::certificate::genesis_finalization_certificate(
+        dag,
+        genesis,
+        genesis.header.version,
+        genesis.shard_id.clone(),
+        0,
+        1_000_000,
+    )
+    .unwrap()
+}
+
+fn generated_candidate_context_digest(
+    block: &BlockMessage,
+    genesis: &BlockMessage,
+    dag: &KeyValueDagRepresentation,
+) -> BlockHash {
+    let authority = dag.lookup_unsafe(&genesis.block_hash).unwrap();
+    let justifications = block
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let exact_latest_messages = authority
+        .active_validator_set
+        .iter()
+        .map(|validator| {
+            let latest = justifications
+                .get(validator)
+                .cloned()
+                .or_else(|| {
+                    dag.latest_message(validator)
+                        .unwrap()
+                        .map(|metadata| metadata.block_hash)
+                })
+                .unwrap_or_else(|| genesis.block_hash.clone());
+            (validator.clone(), latest)
+        })
+        .collect::<BTreeMap<_, _>>();
+    CertifiedConsensusContext::for_parents(
+        dag,
+        &block.header.parents_hash_list,
+        &exact_latest_messages,
+    )
+    .unwrap()
+    .digest()
+    .clone()
+}
 
 pub async fn certified_fork_choice(
     estimator: &Estimator,
@@ -334,6 +392,12 @@ pub fn create_genesis_block(
         .insert_indexed(&genesis, &genesis, false)
         .unwrap();
 
+    let dag = indexed_block_dag_storage.get_representation().unwrap();
+    dag.put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
+        .unwrap();
+    dag.put_cached_frontier(genesis.block_hash.clone(), genesis.block_hash.clone())
+        .unwrap();
+
     block_store
         .put(genesis.block_hash.clone(), &modified_block)
         .unwrap();
@@ -413,7 +477,7 @@ pub fn create_block_with_system_deploys_at(
     let seq_num = seq_num.unwrap_or(0);
     let invalid = invalid.unwrap_or(false);
 
-    let block = build_block_with_system_deploys(
+    let mut block = build_block_with_system_deploys(
         parents_hash_list,
         Some(creator),
         time_stamp,
@@ -427,9 +491,29 @@ pub fn create_block_with_system_deploys_at(
         system_deploys,
     );
 
+    if block.header.version >= casper::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
+        let dag = indexed_block_dag_storage.get_representation().unwrap();
+        let certificate = generated_genesis_certificate(genesis, &dag);
+        let context_digest = generated_candidate_context_digest(&block, genesis, &dag);
+        block.header.finalized_floor = Some(certificate.commitment(context_digest));
+        block.finalized_floor_certificate = Some(certificate);
+    }
+
     let modified_block = indexed_block_dag_storage
         .insert_indexed(&block, genesis, invalid)
         .unwrap();
+
+    let dag = indexed_block_dag_storage.get_representation().unwrap();
+    dag.put_cached_floor(
+        modified_block.block_hash.clone(),
+        genesis.block_hash.clone(),
+    )
+    .unwrap();
+    dag.put_cached_frontier(
+        modified_block.block_hash.clone(),
+        genesis.block_hash.clone(),
+    )
+    .unwrap();
 
     block_store
         .put(block.block_hash.clone(), &modified_block)

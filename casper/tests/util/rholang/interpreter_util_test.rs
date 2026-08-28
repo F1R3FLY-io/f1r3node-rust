@@ -187,6 +187,7 @@ impl TestContext {
             },
             consensus_context:
                 casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
+            finalized_floor_certificate: None,
         }
     }
 

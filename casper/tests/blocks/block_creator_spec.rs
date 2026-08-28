@@ -114,6 +114,7 @@ fn create_snapshot(
         on_chain_state,
         consensus_context:
             casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
+        finalized_floor_certificate: None,
     };
     seed_finalized_boundary(&mut snapshot, block_store);
     snapshot

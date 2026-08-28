@@ -130,10 +130,10 @@ pub async fn read_on_chain_fault_tolerance_threshold(
 /// Compares the on-chain token metadata against the node's local config.
 /// Returns `Err` with a descriptive message if any field disagrees.
 ///
-/// This is called once after the node transitions to Running state. A mismatch
-/// means the operator's config does not reflect the values baked into this
-/// chain's genesis block; the safest behaviour is to abort the node so the
-/// API never reports misleading values to clients.
+/// This is called before a joining node constructs Casper or publishes the
+/// Running state. A mismatch means the operator's config does not reflect the
+/// values baked into this chain's genesis block, so startup fails before APIs
+/// or consensus tasks can observe the node as ready.
 pub async fn verify_token_metadata_matches_config(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,

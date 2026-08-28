@@ -1,6 +1,7 @@
 # Sage cross-witness (symbolic CAS) of the finalized-floor FT-threshold algebra
 # and finalization monotonicity — the third leg of the multi-prover gate
-# (Wolfram primary; Z3 + Sage cross-witness) confirming the Rocq L-ANC/L-SNAP.
+# (Rocq authoritative; Sage, Z3, and Wolfram independent cross-witnesses)
+# confirming the L-ANC/L-SNAP algebra.
 var('q S num den awA awD')
 
 # 1. A9 exact-integer FT-threshold equivalence. Multiplying (2q-S)/S >= num/den

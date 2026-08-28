@@ -12,6 +12,9 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use tracing::{debug, info};
 
+use crate::rust::engine::finalization_certificate_retriever::{
+    CertificateRequestOutcome, FinalizationCertificateRetriever,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC,
@@ -84,6 +87,7 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     peer_requery_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
     retry_attempts_by_hash: Arc<Mutex<HashMap<BlockHash, u32>>>,
     retry_budget_quarantine_until: Arc<Mutex<HashMap<BlockHash, u64>>>,
+    finalization_certificate_retriever: FinalizationCertificateRetriever<T>,
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
@@ -361,6 +365,11 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         connections_cell: ConnectionsCell,
         conf: RPConf,
     ) -> Self {
+        let finalization_certificate_retriever = FinalizationCertificateRetriever::new(
+            transport.clone(),
+            connections_cell.clone(),
+            conf.clone(),
+        );
         Self {
             requested_blocks,
             dependency_recovery_last_request: Arc::new(Mutex::new(HashMap::new())),
@@ -369,10 +378,43 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             peer_requery_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
             retry_attempts_by_hash: Arc::new(Mutex::new(HashMap::new())),
             retry_budget_quarantine_until: Arc::new(Mutex::new(HashMap::new())),
+            finalization_certificate_retriever,
             transport,
             connections_cell,
             conf,
         }
+    }
+
+    pub async fn request_finalization_certificate(
+        &self,
+        digest: BlockHash,
+    ) -> Result<CertificateRequestOutcome, CasperError> {
+        self.finalization_certificate_retriever
+            .request(digest)
+            .await
+    }
+
+    pub fn finalization_certificate_response_is_expected(
+        &self,
+        digest: &BlockHash,
+    ) -> Result<bool, CasperError> {
+        self.finalization_certificate_retriever
+            .response_is_expected(digest)
+    }
+
+    pub fn complete_finalization_certificate_request(
+        &self,
+        digest: &BlockHash,
+    ) -> Result<(), CasperError> {
+        self.finalization_certificate_retriever.complete(digest)
+    }
+
+    pub fn retain_active_finalization_certificate_requests(
+        &self,
+        active: &HashSet<BlockHash>,
+    ) -> Result<(), CasperError> {
+        self.finalization_certificate_retriever
+            .retain_active(active)
     }
 
     fn has_exceeded_retry_budget(&self, hash: &BlockHash) -> Result<bool, CasperError> {
@@ -827,6 +869,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             state.keys().cloned().collect()
         };
 
+        let mut first_dispatch_error = None;
+
         // Process each hash
         for hash in hashes_to_process {
             // Get the current state for this hash
@@ -901,7 +945,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     continue;
                 }
 
-                let did_retry = self.try_rerequest(&hash).await?;
+                let did_retry = match self.try_rerequest(&hash).await {
+                    Ok(did_retry) => did_retry,
+                    Err(error) => {
+                        first_dispatch_error.get_or_insert(error);
+                        continue;
+                    }
+                };
                 if did_retry {
                     self.register_retry_attempt(&hash)?;
                     metrics::counter!(BLOCK_REQUESTS_RETRIES_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE).increment(1);
@@ -938,8 +988,11 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         self.sweep_orphaned_aux_tracking()?;
         self.sweep_expired_retry_budget_quarantine(current_time)?;
         self.update_aux_tracking_metrics()?;
+        if let Err(error) = self.finalization_certificate_retriever.request_all().await {
+            first_dispatch_error.get_or_insert(error);
+        }
 
-        Ok(())
+        first_dispatch_error.map_or(Ok(()), Err)
     }
 
     /// Force dependency recovery by reopening request state and rebroadcasting HasBlockRequest.
@@ -1418,8 +1471,10 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
 #[cfg(test)]
 mod tests {
+    use comm::rust::errors::CommError;
     use comm::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::{Connections, ConnectionsCell};
+    use comm::rust::rp::protocol_helper;
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
     use prost::bytes::Bytes;
 
@@ -1436,6 +1491,65 @@ mod tests {
                 udp_port: port as u32,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn failed_block_retry_does_not_suppress_certificate_maintenance() {
+        let local = peer_node("local", 40400);
+        let rp_conf = create_rp_conf_ask(local.clone(), None, None);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(Connections::from_vec(vec![local]))),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever = BlockRetriever::new(
+            requested_blocks,
+            transport.clone(),
+            connections_cell,
+            rp_conf,
+        );
+        let block_hash = Bytes::from(vec![1; models::rust::block_hash::LENGTH]);
+        let certificate_digest = Bytes::from(vec![2; models::rust::block_hash::LENGTH]);
+        let stale = BlockRetriever::<TransportLayerStub>::create_timed_out_timestamp(
+            Duration::from_secs(2),
+        );
+        block_retriever
+            .set_request_state_for_test(block_hash.clone(), RequestState {
+                timestamp: stale,
+                initial_timestamp: stale,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: Vec::new(),
+                peer_requery_cursor: 0,
+            })
+            .await
+            .unwrap();
+        block_retriever
+            .request_finalization_certificate(certificate_digest.clone())
+            .await
+            .unwrap();
+        block_retriever
+            .finalization_certificate_retriever
+            .make_retry_ready(&certificate_digest)
+            .unwrap();
+        transport.reset();
+        transport.set_responses(|_, _| Err(CommError::TimeOut));
+
+        assert!(block_retriever
+            .request_all(Duration::from_millis(1))
+            .await
+            .is_err());
+        let packet_types = transport
+            .get_all_requests()
+            .into_iter()
+            .map(|request| protocol_helper::to_packet(&request.msg).unwrap().type_id)
+            .collect::<HashSet<_>>();
+        assert!(packet_types.contains("HasBlockRequest"));
+        assert!(packet_types.contains("FinalizationCertificateRequest"));
+        assert!(block_retriever
+            .finalization_certificate_response_is_expected(&certificate_digest)
+            .unwrap());
     }
 
     #[tokio::test]

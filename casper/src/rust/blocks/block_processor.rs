@@ -72,6 +72,20 @@ static CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG: OnceLock<u64> = OnceLock::new();
 static MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
 static MISSING_DEPENDENCY_QUARANTINE_MS_CFG: OnceLock<u64> = OnceLock::new();
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum CasperDependency {
+    Block(BlockHash),
+    FinalizationCertificate(BlockHash),
+}
+
+impl CasperDependency {
+    fn bytes(&self) -> &BlockHash {
+        match self {
+            Self::Block(hash) | Self::FinalizationCertificate(hash) => hash,
+        }
+    }
+}
+
 fn casper_buffer_max_approx_nodes() -> usize {
     *CASPER_BUFFER_MAX_APPROX_NODES_CFG.get_or_init(|| {
         env::var_or(
@@ -457,7 +471,15 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
 
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
     pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        self.block_store.put_block_message(block)?;
+        if block.header.version >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+            && block.header.finalized_floor.is_some()
+            && block.finalized_floor_certificate.is_none()
+        {
+            self.block_store
+                .put_block_message_awaiting_certificate(block)?;
+        } else {
+            self.block_store.put_block_message(block)?;
+        }
         Ok(())
     }
 
@@ -474,30 +496,57 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         &self,
         _casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
-    ) -> Result<(bool, HashSet<BlockHash>, HashSet<BlockHash>), CasperError> {
+    ) -> Result<(bool, HashSet<CasperDependency>, HashSet<CasperDependency>), CasperError> {
         let dag = self.block_dag_storage.get_representation()?;
-        let (deps_validated, deps_missing) =
-            proto_util::dependency_metadata_partition(block, &dag)?;
-
-        let deps_in_buffer_all: Vec<BlockHash> = {
-            deps_missing
-                .iter()
-                .filter_map(|dep| {
-                    let block_hash_serde = BlockHashSerde(dep.clone());
-                    if self.casper_buffer.contains(&block_hash_serde)
-                        || self.casper_buffer.is_pendant(&block_hash_serde)
-                    {
-                        Some(dep.clone())
-                    } else {
+        let mut block_with_certificate = block.clone();
+        let missing_certificate = if block.header.version
+            >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+            && block.finalized_floor_certificate.is_none()
+        {
+            match block.header.finalized_floor.as_ref() {
+                Some(commitment) => match self
+                    .block_store
+                    .get_finalization_certificate(&commitment.certificate_digest)?
+                {
+                    Some(certificate) => {
+                        block_with_certificate.finalized_floor_certificate = Some(certificate);
                         None
                     }
-                })
-                .collect()
+                    None => Some(commitment.certificate_digest.clone()),
+                },
+                None => None,
+            }
+        } else {
+            None
         };
+        let (deps_validated, deps_missing) =
+            proto_util::dependency_metadata_partition(&block_with_certificate, &dag)?;
+
+        let mut missing: HashSet<CasperDependency> = deps_missing
+            .into_iter()
+            .map(CasperDependency::Block)
+            .collect();
+        if let Some(digest) = missing_certificate {
+            missing.insert(CasperDependency::FinalizationCertificate(digest));
+        }
+
+        let deps_in_buffer_all: Vec<CasperDependency> = missing
+            .iter()
+            .filter(|dependency| match dependency {
+                CasperDependency::Block(hash) => {
+                    let hash = BlockHashSerde(hash.clone());
+                    self.casper_buffer.contains(&hash) || self.casper_buffer.is_pendant(&hash)
+                }
+                CasperDependency::FinalizationCertificate(digest) => self
+                    .casper_buffer
+                    .requested_as_certificate_dependency(&BlockHashSerde(digest.clone())),
+            })
+            .cloned()
+            .collect();
 
         let deps_in_buffer = deps_in_buffer_all;
 
-        let deps_to_fetch: Vec<BlockHash> = deps_missing
+        let deps_to_fetch: Vec<CasperDependency> = missing
             .iter()
             .filter(|&dep| !deps_in_buffer.contains(dep))
             .cloned()
@@ -512,13 +561,13 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
                 PrettyPrinter::build_string_hashes(
                     &deps_to_fetch
                         .iter()
-                        .map(|h| h.as_ref().to_vec())
+                        .map(|dependency| dependency.bytes().to_vec())
                         .collect::<Vec<_>>()
                 ),
                 PrettyPrinter::build_string_hashes(
                     &deps_in_buffer
                         .iter()
-                        .map(|h| h.as_ref().to_vec())
+                        .map(|dependency| dependency.bytes().to_vec())
                         .collect::<Vec<_>>()
                 ),
                 PrettyPrinter::build_string_hashes(
@@ -532,8 +581,8 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
 
         Ok((
             ready,
-            deps_to_fetch.into_iter().collect::<HashSet<BlockHash>>(),
-            deps_in_buffer.into_iter().collect::<HashSet<BlockHash>>(),
+            deps_to_fetch.into_iter().collect(),
+            deps_in_buffer.into_iter().collect(),
         ))
     }
 
@@ -541,7 +590,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     pub async fn commit_to_buffer(
         &self,
         block: &BlockMessage,
-        deps: Option<HashSet<BlockHash>>,
+        deps: Option<HashSet<CasperDependency>>,
     ) -> Result<(), CasperError> {
         match deps {
             None => {
@@ -550,10 +599,16 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
             }
             Some(dependencies) => {
                 let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-                dependencies.iter().try_for_each(|dep| {
-                    let dep_serde = BlockHashSerde(dep.clone());
-                    self.casper_buffer
-                        .add_relation(dep_serde, block_hash_serde.clone())
+                dependencies.iter().try_for_each(|dep| match dep {
+                    CasperDependency::Block(hash) => self
+                        .casper_buffer
+                        .add_relation(BlockHashSerde(hash.clone()), block_hash_serde.clone()),
+                    CasperDependency::FinalizationCertificate(digest) => {
+                        self.casper_buffer.add_certificate_relation(
+                            BlockHashSerde(digest.clone()),
+                            block_hash_serde.clone(),
+                        )
+                    }
                 })?;
             }
         }
@@ -765,32 +820,56 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
     /// Equivalent to Scala's: requestMissingDependencies = (deps: Set[BlockHash]) => { ... }
     pub async fn request_missing_dependencies(
         &self,
-        deps: &HashSet<BlockHash>,
+        deps: &HashSet<CasperDependency>,
     ) -> Result<(), CasperError> {
+        let mut first_error = None;
         for dep in deps {
-            self.block_retriever
-                .admit_hash(
-                    dep.clone(),
-                    None,
-                    AdmitHashReason::MissingDependencyRequested,
-                )
-                .await?;
+            let result = match dep {
+                CasperDependency::Block(hash) => self
+                    .block_retriever
+                    .admit_hash(
+                        hash.clone(),
+                        None,
+                        AdmitHashReason::MissingDependencyRequested,
+                    )
+                    .await
+                    .map(|_| ()),
+                CasperDependency::FinalizationCertificate(digest) => self
+                    .block_retriever
+                    .request_finalization_certificate(digest.clone())
+                    .await
+                    .map(|_| ()),
+            };
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
+            }
         }
-
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Recovery helper for deadlock scenarios where dependencies remain in CasperBuffer
     /// but there are no newly discovered hashes to fetch.
     pub async fn recover_stale_buffer_dependencies(
         &self,
-        deps: &HashSet<BlockHash>,
+        deps: &HashSet<CasperDependency>,
     ) -> Result<(), CasperError> {
+        let mut first_error = None;
         for dep in deps {
-            self.block_retriever.recover_dependency(dep.clone()).await?;
+            let result = match dep {
+                CasperDependency::Block(hash) => {
+                    self.block_retriever.recover_dependency(hash.clone()).await
+                }
+                CasperDependency::FinalizationCertificate(digest) => self
+                    .block_retriever
+                    .request_finalization_certificate(digest.clone())
+                    .await
+                    .map(|_| ()),
+            };
+            if let Err(error) = result {
+                first_error.get_or_insert(error);
+            }
         }
-
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     pub async fn recover_after_local_validation_fault(

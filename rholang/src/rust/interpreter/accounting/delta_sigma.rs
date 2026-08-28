@@ -1493,6 +1493,64 @@ mod tests {
     }
 
     #[test]
+    fn empty_signed_region_retains_one_unit_layer_demand() {
+        let signature = wire_ground(7);
+        let DemandBound::FiniteUpperBound { bound, .. } =
+            demand_bound(&signed(Par::default(), signature.clone()), &atom(1))
+        else {
+            panic!("finite bound expected")
+        };
+        assert_eq!(
+            bound.get(&cost_signature_to_sig(&signature).unwrap().lane_hash()),
+            1,
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn conditional_reserves_componentwise_maximum_for_isolated_purses(
+            left_true in 0usize..64,
+            right_true in 0usize..64,
+            left_false in 0usize..64,
+            right_false in 0usize..64,
+        ) {
+            let left = wire_ground(7);
+            let right = wire_ground(8);
+            let branch = |left_count, right_count| {
+                let mut par = signed(par_with_sends(left_count), left.clone());
+                par.cost_signed_terms.extend(
+                    signed(par_with_sends(right_count), right.clone()).cost_signed_terms,
+                );
+                par
+            };
+            let par = Par {
+                conditionals: vec![If {
+                    condition: Some(Par::default()),
+                    if_true: Some(branch(left_true, right_true)),
+                    if_false: Some(branch(left_false, right_false)),
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                }],
+                ..Par::default()
+            };
+            let DemandBound::FiniteUpperBound { bound, .. } = demand_bound(&par, &atom(1)) else {
+                prop_assert!(false, "finite bound expected");
+                return Ok(());
+            };
+            let left_lane = cost_signature_to_sig(&left).unwrap().lane_hash();
+            let right_lane = cost_signature_to_sig(&right).unwrap().lane_hash();
+            prop_assert_eq!(
+                bound.get(&left_lane),
+                left_true.max(left_false).max(1) as u64,
+            );
+            prop_assert_eq!(
+                bound.get(&right_lane),
+                right_true.max(right_false).max(1) as u64,
+            );
+        }
+    }
+
+    #[test]
     fn match_reserves_maximum_alternative() {
         let make_case = |sends| MatchCase {
             pattern: Some(Par::default()),

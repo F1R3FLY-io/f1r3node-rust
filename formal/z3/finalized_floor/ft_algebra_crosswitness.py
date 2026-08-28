@@ -2,8 +2,8 @@
 # Z3 cross-witness for the finalized-floor numeric claims that underlie the Rocq
 # theorems (CliqueOracle.L_ANC / L_SNAP, Merge determinism) and the A9 exact-
 # integer FT-threshold hardening. Independent confirmation = the multi-prover gate
-# (Wolfram primary; Z3 + Sage cross-witness). Each claim is proved by showing its
-# negation is UNSAT.
+# (Rocq authoritative; Z3, Sage, and Wolfram independent cross-witnesses). Each
+# claim is proved by showing its negation is UNSAT.
 from z3 import *
 
 ok = True
