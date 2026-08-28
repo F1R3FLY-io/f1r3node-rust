@@ -4,6 +4,8 @@ use std::convert::Infallible;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use proptest::prelude::*;
+
 use super::checkpoint_wal::{
     SyntheticCheckpointSource, fixture as checkpoint_source_fixture,
     fixture_with_retained_union_cardinality,
@@ -315,6 +317,12 @@ struct CheckpointThenIncrementalImage {
 }
 
 fn checkpoint_then_incremental_image() -> CheckpointThenIncrementalImage {
+    checkpoint_then_incremental_image_with_identity("after-checkpoint")
+}
+
+fn checkpoint_then_incremental_image_with_identity(
+    identity: &str,
+) -> CheckpointThenIncrementalImage {
     let source = checkpoint_source_fixture();
     let store_id = StoreId::from_array([0x91; 16]);
     let checkpoint_sequence = LogPackSequence::FIRST;
@@ -373,7 +381,7 @@ fn checkpoint_then_incremental_image() -> CheckpointThenIncrementalImage {
     .unwrap();
     pack.extend_from_slice(checkpoint_commit.canonical_bytes());
 
-    let mutation = data_batch(source.descriptor.state(), "after-checkpoint");
+    let mutation = data_batch(source.descriptor.state(), identity);
     let sealed = seal_data(&store, &mutation);
     let object_plan = LogPackObjectPlanV1::classify(&sealed, &KnownObjects(known)).unwrap();
     let incremental_sequence = checkpoint_sequence.successor().unwrap();
@@ -925,6 +933,80 @@ fn incremental_history_continues_from_checkpoint_state_and_index() {
     assert_eq!(observed, image.records);
     assert_eq!(recovered.expected_index_tail(), image.canonical_index.len() as u64);
     assert_eq!(recovered.scanned_bytes(), image.pack.len() as u64);
+}
+
+#[test]
+fn incremental_prepare_recovery_never_requests_a_record_sized_buffer() {
+    let image = checkpoint_then_incremental_image_with_identity(&"w".repeat(100_000));
+    let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
+    let reads = Arc::clone(&provider.reader.reads);
+    let token = token_with_slot(image.catalog, false);
+    scan_catalog_authorized_pack_chain(
+        &mut provider,
+        &token,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        |_| Ok(()),
+    )
+    .unwrap()
+    .verify_catalog(token)
+    .unwrap();
+
+    let maximum_read = reads
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, length)| *length)
+        .max()
+        .unwrap();
+    assert!(
+        maximum_read <= 64 * 1024,
+        "kind-1 recovery requested {maximum_read} bytes; the formal bound is 64 KiB",
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+
+    #[test]
+    fn incremental_prepare_recovery_is_bounded_and_exact(
+        identity_len in 1_usize..=131_072,
+    ) {
+        let image = checkpoint_then_incremental_image_with_identity(&"p".repeat(identity_len));
+        let mut provider = MemoryProvider::new(PackId::GENESIS, Arc::clone(&image.pack));
+        let reads = Arc::clone(&provider.reader.reads);
+        let token = token_with_slot(image.catalog, false);
+        let mut observed = Vec::new();
+        let recovered = scan_catalog_authorized_pack_chain(
+            &mut provider,
+            &token,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            |record| {
+                observed.push(record);
+                Ok(())
+            },
+        )
+        .unwrap()
+        .verify_catalog(token)
+        .unwrap();
+
+        let maximum_read = reads
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, length)| *length)
+            .max()
+            .unwrap();
+        prop_assert!(maximum_read <= 64 * 1024);
+        prop_assert_eq!(observed, image.records);
+        prop_assert_eq!(recovered.transactions(), 1);
+        prop_assert_eq!(recovered.checkpoints(), 1);
+        prop_assert_eq!(recovered.state(), image.catalog.state());
+        prop_assert_eq!(recovered.terminal_address(), image.catalog.commit_address());
+        prop_assert_eq!(recovered.expected_index_tail(), image.canonical_index.len() as u64);
+        prop_assert_eq!(recovered.object_records(), image.object_records);
+    }
 }
 
 #[test]

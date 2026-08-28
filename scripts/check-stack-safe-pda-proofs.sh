@@ -45,6 +45,32 @@ if [[ "$generation_checkpoint_closed_capstones" != "17" ]]; then
   echo "stack-safe-pda: expected all seventeen generation-checkpoint Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
   exit 1
 fi
+incremental_prepare_streaming_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/IncrementalPrepareStreaming.v 2>&1
+)"
+printf '%s\n' "$incremental_prepare_streaming_rocq_output"
+incremental_prepare_streaming_closed_capstones="$({
+  printf '%s\n' "$incremental_prepare_streaming_rocq_output" | \
+    grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$incremental_prepare_streaming_closed_capstones" != "12" ]]; then
+  echo "stack-safe-pda: expected all twelve incremental-PREPARE Rocq capstones to be closed; got $incremental_prepare_streaming_closed_capstones" >&2
+  exit 1
+fi
+streaming_codec_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/StreamingCodecPDA.v 2>&1
+)"
+printf '%s\n' "$streaming_codec_rocq_output"
+streaming_codec_closed_capstones="$({
+  printf '%s\n' "$streaming_codec_rocq_output" | \
+    grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$streaming_codec_closed_capstones" != "20" ]]; then
+  echo "stack-safe-pda: expected all twenty streaming-codec Rocq capstones to be closed; got $streaming_codec_closed_capstones" >&2
+  exit 1
+fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
@@ -112,6 +138,10 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/channel_image_cursor.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rspace_canonical_egress.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/incremental_prepare_streaming.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/streaming_codec_pda.rs"
 
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
@@ -333,6 +363,163 @@ do
   if ! grep -q "Invariant ${generation_checkpoint_invariant} is violated" \
       <<<"$generation_checkpoint_output"; then
     echo "stack-safe-pda: ${generation_checkpoint_label} generation-checkpoint witness failed without ${generation_checkpoint_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceIncrementalPrepareStreaming.cfg \
+  RSpaceIncrementalPrepareStreaming.tla -cleanup
+for incremental_prepare_mutant in \
+  "whole-record-buffer:RSpaceIncrementalPrepareStreamingWholeRecordBufferMutant.cfg:NoWholeRecordBuffer" \
+  "record-sized-scratch:RSpaceIncrementalPrepareStreamingScratchRecordMutant.cfg:ScratchIsBounded" \
+  "read-before-admission:RSpaceIncrementalPrepareStreamingReadBeforeAdmissionMutant.cfg:VariableReadsFollowAdmission" \
+  "accept-minus-one:RSpaceIncrementalPrepareStreamingAcceptMinusOneMutant.cfg:MinusOneIsRejectedBeforeVariableRead" \
+  "reject-exact:RSpaceIncrementalPrepareStreamingRejectExactMutant.cfg:ExactBoundaryIsNotRejected" \
+  "cursor-off-by-one:RSpaceIncrementalPrepareStreamingCursorOffByOneMutant.cfg:CursorProgressIsExact" \
+  "incomplete-transcript:RSpaceIncrementalPrepareStreamingIncompleteTranscriptMutant.cfg:AuthenticationTranscriptIsExact" \
+  "semantic-before-crc:RSpaceIncrementalPrepareStreamingSemanticBeforeCrcMutant.cfg:CrcDominatesSemanticError" \
+  "drop-semantic-error:RSpaceIncrementalPrepareStreamingDropSemanticErrorMutant.cfg:OutcomeRefinesContiguousOracle" \
+  "wrong-identity:RSpaceIncrementalPrepareStreamingWrongIdentityMutant.cfg:AcceptedIdentityIsExact" \
+  "skip-commit-binding:RSpaceIncrementalPrepareStreamingSkipCommitBindingMutant.cfg:NoPrivateIndexBeforeCommitBinding" \
+  "skip-chain-binding:RSpaceIncrementalPrepareStreamingSkipChainBindingMutant.cfg:NoPrivateIndexBeforeChainBinding" \
+  "swap-replay-layouts:RSpaceIncrementalPrepareStreamingSwapReplayLayoutsMutant.cfg:ReplayTranscriptMatchesFirstPass" \
+  "skip-replay-transcript:RSpaceIncrementalPrepareStreamingSkipReplayTranscriptMutant.cfg:ReplayTranscriptMatchesFirstPass" \
+  "accept-unstable-source:RSpaceIncrementalPrepareStreamingAcceptUnstableSourceMutant.cfg:StableSourceRequiredForSuccess" \
+  "early-index-exposure:RSpaceIncrementalPrepareStreamingEarlyIndexExposureMutant.cfg:NoIndexExposureBeforeAuthentication"
+do
+  incremental_prepare_label="${incremental_prepare_mutant%%:*}"
+  incremental_prepare_tail="${incremental_prepare_mutant#*:}"
+  incremental_prepare_cfg="${incremental_prepare_tail%%:*}"
+  incremental_prepare_invariant="${incremental_prepare_tail#*:}"
+  if incremental_prepare_output="$({
+    tlc_run "$tla_metadir" \
+      "$incremental_prepare_cfg" \
+      RSpaceIncrementalPrepareStreaming.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$incremental_prepare_output"
+    echo "stack-safe-pda: ${incremental_prepare_label} incremental-PREPARE mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$incremental_prepare_output"
+  if ! grep -q "Invariant ${incremental_prepare_invariant} is violated" \
+      <<<"$incremental_prepare_output"; then
+    echo "stack-safe-pda: ${incremental_prepare_label} incremental-PREPARE mutant failed without ${incremental_prepare_invariant}" >&2
+    exit 1
+  fi
+done
+for incremental_prepare_witness in \
+  "success:RSpaceIncrementalPrepareStreamingNeverSuccess.cfg:NeverSuccess" \
+  "header-rejection:RSpaceIncrementalPrepareStreamingNeverHeaderRejection.cfg:NeverHeaderRejection" \
+  "resource-rejection:RSpaceIncrementalPrepareStreamingNeverResourceRejection.cfg:NeverResourceRejection" \
+  "pair-rejection:RSpaceIncrementalPrepareStreamingNeverPairRejection.cfg:NeverPairRejection" \
+  "read-rejection:RSpaceIncrementalPrepareStreamingNeverReadRejection.cfg:NeverReadRejection" \
+  "crc-rejection:RSpaceIncrementalPrepareStreamingNeverCrcRejection.cfg:NeverCrcRejection" \
+  "mutation-rejection:RSpaceIncrementalPrepareStreamingNeverMutationRejection.cfg:NeverMutationRejection" \
+  "object-rejection:RSpaceIncrementalPrepareStreamingNeverObjectRejection.cfg:NeverObjectRejection" \
+  "commit-rejection:RSpaceIncrementalPrepareStreamingNeverCommitRejection.cfg:NeverCommitRejection" \
+  "chain-rejection:RSpaceIncrementalPrepareStreamingNeverChainRejection.cfg:NeverChainRejection" \
+  "source-rejection:RSpaceIncrementalPrepareStreamingNeverSourceRejection.cfg:NeverSourceRejection"
+do
+  incremental_prepare_label="${incremental_prepare_witness%%:*}"
+  incremental_prepare_tail="${incremental_prepare_witness#*:}"
+  incremental_prepare_cfg="${incremental_prepare_tail%%:*}"
+  incremental_prepare_invariant="${incremental_prepare_tail#*:}"
+  if incremental_prepare_output="$({
+    tlc_run "$tla_metadir" \
+      "$incremental_prepare_cfg" \
+      RSpaceIncrementalPrepareStreaming.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$incremental_prepare_output"
+    echo "stack-safe-pda: ${incremental_prepare_label} incremental-PREPARE non-vacuity witness was unreachable" >&2
+    exit 1
+  fi
+  printf '%s\n' "$incremental_prepare_output"
+  if ! grep -q "Invariant ${incremental_prepare_invariant} is violated" \
+      <<<"$incremental_prepare_output"; then
+    echo "stack-safe-pda: ${incremental_prepare_label} incremental-PREPARE witness failed without ${incremental_prepare_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceStreamingCodecPDA.cfg \
+  RSpaceStreamingCodecPDA.tla -cleanup
+for streaming_codec_mutant in \
+  "whole-input-buffer:RSpaceStreamingCodecPDAWholeInputBufferMutant.cfg:ScratchIsBounded" \
+  "whole-field-buffer:RSpaceStreamingCodecPDAWholeFieldBufferMutant.cfg:NoWholeFieldRetention" \
+  "read-before-limit:RSpaceStreamingCodecPDALimitAfterReadMutant.cfg:VariableReadsFollowAdmission" \
+  "per-section-limit:RSpaceStreamingCodecPDAPerSectionLimitMutant.cfg:OutcomeRefinesCodecOracle" \
+  "order-before-key-validation:RSpaceStreamingCodecPDAOrderBeforeKeyValidationMutant.cfg:OrderingFollowsKeyValidation" \
+  "noop-before-order:RSpaceStreamingCodecPDANoopBeforeOrderMutant.cfg:OutcomeRefinesCodecOracle" \
+  "trust-unstable-reread:RSpaceStreamingCodecPDATrustRereadMutant.cfg:RereadStabilityPrecedesOrderAuthority" \
+  "aggregate-after-fields:RSpaceStreamingCodecPDAAggregateAfterFieldsMutant.cfg:AggregatePrecedesFieldValidation" \
+  "skip-object-grammar:RSpaceStreamingCodecPDASkipObjectGrammarMutant.cfg:OutcomeRefinesCodecOracle" \
+  "accept-dangling-escape:RSpaceStreamingCodecPDAAcceptDanglingEscapeMutant.cfg:OutcomeRefinesCodecOracle" \
+  "any-escape-terminates:RSpaceStreamingCodecPDAAnyEscapeTerminatesMutant.cfg:OutcomeRefinesCodecOracle" \
+  "group-inside-frame:RSpaceStreamingCodecPDAGroupInsideFrameMutant.cfg:OutcomeRefinesCodecOracle" \
+  "accept-empty-continuation:RSpaceStreamingCodecPDAAcceptEmptyContinuationMutant.cfg:OutcomeRefinesCodecOracle" \
+  "accept-continuation-trailing:RSpaceStreamingCodecPDAAcceptContinuationTrailingMutant.cfg:OutcomeRefinesCodecOracle" \
+  "require-framed-datum-suffix:RSpaceStreamingCodecPDARequireFramedDatumSuffixMutant.cfg:OutcomeRefinesCodecOracle" \
+  "require-framed-join-suffix:RSpaceStreamingCodecPDARequireFramedJoinSuffixMutant.cfg:OutcomeRefinesCodecOracle" \
+  "accept-equal-keys:RSpaceStreamingCodecPDAAcceptEqualKeysMutant.cfg:OutcomeRefinesCodecOracle" \
+  "compare-first-chunk-only:RSpaceStreamingCodecPDACompareFirstChunkOnlyMutant.cfg:OutcomeRefinesCodecOracle" \
+  "empty-before-trailing:RSpaceStreamingCodecPDAEmptyBeforeTrailingMutant.cfg:OutcomeRefinesCodecOracle"
+do
+  streaming_codec_label="${streaming_codec_mutant%%:*}"
+  streaming_codec_tail="${streaming_codec_mutant#*:}"
+  streaming_codec_cfg="${streaming_codec_tail%%:*}"
+  streaming_codec_invariant="${streaming_codec_tail#*:}"
+  if streaming_codec_output="$({
+    tlc_run "$tla_metadir" \
+      "$streaming_codec_cfg" \
+      RSpaceStreamingCodecPDA.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$streaming_codec_output"
+    echo "stack-safe-pda: ${streaming_codec_label} streaming-codec mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$streaming_codec_output"
+  if ! grep -q "Invariant ${streaming_codec_invariant} is violated" \
+      <<<"$streaming_codec_output"; then
+    echo "stack-safe-pda: ${streaming_codec_label} streaming-codec mutant failed without ${streaming_codec_invariant}" >&2
+    exit 1
+  fi
+done
+for streaming_codec_witness in \
+  "datum-success:RSpaceStreamingCodecPDANeverDatumSuccess.cfg:NeverDatumSuccess" \
+  "continuation-success:RSpaceStreamingCodecPDANeverContinuationSuccess.cfg:NeverContinuationSuccess" \
+  "join-success:RSpaceStreamingCodecPDANeverJoinSuccess.cfg:NeverJoinSuccess" \
+  "mutation-success:RSpaceStreamingCodecPDANeverMutationSuccess.cfg:NeverMutationSuccess" \
+  "dag-success:RSpaceStreamingCodecPDANeverDagSuccess.cfg:NeverDagSuccess" \
+  "blob-success:RSpaceStreamingCodecPDANeverBlobSuccess.cfg:NeverBlobSuccess" \
+  "semantic-success:RSpaceStreamingCodecPDANeverSemanticSuccess.cfg:NeverSemanticSuccess" \
+  "accelerator-success:RSpaceStreamingCodecPDANeverAcceleratorSuccess.cfg:NeverAcceleratorSuccess" \
+  "retention-success:RSpaceStreamingCodecPDANeverRetentionSuccess.cfg:NeverRetentionSuccess" \
+  "frame-rejection:RSpaceStreamingCodecPDANeverFrameRejection.cfg:NeverFrameRejection" \
+  "group-rejection:RSpaceStreamingCodecPDANeverGroupRejection.cfg:NeverGroupRejection" \
+  "resource-rejection:RSpaceStreamingCodecPDANeverResourceRejection.cfg:NeverResourceRejection" \
+  "key-rejection:RSpaceStreamingCodecPDANeverKeyRejection.cfg:NeverKeyRejection" \
+  "order-rejection:RSpaceStreamingCodecPDANeverOrderRejection.cfg:NeverOrderRejection" \
+  "source-rejection:RSpaceStreamingCodecPDANeverSourceRejection.cfg:NeverSourceRejection" \
+  "aggregate-rejection:RSpaceStreamingCodecPDANeverAggregateRejection.cfg:NeverAggregateRejection" \
+  "field-rejection:RSpaceStreamingCodecPDANeverFieldRejection.cfg:NeverFieldRejection"
+do
+  streaming_codec_label="${streaming_codec_witness%%:*}"
+  streaming_codec_tail="${streaming_codec_witness#*:}"
+  streaming_codec_cfg="${streaming_codec_tail%%:*}"
+  streaming_codec_invariant="${streaming_codec_tail#*:}"
+  if streaming_codec_output="$({
+    tlc_run "$tla_metadir" \
+      "$streaming_codec_cfg" \
+      RSpaceStreamingCodecPDA.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$streaming_codec_output"
+    echo "stack-safe-pda: ${streaming_codec_label} streaming-codec non-vacuity witness was unreachable" >&2
+    exit 1
+  fi
+  printf '%s\n' "$streaming_codec_output"
+  if ! grep -q "Invariant ${streaming_codec_invariant} is violated" \
+      <<<"$streaming_codec_output"; then
+    echo "stack-safe-pda: ${streaming_codec_label} streaming-codec witness failed without ${streaming_codec_invariant}" >&2
     exit 1
   fi
 done

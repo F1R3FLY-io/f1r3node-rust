@@ -176,6 +176,21 @@ impl PrepareRecordIdentityV1 {
         }
     }
 
+    pub const fn from_streamed(
+        preflight: PrepareRecordPreflightV1,
+        digest: PhysicalDigest,
+        crc32c: u32,
+    ) -> Self {
+        Self {
+            sequence: preflight.sequence,
+            store_id: preflight.store_id,
+            receipt: preflight.receipt(),
+            record_len: preflight.record_len,
+            digest,
+            crc32c,
+        }
+    }
+
     pub const fn sequence(self) -> LogPackSequence { self.sequence }
 
     pub const fn store_id(self) -> StoreId { self.store_id }
@@ -611,6 +626,12 @@ struct PrepareHeaderV1 {
 /// mandatory after admission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepareRecordPreflightV1 {
+    sequence: LogPackSequence,
+    store_id: StoreId,
+    base: StateVersionV1,
+    target: StateVersionV1,
+    profile_id: SemanticProfileId,
+    mutation_digest: ObjectDigest,
     record_len: u64,
     mutation_len: u64,
     object_count: u64,
@@ -618,6 +639,27 @@ pub struct PrepareRecordPreflightV1 {
 }
 
 impl PrepareRecordPreflightV1 {
+    pub const fn sequence(self) -> LogPackSequence { self.sequence }
+
+    pub const fn store_id(self) -> StoreId { self.store_id }
+
+    pub const fn base(self) -> StateVersionV1 { self.base }
+
+    pub const fn target(self) -> StateVersionV1 { self.target }
+
+    pub const fn profile_id(self) -> SemanticProfileId { self.profile_id }
+
+    pub const fn mutation_digest(self) -> ObjectDigest { self.mutation_digest }
+
+    pub const fn receipt(self) -> SealedTransitionV1 {
+        SealedTransitionV1::new_for_persistence(
+            self.base,
+            self.target,
+            self.mutation_digest,
+            self.profile_id,
+        )
+    }
+
     pub const fn record_len(self) -> u64 { self.record_len }
 
     pub const fn mutation_len(self) -> u64 { self.mutation_len }
@@ -648,6 +690,12 @@ pub fn preflight_prepare_record_v1(
 ) -> Result<PrepareRecordPreflightV1, LogPackFormatError> {
     let header = parse_prepare_header_v1(prefix, limits)?;
     Ok(PrepareRecordPreflightV1 {
+        sequence: header.sequence,
+        store_id: header.store_id,
+        base: header.base,
+        target: header.target,
+        profile_id: header.profile_id,
+        mutation_digest: header.mutation_digest,
         record_len: header.declared_len,
         mutation_len: header.mutation_len,
         object_count: header.object_count,
@@ -1088,6 +1136,13 @@ impl TransactionCommitViewV1 {
     pub fn verify_prepare(
         self,
         prepare: TransactionPrepareRecordViewV1<'_>,
+    ) -> Result<(), LogPackFormatError> {
+        self.verify_prepare_identity(PrepareRecordIdentityV1::from_record_view(prepare))
+    }
+
+    pub fn verify_prepare_identity(
+        self,
+        prepare: PrepareRecordIdentityV1,
     ) -> Result<(), LogPackFormatError> {
         if prepare.sequence() != self.sequence {
             return Err(LogPackFormatError::Sequence {

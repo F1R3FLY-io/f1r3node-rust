@@ -10,6 +10,7 @@ mod durable_publication;
 mod durable_recovery;
 mod durable_startup;
 mod index_codec;
+mod incremental_prepare_streaming_properties;
 mod manifest_codec;
 mod mutation_codec;
 mod object_codec;

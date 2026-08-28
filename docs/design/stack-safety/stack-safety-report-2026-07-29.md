@@ -11260,9 +11260,12 @@ full parallel suite.
 The final `rspace_plus_plus` library gate passes **392/392** in **52.20 s**. The complete package
 gate passes **817/817** in **4 min 36.055 s**, with **5.4 GiB** peak resident memory inside a 10 GiB
 hard cap, zero swap, and a ten-core quota. These results establish the stack, resource, publication,
-and recovery refinement of the dormant backend. They do not activate it beneath production RSpace,
-replace LMDB, finish compaction/reader-safe garbage collection, provide Windows-native authority
-handles, or constitute the required LMDB-versus-PathMap throughput and storage comparison.
+and recovery refinement of the dormant backend at the verified operation-phase abstraction. They do
+not yet establish the separately tracked byte-progress crash-I/O matrix for positive short writes,
+zero progress, interruptions, synchronization uncertainty, or power-loss removal of unsynchronized
+names. They also do not activate the backend beneath production RSpace, replace LMDB, finish
+compaction/reader-safe garbage collection, provide Windows-native authority handles, or constitute
+the required LMDB-versus-PathMap throughput and storage comparison.
 
 ---
 
