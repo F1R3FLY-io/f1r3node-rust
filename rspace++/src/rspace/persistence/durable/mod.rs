@@ -12,6 +12,7 @@ mod io;
 mod layout;
 mod limits;
 mod pack;
+mod publication;
 mod recovery;
 mod startup;
 
@@ -49,6 +50,14 @@ pub(crate) use io::{DurableIoFailpointV1, arm_durable_io_failpoint};
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
+pub(crate) use publication::{
+    GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
+};
+#[cfg(test)]
+pub(crate) use publication::{
+    GenerationCheckpointPublicationHookPointV1, arm_generation_checkpoint_publication_failpoint,
+    arm_generation_checkpoint_publication_hook,
+};
 pub(crate) use recovery::{
     CatalogPackProviderV1, DurableReadAt, RecoveryError, replay_catalog_authorized_pack_chain,
     scan_catalog_authorized_pack_chain,

@@ -1,0 +1,668 @@
+//! Affine publication of one self-contained durable RSpace generation.
+//!
+//! The publisher consumes the old semantically admitted writer authority. It
+//! first makes an exact successor pack and index durable, then performs the
+//! two-slot catalog compare-and-swap, and finally reconstructs authority by
+//! running the ordinary restart path through semantic admission. No success
+//! or error path can return the stale pre-publication writer.
+
+use std::fmt::{Display, Formatter};
+#[cfg(test)]
+use std::path::Path;
+
+use super::admission::{
+    AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
+    DurableAdmissionLimitsV1, DurableObjectReadErrorV1, SemanticallyAdmittedDurableWriterV1,
+    admit_physical_writer,
+};
+use super::catalog::{
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1,
+};
+use super::index::{
+    CanonicalIndexStreamV1, IndexFormatError, IndexGenerationV1,
+    PreparedGenerationCheckpointIndexV1, PreparedGenerationCheckpointIndexVisitErrorV1,
+};
+#[cfg(test)]
+use super::io::DurableIoOperation;
+use super::io::{
+    CatalogSlotIndexV1, DurableCanonicalAppendSinkV1, DurableIoError, DurableWriterLeaseV1,
+    FileLengthExpectation,
+};
+use super::limits::{DurableLimitError, DurableLimitKind, DurableLimits};
+use super::pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
+use super::startup::{DurableStartupErrorV1, recover_physical_with_lease_v1};
+use crate::rspace::persistence::canonical::CanonicalSink;
+use crate::rspace::persistence::durable::PACK_HEADER_LEN_V1;
+use crate::rspace::persistence::semantic::SemanticProfile;
+use crate::rspace::persistence::wal::{
+    GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
+    GenerationCheckpointPrepareIdentityV1, GenerationCheckpointPrepareWriteErrorV1, LogPackAddress,
+    LogPackDecodeLimits, LogPackFormatError, PackId, PreparedGenerationCheckpointV1,
+};
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenerationCheckpointPublicationHookPointV1 {
+    BeforeCatalogCompareAndSwap,
+    AfterPrepareSync,
+    AfterIndexSync,
+    AfterCommitSync,
+    AfterArtifactDirectorySync,
+    AfterCatalogSlotWrite,
+    AfterCatalogSyncBeforeRecovery,
+}
+
+#[cfg(test)]
+type GenerationCheckpointPublicationHookV1 =
+    (GenerationCheckpointPublicationHookPointV1, Box<dyn FnOnce() + 'static>);
+
+#[cfg(test)]
+thread_local! {
+    static GENERATION_CHECKPOINT_PUBLICATION_HOOK: std::cell::RefCell<
+        Option<GenerationCheckpointPublicationHookV1>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static GENERATION_CHECKPOINT_PUBLICATION_FAILPOINT: std::cell::Cell<
+        Option<GenerationCheckpointPublicationHookPointV1>,
+    > = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn arm_generation_checkpoint_publication_hook(
+    point: GenerationCheckpointPublicationHookPointV1,
+    hook: impl FnOnce() + 'static,
+) {
+    GENERATION_CHECKPOINT_PUBLICATION_HOOK.with(|armed| {
+        let previous = armed.borrow_mut().replace((point, Box::new(hook)));
+        assert!(previous.is_none(), "generation-checkpoint publication hook already armed");
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn arm_generation_checkpoint_publication_failpoint(
+    point: GenerationCheckpointPublicationHookPointV1,
+) {
+    assert!(
+        matches!(
+            point,
+            GenerationCheckpointPublicationHookPointV1::AfterPrepareSync |
+                GenerationCheckpointPublicationHookPointV1::AfterIndexSync |
+                GenerationCheckpointPublicationHookPointV1::AfterCommitSync |
+                GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync
+        ),
+        "only definitely-unpublished phases accept the typed publication failpoint"
+    );
+    GENERATION_CHECKPOINT_PUBLICATION_FAILPOINT.with(|armed| {
+        assert!(armed.replace(Some(point)).is_none(), "publication failpoint already armed");
+    });
+}
+
+#[cfg(test)]
+fn trip_generation_checkpoint_publication_failpoint(
+    point: GenerationCheckpointPublicationHookPointV1,
+    path: &Path,
+) -> Result<(), GenerationCheckpointPublicationErrorV1> {
+    GENERATION_CHECKPOINT_PUBLICATION_FAILPOINT.with(|armed| {
+        if armed.get() != Some(point) {
+            return Ok(());
+        }
+        armed.set(None);
+        Err(GenerationCheckpointPublicationErrorV1::Io(DurableIoError::Io {
+            operation: DurableIoOperation::SyncFile,
+            path: path.to_path_buf(),
+            source: std::io::Error::other(format!(
+                "injected generation-checkpoint publication failure at {point:?}"
+            )),
+        }))
+    })
+}
+
+#[cfg(test)]
+fn run_generation_checkpoint_publication_hook(point: GenerationCheckpointPublicationHookPointV1) {
+    GENERATION_CHECKPOINT_PUBLICATION_HOOK.with(|armed| {
+        let should_run = armed
+            .borrow()
+            .as_ref()
+            .is_some_and(|(armed_point, _)| *armed_point == point);
+        if should_run {
+            let (_, hook) = armed.borrow_mut().take().expect("checked publication hook");
+            hook();
+        }
+    });
+}
+
+#[derive(Debug)]
+pub(crate) enum GenerationCheckpointPublicationErrorV1 {
+    Io(DurableIoError),
+    LogPack(Box<LogPackFormatError>),
+    Pack(Box<PackFormatError>),
+    Index(Box<IndexFormatError>),
+    Durable(Box<super::DurableFormatError>),
+    Limit(DurableLimitError),
+    CheckpointWrite(
+        Box<GenerationCheckpointPrepareWriteErrorV1<DurableObjectReadErrorV1, DurableIoError>>,
+    ),
+    CheckpointIndex(
+        Box<PreparedGenerationCheckpointIndexVisitErrorV1<CheckpointIndexWriteErrorV1>>,
+    ),
+    SuccessorIdentityMismatch {
+        planned_pack: PackId,
+        prepared_pack: PackId,
+        planned_index: IndexGenerationV1,
+        prepared_index: IndexGenerationV1,
+    },
+    CatalogCompareAndSwap,
+    CatalogCommitIndeterminate(DurableIoError),
+    PublishedRecovery(Box<DurableStartupErrorV1>),
+    PublishedAdmission(Box<DurableAdmissionErrorV1>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GenerationCheckpointPublicationOutcomeV1 {
+    DefinitelyNotPublished,
+    Indeterminate,
+    Published,
+}
+
+impl GenerationCheckpointPublicationErrorV1 {
+    /// Classify whether the catalog publication boundary was crossed without
+    /// requiring callers to maintain a fragile list of error variants.
+    pub(crate) const fn publication_outcome(&self) -> GenerationCheckpointPublicationOutcomeV1 {
+        match self {
+            Self::CatalogCommitIndeterminate(_) => {
+                GenerationCheckpointPublicationOutcomeV1::Indeterminate
+            }
+            Self::PublishedRecovery(_) | Self::PublishedAdmission(_) => {
+                GenerationCheckpointPublicationOutcomeV1::Published
+            }
+            Self::Io(_) |
+            Self::LogPack(_) |
+            Self::Pack(_) |
+            Self::Index(_) |
+            Self::Durable(_) |
+            Self::Limit(_) |
+            Self::CheckpointWrite(_) |
+            Self::CheckpointIndex(_) |
+            Self::SuccessorIdentityMismatch { .. } |
+            Self::CatalogCompareAndSwap => {
+                GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished
+            }
+        }
+    }
+}
+
+impl Display for GenerationCheckpointPublicationErrorV1 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => Display::fmt(error, formatter),
+            Self::LogPack(error) => Display::fmt(error, formatter),
+            Self::Pack(error) => Display::fmt(error, formatter),
+            Self::Index(error) => Display::fmt(error, formatter),
+            Self::Durable(error) => Display::fmt(error, formatter),
+            Self::Limit(error) => Display::fmt(error, formatter),
+            Self::CheckpointWrite(error) => Display::fmt(error, formatter),
+            Self::CheckpointIndex(error) => Display::fmt(error, formatter),
+            Self::SuccessorIdentityMismatch {
+                planned_pack,
+                prepared_pack,
+                planned_index,
+                prepared_index,
+            } => write!(
+                formatter,
+                "successor cleanup derived pack/index ({}, {}) but publication preflight derived \
+                 ({}, {})",
+                prepared_pack.get(),
+                prepared_index.get(),
+                planned_pack.get(),
+                planned_index.get(),
+            ),
+            Self::CatalogCompareAndSwap => formatter.write_str(
+                "durable catalog changed after successor files were synchronized but before \
+                 publication began",
+            ),
+            Self::CatalogCommitIndeterminate(error) => write!(
+                formatter,
+                "durable catalog publication may have selected either generation: {error}"
+            ),
+            Self::PublishedRecovery(error) => write!(
+                formatter,
+                "published generation failed restart-grade physical recovery: {error}"
+            ),
+            Self::PublishedAdmission(error) => write!(
+                formatter,
+                "published generation failed mandatory semantic admission: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GenerationCheckpointPublicationErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::LogPack(error) => Some(error.as_ref()),
+            Self::Pack(error) => Some(error.as_ref()),
+            Self::Index(error) => Some(error.as_ref()),
+            Self::Durable(error) => Some(error.as_ref()),
+            Self::Limit(error) => Some(error),
+            Self::CheckpointWrite(error) => Some(error.as_ref()),
+            Self::CheckpointIndex(error) => Some(error.as_ref()),
+            Self::CatalogCommitIndeterminate(error) => Some(error),
+            Self::PublishedRecovery(error) => Some(error.as_ref()),
+            Self::PublishedAdmission(error) => Some(error.as_ref()),
+            Self::SuccessorIdentityMismatch { .. } | Self::CatalogCompareAndSwap => None,
+        }
+    }
+}
+
+impl From<DurableIoError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: DurableIoError) -> Self { Self::Io(error) }
+}
+
+impl From<LogPackFormatError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: LogPackFormatError) -> Self { Self::LogPack(Box::new(error)) }
+}
+
+impl From<PackFormatError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: PackFormatError) -> Self { Self::Pack(Box::new(error)) }
+}
+
+impl From<IndexFormatError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: IndexFormatError) -> Self { Self::Index(Box::new(error)) }
+}
+
+impl From<super::DurableFormatError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: super::DurableFormatError) -> Self { Self::Durable(Box::new(error)) }
+}
+
+impl From<DurableLimitError> for GenerationCheckpointPublicationErrorV1 {
+    fn from(error: DurableLimitError) -> Self { Self::Limit(error) }
+}
+
+#[derive(Debug)]
+pub(crate) enum CheckpointIndexWriteErrorV1 {
+    Index(Box<IndexFormatError>),
+    Io(DurableIoError),
+    Cursor { expected: u64, actual: u64 },
+}
+
+impl Display for CheckpointIndexWriteErrorV1 {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Index(error) => Display::fmt(error, formatter),
+            Self::Io(error) => Display::fmt(error, formatter),
+            Self::Cursor { expected, actual } => write!(
+                formatter,
+                "canonical checkpoint index record expected offset {expected}, sink is at {actual}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CheckpointIndexWriteErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Index(error) => Some(error.as_ref()),
+            Self::Io(error) => Some(error),
+            Self::Cursor { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CheckpointPrepareDurableV1 {
+    address: LogPackAddress,
+    identity: GenerationCheckpointPrepareIdentityV1,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FreshIndexDurableV1 {
+    prepare: CheckpointPrepareDurableV1,
+    exact_tail: u64,
+    publication: crate::rspace::persistence::CommitPublicationV1,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CheckpointCommitDurableV1 {
+    index: FreshIndexDurableV1,
+    address: LogPackAddress,
+    digest: crate::rspace::persistence::PhysicalDigest,
+}
+
+#[derive(Clone, Debug)]
+struct GenerationFilesDurableV1 {
+    commit: CheckpointCommitDurableV1,
+    successor: CatalogSlotV1,
+    successor_image: [u8; CATALOG_IMAGE_LEN],
+}
+
+impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
+    /// Rewrite the exact admitted retained closure into one fresh immutable
+    /// generation and return authority reconstructed from its durable bytes.
+    pub(crate) fn publish_generation_checkpoint_v1(
+        self,
+        recovery_limits: DurableLimits,
+        wal_limits: LogPackDecodeLimits,
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, GenerationCheckpointPublicationErrorV1>
+    {
+        let (mut lease, authority, durable) = {
+            let (mut lease, source) = self.into_parts();
+            let authority = source.authority().clone();
+            let durable = prepare_and_write_successor_generation::<P>(
+                &mut lease,
+                &source,
+                &authority,
+                recovery_limits,
+                wal_limits,
+            )?;
+            // The admitted old-generation store and all plans borrowing it
+            // leave scope here. Only the lease, exact old catalog token, and
+            // fully synchronized successor receipts cross the CAS boundary.
+            (lease, authority, durable)
+        };
+
+        // Both final successor names and their complete metadata must be
+        // durable before the catalog is allowed to make them reachable.
+        lease.sync_directory()?;
+
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync,
+        );
+        #[cfg(test)]
+        trip_generation_checkpoint_publication_failpoint(
+            GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync,
+            lease.directory().path(),
+        )?;
+
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::BeforeCatalogCompareAndSwap,
+        );
+
+        publish_catalog_compare_and_swap(&mut lease, &authority, &durable)?;
+
+        #[cfg(test)]
+        run_generation_checkpoint_publication_hook(
+            GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
+        );
+
+        // The only authority returned to the caller is reconstructed by the
+        // same path used after an operating-system process restart.
+        let physical = recover_physical_with_lease_v1(lease, recovery_limits, wal_limits).map_err(
+            |error| GenerationCheckpointPublicationErrorV1::PublishedRecovery(Box::new(error)),
+        )?;
+        admit_physical_writer::<P>(physical, admission_limits).map_err(|error| {
+            GenerationCheckpointPublicationErrorV1::PublishedAdmission(Box::new(error))
+        })
+    }
+}
+
+fn prepare_and_write_successor_generation<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    source: &AdmittedCheckpointSourceV1<P>,
+    authority: &CatalogAuthorityTokenV1,
+    recovery_limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+) -> Result<GenerationFilesDurableV1, GenerationCheckpointPublicationErrorV1> {
+    let current = authority.slot();
+    let current_pack = PackId::new(current.pack().active_pack())?;
+    let previous_terminal = PackTerminalIdentityV1::new(
+        current_pack,
+        current.commit_sequence(),
+        current.commit_digest(),
+    );
+    let pack_header = PackHeaderV1::successor(current.store_id(), previous_terminal)?;
+    let index_generation =
+        IndexGenerationV1::new(current.pack().index_generation())?.successor()?;
+    let prepared = PreparedGenerationCheckpointV1::<P, _>::new(
+        source,
+        current.store_id(),
+        pack_header.first_sequence(),
+        wal_limits,
+    )?;
+    let prepare_address = LogPackAddress::from_pack(
+        pack_header.pack_id(),
+        PACK_HEADER_LEN_V1,
+        prepared.record_len(),
+    )?;
+    let index_header = super::ObjectIndexHeaderV1::new(current.store_id(), index_generation);
+    let index_plan =
+        PreparedGenerationCheckpointIndexV1::new(index_header, prepare_address, &prepared)?;
+    let commit_address = LogPackAddress::from_pack(
+        pack_header.pack_id(),
+        prepare_address.end(),
+        GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+    )?;
+    preflight_recovery_limits(
+        recovery_limits,
+        commit_address.end(),
+        index_plan.record_count(),
+        index_plan.exact_tail(),
+    )?;
+
+    let artifacts = lease.prepare_unpublished_successor_artifacts(authority)?;
+    if artifacts.pack() != pack_header.pack_id() || artifacts.index() != index_generation {
+        return Err(GenerationCheckpointPublicationErrorV1::SuccessorIdentityMismatch {
+            planned_pack: pack_header.pack_id(),
+            prepared_pack: artifacts.pack(),
+            planned_index: index_generation,
+            prepared_index: artifacts.index(),
+        });
+    }
+
+    let prepare_durable = write_and_sync_prepare(lease, pack_header, prepare_address, &prepared)?;
+    let index_durable = write_and_sync_index(lease, &index_plan, prepare_durable)?;
+    let commit_durable = append_and_sync_commit(lease, current, commit_address, index_durable)?;
+    prepare_successor_catalog(authority, current, &prepared, commit_durable)
+}
+
+impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+    pub(crate) fn publish_generation_checkpoint_v1(
+        self,
+        recovery_limits: DurableLimits,
+        wal_limits: LogPackDecodeLimits,
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, GenerationCheckpointPublicationErrorV1>
+    {
+        self.into_checkpoint_publication()
+            .publish_generation_checkpoint_v1(recovery_limits, wal_limits, admission_limits)
+    }
+}
+
+fn preflight_recovery_limits(
+    limits: DurableLimits,
+    pack_tail: u64,
+    object_records: u64,
+    index_tail: u64,
+) -> Result<(), DurableLimitError> {
+    limits.require(DurableLimitKind::LivePacks, 1)?;
+    limits.require(DurableLimitKind::PackBytes, pack_tail)?;
+    limits.require(DurableLimitKind::TotalScanBytes, pack_tail)?;
+    limits.require(DurableLimitKind::ObjectRecords, object_records)?;
+    limits.require(DurableLimitKind::IndexRecords, object_records)?;
+    limits.require(DurableLimitKind::IndexBytes, index_tail)?;
+    Ok(())
+}
+
+fn write_and_sync_prepare<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    header: PackHeaderV1,
+    address: LogPackAddress,
+    prepared: &PreparedGenerationCheckpointV1<'_, P, AdmittedCheckpointSourceV1<P>>,
+) -> Result<CheckpointPrepareDurableV1, GenerationCheckpointPublicationErrorV1> {
+    let mut pack = lease.create_pack(header.pack_id())?;
+    pack.write_all_at(0, &header.encode())?;
+    let mut sink = DurableCanonicalAppendSinkV1::new(&mut pack, address.offset(), address.end())?;
+    let identity = prepared.write_to(&mut sink).map_err(|error| {
+        GenerationCheckpointPublicationErrorV1::CheckpointWrite(Box::new(error))
+    })?;
+    sink.finish()?;
+    pack.sync_all()?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterPrepareSync,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterPrepareSync,
+        pack.path(),
+    )?;
+    Ok(CheckpointPrepareDurableV1 { address, identity })
+}
+
+fn write_and_sync_index<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    plan: &PreparedGenerationCheckpointIndexV1<'_, '_, P, AdmittedCheckpointSourceV1<P>>,
+    prepare: CheckpointPrepareDurableV1,
+) -> Result<FreshIndexDurableV1, GenerationCheckpointPublicationErrorV1> {
+    let mut index = lease.create_index(plan.header().generation())?;
+    let mut sink = DurableCanonicalAppendSinkV1::new(&mut index, 0, plan.exact_tail())?;
+    let mut stream = CanonicalIndexStreamV1::new(plan.header());
+    sink.write_all(&stream.header_image())?;
+    plan.try_visit_records(|record| {
+        let image = stream
+            .next_record(record)
+            .map_err(|error| CheckpointIndexWriteErrorV1::Index(Box::new(error)))?;
+        let actual = sink.cursor();
+        if image.offset() != actual {
+            return Err(CheckpointIndexWriteErrorV1::Cursor {
+                expected: image.offset(),
+                actual,
+            });
+        }
+        sink.write_all(image.bytes())
+            .map_err(CheckpointIndexWriteErrorV1::Io)
+    })
+    .map_err(|error| GenerationCheckpointPublicationErrorV1::CheckpointIndex(Box::new(error)))?;
+    stream.verify_appointed_tail(plan.exact_tail())?;
+    sink.finish()?;
+    index.sync_all()?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterIndexSync,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterIndexSync,
+        index.path(),
+    )?;
+    Ok(FreshIndexDurableV1 {
+        prepare,
+        exact_tail: plan.exact_tail(),
+        publication: plan.publication(),
+    })
+}
+
+fn append_and_sync_commit(
+    lease: &mut DurableWriterLeaseV1,
+    current: CatalogSlotV1,
+    address: LogPackAddress,
+    index: FreshIndexDurableV1,
+) -> Result<CheckpointCommitDurableV1, GenerationCheckpointPublicationErrorV1> {
+    let commit = GenerationCheckpointCommitRecordV1::new(
+        current.store_id(),
+        current.commit_digest(),
+        index.prepare.address,
+        index.prepare.identity,
+        index.publication,
+    )?;
+    let mut pack = lease.open_pack(address.pack_id())?;
+    pack.require_length(FileLengthExpectation::Exact(address.offset()))?;
+    pack.write_all_at(address.offset(), commit.canonical_bytes())?;
+    pack.require_length(FileLengthExpectation::Exact(address.end()))?;
+    pack.sync_all()?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
+    );
+    #[cfg(test)]
+    trip_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
+        pack.path(),
+    )?;
+    Ok(CheckpointCommitDurableV1 {
+        index,
+        address,
+        digest: commit.digest(),
+    })
+}
+
+fn prepare_successor_catalog<P: SemanticProfile>(
+    authority: &CatalogAuthorityTokenV1,
+    current: CatalogSlotV1,
+    prepared: &PreparedGenerationCheckpointV1<'_, P, AdmittedCheckpointSourceV1<P>>,
+    commit: CheckpointCommitDurableV1,
+) -> Result<GenerationFilesDurableV1, GenerationCheckpointPublicationErrorV1> {
+    let descriptor = prepared.descriptor();
+    let pack = CatalogPackStateV1::new(
+        commit.address.segment(),
+        commit.address.segment(),
+        commit.address.end(),
+        commit.index.publication.index_generation(),
+        commit.index.exact_tail,
+        descriptor.retention_manifest(),
+        descriptor.current_state_canonical_bytes().get(),
+        descriptor
+            .inventory()
+            .retained_union_canonical_bytes()
+            .get(),
+    )?;
+    let successor = current.successor(
+        current.state(),
+        descriptor.state(),
+        commit.digest,
+        prepared.sequence(),
+        commit.address,
+        pack,
+    )?;
+    let successor_image = authority.successor_image(successor)?;
+    Ok(GenerationFilesDurableV1 {
+        commit,
+        successor,
+        successor_image,
+    })
+}
+
+fn publish_catalog_compare_and_swap(
+    lease: &mut DurableWriterLeaseV1,
+    authority: &CatalogAuthorityTokenV1,
+    durable: &GenerationFilesDurableV1,
+) -> Result<(), GenerationCheckpointPublicationErrorV1> {
+    let mut catalog = lease.open_catalog()?;
+    let observed = catalog.read_catalog_image()?;
+    if !authority.matches_exactly(&observed) {
+        return Err(GenerationCheckpointPublicationErrorV1::CatalogCompareAndSwap);
+    }
+
+    let inactive = match authority.selection().inactive_slot_index() {
+        0 => CatalogSlotIndexV1::First,
+        1 => CatalogSlotIndexV1::Second,
+        _ => unreachable!("a two-slot catalog has exactly two slot indices"),
+    };
+    let offset = authority.selection().inactive_slot_index() * CATALOG_SLOT_LEN;
+    let successor_bytes: &[u8; CATALOG_SLOT_LEN] = durable.successor_image
+        [offset..offset + CATALOG_SLOT_LEN]
+        .try_into()
+        .expect("successor image contains one exact inactive catalog slot");
+    debug_assert_eq!(*successor_bytes, durable.successor.encode());
+    debug_assert_eq!(durable.commit.address.end(), durable.successor.durable_pack_tail());
+
+    // The uncertainty boundary starts immediately before this positional
+    // write. A short/torn write can leave either old or new authority valid;
+    // neither outcome permits the stale writer to escape.
+    catalog
+        .write_catalog_slot(inactive, successor_bytes)
+        .map_err(GenerationCheckpointPublicationErrorV1::CatalogCommitIndeterminate)?;
+    #[cfg(test)]
+    run_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCatalogSlotWrite,
+    );
+    catalog
+        .sync_catalog_all()
+        .map_err(GenerationCheckpointPublicationErrorV1::CatalogCommitIndeterminate)
+}

@@ -26,6 +26,8 @@ pub(crate) enum DurableIoFailpointV1 {
     BeforeReplace,
     AfterReplaceBeforeDirectorySync,
     DirectorySync,
+    CatalogSlotWrite,
+    CatalogSync,
 }
 
 #[cfg(test)]
@@ -539,8 +541,24 @@ impl DurableWritableFileV1<'_> {
         slot: CatalogSlotIndexV1,
         bytes: &[u8; CATALOG_SLOT_LEN],
     ) -> Result<(), DurableIoError> {
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::CatalogSlotWrite,
+            DurableIoOperation::PositionalWrite,
+            self.file.path(),
+        )?;
         self.require_length(FileLengthExpectation::Exact(CATALOG_IMAGE_LEN as u64))?;
         self.write_all_at(slot.offset(), bytes)
+    }
+
+    pub(crate) fn sync_catalog_all(&mut self) -> Result<(), DurableIoError> {
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::CatalogSync,
+            DurableIoOperation::SyncFile,
+            self.file.path(),
+        )?;
+        self.sync_all()
     }
 }
 
