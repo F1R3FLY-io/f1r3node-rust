@@ -27,7 +27,7 @@ Errors == {
 Outcomes == (Errors \ {NoError}) \cup {"success"}
 Phases == {
   "Discriminator", "Header", "Preflight", "Pair", "Scan", "Trailer",
-  "Commit", "Chain", "Replay", "Done"
+  "Commit", "Chain", "ReplayBytes", "ReplayLayout", "Done"
 }
 
 Scenario(name, headerValid, resourceCase, pairValid, readFault,
@@ -87,13 +87,13 @@ PrefixOf(prefix, whole) ==
 
 VARIABLES scenario, phase, cursor, authenticated, semantic, deferred,
           scratchUsed, recordBuffer, variableReads, identity, validated,
-          commitBound, chainBound, firstTranscript, replayTranscript, privateLayouts,
-          publicLayouts, outcome
+          commitBound, chainBound, firstTranscript, replayCursor,
+          replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome
 
 vars == <<scenario, phase, cursor, authenticated, semantic, deferred,
           scratchUsed, recordBuffer, variableReads, identity, validated,
-          commitBound, chainBound, firstTranscript, replayTranscript, privateLayouts,
-          publicLayouts, outcome>>
+          commitBound, chainBound, firstTranscript, replayCursor,
+          replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome>>
 
 Init ==
   /\ scenario \in Scenarios
@@ -110,6 +110,8 @@ Init ==
   /\ commitBound = FALSE
   /\ chainBound = FALSE
   /\ firstTranscript = <<>>
+  /\ replayCursor = 0
+  /\ replayAuthenticated = <<>>
   /\ replayTranscript = <<>>
   /\ privateLayouts = <<>>
   /\ publicLayouts = <<>>
@@ -120,8 +122,8 @@ ReadDiscriminator ==
   /\ phase' = "Header"
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity,
-                  validated, commitBound, chainBound, firstTranscript, replayTranscript,
-                  privateLayouts, publicLayouts, outcome>>
+                  validated, commitBound, chainBound, firstTranscript, replayCursor,
+                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts, outcome>>
 
 AuthenticateHeader ==
   /\ phase = "Header"
@@ -132,8 +134,8 @@ AuthenticateHeader ==
              /\ outcome' = "header"
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity,
-                  validated, commitBound, chainBound, firstTranscript, replayTranscript,
-                  privateLayouts, publicLayouts>>
+                  validated, commitBound, chainBound, firstTranscript, replayCursor,
+                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts>>
 
 ResourceAdmitted ==
   IF Mutation = "AcceptMinusOne" THEN TRUE
@@ -152,7 +154,7 @@ Preflight ==
              /\ outcome' = "resource"
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, identity, validated, commitBound, chainBound,
-                  firstTranscript, replayTranscript, privateLayouts,
+                  firstTranscript, replayCursor, replayAuthenticated, replayTranscript, privateLayouts,
                   publicLayouts>>
 
 CheckPair ==
@@ -164,8 +166,8 @@ CheckPair ==
              /\ outcome' = "pair"
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity,
-                  validated, commitBound, chainBound, firstTranscript, replayTranscript,
-                  privateLayouts, publicLayouts>>
+                  validated, commitBound, chainBound, firstTranscript, replayCursor,
+                  replayAuthenticated, replayTranscript, privateLayouts, publicLayouts>>
 
 SemanticFaultAt(next) ==
   IF scenario.semanticFault = "mutation" /\ next = 1 THEN "mutation"
@@ -181,7 +183,7 @@ ScanChunk ==
             /\ outcome' = "read"
             /\ UNCHANGED <<cursor, authenticated, semantic, deferred,
                             scratchUsed, identity, validated, commitBound, chainBound,
-                            firstTranscript, replayTranscript, privateLayouts,
+                            firstTranscript, replayCursor, replayAuthenticated, replayTranscript, privateLayouts,
                             publicLayouts>>
        ELSE /\ cursor' = IF Mutation = "CursorOffByOne" THEN cursor + 2 ELSE next
             /\ authenticated' =
@@ -200,7 +202,7 @@ ScanChunk ==
                  IF Mutation = "EarlyIndexExposure" /\ next = 1
                  THEN <<1>> ELSE publicLayouts
             /\ UNCHANGED <<identity, validated, commitBound, chainBound, firstTranscript,
-                            replayTranscript, privateLayouts>>
+                            replayCursor, replayAuthenticated, replayTranscript, privateLayouts>>
   /\ variableReads' = variableReads + 1
   /\ UNCHANGED <<scenario, recordBuffer>>
 
@@ -233,7 +235,7 @@ FinishTrailer ==
              /\ validated' = TRUE
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, commitBound, chainBound,
-                  replayTranscript, privateLayouts, publicLayouts>>
+                  replayCursor, replayAuthenticated, replayTranscript, privateLayouts, publicLayouts>>
 
 BindCommit ==
   /\ phase = "Commit"
@@ -246,13 +248,13 @@ BindCommit ==
              /\ commitBound' = FALSE
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity, validated,
-                  chainBound, firstTranscript, replayTranscript, privateLayouts,
-                  publicLayouts>>
+                  chainBound, firstTranscript, replayCursor, replayAuthenticated,
+                  replayTranscript, privateLayouts, publicLayouts>>
 
 BindChain ==
   /\ phase = "Chain"
   /\ IF scenario.chainValid
-        THEN /\ phase' = "Replay"
+        THEN /\ phase' = "ReplayBytes"
              /\ outcome' = outcome
              /\ chainBound' = (Mutation # "SkipChainBinding")
         ELSE /\ phase' = "Done"
@@ -260,11 +262,31 @@ BindChain ==
              /\ chainBound' = FALSE
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity, validated,
-                  commitBound, firstTranscript, replayTranscript,
+                  commitBound, firstTranscript, replayCursor, replayAuthenticated, replayTranscript,
                   privateLayouts, publicLayouts>>
 
+ReplaySourceChunk ==
+  /\ phase = "ReplayBytes"
+  /\ replayCursor < ChunkCount
+  /\ LET next == replayCursor + 1 IN
+       /\ replayCursor' = next
+       /\ replayAuthenticated' = Append(replayAuthenticated, next)
+       /\ IF next = ChunkCount
+             THEN IF scenario.sourceStable \/ Mutation = "AcceptUnstableSource"
+                  THEN /\ phase' = "ReplayLayout"
+                       /\ outcome' = outcome
+                  ELSE /\ phase' = "Done"
+                       /\ outcome' = "source"
+             ELSE /\ phase' = "ReplayBytes"
+                  /\ outcome' = outcome
+  /\ variableReads' = variableReads + 1
+  /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
+                  scratchUsed, recordBuffer, identity, validated, commitBound,
+                  chainBound, firstTranscript, replayTranscript, privateLayouts,
+                  publicLayouts>>
+
 ReplayLayout ==
-  /\ phase = "Replay"
+  /\ phase = "ReplayLayout"
   /\ Len(privateLayouts) < ObjectCount
   /\ LET next == Len(privateLayouts) + 1 IN
        /\ privateLayouts' =
@@ -279,18 +301,20 @@ ReplayLayout ==
                        /\ outcome' = "success"
                   ELSE /\ phase' = "Done"
                        /\ outcome' = "source"
-             ELSE /\ phase' = "Replay"
+             ELSE /\ phase' = "ReplayLayout"
                   /\ outcome' = outcome
   /\ UNCHANGED <<scenario, cursor, authenticated, semantic, deferred,
                   scratchUsed, recordBuffer, variableReads, identity, validated,
-                  commitBound, chainBound, firstTranscript, publicLayouts>>
+                  commitBound, chainBound, firstTranscript, replayCursor,
+                  replayAuthenticated, publicLayouts>>
 
 Done ==
   /\ phase = "Done"
   /\ UNCHANGED vars
 
 Next == ReadDiscriminator \/ AuthenticateHeader \/ Preflight \/ CheckPair \/
-        ScanChunk \/ FinishTrailer \/ BindCommit \/ BindChain \/ ReplayLayout \/ Done
+        ScanChunk \/ FinishTrailer \/ BindCommit \/ BindChain \/ ReplaySourceChunk \/
+        ReplayLayout \/ Done
 
 Spec == Init /\ [][Next]_vars
 
@@ -309,6 +333,8 @@ TypeInvariant ==
   /\ commitBound \in BOOLEAN
   /\ chainBound \in BOOLEAN
   /\ firstTranscript \in Seq(1..ChunkCount)
+  /\ replayCursor \in 0..ChunkCount
+  /\ replayAuthenticated \in Seq(1..ChunkCount)
   /\ replayTranscript \in Seq(1..ObjectCount)
   /\ privateLayouts \in Seq(1..ObjectCount)
   /\ publicLayouts \in Seq(1..ObjectCount)
@@ -331,7 +357,12 @@ NoPrivateIndexBeforeCommitBinding == Len(privateLayouts) > 0 => validated /\ com
 NoPrivateIndexBeforeChainBinding == Len(privateLayouts) > 0 => chainBound
 CommitBindsExactIdentity == commitBound => identity = "exact"
 ReplayTranscriptMatchesFirstPass ==
-  outcome = "success" => replayTranscript = ExpectedLayouts /\ privateLayouts = ExpectedLayouts
+  outcome = "success" =>
+    replayAuthenticated = firstTranscript /\ replayTranscript = ExpectedLayouts /\
+    privateLayouts = ExpectedLayouts
+FullSourceReplayPrecedesPrivateIndex ==
+  Len(privateLayouts) > 0 =>
+    replayCursor = ChunkCount /\ replayAuthenticated = firstTranscript
 StableSourceRequiredForSuccess == outcome = "success" => scenario.sourceStable
 AcceptedIdentityIsExact ==
   outcome = "success" => identity = "exact" /\ commitBound /\ chainBound

@@ -201,6 +201,32 @@ Qed.
 
 End ExactReplay.
 
+Section ExactSourceReplay.
+
+Fixpoint exact_source_replay (first replay : list nat) : bool :=
+  match first, replay with
+  | [], [] => true
+  | expected :: expected_tail, observed :: observed_tail =>
+      Nat.eqb expected observed &&
+      exact_source_replay expected_tail observed_tail
+  | _, _ => false
+  end.
+
+Theorem exact_source_replay_accepts_iff_identical :
+  forall first replay,
+    exact_source_replay first replay = true <-> first = replay.
+Proof.
+  intro first; induction first as [|expected expected_tail IH];
+    intros [|observed observed_tail]; simpl; try (split; discriminate).
+  - split; reflexivity.
+  - rewrite andb_true_iff, Nat.eqb_eq, IH.
+    split.
+    + intros [same_head same_tail]; subst; reflexivity.
+    + intro same; inversion same; split; reflexivity.
+Qed.
+
+End ExactSourceReplay.
+
 Section ExactBinding.
 
 Record prepare_identity : Type := PrepareIdentity {
@@ -304,6 +330,7 @@ Record validation_state : Type := ValidationState {
   semantics_validated : bool;
   commit_bound : bool;
   chain_bound : bool;
+  source_replay_validated : bool;
   replay_validated : bool;
   source_stable : bool
 }.
@@ -311,7 +338,8 @@ Record validation_state : Type := ValidationState {
 Definition validation_accepted (state : validation_state) : bool :=
   extent_complete state && crc_validated state &&
   semantics_validated state && commit_bound state &&
-  chain_bound state && replay_validated state && source_stable state.
+  chain_bound state && source_replay_validated state &&
+  replay_validated state && source_stable state.
 
 Definition recovered_authority (state : validation_state) : option nat :=
   if validation_accepted state then Some 1 else None.
@@ -324,6 +352,7 @@ Theorem authority_exists_iff_every_validation_gate_passes :
     semantics_validated state = true /\
     commit_bound state = true /\
     chain_bound state = true /\
+    source_replay_validated state = true /\
     replay_validated state = true /\
     source_stable state = true.
 Proof.
@@ -332,14 +361,14 @@ Proof.
   - split.
     + intro accepted_authority. unfold validation_accepted in accepted.
       repeat rewrite andb_true_iff in accepted.
-      destruct accepted as [[[[[[extent crc] semantic] commit] chain] replay]
-        stable]. repeat split; assumption.
+      destruct accepted as [[[[[[[extent crc] semantic] commit] chain] source_replay]
+        replay] stable]. repeat split; assumption.
     + intro gates. reflexivity.
   - split.
     + discriminate.
-    + intros [extent [crc [semantic [commit [chain [replay stable]]]]]].
+    + intros [extent [crc [semantic [commit [chain [source_replay [replay stable]]]]]]].
       unfold validation_accepted in accepted.
-      rewrite extent, crc, semantic, commit, chain, replay, stable in accepted.
+      rewrite extent, crc, semantic, commit, chain, source_replay, replay, stable in accepted.
       discriminate.
 Qed.
 
@@ -360,6 +389,7 @@ Theorem index_is_not_visible_before_full_authentication :
     semantics_validated state = true /\
     commit_bound state = true /\
     chain_bound state = true /\
+    source_replay_validated state = true /\
     replay_validated state = true /\
     source_stable state = true.
 Proof.
@@ -377,6 +407,7 @@ Print Assumptions observation_fold_retains_exact_first_error.
 Print Assumptions deferred_semantic_error_refines_contiguous_oracle.
 Print Assumptions crc_failure_dominates_every_semantic_error.
 Print Assumptions exact_layout_replay_accepts_iff_identical.
+Print Assumptions exact_source_replay_accepts_iff_identical.
 Print Assumptions commit_binding_accepts_exactly_the_prepare_identity.
 Print Assumptions exact_resource_boundary_is_admitted.
 Print Assumptions required_minus_one_is_rejected.

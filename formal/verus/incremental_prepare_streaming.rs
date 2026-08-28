@@ -183,6 +183,35 @@ pub fn checked_add_physical_work(
     }
 }
 
+pub open spec fn full_source_replay_exact_spec(
+    first_len: int,
+    replay_len: int,
+    first_identity: int,
+    replay_identity: int,
+) -> bool {
+    first_len == replay_len && first_identity == replay_identity
+}
+
+/// The post-chain source gate authenticates the complete PREPARE CRC domain,
+/// including every DATA body.  Length and domain-separated physical identity
+/// must both match the first pass before index replay can begin.
+pub fn full_source_replay_exact(
+    first_len: u64,
+    replay_len: u64,
+    first_identity: u64,
+    replay_identity: u64,
+) -> (accepted: bool)
+    ensures
+        accepted == full_source_replay_exact_spec(
+            first_len as int,
+            replay_len as int,
+            first_identity as int,
+            replay_identity as int,
+        ),
+{
+    first_len == replay_len && first_identity == replay_identity
+}
+
 /// A variable-size read is impossible until the fixed authenticated prefix and
 /// every declared resource have been admitted.  Once admitted, the returned
 /// request obeys the same fixed scratch bound as `next_stream_read_width`.
@@ -246,6 +275,7 @@ pub fn validation_accepted(
     semantics_valid: bool,
     commit_bound: bool,
     chain_bound: bool,
+    source_replay_exact: bool,
     replay_exact: bool,
     source_stable: bool,
 ) -> (accepted: bool)
@@ -256,6 +286,7 @@ pub fn validation_accepted(
             && semantics_valid
             && commit_bound
             && chain_bound
+            && source_replay_exact
             && replay_exact
             && source_stable
         ),
@@ -265,6 +296,7 @@ pub fn validation_accepted(
         && semantics_valid
         && commit_bound
         && chain_bound
+        && source_replay_exact
         && replay_exact
         && source_stable
 }

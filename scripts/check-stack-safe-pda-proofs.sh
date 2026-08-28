@@ -54,8 +54,8 @@ incremental_prepare_streaming_closed_capstones="$({
   printf '%s\n' "$incremental_prepare_streaming_rocq_output" | \
     grep -c '^Closed under the global context$'
 } || true)"
-if [[ "$incremental_prepare_streaming_closed_capstones" != "12" ]]; then
-  echo "stack-safe-pda: expected all twelve incremental-PREPARE Rocq capstones to be closed; got $incremental_prepare_streaming_closed_capstones" >&2
+if [[ "$incremental_prepare_streaming_closed_capstones" != "13" ]]; then
+  echo "stack-safe-pda: expected all thirteen incremental-PREPARE Rocq capstones to be closed; got $incremental_prepare_streaming_closed_capstones" >&2
   exit 1
 fi
 streaming_codec_rocq_output="$(
