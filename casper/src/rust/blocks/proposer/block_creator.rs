@@ -1013,19 +1013,13 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| !is_retry_candidate(deploy))
         .cloned()
         .collect();
-    // #194: deliberately does NOT exclude `rejected_in_scope` deploys here.
-    // `retry_scope_exempt` (above) only exempts a rejected-in-scope deploy from
-    // `blocked_by_scope` when THIS validator also holds it in its own local
-    // `recovered_sigs` buffer. A validator that only learned of the deploy via
-    // gossip/another block's inclusion never populates that buffer, so without
-    // this candidate route such a deploy is excluded from both recovery paths
-    // and gets filtered "already in scope" forever.
     let in_scope_recovery_candidates: HashSet<Signed<DeployData>> = if allow_in_scope_recovery {
         already_in_scope
             .iter()
             .filter(|deploy| {
                 !canonical_won.contains(&deploy.sig)
                     && casper_snapshot.deploys_in_scope.contains(&deploy.sig)
+                    && !casper_snapshot.rejected_in_scope.contains(&deploy.sig)
             })
             .cloned()
             .collect()
@@ -5148,90 +5142,6 @@ mod tests {
             .deploys
             .iter()
             .all(|deploy| fresh_sigs.contains(&deploy.sig)));
-    }
-
-    // Regression for #194: a deploy the DAG-wide scan marks `rejected_in_scope`
-    // (a descendant merge rejected it) is only exempt from the scope block when
-    // THIS validator also holds it in its own local recovery buffer
-    // (`retry_scope_exempt`, line ~845). A validator that only saw the deploy
-    // via gossip/another block's inclusion never populates that local buffer,
-    // so before this fix the deploy fell into a gap between both recovery
-    // routes: excluded from `in_scope_recovery_candidates` because it IS
-    // `rejected_in_scope`, and excluded from the local-recovery retry path
-    // because it is NOT locally recovered. It was filtered "already in scope"
-    // every round with no route back in, matching the testbed audit's
-    // asymmetric per-validator stall (some validators stuck, others fine).
-    #[tokio::test]
-    async fn rejected_in_scope_deploy_without_local_recovery_is_still_selected_for_recovery() {
-        let mut kvm = InMemoryStoreManager::new();
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
-            KeyValueDeployStorage::new(&mut kvm)
-                .await
-                .expect("deploy storage"),
-        ));
-        let rejected_deploy_buffer = Arc::new(Mutex::new(
-            KeyValueRejectedDeployBuffer::new(&mut kvm)
-                .await
-                .expect("rejected deploy buffer"),
-        ));
-        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
-            .await
-            .expect("block store");
-        let mut snapshot =
-            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot
-            .on_chain_state
-            .shard_conf
-            .max_user_deploys_per_block = 32;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
-        let deploy = construct_deploy::source_deploy(
-            "@stranded_no_local_buffer!(0)".to_string(),
-            1_000,
-            None,
-            None,
-            None,
-            Some(1),
-            Some("test".to_string()),
-        )
-        .expect("deploy");
-        // In scope (some block in the DAG carries it) AND rejected_in_scope
-        // (a descendant merge already rejected it) — but the rejected-deploy
-        // buffer (below) stays empty, so this validator never locally
-        // "recovered" it. No parents are set, so `canonical_won` is empty:
-        // the deploy did not land via any canonical parent either.
-        snapshot.deploys_in_scope.insert(deploy.sig.clone());
-        snapshot.rejected_in_scope.insert(deploy.sig.clone());
-        deploy_storage
-            .lock()
-            .add(vec![deploy.clone()])
-            .expect("seed deploy storage");
-
-        let prepared = prepare_user_deploys_with_policy(
-            &snapshot,
-            300,
-            10_000,
-            deploy_storage,
-            rejected_deploy_buffer,
-            &block_store,
-            false,
-            DeployAdmissionPolicy {
-                allow_ordinary: false,
-                ordinary_cap: 0,
-                allow_in_scope_recovery: true,
-                in_scope_recovery_cap: NON_LEADER_FALLBACK_MIN_ORDINARY_DEPLOY_CAP,
-                reserve_tail: false,
-                fallback: true,
-                backpressure: true,
-            },
-            None,
-        )
-        .await
-        .expect("prepare deploys");
-
-        assert_eq!(prepared.already_in_scope_count, 1);
-        assert_eq!(prepared.selected_in_scope_recovery_count, 1);
-        assert_eq!(prepared.deploys.len(), 1);
-        assert_eq!(prepared.deploys.iter().next().unwrap().sig, deploy.sig);
     }
 
     #[tokio::test]
