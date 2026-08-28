@@ -745,18 +745,32 @@ if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
 		#    could read the dead VM's tags), so even a lost runner leaves
 		#    durable last words. Stamped ONLY in the warning/breach band —
 		#    a healthy run never writes tags, keeping the read-modify-write
-		#    race with the soak-signal tag out of the normal path.
+		#    race with the soak-signal tag out of the normal path. The
+		#    freeform-tag API replaces the whole map, so the remaining
+		#    single-write race against a concurrent soak-signal writer is
+		#    accepted by design: it exists only while the host is already
+		#    dying, and last words outrank a checkpoint signal there.
+		guardian_oom_mark_warned=0
 		guardian_mark_workload_oom_preferred() {
-			local pid cid
+			local pid cid failed=0
 			for pid in $(pgrep -f '/tmp/rnode' 2>/dev/null); do
 				echo 1000 >"/proc/$pid/oom_score_adj" 2>/dev/null ||
-					sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 || true
+					sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
+					failed=1
 			done
 			for cid in $(docker ps -q --filter 'name=rnode.' 2>/dev/null); do
 				pid="$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null)" || continue
 				[ -n "$pid" ] && [ "$pid" != "0" ] || continue
-				sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 || true
+				sudo -n tee "/proc/$pid/oom_score_adj" <<<"1000" >/dev/null 2>&1 ||
+					failed=1
 			done
+			# One line for the whole guardian lifetime: a per-sample failure
+			# would flood the log, silence would hide that the runner is NOT
+			# protected from the kernel OOM killer.
+			if [ "$failed" -eq 1 ] && [ "$guardian_oom_mark_warned" -eq 0 ]; then
+				guardian_oom_mark_warned=1
+				printf 'host guardian: could not apply oom_score_adj to some workload processes; the runner is not OOM-preferred over them\n' >&2
+			fi
 		}
 		guardian_stamp_health_tag() {
 			local state="$1" avail="$2" iid tags
@@ -764,7 +778,10 @@ if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
 			iid="$(curl -fsS --max-time 5 -H 'Authorization: Bearer Oracle' \
 				http://169.254.169.254/opc/v2/instance/id 2>/dev/null)" || return 0
 			case "$iid" in ocid1.instance.*) ;; *) return 0 ;; esac
-			tags="$(oci --auth instance_principal compute instance get \
+			# Every remote call is deadline-bounded: this function runs while
+			# the host is under memory pressure, and a hung CLI here must not
+			# stall the guardian whose whole job is reacting fast.
+			tags="$(timeout 15 oci --auth instance_principal compute instance get \
 				--instance-id "$iid" --query 'data."freeform-tags"' \
 				--output json 2>/dev/null)" || return 0
 			tags="$(printf '%s' "$tags" | python3 -c '
@@ -773,28 +790,37 @@ tags = json.load(sys.stdin) or {}
 tags["soak-health"] = sys.argv[1]
 print(json.dumps(tags))
 ' "$state:$(date +%s):avail=${avail}MB")" || return 0
-			oci --auth instance_principal compute instance update \
+			timeout 15 oci --auth instance_principal compute instance update \
 				--instance-id "$iid" --freeform-tags "$tags" --force \
 				>/dev/null 2>&1 || true
 		}
 		over=0
 		hard_floor_mb=$((HOST_FREE_FLOOR_MB / 2))
-		warn_floor_mb=$((HOST_FREE_FLOOR_MB + 4096))
+		[ "$hard_floor_mb" -ge 1 ] || hard_floor_mb=1
+		warn_floor_mb=$((HOST_FREE_FLOOR_MB + ${SOAK_HOST_WARN_BAND_MB:-4096}))
 		last_stamp=0
+		sample_n=0
 		while :; do
 			sleep 5
 			free_mb="$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null)"
 			[ -n "$free_mb" ] || continue
-			guardian_mark_workload_oom_preferred
-			if [ "$free_mb" -lt "$warn_floor_mb" ]; then
-				now="$(date +%s)"
-				if [ $((now - last_stamp)) -ge 60 ]; then
-					guardian_stamp_health_tag warning "$free_mb"
-					last_stamp="$now"
-				fi
-			fi
+			# Every 3rd sample (15s): fresh nodes appear at iteration
+			# boundaries, not per second, and the docker inspect round trip
+			# is not free at a 5s cadence.
+			sample_n=$((sample_n + 1))
+			[ $((sample_n % 3)) -eq 1 ] && guardian_mark_workload_oom_preferred
 			if [ "$free_mb" -ge "$HOST_FREE_FLOOR_MB" ]; then
 				over=0
+				# The warning stamp runs ONLY on the healthy side of the
+				# breach checks and in the background, so a slow tag write
+				# can never delay the emergency kill below.
+				if [ "$free_mb" -lt "$warn_floor_mb" ]; then
+					now="$(date +%s)"
+					if [ $((now - last_stamp)) -ge 60 ]; then
+						guardian_stamp_health_tag warning "$free_mb" &
+						last_stamp="$now"
+					fi
+				fi
 				continue
 			fi
 			over=$((over + 1))
