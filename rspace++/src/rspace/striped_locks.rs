@@ -1,15 +1,17 @@
 // Fixed-size striped-lock scheme shared by `RSpace` and `ReplayRSpace`.
 //
-// 256 pre-allocated mutexes, channel hash % NUM_LOCK_STRIPES -> stripe
-// index, replacing a growing DashMap<u64, Mutex> (PR #72 fixed this for
-// RSpace's phase_a_locks/phase_b_locks; issue #43 ported the same fix to
+// Pre-allocated mutexes, channel hash % NUM_LOCK_STRIPES -> stripe index,
+// replacing a growing DashMap<u64, Mutex> (PR #72 fixed this for RSpace's
+// phase_a_locks/phase_b_locks; issue #43 ported the same fix to
 // ReplayRSpace, which had been left on the pre-#72 DashMap). Extracted here
 // because both types otherwise carried verbatim copies of this machinery.
+//
+// 256 -> 4096
 
 use std::hash::Hash;
 use std::sync::Arc;
 
-pub(crate) const NUM_LOCK_STRIPES: usize = 256;
+pub(crate) const NUM_LOCK_STRIPES: usize = 4096;
 
 pub(crate) struct HeldLock {
     _guard: tokio::sync::OwnedMutexGuard<()>,
