@@ -32,6 +32,19 @@ if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
   echo "stack-safe-pda: expected all six RSpace commit Rocq capstones to be closed; got $rspace_commit_closed_capstones" >&2
   exit 1
 fi
+generation_checkpoint_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/GenerationCheckpointPublication.v 2>&1
+)"
+printf '%s\n' "$generation_checkpoint_rocq_output"
+generation_checkpoint_closed_capstones="$({
+  printf '%s\n' "$generation_checkpoint_rocq_output" | \
+    grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$generation_checkpoint_closed_capstones" != "13" ]]; then
+  echo "stack-safe-pda: expected all thirteen generation-checkpoint Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
+  exit 1
+fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPM1.v
 rmp2_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RMP2.v 2>&1
@@ -230,6 +243,76 @@ do
   if ! grep -q "Invariant ${checkpoint_authority_invariant} is violated" \
       <<<"$checkpoint_authority_output"; then
     echo "stack-safe-pda: ${checkpoint_authority_label} atomic-checkpoint authority mutant failed without ${checkpoint_authority_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceGenerationCheckpointPublication.cfg \
+  RSpaceGenerationCheckpointPublication.tla -cleanup
+for generation_checkpoint_mutant in \
+  "affine-clone:RSpaceGenerationCheckpointPublicationAffineCloneMutant.cfg:AtMostOneMutableAuthority" \
+  "lease-gap:RSpaceGenerationCheckpointPublicationLeaseGapMutant.cfg:AuthorityIsContinuous" \
+  "phase-skip:RSpaceGenerationCheckpointPublicationPhaseSkipMutant.cfg:PhaseFollowsAffineProtocol" \
+  "premature-catalog:RSpaceGenerationCheckpointPublicationPrematureCatalogMutant.cfg:NewAuthorityRequiresRestartGradeGeneration" \
+  "membership-substitution:RSpaceGenerationCheckpointPublicationMembershipSubstitutionMutant.cfg:CheckpointAndIndexExactlyAdmitted" \
+  "stale-cas:RSpaceGenerationCheckpointPublicationStaleCasMutant.cfg:CatalogWriteUsesExactOldImage" \
+  "third-authority:RSpaceGenerationCheckpointPublicationThirdAuthorityMutant.cfg:CrashRecoverySelectsOnlyValidAuthority" \
+  "early-ack:RSpaceGenerationCheckpointPublicationEarlyAckMutant.cfg:AcknowledgementRequiresRestartPathReadmission" \
+  "inventory-count:RSpaceGenerationCheckpointPublicationInventoryCountMutant.cfg:DescriptorInventoriesAreExact" \
+  "inventory-bytes:RSpaceGenerationCheckpointPublicationInventoryBytesMutant.cfg:DescriptorInventoriesAreExact" \
+  "inventory-digest:RSpaceGenerationCheckpointPublicationInventoryDigestMutant.cfg:OrderedInventoryIsExact" \
+  "dirty-slot-selection:RSpaceGenerationCheckpointPublicationDirtySlotSelectionMutant.cfg:CrashRecoverySelectsOnlyValidAuthority" \
+  "catalog-failure-dnp:RSpaceGenerationCheckpointPublicationCatalogFailureDnpMutant.cfg:OutcomeBoundaryIsExact" \
+  "skip-catalog-directory:RSpaceGenerationCheckpointPublicationSkipCatalogDirectoryMutant.cfg:PhysicalRecoveryRequiresCatalogDirectory" \
+  "cleanup-after-uncertainty:RSpaceGenerationCheckpointPublicationCleanupAfterUncertaintyMutant.cfg:PreflightAndCleanupPrecedeMutation" \
+  "wire-layout:RSpaceGenerationCheckpointPublicationWireLayoutMutant.cfg:WireLayoutIsExact" \
+  "charge-pollution:RSpaceGenerationCheckpointPublicationChargePollutionMutant.cfg:CheckpointHasZeroSemanticCharge" \
+  "physical-metering:RSpaceGenerationCheckpointPublicationPhysicalMeteringMutant.cfg:CheckpointHasZeroSemanticCharge"
+do
+  generation_checkpoint_label="${generation_checkpoint_mutant%%:*}"
+  generation_checkpoint_tail="${generation_checkpoint_mutant#*:}"
+  generation_checkpoint_cfg="${generation_checkpoint_tail%%:*}"
+  generation_checkpoint_invariant="${generation_checkpoint_tail#*:}"
+  if generation_checkpoint_output="$({
+    tlc_run "$tla_metadir" \
+      "$generation_checkpoint_cfg" \
+      RSpaceGenerationCheckpointPublication.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$generation_checkpoint_output"
+    echo "stack-safe-pda: ${generation_checkpoint_label} generation-checkpoint mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$generation_checkpoint_output"
+  if ! grep -q "Invariant ${generation_checkpoint_invariant} is violated" \
+      <<<"$generation_checkpoint_output"; then
+    echo "stack-safe-pda: ${generation_checkpoint_label} generation-checkpoint mutant failed without ${generation_checkpoint_invariant}" >&2
+    exit 1
+  fi
+done
+for generation_checkpoint_witness in \
+  "acknowledged:RSpaceGenerationCheckpointPublicationNeverAcknowledged.cfg:NeverAcknowledged" \
+  "recovered-old:RSpaceGenerationCheckpointPublicationNeverRecoveredOld.cfg:NeverRecoveredOld" \
+  "recovered-new:RSpaceGenerationCheckpointPublicationNeverRecoveredNew.cfg:NeverRecoveredNew" \
+  "published-failure:RSpaceGenerationCheckpointPublicationNeverPublishedFailure.cfg:NeverPublishedFailure" \
+  "indeterminate:RSpaceGenerationCheckpointPublicationNeverIndeterminate.cfg:NeverIndeterminate"
+do
+  generation_checkpoint_label="${generation_checkpoint_witness%%:*}"
+  generation_checkpoint_tail="${generation_checkpoint_witness#*:}"
+  generation_checkpoint_cfg="${generation_checkpoint_tail%%:*}"
+  generation_checkpoint_invariant="${generation_checkpoint_tail#*:}"
+  if generation_checkpoint_output="$({
+    tlc_run "$tla_metadir" \
+      "$generation_checkpoint_cfg" \
+      RSpaceGenerationCheckpointPublication.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$generation_checkpoint_output"
+    echo "stack-safe-pda: ${generation_checkpoint_label} generation-checkpoint non-vacuity witness was unreachable" >&2
+    exit 1
+  fi
+  printf '%s\n' "$generation_checkpoint_output"
+  if ! grep -q "Invariant ${generation_checkpoint_invariant} is violated" \
+      <<<"$generation_checkpoint_output"; then
+    echo "stack-safe-pda: ${generation_checkpoint_label} generation-checkpoint witness failed without ${generation_checkpoint_invariant}" >&2
     exit 1
   fi
 done
