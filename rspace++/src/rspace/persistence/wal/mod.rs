@@ -7,6 +7,7 @@
 
 mod codec;
 mod checkpoint;
+mod checkpoint_commit;
 mod disposition;
 mod error;
 mod types;
@@ -21,12 +22,17 @@ pub(crate) use checkpoint::{
     GenerationCheckpointSourceV1, PreparedGenerationCheckpointV1,
     preflight_generation_checkpoint_prepare_v1,
 };
+pub(crate) use checkpoint_commit::{
+    GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
+    GenerationCheckpointCommitViewV1,
+};
 pub use codec::{
-    LogPackObjectIter, LogPackObjectView, PREPARE_DISCRIMINATOR_LEN_V1, PrepareRecordIdentityV1,
-    PrepareRecordKindV1, PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
+    COMMIT_DISCRIMINATOR_LEN_V1, CommitRecordKindV1, LogPackObjectIter, LogPackObjectView,
+    PREPARE_DISCRIMINATOR_LEN_V1, PrepareRecordIdentityV1, PrepareRecordKindV1,
+    PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
     TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
-    TransactionPrepareRecordViewV1, decode_prepare_kind_v1, preflight_prepare_record_len_v1,
-    preflight_prepare_record_v1,
+    TransactionPrepareRecordViewV1, decode_commit_kind_v1, decode_prepare_kind_v1,
+    preflight_prepare_record_len_v1, preflight_prepare_record_v1,
 };
 pub(crate) use codec::{PrepareRecordPreflightV1, PreparedObjectLayoutV1};
 pub use disposition::{

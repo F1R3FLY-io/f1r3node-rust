@@ -428,6 +428,36 @@ impl GenerationCheckpointDescriptorV1 {
     }
 
     pub(crate) const fn inventory(self) -> CheckpointObjectInventoryV1 { self.inventory }
+
+    pub(crate) const fn as_view(self) -> GenerationCheckpointDescriptorViewV1 {
+        GenerationCheckpointDescriptorViewV1 {
+            profile_id: self.profile_id,
+            state: self.state,
+            retention_manifest: self.retention_manifest,
+            current_state_canonical_bytes: self.current_state_canonical_bytes,
+            retained_union_canonical_bytes: self.inventory.retained_union_canonical_bytes,
+            retained_union_objects: self.inventory.retained_union_objects,
+            data_objects: self.inventory.data_objects,
+            data_canonical_bytes: self.inventory.data_canonical_bytes,
+            ordered_digest: self.inventory.ordered_digest,
+        }
+    }
+
+    pub(crate) const fn from_view(view: GenerationCheckpointDescriptorViewV1) -> Self {
+        Self {
+            profile_id: view.profile_id,
+            state: view.state,
+            retention_manifest: view.retention_manifest,
+            current_state_canonical_bytes: view.current_state_canonical_bytes,
+            inventory: CheckpointObjectInventoryV1 {
+                retained_union_objects: view.retained_union_objects,
+                retained_union_canonical_bytes: view.retained_union_canonical_bytes,
+                data_objects: view.data_objects,
+                data_canonical_bytes: view.data_canonical_bytes,
+                ordered_digest: view.ordered_digest,
+            },
+        }
+    }
 }
 
 impl CanonicalEncode for GenerationCheckpointDescriptorV1 {

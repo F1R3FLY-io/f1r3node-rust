@@ -768,8 +768,13 @@ pub(crate) struct DurableAdmissionReportV1 {
     pub(crate) object_read_bytes: u64,
 }
 
-pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
-    lease: DurableWriterLeaseV1,
+/// Immutable checkpoint source pinned to one exact catalog authority.
+///
+/// Keeping this authority separate from the mutable writer lease lets a
+/// generation publisher borrow the complete admitted source while mutating
+/// new pack/index files, without reopening the store, cloning the closure, or
+/// introducing aliasing escape hatches.
+pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
     store: DurableIndexedObjectStoreV1,
     authority: CatalogAuthorityTokenV1,
     version: StateVersionV1,
@@ -780,7 +785,7 @@ pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
     profile: PhantomData<fn() -> P>,
 }
 
-impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
     pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         VerifiedDagState::from_completed_admission(&self.store, self.version, self.semantic)
             .expect("durable admission token is bound to its exact catalog state")
@@ -832,14 +837,51 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         self.store
             .copy_verified_canonical_with_scratch(reference, sink, scratch)
     }
+}
 
-    /// Publication is an affine transition: later durable mutation code must
-    /// consume this complete authority rather than borrowing the raw lease.
-    pub(super) fn into_publication_parts(
-        self,
-    ) -> (DurableWriterLeaseV1, DurableIndexedObjectStoreV1, CatalogAuthorityTokenV1, StateVersionV1)
-    {
-        (self.lease, self.store, self.authority, self.version)
+/// Affine authority for constructing and publishing one fresh generation.
+///
+/// Publication must destructure this value into its disjoint fields. The
+/// source remains immutably borrowed by checkpoint/index plans while the lease
+/// alone owns all filesystem mutation authority.
+pub(crate) struct CheckpointPublicationAuthorityV1<P: SemanticProfile> {
+    lease: DurableWriterLeaseV1,
+    source: AdmittedCheckpointSourceV1<P>,
+}
+
+impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
+    pub(crate) fn into_parts(self) -> (DurableWriterLeaseV1, AdmittedCheckpointSourceV1<P>) {
+        (self.lease, self.source)
+    }
+}
+
+pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
+    lease: DurableWriterLeaseV1,
+    source: AdmittedCheckpointSourceV1<P>,
+}
+
+impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+    pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
+        self.source.verified_state()
+    }
+
+    pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.source.report() }
+
+    pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { self.source.authority() }
+
+    pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] {
+        self.source.retention_manifest_bytes()
+    }
+
+    pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
+        self.source.retained_closure()
+    }
+
+    pub(crate) fn into_checkpoint_publication(self) -> CheckpointPublicationAuthorityV1<P> {
+        CheckpointPublicationAuthorityV1 {
+            lease: self.lease,
+            source: self.source,
+        }
     }
 }
 
@@ -993,14 +1035,16 @@ fn admit_physical_writer<P: SemanticProfile>(
     drop(bounded);
     Ok(SemanticallyAdmittedDurableWriterV1 {
         lease,
-        store,
-        authority,
-        version: catalog.state(),
-        retention_manifest_bytes,
-        semantic,
-        retained_closure: ledger,
-        report,
-        profile: PhantomData,
+        source: AdmittedCheckpointSourceV1 {
+            store,
+            authority,
+            version: catalog.state(),
+            retention_manifest_bytes,
+            semantic,
+            retained_closure: ledger,
+            report,
+            profile: PhantomData,
+        },
     })
 }
 

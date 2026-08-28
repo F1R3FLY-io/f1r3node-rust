@@ -48,6 +48,7 @@ pub enum LogPackFormatError {
         actual: u64,
     },
     UnsupportedPrepareKind(u64),
+    UnsupportedCommitKind(u64),
     LengthMismatch {
         declared: u64,
         actual: u64,
@@ -139,6 +140,31 @@ pub enum LogPackFormatError {
         expected: crate::rspace::persistence::CanonicalObjectKind,
         actual: crate::rspace::persistence::CanonicalObjectKind,
     },
+    CheckpointDescriptorMismatch,
+    CheckpointPrepareOffset {
+        expected: u64,
+        actual: u64,
+    },
+    CheckpointFirstLivePack {
+        expected: u64,
+        actual: u64,
+    },
+    CheckpointPublicationRetention {
+        expected: ObjectRefV1,
+        actual: ObjectRefV1,
+    },
+    CheckpointPublicationCurrentBytes {
+        expected: u64,
+        actual: u64,
+    },
+    CheckpointPublicationRetainedBytes {
+        expected: u64,
+        actual: u64,
+    },
+    CheckpointIndexTail {
+        expected: u64,
+        actual: u64,
+    },
     Checkpoint(GenerationCheckpointErrorV1),
     ResourceLimit {
         resource: &'static str,
@@ -181,6 +207,9 @@ impl Display for LogPackFormatError {
             }
             Self::UnsupportedPrepareKind(kind) => {
                 write!(formatter, "unsupported log-pack prepare kind {kind}")
+            }
+            Self::UnsupportedCommitKind(kind) => {
+                write!(formatter, "unsupported log-pack commit kind {kind}")
             }
             Self::LengthMismatch { declared, actual } => {
                 write!(formatter, "log-pack length mismatch: declared {declared}, actual {actual}")
@@ -298,6 +327,37 @@ impl Display for LogPackFormatError {
                 "checkpoint {role} object {reference:?} has kind {}; expected {}",
                 actual.name(),
                 expected.name()
+            ),
+            Self::CheckpointDescriptorMismatch => formatter
+                .write_str("checkpoint COMMIT descriptor does not equal its PREPARE descriptor"),
+            Self::CheckpointPrepareOffset { expected, actual } => write!(
+                formatter,
+                "checkpoint PREPARE offset {actual} does not equal required fresh-generation \
+                 offset {expected}"
+            ),
+            Self::CheckpointFirstLivePack { expected, actual } => write!(
+                formatter,
+                "checkpoint first-live pack {actual} does not equal PREPARE pack {expected}"
+            ),
+            Self::CheckpointPublicationRetention { expected, actual } => write!(
+                formatter,
+                "checkpoint publication retention manifest {actual:?} does not equal descriptor \
+                 manifest {expected:?}"
+            ),
+            Self::CheckpointPublicationCurrentBytes { expected, actual } => write!(
+                formatter,
+                "checkpoint publication current-state bytes {actual} do not equal descriptor \
+                 bytes {expected}"
+            ),
+            Self::CheckpointPublicationRetainedBytes { expected, actual } => write!(
+                formatter,
+                "checkpoint publication retained bytes {actual} do not equal descriptor bytes \
+                 {expected}"
+            ),
+            Self::CheckpointIndexTail { expected, actual } => write!(
+                formatter,
+                "checkpoint durable index tail {actual} does not equal exact derived tail \
+                 {expected}"
             ),
             Self::Checkpoint(error) => Display::fmt(error, formatter),
             Self::ResourceLimit {

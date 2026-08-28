@@ -18,9 +18,10 @@ mod startup;
 #[cfg(test)]
 pub(crate) use admission::copy_verified_canonical_with_scratch;
 pub(crate) use admission::{
-    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAdmissionReportV1,
-    DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1, DurableObjectReadErrorV1,
-    InventoryMismatchKindV1, SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
+    AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
+    DurableAdmissionLimitsV1, DurableAdmissionReportV1, DurableIndexedObjectStoreV1,
+    DurableObjectCopyErrorV1, DurableObjectReadErrorV1, InventoryMismatchKindV1,
+    SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
 };
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
@@ -29,6 +30,7 @@ pub use catalog::{
 pub use error::DurableFormatError;
 pub(crate) use index::{
     CanonicalIndexStreamV1, CommittedObjectIndexV1, ObjectIndexPrefixVerifierV1,
+    PreparedGenerationCheckpointIndexV1, PreparedGenerationCheckpointIndexVisitErrorV1,
     PreparedIndexAppendV1,
 };
 pub use index::{

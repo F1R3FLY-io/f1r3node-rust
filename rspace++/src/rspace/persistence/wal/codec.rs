@@ -33,12 +33,14 @@ use crate::rspace::persistence::transaction::{
 };
 
 pub(super) const PREPARE_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Prep\0\0";
-const COMMIT_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Comm\0\0";
+pub(super) const COMMIT_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceWAL.Comm\0\0";
 pub(super) const LOG_PACK_VERSION_V1: u64 = 1;
 pub(super) const TRANSACTION_PREPARE_KIND_V1: u64 = 1;
 pub(super) const GENERATION_CHECKPOINT_PREPARE_KIND_V1: u64 = 3;
-const COMMIT_KIND: u64 = 2;
+pub(super) const TRANSACTION_COMMIT_KIND_V1: u64 = 2;
+pub(super) const GENERATION_CHECKPOINT_COMMIT_KIND_V1: u64 = 4;
 pub const PREPARE_DISCRIMINATOR_LEN_V1: u64 = (OBJECT_DOMAIN_LEN + 8 + 8) as u64;
+pub const COMMIT_DISCRIMINATOR_LEN_V1: u64 = (OBJECT_DOMAIN_LEN + 8 + 8) as u64;
 const OBJECT_REF_LEN: u64 = (OBJECT_DIGEST_LEN + 8) as u64;
 const OBJECT_RECORD_HEADER_LEN: u64 = 8 + OBJECT_REF_LEN;
 const PREPARE_AUTH_HEADER_LEN: usize = 232;
@@ -97,6 +99,53 @@ pub fn decode_prepare_kind_v1(prefix: &[u8]) -> Result<PrepareRecordKindV1, LogP
         TRANSACTION_PREPARE_KIND_V1 => Ok(PrepareRecordKindV1::Incremental),
         GENERATION_CHECKPOINT_PREPARE_KIND_V1 => Ok(PrepareRecordKindV1::GenerationCheckpoint),
         _ => Err(LogPackFormatError::UnsupportedPrepareKind(kind)),
+    }
+}
+
+/// An unauthenticated COMMIT discriminator used only to select a fixed record
+/// width. The selected record must still pass its complete kind-specific CRC
+/// and canonical parser before any field becomes authoritative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitRecordKindV1 {
+    Incremental,
+    GenerationCheckpoint,
+}
+
+impl CommitRecordKindV1 {
+    pub const fn fixed_record_len(self) -> u64 {
+        match self {
+            Self::Incremental => TRANSACTION_COMMIT_RECORD_LEN_V1,
+            Self::GenerationCheckpoint => {
+                super::checkpoint_commit::GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1
+            }
+        }
+    }
+}
+
+/// Decode only the domain/version/kind discriminator of a COMMIT record.
+///
+/// This unauthenticated result carries no authority over any variable or
+/// semantic field and may select only one of two small fixed record widths.
+pub fn decode_commit_kind_v1(prefix: &[u8]) -> Result<CommitRecordKindV1, LogPackFormatError> {
+    let actual = checked_len(prefix.len(), "WAL commit discriminator")?;
+    if actual != COMMIT_DISCRIMINATOR_LEN_V1 {
+        return Err(LogPackFormatError::LengthMismatch {
+            declared: COMMIT_DISCRIMINATOR_LEN_V1,
+            actual,
+        });
+    }
+    let mut cursor = ReadCursor::new(prefix);
+    require_domain(&mut cursor, COMMIT_DOMAIN)?;
+    let version = cursor.read_u64()?;
+    if version != LOG_PACK_VERSION_V1 {
+        return Err(LogPackFormatError::UnsupportedVersion(version));
+    }
+    let kind = cursor.read_u64()?;
+    cursor.finish()?;
+    match kind {
+        TRANSACTION_COMMIT_KIND_V1 => Ok(CommitRecordKindV1::Incremental),
+        GENERATION_CHECKPOINT_COMMIT_KIND_V1 => Ok(CommitRecordKindV1::GenerationCheckpoint),
+        _ => Err(LogPackFormatError::UnsupportedCommitKind(kind)),
     }
 }
 
@@ -879,7 +928,7 @@ impl TransactionCommitRecordV1 {
             let mut sink = ArraySink::new(&mut bytes[..COMMIT_AUTH_LEN]);
             sink.write_all(COMMIT_DOMAIN).expect("fixed commit domain");
             write_u64(&mut sink, LOG_PACK_VERSION_V1).expect("fixed commit version");
-            write_u64(&mut sink, COMMIT_KIND).expect("fixed commit kind");
+            write_u64(&mut sink, TRANSACTION_COMMIT_KIND_V1).expect("fixed commit kind");
             write_u64(&mut sink, COMMIT_RECORD_LEN as u64).expect("fixed commit length");
             write_u64(&mut sink, prepare.sequence().get()).expect("fixed commit sequence");
             sink.write_all(store_id.as_bytes()).expect("fixed store ID");
@@ -961,7 +1010,7 @@ impl TransactionCommitViewV1 {
         }
         let mut cursor = ReadCursor::new(&bytes[..COMMIT_AUTH_LEN]);
         require_domain(&mut cursor, COMMIT_DOMAIN)?;
-        require_version_and_kind(&mut cursor, COMMIT_KIND)?;
+        require_version_and_kind(&mut cursor, TRANSACTION_COMMIT_KIND_V1)?;
         let declared_len = cursor.read_u64()?;
         if declared_len != COMMIT_RECORD_LEN as u64 {
             return Err(LogPackFormatError::LengthMismatch {
@@ -1071,7 +1120,7 @@ impl TransactionCommitViewV1 {
     }
 }
 
-fn require_record_address(
+pub(super) fn require_record_address(
     address: LogPackAddress,
     field: &'static str,
 ) -> Result<(), LogPackFormatError> {
@@ -1179,7 +1228,10 @@ fn write_prepare_header<S: CanonicalSink>(
     write_u64(sink, object_bytes)
 }
 
-fn write_state<S: CanonicalSink>(sink: &mut S, state: StateVersionV1) -> Result<(), S::Error> {
+pub(super) fn write_state<S: CanonicalSink>(
+    sink: &mut S,
+    state: StateVersionV1,
+) -> Result<(), S::Error> {
     write_u64(sink, state.generation())?;
     write_reference(sink, state.manifest())
 }
@@ -1192,11 +1244,13 @@ pub(super) fn write_reference<S: CanonicalSink>(
     write_u64(sink, reference.encoded_len())
 }
 
-fn read_state(cursor: &mut ReadCursor<'_>) -> Result<StateVersionV1, CanonicalFormatError> {
+pub(super) fn read_state(
+    cursor: &mut ReadCursor<'_>,
+) -> Result<StateVersionV1, CanonicalFormatError> {
     Ok(StateVersionV1::new(cursor.read_u64()?, ObjectRefV1::parse(cursor)?))
 }
 
-fn read_store_id(cursor: &mut ReadCursor<'_>) -> Result<StoreId, CanonicalFormatError> {
+pub(super) fn read_store_id(cursor: &mut ReadCursor<'_>) -> Result<StoreId, CanonicalFormatError> {
     let bytes = cursor
         .read_exact(STORE_ID_LEN)?
         .try_into()
@@ -1204,7 +1258,9 @@ fn read_store_id(cursor: &mut ReadCursor<'_>) -> Result<StoreId, CanonicalFormat
     Ok(StoreId::from_array(bytes))
 }
 
-fn read_profile_id(cursor: &mut ReadCursor<'_>) -> Result<SemanticProfileId, CanonicalFormatError> {
+pub(super) fn read_profile_id(
+    cursor: &mut ReadCursor<'_>,
+) -> Result<SemanticProfileId, CanonicalFormatError> {
     let bytes = cursor
         .read_exact(SEMANTIC_PROFILE_ID_LEN)?
         .try_into()
@@ -1212,7 +1268,7 @@ fn read_profile_id(cursor: &mut ReadCursor<'_>) -> Result<SemanticProfileId, Can
     Ok(SemanticProfileId::from_array(bytes))
 }
 
-fn read_physical_digest(
+pub(super) fn read_physical_digest(
     cursor: &mut ReadCursor<'_>,
 ) -> Result<PhysicalDigest, CanonicalFormatError> {
     let bytes = cursor
@@ -1222,7 +1278,7 @@ fn read_physical_digest(
     Ok(PhysicalDigest::from_array(bytes))
 }
 
-fn require_domain(
+pub(super) fn require_domain(
     cursor: &mut ReadCursor<'_>,
     expected: &[u8; OBJECT_DOMAIN_LEN],
 ) -> Result<(), LogPackFormatError> {
@@ -1232,7 +1288,7 @@ fn require_domain(
     Ok(())
 }
 
-fn require_version_and_kind(
+pub(super) fn require_version_and_kind(
     cursor: &mut ReadCursor<'_>,
     expected_kind: u64,
 ) -> Result<(), LogPackFormatError> {

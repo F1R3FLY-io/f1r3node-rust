@@ -12,14 +12,17 @@ use super::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 use crate::rspace::persistence::canonical::{
     CanonicalFormatError, ObjectDigest, ObjectRefV1, ReadCursor,
 };
+use crate::rspace::persistence::checkpoint::GenerationCheckpointErrorV1;
 use crate::rspace::persistence::checksum::{
     CHECKSUM_FIELD_LEN, crc32c, decode_crc32c, encode_crc32c,
 };
 use crate::rspace::persistence::physical::{STORE_ID_LEN, StoreId};
 use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::wal::{
+    CommitPublicationV1, GenerationCheckpointLayoutVisitErrorV1,
+    GenerationCheckpointObjectLayoutV1, GenerationCheckpointSourceV1, LogPackAddress,
     LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectView, LogPackSequence, PackId,
-    PreparedLogPackTransactionV1, PreparedObjectLayoutV1,
+    PreparedGenerationCheckpointV1, PreparedLogPackTransactionV1, PreparedObjectLayoutV1,
 };
 
 #[cfg(test)]
@@ -284,13 +287,22 @@ impl ObjectIndexRecordV1 {
         let relative = layout
             .canonical_offset()
             .ok_or(IndexFormatError::InlineObjectMissingOffset(layout.reference()))?;
-        let canonical_offset = prepare_offset.checked_add(relative).ok_or(
-            IndexFormatError::AbsoluteOffsetOverflow {
-                prepare_offset,
-                relative_offset: relative,
-            },
-        )?;
-        Self::new(layout.reference(), ObjectLocationV1::new(pack_id, canonical_offset, sequence)?)
+        Self::from_relative(layout.reference(), relative, pack_id, prepare_offset, sequence)
+    }
+
+    pub(crate) fn from_checkpoint_layout(
+        pack_id: PackId,
+        prepare_offset: u64,
+        sequence: LogPackSequence,
+        layout: GenerationCheckpointObjectLayoutV1,
+    ) -> Result<Self, IndexFormatError> {
+        Self::from_relative(
+            layout.reference(),
+            layout.canonical_offset(),
+            pack_id,
+            prepare_offset,
+            sequence,
+        )
     }
 
     pub(crate) fn from_data_view(
@@ -305,13 +317,23 @@ impl ObjectIndexRecordV1 {
         let relative = object
             .canonical_offset()
             .ok_or(IndexFormatError::InlineObjectMissingOffset(object.reference()))?;
+        Self::from_relative(object.reference(), relative, pack_id, prepare_offset, sequence)
+    }
+
+    fn from_relative(
+        reference: ObjectRefV1,
+        relative: u64,
+        pack_id: PackId,
+        prepare_offset: u64,
+        sequence: LogPackSequence,
+    ) -> Result<Self, IndexFormatError> {
         let canonical_offset = prepare_offset.checked_add(relative).ok_or(
             IndexFormatError::AbsoluteOffsetOverflow {
                 prepare_offset,
                 relative_offset: relative,
             },
         )?;
-        Self::new(object.reference(), ObjectLocationV1::new(pack_id, canonical_offset, sequence)?)
+        Self::new(reference, ObjectLocationV1::new(pack_id, canonical_offset, sequence)?)
     }
 
     pub const fn reference(self) -> ObjectRefV1 { self.reference }
@@ -681,6 +703,177 @@ impl<'prepared, 'transaction, 'mutation, P: SemanticProfile>
     }
 }
 
+/// Complete fresh-index image derived from the exact checkpoint PREPARE
+/// layout. The plan borrows the already-admitted source, emits each record
+/// through a caller callback, and never materializes a record collection.
+pub(crate) struct PreparedGenerationCheckpointIndexV1<'prepared, 'source, P, Source>
+where
+    P: SemanticProfile,
+    Source: GenerationCheckpointSourceV1,
+{
+    prepared: &'prepared PreparedGenerationCheckpointV1<'source, P, Source>,
+    header: ObjectIndexHeaderV1,
+    prepare_address: LogPackAddress,
+    exact_tail: u64,
+    publication: CommitPublicationV1,
+}
+
+impl<'prepared, 'source, P, Source>
+    PreparedGenerationCheckpointIndexV1<'prepared, 'source, P, Source>
+where
+    P: SemanticProfile,
+    Source: GenerationCheckpointSourceV1,
+{
+    pub(crate) fn new(
+        header: ObjectIndexHeaderV1,
+        prepare_address: LogPackAddress,
+        prepared: &'prepared PreparedGenerationCheckpointV1<'source, P, Source>,
+    ) -> Result<Self, IndexFormatError> {
+        if header.store_id() != prepared.store_id() {
+            return Err(IndexFormatError::PrepareStore {
+                expected: header.store_id(),
+                actual: prepared.store_id(),
+            });
+        }
+        if prepare_address.length() != prepared.record_len() {
+            return Err(IndexFormatError::Length {
+                field: "checkpoint PREPARE address",
+                expected: prepared.record_len(),
+                actual: prepare_address.length(),
+            });
+        }
+        if prepare_address.offset() != PACK_HEADER_LEN_V1 {
+            return Err(IndexFormatError::CheckpointPrepareOffset {
+                expected: PACK_HEADER_LEN_V1,
+                actual: prepare_address.offset(),
+            });
+        }
+        prepare_address
+            .offset()
+            .checked_add(prepared.record_len())
+            .ok_or(IndexFormatError::PrepareEndOverflow {
+                offset: prepare_address.offset(),
+                length: prepared.record_len(),
+            })?;
+
+        let descriptor = prepared.descriptor();
+        let record_count = descriptor.inventory().data_objects();
+        let record_bytes = record_count.checked_mul(INDEX_RECORD_LEN_V1).ok_or(
+            IndexFormatError::IndexTailOverflow {
+                old_tail: INDEX_HEADER_LEN_V1,
+                record_count,
+            },
+        )?;
+        let exact_tail = INDEX_HEADER_LEN_V1.checked_add(record_bytes).ok_or(
+            IndexFormatError::IndexTailOverflow {
+                old_tail: INDEX_HEADER_LEN_V1,
+                record_count,
+            },
+        )?;
+        let publication = CommitPublicationV1::new(
+            prepare_address.segment(),
+            header.generation().get(),
+            exact_tail,
+            descriptor.retention_manifest(),
+            descriptor.current_state_canonical_bytes().get(),
+            descriptor
+                .inventory()
+                .retained_union_canonical_bytes()
+                .get(),
+        )?;
+        Ok(Self {
+            prepared,
+            header,
+            prepare_address,
+            exact_tail,
+            publication,
+        })
+    }
+
+    pub(crate) const fn header(&self) -> ObjectIndexHeaderV1 { self.header }
+
+    pub(crate) const fn prepare_address(&self) -> LogPackAddress { self.prepare_address }
+
+    pub(crate) fn record_count(&self) -> u64 {
+        self.prepared.descriptor().inventory().data_objects()
+    }
+
+    pub(crate) const fn exact_tail(&self) -> u64 { self.exact_tail }
+
+    pub(crate) const fn publication(&self) -> CommitPublicationV1 { self.publication }
+
+    pub(crate) fn try_visit_records<E>(
+        &self,
+        mut visitor: impl FnMut(ObjectIndexRecordV1) -> Result<(), E>,
+    ) -> Result<(), PreparedGenerationCheckpointIndexVisitErrorV1<E>> {
+        let pack_id = self.prepare_address.pack_id();
+        let prepare_offset = self.prepare_address.offset();
+        let sequence = self.prepared.sequence();
+        self.prepared
+            .try_visit_object_layouts(|layout| {
+                let record = ObjectIndexRecordV1::from_checkpoint_layout(
+                    pack_id,
+                    prepare_offset,
+                    sequence,
+                    layout,
+                )
+                .map_err(CheckpointIndexVisitorErrorV1::Index)?;
+                visitor(record).map_err(CheckpointIndexVisitorErrorV1::Visitor)
+            })
+            .map_err(|error| match error {
+                GenerationCheckpointLayoutVisitErrorV1::Checkpoint(error) => {
+                    PreparedGenerationCheckpointIndexVisitErrorV1::Checkpoint(error)
+                }
+                GenerationCheckpointLayoutVisitErrorV1::Invariant(error) => {
+                    PreparedGenerationCheckpointIndexVisitErrorV1::Invariant(error)
+                }
+                GenerationCheckpointLayoutVisitErrorV1::Visitor(
+                    CheckpointIndexVisitorErrorV1::Index(error),
+                ) => PreparedGenerationCheckpointIndexVisitErrorV1::Index(error),
+                GenerationCheckpointLayoutVisitErrorV1::Visitor(
+                    CheckpointIndexVisitorErrorV1::Visitor(error),
+                ) => PreparedGenerationCheckpointIndexVisitErrorV1::Visitor(error),
+            })
+    }
+}
+
+enum CheckpointIndexVisitorErrorV1<E> {
+    Index(IndexFormatError),
+    Visitor(E),
+}
+
+#[derive(Debug)]
+pub(crate) enum PreparedGenerationCheckpointIndexVisitErrorV1<E> {
+    Checkpoint(GenerationCheckpointErrorV1),
+    Invariant(LogPackFormatError),
+    Index(IndexFormatError),
+    Visitor(E),
+}
+
+impl<E: Display> Display for PreparedGenerationCheckpointIndexVisitErrorV1<E> {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Checkpoint(error) => Display::fmt(error, formatter),
+            Self::Invariant(error) => write!(formatter, "checkpoint layout invariant: {error}"),
+            Self::Index(error) => Display::fmt(error, formatter),
+            Self::Visitor(error) => write!(formatter, "checkpoint index visitor failed: {error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error
+    for PreparedGenerationCheckpointIndexVisitErrorV1<E>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Checkpoint(error) => Some(error),
+            Self::Invariant(error) => Some(error),
+            Self::Index(error) => Some(error),
+            Self::Visitor(error) => Some(error),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IndexFormatError {
     Canonical(CanonicalFormatError),
@@ -723,6 +916,10 @@ pub enum IndexFormatError {
         relative_offset: u64,
     },
     PrepareOffsetBeforePackHeader(u64),
+    CheckpointPrepareOffset {
+        expected: u64,
+        actual: u64,
+    },
     PrepareEndOverflow {
         offset: u64,
         length: u64,
@@ -816,7 +1013,7 @@ impl Display for IndexFormatError {
             }
             Self::PrepareStore { expected, actual } => write!(
                 formatter,
-                "index store {expected} does not match prepared transaction store {actual}"
+                "index store {expected} does not match prepared WAL record store {actual}"
             ),
             Self::Generation { expected, actual } => write!(
                 formatter,
@@ -839,6 +1036,11 @@ impl Display for IndexFormatError {
             Self::PrepareOffsetBeforePackHeader(offset) => {
                 write!(formatter, "prepare offset {offset} lies inside the pack header")
             }
+            Self::CheckpointPrepareOffset { expected, actual } => write!(
+                formatter,
+                "checkpoint PREPARE offset {actual} does not equal required fresh-pack offset \
+                 {expected}"
+            ),
             Self::PrepareEndOverflow { offset, length } => write!(
                 formatter,
                 "prepare offset {offset} plus record length {length} overflows u64"

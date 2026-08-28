@@ -87,14 +87,15 @@ pub use transaction::{
     SealedDagTransaction, SealedObject, SealedTransitionV1, VerifiedDagState,
 };
 pub use wal::{
-    CommitPublicationV1, CommittedObjectComparison, CommittedObjectLookup, LogPackAddress,
-    LogPackDecodeLimits, LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectIter,
-    LogPackObjectPlanError, LogPackObjectPlanV1, LogPackObjectView, LogPackSequence,
-    LogPackWriteError, PREPARE_DISCRIMINATOR_LEN_V1, PackId, PrepareRecordIdentityV1,
-    PrepareRecordKindV1, PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
+    COMMIT_DISCRIMINATOR_LEN_V1, CommitPublicationV1, CommitRecordKindV1,
+    CommittedObjectComparison, CommittedObjectLookup, LogPackAddress, LogPackDecodeLimits,
+    LogPackFormatError, LogPackObjectDispositionV1, LogPackObjectIter, LogPackObjectPlanError,
+    LogPackObjectPlanV1, LogPackObjectView, LogPackSequence, LogPackWriteError,
+    PREPARE_DISCRIMINATOR_LEN_V1, PackId, PrepareRecordIdentityV1, PrepareRecordKindV1,
+    PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
     TRANSACTION_PREPARE_HEADER_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
-    TransactionPrepareRecordViewV1, decode_prepare_kind_v1, preflight_prepare_record_len_v1,
-    preflight_prepare_record_v1,
+    TransactionPrepareRecordViewV1, decode_commit_kind_v1, decode_prepare_kind_v1,
+    preflight_prepare_record_len_v1, preflight_prepare_record_v1,
 };
 
 #[cfg(test)]

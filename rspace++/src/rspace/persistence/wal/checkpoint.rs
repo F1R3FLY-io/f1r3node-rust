@@ -23,7 +23,7 @@ use crate::rspace::persistence::checksum::{
     CHECKSUM_FIELD_LEN, crc32c, decode_crc32c, encode_crc32c,
 };
 use crate::rspace::persistence::durable::{
-    DurableObjectCopyErrorV1, DurableObjectReadErrorV1, SemanticallyAdmittedDurableWriterV1,
+    AdmittedCheckpointSourceV1, DurableObjectCopyErrorV1, DurableObjectReadErrorV1,
 };
 use crate::rspace::persistence::physical::{PhysicalDigest, STORE_ID_LEN, StoreId};
 use crate::rspace::persistence::semantic::SemanticProfile;
@@ -97,22 +97,22 @@ pub(crate) trait GenerationCheckpointSourceV1: source_seal::Sealed {
     ) -> Result<(), GenerationCheckpointSourceCopyErrorV1<Self::ReadError, S::Error>>;
 }
 
-impl<P: SemanticProfile> source_seal::Sealed for SemanticallyAdmittedDurableWriterV1<P> {}
+impl<P: SemanticProfile> source_seal::Sealed for AdmittedCheckpointSourceV1<P> {}
 
-impl<P: SemanticProfile> GenerationCheckpointSourceV1 for SemanticallyAdmittedDurableWriterV1<P> {
+impl<P: SemanticProfile> GenerationCheckpointSourceV1 for AdmittedCheckpointSourceV1<P> {
     type ReadError = DurableObjectReadErrorV1;
 
     fn checkpoint_descriptor(
         &self,
     ) -> Result<GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1> {
-        SemanticallyAdmittedDurableWriterV1::checkpoint_descriptor(self)
+        AdmittedCheckpointSourceV1::checkpoint_descriptor(self)
     }
 
     fn try_visit_checkpoint_references<E>(
         &self,
         visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
     ) -> Result<(), CheckpointReferenceVisitErrorV1<E>> {
-        SemanticallyAdmittedDurableWriterV1::try_visit_checkpoint_references(self, visitor)
+        AdmittedCheckpointSourceV1::try_visit_checkpoint_references(self, visitor)
     }
 
     fn copy_checkpoint_object<S: CanonicalSink>(
@@ -121,9 +121,7 @@ impl<P: SemanticProfile> GenerationCheckpointSourceV1 for SemanticallyAdmittedDu
         sink: &mut S,
         scratch: &mut Vec<u8>,
     ) -> Result<(), GenerationCheckpointSourceCopyErrorV1<Self::ReadError, S::Error>> {
-        match SemanticallyAdmittedDurableWriterV1::copy_checkpoint_object(
-            self, reference, sink, scratch,
-        ) {
+        match AdmittedCheckpointSourceV1::copy_checkpoint_object(self, reference, sink, scratch) {
             Ok(()) => Ok(()),
             Err(DurableObjectCopyErrorV1::Object(error)) => {
                 Err(GenerationCheckpointSourceCopyErrorV1::Source(error))
@@ -146,6 +144,19 @@ pub(crate) struct GenerationCheckpointPrepareIdentityV1 {
 }
 
 impl GenerationCheckpointPrepareIdentityV1 {
+    pub(crate) const fn from_record_view(
+        view: GenerationCheckpointPrepareRecordViewV1<'_>,
+    ) -> Self {
+        Self {
+            sequence: view.preflight.sequence,
+            store_id: view.preflight.store_id,
+            descriptor: GenerationCheckpointDescriptorV1::from_view(view.preflight.descriptor),
+            record_len: view.preflight.record_len,
+            digest: view.digest,
+            crc32c: view.crc32c,
+        }
+    }
+
     pub(crate) const fn sequence(self) -> LogPackSequence { self.sequence }
 
     pub(crate) const fn store_id(self) -> StoreId { self.store_id }
@@ -257,6 +268,10 @@ where
     pub(crate) const fn record_len(&self) -> u64 { self.record_len }
 
     pub(crate) const fn descriptor(&self) -> GenerationCheckpointDescriptorV1 { self.descriptor }
+
+    pub(crate) const fn store_id(&self) -> StoreId { self.store_id }
+
+    pub(crate) const fn sequence(&self) -> LogPackSequence { self.sequence }
 
     pub(crate) fn try_visit_object_layouts<E>(
         &self,
