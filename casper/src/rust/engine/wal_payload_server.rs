@@ -286,6 +286,55 @@ impl rholang::rust::interpreter::io::wal::PayloadPersistence for InMemoryPayload
     }
 }
 
+/// DD-7b-2 (a) Option 2 (2026-08-29): block-storage-backed
+/// implementation of `PayloadSourceRecorder`.  Wraps the
+/// `BlockDagKeyValueStorage` handle (co-located with the DAG's
+/// existing `deploy_index`) and forwards `record` calls to
+/// `record_payload_source`.
+///
+/// Wired into every runtime's `FileHandleTable::payload_source_recorder`
+/// via `RuntimeManager::set_payload_source_recorder` at boot;
+/// symmetric on leader and follower so any node whose block
+/// processing succeeded can serve the Option 2 tier at boot to a
+/// later joiner.
+///
+/// # Debug output
+///
+/// Custom Debug impl avoids leaking the underlying
+/// `BlockDagKeyValueStorage`'s (typically large) internal state
+/// through recorder-diagnostic logs.
+#[derive(Clone)]
+pub struct BlockStorageBackedRecorder {
+    /// `BlockDagKeyValueStorage` is itself `Clone` (all internal
+    /// state is Arc-shared under `PlRwLock`), so we hold it by
+    /// value and lean on that shape rather than adding an extra
+    /// `Arc` indirection.
+    storage: block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
+}
+
+impl BlockStorageBackedRecorder {
+    pub fn new(
+        storage: block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
+    ) -> Self {
+        Self { storage }
+    }
+}
+
+impl std::fmt::Debug for BlockStorageBackedRecorder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlockStorageBackedRecorder")
+            .finish_non_exhaustive()
+    }
+}
+
+impl rholang::rust::interpreter::io::wal::PayloadSourceRecorder for BlockStorageBackedRecorder {
+    fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String> {
+        self.storage
+            .record_payload_source(payload_hash, deploy_sig)
+            .map_err(|e| format!("{e}"))
+    }
+}
+
 /// Phase 7b-2 (2026-08-27): a bundled handle to a payload store
 /// that lets the same underlying bytes be reached through TWO
 /// trait objects — `PayloadPersistence` (the write path, called

@@ -80,7 +80,7 @@ use tracing::{info, warn};
 use crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion;
 use crate::rust::engine::wal_payload_server::PayloadLookup;
 use crate::rust::engine::wal_payload_sync::{
-    apply_wal_slice_after_fetch, BootApplyError, WalPayloadSyncDriver,
+    apply_wal_slice_after_fetch, BootApplyError, Option2ReducerContext, WalPayloadSyncDriver,
 };
 
 /// Default boot-time apply timeout.  Matches `STALE_EVICTION_MS`
@@ -113,12 +113,21 @@ pub const BOOT_APPLY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// `DirectoryPayloadStore` populated by prior block processing)
 /// before enqueueing a peer fetch.  When `None`, every payload is
 /// enqueued for peer fetch — matches pre-reducer behavior.
+///
+/// `option2_ctx` is the DD-7b-2 (a) Option 2 reducer source
+/// (2026-08-29): when `Some`, the boot enumerator chains through
+/// the block-storage `payload_hash → deploy_sig` index to
+/// reproduce write bytes from block-stored deploys — closing the
+/// gap Option 1 leaves for first-time joiners with empty payload
+/// stores.  When `None`, Option 2 is disabled and the enumerator
+/// falls through to peer fetch for hashes Tier 1 misses.
 pub fn spawn_boot_apply_subscriber(
     mut rx: UnboundedReceiver<SnapshotCompletion>,
     wal_payload_driver: Arc<WalPayloadSyncDriver>,
     snapshot_dir: std::path::PathBuf,
     allowed_roots: Vec<std::path::PathBuf>,
     payload_lookup: Option<Arc<dyn PayloadLookup>>,
+    option2_ctx: Option<Option2ReducerContext>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(completion) = rx.recv().await {
@@ -127,6 +136,7 @@ pub fn spawn_boot_apply_subscriber(
                 &snapshot_dir,
                 &allowed_roots,
                 payload_lookup.clone(),
+                option2_ctx.clone(),
                 completion,
             )
             .await;
@@ -143,6 +153,7 @@ async fn handle_completion(
     snapshot_dir: &std::path::Path,
     allowed_roots: &[std::path::PathBuf],
     payload_lookup: Option<Arc<dyn PayloadLookup>>,
+    option2_ctx: Option<Option2ReducerContext>,
     completion: SnapshotCompletion,
 ) {
     let SnapshotCompletion {
@@ -192,6 +203,7 @@ async fn handle_completion(
         BOOT_APPLY_TIMEOUT,
         BOOT_APPLY_POLL_INTERVAL,
         payload_lookup,
+        option2_ctx,
     )
     .await
     {
@@ -293,6 +305,7 @@ mod tests {
             snapshot_dir.path().to_path_buf(),
             Vec::new(),
             None,
+            None,
         );
 
         tx.send(SnapshotCompletion {
@@ -329,6 +342,7 @@ mod tests {
             Arc::clone(&wal_driver),
             snapshot_dir.path().to_path_buf(),
             Vec::new(),
+            None,
             None,
         );
 
@@ -405,6 +419,7 @@ mod tests {
             snapshot_dir.path().to_path_buf(),
             Vec::new(),
             None,
+            None,
         );
         tx.send(SnapshotCompletion {
             block_hash: vec![0x01; 32],
@@ -477,6 +492,7 @@ mod tests {
             Arc::clone(&wal_driver),
             snapshot_dir.path().to_path_buf(),
             Vec::new(),
+            None,
             None,
         );
         tx.send(SnapshotCompletion {

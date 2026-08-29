@@ -201,6 +201,28 @@ pub struct RuntimeManager {
     pub payload_store: Arc<
         tokio::sync::RwLock<Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>>,
     >,
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): shared payload-source
+    /// recorder.  Boot pipeline populates via
+    /// `set_payload_source_recorder` from a
+    /// `BlockStorageBackedRecorder` wrapping the
+    /// `BlockDagKeyValueStorage` handle.  Threaded into every
+    /// spawned runtime's `FileHandleTable::payload_source_recorder`
+    /// via `share_payload_source_recorder`.
+    ///
+    /// `None` when the operator hasn't wired an index yet OR when
+    /// the boot pipeline hasn't fired.  Handlers see `None` and
+    /// skip the record step; joiners can still fall through to
+    /// the local `PayloadLookup` or peer fetch.
+    ///
+    /// Wrapped in `Arc<RwLock<Option<...>>>` for the same reason
+    /// as `payload_store` — a boot-time set on one clone is
+    /// visible to every other clone.
+    pub payload_source_recorder: Arc<
+        tokio::sync::RwLock<
+            Option<Arc<dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder>>,
+        >,
+    >,
 }
 
 #[derive(Clone)]
@@ -559,6 +581,17 @@ impl RuntimeManager {
                     .as_ref()
                     .map(|b| b.persistence.clone()),
             );
+        // DD-7b-2 (a) Option 2 (2026-08-29): share the payload-
+        // source recorder so every Consensus-cap `journal_write`
+        // on this runtime records `payload_hash → deploy_sig`
+        // into the manager-shared block-storage-backed index.
+        // A `None` slot (observer nodes, tests) becomes a no-op
+        // inside journal_write.
+        runtime
+            .fs_handles
+            .share_payload_source_recorder(
+                self.payload_source_recorder.read().await.as_ref().cloned(),
+            );
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -623,6 +656,19 @@ impl RuntimeManager {
                     .await
                     .as_ref()
                     .map(|b| b.persistence.clone()),
+            );
+        // DD-7b-2 (a) Option 2 (2026-08-29): symmetric with the
+        // play-side spawn — replay runtimes also share the
+        // payload-source recorder so a follower's replay-branch
+        // `journal_write` (through the WalDeployScope-plumbed
+        // `current_deploy_sig`) records the same `payload_hash →
+        // deploy_sig` mapping.  Keeps leader/follower symmetric so
+        // any node whose block processing succeeded can serve the
+        // Option 2 tier at boot to a later joiner.
+        runtime
+            .fs_handles
+            .share_payload_source_recorder(
+                self.payload_source_recorder.read().await.as_ref().cloned(),
             );
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
@@ -2001,6 +2047,9 @@ impl RuntimeManager {
             // Phase 7b-2 (2026-08-27): default None; boot sets via
             // `set_payload_store`.
             payload_store: Arc::new(tokio::sync::RwLock::new(None)),
+            // DD-7b-2 (a) Option 2 (2026-08-29): default None;
+            // boot sets via `set_payload_source_recorder`.
+            payload_source_recorder: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -2068,6 +2117,28 @@ impl RuntimeManager {
         bundle: Option<crate::rust::engine::wal_payload_server::PayloadStoreBundle>,
     ) {
         *self.payload_store.write().await = bundle;
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): boot hook — install (or
+    /// clear) the shared payload-source recorder.  Every subsequent
+    /// `spawn_runtime` / `spawn_replay_runtime` call attaches the
+    /// current value to the returned runtime's
+    /// `fs_handles.payload_source_recorder`.  Mirrors
+    /// `set_payload_store`'s hot-reload semantics — a boot-time set
+    /// (or a later toggle) is picked up on the next spawn.
+    ///
+    /// Consensus-safety: `journal_write` reads the recorder slot
+    /// per call; a boot-time set is immediately visible to every
+    /// live runtime.  Recorder identity (which storage backend)
+    /// is a per-node local concern and does not affect consensus —
+    /// only the WAL entries themselves are consensus-observable.
+    /// A `None` recorder → journal_write skips the record step,
+    /// which matches pre-Option-2 behavior verbatim.
+    pub async fn set_payload_source_recorder(
+        &self,
+        recorder: Option<Arc<dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder>>,
+    ) {
+        *self.payload_source_recorder.write().await = recorder;
     }
 
     /// Phase 7b-2 diagnostic — read the currently-installed

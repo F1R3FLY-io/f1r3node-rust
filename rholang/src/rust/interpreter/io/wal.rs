@@ -324,6 +324,51 @@ pub trait PayloadPersistence: Send + Sync + std::fmt::Debug {
     fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String>;
 }
 
+/// DD-7b-2 (a) Option 2 (2026-08-29): serving-side "payload source"
+/// recorder.  A leader validator's `journal_write` (and the
+/// symmetric follower-side replay-branch call) invokes
+/// `record(payload_hash, &deploy_sig)` after computing the write's
+/// content hash, so a persistent `payload_hash → deploy_sig` index
+/// accumulates alongside the WAL.  On boot, a joiner's DD-7b-2 (a)
+/// reducer (the second tier below `PayloadLookup`) consults this
+/// index to translate an unresolved WAL payload_hash into a source
+/// ProcessedDeploy that can be re-executed via
+/// `capture_consensus_writes_by_replaying_deploy` — closing the
+/// gap Option 1's local `PayloadLookup` leaves for first-time
+/// joiners with empty payload stores.
+///
+/// The trait is intentionally minimal — one method, sync — and
+/// lives in this crate so the fs-write handlers can call it
+/// without depending on the casper crate.  The concrete impl
+/// (`BlockStorageBackedRecorder`) lives in casper because it wraps
+/// the `BlockDagKeyValueStorage`'s new `payload_source_index`
+/// typed store.
+///
+/// # Chaining
+///
+/// `payload_hash → deploy_sig` (this trait) chains through the
+/// existing `deploy_sig → block_hash` map (block-storage's
+/// `deploy_index` — already populated as an atomic side-effect of
+/// block insertion) → block bytes → ProcessedDeploy →
+/// `capture_consensus_writes_by_replaying_deploy` → the requested
+/// payload bytes.
+///
+/// # Fail-open discipline
+///
+/// Errors are stringified.  `journal_write` logs at warn on Err
+/// (M-2 review-fix pattern) and continues; a failure here is a
+/// defense-in-depth backup hop — the joiner still has Option 1
+/// (local `PayloadLookup`) plus peer fetch to fall through to.
+pub trait PayloadSourceRecorder: Send + Sync + std::fmt::Debug {
+    /// Record that `payload_hash` was produced by the deploy
+    /// identified by `deploy_sig`.  Idempotent by content;
+    /// last-writer-wins on the (payload_hash → deploy_sig) key
+    /// (see `casper::rust::engine::wal_payload_server::
+    /// BlockStorageBackedRecorder`'s docstring for the retention
+    /// interaction).
+    fn record(&self, payload_hash: [u8; 32], deploy_sig: &[u8]) -> Result<(), String>;
+}
+
 /// Per-runtime append-only WAL buffer.  Cloneable (shares the
 /// underlying `Arc<Mutex<Vec<...>>>` via reference-counting) so every
 /// handler closure can journal into the same list.

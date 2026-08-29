@@ -192,6 +192,60 @@ pub struct FileHandleTable {
     /// never held across an `.await`, and using a tokio lock from
     /// inside a sync trait method would risk executor deadlock.
     pub payload_store: Arc<std::sync::RwLock<Option<Arc<dyn super::wal::PayloadPersistence>>>>,
+    /// DD-7b-2 (a) Option 2 (2026-08-29): optional shared payload-
+    /// source recorder.  Symmetric with `payload_store`: when set
+    /// (via `share_payload_source_recorder` at
+    /// `RuntimeManager::spawn_runtime` /
+    /// `spawn_replay_runtime` time), `journal_write` calls
+    /// `recorder.record(payload_hash, &current_deploy_sig)` on
+    /// every successful Consensus-cap write so a persistent
+    /// `payload_hash → deploy_sig` index accumulates alongside
+    /// the WAL and payload store.  Joining validators consult
+    /// this index (via the two-tier reducer in
+    /// `wal_payload_sync::apply_wal_slice_after_fetch`) to
+    /// reconstruct write bytes from block-stored deploys when
+    /// the local `PayloadLookup` misses.
+    ///
+    /// `None` on nodes without an operator-configured index
+    /// (observer nodes, test harnesses); when None, `journal_write`
+    /// still appends the WAL entry but the mapping is not
+    /// recorded on this side.  Safe for joiner-only posture (they
+    /// never serve as a reproduction source); a serving validator
+    /// SHOULD wire this at boot.
+    ///
+    /// Same interior-mutability + lock-choice rationale as
+    /// `payload_store` above — `std::sync::RwLock` because the
+    /// guard is never held across `.await` and using a tokio
+    /// lock from inside a sync trait method would risk executor
+    /// deadlock.
+    pub payload_source_recorder:
+        Arc<std::sync::RwLock<Option<Arc<dyn super::wal::PayloadSourceRecorder>>>>,
+    /// DD-7b-2 (a) Option 2 (2026-08-29): per-runtime "current
+    /// deploy signature" cell.  Set by
+    /// `casper::rholang::runtime::WalDeployScope::new_with_lock_sweep`
+    /// at deploy entry to the primary signer's raw signature bytes
+    /// (`cosigned.primary().sig.to_vec()` for user deploys; empty
+    /// for system deploys which don't have a signature and whose
+    /// writes should NOT populate the payload-source index).
+    /// Cleared to `Vec::new()` when the `WalDeployScope` guard
+    /// drops.
+    ///
+    /// `journal_write` reads this cell at write time and passes
+    /// it to the payload-source recorder alongside the write's
+    /// `payload_hash`; an empty sig skips the record step (system
+    /// deploys, between-deploy handler calls under tests, etc.).
+    ///
+    /// Rationale for a new cell (vs. re-using `current_deploy_scope`,
+    /// which is Blake2b256(sig)): the block-storage `deploy_index`
+    /// keys on raw sig bytes (`DeployId = shared::ByteString`), not
+    /// the scope hash.  Recording the scope hash would break the
+    /// chain the reducer needs to walk (payload_hash → deploy_sig
+    /// → block_hash → block bytes → ProcessedDeploy).
+    ///
+    /// Per-runtime (not manager-broadcast): each runtime processes
+    /// deploys sequentially, so a single cell suffices; concurrent
+    /// runtimes have independent `FileHandleTable` instances.
+    pub current_deploy_sig: Arc<std::sync::RwLock<Vec<u8>>>,
     /// Item d-3 (2026-08-28): per-fd shadow-install notifiers.  The
     /// follower's rigged-replay reducer can dispatch a mutating handler
     /// (`fs_write` / `fs_read` / `fs_truncate`) on a spawned task
@@ -259,6 +313,18 @@ impl FileHandleTable {
             // and journal_write skips the persist step (matches
             // pre-7b-2 behavior).
             payload_store: Arc::new(std::sync::RwLock::new(None)),
+            // DD-7b-2 (a) Option 2: unset by default; the boot
+            // pipeline populates via `share_payload_source_recorder`
+            // from the manager's shared slot.  Tests that don't wire
+            // one see None and journal_write skips the record step.
+            payload_source_recorder: Arc::new(std::sync::RwLock::new(None)),
+            // DD-7b-2 (a) Option 2: empty sig at construction —
+            // WalDeployScope::new_with_lock_sweep sets it at deploy
+            // entry and clears it on Drop.  Empty acts as a
+            // sentinel (matches system-deploy and between-deploy
+            // handler-call states); journal_write skips the record
+            // step when empty.
+            current_deploy_sig: Arc::new(std::sync::RwLock::new(Vec::new())),
             // Item d-3: empty map — populated on demand by waiters
             // on the follower's replay branch; drained by
             // `notify_fd_ready` in fs_open's replay branch.
@@ -314,6 +380,43 @@ impl FileHandleTable {
         self.payload_store
             .read()
             .expect("payload_store lock poisoned")
+            .clone()
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): attach the manager-
+    /// shared payload-source recorder.  Called from
+    /// `RuntimeManager::spawn_runtime` /
+    /// `spawn_replay_runtime` (post-spawn, but the interior
+    /// `Arc<RwLock<_>>` ensures the write is visible through every
+    /// clone).  A `None` argument clears any previously-attached
+    /// recorder; a `Some(recorder)` sets it.
+    ///
+    /// After attachment, `journal_write` on every mutating fs
+    /// handler for a Consensus cap will call
+    /// `recorder.record(payload_hash, &current_deploy_sig)` so a
+    /// persistent `payload_hash → deploy_sig` index accumulates.
+    ///
+    /// Takes `&self` (not `&mut self`) because the RwLock provides
+    /// interior mutability — matches `share_payload_store` for the
+    /// same reason.
+    pub fn share_payload_source_recorder(
+        &self,
+        shared: Option<Arc<dyn super::wal::PayloadSourceRecorder>>,
+    ) {
+        *self
+            .payload_source_recorder
+            .write()
+            .expect("payload_source_recorder lock poisoned") = shared;
+    }
+
+    /// DD-7b-2 (a) Option 2 diagnostic — read the currently-
+    /// installed payload-source recorder, if any.  Used by
+    /// `journal_write` to look up the recorder on every Consensus-
+    /// cap write.
+    pub fn payload_source_recorder(&self) -> Option<Arc<dyn super::wal::PayloadSourceRecorder>> {
+        self.payload_source_recorder
+            .read()
+            .expect("payload_source_recorder lock poisoned")
             .clone()
     }
 

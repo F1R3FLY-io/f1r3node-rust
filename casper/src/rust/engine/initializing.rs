@@ -1209,12 +1209,25 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // DD-7b-2 (a) Option 1: reproduce locally via the
             // joiner's own PayloadLookup before falling back to
             // peer fetch.  See casper_launch.rs for full rationale.
+            // DD-7b-2 (a) Option 2 (2026-08-29): block-storage-
+            // backed reproduction tier — walks the
+            // payload_hash → deploy_sig chain and re-executes the
+            // source deploy in a scratch runtime to reproduce
+            // bytes for hashes the local `PayloadLookup` misses.
+            // See casper_launch.rs for the full flow.
+            let option2_ctx =
+                Some(crate::rust::engine::wal_payload_sync::Option2ReducerContext {
+                    block_storage: self.block_dag_storage.clone(),
+                    block_store: self.block_store.clone(),
+                    runtime_manager: self.runtime_manager.clone(),
+                });
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),
                 snap_ctx.snapshot_dir.clone(),
                 allowed_roots,
                 Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
+                option2_ctx,
             );
         }
 

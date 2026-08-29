@@ -766,6 +766,120 @@ mod tests {
         );
     }
 
+    /// DD-7b-2 (a) Option 2 (2026-08-29): setup.rs must construct
+    /// a `BlockStorageBackedRecorder` from the DAG storage handle
+    /// and attach it via `set_payload_source_recorder(Some(...))`.
+    /// A regression that dropped either half would silently
+    /// disable the payload-source index population; joiners would
+    /// then have zero help from the Option 2 tier and every
+    /// unresolved WAL payload hash would go through peer fetch.
+    #[test]
+    fn boot_pipeline_installs_payload_source_recorder() {
+        let setup_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/rust/runtime/setup.rs",
+        ))
+        .expect("read setup.rs");
+        assert!(
+            setup_rs.contains("BlockStorageBackedRecorder"),
+            "setup.rs must construct a BlockStorageBackedRecorder at boot \
+             (DD-7b-2 (a) Option 2).  If you refactored, update this test's \
+             needle."
+        );
+        assert!(
+            setup_rs.contains("set_payload_source_recorder"),
+            "setup.rs must attach the recorder to RuntimeManager via \
+             set_payload_source_recorder(Some(...)).await."
+        );
+        assert!(
+            setup_rs.contains("block_dag_storage.clone()"),
+            "setup.rs must wrap the block_dag_storage handle in the recorder \
+             so leader-side writes chain into the same LMDB indices the \
+             joiner will consult."
+        );
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): the Option 2 tier — the
+    /// `Option2ReducerContext` — must be plumbed to
+    /// `spawn_boot_apply_subscriber` at BOTH boot sites.  A
+    /// refactor that dropped the context (reverting to Option 1
+    /// only) would silently disable the block-storage-backed
+    /// replay tier without any compile-time or unit-test signal;
+    /// first-time joiners with empty payload stores would fall
+    /// through to peer fetch on every hash.
+    ///
+    /// Sibling of `boot_pipeline_wires_payload_lookup_into_wal_apply_subscriber`
+    /// — that pin covers Option 1, this pin covers Option 2.
+    #[test]
+    fn boot_pipeline_wires_option2_ctx_into_wal_apply_subscriber() {
+        for (name, rel) in [
+            ("casper_launch", "casper/src/rust/engine/casper_launch.rs"),
+            ("initializing", "casper/src/rust/engine/initializing.rs"),
+        ] {
+            let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let call_idx = src
+                .find("spawn_boot_apply_subscriber(")
+                .unwrap_or_else(|| panic!("{name}: spawn_boot_apply_subscriber call not found"));
+            let tail = &src[call_idx..];
+            let close_idx = tail
+                .find(");")
+                .unwrap_or_else(|| panic!("{name}: subscriber call has no terminating );"));
+            let call = &tail[..close_idx];
+            assert!(
+                call.contains("option2_ctx"),
+                "{name} ({rel}) must pass the Option 2 reducer context (bound \
+                 to `option2_ctx`) to spawn_boot_apply_subscriber.  Dropping \
+                 the arg (reverting to Option 1 only) silently disables the \
+                 block-storage-backed replay tier for the DD-7b-2 (a) reducer."
+            );
+            assert!(
+                call.contains("Some(std::sync::Arc::clone(&wal_ctx.payload_lookup))"),
+                "{name} ({rel}) must still wire the Option 1 tier alongside \
+                 Option 2 — both tiers are load-bearing for the reducer's \
+                 chain-of-fall-through behavior."
+            );
+        }
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): the boot sites'
+    /// `Option2ReducerContext` construction must include all three
+    /// load-bearing fields — a refactor that dropped `block_store`
+    /// (needed for `block_store.get(&block_hash)`), `block_storage`
+    /// (for the two index lookups), or `runtime_manager` (for
+    /// replay) would compile via the enclosing struct's missing-
+    /// field diagnostic, BUT if a future refactor reintroduces
+    /// `Default` fields the compile-time signal is lost.  This pin
+    /// freezes the shape.
+    #[test]
+    fn option2_reducer_context_construction_names_all_three_handles() {
+        for (name, rel) in [
+            ("casper_launch", "casper/src/rust/engine/casper_launch.rs"),
+            ("initializing", "casper/src/rust/engine/initializing.rs"),
+        ] {
+            let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let ctor_idx = src
+                .find("Option2ReducerContext {")
+                .unwrap_or_else(|| panic!("{name}: Option2ReducerContext construction not found"));
+            let tail = &src[ctor_idx..];
+            let close_idx = tail
+                .find("})")
+                .unwrap_or_else(|| panic!("{name}: Option2ReducerContext ctor unclosed"));
+            let ctor = &tail[..close_idx];
+            for field in ["block_storage:", "block_store:", "runtime_manager:"] {
+                assert!(
+                    ctor.contains(field),
+                    "{name} ({rel}) Option2ReducerContext construction must include \
+                     `{field}`.  All three handles are load-bearing for the \
+                     payload_hash → deploy_sig → block_hash → replay chain."
+                );
+            }
+        }
+    }
+
     // Slice 30b: build_snapshot_writer tests.
 
     #[test]

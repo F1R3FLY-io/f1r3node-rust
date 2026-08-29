@@ -462,6 +462,50 @@ impl FsProcesses {
                         );
                     }
                 }
+                // DD-7b-2 (a) Option 2 (2026-08-29): record the
+                // payload_hash → deploy_sig mapping into the
+                // block-storage-backed persistent index.  Chained
+                // through the existing deploy_sig → block_hash
+                // map (deploy_index in block_dag_key_value_storage),
+                // this lets a joiner reconstruct write bytes from
+                // block-stored deploys via
+                // capture_consensus_writes_by_replaying_deploy —
+                // the second tier of apply_wal_slice_after_fetch's
+                // reducer below the local PayloadLookup.
+                //
+                // Symmetric on leader (fs_write path) AND follower
+                // (replay path via journal_write's replay-branch
+                // caller); WalDeployScope sets current_deploy_sig
+                // on both sides so any node whose block processing
+                // succeeded can serve the Option 2 tier.  An empty
+                // sig (system deploys, between-deploy handler
+                // calls) skips — see FileHandleTable::
+                // current_deploy_sig docstring.  M-2 review
+                // discipline: fail-open; log Err at warn instead
+                // of aborting the deploy so a broken index doesn't
+                // reject Consensus writes leader-side.
+                let PayloadRef::Hash(payload_hash) = PayloadRef::hash(bytes) else {
+                    unreachable!("PayloadRef::hash always returns Hash variant")
+                };
+                if let Some(recorder) = self.handles.payload_source_recorder() {
+                    let sig = self
+                        .handles
+                        .current_deploy_sig
+                        .read()
+                        .expect("current_deploy_sig lock poisoned")
+                        .clone();
+                    if !sig.is_empty() {
+                        if let Err(e) = recorder.record(payload_hash, &sig) {
+                            tracing::warn!(
+                                target: "f1r3fly.fs_wal.payload_source_index",
+                                error = %e,
+                                "payload_source recorder record failed on \
+                                 Consensus write; joiners will need to fall back \
+                                 to peer fetch for this payload hash"
+                            );
+                        }
+                    }
+                }
                 self.handles
                     .wal
                     .append_with_ack(
@@ -471,7 +515,7 @@ impl FsProcesses {
                             extra_path: None,
                             offset: resolved_offset,
                             length: Some(bytes.len() as u64),
-                            payload_ref: Some(PayloadRef::hash(bytes)),
+                            payload_ref: Some(PayloadRef::Hash(payload_hash)),
                             mode_bits: None,
                             owner: None,
                             group: None,
@@ -5388,5 +5432,58 @@ mod cmode_tests {
                  finds an empty fd table)."
             );
         }
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): `journal_write`'s
+    /// Consensus branch must call `payload_source_recorder.record(...)`
+    /// after computing the payload hash — this populates the
+    /// `payload_hash → deploy_sig` index a joining validator's
+    /// boot-time reducer walks to reproduce write bytes from
+    /// block-stored deploys.  Symmetric on leader and follower
+    /// (both go through this handler on their respective play/replay
+    /// branches).  A refactor that dropped the recorder call would
+    /// silently disable the Option 2 tier for this validator; the
+    /// leader-side index would stop populating, and any joiner
+    /// that hits this validator as its Option 2 source would fall
+    /// back to peer fetch on every unresolved hash.
+    #[test]
+    fn journal_write_records_payload_source_on_consensus_writes() {
+        let src = include_str!("handlers.rs");
+        let fn_start = src
+            .find("async fn journal_write(")
+            .expect("journal_write must exist");
+        // Bound to the immediate function body — under 200 lines
+        // today; 8 KiB is generous.
+        let end = std::cmp::min(fn_start + 8192, src.len());
+        let window = &src[fn_start..end];
+        assert!(
+            window.contains("payload_source_recorder"),
+            "journal_write must consult the payload_source_recorder slot on \
+             the Consensus branch.  Dropping the call silently disables the \
+             DD-7b-2 (a) Option 2 index population; joiners lose the \
+             block-storage-backed reproduction tier."
+        );
+        assert!(
+            window.contains("recorder.record("),
+            "journal_write must call `recorder.record(payload_hash, &sig)` \
+             after computing the write's Blake2b256 hash — this is the \
+             actual index-populating call, distinct from the payload_store \
+             persist step above it."
+        );
+        assert!(
+            window.contains("current_deploy_sig"),
+            "journal_write must read the WalDeployScope-plumbed \
+             `current_deploy_sig` cell; without it, the recorder would be \
+             called with an empty sig (skipping the record step by the \
+             non-empty guard below) and the index would never populate."
+        );
+        assert!(
+            window.contains("if !sig.is_empty()"),
+            "journal_write must guard the recorder call on non-empty sig — \
+             system deploys have no sig and their writes cannot be \
+             reproduced via the ProcessedDeploy chain; recording under an \
+             empty sig would create dead index entries `lookup_by_deploy_id` \
+             never resolves."
+        );
     }
 }

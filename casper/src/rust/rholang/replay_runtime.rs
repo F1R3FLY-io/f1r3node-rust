@@ -572,6 +572,20 @@ impl ReplayRuntimeOps {
                 .fs_handles
                 .current_deploy_scope
                 .clone(),
+            // DD-7b-2 (a) Option 2 (2026-08-29): symmetric with the
+            // leader-side call site in runtime.rs — pass the raw
+            // deploy sig so the follower's journal_write records
+            // the same `payload_hash → deploy_sig` mapping into its
+            // own block-storage-backed source index.  Symmetric
+            // recording means any node whose block processing
+            // succeeded (leader or follower) can serve the Option 2
+            // reproduction tier at boot to a later joiner.
+            processed_deploy.deploy.sig.to_vec(),
+            self.runtime_ops
+                .runtime
+                .fs_handles
+                .current_deploy_sig
+                .clone(),
         );
 
         // Cost-accounted merge: `process_deploy_with_cost_accounting`
@@ -1596,6 +1610,40 @@ mod tests {
              drained slice `replay_slice` (a `let _replay_slice = ...` \
              pattern would discard it — the failure mode that shipped in \
              the pre-d-3 tree and blocked the two-validator canary)"
+        );
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): the follower-side
+    /// replay path must plumb the raw sig from
+    /// `processed_deploy.deploy.sig` into
+    /// `WalDeployScope::new_with_lock_sweep`'s 5th arg AND the
+    /// shared `current_deploy_sig` cell as its 6th arg.  Symmetric
+    /// with the leader-side pin
+    /// `user_deploy_path_plumbs_deploy_sig_via_wal_deploy_scope`
+    /// in `runtime.rs` — symmetric recording means any node whose
+    /// block processing succeeded (leader OR follower) can serve
+    /// the Option 2 tier at boot to a later joiner.  A refactor
+    /// that dropped either half would silently disable the
+    /// follower-side index population; joiners relying on a
+    /// follower to serve would fall through to peer fetch.
+    #[test]
+    fn replay_deploy_e_plumbs_deploy_sig_via_wal_deploy_scope() {
+        let src = include_str!("replay_runtime.rs");
+        assert!(
+            src.contains("processed_deploy.deploy.sig.to_vec()"),
+            "Option 2 regression: replay_runtime.rs must plumb \
+             `processed_deploy.deploy.sig.to_vec()` into WalDeployScope::\
+             new_with_lock_sweep so the follower's journal_write records the \
+             same payload_hash → deploy_sig mapping the leader records.  \
+             Dropping the sig would silently disable follower-side recording."
+        );
+        assert!(
+            src.contains("fs_handles\n                .current_deploy_sig")
+                || src.contains("fs_handles.current_deploy_sig")
+                || src.contains(".current_deploy_sig"),
+            "Option 2 regression: replay_runtime.rs must plumb the shared \
+             `current_deploy_sig` cell into WalDeployScope so concurrent \
+             journal_write reads see the follower's current sig."
         );
     }
 }

@@ -296,6 +296,23 @@ pub(crate) struct WalDeployScope {
     /// acquire time so the LockRegistry entry records the correct
     /// scope for the eventual sweep.
     current_scope_cell: std::sync::Arc<std::sync::RwLock<DeployScope>>,
+    /// DD-7b-2 (a) Option 2 (2026-08-29): per-runtime "current
+    /// deploy sig" cell shared with `FileHandleTable::
+    /// current_deploy_sig`.  Constructor sets it to the deploy's
+    /// raw signature bytes (empty for system deploys, which don't
+    /// have a signature and whose writes should NOT populate the
+    /// payload-source index).  Drop clears back to `Vec::new()`.
+    /// Handlers read this cell at `journal_write` time so the
+    /// payload-source recorder records `payload_hash →
+    /// deploy_sig` for the currently-executing deploy.
+    ///
+    /// Distinct from `current_scope_cell` (Blake2b256(sig))
+    /// because block-storage's `deploy_index` is keyed on raw sig
+    /// bytes (`DeployId = shared::ByteString`), not the scope
+    /// hash — recording the scope hash would break the chain the
+    /// reducer walks (payload_hash → deploy_sig → block_hash →
+    /// block → ProcessedDeploy).
+    current_deploy_sig_cell: std::sync::Arc<std::sync::RwLock<Vec<u8>>>,
 }
 
 impl WalDeployScope {
@@ -318,11 +335,18 @@ impl WalDeployScope {
         // Test-only fallback scope: any non-sentinel value avoids
         // the debug_assert in release_all_for_deploy.  `[0xAA; 32]`
         // is arbitrary but recognizable in test-failure diagnostics.
+        //
+        // DD-7b-2 (a) Option 2: test-only fallback sig — empty is
+        // fine because the legacy test constructor doesn't wire
+        // any payload-source recorder, so the recorder-skip guard
+        // in journal_write covers it either way.
         Self::new_with_lock_sweep(
             wal,
             LockRegistry::new(),
             [0xAAu8; 32],
             std::sync::Arc::new(std::sync::RwLock::new([0u8; 32])),
+            Vec::new(),
+            std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
         )
     }
 
@@ -344,6 +368,8 @@ impl WalDeployScope {
         lock_registry: LockRegistry,
         deploy_scope: DeployScope,
         current_scope_cell: std::sync::Arc<std::sync::RwLock<DeployScope>>,
+        deploy_sig: Vec<u8>,
+        current_deploy_sig_cell: std::sync::Arc<std::sync::RwLock<Vec<u8>>>,
     ) -> Self {
         // Promoted from debug_assert to assert during step-5 review
         // (2026-08-13) for release-build defense-in-depth: the 3 call
@@ -367,6 +393,17 @@ impl WalDeployScope {
         *current_scope_cell
             .write()
             .expect("current_deploy_scope RwLock poisoned") = deploy_scope;
+        // DD-7b-2 (a) Option 2: publish this deploy's raw sig to
+        // the shared cell so concurrent-in-this-deploy
+        // `journal_write` calls read it and record the
+        // `payload_hash → deploy_sig` mapping via the
+        // payload-source recorder.  Empty sig (system deploys) is
+        // handled by journal_write's non-empty-sig guard — the
+        // Drop clear-to-empty covers that no stale sig persists
+        // across deploy boundaries.
+        *current_deploy_sig_cell
+            .write()
+            .expect("current_deploy_sig RwLock poisoned") = deploy_sig;
         Self {
             wal,
             mark,
@@ -374,6 +411,7 @@ impl WalDeployScope {
             lock_registry,
             deploy_scope,
             current_scope_cell,
+            current_deploy_sig_cell,
         }
     }
 
@@ -501,6 +539,15 @@ impl Drop for WalDeployScope {
             .current_scope_cell
             .write()
             .expect("current_deploy_scope RwLock poisoned") = [0u8; 32];
+        // DD-7b-2 (a) Option 2 (2026-08-29): clear the per-runtime
+        // "current deploy sig" cell back to empty so between-deploy
+        // handler calls see no live sig (journal_write's non-empty
+        // guard would skip the record step regardless, but keeping
+        // the cell clean avoids confusion in diagnostics).
+        self.current_deploy_sig_cell
+            .write()
+            .expect("current_deploy_sig RwLock poisoned")
+            .clear();
     }
 }
 
@@ -1800,6 +1847,16 @@ impl RuntimeOps {
             self.runtime.fs_handles.lock_registry.clone(),
             deploy_scope,
             self.runtime.fs_handles.current_deploy_scope.clone(),
+            // DD-7b-2 (a) Option 2 (2026-08-29): raw primary-signer
+            // sig plumbed to FileHandleTable.current_deploy_sig so
+            // journal_write can record `payload_hash → deploy_sig`
+            // in the block-storage-backed source index.  Primary is
+            // authoritative for user deploys — cosigners' sigs would
+            // give the same payload but chain to the same block via
+            // deploy_index, so recording the primary keeps the index
+            // canonical and avoids duplicate mappings.
+            cosigned.primary().sig.to_vec(),
+            self.runtime.fs_handles.current_deploy_sig.clone(),
         );
 
         // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
@@ -2203,6 +2260,19 @@ impl RuntimeOps {
             self.runtime.fs_handles.lock_registry.clone(),
             deploy_scope,
             self.runtime.fs_handles.current_deploy_scope.clone(),
+            // DD-7b-2 (a) Option 2 (2026-08-29): system deploys have
+            // no primary-signer sig (state-hash-derived scope only)
+            // and their Consensus-cap writes — if any — cannot be
+            // reproduced via the ProcessedDeploy→replay chain the
+            // reducer walks (system deploys carry no
+            // `deploy: DeployData` field, so deploy_index doesn't
+            // key them).  Empty sig → journal_write's non-empty
+            // guard skips the record step; the payload_hash still
+            // lands in the WAL and joiners fall back to peer fetch
+            // for system-deploy writes, which is the correct
+            // pre-Option-2 behavior.
+            Vec::new(),
+            self.runtime.fs_handles.current_deploy_sig.clone(),
         );
 
         let (event_log, result, mergeable_channels) =
@@ -3715,6 +3785,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_scope,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             lock_registry
                 .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy_scope)
@@ -3759,6 +3831,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_a,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             lock_registry
                 .try_acquire_range((1, 43), 0, 100, LockMode::Write, holder(1), deploy_a)
@@ -3792,6 +3866,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_scope,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             // Inside the guard: real scope.
             assert_eq!(
@@ -3824,6 +3900,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_scope,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             // Acquire 5 range locks + 1 sequential (on different inode).
             for i in 0..5 {
@@ -3894,6 +3972,8 @@ mod tests {
                 lock_registry,
                 deploy_scope,
                 current_scope_cell,
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             registry_snapshot
                 .try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy_scope)
@@ -3935,7 +4015,14 @@ mod tests {
         // but fail in release; both build modes' CI runs would
         // catch the regression.
         let _scope =
-            WalDeployScope::new_with_lock_sweep(wal, lock_registry, [0u8; 32], current_scope_cell);
+            WalDeployScope::new_with_lock_sweep(
+                wal,
+                lock_registry,
+                [0u8; 32],
+                current_scope_cell,
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            );
     }
 
     // ---------------------------------------------------------------
@@ -3973,6 +4060,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_scope,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             let outcome = lock_registry
                 .try_acquire_range_wait(
@@ -4066,6 +4155,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_a,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             let _a_outcome = lock_registry
                 .try_acquire_range_wait(
@@ -4185,6 +4276,8 @@ mod tests {
                 lock_registry.clone(),
                 deploy_scope,
                 current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
             );
             lock_registry
                 .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy_scope)
@@ -4251,6 +4344,85 @@ mod tests {
             "step 5 regression: user-deploy path must pass \
              fs_handles.current_deploy_scope to new_with_lock_sweep so the \
              handlers can read the deploy scope at acquire time"
+        );
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): the user-deploy path must
+    /// plumb the raw primary-signer sig into `WalDeployScope::
+    /// new_with_lock_sweep`'s 5th arg AND the shared
+    /// `current_deploy_sig` cell as its 6th arg.  Both are needed
+    /// for `journal_write` to record `payload_hash → deploy_sig`
+    /// into the block-storage-backed source index (which the
+    /// joiner's boot-time reducer walks to reproduce write bytes
+    /// from block-stored deploys).  A refactor that dropped either
+    /// half (e.g., passed `Vec::new()` for the sig, or dropped the
+    /// cell) would silently disable the recorder for user deploys
+    /// — the leader-side index would stop populating; joiners
+    /// would fall through to peer fetch on every hash.
+    #[test]
+    fn user_deploy_path_plumbs_deploy_sig_via_wal_deploy_scope() {
+        let src = include_str!("runtime.rs");
+        let start = src
+            .find("async fn process_deploy_cosigned_with_budget_and_authority_mode")
+            .expect("target method must exist");
+        let body_end = src[start..]
+            .find("Ok((deploy_result, eval_result.mergeable, fs_wal, exhausted))")
+            .expect("terminal return must exist");
+        let body = &src[start..start + body_end];
+        assert!(
+            body.contains("cosigned.primary().sig.to_vec()"),
+            "Option 2 regression: user-deploy path must plumb the primary \
+             signer's raw sig bytes (`cosigned.primary().sig.to_vec()`) into \
+             WalDeployScope::new_with_lock_sweep so journal_write can record \
+             payload_hash → deploy_sig in the block-storage-backed source \
+             index.  Dropping the sig would silently disable the recorder \
+             for user deploys."
+        );
+        assert!(
+            body.contains("fs_handles.current_deploy_sig.clone()"),
+            "Option 2 regression: user-deploy path must plumb \
+             fs_handles.current_deploy_sig into WalDeployScope so the sig is \
+             visible to journal_write concurrently with the deploy's writes."
+        );
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): the system-deploy path
+    /// must plumb an EMPTY sig (system deploys have no signature
+    /// and their Consensus-cap writes — if any — cannot be
+    /// reproduced via the ProcessedDeploy → replay chain the
+    /// reducer walks).  A refactor that plumbed a state-hash-
+    /// derived value here would cause journal_write to record
+    /// `payload_hash → deploy_sig` under a "sig" that
+    /// `lookup_by_deploy_id` (keyed on user-deploy raw sigs) would
+    /// never resolve — the index would grow with dead entries.
+    #[test]
+    fn system_deploy_path_plumbs_empty_deploy_sig_via_wal_deploy_scope() {
+        let src = include_str!("runtime.rs");
+        // Use `pub async fn play_system_deploy<` to distinguish from
+        // the earlier `play_system_deploys_for_state` method.
+        let start = src
+            .find("pub async fn play_system_deploy<")
+            .expect("play_system_deploy<S: SystemDeployTrait> must exist");
+        // Bound to the immediate function body; the WalDeployScope
+        // ctor call is expanded with multi-line comments so allow a
+        // generous 8 KiB window from the `fn` line.
+        let end = std::cmp::min(start + 8192, src.len());
+        let body = &src[start..end];
+        let wal_scope_idx = body
+            .find("WalDeployScope::new_with_lock_sweep(")
+            .expect("play_system_deploy must construct WalDeployScope");
+        // Search within a fixed post-ctor window; the sig arg is the
+        // 5th positional and lands within ~2 KiB of the ctor open.
+        let after = &body[wal_scope_idx..];
+        let ctor_window_end = std::cmp::min(2048, after.len());
+        let ctor = &after[..ctor_window_end];
+        assert!(
+            ctor.contains("Vec::new()"),
+            "Option 2 regression: play_system_deploy must plumb Vec::new() \
+             (empty sig) into WalDeployScope::new_with_lock_sweep — system \
+             deploys have no primary-signer sig and their writes cannot be \
+             reproduced via the ProcessedDeploy chain.  A non-empty sig \
+             would cause journal_write to record dead index entries."
         );
     }
 

@@ -526,12 +526,31 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // fetch.  Fresh joiners (empty store) see zero help
             // and fall back to peer fetch on every hash — no
             // regression.
+            // DD-7b-2 (a) Option 2 (2026-08-29): the block-storage-
+            // backed reproduction tier is threaded to the boot
+            // enumerator as the SECOND tier below the local
+            // `PayloadLookup`.  For any WAL payload hash present in
+            // the `payload_hash → deploy_sig` index this validator
+            // populated during prior block processing, the
+            // enumerator walks payload_hash → deploy_sig →
+            // block_hash → block bytes → ProcessedDeploy →
+            // capture_consensus_writes_by_replaying_deploy to
+            // reproduce the bytes locally.  Fresh joiners (empty
+            // index) get zero help from this tier and fall back to
+            // peer fetch — no regression.
+            let option2_ctx =
+                Some(crate::rust::engine::wal_payload_sync::Option2ReducerContext {
+                    block_storage: self.block_dag_storage.clone(),
+                    block_store: self.block_store.clone(),
+                    runtime_manager: self.runtime_manager.clone(),
+                });
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),
                 snap_ctx.snapshot_dir.clone(),
                 allowed_roots,
                 Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
+                option2_ctx,
             );
         }
 

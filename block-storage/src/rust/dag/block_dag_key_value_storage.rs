@@ -829,6 +829,40 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) deploy_index: Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BlockHashSerde>>>,
     pub(crate) deploy_occurrence_index:
         Arc<PlRwLock<KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>>>>,
+    /// DD-7b-2 (a) Option 2 (2026-08-29): persistent
+    /// `payload_hash → deploy_sig` index populated as an
+    /// atomic side-effect of Consensus-cap `journal_write` via
+    /// the `PayloadSourceRecorder` trait.  Chains through the
+    /// existing `deploy_index` (`deploy_sig → block_hash`) so a
+    /// joiner's boot-time reducer can walk `payload_hash →
+    /// deploy_sig → block_hash → block bytes → ProcessedDeploy →
+    /// capture_consensus_writes_by_replaying_deploy` to reproduce
+    /// write bytes locally from block-stored deploys — closing
+    /// the gap DD-7b-2 (a) Option 1's local `PayloadLookup`
+    /// leaves for first-time joiners with empty payload stores.
+    ///
+    /// Key type: `Vec<u8>` (always 32 bytes at insert time — the
+    /// Blake2b256 payload hash). Value type: `DeployId =
+    /// shared::rust::ByteString = Vec<u8>` (the raw primary-signer
+    /// signature bytes).  Semantics on collision: latest-writer-
+    /// wins — LMDB's default `put` behavior.  A newer deploy that
+    /// produces byte-identical writes overwrites the older
+    /// mapping; if the new deploy's block is later pruned, the
+    /// reducer's block-load step returns None and the joiner
+    /// falls through to peer fetch (design decision 6: "lazy"
+    /// fork/prune, see 2026-07-24-File-IO.md).
+    ///
+    /// Write path: `casper::rust::engine::wal_payload_server::
+    /// BlockStorageBackedRecorder::record` (via the
+    /// `PayloadSourceRecorder` trait wired into
+    /// `FileHandleTable::payload_source_recorder`).  Read path:
+    /// `apply_wal_slice_after_fetch`'s two-tier reducer inside
+    /// `casper::rust::engine::wal_payload_sync`.  No RMW
+    /// invariant across other indices, so record does NOT
+    /// acquire `global_lock` (contention with block-insert
+    /// writers would slow deploy execution).
+    pub(crate) payload_source_index:
+        Arc<PlRwLock<KeyValueTypedStoreImpl<Vec<u8>, DeployId>>>,
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
@@ -877,6 +911,12 @@ impl BlockDagKeyValueStorage {
         let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await?;
         let deploy_occurrence_index_kv_store =
             kvm.store("deploy-occurrence-index".to_string()).await?;
+        // DD-7b-2 (a) Option 2 (2026-08-29): persistent
+        // payload_hash → deploy_sig index co-located with the
+        // existing deploy_index.  Same lifecycle as block_storage
+        // — pruning-together is natural.
+        let payload_source_index_kv_store =
+            kvm.store("payload-source-index".to_string()).await?;
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let frontier_index_kv_store = kvm.store("frontier-index".to_string()).await?;
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
@@ -901,6 +941,7 @@ impl BlockDagKeyValueStorage {
                     ("invalid-blocks", &invalid_blocks_kv_store),
                     ("deploy-index", &deploy_index_kv_store),
                     ("deploy-occurrence-index", &deploy_occurrence_index_kv_store),
+                    ("payload-source-index", &payload_source_index_kv_store),
                     ("floor-index", &floor_index_kv_store),
                     ("frontier-index", &frontier_index_kv_store),
                     ("genesis-hash", &genesis_hash_kv_store),
@@ -979,12 +1020,18 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(deploy_index_kv_store);
         let deploy_occurrence_index_db: KeyValueTypedStoreImpl<DeployId, BTreeSet<BlockHashSerde>> =
             KeyValueTypedStoreImpl::new(deploy_occurrence_index_kv_store);
+        // DD-7b-2 (a) Option 2 (2026-08-29): payload-hash → deploy-sig
+        // typed store.  Vec<u8> key = 32-byte Blake2b256 payload
+        // hash; DeployId = raw primary-signer signature bytes.
+        let payload_source_index_db: KeyValueTypedStoreImpl<Vec<u8>, DeployId> =
+            KeyValueTypedStoreImpl::new(payload_source_index_kv_store);
 
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
             block_metadata_index: Arc::new(PlRwLock::new(block_metadata_store)),
             deploy_index: Arc::new(PlRwLock::new(deploy_index_db)),
             deploy_occurrence_index: Arc::new(PlRwLock::new(deploy_occurrence_index_db)),
+            payload_source_index: Arc::new(PlRwLock::new(payload_source_index_db)),
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
@@ -1028,6 +1075,79 @@ impl BlockDagKeyValueStorage {
     pub fn genesis_hash(&self) -> Result<Option<BlockHash>, KvStoreError> {
         let _lock_guard = self.global_lock.read();
         self.genesis_hash_internal()
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): record `payload_hash →
+    /// deploy_sig` in the persistent index.  Called from
+    /// `journal_write` via the `PayloadSourceRecorder` trait
+    /// (implemented in `casper::rust::engine::wal_payload_server::
+    /// BlockStorageBackedRecorder`).  Latest-writer-wins on
+    /// collision — LMDB's default put behavior.
+    ///
+    /// No `global_lock` acquire: this write does not participate
+    /// in the cross-index RMW invariants that `global_lock`
+    /// coordinates.  Contention with block-insert writers would
+    /// slow deploy execution unnecessarily.  The underlying
+    /// typed-store lock (`payload_source_index`'s `PlRwLock`)
+    /// serializes concurrent recorders within a runtime.
+    pub fn record_payload_source(
+        &self,
+        payload_hash: [u8; 32],
+        deploy_sig: &[u8],
+    ) -> Result<(), KvStoreError> {
+        let guard = self.payload_source_index.write();
+        guard.put_one(payload_hash.to_vec(), deploy_sig.to_vec())
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): `deploy_sig → block_hash`
+    /// lookup mirror of `KeyValueDagRepresentation::
+    /// lookup_by_deploy_id`.  Exposed on the writable storage so
+    /// the joiner's boot-time reducer can chain
+    /// `payload_hash → deploy_sig → block_hash` without needing a
+    /// pre-LFB DAG representation (the DAG rep requires
+    /// `LastFinalizedBlockUninitialized`-guarded state, which
+    /// may not yet be set when the boot subscriber fires).
+    pub fn lookup_by_deploy_id(
+        &self,
+        deploy_id: &DeployId,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        let deploy_index_guard = self.deploy_index.read();
+        deploy_index_guard
+            .get_one(deploy_id)
+            .map(|result| result.map(|block_hash_serde| block_hash_serde.into()))
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): look up the recorded
+    /// `deploy_sig` for a `payload_hash`.  Called from the joiner's
+    /// boot-time reducer inside `apply_wal_slice_after_fetch`;
+    /// chained through `lookup_by_deploy_id` (`deploy_sig →
+    /// block_hash`) to walk `payload_hash → deploy_sig →
+    /// block_hash → block bytes → ProcessedDeploy →
+    /// capture_consensus_writes_by_replaying_deploy`.
+    ///
+    /// Returns None on:
+    /// - miss (no recording ever happened for this hash — e.g.,
+    ///   the writing deploy was on a peer that didn't run Option 2,
+    ///   or the write predates this recorder's boot)
+    /// - a fresh joiner with an empty index (matches
+    ///   pre-Option-2 behavior — falls through to peer fetch)
+    pub fn lookup_payload_source(
+        &self,
+        payload_hash: &[u8; 32],
+    ) -> Result<Option<DeployId>, KvStoreError> {
+        let guard = self.payload_source_index.read();
+        guard.get_one(&payload_hash.to_vec())
+    }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): test-only accessor for
+    /// the payload-source-index handle.  Same rationale as
+    /// `deploy_index_for_tests`.
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn payload_source_index_for_tests(
+        &self,
+    ) -> Arc<PlRwLock<KeyValueTypedStoreImpl<Vec<u8>, DeployId>>> {
+        self.payload_source_index.clone()
     }
 
     #[cfg(any(test, feature = "test-internals"))]
@@ -1293,6 +1413,14 @@ impl BlockDagKeyValueStorage {
             block_metadata_index,
             deploy_index,
             deploy_occurrence_index,
+            // DD-7b-2 (a) Option 2: test constructor defaults to a
+            // fresh in-memory typed store — none of the cross-crate
+            // tests that call from_parts today wire payload-source
+            // recording, so an empty index matches pre-Option-2
+            // behavior.
+            payload_source_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )))),
             invalid_blocks_index,
             floor_index,
             frontier_index,

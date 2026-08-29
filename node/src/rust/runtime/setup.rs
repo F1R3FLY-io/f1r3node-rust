@@ -391,6 +391,36 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             );
         }
 
+        // DD-7b-2 (a) Option 2 (2026-08-29): wire the block-storage-
+        // backed payload-source recorder so every Consensus-cap
+        // `journal_write` records a `payload_hash → deploy_sig`
+        // entry into the LMDB index co-located with `deploy_index`.
+        // Joining validators consult this index at boot (via the
+        // Option 2 tier of `apply_wal_slice_after_fetch`'s two-tier
+        // reducer) to reproduce write bytes from block-stored
+        // deploys — closing the gap Option 1's local
+        // `PayloadLookup` leaves for first-time joiners with empty
+        // payload stores.
+        //
+        // Installed on EVERY node like the payload store above:
+        // observer nodes never fire a Consensus-cap write handler
+        // so the index stays empty, but a node that starts as
+        // observer and later gains a validator key won't need a
+        // restart to start populating the index.
+        {
+            use casper::rust::engine::wal_payload_server::BlockStorageBackedRecorder;
+            let recorder = std::sync::Arc::new(BlockStorageBackedRecorder::new(
+                block_dag_storage.clone(),
+            ))
+                as std::sync::Arc<dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder>;
+            runtime_manager.set_payload_source_recorder(Some(recorder)).await;
+            tracing::info!(
+                target: "f1r3fly.fs_wal.payload_source_index",
+                "DD-7b-2 (a) Option 2: payload-source recorder attached — Consensus-cap \
+                 writes will record payload_hash → deploy_sig for joiner-side reproduction"
+            );
+        }
+
         // H-5 fix (2026-08-06): populate the root-identity registry
         // with (dev, inode) captured from each provisioned root at
         // boot.  Every subsequent syscall on a shared runtime asks
