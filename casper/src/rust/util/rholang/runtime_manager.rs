@@ -2419,6 +2419,64 @@ mod payload_store_wiring_tests {
         let got = bundle.lookup.get(&h).unwrap().unwrap();
         assert_eq!(got, payload);
     }
+
+    /// L-3 review pin (2026-08-29): overriding the payload_store
+    /// on ONE runtime's `fs_handles` MUST NOT leak into a
+    /// different runtime spawned from the same manager.  The
+    /// Option 2 helper (`capture_consensus_writes_by_replaying_deploy`)
+    /// relies on this isolation: it replaces the scratch runtime's
+    /// payload_store with an in-memory capture store, and the
+    /// helper's docstring promises other runtimes' stores stay
+    /// intact.  A future refactor moving the `payload_store` slot
+    /// from per-`FileHandleTable` to manager-shared would silently
+    /// break this invariant — captures would leak into the
+    /// production runtime's serving payload_store, poisoning
+    /// downstream wire dispatch.
+    #[tokio::test]
+    async fn per_runtime_payload_store_override_does_not_leak_across_runtimes() {
+        let manager = empty_manager().await;
+        // Establish a manager-shared bundle so both runtimes start
+        // with the same PROD store visible.
+        let prod_bundle = PayloadStoreBundle::from_in_memory(InMemoryPayloadStore::new());
+        manager.set_payload_store(Some(prod_bundle.clone())).await;
+
+        let rt_a = manager.spawn_runtime().await;
+        let rt_b = manager.spawn_runtime().await;
+
+        // Baseline: both runtimes see the prod bundle.
+        assert!(rt_a.fs_handles.payload_store().is_some(), "rt_a baseline");
+        assert!(rt_b.fs_handles.payload_store().is_some(), "rt_b baseline");
+
+        // Override rt_a's local slot with a distinct capture store
+        // — the pattern `capture_consensus_writes_by_replaying_deploy`
+        // uses.  Store the capture Arc so we can compare against
+        // rt_b's view.
+        let capture = std::sync::Arc::new(InMemoryPayloadStore::new());
+        rt_a.fs_handles.share_payload_store(Some(capture.clone()
+            as std::sync::Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>));
+
+        // rt_b's slot is unchanged — still the prod bundle, NOT
+        // rt_a's capture.  Detect via Arc::ptr_eq on the underlying
+        // trait objects: rt_b's persistence Arc should equal
+        // prod_bundle.persistence, not the capture Arc.
+        let rt_b_store = rt_b
+            .fs_handles
+            .payload_store()
+            .expect("rt_b payload_store must remain set");
+        let capture_as_persistence: std::sync::Arc<
+            dyn rholang::rust::interpreter::io::wal::PayloadPersistence,
+        > = capture.clone();
+        assert!(
+            !std::sync::Arc::ptr_eq(&rt_b_store, &capture_as_persistence),
+            "rt_b's payload_store must NOT have been redirected to rt_a's capture store — \
+             per-runtime interior mutability is a load-bearing property of the Option 2 \
+             helper's isolation contract"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&rt_b_store, &prod_bundle.persistence),
+            "rt_b's payload_store must still resolve to the manager-shared prod bundle"
+        );
+    }
 }
 
 /// H-7 fix (2026-08-06) regression tests: `RuntimeManager` spawn

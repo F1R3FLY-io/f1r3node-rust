@@ -425,6 +425,23 @@ impl FileHandleTable {
         };
         let notified = notifier.notified();
         tokio::pin!(notified);
+        // M-1 review fix (2026-08-29): `Notify::notified()` returns a
+        // `Notified` future that only REGISTERS as a waiter on
+        // `notify_waiters()` when first polled.  Between `notified()`
+        // creation and `.await` below, our task may be de-scheduled
+        // long enough for a concurrent `notify_fd_ready` to fire —
+        // with no registered waiters, the notification is dropped,
+        // and our subsequent `.await` sees no permit and parks until
+        // the timeout expires.  The final `contains_fd` after
+        // timeout recovers correctness (the fd IS present) but
+        // adds a full `timeout` window of latency per affected call.
+        //
+        // `enable()` (tokio >= 1.10) registers the waiter WITHOUT
+        // polling.  After enable(), any subsequent `notify_waiters()`
+        // reliably wakes us; the double-check below still guards the
+        // ordering where the shadow lands BEFORE we register
+        // interest.
+        notified.as_mut().enable();
         if self.contains_fd(fd).await {
             return true;
         }
@@ -1279,6 +1296,124 @@ mod tests {
             start.elapsed() >= Duration::from_millis(50),
             "timeout must be respected — a false return before deadline \
              would mean the wait short-circuited"
+        );
+    }
+
+    /// L-2 review pin (2026-08-29): two tasks parked in
+    /// `wait_for_replay_shadow` on the SAME fd must both wake on a
+    /// single `notify_fd_ready` call.  `Notify::notify_waiters()`
+    /// wakes every registered waiter; a regression that switched to
+    /// `notify_one()` would leave one waiter parked until timeout,
+    /// causing intermittent 500ms stalls on realistic Rholang like
+    /// `fsRead | fsWrite` where both branches race the same fd's
+    /// shadow install.
+    #[tokio::test]
+    async fn wait_for_replay_shadow_wakes_all_concurrent_waiters() {
+        let table = std::sync::Arc::new(FileHandleTable::new());
+        let t1 = table.clone();
+        let t2 = table.clone();
+        let w1 = tokio::spawn(async move {
+            t1.wait_for_replay_shadow(555, Duration::from_secs(2)).await
+        });
+        let w2 = tokio::spawn(async move {
+            t2.wait_for_replay_shadow(555, Duration::from_secs(2)).await
+        });
+        // Yield the runtime a couple of times so both waiter tasks
+        // reach the .await (registered as Notify waiters) before we
+        // fire the notify — otherwise a fast notify race could
+        // land BEFORE waiter registration and rely purely on the
+        // M-1 enable() guarantee to be observed.  The pin still
+        // exercises the "both wake on one notify" property either
+        // way.
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        let shadow = make_shadow_handle(PathBuf::from("/root/concurrent"), ConsensusMode::Consensus);
+        assert!(table.insert_at(555, shadow).await);
+        table.notify_fd_ready(555);
+        let r1 = w1.await.expect("waiter 1 join");
+        let r2 = w2.await.expect("waiter 2 join");
+        assert!(r1, "waiter 1 must observe fd present after notify");
+        assert!(r2, "waiter 2 must observe fd present after notify");
+    }
+
+    /// M-1 review pin (2026-08-29): a `notify_fd_ready` that fires
+    /// between `notified()` creation and its first poll must still
+    /// be observed by the waiter.  Without
+    /// `notified.as_mut().enable()` (added in M-1), the waiter
+    /// would register AFTER `notify_waiters()` fired, park until
+    /// timeout, and only recover via the terminal `contains_fd`
+    /// check — a full-timeout latency stall on every affected
+    /// call.
+    ///
+    /// The pin uses two oneshot channels to deterministically
+    /// place the notify in the "between enable() and .await"
+    /// window: the waiter signals when it's past enable(), fires
+    /// the notify, then releases the waiter to poll.  The
+    /// elapsed-time assertion (well under the wait's own timeout)
+    /// distinguishes the enable() wake path from the
+    /// timeout-recover path — a regression that dropped enable()
+    /// would take ~waiter_timeout ms; enable() takes microseconds.
+    #[tokio::test]
+    async fn wait_for_replay_shadow_survives_notify_before_await() {
+        let table = std::sync::Arc::new(FileHandleTable::new());
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        let (go_tx, go_rx) = tokio::sync::oneshot::channel::<()>();
+        let table_for_waiter = table.clone();
+
+        // Waiter-side timeout inside the wait — a regression that
+        // dropped enable() would stall for this long; enable()
+        // wakes in microseconds.  200ms leaves plenty of headroom
+        // over the elapsed-time assert below (100ms) without being
+        // flaky on slow CI.
+        const WAITER_TIMEOUT: Duration = Duration::from_millis(200);
+        const MAX_ELAPSED_WITH_ENABLE: Duration = Duration::from_millis(100);
+
+        let waiter = tokio::spawn(async move {
+            // Mirror wait_for_replay_shadow's shape up through
+            // enable(), then coordinate with the driver so the
+            // notify fires in the "between enable() and .await"
+            // window enable() is supposed to make safe.
+            if table_for_waiter.contains_fd(888).await {
+                return (true, Duration::ZERO);
+            }
+            let notifier = {
+                let mut map = table_for_waiter
+                    .fd_notifiers
+                    .lock()
+                    .expect("fd_notifiers poisoned");
+                map.entry(888)
+                    .or_insert_with(|| std::sync::Arc::new(tokio::sync::Notify::new()))
+                    .clone()
+            };
+            let notified = notifier.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let _ = ready_tx.send(());
+            let _ = go_rx.await;
+            let started = std::time::Instant::now();
+            let _ = tokio::time::timeout(WAITER_TIMEOUT, notified).await;
+            let elapsed = started.elapsed();
+            (table_for_waiter.contains_fd(888).await, elapsed)
+        });
+
+        ready_rx.await.expect("waiter reached enable");
+        let shadow = make_shadow_handle(
+            PathBuf::from("/root/pre-await-notify"),
+            ConsensusMode::Consensus,
+        );
+        assert!(table.insert_at(888, shadow).await);
+        table.notify_fd_ready(888);
+        go_tx.send(()).expect("coordinator go");
+
+        let (observed, elapsed) = waiter.await.expect("waiter join");
+        assert!(observed, "waiter must observe fd present");
+        assert!(
+            elapsed < MAX_ELAPSED_WITH_ENABLE,
+            "wait must have woken via notify, not timeout+recover.  elapsed = {elapsed:?}; \
+             a value near WAITER_TIMEOUT ({WAITER_TIMEOUT:?}) indicates enable() was dropped \
+             and the waiter fell through to the terminal contains_fd."
         );
     }
 }

@@ -624,13 +624,28 @@ where
                     return None;
                 };
                 let h = *h;
-                // A `get` error is treated the same as a miss —
-                // fall back to peer fetch.  The store's Err
-                // variants (backing IO failed, etc.) are rare and
-                // operator-observable via their own log; the
-                // reducer shouldn't second-guess whether to
-                // propagate them.
-                lookup.get(&h).ok().flatten()
+                // M-2 review fix (2026-08-29): `get` errors are
+                // treated as misses (fall back to peer fetch —
+                // fail-open so a broken local store doesn't kill
+                // joiner boot), but they MUST be logged so
+                // operators can see chronic store faults instead
+                // of just extra peer-fetch traffic.  Pre-M-2's
+                // `.ok().flatten()` swallowed the Err silently.
+                match lookup.get(&h) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        warn!(
+                            target: "f1r3fly.casper.wal_payload_sync",
+                            hash = hex::encode(h),
+                            error = %e,
+                            "PayloadLookup returned Err on boot enumerator lookup; \
+                             falling back to peer fetch (fail-open).  A recurring \
+                             stream of these indicates a broken local payload store \
+                             — investigate the backing directory / permissions."
+                        );
+                        None
+                    }
+                }
             })
             .await
         }
@@ -2048,5 +2063,127 @@ mod tests {
         // Correct bytes landed on disk.
         let got = std::fs::read(&target).unwrap();
         assert_eq!(&got[..real_payload.len()], real_payload.as_slice());
+    }
+
+    /// M-2 review pin (2026-08-29): a `PayloadLookup` that returns
+    /// `Err` (backing IO fault, poisoned lock, corrupted store) is
+    /// treated the same as a miss — the enumerator falls back to
+    /// peer fetch (fail-open: a broken local store must not kill
+    /// joiner boot).  The Err is logged at warn (see
+    /// `apply_wal_slice_after_fetch`'s reducer closure); operators
+    /// observe chronic faults via that log stream.  Pre-M-2's
+    /// `.ok().flatten()` swallowed the Err with no log, hiding
+    /// broken stores behind extra peer-fetch traffic.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payload_lookup_reducer_treats_err_as_miss_and_falls_back_to_fetch() {
+        use crate::rust::engine::wal_payload_server::PayloadLookup;
+
+        /// Test-only lookup that always returns `Err` — models a
+        /// backing store with IO failure / permission problem.
+        #[derive(Debug)]
+        struct AlwaysErrStore;
+        impl PayloadLookup for AlwaysErrStore {
+            fn get(&self, _payload_hash: &[u8; 32]) -> Result<Option<Vec<u8>>, String> {
+                Err("simulated backing-store IO fault".to_string())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("t.bin");
+        std::fs::write(&target, vec![0u8; 16]).unwrap();
+
+        let lookup: Arc<dyn PayloadLookup> = Arc::new(AlwaysErrStore);
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        // Pre-resolve the CORRECT bytes on the retriever so the
+        // peer-fetch fallback path lets is_complete() short-circuit.
+        let payload = b"peer-served-after-err".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
+
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            move |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            Some(lookup),
+        )
+        .await
+        .expect("apply must succeed via peer-served bytes despite lookup Err");
+
+        // Reducer error → treated as miss → enumerator enqueued.
+        assert_eq!(report.enumerated.resolved_locally, 0);
+        assert_eq!(report.enumerated.enqueued_for_fetch, 1);
+        // Applier still succeeded on the peer-served bytes.
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[..payload.len()], payload.as_slice());
+    }
+
+    /// L-4 review pin (2026-08-29): freeze the load-bearing shape
+    /// of `capture_consensus_writes_by_replaying_deploy`.  This
+    /// helper is the DD-7b-2 (a) Option 2 primitive — a future
+    /// index-building slice wires it into the boot reducer, and
+    /// silent shape drift here would break that follow-up
+    /// without any test signal in this session's scope.
+    ///
+    /// Full E2E via a real `ProcessedDeploy` is deferred to the
+    /// index-building slice (see helper docstring); this
+    /// source-scan pin holds the shape stable in the meantime.
+    /// A regression that dropped any of the load-bearing calls
+    /// would leave the helper compiling but silently broken.
+    #[test]
+    fn capture_consensus_writes_helper_has_load_bearing_shape() {
+        let src = include_str!("wal_payload_sync.rs");
+        let fn_start = src
+            .find("pub async fn capture_consensus_writes_by_replaying_deploy(")
+            .expect(
+                "wal_payload_sync.rs must expose the \
+                 capture_consensus_writes_by_replaying_deploy helper — Option 2 primitive",
+            );
+        // Bound the search to a generous window — the helper is
+        // under 100 lines today; 4 KiB is safely inside its body.
+        let end = std::cmp::min(fn_start + 4096, src.len());
+        let body = &src[fn_start..end];
+        assert!(
+            body.contains("spawn_replay_runtime"),
+            "helper must spawn an isolated replay runtime via \
+             spawn_replay_runtime — a switch to spawn_runtime would \
+             route the capture into the manager's PROD state"
+        );
+        assert!(
+            body.contains("share_payload_store(Some("),
+            "helper must attach the capture store via share_payload_store(Some(...)) \
+             — dropping the override leaves the manager-shared payload_store in place \
+             and captures would leak into production serving state"
+        );
+        assert!(
+            body.contains("InMemoryPayloadStore::new()"),
+            "helper must use InMemoryPayloadStore as the in-memory capture backend \
+             — a DirectoryPayloadStore substitution would persist scratch replay \
+             bytes to the operator's on-disk payload directory"
+        );
+        assert!(
+            body.contains(".reset(&start_root)"),
+            "helper must reset the scratch runtime to the source block's pre-state \
+             — without this, state-dependent Rholang writes reproduce against the \
+             wrong tuplespace and yield different bytes than the leader produced"
+        );
+        assert!(
+            body.contains("replay_deploy_e_with_snapshot("),
+            "helper must drive the deploy via replay_deploy_e_with_snapshot so the \
+             deploy's full acceptance logic (purse snapshot, cost verification, \
+             authority certificate) matches what the leader actually ran"
+        );
+        assert!(
+            body.contains(".snapshot()"),
+            "helper must drain the capture via InMemoryPayloadStore::snapshot() \
+             — returning the internal Arc or a shared reference would leak store \
+             internals to callers and violate the isolation contract"
+        );
     }
 }

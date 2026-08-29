@@ -690,6 +690,57 @@ mod tests {
         }
     }
 
+    /// M-3 review pin (2026-08-29): the DD-7b-2 (a) Option 1
+    /// reducer wire-in — `Some(Arc::clone(&wal_ctx.payload_lookup))`
+    /// passed as the final argument to `spawn_boot_apply_subscriber`
+    /// — must remain in BOTH boot sites.  A refactor that dropped
+    /// the `Some(...)` (reverting to the DD-7b-2 (a) pre-Option-1
+    /// `None` placeholder) would silently disable the local-store
+    /// reducer, forcing every WAL payload hash through peer fetch
+    /// with no compile-time or unit-test signal.
+    ///
+    /// The reducer's mechanics + safety net are covered by
+    /// `payload_lookup_reducer_*` pins in wal_payload_sync.rs
+    /// tests; this pin only ensures the boot sites keep wiring
+    /// the lookup through.
+    #[test]
+    fn boot_pipeline_wires_payload_lookup_into_wal_apply_subscriber() {
+        for (name, rel) in [
+            ("casper_launch", "casper/src/rust/engine/casper_launch.rs"),
+            ("initializing", "casper/src/rust/engine/initializing.rs"),
+        ] {
+            let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            // Load the region between spawn_boot_apply_subscriber(
+            // and its terminating `);` — we want to freeze that the
+            // final argument on the same call site names the
+            // payload_lookup, not just that the string appears
+            // anywhere in the file.
+            let call_idx = src
+                .find("spawn_boot_apply_subscriber(")
+                .unwrap_or_else(|| panic!("{name}: spawn_boot_apply_subscriber call not found"));
+            let tail = &src[call_idx..];
+            let close_idx = tail
+                .find(");")
+                .unwrap_or_else(|| panic!("{name}: subscriber call has no terminating );"));
+            let call = &tail[..close_idx];
+            assert!(
+                call.contains("wal_ctx.payload_lookup"),
+                "{name} ({rel}) must pass wal_ctx.payload_lookup as the DD-7b-2 (a) \
+                 Option 1 reducer source to spawn_boot_apply_subscriber.  A `None` \
+                 (or omitted) argument silently disables the local-store reducer \
+                 and forces every WAL payload hash through peer fetch."
+            );
+            assert!(
+                call.contains("Some("),
+                "{name} ({rel}) must wrap the payload_lookup in Some(...) — the \
+                 subscriber's final argument is Option<Arc<dyn PayloadLookup>>; \
+                 dropping the Some reverts to fetch-everything behavior."
+            );
+        }
+    }
+
     /// catches it.
     #[test]
     fn boot_pipeline_installs_payload_store() {

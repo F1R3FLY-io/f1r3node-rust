@@ -5346,4 +5346,47 @@ mod cmode_tests {
              admitted-then-leaked via release's internal wake_waiters."
         );
     }
+
+    /// L-1 review pin (2026-08-29): every mutating fs handler's
+    /// `is_replay` branch that touches the fd table MUST call
+    /// `wait_for_replay_shadow` before doing so.  Item d-3 landed
+    /// six such call sites (fs_write, fs_write_at, fs_truncate,
+    /// fs_read, fs_read_at, fs_seek); a refactor that dropped any
+    /// one of them would let the follower-side reducer race
+    /// silently re-emerge for that handler — WAL entries would
+    /// go missing, position updates would drift, and leader /
+    /// follower would diverge with no compile-time signal.
+    ///
+    /// The mechanism itself is pinned by
+    /// `handle_table::tests::wait_for_replay_shadow_*` and by the
+    /// PB-M-14 canary; this pin only ensures the call sites keep
+    /// invoking the barrier.
+    #[test]
+    fn every_mutating_replay_branch_calls_wait_for_replay_shadow() {
+        let src = include_str!("handlers.rs");
+        for fn_name in [
+            "pub async fn fs_write(",
+            "pub async fn fs_write_at(",
+            "pub async fn fs_truncate(",
+            "pub async fn fs_read(",
+            "pub async fn fs_read_at(",
+            "pub async fn fs_seek(",
+        ] {
+            let fn_start = src
+                .find(fn_name)
+                .unwrap_or_else(|| panic!("handlers.rs missing {fn_name} definition"));
+            // Bound the search window to the function body — 8 KiB
+            // is generous vs. any of these handlers' current length.
+            let end = std::cmp::min(fn_start + 8192, src.len());
+            let window = &src[fn_start..end];
+            assert!(
+                window.contains("wait_for_replay_shadow"),
+                "{fn_name} must call wait_for_replay_shadow on its replay branch \
+                 before touching the fd table — dropping this call silently \
+                 re-opens the item d-3 follower-side reducer race (fs_open's \
+                 shadow-install can lose to a spawned mutating handler that \
+                 finds an empty fd table)."
+            );
+        }
+    }
 }
