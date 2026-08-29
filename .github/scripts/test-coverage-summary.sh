@@ -46,10 +46,16 @@ out="$("$SCRIPT" "$tmp" crypto models graphz)"
 check "| **All** | 250 | 180 | 72.0% |" "$out"
 check_absent "missing" "$out"
 
-# A malformed file reads as missing instead of aborting the report.
+# Malformed and incomplete files read as missing instead of aborting the report.
 echo "not json" >"$tmp/coverage-shared.json"
 out="$("$SCRIPT" "$tmp" shared)"
 check "| shared | — | — | missing |" "$out"
+check "| **All** | 0 | 0 | n/a |" "$out"
+
+jq -n '{data:[{totals:{lines:{count:10,covered:null,percent:null}}}]}' \
+	>"$tmp/coverage-node.json"
+out="$("$SCRIPT" "$tmp" node)"
+check "| node | — | — | missing |" "$out"
 check "| **All** | 0 | 0 | n/a |" "$out"
 
 # The default crate list covers every crate in the ci.yml coverage matrix.

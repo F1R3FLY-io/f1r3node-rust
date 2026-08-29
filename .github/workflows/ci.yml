@@ -636,18 +636,19 @@ jobs:
           - casper
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
         with:
           toolchain: nightly-2026-02-09
           components: llvm-tools-preview
 
       - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: coverage-${{ matrix.crate }}
 
@@ -655,7 +656,7 @@ jobs:
         run: bash .github/scripts/install-system-dependencies.sh
 
       - name: Install llvm-cov and nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
         with:
           tool: cargo-llvm-cov,nextest
 
@@ -678,7 +679,7 @@ jobs:
             --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
 
       - name: Upload coverage data
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-${{ matrix.crate }}
           path: |
@@ -696,11 +697,11 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/coverage/coverage-${{ matrix.crate }}.lcov
           flags: ${{ matrix.crate }}
-          fail_ci_if_error: true
+          fail_ci_if_error: false
 
   coverage_summary:
     name: Coverage Summary
-    needs: coverage
+    needs: [build_base, coverage]
     if: >-
       always()
       && github.event_name == 'pull_request'
@@ -709,9 +710,21 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: read
+      contents: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Prepare coverage directory
+        shell: bash -euo pipefail {0}
+        run: mkdir -p /tmp/coverage
+
       - name: Download coverage data
-        uses: actions/download-artifact@v4
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: coverage-*
           path: /tmp/coverage
@@ -724,7 +737,7 @@ jobs:
           cat target-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload summary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-summary
           path: target-coverage-summary.md

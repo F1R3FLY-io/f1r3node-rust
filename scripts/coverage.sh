@@ -3,7 +3,7 @@
 #
 # Usage: scripts/coverage.sh [crate ...]
 # With no arguments it measures every crate in the ci.yml coverage matrix.
-# Results land in target/llvm-cov/: one coverage-<crate>.json and one
+# Results land in target/coverage/: one coverage-<crate>.json and one
 # coverage-<crate>.lcov per crate, followed by the rendered summary table.
 #
 # Requires cargo-llvm-cov (cargo install cargo-llvm-cov --locked) and the
@@ -13,9 +13,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ "$#" -gt 0 ]; then
-	crates="$*"
+	crates=("$@")
 else
-	crates="rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper"
+	crates=(rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper)
 fi
 
 if ! cargo llvm-cov --version >/dev/null 2>&1; then
@@ -29,7 +29,7 @@ out="target/coverage"
 mkdir -p "$out"
 ulimit -n 65536 2>/dev/null || true
 
-for crate in $crates; do
+for crate in "${crates[@]}"; do
 	echo "=== $crate ==="
 	# Clean only the profraw so one crate's tests cannot inflate another
 	# crate's coverage; the instrumented build stays cached.
@@ -41,5 +41,4 @@ for crate in $crates; do
 		--lcov --output-path "$out/coverage-$crate.lcov"
 done
 
-# pi-lens-ignore: SC2086
-.github/scripts/coverage-summary.sh "$out" $crates
+.github/scripts/coverage-summary.sh "$out" "${crates[@]}"
