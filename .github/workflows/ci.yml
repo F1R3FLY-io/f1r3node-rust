@@ -608,21 +608,15 @@ jobs:
           path: /tmp/test-logs/
           retention-days: 7
 
-  # Ruleset gate. The branch ruleset requires a status check named exactly
-  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
-  # shard jobs into that one required context, in the same style as the
-  # per-arch integration aggregators below. `needs` on a matrix job resolves
-  # to success only when every shard succeeds.
   # Line coverage is report-only: it never gates a merge or release. It runs
-  # on branch pushes, tags, and exact-merge dispatches (not PR heads) so every
-  # protected-branch head gets per-crate percentages without doubling PR
-  # compute. Codecov upload stays off until a maintainer sets the
-  # ENABLE_CODECOV variable and the CODECOV_TOKEN secret.
+  # on pull-request heads so reviewers see per-crate percentages before merge.
+  # Codecov upload stays off until a maintainer sets the ENABLE_CODECOV
+  # variable and the CODECOV_TOKEN secret.
   coverage:
     name: Coverage (${{ matrix.crate }})
     needs: [build_base, lint]
     if: >-
-      github.event_name != 'pull_request'
+      github.event_name == 'pull_request'
       && needs.build_base.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ matrix.crate == 'casper' && 60 || 45 }}
@@ -694,8 +688,10 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to Codecov
-        if: vars.ENABLE_CODECOV == 'true'
-        uses: codecov/codecov-action@v5
+        if: >-
+          vars.ENABLE_CODECOV == 'true'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: target/coverage/coverage-${{ matrix.crate }}.lcov
@@ -707,7 +703,7 @@ jobs:
     needs: coverage
     if: >-
       always()
-      && github.event_name != 'pull_request'
+      && github.event_name == 'pull_request'
       && needs.coverage.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -734,6 +730,11 @@ jobs:
           path: target-coverage-summary.md
           retention-days: 30
 
+  # Ruleset gate. The branch ruleset requires a status check named exactly
+  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
+  # shard jobs into that one required context, in the same style as the
+  # per-arch integration aggregators below. `needs` on a matrix job resolves
+  # to success only when every shard succeeds.
   test_casper_gate:
     name: Test (casper)
     needs: test_casper
