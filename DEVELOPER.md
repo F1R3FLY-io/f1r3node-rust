@@ -171,6 +171,10 @@ cargo test --release
 cargo test -p casper
 cargo test -p rholang
 ./scripts/run_rust_tests.sh
+
+# Line coverage (requires cargo-llvm-cov and the llvm-tools-preview component)
+just coverage            # every crate
+just coverage casper     # one crate
 ```
 
 ### Run A Standalone Node (without Docker)
