@@ -167,6 +167,20 @@ impl InMemoryPayloadStore {
     pub fn is_empty(&self) -> bool {
         self.map.read().expect("payload store lock poisoned").is_empty()
     }
+
+    /// DD-7b-2 (a) Option 2 (2026-08-29): return a cloned snapshot
+    /// of the current hash → bytes map.  Used by the deploy-write
+    /// reproduction helper (`capture_consensus_writes_by_replaying_deploy`)
+    /// to drain everything a scratch replay wrote into the store.
+    /// Cheap for the small maps this helper produces (a handful of
+    /// Consensus writes per deploy); not intended for large-store
+    /// enumeration on the production serving path.
+    pub fn snapshot(&self) -> HashMap<[u8; 32], Vec<u8>> {
+        self.map
+            .read()
+            .expect("payload store lock poisoned")
+            .clone()
+    }
 }
 
 impl PayloadLookup for InMemoryPayloadStore {
@@ -643,6 +657,54 @@ mod tests {
         // Symlink itself still present.
         let meta = std::fs::symlink_metadata(&symlink_path).unwrap();
         assert!(meta.file_type().is_symlink());
+    }
+
+    /// DD-7b-2 (a) Option 2 primitive pin (2026-08-29):
+    /// `InMemoryPayloadStore::snapshot()` returns a cloned view of
+    /// every inserted (hash, bytes) pair.  The
+    /// `capture_consensus_writes_by_replaying_deploy` helper drains
+    /// its capturing store via this method — a missing entry here
+    /// (or a mutation-aliased return) would silently drop write
+    /// bytes the helper is supposed to reproduce.
+    #[test]
+    fn in_memory_payload_store_snapshot_returns_all_inserted_entries() {
+        let store = InMemoryPayloadStore::new();
+        let a = b"first".to_vec();
+        let b = b"second".to_vec();
+        let c = b"third".to_vec();
+        let ha = store.insert(a.clone());
+        let hb = store.insert(b.clone());
+        let hc = store.insert(c.clone());
+
+        let snap = store.snapshot();
+        assert_eq!(snap.len(), 3);
+        assert_eq!(snap.get(&ha), Some(&a));
+        assert_eq!(snap.get(&hb), Some(&b));
+        assert_eq!(snap.get(&hc), Some(&c));
+
+        // Snapshot is a clone: mutating it doesn't affect the
+        // store, and mutating the store after doesn't affect the
+        // returned snapshot.  Guards against a future refactor
+        // returning a shared reference that leaks store internals.
+        let mut mutated = snap.clone();
+        mutated.remove(&ha);
+        assert_eq!(store.snapshot().len(), 3, "store must be unaffected");
+        let d = b"fourth".to_vec();
+        let _ = store.insert(d.clone());
+        assert_eq!(snap.len(), 3, "prior snapshot must be a stable clone");
+    }
+
+    /// DD-7b-2 (a) Option 2 primitive pin (2026-08-29): empty store
+    /// snapshot is empty (not None, not a placeholder).  The
+    /// deploy-write reproduction helper returns this shape for
+    /// deploys that did no Consensus writes; callers must
+    /// distinguish "no writes" from "helper failed" via the
+    /// `Result` variant, not by inspecting the map.
+    #[test]
+    fn in_memory_payload_store_snapshot_is_empty_when_store_is_empty() {
+        let store = InMemoryPayloadStore::new();
+        let snap = store.snapshot();
+        assert!(snap.is_empty(), "expected empty map, got {snap:?}");
     }
 }
 

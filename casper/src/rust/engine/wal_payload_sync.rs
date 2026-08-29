@@ -714,6 +714,147 @@ where
     })
 }
 
+// -------------------------------------------------------------------
+// DD-7b-2 (a) Option 2 (2026-08-29): deploy-write reproduction
+// primitive.  Given a source deploy + its pre-state, spin up an
+// isolated replay runtime with an in-memory capturing payload store,
+// drive replay_deploy_e, and return every Consensus write's
+// hash → bytes that fell out of `journal_write`'s `store.persist(bytes)`
+// call.
+//
+// This is the shape that closes the gap Option 1 leaves open: a
+// fresh joiner (empty local payload_store) can reconstruct write
+// bytes for WAL entries whose source blocks it has in block storage
+// but hasn't yet processed.  A future slice will:
+//   1. Add an index `payload_hash → (block_hash, deploy_index)` built
+//      during block processing (deploys are already being parsed
+//      there, so extracting the write set is one extra pass).
+//   2. Wire this helper into the DD-7b-2 (a) reducer: for each
+//      unresolved WAL payload_hash H, look up (block, deploy) in
+//      the index, load them from block storage, invoke this helper,
+//      return the matching bytes (`mark_resolved`'s rehash still
+//      catches any bug).
+//   3. Handle fork/prune interactions on the index.
+//
+// This session lands just (0) — the primitive helper + regression
+// pins.  Index + reducer wire-in stay in follow-ups.
+//
+// The helper reasons in the caller's terms (RuntimeManager +
+// pre-state + a ProcessedDeploy).  It doesn't hardcode block_kind
+// or purse_snapshot decisions — those are properties of the source
+// block that only the caller (future index-aware reducer) knows.
+// -------------------------------------------------------------------
+
+/// Reproduce the Consensus write bytes a single deploy produced by
+/// re-executing it in an isolated scratch runtime, with an in-memory
+/// capturing `PayloadPersistence` attached that intercepts every
+/// `journal_write`'s `store.persist(bytes)` call.
+///
+/// Returns a `hash → bytes` map covering every unique Consensus
+/// write the deploy produced (Oracular writes don't touch
+/// `store.persist`, so they're absent).  Empty if the deploy did
+/// no Consensus writes.
+///
+/// The runtime is spawned fresh from `runtime_manager` and dropped
+/// at the end of the call — no state leaks to other runtimes.
+/// The manager's shared `payload_store` slot is NOT mutated; the
+/// helper overrides only this runtime's local
+/// `FileHandleTable.payload_store` via `share_payload_store`.
+///
+/// # Pre-state
+///
+/// `pre_state_hash` must be the block's pre-state that the leader
+/// used when producing this deploy's writes.  A wrong pre-state
+/// will yield different rspace lookups and can silently produce
+/// different bytes on state-dependent writes.  The safety net is
+/// downstream: `mark_resolved` rehashes what this helper returns
+/// against the requested payload_hash, so a mismatch (from wrong
+/// pre-state or otherwise) is caught before corrupt bytes reach the
+/// applier.
+///
+/// # Block kind + purse snapshot
+///
+/// Must match the source block's context.  For `Ordinary` blocks
+/// (post-cost-accounted-rho merge), `purse_snapshot` MUST be
+/// `Some` — replay_deploy_e_with_snapshot returns
+/// `InvalidCostSettlement` otherwise.  For `Genesis`, pass `None`.
+///
+/// # Blocking
+///
+/// Runs the reducer inline (not `spawn_blocking`).  Callers on the
+/// boot subscriber path should call this from a `spawn_blocking`
+/// wrapper if latency matters — parse + reduce a Consensus-cap
+/// deploy takes tens to hundreds of milliseconds.
+///
+/// # Testing posture (2026-08-29 landing)
+///
+/// This session ships the primitive.  Its constituent parts are all
+/// separately pinned:
+///
+/// * `InMemoryPayloadStore::snapshot()` — dedicated pins in
+///   `wal_payload_server::tests::in_memory_payload_store_snapshot_*`.
+/// * `share_payload_store` propagation — pins in the
+///   `payload_store_wiring_tests` module of `runtime_manager.rs`.
+/// * `journal_write` → `store.persist(bytes)` chain — pins in
+///   `rholang/tests/fs_wal_spec.rs::consensus_writes_persist_to_
+///   payload_store` (and the multi-deploy WAL byte-identity test).
+/// * `replay_deploy_e_with_snapshot` — pinned via the block-level
+///   `replay_deploys` + PB-M-14 canary.
+///
+/// End-to-end verification via a real `ProcessedDeploy` requires
+/// the full leader cosign pipeline (compute_state_with_bonds_
+/// cosigned_admitted).  That E2E lands naturally with the
+/// index-building session (see follow-up plan): the block-processing
+/// hook produces `ProcessedDeploy`s on the leader; the joiner-side
+/// reducer feeds them to this helper on boot; the boot E2E test
+/// exercises the whole chain.  Wiring an E2E now would duplicate
+/// scaffolding that follow-up will provide for free.
+pub async fn capture_consensus_writes_by_replaying_deploy(
+    runtime_manager: &crate::rust::util::rholang::runtime_manager::RuntimeManager,
+    pre_state_hash: &models::rust::block::state_hash::StateHash,
+    processed_deploy: &models::rust::casper::protocol::casper_message::ProcessedDeploy,
+    block_kind: crate::rust::rholang::replay_runtime::ReplayBlockKind,
+    purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
+) -> Result<HashMap<[u8; 32], Vec<u8>>, crate::rust::errors::CasperError> {
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    use crate::rust::engine::wal_payload_server::InMemoryPayloadStore;
+    use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
+
+    let mut runtime = runtime_manager.spawn_replay_runtime().await;
+    // Attach the capturing store BEFORE reset/replay so every
+    // journal_write during the drive sees it.  Overwrites the
+    // manager-shared payload_store on THIS runtime only (interior
+    // mutability on the FileHandleTable slot is per-runtime).
+    let capture = Arc::new(InMemoryPayloadStore::new());
+    runtime.fs_handles.share_payload_store(Some(
+        capture.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+    ));
+    // Reset the scratch runtime to the source block's pre-state so
+    // state-dependent writes reproduce identically to the leader.
+    let start_root = Blake2b256Hash::from_bytes_prost(pre_state_hash);
+    runtime
+        .reset(&start_root)
+        .await
+        .map_err(|e| {
+            crate::rust::errors::CasperError::RuntimeError(format!(
+                "capture_consensus_writes: reset to pre-state failed: {e}"
+            ))
+        })?;
+
+    let mut ops = ReplayRuntimeOps::new_from_runtime(runtime);
+    // replay_deploy_e_with_snapshot handles rig() internally.
+    // Errors are propagated to the caller so a bad deploy (e.g.,
+    // stale purse snapshot, missing certificate) doesn't silently
+    // return an empty map that a caller might mistake for
+    // "deploy did no Consensus writes".
+    ops.replay_deploy_e_with_snapshot(block_kind, processed_deploy, purse_snapshot)
+        .await?;
+
+    Ok(capture.snapshot())
+}
+
 /// Default tick period between outbound-request rounds.  Matches
 /// snapshot_chunk_sync's TICK_PERIOD_MS so operators have one knob.
 pub const TICK_PERIOD_MS: u64 = 5_000;
