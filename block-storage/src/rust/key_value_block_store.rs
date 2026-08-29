@@ -245,6 +245,19 @@ impl KeyValueBlockStore {
         }
     }
 
+    /// Key-existence check against the underlying store, skipping the
+    /// decompression and protobuf decode that `contains` (via `get`) pays.
+    /// The cheap availability probe for callers revalidating cached
+    /// per-block facts against THIS store.
+    pub fn contains_key(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self
+            .store
+            .contains(&vec![block_hash.to_vec()])?
+            .first()
+            .copied()
+            .unwrap_or(false))
+    }
+
     fn error_approved_block(cause: String) -> String {
         format!("Approved block decoding error. Cause: {}", cause)
     }

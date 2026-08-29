@@ -54,9 +54,20 @@ pub struct RSpaceStore {
 #[repr(C)]
 #[derive(Clone)]
 pub struct RSpace<C, P, A, K> {
+    // Left as RwLock, unlike store below: its only reader is spawn() (rare,
+    // not on the produce/consume hot path), so it doesn't have that field's
+    // problem.
     pub history_repository:
         Arc<std::sync::RwLock<Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>>>,
-    pub store: Arc<std::sync::RwLock<Arc<Box<dyn HotStore<C, P, A, K>>>>>,
+    // get_store() is called multiple times per produce()/consume() and never
+    // contends a writer on that path — writes only happen at checkpoint/spawn
+    // boundaries, replacing the whole pointer wholesale. ArcSwap is lock-free
+    // for this "read-mostly, rare wholesale swap" pattern: std::sync::RwLock
+    // does atomic RMW on shared reader-count state per read-lock/unlock,
+    // which scales badly under many concurrent readers (confirmed: isolated
+    // read-lock-only benchmark measured negative scaling — see issue #50
+    // follow-up).
+    pub store: Arc<arc_swap::ArcSwap<Box<dyn HotStore<C, P, A, K>>>>,
     installs: Arc<std::sync::Mutex<HashMap<Vec<C>, Install<P, K>>>>,
     event_log: Arc<std::sync::Mutex<Log>>,
     // Striped like phase_a/phase_b_locks below: NUM_LOCK_STRIPES independent
@@ -86,9 +97,7 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
-    pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
-        self.store.read().expect("store read lock").clone()
-    }
+    pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> { self.store.load_full() }
 
     pub fn get_history_repository(
         &self,

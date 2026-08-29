@@ -9,6 +9,7 @@ use crate::rspace::r#match::Match;
 use crate::rspace::rspace_interface::ISpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use crate::rspace::trace::event::{Event, IOEvent};
 
 // ── minimal types ─────────────────────────────────────────────────────────
 
@@ -304,4 +305,162 @@ async fn event_log_and_produce_counter_isolated_cost_at_rholang_par_scale() {
     // reports the isolated cost of these two locks so it can be compared
     // against bench_par_branches' end-to-end number for the same
     // branch/op counts (see issue #50 investigation).
+}
+
+// With produce_counter now sharded (issue #50, part 1), this isolates
+// what's left: event_log alone, pushing directly to the field (bypassing
+// log_produce()/produce_counter entirely) at the same branch/op scale.
+// Confirms whether event_log on its own still accounts for the residual
+// near-zero speedup, and gives a before/after number for its own fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn event_log_isolated_cost_at_rholang_par_scale() {
+    const PAR_BRANCHES: usize = 32;
+    const OPS_PER_BRANCH: usize = 5000;
+
+    // Sequential baseline: identical total ops, one after another.
+    let seq_rspace = make_rspace().await;
+    let t_seq = Instant::now();
+    for b in 0..PAR_BRANCHES {
+        for i in 0..OPS_PER_BRANCH {
+            let channel = format!("seq_{}_{}", b, i);
+            let data = "datum".to_string();
+            let produce_ref = Produce::create(&channel, &data, false);
+            seq_rspace
+                .event_log
+                .lock()
+                .expect("event log lock")
+                .push(Event::IoEvent(IOEvent::Produce(produce_ref)));
+        }
+    }
+    let seq_ms = t_seq.elapsed().as_millis().max(1);
+
+    // Concurrent: PAR_BRANCHES tokio tasks, all sharing one event_log.
+    let par_rspace = Arc::new(make_rspace().await);
+    let t_par = Instant::now();
+    let handles: Vec<_> = (0..PAR_BRANCHES)
+        .map(|b| {
+            let s = par_rspace.clone();
+            tokio::spawn(async move {
+                for i in 0..OPS_PER_BRANCH {
+                    let channel = format!("par_{}_{}", b, i);
+                    let data = "datum".to_string();
+                    let produce_ref = Produce::create(&channel, &data, false);
+                    s.event_log
+                        .lock()
+                        .expect("event log lock")
+                        .push(Event::IoEvent(IOEvent::Produce(produce_ref)));
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.await.unwrap();
+    }
+    let par_ms = t_par.elapsed().as_millis().max(1);
+
+    let num_workers = tokio::runtime::Handle::current().metrics().num_workers();
+    let ideal = PAR_BRANCHES.min(num_workers).min(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(usize::MAX),
+    );
+    let speedup = seq_ms as f64 / par_ms as f64;
+    let efficiency = speedup / ideal as f64 * 100.0;
+
+    eprintln!(
+        "event_log isolated cost (produce_counter excluded): branches={PAR_BRANCHES} \
+         ops_per_branch={OPS_PER_BRANCH} total_ops={} sequential={seq_ms}ms concurrent={par_ms}ms \
+         speedup={:.2}x (ideal {ideal}x: {PAR_BRANCHES} branches on {num_workers} workers) \
+         efficiency={:.1}%",
+        PAR_BRANCHES * OPS_PER_BRANCH,
+        speedup,
+        efficiency,
+    );
+
+    // Diagnostic, not a tight bound: absolute timings swing widely with
+    // build profile (debug vs --release) and op count (see issue #50
+    // follow-up), so this only catches catastrophic regressions back to
+    // real lock-based contention, not general slowdowns.
+    assert!(
+        par_ms <= seq_ms.saturating_mul(5),
+        "event_log regressed: concurrent ({par_ms}ms) more than 5x slower than sequential \
+         ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops — see issue #50"
+    );
+}
+
+// get_store() is called at least 3x per produce()/consume() (produce_lock,
+// locked_produce, store_data) with no writer ever contending it on the
+// hot path. Isolates just that call, at 2x the op count, as a regression
+// sentinel against reintroducing lock-based contention on this path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
+    const PAR_BRANCHES: usize = 32;
+    // 10x rholang-par's own scale (not 5000): get_store() is now a fast
+    // ArcSwap load, so at 5000 ops/branch tokio::spawn's one-time per-task
+    // setup cost dominates the measured concurrent time and swamps the
+    // per-call cost this test means to isolate, making the ratio flaky
+    // (regardless of real ArcSwap performance). See the build-profile/op-
+    // count lesson in issues/02-intra-deploy-par-mutex-rspace.md.
+    const OPS_PER_BRANCH: usize = 50000;
+
+    let seq_rspace = make_rspace().await;
+    let t_seq = Instant::now();
+    for _ in 0..(PAR_BRANCHES * OPS_PER_BRANCH) {
+        let _ = seq_rspace.get_store();
+        let _ = seq_rspace.get_store();
+    }
+    let seq_ms = t_seq.elapsed().as_millis().max(1);
+
+    let par_rspace = Arc::new(make_rspace().await);
+    let t_par = Instant::now();
+    let handles: Vec<_> = (0..PAR_BRANCHES)
+        .map(|_| {
+            let s = par_rspace.clone();
+            tokio::spawn(async move {
+                for _ in 0..OPS_PER_BRANCH {
+                    let _ = s.get_store();
+                    let _ = s.get_store();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.await.unwrap();
+    }
+    let par_ms = t_par.elapsed().as_millis().max(1);
+
+    let num_workers = tokio::runtime::Handle::current().metrics().num_workers();
+    let ideal = PAR_BRANCHES.min(num_workers).min(
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(usize::MAX),
+    );
+    let speedup = seq_ms as f64 / par_ms as f64;
+    let efficiency = speedup / ideal as f64 * 100.0;
+
+    eprintln!(
+        "get_store() ArcSwap load isolated cost (2 calls/op): branches={PAR_BRANCHES} \
+         ops_per_branch={OPS_PER_BRANCH} total_calls={} sequential={seq_ms}ms \
+         concurrent={par_ms}ms speedup={:.2}x (ideal {ideal}x) efficiency={:.1}%",
+        PAR_BRANCHES * OPS_PER_BRANCH * 2,
+        speedup,
+        efficiency,
+    );
+
+    // Diagnostic, not a tight bound: see the comment on
+    // event_log_isolated_cost_at_rholang_par_scale above for why. This loop
+    // has no .await point inside it (a tight synchronous hot loop), the
+    // worst case for any scheduler/atomic primitive and not representative
+    // of real produce()/consume() usage (confirmed fine on the actual
+    // cluster — see issues/02-intra-deploy-par-mutex-rspace.md). On a loaded
+    // shared machine this ratio has been observed up to ~20x with no
+    // functional regression; 50x stays a safe floor for catching a real
+    // reintroduction of RwLock-class contention (which measured >10x even
+    // in isolation) without flaking on ordinary system noise.
+    assert!(
+        par_ms <= seq_ms.saturating_mul(50),
+        "get_store() regressed: concurrent ({par_ms}ms) more than 50x slower than sequential \
+         ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops x2 calls/op — see issue \
+         #50"
+    );
 }
