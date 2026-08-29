@@ -190,7 +190,16 @@ env:
   # Verified: 265 SI unit tests + ruff green on the pushed tree; cloud-init
   # dry render clean. Incidents: f1r3node-rust#365, run 33136185540.
   # Re-pin to the merged main SHA once the SI PR lands.
-  SYSTEM_INTEGRATION_REF: b5cbb63a28755bbc91813589ccc219276025dce1
+  # 2026-08-29: b5cbb63 -> 8b4da0f (ROLLBACK). b5cbb63's branch forked from
+  # SI dev at ffcf4c1d — 21 commits BEHIND SI main — so the pin silently
+  # rolled back three weeks of integration-harness fixes and all six
+  # integration legs failed deterministically (run 33222681493:
+  # finality_stall_recovery, joiner_self_proposes_at_epoch_boundary,
+  # observer_lfs_sync — old test expectations vs current node). Lesson for
+  # every future bump: verify the candidate DESCENDS from the current pin
+  # (git merge-base --is-ancestor) before repinning. Re-bump once SI
+  # rebases the hardening commit onto main and pushes a descendant SHA.
+  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
