@@ -179,7 +179,18 @@ env:
   # full green x3 on the d94fffd content (run 32691266446 attempts 1+2, run
   # 32759382579), and 8b4da0f is d94fffd merged to main with no further
   # changes.
-  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
+  # 2026-08-28: 8b4da0f -> b5cbb63 (SI branch chore/soak-preflight-20260828):
+  # soak runner hardening — runner oom_score_adj -1000 shield, durable
+  # post_mortem via freeform tags, launch-parameterized idle timeout
+  # (RUNNER_IDLE_TIMEOUT_SECS; the pipeline's arm64 launches now pass 7200
+  # so the sequential subprocess leg's runner survives — run 33208755550
+  # hang), and the parents-post-state metrics.py refresh incl. the
+  # COUNTERS_TO_SCRAPE path for counter-rendered metrics. Cross-repo
+  # request/result: SI docs/discoveries/2026-08-28-soak-runner-hardening-*.
+  # Verified: 265 SI unit tests + ruff green on the pushed tree; cloud-init
+  # dry render clean. Incidents: f1r3node-rust#365, run 33136185540.
+  # Re-pin to the merged main SHA once the SI PR lands.
+  SYSTEM_INTEGRATION_REF: b5cbb63a28755bbc91813589ccc219276025dce1
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

@@ -45,7 +45,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
+  SYSTEM_INTEGRATION_REF: b5cbb63a28755bbc91813589ccc219276025dce1
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -352,7 +352,15 @@ jobs:
           # exhausted it under normal PR traffic.
           pids=()
           for _ in $(seq 1 4); do ./launch-runner.sh amd64 & pids+=($!); done
-          for _ in $(seq 1 2); do ./launch-runner.sh arm64 & pids+=($!); done
+          # arm64 runs its two legs SEQUENTIALLY (subprocess queues after
+          # docker), so the runner serving the second leg idles longer than
+          # the cloud-init idle watchdog's 2700s default — run 33208755550
+          # lost its second arm64 runner to that watchdog ten minutes before
+          # arm64-subprocess queued, and the job hung forever. 7200s covers
+          # the observed docker-leg duration with margin. The launcher knob
+          # exists from system-integration pin <pending 2026-08-28 repin>;
+          # older launchers ignore the variable, so this is safe either way.
+          for _ in $(seq 1 2); do RUNNER_IDLE_TIMEOUT_SECS=7200 ./launch-runner.sh arm64 & pids+=($!); done
           failed=0
           for pid in "${pids[@]}"; do
             if ! wait "$pid"; then
