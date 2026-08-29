@@ -199,7 +199,12 @@ env:
   # every future bump: verify the candidate DESCENDS from the current pin
   # (git merge-base --is-ancestor) before repinning. Re-bump once SI
   # rebases the hardening commit onto main and pushes a descendant SHA.
-  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
+  # 2026-08-29: 8b4da0f -> 5858f2a (system-integration MAIN — the #131
+  # dev->main merge). Carries both hardening commits (b5cbb63 + 56ebc9e
+  # review remediations) WITH the dev-merge that cured the stale base, on
+  # top of main's current harness. Verified: descends from 8b4da0f
+  # (merge-base --is-ancestor), per the rule above.
+  SYSTEM_INTEGRATION_REF: 5858f2a26096376f4c2ac6c1636ec45959613782
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
