@@ -755,5 +755,73 @@ mod tests {
         let snap = store.snapshot();
         assert!(snap.is_empty(), "expected empty map, got {snap:?}");
     }
+
+    // ---------------------------------------------------------------
+    // DD-7b-2 (a) Option 2 (2026-08-29): behavioral tests for
+    // `BlockStorageBackedRecorder`.  Complement the shape-scan
+    // pin `journal_write_records_payload_source_on_consensus_writes`
+    // by exercising the actual trait-through-storage path.
+    // ---------------------------------------------------------------
+
+    async fn make_dag_storage(
+    ) -> block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage {
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        let mut kvm = InMemoryStoreManager::new();
+        block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("in-memory DAG storage")
+    }
+
+    /// `BlockStorageBackedRecorder::record` writes through to the
+    /// underlying `BlockDagKeyValueStorage`'s `payload_source_index`
+    /// so a subsequent `lookup_payload_source` returns the recorded
+    /// sig.  A refactor that made `record` a no-op (e.g., forgot to
+    /// call `record_payload_source`) would trip here.
+    #[tokio::test]
+    async fn block_storage_backed_recorder_writes_through_to_index() {
+        use rholang::rust::interpreter::io::wal::PayloadSourceRecorder;
+        let storage = make_dag_storage().await;
+        let recorder = BlockStorageBackedRecorder::new(storage.clone());
+
+        let payload_hash = [0x33u8; 32];
+        let deploy_sig: Vec<u8> = vec![0x77, 0x88, 0x99];
+        recorder
+            .record(payload_hash, &deploy_sig)
+            .expect("record must succeed on fresh storage");
+
+        let got = storage
+            .lookup_payload_source(&payload_hash)
+            .expect("lookup must not error")
+            .expect("recorder.record must have written");
+        assert_eq!(got, deploy_sig);
+    }
+
+    /// The recorder's `Arc<dyn PayloadSourceRecorder>` trait object
+    /// preserves the write-through path.  Confirms the coercion in
+    /// `RuntimeManager::spawn_runtime` /
+    /// `FileHandleTable::share_payload_source_recorder` doesn't
+    /// insert any wrapper that swallows writes.  A regression that
+    /// wrapped the recorder in a NoOp adapter (e.g., during a
+    /// feature-flag rollback) would fire here.
+    #[tokio::test]
+    async fn recorder_write_through_survives_arc_dyn_erasure() {
+        use rholang::rust::interpreter::io::wal::PayloadSourceRecorder;
+        let storage = make_dag_storage().await;
+        let recorder: std::sync::Arc<dyn PayloadSourceRecorder> = std::sync::Arc::new(
+            BlockStorageBackedRecorder::new(storage.clone()),
+        );
+
+        let payload_hash = [0x44u8; 32];
+        let deploy_sig: Vec<u8> = vec![0xAA, 0xBB];
+        recorder
+            .record(payload_hash, &deploy_sig)
+            .expect("record via Arc<dyn PayloadSourceRecorder> must succeed");
+
+        let got = storage
+            .lookup_payload_source(&payload_hash)
+            .expect("lookup")
+            .expect("recorder must have written through the trait object");
+        assert_eq!(got, deploy_sig);
+    }
 }
 

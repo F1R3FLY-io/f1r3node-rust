@@ -2131,3 +2131,124 @@ fn find_returns_ok_none_for_unknown_valid_prefix() {
         }
     });
 }
+
+// -------------------------------------------------------------------
+// DD-7b-2 (a) Option 2 (2026-08-29): behavioral tests for the
+// payload-source index.  Complement the shape-scan pins in casper /
+// node / rholang with real LMDB round-trips that would catch a
+// regression in the typed-store key/value bincode encoding, the
+// `Vec<u8>` key semantics, or the `PlRwLock`-guarded put/get shape.
+// -------------------------------------------------------------------
+
+#[test]
+fn payload_source_record_and_lookup_round_trip() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let payload_hash = [0x11u8; 32];
+        let deploy_sig: Vec<u8> = vec![0xAA, 0xBB, 0xCC, 0xDD];
+
+        // Before recording: lookup misses cleanly.
+        let before = dag_storage
+            .lookup_payload_source(&payload_hash)
+            .expect("lookup must not error on empty index");
+        assert!(
+            before.is_none(),
+            "lookup on an empty index must return Ok(None), not an error"
+        );
+
+        // Record the mapping.
+        dag_storage
+            .record_payload_source(payload_hash, &deploy_sig)
+            .expect("record must succeed on a fresh storage");
+
+        // After recording: lookup returns the exact sig bytes.
+        let got = dag_storage
+            .lookup_payload_source(&payload_hash)
+            .expect("lookup must not error after record");
+        assert_eq!(
+            got.as_deref(),
+            Some(deploy_sig.as_slice()),
+            "lookup after record must return the exact deploy_sig bytes"
+        );
+    });
+}
+
+#[test]
+fn payload_source_latest_writer_wins_on_collision() {
+    // Two deploys produce byte-identical writes → same Blake2b256
+    // payload_hash → same index key.  put_one's latest-writer-wins
+    // semantics are the design choice: newer blocks are more likely
+    // still in block_storage (design decision 6 lazy fork/prune).
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        let payload_hash = [0x22u8; 32];
+        let sig_first: Vec<u8> = vec![0xF1; 8];
+        let sig_second: Vec<u8> = vec![0xF2; 8];
+
+        dag_storage
+            .record_payload_source(payload_hash, &sig_first)
+            .expect("first record");
+        dag_storage
+            .record_payload_source(payload_hash, &sig_second)
+            .expect("second record");
+
+        let got = dag_storage
+            .lookup_payload_source(&payload_hash)
+            .expect("lookup")
+            .expect("must be present");
+        assert_eq!(
+            got, sig_second,
+            "latest-writer-wins: the second record must overwrite the first \
+             (design decision 6 lazy fork/prune assumes newer entries)"
+        );
+    });
+}
+
+#[test]
+fn payload_source_lookup_by_deploy_id_available_on_writable_storage() {
+    // DD-7b-2 (a) Option 2 wire-in adds a `lookup_by_deploy_id`
+    // mirror on `BlockDagKeyValueStorage` (previously only on the
+    // DAG representation).  Needed by the boot reducer BEFORE the
+    // LFB-guarded DAG rep is available.  The DAG-rep version is
+    // already well-covered by upstream tests; this pin verifies
+    // the storage-side method returns the same value for a block
+    // inserted via the standard path.
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+
+        // Pull the genesis's deploy sig — genesis_block seeds
+        // ProcessedDeploys so we have a real key to look up
+        // without needing to construct a child block.
+        let deploy_id_vec: Vec<u8> = genesis
+            .body
+            .deploys
+            .first()
+            .expect("genesis_block seeds at least one processed deploy")
+            .deploy
+            .sig
+            .to_vec();
+        let via_storage = dag_storage
+            .lookup_by_deploy_id(&deploy_id_vec)
+            .expect("storage-side lookup_by_deploy_id must not error");
+        let via_dag_rep = dag_storage
+            .get_representation()
+            .expect("dag representation")
+            .lookup_by_deploy_id(&deploy_id_vec)
+            .expect("dag-rep lookup_by_deploy_id must not error");
+        assert_eq!(
+            via_storage, via_dag_rep,
+            "the new writable-storage lookup_by_deploy_id (used by the boot \
+             reducer's chain step 2) must return the same block_hash as the \
+             DAG-rep version — a divergence would let the boot reducer see a \
+             different chain state than downstream consumers."
+        );
+    });
+}

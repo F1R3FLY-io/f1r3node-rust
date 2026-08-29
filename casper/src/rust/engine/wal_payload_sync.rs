@@ -1036,6 +1036,26 @@ pub async fn capture_consensus_writes_by_replaying_deploy(
     runtime.fs_handles.share_payload_store(Some(
         capture.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
     ));
+    // DD-7b-2 (a) Option 2 review-fix (2026-08-29): disable the
+    // payload-source recorder on this scratch runtime so
+    // `journal_write` does NOT write into the joiner's real
+    // block-storage-backed `payload_source_index` during the
+    // capture.  Without this override, the "scratch" abstraction
+    // leaks:
+    //   * Convergent replay (bytes match original) → idempotent
+    //     overwrite of the same (payload_hash → deploy_sig) entry
+    //     that already exists.  Cosmetic waste.
+    //   * Divergent replay (state-dependent write yields different
+    //     bytes) → new (hash_divergent, deploy_sig) entry lands in
+    //     the joiner's persistent index that no WAL entry ever
+    //     references — dead storage, bounded by attacker deploy
+    //     cost but unbounded across many boots.
+    // Neither case is a correctness issue (`mark_resolved`'s rehash
+    // check catches divergence before bytes reach the applier), but
+    // both waste disk and confuse future diagnostic reads of the
+    // index.  The override is per-runtime (interior-mutability slot);
+    // dropping the scratch runtime discards it — no leak.
+    runtime.fs_handles.share_payload_source_recorder(None);
     // Reset the scratch runtime to the source block's pre-state so
     // state-dependent writes reproduce identically to the leader.
     let start_root = Blake2b256Hash::from_bytes_prost(pre_state_hash);
@@ -2369,6 +2389,25 @@ mod tests {
              — a DirectoryPayloadStore substitution would persist scratch replay \
              bytes to the operator's on-disk payload directory"
         );
+        // DD-7b-2 (a) Option 2 review-fix (2026-08-29): the scratch
+        // runtime MUST disable the payload-source recorder before
+        // reset+replay so `journal_write` on the capture path does
+        // not write into the joiner's real block-storage-backed
+        // `payload_source_index`.  Dropping this override leaves the
+        // manager-shared recorder in place — every scratch replay
+        // then re-records `(payload_hash, deploy_sig)` into the
+        // persistent index (idempotent for convergent replays,
+        // dead-storage pollution for divergent replays).  Neither is
+        // a correctness bug (`mark_resolved` rehash is the safety
+        // net) but both leak the scratch abstraction.
+        assert!(
+            body.contains("share_payload_source_recorder(None)"),
+            "helper must disable the payload-source recorder via \
+             share_payload_source_recorder(None) so scratch replay does not \
+             pollute the joiner's real block-storage-backed payload_source_index \
+             — see the docstring at the override site for the convergent-vs-\
+             divergent replay pollution modes."
+        );
         assert!(
             body.contains(".reset(&start_root)"),
             "helper must reset the scratch runtime to the source block's pre-state \
@@ -2474,5 +2513,206 @@ mod tests {
              already resolved by Tier 1.  Dropping the guard would re-run \
              replay on every hash even after Tier 1 populates the cache."
         );
+    }
+
+    // ---------------------------------------------------------------
+    // DD-7b-2 (a) Option 2 (2026-08-29): behavioral tests for the
+    // reducer's chain-walker and its miss-fallthrough paths.  Each
+    // test constructs a real Option2ReducerContext with in-memory
+    // storage and drives `try_reproduce_via_block_storage_replay`
+    // directly.  Complements the shape pin
+    // `option2_reducer_walks_full_chain` with wiring proof.
+    //
+    // Full end-to-end (leader records → joiner reproduces bytes end-
+    // to-end via scratch replay) requires a real cosigned deploy +
+    // block-processing pipeline.  Documented as an ignored skeleton
+    // at the tail of this module.
+    // ---------------------------------------------------------------
+
+    async fn empty_option2_ctx() -> Option2ReducerContext {
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+        use rholang::rust::interpreter::external_services::ExternalServices;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_storage = block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("in-memory DAG storage");
+        let block_store =
+            block_storage::rust::key_value_block_store::KeyValueBlockStore::create_from_kvm(
+                &mut kvm,
+            )
+            .await
+            .expect("in-memory block store");
+        let rspace_stores = kvm.r_space_stores().await.expect("rspace stores");
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+            .await
+            .expect("mergeable store");
+        let runtime_manager = RuntimeManager::create_with_store(
+            rspace_stores,
+            mergeable_store,
+            std::sync::Arc::new(std::collections::HashMap::new()),
+            ExternalServices::noop(),
+        );
+        Option2ReducerContext {
+            block_storage,
+            block_store,
+            runtime_manager: std::sync::Arc::new(runtime_manager),
+        }
+    }
+
+    /// Chain step 1 miss (empty index): try_reproduce returns Ok(None)
+    /// so the enumerator falls through to peer fetch.  This is the
+    /// baseline case for a fresh joiner with an empty payload_source_
+    /// index — matches pre-Option-2 behavior verbatim.
+    #[tokio::test]
+    async fn option2_reducer_returns_none_on_empty_index() {
+        let ctx = empty_option2_ctx().await;
+        let bogus_hash = [0xFFu8; 32];
+        let result = try_reproduce_via_block_storage_replay(&bogus_hash, &ctx).await;
+        assert!(
+            matches!(result, Ok(None)),
+            "empty payload_source_index must return Ok(None) — fall through \
+             to peer fetch.  Got: {result:?}"
+        );
+    }
+
+    /// Chain step 2 miss: payload_source_index has an entry pointing
+    /// to a sig that has NO deploy_index entry (invalid-block
+    /// scenario: replay ran, recorder fired, but block insertion
+    /// bailed on `invalid` flag → deploy_index skipped).  The chain
+    /// walker returns Ok(None) cleanly rather than propagating the
+    /// dead reference.
+    #[tokio::test]
+    async fn option2_reducer_returns_none_when_deploy_index_lacks_sig() {
+        let ctx = empty_option2_ctx().await;
+        let payload_hash = [0xAAu8; 32];
+        let orphan_sig: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        // Record the payload_source_index entry so chain step 1
+        // returns Some(orphan_sig).
+        ctx.block_storage
+            .record_payload_source(payload_hash, &orphan_sig)
+            .expect("record");
+        // Do NOT touch deploy_index — leaves chain step 2 in the
+        // "sig has no block_hash mapping" state.
+        let result = try_reproduce_via_block_storage_replay(&payload_hash, &ctx).await;
+        assert!(
+            matches!(result, Ok(None)),
+            "chain step 2 miss (orphan sig with no deploy_index entry) must \
+             return Ok(None) — fall through to peer fetch.  Got: {result:?}"
+        );
+    }
+
+    /// Chain step 3 miss: payload_source_index + deploy_index have
+    /// entries, but block_store returns None for the block_hash
+    /// (pruned block scenario, design decision 6 lazy fork/prune).
+    /// The chain walker returns Ok(None) cleanly.
+    #[tokio::test]
+    async fn option2_reducer_returns_none_when_block_store_lacks_block() {
+        let ctx = empty_option2_ctx().await;
+        let payload_hash = [0xBBu8; 32];
+        let dangling_sig: Vec<u8> = vec![0xCA, 0xFE];
+        // Chain step 1 → Some(sig).
+        ctx.block_storage
+            .record_payload_source(payload_hash, &dangling_sig)
+            .expect("record");
+        // Chain step 2 → Some(block_hash) — inject directly via the
+        // test-internals accessor.  The block_hash points to a block
+        // that was never persisted to block_store (pruned).
+        let dangling_block_hash: models::rust::block_hash::BlockHash =
+            prost::bytes::Bytes::from_static(b"pruned-block-hash-32-bytes-XXXXX");
+        let deploy_index = ctx.block_storage.deploy_index_for_tests();
+        deploy_index
+            .write()
+            .put_one(
+                dangling_sig.clone(),
+                models::rust::block_hash::BlockHashSerde(dangling_block_hash),
+            )
+            .expect("put_one deploy_index");
+        // Chain step 3 → None (block not in block_store).
+        let result = try_reproduce_via_block_storage_replay(&payload_hash, &ctx).await;
+        assert!(
+            matches!(result, Ok(None)),
+            "chain step 3 miss (block pruned from block_store) must return \
+             Ok(None) — the lazy fork/prune fallback path.  Got: {result:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // DD-7b-2 (a) Option 2 follow-up (2026-08-29): full end-to-end
+    // behavioral test skeleton.  Ignored until the follow-up
+    // session that wires up a cosigned-deploy test harness for
+    // Option 2's leader-record-then-joiner-reproduce cycle.
+    //
+    // # Why this can't be a self-contained unit test today
+    //
+    // The Option 2 reducer's happy-path exercises the full chain:
+    //   payload_hash → deploy_sig → block_hash → BlockMessage →
+    //   ProcessedDeploy → capture_consensus_writes_by_replaying_deploy
+    //   → the requested bytes.
+    // Each step needs infrastructure the primitive helper's docstring
+    // calls out as "requires the full leader cosign pipeline":
+    //   * A `ProcessedDeploy` carrying a real primary-signer sig
+    //     (so `deploy.sig.to_vec()` chains through deploy_index).
+    //   * A `BlockMessage` containing that ProcessedDeploy under a
+    //     valid pre_state_hash (so `reset(&start_root)` on the
+    //     scratch runtime succeeds).
+    //   * A `ReplayPurseSnapshot` derived from the block's
+    //     authority-cost witness (so `replay_deploy_e_with_snapshot`
+    //     doesn't return InvalidCostSettlement).
+    //   * `journal_write` firing on the leader's fs_write path,
+    //     with the payload_source_recorder wired, so the
+    //     payload_source_index actually populates from the deploy.
+    //
+    // # Skeleton
+    //
+    // Once the harness (or the PB-M-14 canary extension) is
+    // available, this test would:
+    //   1. Build a two-validator harness like
+    //      `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`.
+    //   2. Wire a BlockStorageBackedRecorder to validator A's
+    //      manager BEFORE producing the block.
+    //   3. Validator A produces + adds a block whose deploy writes
+    //      bytes B on a Consensus cap (`add_block_from_deploys(...)`).
+    //   4. Assert:
+    //        A.block_dag_storage.lookup_payload_source(&Blake2b256(B))
+    //        == Some(deploy_sig)
+    //      — this is the leader-side recording pin.
+    //   5. Set up a "joiner" state: fresh RuntimeManager, empty
+    //      payload_store, but with access to A's block_dag_storage
+    //      and block_store (or a copy).
+    //   6. Build an Option2ReducerContext bundling A's storage +
+    //      the joiner's runtime_manager.
+    //   7. Drive apply_wal_slice_after_fetch with:
+    //        - the block's WAL slice (from A's pending_wal_slices),
+    //        - payload_lookup = None (force Option 1 to miss),
+    //        - option2_ctx = Some(ctx from step 6).
+    //   8. Assert:
+    //        - report.enumerated.resolved_locally == 1
+    //        - the target file on disk matches B (via the applier's
+    //          path_map).
+    //   9. Assert:
+    //        - joiner's own payload_source_index STAYS EMPTY
+    //          (scratch-replay pollution fix — the recorder
+    //          override should have prevented any writes).
+    //
+    // # Scope for THAT session
+    //
+    // Realistic scope: ~100-200 LOC + harness reuse from PB-M-14.
+    // Would live either as an extension to
+    // `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`
+    // (natural home — same harness) or a new sibling file
+    // (`option2_e2e.rs`).  The primitive's docstring already
+    // anticipates this: "That E2E lands naturally with the
+    // index-building session (see follow-up plan)".
+    // ---------------------------------------------------------------
+    #[tokio::test]
+    #[ignore = "follow-up: requires cosigned-deploy test harness — see docstring above"]
+    async fn option2_leader_records_and_joiner_reproduces_end_to_end() {
+        // Skeleton — see the doc block above for the concrete
+        // steps.  Unignore once the harness is wired.
+        unimplemented!("Option 2 E2E test skeleton — see doc block above for the plan");
     }
 }
