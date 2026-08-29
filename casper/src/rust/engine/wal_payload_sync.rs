@@ -561,11 +561,24 @@ pub enum BootApplyError {
 ///
 /// # Reducer
 ///
-/// Phase 7b-2 (2026-08-28) uses `|_| None` — fetch every payload
-/// from peers.  Deferred per DD-7b-2 (a) committed 2026-08-27:
-/// the write-payload-determinism reducer will land when a specific
-/// caller needs it (e.g., deploy-arg reproduction from block
-/// storage).
+/// DD-7b-2 (a) Option 1 (landed 2026-08-28): when
+/// `payload_lookup` is `Some`, each unique payload hash is first
+/// asked of the local `PayloadLookup` (typically the joiner's own
+/// `DirectoryPayloadStore` populated by prior block processing).
+/// A hit hands the bytes to `mark_resolved` (rehash-verified) and
+/// skips the peer fetch.  A miss falls through to
+/// `enqueue_payload` (peer fetch).  When `payload_lookup` is
+/// `None`, every hash is enqueued for peer fetch — matches
+/// pre-reducer behavior verbatim.
+///
+/// Boundary: this reducer only helps for hashes the joiner has
+/// SEEN in a locally-processed block (leader- or replay-side
+/// journal_write already persisted the bytes to the store).
+/// A fresh joiner with an empty payload store gets zero help and
+/// falls back to peer fetch on every hash — no regression.
+/// Option 2 (deploy-arg AST reproduction from block storage) is
+/// tracked separately in the deferred catalog and covers cases
+/// this reducer can't.
 ///
 /// # Poll loop
 ///
@@ -594,14 +607,35 @@ pub async fn apply_wal_slice_after_fetch<F>(
     allowed_roots: Vec<std::path::PathBuf>,
     timeout: std::time::Duration,
     poll_interval: std::time::Duration,
+    payload_lookup: Option<Arc<dyn crate::rust::engine::wal_payload_server::PayloadLookup>>,
 ) -> Result<BootApplyReport, BootApplyError>
 where
     F: Fn(&std::path::Path) -> std::path::PathBuf + Send + Sync + 'static,
 {
     use rholang::rust::interpreter::io::wal::PayloadRef;
 
-    // Step 1 — enumerate.
-    let enumerated = enumerate_and_enqueue_payloads(&driver, &wal, |_| None).await;
+    // Step 1 — enumerate.  When `payload_lookup` is provided, the
+    // reducer queries it for each unique payload hash before
+    // enqueueing a peer fetch.  See docstring for the boundary.
+    let enumerated = match payload_lookup {
+        Some(lookup) => {
+            enumerate_and_enqueue_payloads(&driver, &wal, |entry| {
+                let PayloadRef::Hash(h) = entry.payload_ref.as_ref()? else {
+                    return None;
+                };
+                let h = *h;
+                // A `get` error is treated the same as a miss —
+                // fall back to peer fetch.  The store's Err
+                // variants (backing IO failed, etc.) are rare and
+                // operator-observable via their own log; the
+                // reducer shouldn't second-guess whether to
+                // propagate them.
+                lookup.get(&h).ok().flatten()
+            })
+            .await
+        }
+        None => enumerate_and_enqueue_payloads(&driver, &wal, |_| None).await,
+    };
 
     // Step 2 — poll for completion under a timeout ceiling.
     let deadline = std::time::Instant::now() + timeout;
@@ -1318,6 +1352,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
+            None,
         )
         .await
         .expect("apply happy path");
@@ -1358,6 +1393,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_millis(120),
             std::time::Duration::from_millis(20),
+            None,
         )
         .await
         .expect_err("expect timeout");
@@ -1401,6 +1437,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
+            None,
         )
         .await
         .expect("apply with dedup");
@@ -1449,6 +1486,7 @@ mod tests {
             vec![allowed.path().to_path_buf()],
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
+            None,
         )
         .await
         .expect_err("out-of-root path must Err");
@@ -1506,6 +1544,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
+            None,
         )
         .await
         .expect_err("DeployRef must Err");
@@ -1542,6 +1581,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_millis(80),
             std::time::Duration::from_millis(20),
+            None,
         )
         .await
         .expect_err("first call must time out");
@@ -1562,6 +1602,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
+            None,
         )
         .await
         .expect("post-timeout retry must succeed");
@@ -1692,6 +1733,7 @@ mod tests {
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
+            None,
         )
         .await
         .expect("apply with path_map");
@@ -1701,5 +1743,169 @@ mod tests {
         // dst reflects the write.
         let got = std::fs::read(dst_dir.path().join("f.bin")).unwrap();
         assert_eq!(&got[..payload.len()], payload.as_slice());
+    }
+
+    // ---------------------------------------------------------------
+    // DD-7b-2 (a) Option 1 (2026-08-28): PayloadLookup-backed
+    // reducer pins.  Prove that the boot enumerator consults the
+    // local `PayloadLookup` before enqueueing peer fetch, and that
+    // the safety-net rehash in `mark_resolved` catches a lookup
+    // that returns bytes not matching the requested hash.
+    // ---------------------------------------------------------------
+
+    /// A payload present in the local store is `mark_resolved`ed
+    /// via the reducer and does NOT hit the peer-fetch queue.
+    /// `apply_wal_slice_after_fetch` reports `resolved_locally = 1`
+    /// (not `enqueued_for_fetch`), the retriever's pending queue
+    /// stays empty, and the applier still runs with correct
+    /// bytes.  This is the DD-7b-2 (a) Option 1 win: warm re-boots
+    /// with a populated payload store skip wire traffic entirely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payload_lookup_reducer_resolves_from_local_store() {
+        use crate::rust::engine::wal_payload_server::PayloadLookup;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.bin");
+        std::fs::write(&target, vec![0u8; 32]).unwrap();
+
+        let payload = b"from-local-store".to_vec();
+        let store = InMemoryPayloadStore::new();
+        let payload_hash = store.insert(payload.clone());
+        assert_eq!(payload_hash, hash_of(&payload));
+        let lookup: Arc<dyn PayloadLookup> = Arc::new(store);
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
+
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            move |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            Some(lookup),
+        )
+        .await
+        .expect("apply must succeed on locally-resolved payload");
+
+        // The reducer resolved the payload before enqueueing;
+        // fetch traffic stayed at zero for this hash.
+        assert_eq!(report.enumerated.resolved_locally, 1);
+        assert_eq!(report.enumerated.enqueued_for_fetch, 0);
+        // And the applier still wrote the correct bytes.
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[..payload.len()], payload.as_slice());
+    }
+
+    /// A payload absent from the local store falls through to
+    /// peer fetch — the reducer returns None and the enumerator
+    /// enqueues the hash.  Fresh joiners with an empty store see
+    /// this on every hash; the boundary is documented on
+    /// `apply_wal_slice_after_fetch`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payload_lookup_reducer_falls_back_to_fetch_on_miss() {
+        use crate::rust::engine::wal_payload_server::PayloadLookup;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("t.bin");
+        std::fs::write(&target, vec![0u8; 16]).unwrap();
+
+        // Empty store — every lookup returns None.
+        let store = InMemoryPayloadStore::new();
+        let lookup: Arc<dyn PayloadLookup> = Arc::new(store);
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        // Pre-resolve the payload directly on the retriever so
+        // the poll loop short-circuits (test-harness convenience:
+        // simulate "peer fetch already happened").
+        let payload = b"peer-served".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
+
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            move |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            Some(lookup),
+        )
+        .await
+        .expect("apply must succeed via peer-served payload");
+
+        // Reducer missed; enumerator enqueued for fetch — the
+        // pre-marked payload made `is_complete()` true so the
+        // apply still ran.
+        assert_eq!(report.enumerated.resolved_locally, 0);
+        assert_eq!(report.enumerated.enqueued_for_fetch, 1);
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[..payload.len()], payload.as_slice());
+    }
+
+    /// Safety pin: a lookup that returns bytes whose hash does
+    /// NOT match the requested hash is caught by
+    /// `mark_resolved`'s defense-in-depth rehash; the enumerator
+    /// falls back to peer fetch instead of feeding corrupt bytes
+    /// to the applier.  Guards against a future PayloadLookup impl
+    /// bug or a poisoned local store.
+    ///
+    /// In release builds, `mark_resolved` returns false silently
+    /// and the enumerator falls back to fetch.  In debug builds,
+    /// `mark_resolved` panics on the mismatch (`debug_assert!`)
+    /// to catch reducer bugs early — this test is release-gated so
+    /// it exercises the fallback path without tripping the debug
+    /// panic.
+    #[cfg(not(debug_assertions))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn payload_lookup_reducer_corrupt_bytes_fall_back_to_fetch() {
+        use crate::rust::engine::wal_payload_server::PayloadLookup;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("t.bin");
+        std::fs::write(&target, vec![0u8; 16]).unwrap();
+
+        let real_payload = b"real-bytes".to_vec();
+        let real_hash = hash_of(&real_payload);
+        // Store maps real_hash → WRONG bytes via
+        // `insert_with_hash` (which bypasses the auto-hash check
+        // — that's what makes it possible to plant corrupt
+        // entries for this test).
+        let store = InMemoryPayloadStore::new();
+        store.insert_with_hash(real_hash, b"totally-wrong-bytes".to_vec());
+        let lookup: Arc<dyn PayloadLookup> = Arc::new(store);
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        // Pre-resolve the CORRECT bytes on the retriever so the
+        // peer-fetch fallback path is what `is_complete()` sees.
+        driver
+            .retriever
+            .mark_resolved(real_hash, real_payload.clone())
+            .await;
+        let wal = vec![write_entry(target.to_str().unwrap(), 0, &real_payload)];
+
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            move |p| p.to_path_buf(),
+            Vec::new(),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            Some(lookup),
+        )
+        .await
+        .expect("apply must succeed via peer-served correct bytes");
+
+        // Reducer's wrong bytes were rejected → enumerator
+        // enqueued the hash for peer fetch instead.
+        assert_eq!(report.enumerated.resolved_locally, 0);
+        assert_eq!(report.enumerated.enqueued_for_fetch, 1);
+        // Correct bytes landed on disk.
+        let got = std::fs::read(&target).unwrap();
+        assert_eq!(&got[..real_payload.len()], real_payload.as_slice());
     }
 }

@@ -516,11 +516,22 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // the trust anchor is Blake2b256 preimage resistance
             // via the Merkle root check upstream.
             let allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+            // DD-7b-2 (a) Option 1: the local `PayloadLookup` (this
+            // validator's own `DirectoryPayloadStore` populated by
+            // journal_write on prior block processing) is threaded
+            // to the boot enumerator as the "reproduce locally
+            // before peer-fetching" source.  For any WAL payload
+            // hash present in the local store, the enumerator hands
+            // the bytes to `mark_resolved` and skips the peer
+            // fetch.  Fresh joiners (empty store) see zero help
+            // and fall back to peer fetch on every hash — no
+            // regression.
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),
                 snap_ctx.snapshot_dir.clone(),
                 allowed_roots,
+                Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
             );
         }
 

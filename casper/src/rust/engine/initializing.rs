@@ -1206,11 +1206,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // or forged snapshot writing outside the joiner's
             // managed tree.  Empty vector = validation skipped.
             let allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+            // DD-7b-2 (a) Option 1: reproduce locally via the
+            // joiner's own PayloadLookup before falling back to
+            // peer fetch.  See casper_launch.rs for full rationale.
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),
                 snap_ctx.snapshot_dir.clone(),
                 allowed_roots,
+                Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
             );
         }
 
