@@ -17,8 +17,9 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 
 use super::mode::AccessMode;
 use super::wal::Wal;
@@ -190,9 +191,41 @@ pub struct FileHandleTable {
     /// same reason `InMemoryPayloadStore` uses one: the guard is
     /// never held across an `.await`, and using a tokio lock from
     /// inside a sync trait method would risk executor deadlock.
-    pub payload_store:
-        Arc<std::sync::RwLock<Option<Arc<dyn super::wal::PayloadPersistence>>>>,
+    pub payload_store: Arc<std::sync::RwLock<Option<Arc<dyn super::wal::PayloadPersistence>>>>,
+    /// Item d-3 (2026-08-28): per-fd shadow-install notifiers.  The
+    /// follower's rigged-replay reducer can dispatch a mutating handler
+    /// (`fs_write` / `fs_read` / `fs_truncate`) on a spawned task
+    /// BEFORE `fs_open`'s replay branch has finished `insert_at.await`
+    /// on another task — so `journal_write`'s `with_mut(fd, ...)` sees
+    /// None, no WAL entry lands, and the follower's per-deploy WAL
+    /// slice diverges from the leader's.  This map holds a
+    /// `tokio::sync::Notify` per fd that is currently being waited on;
+    /// the replay-branch of every mutating handler waits (with a
+    /// bounded timeout) on the fd's Notify if `with_mut` returns None,
+    /// and `fs_open`'s replay branch calls `notify_fd_ready(fd)` once
+    /// its `insert_at` completes.
+    ///
+    /// Leader path never populates the map: leader's fs_open + fs_write
+    /// run on the same task in source-code order, so `with_mut`
+    /// succeeds on first try and `wait_for_replay_shadow`'s fast path
+    /// exits without touching the map.
+    ///
+    /// `std::sync::Mutex` is chosen over `tokio::sync::Mutex` because
+    /// the guard is never held across `.await` — same rationale as
+    /// `payload_store` above.  Interior mutability so `notify_fd_ready`
+    /// can take `&self`.
+    fd_notifiers: Arc<std::sync::Mutex<HashMap<u64, Arc<Notify>>>>,
 }
+
+/// Item d-3 (2026-08-28): bounded wait for a fs_open replay-branch
+/// shadow install to become visible in the fd table.  500ms is 500x
+/// the typical tokio dispatch latency between spawn and first poll on
+/// a busy worker, so a legit fs_open→fs_write race resolves in
+/// microseconds; the timeout only fires on genuinely-missing fds
+/// (leader replied `[false, code, msg]` to fs_open, so no shadow was
+/// installed, and Rholang subsequently invoked a mutating handler
+/// with the bad fd anyway — a caller bug, not a race).
+pub const SHADOW_WAIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 struct Inner {
@@ -226,6 +259,10 @@ impl FileHandleTable {
             // and journal_write skips the persist step (matches
             // pre-7b-2 behavior).
             payload_store: Arc::new(std::sync::RwLock::new(None)),
+            // Item d-3: empty map — populated on demand by waiters
+            // on the follower's replay branch; drained by
+            // `notify_fd_ready` in fs_open's replay branch.
+            fd_notifiers: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -263,11 +300,11 @@ impl FileHandleTable {
     /// Takes `&self` (not `&mut self`) because the RwLock provides
     /// interior mutability — matches the shape used by
     /// `RootIdentityRegistry::register` for the same reason.
-    pub fn share_payload_store(
-        &self,
-        shared: Option<Arc<dyn super::wal::PayloadPersistence>>,
-    ) {
-        *self.payload_store.write().expect("payload_store lock poisoned") = shared;
+    pub fn share_payload_store(&self, shared: Option<Arc<dyn super::wal::PayloadPersistence>>) {
+        *self
+            .payload_store
+            .write()
+            .expect("payload_store lock poisoned") = shared;
     }
 
     /// Phase 7b-2 diagnostic — read the currently-installed
@@ -339,6 +376,81 @@ impl FileHandleTable {
         }
         table.insert(fd, handle);
         true
+    }
+
+    /// Item d-3 (2026-08-28): fast presence check for `fd` in the fd
+    /// table.  Used by `wait_for_replay_shadow`'s double-check pattern
+    /// to close the race between "register interest via Notify" and
+    /// "shadow insert lands".
+    pub async fn contains_fd(&self, fd: u64) -> bool {
+        let table = self.inner.table.read().await;
+        table.contains_key(&fd)
+    }
+
+    /// Item d-3 (2026-08-28): follower-side replay barrier.  If `fd`
+    /// is already present in the fd table, return immediately (fast
+    /// path — leader path always hits this).  Otherwise, register a
+    /// waiter on the fd's `Notify`, re-check presence (defends
+    /// against a shadow-install that landed between the initial
+    /// check and Notify registration), and wait up to `timeout`
+    /// for `fs_open`'s replay-branch `notify_fd_ready(fd)` to
+    /// resolve.
+    ///
+    /// Returns `true` iff the fd is present when the function returns
+    /// — either observed on entry, observed on the double-check, or
+    /// observed after `notify_fd_ready` wakes the waiter.  Returns
+    /// `false` only when the timeout expires with the fd still
+    /// absent — a genuine "fd never opened" case (leader replied
+    /// error to fs_open, no shadow ever installed).  Callers on the
+    /// replay branch treat `false` the same as pre-d-3: skip the
+    /// journal step and proceed to produce the leader's cached error
+    /// reply.
+    ///
+    /// Bounded timeout by design: `SHADOW_WAIT_TIMEOUT` (500ms) is
+    /// well above tokio dispatch latency but small enough that error
+    /// paths don't stall block validation.
+    pub async fn wait_for_replay_shadow(&self, fd: u64, timeout: Duration) -> bool {
+        // Fast path: fd already present.  Leader always hits this.
+        if self.contains_fd(fd).await {
+            return true;
+        }
+        // Slow path: register interest via Notify BEFORE the
+        // double-check so a shadow-install that lands between the
+        // check and the wait still wakes us.
+        let notifier = {
+            let mut map = self.fd_notifiers.lock().expect("fd_notifiers poisoned");
+            map.entry(fd)
+                .or_insert_with(|| Arc::new(Notify::new()))
+                .clone()
+        };
+        let notified = notifier.notified();
+        tokio::pin!(notified);
+        if self.contains_fd(fd).await {
+            return true;
+        }
+        // Bounded wait; even on timeout, do one final presence
+        // check so a shadow-install that raced with the timeout
+        // firing is still observed.
+        let _ = tokio::time::timeout(timeout, notified).await;
+        self.contains_fd(fd).await
+    }
+
+    /// Item d-3 (2026-08-28): wake every `wait_for_replay_shadow`
+    /// waiter for `fd`.  Called from `fs_open`'s replay branch after
+    /// `insert_at` (whether or not insertion succeeded — a
+    /// pre-existing slot means the shadow is already there and
+    /// waiters should be released to re-check).  Removes the fd's
+    /// entry from the notifier map so subsequent
+    /// `wait_for_replay_shadow` calls (unlikely; the fd is now in
+    /// the table) fast-path on `contains_fd`.
+    pub fn notify_fd_ready(&self, fd: u64) {
+        let notifier = {
+            let mut map = self.fd_notifiers.lock().expect("fd_notifiers poisoned");
+            map.remove(&fd)
+        };
+        if let Some(n) = notifier {
+            n.notify_waiters();
+        }
     }
 
     /// Remove and close the handle at `fd`.  Returns `true` if the fd was
@@ -1088,5 +1200,85 @@ mod tests {
             ConsensusMode::Oracular /* from make_handle default */
         );
         assert_eq!(meta.1, path);
+    }
+
+    // ---------------------------------------------------------------
+    // Item d-3 (2026-08-28): per-fd shadow-install barrier tests.
+    // ---------------------------------------------------------------
+
+    /// Fast path: an fd already in the table is observed by the
+    /// initial `contains_fd` and `wait_for_replay_shadow` returns
+    /// `true` without touching the notifier map.  Leader path
+    /// always hits this — fs_open's `insert()` runs on the same
+    /// task as the subsequent fs_write, so the fd is present.
+    #[tokio::test]
+    async fn wait_for_replay_shadow_fast_path_when_fd_present() {
+        let table = FileHandleTable::new();
+        let shadow = make_shadow_handle(PathBuf::from("/root/x"), ConsensusMode::Consensus);
+        assert!(table.insert_at(7, shadow).await);
+        // Fd is present; wait returns immediately even with a
+        // near-zero timeout.
+        assert!(
+            table
+                .wait_for_replay_shadow(7, Duration::from_millis(1))
+                .await,
+            "fast path must return true without waiting when fd is already present"
+        );
+    }
+
+    /// The barrier's core invariant: a waiter parked in
+    /// `wait_for_replay_shadow` wakes on `notify_fd_ready` and
+    /// re-observes the fd on retry.  This is what closes the
+    /// follower-side reducer race that caused fs_write's
+    /// `journal_write` to see None and drop the Write WAL entry.
+    #[tokio::test]
+    async fn wait_for_replay_shadow_wakes_on_notify_after_insert() {
+        let table = std::sync::Arc::new(FileHandleTable::new());
+        let waiter_table = table.clone();
+        let waiter = tokio::spawn(async move {
+            // Timeout well above the sleep+insert delay below so
+            // the barrier reliably wakes on notify, not on
+            // timeout — asserting the notify path, not the
+            // timeout fallback.
+            waiter_table
+                .wait_for_replay_shadow(99, Duration::from_secs(2))
+                .await
+        });
+        // Simulate the fs_open replay branch: delay + insert +
+        // notify, mirroring the race pattern where the mutating-
+        // handler task registers interest first and fs_open lands
+        // its shadow later on another task.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let shadow = make_shadow_handle(PathBuf::from("/root/late"), ConsensusMode::Consensus);
+        assert!(table.insert_at(99, shadow).await);
+        table.notify_fd_ready(99);
+        let observed = waiter.await.expect("waiter task join");
+        assert!(
+            observed,
+            "wait_for_replay_shadow must return true after notify_fd_ready wakes it"
+        );
+    }
+
+    /// Timeout fallback: if `notify_fd_ready` is never called
+    /// (leader replied error to fs_open, no shadow ever installed)
+    /// the barrier gives up after the bounded timeout and returns
+    /// `false`, letting the caller proceed as pre-d-3 (no-op
+    /// journal_write on an unknown fd).
+    #[tokio::test]
+    async fn wait_for_replay_shadow_returns_false_on_timeout() {
+        let table = FileHandleTable::new();
+        let start = std::time::Instant::now();
+        // Use a small (but non-zero) timeout so the test is fast
+        // yet exercises the actual `tokio::time::timeout` path
+        // rather than an immediate fast-path shortcut.
+        let observed = table
+            .wait_for_replay_shadow(123, Duration::from_millis(50))
+            .await;
+        assert!(!observed, "must return false when fd never lands");
+        assert!(
+            start.elapsed() >= Duration::from_millis(50),
+            "timeout must be respected — a false return before deadline \
+             would mean the wait short-circuited"
+        );
     }
 }

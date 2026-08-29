@@ -41,52 +41,64 @@
 //! `StateBoundAdmission`, and inserts into
 //! `RuntimeManager.pending_wal_slices` at the end of
 //! `compute_state_with_bonds_cosigned_admitted` keyed by the block's
-//! final post-state-hash.  The replay-side aggregation is
-//! DELIBERATELY NOT landed — see the "Reverted" note below.
+//! final post-state-hash.  Item d-3 (below) closes the follower-side
+//! race that previously blocked the replay-side aggregation.
 //!
-//! **Blocked on the follower-side reducer race (item d-3).**
+//! ## Item d-3 (2026-08-28): follower-side race closed
 //!
-//! Concrete cause pinpointed in the 2026-08-28 investigation (see
-//! auto-memory `fileio_d3_reducer_race_finding.md`): RSpace's rigged
-//! replay fires the ack-consumer's continuation (which eventually
-//! invokes `fsWrite`) via a spawned task that does NOT observe
-//! `fs_open`'s `insert_at.await` — so the follower's fd table has no
-//! shadow handle when `fs_write.journal_write` calls
-//! `with_mut(fd, ...)`.  Result: `meta=None`, `journal_write` returns
-//! `Ok(false)` without appending, the Write entry never lands in the
-//! WAL, and `take_and_commit` drains only [Stat] instead of [Stat,
-//! Write].
+//! Root cause: RSpace's rigged replay fires the ack-consumer's
+//! continuation (which eventually invokes `fsWrite`) via a spawned
+//! task that does NOT observe `fs_open`'s `insert_at.await` — so
+//! the follower's fd table had no shadow handle when
+//! `fs_write.journal_write` called `with_mut(fd, ...)`.  Result:
+//! `meta=None`, `journal_write` returned `Ok(false)` without
+//! appending, the Write entry never landed in the WAL, and
+//! `take_and_commit` drained only [Stat] instead of [Stat, Write].
 //!
-//! Failed quick-fix attempts (all ≤3/5 reliable, INVALID as
-//! production fixes): `tokio::task::yield_now().await` at drain-side
-//! or source-side, 10× yields in a row, changing `FileHandleTable`'s
-//! inner `tokio::sync::RwLock` to `std::sync::RwLock` (fully sync),
-//! named binding on `insert_at`'s return.  The only reliably-
-//! successful "fix" is an `eprintln!` inside `fs_write` or
-//! `journal_write` — the stderr syscall provides a cross-task
-//! synchronization point but is not a valid production fix.
+//! Considered and rejected during the 2026-08-28 investigation:
+//! `yield_now`s at drain/source, `std::sync::RwLock` on the fd
+//! table, JoinSet tracking in `reduce.rs::run_parallel_dispatches`,
+//! and RSpace rig changes to force `produce.await` completion
+//! before continuation fire.  Also rejected: pre-installing shadows
+//! at `replay_deploys` entry from `ProcessedDeploy.deploy_log`
+//! walks — the log carries only `Blake2b256Hash`es of channel Pars
+//! and (for non-deterministic produces) the leader's cached reply
+//! bytes, but the args (`root`, `rel`, `mode`, `cmode`) needed to
+//! reconstruct a shadow's `canon_path` / `cmode` are not in the
+//! log.  Those come only from live Rholang re-evaluation, which
+//! doesn't happen until the user-deploy loop runs the reducer.
 //!
-//! Publishing an INCOMPLETE follower-side slice into
-//! `pending_wal_slices` is more dangerous than publishing nothing:
-//! the finalization-runner would build a snapshot from the partial
-//! slice on the follower, diverging from the leader's snapshot and
-//! misleading joiners.  So the replay-side aggregation is deferred
-//! until d-3 lands.
+//! Landed fix (per-fd Notify barrier at the handle-table layer):
+//! `FileHandleTable` gains an `fd_notifiers: HashMap<u64, Arc<Notify>>`
+//! and two helpers, `wait_for_replay_shadow(fd, timeout)` and
+//! `notify_fd_ready(fd)`.  Every mutating fs handler on the
+//! `is_replay = true` branch calls
+//! `wait_for_replay_shadow(fd, SHADOW_WAIT_TIMEOUT)` before
+//! `journal_write` / `journal_read` / `journal_truncate`, and
+//! `fs_open`'s replay branch calls `notify_fd_ready(fd)` after
+//! `insert_at`.  Leader path is untouched (fast-path returns
+//! immediately because the fd is installed synchronously on the
+//! same task).  Scope: `handle_table.rs` (~90 LOC, mostly doc
+//! comments) + one-line waits in `handlers.rs` — no reducer,
+//! RSpace, or deploy_log surface.
 //!
-//! **Fix path (decided): pre-install shadows at `replay_deploys`
-//! entry.**  Before the user-deploy loop starts, walk each
-//! `ProcessedDeploy.deploy_log` for fs_open replies and pre-install
-//! shadow handles.  Then the rigged reducer's early-firing of
-//! continuations is harmless — shadows are already visible when
-//! `fs_write` looks them up.  See `../../under-review/2026-07-24-
-//! File-IO/handoff-item-d-3.md` in the FIPS repo for the concrete
-//! implementation plan.
+//! ## Replay-side WAL aggregation
 //!
-//! **How to un-ignore this test:** once the reducer race is closed,
-//! remove the `#[ignore]` attribute below.  The regression pin
+//! Now landed:
+//! `replay_deploy_e_with_snapshot_transaction` returns the drained
+//! WAL slice; `replay_deploys` aggregates across the user-deploy
+//! loop and publishes into `RuntimeManager.pending_wal_slices`
+//! keyed by the follower's computed post-state-hash — mirroring
+//! the play-side insert in `runtime.rs::compute_state_with_bonds_
+//! cosigned_admitted` (same eviction cap, same tracing target).
+//!
+//! ## Regression coverage
+//!
+//! The play-side aggregation shape is frozen by
 //! `state_bound_cost_evidence_for_state_cosigned_aggregates_fs_wal`
-//! (in runtime.rs) freezes the play-side aggregation shape today,
-//! independent of this test.
+//! (in runtime.rs), independent of this test.  The follower-side
+//! aggregation is exercised by this test end-to-end (block-
+//! processing → replay → `pending_wal_slices` publish).
 //!
 //! ## Interim coverage relationship
 //!
@@ -117,6 +129,7 @@ use casper::rust::genesis::contracts::fs_genesis::{
 };
 use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::util::construct_deploy;
+use serial_test::serial;
 
 use crate::helper::test_node::{TestFsProvisioning, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
@@ -125,13 +138,17 @@ use crate::util::genesis_builder::GenesisBuilder;
 const PAYLOAD: &[u8] = b"hello world";
 const PAYLOAD_HEX: &str = "68656c6c6f20776f726c64";
 
+// Item d-3 (2026-08-28): both PB-M-14 canaries stand up a full 2-
+// validator Casper network with genesis rebuild; running them
+// concurrently exhausts shared harness state (genesis cache
+// contention, in-memory transport churn) and causes intermittent
+// failures unrelated to the WAL-identity properties they exercise.
+// The `#[serial]` guard forces them onto the same lane so `cargo
+// test -- pb_m_14` reliably runs both back-to-back.  Each still
+// runs fully in isolation; the guard is only about not overlapping
+// with each other.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on item d-3 (2026-08-28 root cause pinpointed): follower's rigged \
-            replay fires fs_write's continuation before fs_open's insert_at is observed, \
-            so journal_write's with_mut(fd) returns None and no Write WAL entry lands.  \
-            Fix path decided: pre-install shadow handles at replay_deploys entry by \
-            walking each ProcessedDeploy.deploy_log for fs_open replies.  See docstring \
-            + auto-memory fileio_d3_reducer_race_finding.md + FIPS handoff-item-d-3.md."]
+#[serial]
 async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
     // ---- shared fs setup ---------------------------------------------
     // Shared tempdir (design option A): both validators point at the
@@ -190,13 +207,10 @@ async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
 
     let fs_provisionings = vec![Some(mk_provisioning(0)), Some(mk_provisioning(1))];
 
-    let mut nodes = TestNode::create_network_with_fs_provisioning(
-        genesis.clone(),
-        2,
-        fs_provisionings,
-    )
-    .await
-    .expect("two-validator network with fs provisioning");
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
+            .await
+            .expect("two-validator network with fs provisioning");
 
     // ---- Consensus write deploy --------------------------------------
     // Bundle-URI route (the production path) rather than
@@ -246,23 +260,21 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     // ---- assertion 1: WAL byte identity ------------------------------
     let a_slice = {
         let guard = left[0].runtime_manager.pending_wal_slices.read().await;
-        guard
-            .get(&post_state_key)
-            .cloned()
-            .unwrap_or_else(|| panic!(
+        guard.get(&post_state_key).cloned().unwrap_or_else(|| {
+            panic!(
                 "validator A missing pending_wal_slices entry for post_state_hash {:?}",
                 hex::encode(&post_state_key),
-            ))
+            )
+        })
     };
     let b_slice = {
         let guard = right[0].runtime_manager.pending_wal_slices.read().await;
-        guard
-            .get(&post_state_key)
-            .cloned()
-            .unwrap_or_else(|| panic!(
+        guard.get(&post_state_key).cloned().unwrap_or_else(|| {
+            panic!(
                 "validator B missing pending_wal_slices entry for post_state_hash {:?}",
                 hex::encode(&post_state_key),
-            ))
+            )
+        })
     };
 
     assert_eq!(
@@ -328,6 +340,7 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 /// `pb_m_14_two_validator_wal_and_file_byte_identity` above, blocked
 /// on the reducer/handler-completion fix (item d-3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
 async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
     let shared_root = tempfile::tempdir().expect("shared_root tempdir");
     let file_path = shared_root.path().join("data.bin");
@@ -363,13 +376,10 @@ async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
         payload_dir,
     })];
 
-    let mut nodes = TestNode::create_network_with_fs_provisioning(
-        genesis.clone(),
-        1,
-        fs_provisionings,
-    )
-    .await
-    .expect("single-validator network with fs provisioning");
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 1, fs_provisionings)
+            .await
+            .expect("single-validator network with fs provisioning");
 
     let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
     let shard_id = genesis.genesis_block.shard_id.clone();
@@ -445,5 +455,8 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     // Sanity: on-disk file matches what we wrote.
     let on_disk = std::fs::read(&canon_path).expect("read bundle file back");
-    assert_eq!(on_disk, PAYLOAD, "on-disk bytes must match deployed payload");
+    assert_eq!(
+        on_disk, PAYLOAD,
+        "on-disk bytes must match deployed payload"
+    );
 }

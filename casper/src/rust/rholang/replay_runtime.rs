@@ -16,6 +16,7 @@ use rholang::rust::interpreter::accounting::authority::{DemandBound, ResourceMul
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
+use rholang::rust::interpreter::io::wal::WalEntry;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
@@ -310,6 +311,11 @@ impl ReplayRuntimeOps {
         };
         let mut deploy_results = Vec::new();
         let mut current_root = start_hash.clone();
+        // Item d-3 (2026-08-28): accumulate per-deploy fs_wal
+        // slices returned by `replay_deploy_e_with_snapshot` into a
+        // single block-level Vec<WalEntry>.  Published into
+        // `pending_wal_slices` after the final checkpoint below.
+        let mut block_fs_wal: Vec<WalEntry> = Vec::new();
         for term in terms {
             let effect = format!("user:{}", hex::encode(&term.deploy.sig));
             let validate_witness = Self::validate_effect_pre_state(
@@ -335,7 +341,7 @@ impl ReplayRuntimeOps {
             } else {
                 None
             };
-            let result = self
+            let (result, fs_wal) = self
                 .replay_deploy_e_with_snapshot(block_kind, &term, purse_snapshot.as_ref())
                 .await?;
             let checkpoint = self.runtime_ops.runtime.create_checkpoint().await;
@@ -345,6 +351,7 @@ impl ReplayRuntimeOps {
             }
             current_root = actual_post;
             deploy_results.push(result);
+            block_fs_wal.extend(fs_wal);
         }
         drop(_filter_exemption); // Explicit drop before subsequent runtime ops.
         metrics::histogram!(BLOCK_REPLAY_PHASE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -389,6 +396,40 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_PHASE_CREATE_CHECKPOINT_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(checkpoint_start.elapsed().as_secs_f64());
 
+        // Item d-3 (2026-08-28): publish the aggregated per-block
+        // fs_wal slice into `pending_wal_slices` under the follower's
+        // computed post-state-hash — mirrors the play-side insert in
+        // `runtime.rs::compute_state_with_bonds_cosigned_admitted`
+        // (same eviction cap, same tracing target) so both leader
+        // and follower publish under identical keys, enabling
+        // byte-identical `pending_wal_slices` entries for the same
+        // block.  Safe because every mutating fs handler on the
+        // replay branch waits on `handles.wait_for_replay_shadow`
+        // before `journal_write`, so `take_and_commit` in
+        // `replay_deploy_e_with_snapshot_transaction` observes the
+        // complete per-deploy WAL slice.
+        if !block_fs_wal.is_empty() {
+            const MAX_PENDING_WAL_SLICES: usize = 1024;
+            let follower_state_hash = checkpoint.root.to_bytes_prost();
+            let block_number = block_data.block_number;
+            let mut slices = self.runtime_ops.runtime.pending_wal_slices.write().await;
+            if slices.len() >= MAX_PENDING_WAL_SLICES {
+                if let Some(oldest_key) = slices
+                    .iter()
+                    .min_by_key(|(_, (bn, _))| *bn)
+                    .map(|(k, _)| k.clone())
+                {
+                    slices.remove(&oldest_key);
+                    tracing::warn!(
+                        target: "f1r3fly.casper.fs_wal",
+                        cap = MAX_PENDING_WAL_SLICES,
+                        "pending_wal_slices cache full; evicting oldest entry.  \
+                         Deep-fork scenario or stalled finalizer?"
+                    );
+                }
+            }
+            slices.insert(follower_state_hash.to_vec(), (block_number, block_fs_wal));
+        }
         tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", computed_root = %hex::encode(&checkpoint.root.bytes()[..8.min(checkpoint.root.bytes().len())]), "replay.replay_deploys DONE (computed final replay root)");
         Ok((checkpoint.root, all_mergeable))
         }
@@ -432,8 +473,14 @@ impl ReplayRuntimeOps {
         block_kind: ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        // Item d-3 (2026-08-28): the fs_wal element of the tuple
+        // returned by `replay_deploy_e_with_snapshot` is only useful
+        // to `replay_deploys`' block-level aggregation; per-deploy
+        // callers (reporting_casper, this thin wrapper for tests)
+        // discard it.
         self.replay_deploy_e_with_snapshot(block_kind, processed_deploy, None)
             .await
+            .map(|(channels, _fs_wal)| channels)
     }
 
     pub(crate) async fn replay_deploy_e_with_snapshot(
@@ -441,7 +488,7 @@ impl ReplayRuntimeOps {
         block_kind: ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
         purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
-    ) -> Result<NumberChannelsEndVal, CasperError> {
+    ) -> Result<(NumberChannelsEndVal, Vec<WalEntry>), CasperError> {
         let fallback = self.runtime_ops.runtime.create_soft_checkpoint().await;
         let result = self
             .replay_deploy_e_with_snapshot_transaction(block_kind, processed_deploy, purse_snapshot)
@@ -460,7 +507,7 @@ impl ReplayRuntimeOps {
         block_kind: ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
         purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
-    ) -> Result<NumberChannelsEndVal, CasperError> {
+    ) -> Result<(NumberChannelsEndVal, Vec<WalEntry>), CasperError> {
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
         let execution_authority = if block_kind.requires_authority_settlement() {
             let certificate =
@@ -563,32 +610,22 @@ impl ReplayRuntimeOps {
         // H-2: commit-drain the WAL slice with the leader's frozen
         // event_log so the follower processes byte-identical
         // entry order (H-R3's log-order-derived drain applies to
-        // replay too).  Result is intentionally discarded — no
-        // downstream consumer on the replay side today; the
-        // side effect (releasing entries from the shared WAL) is
-        // the H-2 fix's purpose.
+        // replay too).
         //
-        // Item (d-2) 2026-08-28 note: an earlier draft plumbed the
-        // drained slice up to `replay_deploys` so it could feed
-        // `pending_wal_slices` on the follower, mirroring the play-
-        // side fix in `state_bound_cost_evidence_for_state_cosigned`
-        // + `compute_state_with_bonds_cosigned_admitted`.  It was
-        // reverted after uncovering a reducer race: the follower's
-        // `is_replay = true` mutating fs handlers (fs_write,
-        // fs_write_at, ...) are dispatched via `tokio::spawn` in
-        // `reduce.rs:845` and short-circuit without a
-        // `spawn_blocking` syscall, so `take_and_commit` here can
-        // fire BEFORE the spawned handler's `journal_write` runs —
-        // producing a per-deploy slice missing its Write entries.
-        // Publishing an incomplete slice into `pending_wal_slices`
-        // is more dangerous than not publishing at all: the
-        // finalization-runner would build a snapshot from the
-        // partial slice on the follower, diverging from the
-        // leader's snapshot and misleading joiners.  Follow-up
-        // d-3 fixes the reducer completion semantics; only then
-        // can the replay-side aggregation land.  See canary
-        // `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`.
-        let _replay_slice = wal_scope.take_and_commit(&processed_deploy.deploy_log);
+        // Item d-3 (2026-08-28): the drained slice is now returned
+        // up to `replay_deploys` so it can aggregate a block-level
+        // WAL slice and publish it into `RuntimeManager.pending_
+        // wal_slices` keyed by the block's final post-state-hash,
+        // mirroring the play-side fix in
+        // `state_bound_cost_evidence_for_state_cosigned` +
+        // `compute_state_with_bonds_cosigned_admitted`.  Safe post-
+        // d-3 because the follower's mutating fs handlers wait on
+        // `handles.wait_for_replay_shadow(fd, ...)` before
+        // `journal_write`, guaranteeing `fs_open`'s shadow install
+        // has landed even when the rigged reducer fires the ack
+        // consumer's continuation on a spawned task ahead of
+        // `fs_open`'s `insert_at.await`.
+        let replay_slice = wal_scope.take_and_commit(&processed_deploy.deploy_log);
 
         // Time checkpoint-mergeable operation (matches Scala RuntimeReplaySyntax.scala:L322)
         let checkpoint_mergeable_start = Instant::now();
@@ -599,7 +636,7 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(checkpoint_mergeable_start.elapsed().as_secs_f64());
 
-        Ok(channels_data)
+        Ok((channels_data, replay_slice))
     }
 
     /// Replay path mirror of [`RuntimeOps::play_ordinary_deploy_cosigned`].
@@ -1477,5 +1514,88 @@ mod tests {
             u64::MAX
         )
         .is_err());
+    }
+
+    /// Item d-3 (2026-08-28) regression pin: `replay_deploys`
+    /// publishes the aggregated per-block follower-side WAL slice
+    /// into `RuntimeManager.pending_wal_slices` keyed by the
+    /// follower's FINAL post-state-hash — mirroring the play-side
+    /// insert in `runtime.rs::compute_state_with_bonds_cosigned_
+    /// admitted`.  Without this insert the follower's snapshot-
+    /// writer input starves for every replayed block, breaking
+    /// leader-vs-follower `pending_wal_slices` byte-identity end-
+    /// to-end (see `pb_m_14_two_validator_e2e`).
+    ///
+    /// Companion pin to
+    /// `compute_state_with_bonds_cosigned_admitted_publishes_pending_wal_slice`
+    /// in `runtime_manager.rs` — that pin guards the play-side
+    /// publish; this one guards the replay-side.
+    #[test]
+    fn replay_deploys_publishes_pending_wal_slice() {
+        let src = include_str!("replay_runtime.rs");
+        let start_idx = src
+            .find("pub async fn replay_deploys(")
+            .expect("replay_deploys must exist in this file");
+        let end_marker = "Ok((checkpoint.root, all_mergeable))";
+        let body_end = src[start_idx..].find(end_marker).expect(
+            "terminal return `Ok((checkpoint.root, all_mergeable))` \
+             must exist inside replay_deploys",
+        );
+        let body = &src[start_idx..start_idx + body_end];
+        assert!(
+            body.contains("block_fs_wal"),
+            "replay_deploys must aggregate a block-level Vec<WalEntry> \
+             from `replay_deploy_e_with_snapshot`'s per-deploy return \
+             tuple (item d-3)"
+        );
+        assert!(
+            body.contains("self.runtime_ops.runtime.pending_wal_slices.write().await"),
+            "replay_deploys must acquire a write lock on the follower \
+             runtime's `pending_wal_slices` to publish the block's \
+             aggregated WAL slice (item d-3)"
+        );
+        assert!(
+            body.contains("checkpoint.root.to_bytes_prost()"),
+            "replay_deploys must key the `pending_wal_slices` insert by \
+             the follower's FINAL computed post-state-hash \
+             (`checkpoint.root`), so leader and follower publish under \
+             identical keys and byte-identical entries can be compared"
+        );
+        assert!(
+            body.contains("MAX_PENDING_WAL_SLICES"),
+            "replay_deploys must apply the same eviction cap the play-side \
+             insert uses — defense-in-depth against deep-fork or stalled- \
+             finalizer pending-slice accumulation on the follower"
+        );
+    }
+
+    /// Item d-3 (2026-08-28) regression pin: the drained WAL slice
+    /// is returned up through `replay_deploy_e_with_snapshot_transaction`
+    /// (not silently dropped).  Without this return, the aggregation
+    /// step in `replay_deploys` has nothing to aggregate and
+    /// `pending_wal_slices` never publishes on the follower.
+    #[test]
+    fn replay_deploy_e_transaction_returns_drained_wal_slice() {
+        let src = include_str!("replay_runtime.rs");
+        let start_idx = src
+            .find("async fn replay_deploy_e_with_snapshot_transaction(")
+            .expect("replay_deploy_e_with_snapshot_transaction must exist");
+        let end_marker = "Ok((channels_data, replay_slice))";
+        assert!(
+            src[start_idx..].contains(end_marker),
+            "replay_deploy_e_with_snapshot_transaction must return the \
+             per-deploy drained WAL slice as `Ok((channels_data, replay_slice))` \
+             so `replay_deploys` can aggregate it (item d-3).  A prior \
+             `let _replay_slice = ...` that discarded the slice would \
+             break the follower-side aggregation."
+        );
+        let body = &src[start_idx..start_idx + src[start_idx..].find(end_marker).unwrap()];
+        assert!(
+            body.contains("let replay_slice = wal_scope.take_and_commit"),
+            "replay_deploy_e_with_snapshot_transaction must name the \
+             drained slice `replay_slice` (a `let _replay_slice = ...` \
+             pattern would discard it — the failure mode that shipped in \
+             the pre-d-3 tree and blocked the two-validator canary)"
+        );
     }
 }
