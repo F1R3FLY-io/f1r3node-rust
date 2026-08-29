@@ -42,7 +42,8 @@ use rspace_plus_plus::rspace::shared::trie_exporter::NodePath;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::import_session::{
     SealedStateImport, StateImportError, StateImportPage, StateImportPageReceipt,
-    StateImportPublication, StateImportPublicationMode, StateImportSession, StateImportSpec,
+    StateImportPublication, StateImportPublicationMode, StateImportPublicationWitness,
+    StateImportSession, StateImportSpec,
 };
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
@@ -1774,17 +1775,174 @@ fn panic_payload_message(payload: &(dyn std::any::Any + std::marker::Send)) -> S
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum StateImportFfiTestPhase {
+    BeforeOperation = 0b001,
+    BeforePrimaryEncoding = 0b010,
+    BeforeFallbackEncoding = 0b100,
+}
+
+#[cfg(test)]
+thread_local! {
+    static STATE_IMPORT_FFI_TEST_PHASES: std::cell::Cell<u8> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+struct StateImportFfiTestPlanGuard;
+
+#[cfg(test)]
+impl StateImportFfiTestPlanGuard {
+    fn install(phases: &[StateImportFfiTestPhase]) -> Self {
+        let mask = phases.iter().fold(0_u8, |mask, phase| mask | *phase as u8);
+        STATE_IMPORT_FFI_TEST_PHASES.with(|active| {
+            assert_eq!(
+                active.replace(mask),
+                0,
+                "nested state-import FFI test plans are forbidden",
+            );
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for StateImportFfiTestPlanGuard {
+    fn drop(&mut self) { STATE_IMPORT_FFI_TEST_PHASES.with(|active| active.set(0)); }
+}
+
+#[cfg(test)]
+fn inject_state_import_ffi_test_phase(phase: StateImportFfiTestPhase) {
+    STATE_IMPORT_FFI_TEST_PHASES.with(|active| {
+        let bit = phase as u8;
+        let mask = active.get();
+        if mask & bit != 0 {
+            active.set(mask & !bit);
+            panic!("injected state-import FFI boundary phase {bit:#05b}");
+        }
+    });
+}
+
+enum StateImportFfiDeferredAction {
+    ExposeOpen {
+        output: *mut *mut OpenStateImportHandle,
+        handle: Box<OpenStateImportHandle>,
+    },
+    ExposeSealed {
+        output: *mut *mut SealedStateImportHandle,
+        handle: Box<SealedStateImportHandle>,
+    },
+    InvalidateOpenUnlessSuccessEncoded {
+        handle: *mut OpenStateImportHandle,
+    },
+}
+
+#[derive(Default)]
+struct StateImportFfiBoundaryState {
+    deferred: std::cell::RefCell<Option<StateImportFfiDeferredAction>>,
+}
+
+impl StateImportFfiBoundaryState {
+    fn defer(&self, action: StateImportFfiDeferredAction) {
+        let previous = self.deferred.replace(Some(action));
+        assert!(previous.is_none(), "one FFI call may defer only one affine action");
+    }
+
+    fn finish_primary_encoding(&self, operation_succeeded: bool) {
+        let Some(action) = self.deferred.borrow_mut().take() else {
+            return;
+        };
+        match action {
+            StateImportFfiDeferredAction::ExposeOpen { output, handle } if operation_succeeded => {
+                // SAFETY: the exported function initialized and validated the
+                // foreign out-pointer before entering the unwind boundary.
+                unsafe { output.write(Box::into_raw(handle)) };
+            }
+            StateImportFfiDeferredAction::ExposeSealed { output, handle }
+                if operation_succeeded =>
+            {
+                // SAFETY: the exported function initialized and validated the
+                // foreign out-pointer before entering the unwind boundary.
+                unsafe { output.write(Box::into_raw(handle)) };
+            }
+            StateImportFfiDeferredAction::InvalidateOpenUnlessSuccessEncoded { .. }
+                if operation_succeeded => {}
+            StateImportFfiDeferredAction::InvalidateOpenUnlessSuccessEncoded { handle } => {
+                invalidate_open_handle_without_panicking(handle);
+            }
+            // A capability-producing operation only registers its private
+            // handle after it has succeeded. Retain the defensive drop path if
+            // that internal contract is ever violated.
+            StateImportFfiDeferredAction::ExposeOpen { .. } |
+            StateImportFfiDeferredAction::ExposeSealed { .. } => {}
+        }
+    }
+
+    fn rollback(&self) {
+        let Some(action) = self.deferred.borrow_mut().take() else {
+            return;
+        };
+        if let StateImportFfiDeferredAction::InvalidateOpenUnlessSuccessEncoded { handle } = action
+        {
+            invalidate_open_handle_without_panicking(handle);
+        }
+        // Private open/sealed boxes are dropped here without ever becoming
+        // caller-visible.
+    }
+}
+
+fn invalidate_open_handle_without_panicking(handle: *mut OpenStateImportHandle) {
+    if handle.is_null() {
+        return;
+    }
+    // SAFETY: registration happens only while the foreign caller's unique,
+    // live handle is validated by `state_import_stage_page`.
+    let handle = unsafe { &*handle };
+    if let Ok(mut session) = handle.session.lock() {
+        session.take();
+    }
+}
+
 /// Run one import operation behind an unwind barrier and serialize exactly one
 /// structured result. The second barrier prevents even result construction
 /// from unwinding through an `extern "C"` frame.
-fn state_import_ffi_boundary<F>(operation: &'static str, call: F) -> *const u8
-where F: FnOnce() -> Result<StateImportSuccessProto, StateImportFfiFailure> {
+fn state_import_ffi_boundary<F>(
+    operation: &'static str,
+    publication_witness: Option<&StateImportPublicationWitness>,
+    call: F,
+) -> *const u8
+where
+    F: FnOnce(
+        &StateImportFfiBoundaryState,
+    ) -> Result<StateImportSuccessProto, StateImportFfiFailure>,
+{
+    let boundary_state = StateImportFfiBoundaryState::default();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        leak_length_prefixed_state_import_result(protobuf_state_import_result(operation, call()))
+        #[cfg(test)]
+        inject_state_import_ffi_test_phase(StateImportFfiTestPhase::BeforeOperation);
+        let operation_result = call(&boundary_state);
+        let operation_succeeded = operation_result.is_ok();
+        #[cfg(test)]
+        inject_state_import_ffi_test_phase(StateImportFfiTestPhase::BeforePrimaryEncoding);
+        let pointer = leak_length_prefixed_state_import_result(protobuf_state_import_result(
+            operation,
+            operation_result,
+        ));
+        boundary_state.finish_primary_encoding(operation_succeeded);
+        pointer
     }));
     match result {
         Ok(pointer) => pointer,
         Err(payload) => catch_unwind(AssertUnwindSafe(|| {
+            boundary_state.rollback();
+            if publication_witness
+                .is_some_and(StateImportPublicationWitness::authoritative_publication_observed)
+            {
+                return std::ptr::null();
+            }
+            #[cfg(test)]
+            inject_state_import_ffi_test_phase(StateImportFfiTestPhase::BeforeFallbackEncoding);
             leak_length_prefixed_state_import_result(protobuf_state_import_result(
                 operation,
                 Err(StateImportFfiFailure::new(
@@ -2053,8 +2211,9 @@ pub unsafe extern "C" fn state_import_begin(
     payload_bytes_len: usize,
     out_open_handle: *mut *mut OpenStateImportHandle,
 ) -> *const u8 {
-    state_import_ffi_boundary("state_import_begin", || {
-        unsafe { initialize_open_handle_output(out_open_handle) }?;
+    let output_initialization = unsafe { initialize_open_handle_output(out_open_handle) };
+    state_import_ffi_boundary("state_import_begin", None, |boundary_state| {
+        output_initialization?;
         let payload =
             unsafe { required_protobuf_input(payload_pointer, payload_bytes_len, "import spec") }?;
         let protobuf_spec = StateImportSpecProto::decode(payload).map_err(|error| {
@@ -2065,11 +2224,12 @@ pub unsafe extern "C" fn state_import_begin(
         let session = importer
             .begin_import(spec)
             .map_err(StateImportFfiFailure::import)?;
-        let handle = Box::into_raw(Box::new(OpenStateImportHandle {
-            session: Mutex::new(Some(session)),
-        }));
-        // SAFETY: initialization above established a non-null writable out-pointer.
-        unsafe { out_open_handle.write(handle) };
+        boundary_state.defer(StateImportFfiDeferredAction::ExposeOpen {
+            output: out_open_handle,
+            handle: Box::new(OpenStateImportHandle {
+                session: Mutex::new(Some(session)),
+            }),
+        });
         Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_OPENED, None, None))
     })
 }
@@ -2089,7 +2249,7 @@ pub unsafe extern "C" fn state_import_stage_page(
     payload_pointer: *const u8,
     payload_bytes_len: usize,
 ) -> *const u8 {
-    state_import_ffi_boundary("state_import_stage_page", || {
+    state_import_ffi_boundary("state_import_stage_page", None, |boundary_state| {
         if open_handle.is_null() {
             return Err(StateImportFfiFailure::null_pointer("open state-import handle"));
         }
@@ -2113,6 +2273,9 @@ pub unsafe extern "C" fn state_import_stage_page(
         let receipt = session
             .validate_and_stage_page(page)
             .map_err(StateImportFfiFailure::import)?;
+        boundary_state.defer(StateImportFfiDeferredAction::InvalidateOpenUnlessSuccessEncoded {
+            handle: open_handle,
+        });
         Ok(protobuf_state_import_success(
             PROTOBUF_STATE_IMPORT_SUCCESS_PAGE_STAGED,
             Some(receipt_to_protobuf(receipt)?),
@@ -2135,15 +2298,17 @@ pub unsafe extern "C" fn state_import_seal(
     open_handle: *mut OpenStateImportHandle,
     out_sealed_handle: *mut *mut SealedStateImportHandle,
 ) -> *const u8 {
-    state_import_ffi_boundary("state_import_seal", || {
-        unsafe { initialize_sealed_handle_output(out_sealed_handle) }?;
+    let output_initialization = unsafe { initialize_sealed_handle_output(out_sealed_handle) };
+    state_import_ffi_boundary("state_import_seal", None, |boundary_state| {
+        output_initialization?;
         let session = unsafe { consume_open_handle(open_handle) }?;
         let sealed = session.seal().map_err(StateImportFfiFailure::import)?;
-        let handle = Box::into_raw(Box::new(SealedStateImportHandle {
-            session: Mutex::new(Some(sealed)),
-        }));
-        // SAFETY: initialization above established a non-null writable out-pointer.
-        unsafe { out_sealed_handle.write(handle) };
+        boundary_state.defer(StateImportFfiDeferredAction::ExposeSealed {
+            output: out_sealed_handle,
+            handle: Box::new(SealedStateImportHandle {
+                session: Mutex::new(Some(sealed)),
+            }),
+        });
         Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_SEALED, None, None))
     })
 }
@@ -2158,9 +2323,12 @@ pub unsafe extern "C" fn state_import_seal(
 pub unsafe extern "C" fn state_import_publish(
     sealed_handle: *mut SealedStateImportHandle,
 ) -> *const u8 {
-    state_import_ffi_boundary("state_import_publish", || {
+    let publication_witness = StateImportPublicationWitness::new();
+    state_import_ffi_boundary("state_import_publish", Some(&publication_witness), |_| {
         let sealed = unsafe { consume_sealed_handle(sealed_handle) }?;
-        let publication = sealed.publish().map_err(StateImportFfiFailure::import)?;
+        let publication = sealed
+            .publish(&publication_witness)
+            .map_err(StateImportFfiFailure::import)?;
         Ok(protobuf_state_import_success(
             PROTOBUF_STATE_IMPORT_SUCCESS_PUBLISHED,
             None,
@@ -2179,7 +2347,7 @@ pub unsafe extern "C" fn state_import_publish(
 pub unsafe extern "C" fn state_import_abort_open(
     open_handle: *mut OpenStateImportHandle,
 ) -> *const u8 {
-    state_import_ffi_boundary("state_import_abort_open", || {
+    state_import_ffi_boundary("state_import_abort_open", None, |_| {
         let session = unsafe { consume_open_handle(open_handle) }?;
         drop(session);
         Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_ABORTED, None, None))
@@ -2196,7 +2364,7 @@ pub unsafe extern "C" fn state_import_abort_open(
 pub unsafe extern "C" fn state_import_abort_sealed(
     sealed_handle: *mut SealedStateImportHandle,
 ) -> *const u8 {
-    state_import_ffi_boundary("state_import_abort_sealed", || {
+    state_import_ffi_boundary("state_import_abort_sealed", None, |_| {
         let session = unsafe { consume_sealed_handle(sealed_handle) }?;
         drop(session);
         Ok(protobuf_state_import_success(PROTOBUF_STATE_IMPORT_SUCCESS_ABORTED, None, None))

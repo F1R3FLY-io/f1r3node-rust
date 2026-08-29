@@ -277,6 +277,83 @@ do
   fi
 done
 tlc_run "$tla_metadir" \
+  RSpaceRecordReplayAuthorityLifecycle.cfg \
+  RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+if record_replay_skip_reset_mutant="$({
+  tlc_run "$tla_metadir" \
+    RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg \
+    RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$record_replay_skip_reset_mutant"
+  echo "stack-safe-pda: record/replay skip-reset mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$record_replay_skip_reset_mutant"
+if ! grep -q 'Invariant ReplayCommitRequiresReactivation is violated' \
+    <<<"$record_replay_skip_reset_mutant"; then
+  echo "stack-safe-pda: record/replay skip-reset mutant failed without ReplayCommitRequiresReactivation" >&2
+  exit 1
+fi
+tlc_run "$tla_metadir" \
+  RSpaceStateImportFfiBoundary.cfg \
+  RSpaceStateImportFfiBoundary.tla -cleanup
+for state_import_ffi_mutant in \
+  "capability-exposure:RSpaceStateImportFfiBoundaryExposeMutant.cfg:CapabilityOutputRequiresEncodedSuccess" \
+  "published-misclassification:RSpaceStateImportFfiBoundaryMisclassifyMutant.cfg:PublicationResponseIsTruthful" \
+  "escaped-unwind:RSpaceStateImportFfiBoundaryEscapeMutant.cfg:NoOrdinaryUnwindEscapesBoundary" \
+  "usable-staged-open:RSpaceStateImportFfiBoundaryUsableStagedOpenMutant.cfg:StageEncodingFailurePoisonsMutatedOpen" \
+  "duplicate-publication:RSpaceStateImportFfiBoundaryDuplicatePublicationMutant.cfg:PublicationIsMonotoneAndUnique"
+do
+  state_import_ffi_label="${state_import_ffi_mutant%%:*}"
+  state_import_ffi_tail="${state_import_ffi_mutant#*:}"
+  state_import_ffi_cfg="${state_import_ffi_tail%%:*}"
+  state_import_ffi_invariant="${state_import_ffi_tail#*:}"
+  if state_import_ffi_output="$({
+    tlc_run "$tla_metadir" \
+      "$state_import_ffi_cfg" RSpaceStateImportFfiBoundary.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$state_import_ffi_output"
+    echo "stack-safe-pda: ${state_import_ffi_label} state-import FFI mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$state_import_ffi_output"
+  if ! grep -q "Invariant ${state_import_ffi_invariant} is violated" \
+      <<<"$state_import_ffi_output"; then
+    echo "stack-safe-pda: ${state_import_ffi_label} state-import FFI mutant failed without ${state_import_ffi_invariant}" >&2
+    exit 1
+  fi
+done
+if state_import_ffi_liveness_mutant="$({
+  tlc_run "$tla_metadir" \
+    RSpaceStateImportFfiBoundaryNoFairnessMutant.cfg \
+    RSpaceStateImportFfiBoundary.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$state_import_ffi_liveness_mutant"
+  echo "stack-safe-pda: no-fairness state-import FFI mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$state_import_ffi_liveness_mutant"
+if ! grep -q 'Temporal properties were violated' \
+    <<<"$state_import_ffi_liveness_mutant"; then
+  echo "stack-safe-pda: no-fairness state-import FFI mutant failed without the liveness witness" >&2
+  exit 1
+fi
+if state_import_ffi_two_publications="$({
+  tlc_run "$tla_metadir" \
+    RSpaceStateImportFfiBoundaryTwoPublicationsWitness.cfg \
+    RSpaceStateImportFfiBoundary.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$state_import_ffi_two_publications"
+  echo "stack-safe-pda: second legal state-import publication was unreachable" >&2
+  exit 1
+fi
+printf '%s\n' "$state_import_ffi_two_publications"
+if ! grep -q 'Invariant NeverTwoPublications is violated' \
+    <<<"$state_import_ffi_two_publications"; then
+  echo "stack-safe-pda: second state-import publication witness failed without NeverTwoPublications" >&2
+  exit 1
+fi
+tlc_run "$tla_metadir" \
   RSpaceGenerationCheckpointPublication.cfg \
   RSpaceGenerationCheckpointPublication.tla -cleanup
 for generation_checkpoint_mutant in \

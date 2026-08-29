@@ -63,6 +63,7 @@ async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
 
     let initial_phlo = Cost::create(i64::MAX, "epathmap replay equivalence".to_string());
     let rand = Blake2b512Random::create_from_bytes(&[0x51; 32]);
+    let initial_root = runtime.get_root().await;
 
     // ── RECORD ───────────────────────────────────────────────────────────
     let play_result = runtime
@@ -90,8 +91,17 @@ async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
         "the program must fire at least the idx and relay COMMs (got {comm_count} in {} events)",
         log.len()
     );
+    let play_checkpoint = runtime.create_checkpoint().await;
 
     // ── REPLAY ───────────────────────────────────────────────────────────
+    // The play checkpoint advanced the shared atomic authority from the
+    // initial root. Reactivate that known base before replay prepares its own
+    // checkpoint; target-root equality never authorizes a stale base plan.
+    replay_runtime
+        .reset(&initial_root)
+        .await
+        .expect("replay reset must reactivate the recorded base root");
+
     // `rig` indexes the recorded log by EVENT HASH; the replayed run must
     // re-derive every hash to consume it.
     replay_runtime
@@ -124,7 +134,6 @@ async fn epathmap_heavy_record_then_replay_reproduces_the_log() {
 
     // HISTORY EQUALITY: both sides checkpoint to the same root (the
     // cold-store serializer twins produce identical leaves).
-    let play_checkpoint = runtime.create_checkpoint().await;
     let replay_checkpoint = replay_runtime.create_checkpoint().await;
     assert_eq!(
         play_checkpoint.root, replay_checkpoint.root,

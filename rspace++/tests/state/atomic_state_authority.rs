@@ -172,6 +172,20 @@ fn no_op_writes_nothing_and_does_not_advance_generation() {
 }
 
 #[test]
+fn preparing_checkpoint_leaves_authority_byte_for_byte_unchanged() {
+    let authority = RSpaceStateAuthority::in_memory();
+    let history = history_at_current(&authority);
+    let (cold, _bytes) = data_leaf(b"prepare-is-private");
+    let before = memory_snapshot(&authority);
+    let current_before = authority.current_verified_root().unwrap().unwrap();
+
+    let (_next, _prepared) = prepare_insert(history.as_ref(), 14, &cold);
+
+    assert_eq!(authority.current_verified_root().unwrap().unwrap(), current_before);
+    assert_eq!(memory_snapshot(&authority), before);
+}
+
+#[test]
 fn prepared_checkpoint_cannot_cross_an_authority_boundary() {
     let origin = RSpaceStateAuthority::in_memory();
     let foreign = RSpaceStateAuthority::in_memory();
@@ -210,6 +224,63 @@ fn same_generation_plans_conflict_without_partial_visibility() {
 
     assert!(matches!(error, HistoryError::RootError(RootError::RootCatalogConflict { .. })));
     assert_eq!(memory_snapshot(&authority), before_stale);
+}
+
+#[test]
+fn target_equal_replay_requires_reactivation_and_reuses_exact_object_closure() {
+    let authority = RSpaceStateAuthority::in_memory();
+    let initial = authority.current_verified_root().unwrap().unwrap();
+    let history = history_at_current(&authority);
+    let (cold, bytes) = data_leaf(b"target-equal-record-replay");
+    let (_play_history, play_plan) = prepare_insert(history.as_ref(), 15, &cold);
+    let (_stale_replay_history, stale_replay_plan) = prepare_insert(history.as_ref(), 15, &cold);
+
+    let play = authority
+        .commit_local_checkpoint(&play_plan, vec![(cold.clone(), bytes.clone())], &validator())
+        .expect("play checkpoint");
+    assert_eq!(play_plan.target_root(), play.root());
+    assert_eq!(stale_replay_plan.target_root(), play.root());
+    let after_play = memory_snapshot(&authority);
+
+    let error = authority
+        .commit_local_checkpoint(
+            &stale_replay_plan,
+            vec![(cold.clone(), bytes.clone())],
+            &validator(),
+        )
+        .expect_err("target equality must not authorize a stale replay base");
+    assert!(matches!(error, HistoryError::RootError(RootError::RootCatalogConflict { .. })));
+    assert_eq!(
+        memory_snapshot(&authority),
+        after_play,
+        "RR-07: rejected skip-reset replay must preserve every authority namespace",
+    );
+
+    authority
+        .activate_known(authority.known_verified_root(initial.root()).unwrap())
+        .expect("reactivate the recorded base");
+    let reset_snapshot = memory_snapshot(&authority);
+    let fresh_history = history_at_current(&authority);
+    let (_replay_history, replay_plan) = prepare_insert(fresh_history.as_ref(), 15, &cold);
+    assert_eq!(
+        memory_snapshot(&authority),
+        reset_snapshot,
+        "RR-10: fresh replay preparation must be byte-for-byte private",
+    );
+    let replay = authority
+        .commit_local_checkpoint(&replay_plan, vec![(cold, bytes)], &validator())
+        .expect("fresh replay checkpoint");
+    assert_eq!(replay.root(), play.root());
+
+    let mut after_replay = memory_snapshot(&authority);
+    let mut play_closure = after_play;
+    after_replay.roots.remove(CURRENT_ROOT_KEY);
+    play_closure.roots.remove(CURRENT_ROOT_KEY);
+    assert_eq!(
+        after_replay, play_closure,
+        "RR-12: replay must reuse the exact authenticated history/cold closure and verified-root \
+         catalog",
+    );
 }
 
 #[test]

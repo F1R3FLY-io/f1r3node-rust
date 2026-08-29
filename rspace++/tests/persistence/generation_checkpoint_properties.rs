@@ -260,23 +260,85 @@ proptest! {
         let catalog: [u8; CATALOG_IMAGE_LEN] = catalog
             .try_into()
             .expect("the generator fixes the catalog image length");
-        let result = std::panic::catch_unwind(|| {
-            let _ = GenerationCheckpointDescriptorViewV1::parse(&bytes);
-            let _ = preflight_generation_checkpoint_prepare_v1(
-                &bytes,
-                LogPackDecodeLimits::UNBOUNDED,
-            );
-            let _ = GenerationCheckpointPrepareRecordViewV1::parse(
-                &bytes,
-                LogPackDecodeLimits::UNBOUNDED,
-            );
-            let _ = GenerationCheckpointCommitViewV1::parse(&bytes);
-            let _ = ObjectIndexFileViewV1::parse_exact(&bytes);
-            let _ = PackHeaderV1::parse_exact(&bytes);
-            let _ = RetentionManifestView::parse(&bytes);
-            let _ = CatalogSelectionV1::select(&catalog);
-        });
-        prop_assert!(result.is_ok());
+        let _ = GenerationCheckpointDescriptorViewV1::parse(&bytes);
+        let _ = preflight_generation_checkpoint_prepare_v1(
+            &bytes,
+            LogPackDecodeLimits::UNBOUNDED,
+        );
+        let _ = GenerationCheckpointPrepareRecordViewV1::parse(
+            &bytes,
+            LogPackDecodeLimits::UNBOUNDED,
+        );
+        let _ = GenerationCheckpointCommitViewV1::parse(&bytes);
+        let _ = ObjectIndexFileViewV1::parse_exact(&bytes);
+        let _ = PackHeaderV1::parse_exact(&bytes);
+        let _ = RetentionManifestView::parse(&bytes);
+        let _ = CatalogSelectionV1::select(&catalog);
+    }
+
+    #[test]
+    fn arbitrary_checkpoint_descriptor_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = GenerationCheckpointDescriptorViewV1::parse(&bytes);
+    }
+
+    #[test]
+    fn arbitrary_generation_prepare_preflight_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = preflight_generation_checkpoint_prepare_v1(
+            &bytes,
+            LogPackDecodeLimits::UNBOUNDED,
+        );
+    }
+
+    #[test]
+    fn arbitrary_generation_prepare_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = GenerationCheckpointPrepareRecordViewV1::parse(
+            &bytes,
+            LogPackDecodeLimits::UNBOUNDED,
+        );
+    }
+
+    #[test]
+    fn arbitrary_generation_commit_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = GenerationCheckpointCommitViewV1::parse(&bytes);
+    }
+
+    #[test]
+    fn arbitrary_object_index_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = ObjectIndexFileViewV1::parse_exact(&bytes);
+    }
+
+    #[test]
+    fn arbitrary_pack_header_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = PackHeaderV1::parse_exact(&bytes);
+    }
+
+    #[test]
+    fn arbitrary_retention_manifest_bytes_are_total(
+        bytes in proptest::collection::vec(any::<u8>(), 0..1024),
+    ) {
+        let _ = RetentionManifestView::parse(&bytes);
+    }
+
+    #[test]
+    fn arbitrary_exact_catalog_images_are_total(
+        catalog in proptest::collection::vec(any::<u8>(), CATALOG_IMAGE_LEN..=CATALOG_IMAGE_LEN),
+    ) {
+        let catalog: [u8; CATALOG_IMAGE_LEN] = catalog
+            .try_into()
+            .expect("the generator fixes the catalog image length");
+        let _ = CatalogSelectionV1::select(&catalog);
     }
 }
 

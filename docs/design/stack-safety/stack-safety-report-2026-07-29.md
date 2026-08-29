@@ -329,6 +329,8 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C27** | this checkpoint; pgmcp #6189 | f1r3node | duplicated pack/index offset arithmetic $`\rightarrow`$ one prepared WAL object-layout iterator plus fixed portable pack and rebuildable index codecs | native stack $`O(1)`$; exact 128-byte pack header, 64-byte index header, and 72-byte index records; index append is one lazy pass with no body copy, record reparse, entry projection, or sort | **yes for dormant physical layouts**; aggregate persistence 134/134 after authenticated 240-byte prefix preflight, exact 672-byte catalog CAS token, explicit aggregate work limits, and CoW PathMap recovery-index duplicate refusal | [5.54](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27) |
 | **SS-C28** | this checkpoint; pgmcp #6189/#6100 | f1r3node | unbound filesystem recovery $`\rightarrow`$ pinned-directory affine lease plus mandatory exact index verification or synchronized atomic rebuild | native stack $`O(1)`$; ordinary startup one WAL pass, repair three pre-admitted passes; exactly one $`O(d)`$ PathMap for $`d`$ DATA records and $`O(1)`$ replay state | **yes for dormant Unix physical recovery**; I/O 11/11, startup/failpoints 7/7, persistence 153/153; semantic/inventory admission, Windows handles, compaction, LMDB cutover, and comparative performance remain open | [5.55](#555-affine-durable-startup-and-single-pathmap-index-repair-ss-c28) |
 | **SS-C29** | this checkpoint; campaign-root-4131 | f1r3node | partially specified generation checkpoint $`\rightarrow`$ formally verified affine publisher with exact inventory receipts, proof-derived pre-mutation resource admission, restart-path readmission, and deterministic derived-index repair | native stack $`O(1)`$ in trie depth, key length, retained-state depth, and object count; inventories and WAL/index emission remain streaming; one $`O(d)`$ recovery PathMap; every retained work slope has an explicit total-resource certificate | **yes for dormant checkpoint publication**; 74/74 invariant bindings, 17 Rocq capstones, 7,896 TLA+ states, 28 rejected mutants, 14 reached witnesses, 392/392 library and 817/817 package tests | [5.56](#556-formally-verified-generation-checkpoint-publication-ss-c29) |
+| **SS-C30** | this checkpoint; campaign-root-4131 | f1r3node | record-sized kind-1 PREPARE recovery buffer $`\rightarrow`$ formally refined phase-split streaming PDA with one reusable 64 KiB scratch region and source-authenticated replay | native stack $`O(1)`$ in record/key/object depth; fixed scratch plus boxed constant state; two WAL scans for index repair rather than three | **yes for dormant physical recovery**; 89/89 invariant bindings, 53 generated properties, fixed 128/256 KiB stack matrix, 452/452 library and 877/877 package tests | [5.57](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30) |
+| **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -567,6 +569,8 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.54 Portable log-pack and rebuildable object-index layouts [SS-C27]](#554-portable-log-pack-and-rebuildable-object-index-layouts-ss-c27)
   - [5.55 Affine durable startup and single-PathMap index repair [SS-C28]](#555-affine-durable-startup-and-single-pathmap-index-repair-ss-c28)
   - [5.56 Formally verified generation checkpoint publication [SS-C29]](#556-formally-verified-generation-checkpoint-publication-ss-c29)
+  - [5.57 Formally refined kind-1 PREPARE streaming and fixed native-stack envelope [SS-C30]](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30)
+  - [5.58 Formally verified replay authority and affine FFI failure closure [SS-C31]](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -11310,6 +11314,64 @@ This remains a dormant persistence result. V1 PREPARE/COMMIT bytes, recovered se
 object locations, catalog authority, and semantic COMM accounting are unchanged. Production LMDB
 cutover, compaction, reader-safe garbage collection, Windows-native authority, migration policy,
 and comparative performance/storage evidence remain separate gates.
+
+### 5.58 Formally verified replay authority and affine FFI failure closure [SS-C31]
+
+SS-C31 closes the two regressions exposed by the first exact release-workspace run after the
+kind-1 PREPARE checkpoint. Formal verification again preceded executable changes. The record/replay
+model distinguishes target-root equality from authority over the exact `(root, generation)` base;
+the state-import foreign-function-interface (FFI) model distinguishes boundary-entry faults,
+operation-body faults, result-encoding faults, affine capability ownership, and root-catalog
+publication. The 26 formal obligations were extracted into the living catalog
+`docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md` and mechanically
+bound to named, non-ignored executable properties before the implementation repair was accepted.
+
+The replay control explores 7 generated / 6 distinct states to depth 6. Its skip-reset mutant
+violates `ReplayCommitRequiresReactivation`: reaching the old target root does not authorize reuse
+of a plan prepared against an earlier generation. The repaired executable sequence records play,
+reactivates the known initial root, prepares replay against the fresh generation, and then compares
+the result. A stronger authority property snapshots the current root, generation, activation
+count, verified-root catalog, history namespace, and cold-object namespace. It proves a stale
+target-equal attempt changes none of them, preparation remains byte-for-byte private, and the fresh
+replay reproduces the exact authenticated play closure apart from the expected current-root record.
+
+The FFI control explores 6,586 generated / 4,661 distinct states to depth 20 and proves fair
+completion through `EveryStartedCallReturns`. Five safety mutants expose early capability output,
+escaped ordinary unwind, false publication classification, usable unacknowledged staging, and
+duplicate publication within one affine call. A no-fairness mutant violates the liveness property,
+while an independent reachability witness proves that two complete begin--seal--publish cycles can
+legally publish once each. This prevents an undersized call bound from making exactly-once evidence
+vacuous.
+
+The Rust boundary now keeps begin and seal capabilities private until their success response is
+encoded. A staged mutation whose receipt cannot be encoded poisons its open session. A failure before
+operation entry preserves the caller-owned input; a failure after an operation consumes or poisons
+according to that operation's affine contract. If the root-catalog effect has already occurred and
+result construction then fails, the boundary returns null instead of inventing an unpublished
+error. `StateImportPublicationWitness` deliberately records only this authoritative catalog effect;
+it makes no claim about filesystem durability. Ordinary Rust unwinds are contained at the C ABI,
+while abort-mode panics, native stack overflow, out-of-memory abort, and foreign faults remain
+outside that mechanism's stated domain.
+
+An exhaustive finite matrix executes all six operations against all three injectable boundary
+phases, for 18 modeled cells, with exact capability-output, reuse/consume/poison, drop-count, and
+publication-count assertions. Two sequential publication cycles are separately checked. Arbitrary
+checkpoint-wire properties now call each parser directly, so any panic is an ordinary property
+failure rather than an expected unwind. The repository panic-policy gate permits only the narrowly
+documented production FFI interceptors.
+
+The integrated Rocq, Verus, Z3, TLA+, and mCRL2 harness passes with every new mutant rejected by its
+named obligation. The rhotypes plus Casper LFS boundary gate passes **78/78**. The exact release
+workspace command passes **5,122/5,122** in **279.181 s**, with 53 intentionally skipped tests,
+under a 16 GiB hard resident-memory cap, zero swap, and a twelve-core quota. No `RUST_MIN_STACK`,
+`stacker`, recursive traversal cap, or stack-growth shim is introduced.
+
+The replay correction changes test protocol rather than production replay semantics. The FFI repair
+changes only failure containment and affine output ownership at an internal Rust/C boundary. It
+does not change canonical protobuf or bincode bytes, PathMap or EPathMap identity, state roots,
+history hashes, matching, COMM order, accepted Rholang programs, compute accounting, or storage
+accounting. The dormant persistence backend remains subject to its separately documented
+activation, compaction, garbage-collection, migration, and LMDB-comparison gates.
 
 ---
 

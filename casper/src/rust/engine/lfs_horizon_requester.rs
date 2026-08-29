@@ -17,8 +17,8 @@ use futures::Stream;
 use models::rust::casper::protocol::casper_message::{StoreItemsCursorProtocol, StoreItemsMessage};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::import_session::{
-    StateImportError, StateImportPage, StateImportPublicationMode, StateImportSession,
-    StateImportSpec,
+    StateImportError, StateImportPage, StateImportPublicationMode, StateImportPublicationWitness,
+    StateImportSession, StateImportSpec,
 };
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
@@ -262,7 +262,9 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
                 "LFS forward-horizon: import session publication was already consumed".to_string(),
             )
         })?;
-        let publication = session.seal()?.publish()?;
+        let publication = session
+            .seal()?
+            .publish(&StateImportPublicationWitness::new())?;
         if publication.verified_roots != self.target_roots {
             return Err(CasperError::RuntimeError(format!(
                 "LFS forward-horizon: importer published an inexact root set (expected {}, got {})",
@@ -585,7 +587,10 @@ mod tests {
     impl SealedStateImport for MockSealed {
         fn spec(&self) -> &StateImportSpec { &self.spec }
 
-        fn publish(self: Box<Self>) -> Result<StateImportPublication, StateImportError> {
+        fn publish(
+            self: Box<Self>,
+            witness: &StateImportPublicationWitness,
+        ) -> Result<StateImportPublication, StateImportError> {
             let mut trace = self.trace.lock().unwrap();
             trace.publish_count += 1;
             if trace.fail_publish {
@@ -593,6 +598,7 @@ mod tests {
                     "injected publication rejection".to_string(),
                 ));
             }
+            witness.record_authoritative_publication();
             Ok(trace
                 .publication_override
                 .clone()

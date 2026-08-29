@@ -6021,6 +6021,43 @@ consensus observer. Activation, LMDB migration, bounded compaction and reader-sa
 collection, Windows-native authority, and the comparative LMDB performance/storage study remain
 separate gates and must re-enter this register.
 
+**CBR-053 living continuation (2026-08-29, replay-authority and affine FFI failure
+closure).** The exact release-workspace gate exposed one stale record/replay test protocol and one
+ordinary-unwind containment gap at the internal state-import FFI. Their correction followed a
+formal-first sequence: two TLA+ controls were checked, every safety and liveness obligation was
+extracted into 26 stable identifiers, an executable registry bound every identifier to a named
+property, and only then were the test protocol and boundary implementation changed.
+
+The replay model proves that target-root equality is not authority over an earlier generation. A
+stale target-equal replay attempt must leave current root, generation, activation count,
+verified-root catalog, history objects, and cold objects unchanged. Preparation after reactivating
+the known base must likewise remain private. The executable witness then proves the fresh replay
+publishes the same target and reuses the exact authenticated play closure. This corrects a test that
+skipped the existing reactivation contract; it does not change production checkpoint semantics.
+
+The FFI model separates boundary-entry faults from operation-body faults and primary from fallback
+response encoding. Begin and seal capabilities remain private until success encoding. An
+unacknowledged staged mutation poisons its open session. Each affine publish call crosses authority
+at most once, while two independent import cycles may each publish. If the root-catalog effect is
+already authoritative and response construction then fails, the ABI returns null rather than a
+false unpublished error. The witness records authority only, not filesystem durability. This is a
+failure-containment and ownership correction to an internal Rust/C boundary, not a public Rholang,
+protobuf, bincode, network, or REPL API change.
+
+The replay control explores 7 generated / 6 distinct TLA+ states at depth 6. The FFI control
+explores 6,586 generated / 4,661 distinct states at depth 20 and proves fair completion. Seven
+negative controls fail their named safety/liveness obligations, and an independent witness reaches
+two legal sequential publications. The exhaustive implementation matrix covers all 18 operation by
+fault-phase cells. The integrated Rocq/Verus/Z3/TLC/mCRL2 gate passes; rhotypes plus Casper LFS pass
+78/78; and the exact release workspace passes 5,122/5,122 in 279.181 seconds, with 53 intentionally
+skipped tests, under a hard memory cap with swap disabled.
+
+This continuation is `CONSENSUS_NEUTRAL_INTERNAL_BOUNDARY_FIX`. No canonical term, protobuf,
+bincode, PathMap/EPathMap, WAL, pack, index, catalog, block, network, or replay byte changes. No
+state root, history hash, matching result, COMM schedule, accepted program, compute charge, or
+storage charge changes. CBR-053's dormant-backend activation, migration, compaction,
+reader-safe-garbage-collection, and LMDB comparison obligations remain unchanged.
+
 ### B.2 The original commit-level exemptions
 
 Every commit in `7293d57c..dc383ed1` touching the consensus-critical path set, that is **not** a

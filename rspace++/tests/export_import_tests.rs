@@ -12,8 +12,8 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::import_session::{
-    StateImportError, StateImportPage, StateImportPublicationMode, StateImportSession,
-    StateImportSpec,
+    StateImportError, StateImportPage, StateImportPublicationMode, StateImportPublicationWitness,
+    StateImportSession, StateImportSpec,
 };
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
@@ -168,7 +168,7 @@ fn import_checkpoint_by_cursor(
     let publication = session
         .seal()
         .expect("seal complete state closure")
-        .publish()
+        .publish(&StateImportPublicationWitness::new())
         .expect("atomically publish and activate verified checkpoint");
     assert_eq!(publication.verified_roots, vec![root.clone()]);
     let activation = publication
@@ -390,7 +390,7 @@ async fn invalid_pages_leave_no_root_authority_and_the_same_session_can_retry() 
     let publication = session
         .seal()
         .expect("corrected terminal page seals the complete closure")
-        .publish()
+        .publish(&StateImportPublicationWitness::new())
         .expect("corrected closure publishes atomically");
     assert_eq!(
         publication

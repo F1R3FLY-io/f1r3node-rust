@@ -16,7 +16,7 @@ use crate::rspace::shared::trie_exporter::{AuthenticatedTraversalPage, NodePath,
 use crate::rspace::state::closure_verifier::RecordValidator;
 use crate::rspace::state::import_session::{
     SealedStateImport, StateImportError, StateImportPage, StateImportPageReceipt,
-    StateImportPublication, StateImportSession, StateImportSpec,
+    StateImportPublication, StateImportPublicationWitness, StateImportSession, StateImportSpec,
 };
 use crate::rspace::state::rspace_exporter::RSpaceExporterInstance;
 use crate::rspace::state::rspace_importer::RSpaceImporter;
@@ -224,8 +224,11 @@ struct SealedRSpaceImport {
 impl SealedStateImport for SealedRSpaceImport {
     fn spec(&self) -> &StateImportSpec { self.sealed.spec() }
 
-    fn publish(self: Box<Self>) -> Result<StateImportPublication, StateImportError> {
-        self.authority.publish_import(self.sealed)
+    fn publish(
+        self: Box<Self>,
+        witness: &StateImportPublicationWitness,
+    ) -> Result<StateImportPublication, StateImportError> {
+        self.authority.publish_import(self.sealed, witness)
     }
 }
 
@@ -410,7 +413,9 @@ mod tests {
 
     use super::*;
     use crate::rspace::history::instances::radix_history::RadixHistory;
-    use crate::rspace::state::import_session::{StateImportActivation, StateImportPublicationMode};
+    use crate::rspace::state::import_session::{
+        StateImportActivation, StateImportPublicationMode, StateImportPublicationWitness,
+    };
 
     fn empty_importer() -> RSpaceImporterImpl {
         let authority = RSpaceStateAuthority::in_memory();
@@ -455,7 +460,11 @@ mod tests {
             })
             .unwrap();
         assert!(receipt.terminal);
-        let publication = session.seal().unwrap().publish().unwrap();
+        let publication = session
+            .seal()
+            .unwrap()
+            .publish(&StateImportPublicationWitness::new())
+            .unwrap();
         assert_eq!(
             publication.activation,
             Some(StateImportActivation {
@@ -537,7 +546,15 @@ mod tests {
                 data_items: Vec::new(),
             })
             .unwrap();
-        assert_eq!(session.seal().unwrap().publish().unwrap().verified_roots, vec![root]);
+        assert_eq!(
+            session
+                .seal()
+                .unwrap()
+                .publish(&StateImportPublicationWitness::new())
+                .unwrap()
+                .verified_roots,
+            vec![root]
+        );
     }
 
     fn stage_empty_root(
@@ -568,13 +585,25 @@ mod tests {
         let root = RadixHistory::empty_root_node_hash();
         let first = stage_empty_root(&importer, StateImportPublicationMode::Activate(root.clone()));
         let stale = stage_empty_root(&importer, StateImportPublicationMode::Activate(root.clone()));
-        assert_eq!(first.publish().unwrap().activation.unwrap().generation, 1);
+        let first_witness = StateImportPublicationWitness::new();
+        assert_eq!(
+            first
+                .publish(&first_witness)
+                .unwrap()
+                .activation
+                .unwrap()
+                .generation,
+            1
+        );
+        assert!(first_witness.authoritative_publication_observed());
+        let stale_witness = StateImportPublicationWitness::new();
         assert!(matches!(
-            stale.publish(),
+            stale.publish(&stale_witness),
             Err(StateImportError::Root(
                 crate::rspace::errors::RootError::RootCatalogConflict { .. }
             ))
         ));
+        assert!(!stale_witness.authoritative_publication_observed());
     }
 
     #[test]
@@ -582,9 +611,11 @@ mod tests {
         let importer = empty_importer();
         let current = importer.authority.current_verified_root().unwrap().unwrap();
 
+        let witness = StateImportPublicationWitness::new();
         let publication = stage_empty_root(&importer, StateImportPublicationMode::PreserveCurrent)
-            .publish()
+            .publish(&witness)
             .unwrap();
+        assert!(witness.authoritative_publication_observed());
         assert_eq!(publication.activation, None);
         assert_eq!(importer.authority.current_verified_root().unwrap().unwrap(), current);
         assert!(

@@ -13,8 +13,8 @@ use models::rust::casper::protocol::casper_message::{
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::import_session::{
-    StateImportError, StateImportPage, StateImportPublicationMode, StateImportSession,
-    StateImportSpec,
+    StateImportError, StateImportPage, StateImportPublicationMode, StateImportPublicationWitness,
+    StateImportSession, StateImportSpec,
 };
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
@@ -245,7 +245,9 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
                 "tuple-space import session was already consumed".to_string(),
             ))
         })?;
-        let publication = session.seal()?.publish()?;
+        let publication = session
+            .seal()?
+            .publish(&StateImportPublicationWitness::new())?;
         let activation = publication.activation.ok_or_else(|| {
             CasperError::StateImportError(StateImportError::InternalInvariant(
                 "tuple-space import published without activating its target root".to_string(),

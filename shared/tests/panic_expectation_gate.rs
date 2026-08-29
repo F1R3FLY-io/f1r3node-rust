@@ -121,6 +121,19 @@ type Allowed = (&'static str, usize, &'static str);
 const CATCH_UNWIND_ALLOWLIST: &[Allowed] = &[
     // ── use 3: production code defending itself ──────────────────────────────
     (
+        "rspace++/libs/rspace_rhotypes/src/lib.rs",
+        3,
+        "PRODUCTION, NOT A TEST. The import names the interceptor and the two calls \
+         form the state-import C ABI boundary: the primary barrier converts an \
+         ordinary Rust unwind into one structured protobuf PANIC result, while the \
+         fallback barrier returns null if constructing that result also unwinds. \
+         RSpaceStateImportFfiBoundary.tla specifies the affine capability/result \
+         contract and its required negative controls. This defense is intentionally \
+         limited to ordinary unwind builds; it cannot contain abort-mode panics, OOM \
+         or native-stack failure, cg_clif propagation, or a fault that has already \
+         crossed a non-unwinding ABI.",
+    ),
+    (
         "rholang/src/rust/interpreter/reduce.rs",
         1,
         "PRODUCTION, NOT A TEST. `spawn_detached` counts detached reduction tasks with \

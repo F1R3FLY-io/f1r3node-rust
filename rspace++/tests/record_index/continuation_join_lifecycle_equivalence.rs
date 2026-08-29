@@ -24,7 +24,7 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::import_session::{
-    StateImportPage, StateImportPublicationMode, StateImportSpec,
+    StateImportPage, StateImportPublicationMode, StateImportPublicationWitness, StateImportSpec,
 };
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
@@ -258,7 +258,7 @@ fn import_root(
     let publication = session
         .seal()
         .expect("complete closure")
-        .publish()
+        .publish(&StateImportPublicationWitness::new())
         .expect("publish imported root");
     assert_eq!(publication.verified_roots, vec![root.clone()]);
     assert_eq!(publication.activation.expect("activation").root, *root);

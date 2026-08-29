@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use shared::rust::store::key_value_store::KvStoreError;
 
@@ -98,6 +99,40 @@ pub struct StateImportActivation {
     pub generation: u64,
 }
 
+/// Monotone witness for the authority-effect boundary of one publication call.
+///
+/// The caller creates a fresh witness for each affine publication attempt. A
+/// [`SealedStateImport`] implementation records the witness immediately after
+/// its root-catalog transaction becomes authoritative, before constructing or
+/// encoding a receipt. This lets an FFI boundary distinguish a pre-publication
+/// unwind from an unwind after authority has already changed. The witness does
+/// not claim filesystem durability; persistent backends establish that
+/// separately.
+#[derive(Debug, Default)]
+pub struct StateImportPublicationWitness {
+    authoritative: AtomicBool,
+}
+
+impl StateImportPublicationWitness {
+    pub const fn new() -> Self {
+        Self {
+            authoritative: AtomicBool::new(false),
+        }
+    }
+
+    /// Record that this call crossed its authoritative publication point.
+    ///
+    /// The transition is monotone and intentionally non-panicking so it can be
+    /// placed directly after a storage commit.
+    pub fn record_authoritative_publication(&self) {
+        self.authoritative.store(true, Ordering::Release);
+    }
+
+    pub fn authoritative_publication_observed(&self) -> bool {
+        self.authoritative.load(Ordering::Acquire)
+    }
+}
+
 /// Mutable but unpublished import capability.
 ///
 /// `seal(self: Box<Self>)` consumes the only staging capability.  Code holding
@@ -119,7 +154,12 @@ pub trait StateImportSession: Send {
 pub trait SealedStateImport: Send {
     fn spec(&self) -> &StateImportSpec;
 
-    fn publish(self: Box<Self>) -> Result<StateImportPublication, StateImportError>;
+    /// Publish the verified roots and mark `witness` at the authority-effect
+    /// boundary before doing any fallible receipt construction.
+    fn publish(
+        self: Box<Self>,
+        witness: &StateImportPublicationWitness,
+    ) -> Result<StateImportPublication, StateImportError>;
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -358,5 +398,15 @@ mod tests {
                 available: 31,
             })
         );
+    }
+
+    #[test]
+    fn publication_witness_is_false_until_marked_and_then_monotone() {
+        let witness = StateImportPublicationWitness::new();
+        assert!(!witness.authoritative_publication_observed());
+        witness.record_authoritative_publication();
+        assert!(witness.authoritative_publication_observed());
+        witness.record_authoritative_publication();
+        assert!(witness.authoritative_publication_observed());
     }
 }

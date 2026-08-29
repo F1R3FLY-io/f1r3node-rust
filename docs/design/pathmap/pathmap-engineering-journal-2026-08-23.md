@@ -3337,6 +3337,53 @@ replacement or a mixed-version activation policy. Compaction, reader-safe garbag
 Windows-native authority, migration/cutover, and LMDB comparison remain separately tracked. No
 PathMap source or fork was modified.
 
+### J-046 — 2026-08-29: root equality is not replay authority, and FFI effects precede responses
+
+**QUESTION.** How should record/replay and the state-import FFI behave when a replay reaches an
+already visible target root, an ordinary Rust unwind occurs at an ABI boundary, or response encoding
+fails after an affine operation has changed authority?
+
+**HYPOTHESIS.** Replay must remain bound to the exact `(root, generation)` base even when its target
+equals the current root. A fresh reactivation is required before a fresh replay plan may commit.
+At the FFI boundary, capabilities must remain private until a success response is encoded, while an
+already-observed root-catalog publication must never be relabeled as unpublished merely because its
+response could not be constructed.
+
+**METHOD.** Formal verification preceded implementation. One TLA+ lifecycle models play, stale
+target-equal replay rejection, base reactivation, fresh replay preparation, and replay commit. A
+second model enumerates six FFI operations, three boundary-fault phases, affine capability states,
+per-call and total publication counts, ordinary-unwind containment, and phase fairness. Twenty-six
+formal safety/liveness obligations were extracted into a stable catalog and an exact executable
+binding registry. Mutants cover skip-reset acceptance, early capability exposure, escaped unwind,
+false publication classification, usable unacknowledged staging, duplicate in-call publication, and
+missing fairness; an additional witness must reach a second legal publication.
+
+**OBSERVATIONS.** The replay control explores 7 generated / 6 distinct states at depth 6. The FFI
+control explores 6,586 generated / 4,661 distinct states at depth 20. All controls pass, every mutant
+fails its assigned obligation, and the second-publication witness is reachable. The implementation
+property snapshots all replay authority namespaces, not merely the target root, and proves that
+stale refusal and fresh preparation are externally atomic. The FFI matrix executes all 18 operation
+by fault-phase cells with exact output, ownership, drop, poison, and publication assertions.
+
+**COMPLEXITY.** These repairs add constant-size phase and publication witnesses only. Replay still
+uses the existing PathMap-backed history and cold-object authorities without flattening them or
+constructing `Vec<Par>` projections. No input-sized native-stack allocation, recursive traversal,
+extra trie, or object-closure copy is introduced.
+
+**EVIDENCE.** The integrated Rocq/Verus/Z3/TLC/mCRL2 harness passes. The focused rhotypes and Casper
+LFS gate passes 78/78. The exact release workspace passes 5,122/5,122 in 279.181 seconds, with 53
+intentionally skipped tests, under a 16 GiB hard resident-memory cap, zero swap, and a twelve-core
+quota. The mechanical registry proves exact coverage of all 13 replay and 13 FFI obligations.
+
+**ACCOUNTING.** `StateImportPublicationWitness` means that the authoritative root-catalog effect was
+observed; it is not a filesystem-durability receipt. The changes do not alter COMM accounting,
+canonical term bytes, history hashes, roots, or the active compute/storage tariff.
+
+**BOUNDARY.** The replay change repairs a test that violated the existing generation protocol. The
+production change hardens only the internal FFI failure boundary and updates its Rust trait call
+sites. It neither activates dormant PathMap persistence nor changes the Rholang, protobuf, bincode,
+network, or REPL interface. No PathMap source or fork was modified.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

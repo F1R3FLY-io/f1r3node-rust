@@ -16,8 +16,8 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::import_session::{
     SealedStateImport, StateImportActivation, StateImportError, StateImportPage,
-    StateImportPageReceipt, StateImportPublication, StateImportPublicationMode, StateImportSession,
-    StateImportSpec,
+    StateImportPageReceipt, StateImportPublication, StateImportPublicationMode,
+    StateImportPublicationWitness, StateImportSession, StateImportSpec,
 };
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use shared::rust::ByteVector;
@@ -223,7 +223,10 @@ struct MockSealedImport {
 impl SealedStateImport for MockSealedImport {
     fn spec(&self) -> &StateImportSpec { &self.spec }
 
-    fn publish(self: Box<Self>) -> Result<StateImportPublication, StateImportError> {
+    fn publish(
+        self: Box<Self>,
+        witness: &StateImportPublicationWitness,
+    ) -> Result<StateImportPublication, StateImportError> {
         self.observations
             .lock()
             .expect("observation lock")
@@ -248,6 +251,7 @@ impl SealedStateImport for MockSealedImport {
             .expect("observation lock")
             .activations
             .push(activated.clone());
+        witness.record_authoritative_publication();
         Ok(StateImportPublication {
             verified_roots: self.spec.roots().to_vec(),
             activation: Some(StateImportActivation {

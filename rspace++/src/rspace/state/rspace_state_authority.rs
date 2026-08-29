@@ -27,7 +27,7 @@ use crate::rspace::shared::trie_exporter::NodePath;
 use crate::rspace::state::closure_verifier::{RecordValidator, verify_state_closure};
 use crate::rspace::state::import_session::{
     StateImportActivation, StateImportError, StateImportPublication, StateImportPublicationMode,
-    StateImportSpec,
+    StateImportPublicationWitness, StateImportSpec,
 };
 use crate::rspace::state::legacy_state_migration::{complete_legacy_state, migrate_legacy_state};
 
@@ -458,21 +458,27 @@ impl RSpaceStateAuthority {
     pub fn publish_import(
         &self,
         sealed: SealedImportedRoots,
+        witness: &StateImportPublicationWitness,
     ) -> Result<StateImportPublication, StateImportError> {
         self.ensure_authority(&sealed.identity)?;
         let activation = match sealed.spec.publication_mode() {
             StateImportPublicationMode::PreserveCurrent => {
                 self.publish_roots(sealed.spec.roots(), None, sealed.expected_generation)?;
+                witness.record_authoritative_publication();
                 None
             }
             StateImportPublicationMode::Activate(target) => {
-                let current = self
-                    .publish_roots(sealed.spec.roots(), Some(target), sealed.expected_generation)?
-                    .ok_or_else(|| {
-                        StateImportError::InternalInvariant(
-                            "import activation did not produce a current root".to_string(),
-                        )
-                    })?;
+                let current = self.publish_roots(
+                    sealed.spec.roots(),
+                    Some(target),
+                    sealed.expected_generation,
+                )?;
+                witness.record_authoritative_publication();
+                let current = current.ok_or_else(|| {
+                    StateImportError::InternalInvariant(
+                        "import activation did not produce a current root".to_string(),
+                    )
+                })?;
                 Some(StateImportActivation {
                     root: current.root().clone(),
                     generation: current.generation(),
