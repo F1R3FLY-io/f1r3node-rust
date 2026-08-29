@@ -393,12 +393,15 @@ impl KeyValueDagRepresentation {
         }
     }
 
+    // A latest-message slot can name a block this node does not hold (a
+    // stale slot below an LFS restore horizon); both readers treat it as
+    // absent rather than erroring.
     pub fn latest_message(
         &self,
         validator: &Validator,
     ) -> Result<Option<BlockMetadata>, KvStoreError> {
         match self.latest_message_hash(validator) {
-            Some(hash) => self.lookup_unsafe(&hash).map(Some),
+            Some(hash) => self.lookup(&hash),
             None => Ok(None),
         }
     }
@@ -408,8 +411,9 @@ impl KeyValueDagRepresentation {
 
         let mut result = HashMap::new();
         for (validator, hash) in latest_messages.iter() {
-            let metadata = self.lookup_unsafe(hash)?;
-            result.insert(validator.clone(), metadata);
+            if let Some(metadata) = self.lookup(hash)? {
+                result.insert(validator.clone(), metadata);
+            }
         }
 
         Ok(result)

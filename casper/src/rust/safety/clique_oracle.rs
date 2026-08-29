@@ -677,6 +677,24 @@ impl CliqueOracle {
             if full_weight_map.values().sum::<i64>() <= 0 {
                 return Ok(MIN_FAULT_TOLERANCE);
             }
+            // A latest message this node does not hold (a stale slot below an
+            // LFS restore horizon) abstains its validator: it can neither
+            // agree nor witness, and erroring here would fail every
+            // fault-tolerance read on the node. Abstention only ever
+            // understates the clique.
+            let mut held_latest_messages = BTreeMap::new();
+            for (validator, hash) in latest_messages.iter() {
+                if dag.lookup(hash)?.is_some() {
+                    held_latest_messages.insert(validator.clone(), hash.clone());
+                } else {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.safety.clique_oracle",
+                        "abstaining validator with unheld latest message {:?}",
+                        hash
+                    );
+                }
+            }
+            let latest_messages = &held_latest_messages;
             let agreeing_weight_map =
                 Self::agreeing_weight_map(&full_weight_map, target_msg, dag, latest_messages)
                     .await?;

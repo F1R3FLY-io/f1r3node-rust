@@ -142,9 +142,28 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // storage I/O.
     let mut valid_latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
+    // A latest message this node does not hold (a stale slot below an LFS
+    // restore horizon) cannot be cited as a parent; abstain the validator
+    // instead of failing every snapshot. Parent and LCA reads below inherit
+    // held provenance from this filter.
+    let mut unheld_validators: Vec<Validator> = Vec::new();
     for (validator, hash) in valid_latest_msgs.iter() {
-        let meta = dag.lookup_unsafe(hash)?;
-        valid_latest_metas.insert(validator.clone(), meta);
+        match dag.lookup(hash)? {
+            Some(meta) => {
+                valid_latest_metas.insert(validator.clone(), meta);
+            }
+            None => {
+                tracing::debug!(
+                    target: "f1r3fly.casper.snapshot",
+                    "abstaining validator with unheld latest message {:?}",
+                    hash
+                );
+                unheld_validators.push(validator.clone());
+            }
+        }
+    }
+    for validator in unheld_validators {
+        valid_latest_msgs.remove(&validator);
     }
     let mut unique_parent_hashes: HashSet<BlockHash> =
         HashSet::with_capacity(valid_latest_msgs.len());
