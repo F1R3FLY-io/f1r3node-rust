@@ -59,8 +59,8 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// The durable floor and LFB use `(2q−S)/S ≥ θ`. Cleared of denominators
-/// (S, den > 0), the test is `2·q·den ≥ S·(den+num)`. `i128` keeps both
+/// The durable floor and LFB use `(2q−S)/S > θ`. Cleared of denominators
+/// (S, den > 0), the test is `2·q·den > S·(den+num)`. `i128` keeps both
 /// sides exact for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
@@ -76,12 +76,12 @@ pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64) -> bo
     // the lower bound is -den here. The comparison math below is unchanged and is
     // exact across the full [-den, den] range.
     debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
-    if q <= 0 || (agreeing as i128) * 2 <= s as i128 {
+    if (agreeing as i128) * 2 <= s as i128 {
         return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
     }
     let lhs = 2i128 * q as i128 * den as i128;
     let rhs = s as i128 * (den as i128 + num as i128);
-    lhs >= rhs
+    lhs > rhs
 }
 
 pub struct CliqueOracleRunCache {
@@ -564,7 +564,7 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den ≥ S·(den+num)` (see [`ft_decides_exact`]).
+    /// the exact rule `2·q·den > S·(den+num)` (see [`ft_decides_exact`]).
     /// Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
@@ -818,7 +818,7 @@ mod ft_decides_exact_tests {
     /// the tie is exact: S = 2·den, q = den+num ⇒
     /// 2q·den = 2(den+num)·den = S·(den+num).
     #[test]
-    fn boundary_tie_is_finalized() {
+    fn boundary_tie_is_not_finalized() {
         let den = FT_PPM_DEN;
         let num = 333_333;
         let s = 2 * den; // 2_000_000
@@ -828,7 +828,7 @@ mod ft_decides_exact_tests {
             s as i128 * (den as i128 + num as i128),
             "test setup must produce an exact tie"
         );
-        assert!(ft_decides_exact(s, q, s, num, den));
+        assert!(!ft_decides_exact(s, q, s, num, den));
     }
 
     #[test]
@@ -894,12 +894,12 @@ mod ft_decides_exact_tests {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
         #[test]
-        fn inclusive_clique_minimum_matches_the_exact_integer_region(
+        fn strict_clique_minimum_matches_the_exact_integer_region(
             (stake, num, den) in threshold_case(),
         ) {
             let numerator = stake as i128 * (den + num) as i128;
             let denominator = (2 * den) as i128;
-            let q_min = ((numerator + denominator - 1) / denominator) as i64;
+            let q_min = (numerator / denominator + 1) as i64;
             for clique in 0..=stake {
                 prop_assert_eq!(
                     ft_decides_exact(stake, clique, stake, num, den),
@@ -922,13 +922,13 @@ mod ft_decides_exact_tests {
         }
 
         #[test]
-        fn two_certificates_force_overlap_at_or_above_the_fault_budget(
+        fn two_certificates_force_overlap_above_the_fault_budget(
             (stake, num, den, left, right) in two_certificate_case(),
         ) {
             prop_assert!(ft_decides_exact(stake, left, stake, num, den));
             prop_assert!(ft_decides_exact(stake, right, stake, num, den));
             let overlap = (left + right - stake).max(0);
-            prop_assert!(overlap as i128 * den as i128 >= stake as i128 * num as i128);
+            prop_assert!(overlap as i128 * den as i128 > stake as i128 * num as i128);
         }
     }
 }

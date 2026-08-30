@@ -231,6 +231,12 @@ Do not copy the old singular deploy index into the v6 occurrence database. Old s
 
 For v6, canonical lookup reads the open or terminal summary in constant key operations. It does not scan all occurrences.
 
+The public `find_deploy` path follows that canonical index and reads only its
+named block. A missing or mismatched indexed block is a storage-consistency
+error; the endpoint does not substitute a different archived occurrence.
+Pre-v6 lookup retains its bounded recent-block compatibility scan only when no
+legacy index entry exists.
+
 Exact v6 history lookup scans only the 65-byte composite-key prefix for one identifier. The cost is linear in that deploy's source count.
 
 Invalid blocks remain available through the invalid-block diagnostic index. Invalid blocks do not populate canonical deploy, occurrence, or lifecycle indices.

@@ -1443,7 +1443,7 @@ mod tests {
             Some("test".to_string()),
         )
         .expect("canonical deploy");
-        let parent = block_implicits::get_random_block(
+        let mut parent = block_implicits::get_random_block(
             Some(19),
             Some(19),
             None,
@@ -1459,6 +1459,7 @@ mod tests {
             Some("test".to_string()),
             None,
         );
+        parent.header.version = crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION - 1;
         block_store
             .put_block_message(&parent)
             .expect("store parent");

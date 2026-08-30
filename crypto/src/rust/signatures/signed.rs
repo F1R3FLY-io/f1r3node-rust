@@ -394,6 +394,20 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
         Self::envelope_commitment_for(&self.data, &self.signers, self.cosigner_threshold)
     }
 
+    pub fn validate_envelope(&self) -> Result<(), CosignedError>
+    where A: Clone {
+        if self.signing_domain != CosignedSigningDomain::EnvelopeV6 {
+            return Err(CosignedError::LegacyEnvelopeCommitmentUnavailable);
+        }
+        Self::validate_envelope_signer_order(&self.signers)?;
+        Self::from_envelope_signed_data_threshold_inner(
+            self.data.clone(),
+            self.signers.clone(),
+            self.cosigner_threshold,
+        )
+        .map(|_| ())
+    }
+
     pub fn envelope_signing_hash(
         data: &A,
         signers: &[Cosigner],

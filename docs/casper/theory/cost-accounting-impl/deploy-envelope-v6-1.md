@@ -470,6 +470,16 @@ canonical representative. Lifecycle finalization and occurrence compaction
 are one atomic storage transaction, so a terminal deploy cannot reopen behind
 an independently committed occurrence index.
 
+The pending-deploy store persists the complete envelope, including the ordered
+policy members, selected-member bitmap implied by signature presence, quorum,
+and every witness. Opening the store reconstructs and cryptographically
+validates each envelope before the pool can serve proposal work. Startup
+rejects noncanonical member order, an invalid selected signature, an
+unsatisfied quorum, a legacy signing domain, or a key that differs from the
+recomputed envelope commitment. A valid threshold envelope therefore survives
+submit, close, reopen, proposal conversion, and `ProcessedDeploy` round-trip
+without a primary-signer downgrade.
+
 ## Activation and migration
 
 Protocol-v6.1 requires a fresh-genesis activation marker and empty v6.1 deploy,
@@ -478,7 +488,8 @@ occurrence, lifecycle, and replay-evidence stores. Startup rejects:
 - an absent activation marker with nonempty protocol-v6 storage;
 - an incompatible schema or protocol marker;
 - a mixture of legacy and v6.1 deploy rows;
-- a stored envelope whose key differs from its recomputed commitment; or
+- a stored envelope with invalid signer order, signature, quorum, signing
+  domain, or key-to-commitment binding; or
 - a partial occurrence/lifecycle transaction.
 
 There is no compatibility decoder for an earlier draft-v6 envelope. If a
@@ -506,8 +517,11 @@ Conformance suites must reject at least these classes:
 - replay count-only, primary-signature, legacy-wire-field, raw evidence,
   reservation, fee, or RNG identity, unconsumed evidence, caller-context,
   early-publication, peer-byte, bare-row, conflict-overwrite, and cache-first
-  defects; and
-- protocol-v6 startup over legacy, partial, or incompatible persistent state.
+  defects;
+- protocol-v6 startup over legacy, partial, or incompatible persistent state;
+  and
+- persisted envelope signature or quorum corruption, including corruption
+  that leaves the envelope commitment unchanged.
 
 ## Verification and executable evidence
 
@@ -519,7 +533,7 @@ Conformance suites must reject at least these classes:
 | TLA+/TLC/Apalache | `ReplayAdmissionPublication.tla` plus fifteen unsafe controls | Exact authenticated replay, protocol-selected storage/evidence/reservation/fee/RNG identity, exact evidence consumption, and durable publication under arbitrary validator interleavings; every shortcut is independently refuted. |
 | TLA+/TLC | `deploy_recovery/ProtocolVersionLifecycle.tla` plus four genesis-identity controls | Protocol-6 ceremony, occurrence, construction, replay, and family-1 ground-custody projection use one approved protocol envelope; legacy occurrence, execution, replay, and missing custody projection are independently refuted. |
 | Rocq | `finalized_floor/theories/ProtocolVersionLifecycle.v` and `MainTheorem.v` | Current blessed execution and replay use the protocol envelope; canonical family-1 funding ground projects to stable legacy custody; unsupported families, false lengths, and noncanonical keys fail closed. |
-| Rust examples/properties | crypto, models, normalizer, Casper, and block-storage suites, including `vault_payer` and `physical_rejection_rolls_back_before_later_state_bound_execution` | Canonical bytes, strict cryptography, permutation invariance, typed identity, exact custody projection, malformed-input isolation, funded protocol-v6 proposal/replay, store restart, transaction atomicity, and occurrence reduction. |
+| Rust examples/properties | crypto, models, normalizer, Casper, and block-storage suites, including `vault_payer`, `physical_rejection_rolls_back_before_later_state_bound_execution`, `threshold_envelope_survives_lmdb_reopen_and_processed_round_trip`, and `lmdb_reopen_rejects_tampered_persisted_envelope_signature` | Canonical bytes, strict cryptography, permutation invariance, typed identity, exact custody projection, malformed-input isolation, funded protocol-v6 proposal/replay, authenticated store restart, transaction atomicity, and occurrence reduction. |
 | Loom | occurrence/lifecycle and replay-publication linearization models | Every explored concurrent schedule refines one atomic commit order without lost updates, partial visibility, or terminal reopening. |
 | Cross-language vectors | `test-vectors/deploy-envelope-v6.1.json` | Rust, Python, and JavaScript compute identical intent, policy, bitmap, deployment ID, signing message, and verifier outcome. |
 | System integration | fresh protocol-v6 network | Submission, proposal, independent replay, duplicate handling, query, restart, finalization, and multi-validator agreement. |

@@ -78,6 +78,54 @@ fn state_effect_encoding_matches_protocol(
     }
 }
 
+fn duplicate_deploy_ids(
+    block: &BlockMessage,
+    processed: &[ProcessedDeploy],
+) -> Result<HashMap<DeployLookupId, usize>, CasperError> {
+    let exact_protocol = block.header.version >= EXACT_REJECTION_PROTOCOL_VERSION;
+    let mut identity_counts = HashMap::<DeployLookupId, usize>::new();
+    let mut occurrence_counts = HashMap::<(DeployLookupId, BlockHash), usize>::new();
+    for deploy in processed {
+        let deploy_id = deploy
+            .deploy_id_for_protocol(block.header.version)
+            .map_err(CasperError::Other)?;
+        if exact_protocol {
+            *occurrence_counts
+                .entry((deploy_id, block.block_hash.clone()))
+                .or_insert(0) += 1;
+        } else {
+            *identity_counts.entry(deploy_id).or_insert(0) += 1;
+        }
+    }
+    for rejected in &block.body.rejected_deploys {
+        if exact_protocol && rejected.has_provenance() {
+            *occurrence_counts
+                .entry((
+                    rejected.typed_deploy_id().clone(),
+                    rejected.source_block_hash.clone(),
+                ))
+                .or_insert(0) += 1;
+        } else {
+            *identity_counts
+                .entry(rejected.typed_deploy_id().clone())
+                .or_insert(0) += 1;
+        }
+    }
+    let mut duplicates = identity_counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .collect::<HashMap<_, _>>();
+    for ((deploy_id, _), count) in occurrence_counts {
+        if count > 1 {
+            duplicates
+                .entry(deploy_id)
+                .and_modify(|current| *current = (*current).max(count))
+                .or_insert(count);
+        }
+    }
+    Ok(duplicates)
+}
+
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
     Compiler::source_to_adt_with_normalizer_env(rho, normalizer_env)
 }
@@ -839,17 +887,7 @@ pub async fn validate_block_pre_state(
                     .cloned()
                     .collect();
 
-                // Find duplicates across all deploy sigs in the block
-                let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
-                for pd in &block.body.deploys {
-                    *sig_counts.entry(pd.deploy_id().clone()).or_insert(0) += 1;
-                }
-                for rd in &block.body.rejected_deploys {
-                    *sig_counts
-                        .entry(Bytes::copy_from_slice(rd.deploy_id()))
-                        .or_insert(0) += 1;
-                }
-                let duplicate_count = sig_counts.values().filter(|&&c| c > 1).count();
+                let duplicate_count = duplicate_deploy_ids(block, &block.body.deploys)?.len();
 
                 tracing::error!(
                     block_num = block.body.state.block_number,
@@ -943,46 +981,15 @@ async fn replay_block(
     // Extract deploys and system deploys from the block
     let internal_deploys = proto_util::deploys(block);
 
-    // Check for duplicate deploys in the block before replay.
-    let mut sig_counts: HashMap<Bytes, usize> = HashMap::new();
-    for processed in &internal_deploys {
-        *sig_counts.entry(processed.deploy_id().clone()).or_insert(0) += 1;
-    }
-    let mut exact_rejection_counts: HashMap<(Bytes, BlockHash), usize> = HashMap::new();
-    for rejected in &block.body.rejected_deploys {
-        if rejected.has_provenance() {
-            *exact_rejection_counts
-                .entry((
-                    Bytes::copy_from_slice(rejected.deploy_id()),
-                    rejected.source_block_hash.clone(),
-                ))
-                .or_insert(0) += 1;
-        } else {
-            *sig_counts
-                .entry(Bytes::copy_from_slice(rejected.deploy_id()))
-                .or_insert(0) += 1;
-        }
-    }
-    let mut deploy_duplicates: HashMap<Bytes, usize> = sig_counts
-        .into_iter()
-        .filter(|(_, count)| *count > 1)
-        .collect();
-    for ((sig, _), count) in exact_rejection_counts {
-        if count > 1 {
-            deploy_duplicates
-                .entry(sig)
-                .and_modify(|current| *current = (*current).max(count))
-                .or_insert(count);
-        }
-    }
+    let deploy_duplicates = duplicate_deploy_ids(block, &internal_deploys)?;
 
     if !deploy_duplicates.is_empty() {
         let duplicates_str: String = deploy_duplicates
             .iter()
-            .map(|(sig, count)| {
+            .map(|(deploy_id, count)| {
                 format!(
                     "  {} (appears {} times)",
-                    PrettyPrinter::build_string_bytes(sig),
+                    PrettyPrinter::build_string_no_limit(deploy_id.as_bytes()),
                     count
                 )
             })
@@ -2455,11 +2462,15 @@ pub async fn compute_parents_post_state(
                     cursor = s.dag.main_parent(&hash);
                     count_visible.insert(hash);
                 }
+                // Records load through the lineage-step cache (one decode
+                // per block process-wide, store-revalidated) instead of a
+                // full body decode per visible block per merge — the same
+                // batching CLAIM-FINALITY-001 applied to the settled
+                // probes, for the walk that was next in the run
+                // 33099406770 attribution (~47ms/merge).
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
-                    block_store
-                        .get(hash)?
-                        .map(|b| b.body.rejected_deploys)
-                        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
+                    crate::rust::finality::deploy_lifecycle::rejected_records_of(block_store, hash)
+                        .map(|records| records.as_ref().clone())
                 })?
             };
             let prior_rejection_elapsed = prior_rejection_started.elapsed();
@@ -2963,10 +2974,11 @@ mod backstop_tests {
 
     use super::{
         block_in_base_merge_scope, canonical_disposition_sets_at_floor, canonical_rejected_sigs,
-        canonical_won_sigs, handle_errors, merge_scope_backstop_exceeded, reduce_scope_events,
-        rejected_sig_has_visible_non_source_win, state_effect_encoding_matches_protocol,
-        suppress_already_recorded_rejections, visible_rejected_deploy_sigs, SigEvents,
-        EXACT_REJECTION_PROTOCOL_VERSION, MAX_FLOOR_DISTANCE_BLOCKS,
+        canonical_won_sigs, duplicate_deploy_ids, handle_errors, merge_scope_backstop_exceeded,
+        reduce_scope_events, rejected_sig_has_visible_non_source_win,
+        state_effect_encoding_matches_protocol, suppress_already_recorded_rejections,
+        visible_rejected_deploy_sigs, SigEvents, EXACT_REJECTION_PROTOCOL_VERSION,
+        MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::block_status::BlockError;
     use crate::rust::util::construct_deploy;
@@ -3011,6 +3023,43 @@ mod backstop_tests {
             panic!("expected v6 deploy identity")
         };
         RejectedDeploy::occurrence_v6(*deploy_id, source, reason)
+    }
+
+    #[test]
+    fn exact_duplicate_detection_distinguishes_source_occurrences() {
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@1!(1)".to_string(),
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        )
+        .unwrap();
+        let processed = v6_processed(deploy);
+        let deploy_id = v6_processed_id(&processed);
+        let source = Bytes::from(vec![0x72; block_hash::LENGTH]);
+        let mut block = occurrence_test_block(
+            2,
+            1,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            Vec::new(),
+            vec![processed],
+        );
+        let tombstone = v6_occurrence(&deploy_id, source, RejectedDeployReason::MergeConflict);
+        block.body.rejected_deploys = vec![tombstone.clone()];
+
+        assert!(duplicate_deploy_ids(&block, &block.body.deploys)
+            .unwrap()
+            .is_empty());
+
+        block.body.rejected_deploys.push(tombstone);
+        assert_eq!(
+            duplicate_deploy_ids(&block, &block.body.deploys)
+                .unwrap()
+                .get(&deploy_id),
+            Some(&2)
+        );
     }
 
     #[test]

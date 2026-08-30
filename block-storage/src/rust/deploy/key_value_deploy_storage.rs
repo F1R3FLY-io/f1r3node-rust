@@ -37,6 +37,11 @@ impl KeyValueDeployStorage {
 
     fn validate_consistency(&self) -> Result<(), KvStoreError> {
         for (key, envelope) in self.envelope_store.to_map()? {
+            envelope.validate_envelope().map_err(|error| {
+                KvStoreError::InvalidArgument(format!(
+                    "invalid authenticated deploy envelope row: {error}"
+                ))
+            })?;
             let commitment = envelope.envelope_commitment().map_err(|error| {
                 KvStoreError::InvalidArgument(format!("invalid deploy envelope row: {error}"))
             })?;
@@ -53,6 +58,9 @@ impl KeyValueDeployStorage {
         &mut self,
         envelope: Cosigned<DeployData>,
     ) -> Result<bool, KvStoreError> {
+        envelope.validate_envelope().map_err(|error| {
+            KvStoreError::InvalidArgument(format!("invalid authenticated deploy envelope: {error}"))
+        })?;
         let commitment = envelope.envelope_commitment().map_err(|error| {
             KvStoreError::InvalidArgument(format!("invalid deploy envelope: {error}"))
         })?;
@@ -187,14 +195,112 @@ impl KeyValueDeployStorage {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{Arc, Barrier};
 
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use crypto::rust::signatures::signed::Cosigner;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+    use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
+        Db, LmdbDirStoreManager, LmdbEnvConfig,
+    };
     use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::*;
+
+    fn deploy_data() -> DeployData {
+        DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        }
+    }
+
+    fn threshold_envelope() -> Cosigned<DeployData> {
+        let secp = Secp256k1;
+        let mut members = (0..3)
+            .map(|_| {
+                let (private_key, public_key) = secp.new_key_pair();
+                (
+                    Cosigner {
+                        pk: public_key,
+                        sig: Bytes::new(),
+                        sig_algorithm: Box::new(secp.clone()),
+                    },
+                    private_key,
+                )
+            })
+            .collect::<Vec<_>>();
+        members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
+        let selected = [0usize, 2];
+        let threshold = 2;
+        let mut bitmap = vec![0u8; members.len().div_ceil(8)];
+        for index in selected {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+        let unsigned = members
+            .iter()
+            .map(|(signer, _)| signer.clone())
+            .collect::<Vec<_>>();
+        let data = deploy_data();
+        for index in selected {
+            let hash = Cosigned::<DeployData>::envelope_signing_hash_for_presence(
+                &data,
+                &unsigned,
+                threshold,
+                &bitmap,
+                &members[index].0.sig_algorithm.name(),
+            )
+            .unwrap();
+            members[index].0.sig = members[index]
+                .0
+                .sig_algorithm
+                .sign(&hash, &members[index].1.bytes)
+                .into();
+        }
+        Cosigned::from_envelope_signed_data_threshold(
+            data,
+            members.into_iter().map(|(signer, _)| signer).collect(),
+            threshold,
+        )
+        .unwrap()
+    }
+
+    fn lmdb_manager(path: PathBuf) -> impl KeyValueStoreManager {
+        let config = LmdbEnvConfig::new("deploy-env".to_string(), 16 << 20).with_max_dbs(4);
+        LmdbDirStoreManager::new(
+            path,
+            HashMap::from([
+                (Db::new("deploy_storage".to_string(), None), config.clone()),
+                (
+                    Db::new("deploy_envelope_storage_v6".to_string(), None),
+                    config,
+                ),
+            ]),
+        )
+    }
+
+    fn scratch_directory(prefix: &str) -> tempfile::TempDir {
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target/block-storage-test-scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(scratch)
+            .unwrap()
+    }
 
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
@@ -240,5 +346,88 @@ mod tests {
 
         assert_eq!(inserted, 1);
         assert_eq!(storage.read_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn threshold_envelope_survives_lmdb_reopen_and_processed_round_trip() {
+        let directory = scratch_directory("deploy-envelope-reopen-");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let envelope = threshold_envelope();
+        let commitment = envelope.envelope_commitment().unwrap();
+
+        {
+            let mut manager = lmdb_manager(directory.path().to_path_buf());
+            let mut storage = runtime
+                .block_on(KeyValueDeployStorage::new(&mut manager))
+                .unwrap();
+            assert!(storage.add_envelope_if_absent(envelope.clone()).unwrap());
+            drop(storage);
+            runtime.block_on(manager.shutdown()).unwrap();
+        }
+
+        {
+            let mut manager = lmdb_manager(directory.path().to_path_buf());
+            let storage = runtime
+                .block_on(KeyValueDeployStorage::new(&mut manager))
+                .unwrap();
+            let pending = storage
+                .read_all_for_protocol(6)
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap();
+            assert_eq!(pending.deploy_id().as_ref(), commitment.as_ref());
+            assert_eq!(pending.envelope(), &envelope);
+            let processed = ProcessedDeploy::empty_from_cosigned(pending.envelope());
+            assert_eq!(processed.to_cosigned().unwrap(), envelope);
+            drop(storage);
+            runtime.block_on(manager.shutdown()).unwrap();
+        }
+    }
+
+    #[test]
+    fn lmdb_reopen_rejects_tampered_persisted_envelope_signature() {
+        let directory = scratch_directory("deploy-envelope-tamper-");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let envelope = threshold_envelope();
+
+        {
+            let mut manager = lmdb_manager(directory.path().to_path_buf());
+            let mut storage = runtime
+                .block_on(KeyValueDeployStorage::new(&mut manager))
+                .unwrap();
+            storage.add_envelope_if_absent(envelope.clone()).unwrap();
+            let deploy_id =
+                DeployIdV6::try_from(envelope.envelope_commitment().unwrap().as_ref()).unwrap();
+            let key = storage.envelope_store.encode_key(&deploy_id).unwrap();
+            let mut value = storage
+                .envelope_store
+                .raw_store()
+                .get_one(&key)
+                .unwrap()
+                .unwrap();
+            let signature = envelope.selected_signers_v61().unwrap()[0].sig.as_ref();
+            let offset = value
+                .windows(signature.len())
+                .position(|window| window == signature)
+                .unwrap();
+            value[offset + signature.len() - 1] ^= 1;
+            let decoded = storage.envelope_store.decode_value(&value).unwrap();
+            assert!(decoded.validate_envelope().is_err());
+            storage
+                .envelope_store
+                .raw_store()
+                .put_one(key, value)
+                .unwrap();
+            drop(storage);
+            runtime.block_on(manager.shutdown()).unwrap();
+        }
+
+        {
+            let mut manager = lmdb_manager(directory.path().to_path_buf());
+            let reopened = runtime.block_on(KeyValueDeployStorage::new(&mut manager));
+            assert!(matches!(reopened, Err(KvStoreError::InvalidArgument(_))));
+            runtime.block_on(manager.shutdown()).unwrap();
+        }
     }
 }

@@ -917,8 +917,8 @@ async fn incremental_frontier(
     // only raise the fault tolerance — but a bonding event in the band can break
     // that monotonicity, so we verify rather than assume.
     let mut oracle_calls: u64 = 1;
-    // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
-    // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
+    // A9 exact strict semantics (floor path): the pivot must still be witnessed-
+    // finalized over the larger snapshot, so (2q−S)/S > θ.
     let pivot_finalized =
         CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt).await?;
     if !pivot_finalized {
@@ -938,7 +938,7 @@ async fn incremental_frontier(
     let mut best_number = pivot_number;
     let mut advance: u64 = 0;
     for candidate in spine[..spine.len() - 1].iter().rev() {
-        // A9 exact ≥-semantics (floor path): advance while each block stays
+        // A9 exact strict semantics (floor path): advance while each block stays
         // witnessed-finalized over the snapshot.
         let finalized =
             CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt).await?;
@@ -989,7 +989,7 @@ async fn cold_parent_frontier(
     let mut walked: usize = 0;
     let mut oracle_calls: u64 = 0;
     loop {
-        // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
+        // A9 exact strict semantics (floor path): first witnessed-finalized block down
         // the main-parent chain is the frontier.
         let finalized =
             CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt).await?;
@@ -2332,7 +2332,7 @@ mod frontier_determinism_tests {
 
     /// T-FIN (`Selection.select_finalized` / `GuardBridge.upgo_finalized`): the floor
     /// `derive_floor` returns is itself `Finalized` over the justification snapshot — it
-    /// clears the exact FT threshold (floor path, `≥`) per the same clique oracle the
+    /// clears the exact FT threshold (floor path, `>`) per the same clique oracle the
     /// node runs (`CliqueOracle::ft_witnessed_exact`). Confirms the result is a genuinely
     /// finalized cut, not merely a well-formed ancestor.
     #[tokio::test]

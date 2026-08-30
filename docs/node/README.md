@@ -355,6 +355,12 @@ Both gRPC and REST APIs retry `find_deploy` on `DeployNotFoundError`:
 
 These values are hardcoded (previously configurable via `F1R3_*` env vars, removed in v0.4.10).
 
+Protocol-v6 lookup reads the constant-size canonical occurrence summary and
+then its single indexed block. Exact archived occurrence history is not scanned
+by this hot endpoint. A missing or mismatched canonical block fails closed as a
+storage-consistency error. Only an unindexed pre-v6 identifier uses the bounded
+recent-block compatibility scan.
+
 ## Runtime Instances
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
@@ -445,6 +451,12 @@ Structured logging uses the `tracing` crate. The subscriber is initialised from 
 | `file.retention` | `14` | Number of rotated files to keep; `0` = unlimited |
 
 When `sink` includes `"file"`, logs are written to `<data-dir>/logs/node.log`. The `logs/` subdirectory is created automatically. In Docker the data dir is `/var/lib/rnode`, so log files land at `/var/lib/rnode/logs/node.log`.
+
+Deploy-pool filtering emits aggregate counts. Debug records include at most
+eight deterministic deploy-ID prefixes per reason and report the omitted
+count. Routine future, expired, and already-in-scope filtering is not a warning
+condition, so an adversarial pool cannot create one warning or debug record per
+deploy.
 
 ### Precedence (highest wins)
 

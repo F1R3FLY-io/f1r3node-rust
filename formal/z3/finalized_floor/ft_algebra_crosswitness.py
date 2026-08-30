@@ -13,15 +13,18 @@ def prove(name, claim):
     if r == unsat: print(f"  PASS  {name}")
     else: print(f"  FAIL  {name}: {r} {s.model() if r==sat else ''}"); ok = False
 
-# 1. A9: the f32 ratio comparison (2q-S)/S >= num/den is EXACTLY the integer
-#    comparison 2q*den >= S*(den+num) for S>0, den>0 — the exact-arithmetic
+# 1. A9: the strict ratio comparison (2q-S)/S > num/den is EXACTLY the integer
+#    comparison 2q*den > S*(den+num) for S>0, den>0 — the exact-arithmetic
 #    hardening is faithful.
 qr,Sr,numr,denr = Reals('qr Sr numr denr')
-prove("A9 FT ratio == cross-multiplied form (reals, S>0, den>0)",
+prove("A9 strict FT ratio == cross-multiplied form (reals, S>0, den>0)",
       Implies(And(Sr>0, denr>0),
-              ((2*qr-Sr)/Sr >= numr/denr) == ((2*qr-Sr)*denr >= numr*Sr)))
+              ((2*qr-Sr)/Sr > numr/denr) == ((2*qr-Sr)*denr > numr*Sr)))
 q,S,num,den = Ints('q S num den')
-prove("A9 cross-mult == 2q*den >= S*(den+num) (ints, S>0, den>0)",
+prove("A9 strict cross-mult == 2q*den > S*(den+num) (ints, S>0, den>0)",
+      Implies(And(S>0, den>0),
+              ((2*q-S)*den > num*S) == (2*q*den > S*(den+num))))
+prove("inclusive arithmetic control remains equivalent",
       Implies(And(S>0, den>0),
               ((2*q-S)*den >= num*S) == (2*q*den >= S*(den+num))))
 

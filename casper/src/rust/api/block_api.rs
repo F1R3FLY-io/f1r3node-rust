@@ -192,47 +192,34 @@ fn trigger_deploy_propose(trigger: &Option<Arc<ProposeFunction>>) {
     }
 }
 
-fn deploy_hash_or_else<E>(
-    preferred: Option<BlockHash>,
-    fallback: impl FnOnce() -> Result<Option<BlockHash>, E>,
-) -> Result<Option<BlockHash>, E> {
-    match preferred {
-        Some(hash) => Ok(Some(hash)),
-        None => fallback(),
-    }
+fn block_contains_deploy(block: &BlockMessage, deploy_id: &DeployLookupId) -> bool {
+    block.body.deploys.iter().any(|processed| {
+        processed
+            .deploy_id_for_protocol(block.header.version)
+            .as_ref()
+            == Ok(deploy_id)
+    })
 }
 
-fn load_matching_occurrence_blocks<E>(
-    occurrence_hashes: impl IntoIterator<Item = BlockHash>,
+#[derive(Debug)]
+enum CanonicalDeployBlockError<E> {
+    Store(BlockHash, E),
+    Missing(BlockHash),
+    Mismatch(BlockHash),
+}
+
+fn load_canonical_deploy_block<E>(
+    block_hash: BlockHash,
     deploy_id: &DeployLookupId,
-    mut load: impl FnMut(&BlockHash) -> Result<Option<BlockMessage>, E>,
-) -> Result<Vec<BlockMessage>, (BlockHash, E)> {
-    let mut blocks = Vec::new();
-    for hash in occurrence_hashes {
-        match load(&hash) {
-            Ok(Some(block))
-                if block.body.deploys.iter().any(|processed| {
-                    processed
-                        .deploy_id_for_protocol(block.header.version)
-                        .as_ref()
-                        == Ok(deploy_id)
-                }) =>
-            {
-                blocks.push(block);
-            }
-            Ok(_) => {}
-            Err(error) => return Err((hash, error)),
-        }
+    load: impl FnOnce(&BlockHash) -> Result<Option<BlockMessage>, E>,
+) -> Result<BlockMessage, CanonicalDeployBlockError<E>> {
+    let block = load(&block_hash)
+        .map_err(|error| CanonicalDeployBlockError::Store(block_hash.clone(), error))?
+        .ok_or_else(|| CanonicalDeployBlockError::Missing(block_hash.clone()))?;
+    if !block_contains_deploy(&block, deploy_id) {
+        return Err(CanonicalDeployBlockError::Mismatch(block_hash));
     }
-    blocks.sort_by(|left, right| {
-        right
-            .body
-            .state
-            .block_number
-            .cmp(&left.body.state.block_number)
-            .then_with(|| left.block_hash.cmp(&right.block_hash))
-    });
-    Ok(blocks)
+    Ok(block)
 }
 
 fn clamp_depth(requested_depth: i32, max_depth_limit: i32, operation: &str) -> i32 {
@@ -1591,12 +1578,7 @@ impl BlockAPI {
                             hash: PrettyPrinter::build_string_bytes(&block_hash),
                         })
                     })?;
-                if !block.body.deploys.iter().any(|processed| {
-                    processed
-                        .deploy_id_for_protocol(block.header.version)
-                        .as_ref()
-                        == Ok(deploy_id)
-                }) {
+                if !block_contains_deploy(&block, deploy_id) {
                     return Err(eyre::Report::new(
                         crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption {
                             sig: Bytes::copy_from_slice(deploy_id.as_bytes()),
@@ -1607,62 +1589,47 @@ impl BlockAPI {
                 return BlockAPI::get_light_block_info(casper.as_ref(), &block).await;
             }
 
-            let occurrence_hashes = dag.lookup_deploy_occurrences(deploy_id)?;
-            let occurrence_blocks =
-                load_matching_occurrence_blocks(occurrence_hashes, deploy_id, |hash| {
+            if let Some(block_hash) = dag.lookup_by_deploy_id(deploy_id)? {
+                let block = load_canonical_deploy_block(block_hash, deploy_id, |hash| {
                     casper.block_store().get(hash)
                 })
-                .map_err(|(hash, error)| {
-                    eyre::eyre!(
-                        "block_store.get failed for deploy occurrence block {}: {}",
-                        PrettyPrinter::build_string_bytes(&hash),
-                        error
-                    )
+                .map_err(|error| {
+                    match error {
+                    CanonicalDeployBlockError::Store(block_hash, error) => {
+                        eyre::eyre!(
+                            "block_store.get failed for canonical deploy block {}: {}",
+                            PrettyPrinter::build_string_bytes(&block_hash),
+                            error
+                        )
+                    }
+                    CanonicalDeployBlockError::Missing(block_hash) => {
+                        eyre::Report::new(BlockNotFoundError {
+                            hash: PrettyPrinter::build_string_bytes(&block_hash),
+                        })
+                    }
+                    CanonicalDeployBlockError::Mismatch(block_hash) => eyre::Report::new(
+                        crate::rust::api::deploy_finalization_status::DeployFinalizationCorruption {
+                            sig: Bytes::copy_from_slice(deploy_id.as_bytes()),
+                            block_hash,
+                        },
+                    ),
+                }
                 })?;
-            let occurrence_block = occurrence_blocks.into_iter().next();
-            let preferred_hash = occurrence_block
-                .as_ref()
-                .map(|block| block.block_hash.clone());
-            let selected_hash =
-                deploy_hash_or_else(preferred_hash, || dag.lookup_by_deploy_id(deploy_id))?;
-
-            if let Some(block) = occurrence_block {
                 return BlockAPI::get_light_block_info(casper.as_ref(), &block).await;
             }
 
-            if let Some(block_hash) = selected_hash {
-                match casper.block_store().get(&block_hash) {
-                    Ok(Some(block))
-                        if block.body.deploys.iter().any(|processed| {
-                            processed
-                                .deploy_id_for_protocol(block.header.version)
-                                .as_ref()
-                                == Ok(deploy_id)
-                        }) =>
-                    {
-                        return BlockAPI::get_light_block_info(casper.as_ref(), &block).await;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        return Err(eyre::eyre!(
-                            "block_store.get failed for legacy deploy-index block {}: {}",
-                            PrettyPrinter::build_string_bytes(&block_hash),
-                            error
-                        ));
-                    }
+            if matches!(deploy_id, DeployLookupId::Legacy(_)) {
+                if let Some(fallback_block_info) =
+                    Self::find_deploy_by_recent_blocks(casper.as_ref(), &dag, deploy_id).await?
+                {
+                    return Ok(fallback_block_info);
                 }
             }
 
-            if let Some(fallback_block_info) =
-                Self::find_deploy_by_recent_blocks(casper.as_ref(), &dag, deploy_id).await?
-            {
-                Ok(fallback_block_info)
-            } else {
-                Err(DeployNotFoundError {
-                    deploy_id: PrettyPrinter::build_string_no_limit(deploy_id.as_bytes()),
-                }
-                .into())
+            Err(DeployNotFoundError {
+                deploy_id: PrettyPrinter::build_string_no_limit(deploy_id.as_bytes()),
             }
+            .into())
         } else {
             Err(eyre::eyre!("Error: {}", error_message))
         }
@@ -2310,6 +2277,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn canonical_deploy_loader_reads_only_the_indexed_block_and_fails_closed() {
+        let block_hash = Bytes::from_static(b"canonical");
+        let deploy_id = DeployLookupId::Legacy(
+            models::rust::deploy_id::LegacyDeploySignature::new(b"deploy".to_vec()),
+        );
+        let reads = AtomicUsize::new(0);
+        let error = load_canonical_deploy_block(block_hash.clone(), &deploy_id, |hash| {
+            reads.fetch_add(1, AtomicOrdering::SeqCst);
+            assert_eq!(hash, &block_hash);
+            Ok::<_, ()>(Some(
+                models::rust::block_implicits::get_random_block_default(),
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(reads.load(AtomicOrdering::SeqCst), 1);
+        assert!(matches!(
+            error,
+            CanonicalDeployBlockError::Mismatch(hash) if hash == block_hash
+        ));
+    }
+
+    #[test]
+    fn canonical_deploy_loader_distinguishes_missing_blocks_and_store_errors() {
+        let block_hash = Bytes::from_static(b"canonical");
+        let deploy_id = DeployLookupId::Legacy(
+            models::rust::deploy_id::LegacyDeploySignature::new(b"deploy".to_vec()),
+        );
+        let missing = load_canonical_deploy_block(block_hash.clone(), &deploy_id, |_| {
+            Ok::<_, &'static str>(None)
+        })
+        .unwrap_err();
+        assert!(matches!(
+            missing,
+            CanonicalDeployBlockError::Missing(hash) if hash == block_hash
+        ));
+
+        let failure = load_canonical_deploy_block(block_hash.clone(), &deploy_id, |_| {
+            Err::<Option<BlockMessage>, _>("storage failure")
+        })
+        .unwrap_err();
+        assert!(matches!(
+            failure,
+            CanonicalDeployBlockError::Store(hash, "storage failure") if hash == block_hash
+        ));
+    }
+
+    #[test]
     fn parent_frontier_capacity_is_reported_as_recoverable_without_immediate_retry() {
         let status = ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
             configured_cap: 2,
@@ -2323,45 +2338,6 @@ mod tests {
             )
         );
         assert!(!should_retry_deploy_propose(&status));
-    }
-
-    #[test]
-    fn preferred_deploy_hash_does_not_evaluate_legacy_fallback() {
-        let preferred = Bytes::from_static(b"preferred");
-        let mut fallback_called = false;
-        let selected = deploy_hash_or_else::<()>(Some(preferred.clone()), || {
-            fallback_called = true;
-            Ok(None)
-        })
-        .expect("preferred hash selection");
-
-        assert_eq!(selected, Some(preferred));
-        assert!(!fallback_called);
-    }
-
-    #[test]
-    fn occurrence_loader_propagates_errors_and_skips_missing_blocks() {
-        let missing = Bytes::from_static(b"missing");
-        let failed = Bytes::from_static(b"failed");
-        let deploy_id = b"deploy".to_vec();
-        let deploy_id = DeployLookupId::Legacy(
-            models::rust::deploy_id::LegacyDeploySignature::new(deploy_id),
-        );
-        let error = load_matching_occurrence_blocks(
-            [missing.clone(), failed.clone()],
-            &deploy_id,
-            |hash| {
-                if hash == &missing {
-                    Ok(None)
-                } else {
-                    Err("storage failure")
-                }
-            },
-        )
-        .expect_err("storage errors must propagate");
-
-        assert_eq!(error.0, failed);
-        assert_eq!(error.1, "storage failure");
     }
 
     #[tokio::test]
