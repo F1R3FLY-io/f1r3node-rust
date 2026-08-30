@@ -529,8 +529,9 @@ impl DurableWritableFileV1<'_> {
     }
 
     pub(crate) fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DurableIoError> {
-        write_all_at_with(self.file.path(), offset, bytes, |buffer, position| {
-            positioned_write(&self.file.file, buffer, position, self.file.path())
+        let path = self.file.path().to_path_buf();
+        write_all_at_with(self, &path, offset, bytes, |authority, buffer, position| {
+            positioned_write(&authority.file.file, buffer, position, authority.file.path())
         })
     }
 
@@ -1041,6 +1042,16 @@ impl DurableSyncedRebuildCandidateV1<'_> {
 impl DurableWriterLeaseV1 {
     pub(crate) fn directory(&self) -> &DurableDirectoryV1 { &self.directory }
 
+    /// Remove one validated child while retaining compiler-visible exclusive
+    /// writer authority at the physical mutation boundary.
+    fn remove_child(&mut self, name: &str) -> Result<(), DurableIoError> {
+        remove_child_handle(&self.directory.directory, name).map_err(|source| DurableIoError::Io {
+            operation: DurableIoOperation::RemoveFile,
+            path: self.directory.path.join(name),
+            source,
+        })
+    }
+
     pub(crate) fn create_catalog(&mut self) -> Result<DurableWritableFileV1<'_>, DurableIoError> {
         let file = self.directory.create_new(CATALOG_FILE_NAME_V1)?;
         file.file
@@ -1109,16 +1120,10 @@ impl DurableWriterLeaseV1 {
         generation: IndexGenerationV1,
     ) -> Result<DurableRebuildCandidateV1<'_>, DurableIoError> {
         let name = index_rebuild_file_name(generation);
-        match remove_child_handle(&self.directory.directory, &name) {
+        match self.remove_child(&name) {
             Ok(()) => {}
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(DurableIoError::Io {
-                    operation: DurableIoOperation::RemoveFile,
-                    path: self.directory.path.join(&name),
-                    source,
-                });
-            }
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
         }
         let file = self.directory.create_new(&name)?;
         let directory =
@@ -1224,23 +1229,14 @@ impl DurableWriterLeaseV1 {
             }
         }
 
-        let remove = |name: &str| {
-            remove_child_handle(&self.directory.directory, name).map_err(|source| {
-                DurableIoError::Io {
-                    operation: DurableIoOperation::RemoveFile,
-                    path: self.directory.path.join(name),
-                    source,
-                }
-            })
-        };
         let removed_pack = if pack_opened.is_some() {
-            remove(&pack_name)?;
+            self.remove_child(&pack_name)?;
             true
         } else {
             false
         };
         let removed_index = if index_opened.is_some() {
-            remove(&index_name)?;
+            self.remove_child(&index_name)?;
             true
         } else {
             false
@@ -1710,11 +1706,12 @@ fn read_exact_at_with(
     Ok(())
 }
 
-fn write_all_at_with(
+fn write_all_at_with<Authority>(
+    authority: &mut Authority,
     path: &Path,
     offset: u64,
     bytes: &[u8],
-    mut write: impl FnMut(&[u8], u64) -> Result<usize, DurableIoError>,
+    mut write: impl FnMut(&mut Authority, &[u8], u64) -> Result<usize, DurableIoError>,
 ) -> Result<(), DurableIoError> {
     let mut completed = 0usize;
     while completed < bytes.len() {
@@ -1729,7 +1726,7 @@ fn write_all_at_with(
                     completed: completed_u64,
                 })?;
         let offered = bytes.len() - completed;
-        let count = match write(&bytes[completed..], position) {
+        let count = match write(authority, &bytes[completed..], position) {
             Ok(count) => count,
             Err(error) if error.is_interrupted() => continue,
             Err(error) => return Err(error),
@@ -2131,7 +2128,9 @@ mod tests {
         ));
 
         let write_path = scratch.path().join("zero-write");
-        let error = write_all_at_with(&write_path, 19, &[1, 2], |_, _| Ok(0)).unwrap_err();
+        let mut authority = ();
+        let error = write_all_at_with(&mut authority, &write_path, 19, &[1, 2], |_, _, _| Ok(0))
+            .unwrap_err();
         assert!(matches!(
             error,
             DurableIoError::ZeroWrite {
@@ -2166,7 +2165,8 @@ mod tests {
         assert_eq!(read_target, [1, 2, 3, 4]);
 
         let mut write_calls = 0;
-        write_all_at_with(&path, 13, &[5, 6, 7], |buffer, position| {
+        let mut authority = ();
+        write_all_at_with(&mut authority, &path, 13, &[5, 6, 7], |_, buffer, position| {
             write_calls += 1;
             if write_calls == 1 {
                 return Err(DurableIoError::Io {
@@ -2191,8 +2191,10 @@ mod tests {
             reported: 3,
             ..
         }));
-        let error =
-            write_all_at_with(&path, 23, &[8, 9], |buffer, _| Ok(buffer.len() + 1)).unwrap_err();
+        let error = write_all_at_with(&mut authority, &path, 23, &[8, 9], |_, buffer, _| {
+            Ok(buffer.len() + 1)
+        })
+        .unwrap_err();
         assert!(matches!(error, DurableIoError::CallbackCountOutOfBounds {
             operation: DurableIoOperation::PositionalWrite,
             offset: 23,
