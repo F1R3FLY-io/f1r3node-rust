@@ -2923,6 +2923,63 @@ fn proposal_recovery_deferral_reason(
     }
 }
 
+trait CheckpointAttemptObserver {
+    fn before_attempt(&mut self, _user_deploy_limit: usize, _deploys: &[Cosigned<DeployData>]) {}
+
+    fn complete_attempt(
+        &mut self,
+        result: Result<interpreter_util::DeploysCheckpoint, CasperError>,
+    ) -> Result<interpreter_util::DeploysCheckpoint, CasperError> {
+        result
+    }
+}
+
+struct LiveCheckpointAttemptObserver;
+
+impl CheckpointAttemptObserver for LiveCheckpointAttemptObserver {}
+
+#[cfg(feature = "test-utils")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointAttemptTrace {
+    pub user_deploy_limit: usize,
+    pub deploy_ids: Vec<DeployLookupId>,
+}
+
+#[cfg(feature = "test-utils")]
+#[derive(Default)]
+struct ForcedCheckpointRetryObserver {
+    forced: bool,
+    attempts: Vec<CheckpointAttemptTrace>,
+}
+
+#[cfg(feature = "test-utils")]
+impl CheckpointAttemptObserver for ForcedCheckpointRetryObserver {
+    fn before_attempt(&mut self, user_deploy_limit: usize, deploys: &[Cosigned<DeployData>]) {
+        self.attempts.push(CheckpointAttemptTrace {
+            user_deploy_limit,
+            deploy_ids: deploys
+                .iter()
+                .map(crate::rust::util::rholang::acceptance::admission_deploy_id)
+                .collect(),
+        });
+    }
+
+    fn complete_attempt(
+        &mut self,
+        result: Result<interpreter_util::DeploysCheckpoint, CasperError>,
+    ) -> Result<interpreter_util::DeploysCheckpoint, CasperError> {
+        if !self.forced && result.is_ok() {
+            self.forced = true;
+            Err(CasperError::RuntimeError(
+                "number channel forced-checkpoint-retry holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
+                    .to_string(),
+            ))
+        } else {
+            result
+        }
+    }
+}
+
 pub async fn create(
     casper_snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
@@ -2932,6 +2989,61 @@ pub async fn create(
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
     allow_empty_blocks: bool,
+) -> Result<BlockCreatorResult, CasperError> {
+    let mut observer = LiveCheckpointAttemptObserver;
+    create_with_checkpoint_attempt_observer(
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        allow_empty_blocks,
+        &mut observer,
+    )
+    .await
+}
+
+#[cfg(feature = "test-utils")]
+#[allow(clippy::too_many_arguments)]
+pub async fn create_with_forced_checkpoint_retry(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    allow_empty_blocks: bool,
+) -> Result<(BlockCreatorResult, Vec<CheckpointAttemptTrace>), CasperError> {
+    let mut observer = ForcedCheckpointRetryObserver::default();
+    let result = create_with_checkpoint_attempt_observer(
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        allow_empty_blocks,
+        &mut observer,
+    )
+    .await?;
+    Ok((result, observer.attempts))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    allow_empty_blocks: bool,
+    checkpoint_attempt_observer: &mut O,
 ) -> Result<BlockCreatorResult, CasperError> {
     let _heap_boundary = BlockCreationHeapBoundary;
     if casper_snapshot.on_chain_state.shard_conf.casper_version
@@ -3490,23 +3602,25 @@ pub async fn create(
         let cosigned_deploys = attempt_deploys;
         let attempted_user_deploys = user_deploy_limit;
         let attempted_total_deploys = cosigned_deploys.len();
+        checkpoint_attempt_observer.before_attempt(user_deploy_limit, &cosigned_deploys);
 
-        match interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
-            block_store,
-            parents.clone(),
-            cosigned_deploys,
-            attempt_system_deploys,
-            casper_snapshot,
-            runtime_manager,
-            block_data.clone(),
-            invalid_blocks.clone(),
-            Some(&rejected_deploy_buffer),
-            floor_ctx.as_ref(),
-            Some(&validator_identity.public_key.bytes),
-            attempt_admission,
-        )
-        .await
-        {
+        let checkpoint_attempt =
+            interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
+                block_store,
+                parents.clone(),
+                cosigned_deploys,
+                attempt_system_deploys,
+                casper_snapshot,
+                runtime_manager,
+                block_data.clone(),
+                invalid_blocks.clone(),
+                Some(&rejected_deploy_buffer),
+                floor_ctx.as_ref(),
+                Some(&validator_identity.public_key.bytes),
+                attempt_admission,
+            )
+            .await;
+        match checkpoint_attempt_observer.complete_attempt(checkpoint_attempt) {
             Ok(data) => {
                 if attempted_user_deploys < original_admitted_user_deploys {
                     tracing::warn!(
@@ -5480,6 +5594,60 @@ mod tests {
 
         let unrelated = CasperError::RuntimeError("other".to_string());
         assert_eq!(next_checkpoint_retry_limit(&unrelated, 16), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn checkpoint_retry_sequences_are_deterministic_strict_and_bounded(
+            initial in 1usize..=1_000_000usize,
+            error_kind in 0u8..3,
+        ) {
+            let retryable = match error_kind {
+                0 => CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::GasPaymentFailure("payment failed".to_string()),
+                ),
+                1 => CasperError::SystemRuntimeError(
+                    SystemDeployPlatformFailure::GasRefundFailure("refund failed".to_string()),
+                ),
+                _ => CasperError::RuntimeError(
+                    "number channel property holds 2 values [0, 0]; IntegerAdd single-value invariant violated"
+                        .to_string(),
+                ),
+            };
+            let sequence = |mut current: usize| {
+                let mut limits = Vec::new();
+                while let Some(next) = next_checkpoint_retry_limit(&retryable, current) {
+                    limits.push(next);
+                    current = next;
+                }
+                limits
+            };
+
+            let first = sequence(initial);
+            let second = sequence(initial);
+            proptest::prop_assert_eq!(&first, &second);
+            proptest::prop_assert!(first.len() <= usize::BITS as usize);
+            let mut previous = initial;
+            for next in &first {
+                proptest::prop_assert!(*next < previous);
+                proptest::prop_assert!(*next >= 1);
+                previous = *next;
+            }
+            if initial > 1 {
+                proptest::prop_assert_eq!(first.last(), Some(&1));
+            } else {
+                proptest::prop_assert!(first.is_empty());
+            }
+        }
+
+        #[test]
+        fn unrelated_checkpoint_errors_never_start_prefix_retries(
+            current in 0usize..=1_000_000usize,
+            message in "[a-zA-Z0-9 _-]{0,64}",
+        ) {
+            let unrelated = CasperError::RuntimeError(format!("unrelated {message}"));
+            proptest::prop_assert_eq!(next_checkpoint_retry_limit(&unrelated, current), None);
+        }
     }
 
     #[tokio::test]
