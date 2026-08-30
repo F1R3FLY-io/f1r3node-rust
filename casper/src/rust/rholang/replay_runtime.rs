@@ -403,11 +403,11 @@ impl ReplayRuntimeOps {
         // (same eviction cap, same tracing target) so both leader
         // and follower publish under identical keys, enabling
         // byte-identical `pending_wal_slices` entries for the same
-        // block.  Safe because every mutating fs handler on the
-        // replay branch waits on `handles.wait_for_replay_shadow`
-        // before `journal_write`, so `take_and_commit` in
-        // `replay_deploy_e_with_snapshot_transaction` observes the
-        // complete per-deploy WAL slice.
+        // block.  Safe because fs_open's shadow install runs in the
+        // same task as its subsequent produce (see handlers.rs),
+        // and post-signedness-fix (commit `02b4c2efe`) the fd is
+        // always visible to journal_write by the time the reducer
+        // dispatches the mutating handler — no barrier needed.
         if !block_fs_wal.is_empty() {
             const MAX_PENDING_WAL_SLICES: usize = 1024;
             let follower_state_hash = checkpoint.root.to_bytes_prost();
@@ -632,13 +632,12 @@ impl ReplayRuntimeOps {
         // wal_slices` keyed by the block's final post-state-hash,
         // mirroring the play-side fix in
         // `state_bound_cost_evidence_for_state_cosigned` +
-        // `compute_state_with_bonds_cosigned_admitted`.  Safe post-
-        // d-3 because the follower's mutating fs handlers wait on
-        // `handles.wait_for_replay_shadow(fd, ...)` before
-        // `journal_write`, guaranteeing `fs_open`'s shadow install
-        // has landed even when the rigged reducer fires the ack
-        // consumer's continuation on a spawned task ahead of
-        // `fs_open`'s `insert_at.await`.
+        // `compute_state_with_bonds_cosigned_admitted`.  The
+        // per-fd Notify barrier that briefly guarded this call
+        // site (item d-3, 2026-08-28) was removed 2026-08-30 —
+        // the PB-M-14 canary failures d-3 targeted were rooted in
+        // a signedness bug in `extract_ok_fd`, not a scheduling
+        // race.  See handle_table.rs for the removal rationale.
         let replay_slice = wal_scope.take_and_commit(&processed_deploy.deploy_log);
 
         // Time checkpoint-mergeable operation (matches Scala RuntimeReplaySyntax.scala:L322)

@@ -68,19 +68,20 @@
 //! log.  Those come only from live Rholang re-evaluation, which
 //! doesn't happen until the user-deploy loop runs the reducer.
 //!
-//! Landed fix (per-fd Notify barrier at the handle-table layer):
-//! `FileHandleTable` gains an `fd_notifiers: HashMap<u64, Arc<Notify>>`
-//! and two helpers, `wait_for_replay_shadow(fd, timeout)` and
-//! `notify_fd_ready(fd)`.  Every mutating fs handler on the
-//! `is_replay = true` branch calls
-//! `wait_for_replay_shadow(fd, SHADOW_WAIT_TIMEOUT)` before
-//! `journal_write` / `journal_read` / `journal_truncate`, and
-//! `fs_open`'s replay branch calls `notify_fd_ready(fd)` after
-//! `insert_at`.  Leader path is untouched (fast-path returns
-//! immediately because the fd is installed synchronously on the
-//! same task).  Scope: `handle_table.rs` (~90 LOC, mostly doc
-//! comments) + one-line waits in `handlers.rs` — no reducer,
-//! RSpace, or deploy_log surface.
+//! **Historical mitigation** (superseded 2026-08-30): item d-3
+//! landed a per-fd Notify barrier (`fd_notifiers` +
+//! `wait_for_replay_shadow` + `SHADOW_WAIT_TIMEOUT` +
+//! `notify_fd_ready`) that made the canary reliable by
+//! papering-over the failure at the 500ms timeout.  The true root
+//! cause turned out to be a signedness bug in `extract_ok_fd`
+//! (previously `extract_ok_u64`): fds seeded from state-hash
+//! entropy commonly land above `i64::MAX`, wrap to negative i64 in
+//! Rholang's `GInt` storage, and the reject-negative guard bailed —
+//! so the follower's `fs_open` replay branch silently skipped
+//! `insert_at` for those fds.  Commit `02b4c2efe` fixed the
+//! signedness bug; commit that follows removed the barrier
+//! (18/18 canary runs post-signedness-fix confirmed no genuine race
+//! remains).  See `handle_table.rs` for the removal rationale.
 //!
 //! ## Replay-side WAL aggregation
 //!

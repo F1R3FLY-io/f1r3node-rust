@@ -37,7 +37,7 @@ use super::super::rho_runtime::RhoISpace;
 use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 use super::dir_handle_table::{DirHandle, DirIter};
 use super::errors::*;
-use super::handle_table::{FileHandle, FileHandleTable, SHADOW_WAIT_TIMEOUT};
+use super::handle_table::{FileHandle, FileHandleTable};
 // C-R1 review fix: `extract_ok_fd` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
@@ -984,15 +984,6 @@ impl FsProcesses {
                     // divergence surfaces later via WAL mismatch.
                     let _ = self.handles.insert_at(fd, shadow).await;
                 }
-                // Item d-3 (2026-08-28): wake any mutating-handler
-                // task that raced ahead of this shadow install and is
-                // parked in `wait_for_replay_shadow(fd)`.  Called
-                // unconditionally after the `insert_at` attempt
-                // (whether or not the slot was fresh) so waiters
-                // release and re-check the fd table; a pre-existing
-                // slot means the shadow was already there and the
-                // waiter's retry succeeds too.
-                self.handles.notify_fd_ready(fd);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
@@ -1216,13 +1207,6 @@ impl FsProcesses {
                 // would record the post-read offset which is
                 // wrong.  Mirrors the leader path below.
                 let fd_u = fd as u64;
-                // Item d-3 (2026-08-28): barrier on fs_open's
-                // shadow install; see fs_write for the full
-                // rationale.
-                let _ = self
-                    .handles
-                    .wait_for_replay_shadow(fd_u, SHADOW_WAIT_TIMEOUT)
-                    .await;
                 let _ = self.journal_read(fd_u, &bytes, None, ack).await;
                 let n = bytes.len() as u64;
                 let _ = self
@@ -1291,13 +1275,6 @@ impl FsProcesses {
                 extract_ok_bytes(&previous),
             ) {
                 if off >= 0 {
-                    // Item d-3 (2026-08-28): barrier on fs_open's
-                    // shadow install; see fs_write for the full
-                    // rationale.
-                    let _ = self
-                        .handles
-                        .wait_for_replay_shadow(fd as u64, SHADOW_WAIT_TIMEOUT)
-                        .await;
                     let _ = self
                         .journal_read(fd as u64, &bytes, Some(off as u64), ack)
                         .await;
@@ -1416,24 +1393,6 @@ impl FsProcesses {
                 )];
                 produce(&out, ack).await?;
                 return Ok(out);
-            }
-        }
-        // Item d-3 (2026-08-28): on the replay branch, wait up to
-        // SHADOW_WAIT_TIMEOUT for fs_open's shadow-handle install
-        // (which happens on a separate spawned task under the
-        // rigged reducer) to become visible in the fd table.
-        // Without this, `journal_write`'s `with_mut(fd, ...)`
-        // returns None, no WAL entry lands, and the follower's
-        // per-deploy WAL slice silently diverges from the leader's.
-        // No-op fast-path on the leader (fd is installed
-        // synchronously by the leader-path fs_open on the same
-        // task, so `contains_fd` succeeds on entry).
-        if is_replay {
-            if let Some((fd, _)) = &parsed {
-                let _ = self
-                    .handles
-                    .wait_for_replay_shadow(*fd, SHADOW_WAIT_TIMEOUT)
-                    .await;
             }
         }
         // C-29-F1 review fix: journal to WAL on BOTH leader and
@@ -1573,16 +1532,6 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        // Item d-3 (2026-08-28): follower-side barrier on fs_open's
-        // shadow install; see fs_write for the full rationale.
-        if is_replay {
-            if let Some((fd, _, _)) = &parsed {
-                let _ = self
-                    .handles
-                    .wait_for_replay_shadow(*fd, SHADOW_WAIT_TIMEOUT)
-                    .await;
-            }
-        }
         // C-29-F1 review fix: journal to WAL on both leader and follower
         // before the `is_replay` short-circuit (see `fs_write` for the
         // full rationale).
@@ -1712,17 +1661,6 @@ impl FsProcesses {
                 (RhoNumber::unapply(fd_par), extract_ok_u64(&previous))
             {
                 let fd_u = fd as u64;
-                // Item d-3 (2026-08-28): without the barrier, a
-                // fs_seek that races ahead of fs_open's shadow
-                // install would silently fail to update position;
-                // a subsequent fs_write's journal_write would then
-                // record the wrong offset and diverge from the
-                // leader's WAL.  See fs_write for the full
-                // rationale.
-                let _ = self
-                    .handles
-                    .wait_for_replay_shadow(fd_u, SHADOW_WAIT_TIMEOUT)
-                    .await;
                 let _ = self.handles.with_mut(fd_u, |h| h.position = new_pos).await;
             }
             produce(&previous, ack).await?;
@@ -1937,16 +1875,6 @@ impl FsProcesses {
             (Some(fd), Some(n)) if n >= 0 => Some((fd as u64, n as u64)),
             _ => None,
         };
-        // Item d-3 (2026-08-28): follower-side barrier on fs_open's
-        // shadow install; see fs_write for the full rationale.
-        if is_replay {
-            if let Some((fd, _)) = &parsed {
-                let _ = self
-                    .handles
-                    .wait_for_replay_shadow(*fd, SHADOW_WAIT_TIMEOUT)
-                    .await;
-            }
-        }
         // C-29-F1 review fix: journal to WAL on both leader and
         // follower before the `is_replay` short-circuit.  We do the
         // MAX_TRUNCATE_BYTES check first so an oversize truncate does
@@ -5400,49 +5328,6 @@ mod cmode_tests {
              drop's B1 fix.  Reversing allows same-holder waiters to be \
              admitted-then-leaked via release's internal wake_waiters."
         );
-    }
-
-    /// L-1 review pin (2026-08-29): every mutating fs handler's
-    /// `is_replay` branch that touches the fd table MUST call
-    /// `wait_for_replay_shadow` before doing so.  Item d-3 landed
-    /// six such call sites (fs_write, fs_write_at, fs_truncate,
-    /// fs_read, fs_read_at, fs_seek); a refactor that dropped any
-    /// one of them would let the follower-side reducer race
-    /// silently re-emerge for that handler — WAL entries would
-    /// go missing, position updates would drift, and leader /
-    /// follower would diverge with no compile-time signal.
-    ///
-    /// The mechanism itself is pinned by
-    /// `handle_table::tests::wait_for_replay_shadow_*` and by the
-    /// PB-M-14 canary; this pin only ensures the call sites keep
-    /// invoking the barrier.
-    #[test]
-    fn every_mutating_replay_branch_calls_wait_for_replay_shadow() {
-        let src = include_str!("handlers.rs");
-        for fn_name in [
-            "pub async fn fs_write(",
-            "pub async fn fs_write_at(",
-            "pub async fn fs_truncate(",
-            "pub async fn fs_read(",
-            "pub async fn fs_read_at(",
-            "pub async fn fs_seek(",
-        ] {
-            let fn_start = src
-                .find(fn_name)
-                .unwrap_or_else(|| panic!("handlers.rs missing {fn_name} definition"));
-            // Bound the search window to the function body — 8 KiB
-            // is generous vs. any of these handlers' current length.
-            let end = std::cmp::min(fn_start + 8192, src.len());
-            let window = &src[fn_start..end];
-            assert!(
-                window.contains("wait_for_replay_shadow"),
-                "{fn_name} must call wait_for_replay_shadow on its replay branch \
-                 before touching the fd table — dropping this call silently \
-                 re-opens the item d-3 follower-side reducer race (fs_open's \
-                 shadow-install can lose to a spawned mutating handler that \
-                 finds an empty fd table)."
-            );
-        }
     }
 
     /// DD-7b-2 (a) Option 2 (2026-08-29): `journal_write`'s
