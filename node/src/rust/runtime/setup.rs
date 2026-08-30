@@ -481,12 +481,22 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             }
             for entry in merged.consensus_static_files.values() {
                 register_file(&entry.path);
+                // c-2 review-follow-up (2026-08-30): mirror-register
+                // as a consensus-static root so the boot subscriber
+                // can build `allowed_roots` for defense-in-depth
+                // validation of applier target paths.
+                runtime_manager
+                    .register_consensus_static_root(entry.path.clone())
+                    .await;
             }
             for entry in merged.oracle_static_dirs.values() {
                 register_dir(&entry.path);
             }
             for entry in merged.consensus_static_dirs.values() {
                 register_dir(&entry.path);
+                runtime_manager
+                    .register_consensus_static_root(entry.path.clone())
+                    .await;
             }
             tracing::info!(
                 target: "f1r3fly.fs_wal.root_identity",

@@ -1200,12 +1200,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
             >();
             snap_ctx.sync_driver.install_completion_sink(tx);
-            // TODO(fileio): plumb the consensus-static roots from
-            // the operator's provisioning config into `allowed_roots`
-            // as defense-in-depth against a leader-canonicalize bug
-            // or forged snapshot writing outside the joiner's
-            // managed tree.  Empty vector = validation skipped.
-            let allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+            // c-2 review-follow-up (2026-08-30): mirror of the
+            // casper_launch.rs plumbing — see that file for the
+            // full rationale.
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             // DD-7b-2 (a) Option 1: reproduce locally via the
             // joiner's own PayloadLookup before falling back to
             // peer fetch.  See casper_launch.rs for full rationale.

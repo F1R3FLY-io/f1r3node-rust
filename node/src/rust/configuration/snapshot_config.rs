@@ -799,6 +799,85 @@ mod tests {
         );
     }
 
+    /// c-2 review-follow-up (2026-08-30): setup.rs must register
+    /// each consensus-static file / dir path with the RuntimeManager
+    /// via `register_consensus_static_root`, so the boot subscriber
+    /// can pull the list for `allowed_roots` defense-in-depth.  A
+    /// refactor that dropped either registration site would silently
+    /// disable applier-target-path validation on the affected shape
+    /// (files or dirs).
+    #[test]
+    fn boot_pipeline_registers_consensus_static_roots() {
+        let setup_rs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/rust/runtime/setup.rs",
+        ))
+        .expect("read setup.rs");
+        // Both file + dir loops must register.  Find the loop bodies
+        // and confirm each contains the register call.
+        for (loop_marker, shape) in [
+            ("for entry in merged.consensus_static_files.values()", "files"),
+            ("for entry in merged.consensus_static_dirs.values()", "dirs"),
+        ] {
+            let loop_start = setup_rs.find(loop_marker).unwrap_or_else(|| {
+                panic!("setup.rs missing consensus_static_{shape} registration loop")
+            });
+            // Bound to the immediate loop body — 512 bytes is well
+            // above either loop's current size (~150 chars).
+            let end = std::cmp::min(loop_start + 512, setup_rs.len());
+            let window = &setup_rs[loop_start..end];
+            assert!(
+                window.contains("register_consensus_static_root"),
+                "setup.rs consensus_static_{shape} loop MUST call \
+                 register_consensus_static_root — without it, the boot \
+                 subscriber's `allowed_roots` set would be empty for this \
+                 shape and the applier would skip defense-in-depth \
+                 validation of paths in the consensus_static_{shape} \
+                 provisioning."
+            );
+        }
+    }
+
+    /// c-2 review-follow-up (2026-08-30): both boot subscriber sites
+    /// must pull `allowed_roots` from
+    /// `runtime_manager.consensus_static_roots().await` rather than
+    /// falling back to `Vec::new()`.  A regression that reverted to
+    /// the empty-vec placeholder would silently disable the applier's
+    /// path validation on every restart.
+    #[test]
+    fn boot_pipeline_wires_allowed_roots_from_consensus_static_roots() {
+        for (name, rel) in [
+            ("casper_launch", "casper/src/rust/engine/casper_launch.rs"),
+            ("initializing", "casper/src/rust/engine/initializing.rs"),
+        ] {
+            let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            // Find the subscriber call region.
+            let call_idx = src
+                .find("spawn_boot_apply_subscriber(")
+                .unwrap_or_else(|| panic!("{name}: spawn_boot_apply_subscriber call not found"));
+            // Look backwards for the allowed_roots assignment.  The
+            // Option 2 ctx construction comment block sits between,
+            // so a generous 4 KiB back-search covers both files'
+            // current shapes.
+            let region_start = call_idx.saturating_sub(4096);
+            let region = &src[region_start..call_idx];
+            assert!(
+                region.contains("consensus_static_roots()"),
+                "{name} ({rel}) must derive `allowed_roots` from \
+                 `runtime_manager.consensus_static_roots().await` — a \
+                 regression to `Vec::new()` silently disables applier-\
+                 target-path defense-in-depth."
+            );
+            assert!(
+                !region.contains("let allowed_roots: Vec<std::path::PathBuf> = Vec::new()"),
+                "{name} ({rel}) must not fall back to the empty-vec \
+                 placeholder that pre-dated this plumbing."
+            );
+        }
+    }
+
     /// DD-7b-2 (a) Option 2 (2026-08-29): the Option 2 tier — the
     /// `Option2ReducerContext` — must be plumbed to
     /// `spawn_boot_apply_subscriber` at BOTH boot sites.  A
@@ -878,6 +957,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// DD-7b-2 (a) Option 2 retention (2026-08-30): the finalization
+    /// runner's LFB-triggered snapshot-write branch prunes BOTH the
+    /// on-disk `payload_store` AND the LMDB `payload_source_index`
+    /// with the SAME `keep` set derived from retained snapshots.
+    /// A refactor that pruned only one side would leave the other
+    /// growing unbounded (the store would be pruned but the index
+    /// would leak, or vice versa) — dead-storage divergence between
+    /// the two mirror halves of the payload-source retention model.
+    #[test]
+    fn finalization_runner_prunes_both_payload_store_and_index() {
+        let rel = "casper/src/rust/engine/multi_parent_casper/finalization_runner.rs";
+        let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        // Locate the payload-retention block (starts right after the
+        // snapshot-write LFB branch caches the merkle root).
+        let block_start = src
+            .find("if let Some(payload_dir) = writer.payload_dir.clone()")
+            .expect("finalization_runner missing payload_dir retention block");
+        // Bound to a generous 4 KiB — the block is well under that.
+        let end = std::cmp::min(block_start + 4096, src.len());
+        let block = &src[block_start..end];
+        assert!(
+            block.contains("prune_payload_store("),
+            "finalization_runner retention block MUST call \
+             prune_payload_store — dropping this leaks on-disk \
+             payload files past retention."
+        );
+        assert!(
+            block.contains("prune_payload_source_index("),
+            "finalization_runner retention block MUST call \
+             prune_payload_source_index — dropping this leaks LMDB \
+             index entries past retention, letting the joiner's \
+             Option 2 reducer chase dead deploy_sig → block_hash \
+             mappings."
+        );
+        // Both must run under the SAME `keep` set (scan_retained_
+        // payload_hashes result).  A regression that scanned twice
+        // (e.g., two separate spawn_blocking closures) could pick
+        // up different snapshots' contents and diverge.
+        let scan_count = block.matches("scan_retained_payload_hashes").count();
+        assert_eq!(
+            scan_count, 1,
+            "finalization_runner retention block MUST scan retained \
+             hashes exactly once (both prunes share the `keep` set); \
+             got {scan_count} scan_retained_payload_hashes calls."
+        );
     }
 
     // Slice 30b: build_snapshot_writer tests.

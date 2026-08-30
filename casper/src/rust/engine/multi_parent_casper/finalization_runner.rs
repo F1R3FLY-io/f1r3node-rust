@@ -437,22 +437,42 @@ async fn apply_finalization_effects(
                                 if let Some(payload_dir) = writer.payload_dir.clone() {
                                     let snapshot_dir = writer.dir.clone();
                                     let block_hash_pretty_clone = block_hash_pretty.clone();
+                                    // DD-7b-2 (a) Option 2 retention
+                                    // (2026-08-30): the LMDB
+                                    // payload_source_index grows
+                                    // in lockstep with the on-disk
+                                    // payload_store — every
+                                    // Consensus-cap journal_write
+                                    // records to both.  Prune the
+                                    // index using the SAME `keep`
+                                    // set derived from retained
+                                    // snapshots.
+                                    let block_dag_storage_for_prune =
+                                        ctx.block_dag_storage.clone();
                                     let prune_result = tokio::task::spawn_blocking(move || {
                                         let keep = rholang::rust::interpreter::io::snapshot::
                                             scan_retained_payload_hashes(&snapshot_dir)?;
-                                        crate::rust::engine::wal_payload_server::
-                                            prune_payload_store(&payload_dir, &keep)
+                                        let store_removed = crate::rust::engine::wal_payload_server::
+                                            prune_payload_store(&payload_dir, &keep)?;
+                                        let index_removed = block_dag_storage_for_prune
+                                            .prune_payload_source_index(&keep)
+                                            .map_err(|e| std::io::Error::new(
+                                                std::io::ErrorKind::Other,
+                                                format!("prune_payload_source_index: {e}"),
+                                            ))?;
+                                        Ok::<(usize, usize), std::io::Error>((store_removed, index_removed))
                                     })
                                     .await;
                                     match prune_result {
-                                        Ok(Ok(n)) => {
-                                            if n > 0 {
+                                        Ok(Ok((store_removed, index_removed))) => {
+                                            if store_removed > 0 || index_removed > 0 {
                                                 tracing::info!(
                                                     target: "f1r3fly.fs_wal.payload_store",
                                                     block_number = bn,
                                                     block_hash = %block_hash_pretty_clone,
-                                                    removed = n,
-                                                    "Phase 7b-2 payload retention pruned entries"
+                                                    store_removed,
+                                                    index_removed,
+                                                    "Phase 7b-2 + DD-7b-2 (a) Option 2 payload retention pruned entries"
                                                 );
                                             }
                                         }

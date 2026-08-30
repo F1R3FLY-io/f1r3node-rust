@@ -508,14 +508,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
             >();
             snap_ctx.sync_driver.install_completion_sink(tx);
-            // TODO(fileio): plumb the consensus-static roots from
-            // the operator's provisioning config into `allowed_roots`
-            // as defense-in-depth against a leader-canonicalize bug
-            // or forged snapshot writing outside the joiner's
-            // managed tree.  Empty vector = validation skipped;
-            // the trust anchor is Blake2b256 preimage resistance
-            // via the Merkle root check upstream.
-            let allowed_roots: Vec<std::path::PathBuf> = Vec::new();
+            // c-2 review-follow-up (2026-08-30): consensus-static
+            // roots populated at boot by `node::setup` via
+            // `runtime_manager.register_consensus_static_root` for
+            // each entry in `merged.consensus_static_files` +
+            // `merged.consensus_static_dirs`.  Empty on observer
+            // nodes without consensus provisioning; the applier
+            // skips validation on empty (matches pre-plumbing
+            // behavior).
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             // DD-7b-2 (a) Option 1: the local `PayloadLookup` (this
             // validator's own `DirectoryPayloadStore` populated by
             // journal_write on prior block processing) is threaded

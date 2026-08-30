@@ -1139,6 +1139,64 @@ impl BlockDagKeyValueStorage {
         guard.get_one(&payload_hash.to_vec())
     }
 
+    /// DD-7b-2 (a) Option 2 retention (2026-08-30): drop every entry
+    /// in the `payload_source_index` whose key is NOT in `keep`.
+    /// Mirrors `casper::engine::wal_payload_server::prune_payload_store`
+    /// which prunes the on-disk `DirectoryPayloadStore`; this
+    /// counterpart prunes the LMDB index that carries the
+    /// `payload_hash → deploy_sig` mapping.
+    ///
+    /// # Retention policy
+    ///
+    /// The `keep` set is derived by the caller — typically via
+    /// `rholang::rust::interpreter::io::snapshot::scan_retained_payload_hashes`
+    /// (the same source `prune_payload_store` uses).  Every retained
+    /// snapshot's sidecar contributes its referenced payload hashes;
+    /// the union is `keep`.
+    ///
+    /// # Concurrency
+    ///
+    /// Takes the `payload_source_index`'s write lock for the
+    /// duration of the enumerate + delete pass.  Recorders
+    /// (`journal_write`'s `record_payload_source` call) contend
+    /// on the same lock, so a long prune pass momentarily blocks
+    /// new writes.  Practical prune sizes are small (bounded by
+    /// pruned block count × writes per block × unique-bytes ratio);
+    /// under adversarial cases the operator can call this less
+    /// frequently or gate on retention-age.
+    ///
+    /// Returns the number of entries removed.
+    pub fn prune_payload_source_index(
+        &self,
+        keep: &HashSet<[u8; 32]>,
+    ) -> Result<usize, KvStoreError> {
+        let guard = self.payload_source_index.write();
+        let map = guard.to_map()?;
+        let mut to_delete: Vec<Vec<u8>> = Vec::new();
+        for key in map.keys() {
+            // Well-formed keys are exactly 32-byte payload hashes.
+            // Anything else is defensive fallthrough (drop silently
+            // via the keep check — a 32-byte key that decodes as a
+            // [u8; 32] outside `keep` gets removed; a malformed key
+            // isn't in `keep` either but also isn't a legit entry
+            // to keep, so it's fair game to remove).
+            if key.len() != 32 {
+                to_delete.push(key.clone());
+                continue;
+            }
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(key);
+            if !keep.contains(&hash) {
+                to_delete.push(key.clone());
+            }
+        }
+        let removed = to_delete.len();
+        if !to_delete.is_empty() {
+            guard.delete(to_delete)?;
+        }
+        Ok(removed)
+    }
+
     /// DD-7b-2 (a) Option 2 (2026-08-29): test-only accessor for
     /// the payload-source-index handle.  Same rationale as
     /// `deploy_index_for_tests`.

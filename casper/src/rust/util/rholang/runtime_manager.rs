@@ -223,6 +223,26 @@ pub struct RuntimeManager {
             Option<Arc<dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder>>,
         >,
     >,
+
+    /// c-2 review-follow-up (2026-08-30): operator's consensus-static
+    /// roots, used as defense-in-depth `allowed_roots` for the boot
+    /// subscriber's `apply_wal_slice_after_fetch`.  A WAL entry whose
+    /// target path does not sit under one of these roots (via
+    /// `Path::starts_with`) is rejected by the applier — bounds the
+    /// blast radius of a hypothetical leader-canonicalize bug or a
+    /// forged snapshot.
+    ///
+    /// Populated at boot via `register_consensus_static_root` from
+    /// each entry in `merged.consensus_static_files` (file paths)
+    /// and `merged.consensus_static_dirs` (dir paths).  Both shapes
+    /// work with `check_path_allowed`'s `starts_with` check: a file
+    /// path matches exactly (its own path); a dir path matches any
+    /// child under it.
+    ///
+    /// Empty by default; the applier skips validation when empty —
+    /// preserves pre-plumbing behavior for observer nodes without
+    /// consensus provisioning.
+    pub consensus_static_roots: Arc<tokio::sync::RwLock<Vec<std::path::PathBuf>>>,
 }
 
 #[derive(Clone)]
@@ -2050,6 +2070,9 @@ impl RuntimeManager {
             // DD-7b-2 (a) Option 2 (2026-08-29): default None;
             // boot sets via `set_payload_source_recorder`.
             payload_source_recorder: Arc::new(tokio::sync::RwLock::new(None)),
+            // c-2 review-follow-up (2026-08-30): empty until boot
+            // populates via `register_consensus_static_root`.
+            consensus_static_roots: Arc::new(tokio::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -2139,6 +2162,32 @@ impl RuntimeManager {
         recorder: Option<Arc<dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder>>,
     ) {
         *self.payload_source_recorder.write().await = recorder;
+    }
+
+    /// c-2 review-follow-up (2026-08-30): register a consensus-
+    /// static root (file OR directory path) so the boot subscriber
+    /// can pass it as an `allowed_roots` entry to
+    /// `apply_wal_slice_after_fetch`.  Called from `node::setup` for
+    /// each entry in `merged.consensus_static_files` /
+    /// `merged.consensus_static_dirs` — mirrors
+    /// `register_root_identity`'s registration pattern.
+    ///
+    /// Idempotent-by-repeat only in that duplicates are appended
+    /// (the applier's `starts_with` check is set-semantic).
+    /// Practical growth is bounded by the operator's provisioning
+    /// count.
+    pub async fn register_consensus_static_root(&self, path: std::path::PathBuf) {
+        self.consensus_static_roots.write().await.push(path);
+    }
+
+    /// c-2 review-follow-up (2026-08-30): read the operator's
+    /// consensus-static roots for use as `allowed_roots` at the
+    /// boot subscriber sites.  Empty when the operator has no
+    /// consensus-static provisioning (observer nodes) OR when boot
+    /// hasn't populated yet — the applier skips validation on
+    /// empty, matching pre-plumbing behavior.
+    pub async fn consensus_static_roots(&self) -> Vec<std::path::PathBuf> {
+        self.consensus_static_roots.read().await.clone()
     }
 
     /// Phase 7b-2 diagnostic — read the currently-installed
@@ -2734,6 +2783,70 @@ mod payload_source_recorder_wiring_tests {
              called via the FsProcesses clone would leak entries into the \
              joiner's index despite the primitive's isolation attempt"
         );
+    }
+}
+
+#[cfg(test)]
+mod consensus_static_roots_wiring_tests {
+    //! c-2 review-follow-up (2026-08-30): behavioral wiring pins
+    //! for the `consensus_static_roots` slot used by the boot
+    //! subscriber's `allowed_roots` defense-in-depth path.
+
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+
+    async fn empty_manager() -> RuntimeManager {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm).await.unwrap();
+        RuntimeManager::create_with_store(
+            store,
+            mergeable_store,
+            Arc::new(HashMap::new()),
+            ExternalServices::noop(),
+        )
+    }
+
+    /// Round-trip: registered roots are visible via
+    /// `consensus_static_roots()`.
+    #[tokio::test]
+    async fn register_then_read_round_trip() {
+        let manager = empty_manager().await;
+        assert!(
+            manager.consensus_static_roots().await.is_empty(),
+            "fresh manager has no roots"
+        );
+        manager
+            .register_consensus_static_root(PathBuf::from("/opt/f1r3fly/consensus-static-01/data.bin"))
+            .await;
+        manager
+            .register_consensus_static_root(PathBuf::from("/opt/f1r3fly/consensus-static-dir/"))
+            .await;
+        let roots = manager.consensus_static_roots().await;
+        assert_eq!(roots.len(), 2);
+        assert!(roots.contains(&PathBuf::from("/opt/f1r3fly/consensus-static-01/data.bin")));
+        assert!(roots.contains(&PathBuf::from("/opt/f1r3fly/consensus-static-dir/")));
+    }
+
+    /// The roots slot is manager-shared, not per-runtime.  Reads
+    /// see the same set regardless of which clone is queried.
+    #[tokio::test]
+    async fn roots_are_manager_shared_across_clones() {
+        let manager = empty_manager().await;
+        manager
+            .register_consensus_static_root(PathBuf::from("/opt/x"))
+            .await;
+        let manager_clone = manager.clone();
+        let roots_a = manager.consensus_static_roots().await;
+        let roots_b = manager_clone.consensus_static_roots().await;
+        assert_eq!(roots_a, roots_b);
+        assert_eq!(roots_a, vec![PathBuf::from("/opt/x")]);
     }
 }
 

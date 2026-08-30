@@ -2252,3 +2252,97 @@ fn payload_source_lookup_by_deploy_id_available_on_writable_storage() {
         );
     });
 }
+
+// -------------------------------------------------------------------
+// DD-7b-2 (a) Option 2 retention (2026-08-30):
+// `prune_payload_source_index` mirrors `prune_payload_store` — drops
+// index entries whose key isn't in the retained-snapshots `keep` set.
+// -------------------------------------------------------------------
+
+#[test]
+fn payload_source_index_prune_removes_non_retained() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let mut keep: HashSet<[u8; 32]> = HashSet::new();
+
+        // Record 5 entries.  Keep 2 of them; the other 3 should be
+        // dropped by the prune pass.
+        let sigs: Vec<Vec<u8>> = (0..5u8).map(|i| vec![i; 8]).collect();
+        for i in 0..5u8 {
+            let mut h = [0u8; 32];
+            h.fill(i);
+            dag_storage
+                .record_payload_source(h, &sigs[i as usize])
+                .expect("record");
+            if i == 1 || i == 3 {
+                keep.insert(h);
+            }
+        }
+
+        let removed = dag_storage
+            .prune_payload_source_index(&keep)
+            .expect("prune");
+        assert_eq!(
+            removed, 3,
+            "prune must remove exactly the 3 non-retained entries (kept 2 of 5)"
+        );
+
+        // Retained entries still resolve.
+        for i in 0..5u8 {
+            let mut h = [0u8; 32];
+            h.fill(i);
+            let looked_up = dag_storage
+                .lookup_payload_source(&h)
+                .expect("lookup after prune must not error");
+            if i == 1 || i == 3 {
+                assert_eq!(
+                    looked_up.as_deref(),
+                    Some(sigs[i as usize].as_slice()),
+                    "retained hash {i} must still resolve after prune"
+                );
+            } else {
+                assert!(
+                    looked_up.is_none(),
+                    "non-retained hash {i} must be gone after prune"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn payload_source_index_prune_empty_keep_removes_all() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        for i in 0..3u8 {
+            let mut h = [0u8; 32];
+            h.fill(i);
+            dag_storage
+                .record_payload_source(h, &vec![i; 4])
+                .expect("record");
+        }
+        let removed = dag_storage
+            .prune_payload_source_index(&HashSet::new())
+            .expect("prune with empty keep");
+        assert_eq!(removed, 3, "empty keep must drop every entry");
+    });
+}
+
+#[test]
+fn payload_source_index_prune_empty_index_is_noop() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let dag_storage = create_dag_storage(&genesis).await;
+        let mut keep: HashSet<[u8; 32]> = HashSet::new();
+        keep.insert([0xAAu8; 32]);
+        let removed = dag_storage
+            .prune_payload_source_index(&keep)
+            .expect("prune on empty index");
+        assert_eq!(removed, 0, "empty index prune is a no-op");
+    });
+}

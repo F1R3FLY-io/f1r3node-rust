@@ -1137,7 +1137,7 @@ impl TestNode {
         // set_fs_snapshot_writer` themselves post-construction.
         if let Some(prov) = fs_provisioning {
             use casper::rust::engine::wal_payload_server::{
-                DirectoryPayloadStore, PayloadStoreBundle,
+                BlockStorageBackedRecorder, DirectoryPayloadStore, PayloadStoreBundle,
             };
             use rholang::rust::interpreter::io::path::capture_root_identity;
 
@@ -1151,6 +1151,23 @@ impl TestNode {
                 DirectoryPayloadStore::new(prov.payload_dir.clone()),
             );
             runtime_manager.set_payload_store(Some(store_bundle)).await;
+
+            // DD-7b-2 (a) Option 2 (2026-08-30): mirror the production
+            // wire-in from `node::runtime::setup` — attach the
+            // block-storage-backed recorder so leader-side
+            // journal_write populates the `payload_source_index`
+            // for the joiner-side Option 2 reducer to walk.  Without
+            // this, the Option 2 E2E canary would see an empty index
+            // even after a Consensus write.
+            let recorder = std::sync::Arc::new(
+                BlockStorageBackedRecorder::new(block_dag_storage.clone()),
+            )
+                as std::sync::Arc<
+                    dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder,
+                >;
+            runtime_manager
+                .set_payload_source_recorder(Some(recorder))
+                .await;
 
             for root in &prov.root_paths {
                 match capture_root_identity(root) {

@@ -2640,79 +2640,11 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------
-    // DD-7b-2 (a) Option 2 follow-up (2026-08-29): full end-to-end
-    // behavioral test skeleton.  Ignored until the follow-up
-    // session that wires up a cosigned-deploy test harness for
-    // Option 2's leader-record-then-joiner-reproduce cycle.
-    //
-    // # Why this can't be a self-contained unit test today
-    //
-    // The Option 2 reducer's happy-path exercises the full chain:
-    //   payload_hash → deploy_sig → block_hash → BlockMessage →
-    //   ProcessedDeploy → capture_consensus_writes_by_replaying_deploy
-    //   → the requested bytes.
-    // Each step needs infrastructure the primitive helper's docstring
-    // calls out as "requires the full leader cosign pipeline":
-    //   * A `ProcessedDeploy` carrying a real primary-signer sig
-    //     (so `deploy.sig.to_vec()` chains through deploy_index).
-    //   * A `BlockMessage` containing that ProcessedDeploy under a
-    //     valid pre_state_hash (so `reset(&start_root)` on the
-    //     scratch runtime succeeds).
-    //   * A `ReplayPurseSnapshot` derived from the block's
-    //     authority-cost witness (so `replay_deploy_e_with_snapshot`
-    //     doesn't return InvalidCostSettlement).
-    //   * `journal_write` firing on the leader's fs_write path,
-    //     with the payload_source_recorder wired, so the
-    //     payload_source_index actually populates from the deploy.
-    //
-    // # Skeleton
-    //
-    // Once the harness (or the PB-M-14 canary extension) is
-    // available, this test would:
-    //   1. Build a two-validator harness like
-    //      `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`.
-    //   2. Wire a BlockStorageBackedRecorder to validator A's
-    //      manager BEFORE producing the block.
-    //   3. Validator A produces + adds a block whose deploy writes
-    //      bytes B on a Consensus cap (`add_block_from_deploys(...)`).
-    //   4. Assert:
-    //        A.block_dag_storage.lookup_payload_source(&Blake2b256(B))
-    //        == Some(deploy_sig)
-    //      — this is the leader-side recording pin.
-    //   5. Set up a "joiner" state: fresh RuntimeManager, empty
-    //      payload_store, but with access to A's block_dag_storage
-    //      and block_store (or a copy).
-    //   6. Build an Option2ReducerContext bundling A's storage +
-    //      the joiner's runtime_manager.
-    //   7. Drive apply_wal_slice_after_fetch with:
-    //        - the block's WAL slice (from A's pending_wal_slices),
-    //        - payload_lookup = None (force Option 1 to miss),
-    //        - option2_ctx = Some(ctx from step 6).
-    //   8. Assert:
-    //        - report.enumerated.resolved_locally == 1
-    //        - the target file on disk matches B (via the applier's
-    //          path_map).
-    //   9. Assert:
-    //        - joiner's own payload_source_index STAYS EMPTY
-    //          (scratch-replay pollution fix — the recorder
-    //          override should have prevented any writes).
-    //
-    // # Scope for THAT session
-    //
-    // Realistic scope: ~100-200 LOC + harness reuse from PB-M-14.
-    // Would live either as an extension to
-    // `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`
-    // (natural home — same harness) or a new sibling file
-    // (`option2_e2e.rs`).  The primitive's docstring already
-    // anticipates this: "That E2E lands naturally with the
-    // index-building session (see follow-up plan)".
-    // ---------------------------------------------------------------
-    #[tokio::test]
-    #[ignore = "follow-up: requires cosigned-deploy test harness — see docstring above"]
-    async fn option2_leader_records_and_joiner_reproduces_end_to_end() {
-        // Skeleton — see the doc block above for the concrete
-        // steps.  Unignore once the harness is wired.
-        unimplemented!("Option 2 E2E test skeleton — see doc block above for the plan");
-    }
+    // Note (2026-08-30): the full end-to-end Option 2 reducer E2E
+    // (leader records via journal_write → joiner reproduces bytes
+    // via scratch replay) lives in
+    // `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs` as
+    // `pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay`.
+    // It reuses the PB-M-14 two-validator harness for the cosigned-
+    // deploy setup that the ignored skeleton previously waited on.
 }
