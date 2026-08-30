@@ -616,7 +616,7 @@ async fn try_reproduce_via_block_storage_replay(
         ReplayBlockKind::Genesis => None,
         ReplayBlockKind::Ordinary => {
             let supply_reader = RuntimeManagerSupplyReader {
-                runtime_manager: &*ctx.runtime_manager,
+                runtime_manager: &ctx.runtime_manager,
                 pre_state_hash: block.body.state.pre_state_hash.clone(),
             };
             match replay_purse_snapshot(&processed, &supply_reader).await {
@@ -627,7 +627,7 @@ async fn try_reproduce_via_block_storage_replay(
     };
     let pre_state = block.body.state.pre_state_hash.clone();
     let captured = match capture_consensus_writes_by_replaying_deploy(
-        &*ctx.runtime_manager,
+        &ctx.runtime_manager,
         &pre_state,
         &processed,
         block_kind,
