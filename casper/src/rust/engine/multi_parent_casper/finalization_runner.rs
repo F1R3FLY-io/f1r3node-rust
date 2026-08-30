@@ -456,8 +456,7 @@ async fn apply_finalization_effects(
                                             prune_payload_store(&payload_dir, &keep)?;
                                         let index_removed = block_dag_storage_for_prune
                                             .prune_payload_source_index(&keep)
-                                            .map_err(|e| std::io::Error::new(
-                                                std::io::ErrorKind::Other,
+                                            .map_err(|e| std::io::Error::other(
                                                 format!("prune_payload_source_index: {e}"),
                                             ))?;
                                         Ok::<(usize, usize), std::io::Error>((store_removed, index_removed))

@@ -2322,7 +2322,7 @@ fn payload_source_index_prune_empty_keep_removes_all() {
             let mut h = [0u8; 32];
             h.fill(i);
             dag_storage
-                .record_payload_source(h, &vec![i; 4])
+                .record_payload_source(h, &[i; 4])
                 .expect("record");
         }
         let removed = dag_storage
