@@ -2550,6 +2550,193 @@ mod payload_store_wiring_tests {
     }
 }
 
+#[cfg(test)]
+mod payload_source_recorder_wiring_tests {
+    //! DD-7b-2 (a) Option 2 (2026-08-29) + review-follow-up (2026-08-30):
+    //! parity + isolation pins for the `payload_source_recorder` slot.
+    //!
+    //! Mirror of `payload_store_wiring_tests` above for the sibling
+    //! recorder slot.  The Option 2 primitive
+    //! `capture_consensus_writes_by_replaying_deploy` relies on the
+    //! interior-mutability shape here to override JUST the scratch
+    //! runtime's recorder to `None` without touching the manager's
+    //! shared slot — closing the scratch-replay-pollution surface
+    //! flagged in the 2026-08-29 review.
+    //!
+    //! Full E2E via a real `ProcessedDeploy` is deferred (see the
+    //! `option2_leader_records_and_joiner_reproduces_end_to_end`
+    //! skeleton in wal_payload_sync).  This module covers the
+    //! isolation MECHANISM behaviorally — enough to catch a
+    //! refactor that broke the per-runtime override without needing
+    //! the full cosigned-deploy harness.
+
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use rholang::rust::interpreter::io::wal::PayloadSourceRecorder;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+
+    async fn empty_manager() -> RuntimeManager {
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm).await.unwrap();
+        RuntimeManager::create_with_store(
+            store,
+            mergeable_store,
+            Arc::new(HashMap::new()),
+            ExternalServices::noop(),
+        )
+    }
+
+    /// A no-op trait-object recorder for the isolation tests.  The
+    /// tests observe the SLOT state (Some vs None) rather than the
+    /// number of times record was called, so a bare no-op suffices.
+    #[derive(Debug)]
+    struct NoopRecorder;
+
+    impl PayloadSourceRecorder for NoopRecorder {
+        fn record(&self, _payload_hash: [u8; 32], _deploy_sig: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Set-before-spawn: the recorder set on the manager is visible
+    /// to a subsequently spawned runtime.
+    #[tokio::test]
+    async fn manager_set_before_spawn_visible_to_runtime() {
+        let manager = empty_manager().await;
+        let recorder: Arc<dyn PayloadSourceRecorder> = Arc::new(NoopRecorder);
+        manager.set_payload_source_recorder(Some(recorder)).await;
+        let runtime = manager.spawn_runtime().await;
+        assert!(
+            runtime.fs_handles.payload_source_recorder().is_some(),
+            "spawned runtime must see the manager's set recorder"
+        );
+    }
+
+    /// Replay runtimes also get the shared recorder (parity with
+    /// leader runtimes).
+    #[tokio::test]
+    async fn replay_runtimes_also_share_the_recorder() {
+        let manager = empty_manager().await;
+        let recorder: Arc<dyn PayloadSourceRecorder> = Arc::new(NoopRecorder);
+        manager.set_payload_source_recorder(Some(recorder)).await;
+        let replay_rt = manager.spawn_replay_runtime().await;
+        assert!(
+            replay_rt.fs_handles.payload_source_recorder().is_some(),
+            "spawned replay runtime must see the manager's set recorder"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // DD-7b-2 (a) Option 2 review-follow-up (2026-08-30):
+    // scratch-replay isolation behavioral tests.
+    //
+    // The primitive `capture_consensus_writes_by_replaying_deploy`
+    // calls `runtime.fs_handles.share_payload_source_recorder(None)`
+    // on the scratch runtime it spawned.  This test covers the
+    // isolation mechanism end-to-end:
+    //   1. Manager slot = Some(recorder).
+    //   2. Spawn replay runtime → FileHandleTable inherits Some.
+    //   3. `share_payload_source_recorder(None)` on that runtime →
+    //      FileHandleTable now sees None.
+    //   4. Manager slot UNCHANGED = Some.
+    //   5. Spawn ANOTHER replay runtime → FileHandleTable inherits
+    //      Some (the manager slot wasn't touched).
+    //
+    // Without the override, a scratch replay of a state-dependent
+    // deploy that produced divergent bytes would silently write
+    // `(hash_divergent, deploy_sig)` into the recorder's index —
+    // dead storage in the joiner's persistent block-storage index.
+    // ---------------------------------------------------------------
+
+    /// The primitive's per-runtime override clears just this
+    /// runtime's slot without touching the manager's shared slot.
+    /// A subsequently spawned runtime still inherits the manager's
+    /// slot.
+    #[tokio::test]
+    async fn share_payload_source_recorder_none_isolates_scratch_runtime() {
+        let manager = empty_manager().await;
+        let recorder: Arc<dyn PayloadSourceRecorder> = Arc::new(NoopRecorder);
+        manager
+            .set_payload_source_recorder(Some(Arc::clone(&recorder)))
+            .await;
+
+        // Scratch runtime: initially inherits Some(recorder).
+        let scratch = manager.spawn_replay_runtime().await;
+        assert!(
+            scratch.fs_handles.payload_source_recorder().is_some(),
+            "scratch runtime must inherit the manager's recorder on spawn — \
+             without this, the pre-override state is broken and the follow \
+             pin is testing a no-op"
+        );
+
+        // Primitive's override: clear the scratch runtime's slot
+        // WITHOUT touching the manager.
+        scratch.fs_handles.share_payload_source_recorder(None);
+        assert!(
+            scratch.fs_handles.payload_source_recorder().is_none(),
+            "share_payload_source_recorder(None) on the scratch runtime MUST \
+             clear its own slot — the fix at `capture_consensus_writes_by_\
+             replaying_deploy` depends on this to prevent scratch-replay \
+             pollution of the joiner's persistent payload_source_index."
+        );
+
+        // Manager's slot: UNCHANGED.
+        let manager_slot = manager.payload_source_recorder.read().await.clone();
+        assert!(
+            manager_slot.is_some(),
+            "manager's payload_source_recorder slot must be UNCHANGED by a \
+             per-runtime override — the isolation contract is that scratch \
+             runtimes get to disable recording locally without disabling it \
+             globally"
+        );
+
+        // A subsequently spawned runtime STILL inherits Some.
+        let post_scratch = manager.spawn_replay_runtime().await;
+        assert!(
+            post_scratch.fs_handles.payload_source_recorder().is_some(),
+            "a runtime spawned AFTER the scratch runtime's override must \
+             STILL inherit the manager's slot — the override was per-runtime, \
+             not manager-wide"
+        );
+    }
+
+    /// The scratch override survives the fs_handles Clone taken at
+    /// FsProcesses setup time — same interior-mutability rationale
+    /// as `post_spawn_share_on_runtime_is_visible_to_fs_handles_clones`
+    /// in payload_store_wiring_tests.  Without this, journal_write
+    /// on the scratch runtime would see a stale Some(recorder) and
+    /// leak entries into the joiner's index.
+    #[tokio::test]
+    async fn scratch_override_visible_through_fs_handles_clone() {
+        let manager = empty_manager().await;
+        let recorder: Arc<dyn PayloadSourceRecorder> = Arc::new(NoopRecorder);
+        manager
+            .set_payload_source_recorder(Some(Arc::clone(&recorder)))
+            .await;
+        let scratch = manager.spawn_replay_runtime().await;
+        // Take a clone the same way FsProcesses does at reducer-
+        // setup time.
+        let clone_of_handles = scratch.fs_handles.clone();
+        assert!(
+            clone_of_handles.payload_source_recorder().is_some(),
+            "pre-override, the clone must see Some(recorder)"
+        );
+        // Primitive's per-runtime override.
+        scratch.fs_handles.share_payload_source_recorder(None);
+        assert!(
+            clone_of_handles.payload_source_recorder().is_none(),
+            "post-override, the clone MUST see None — otherwise journal_write \
+             called via the FsProcesses clone would leak entries into the \
+             joiner's index despite the primitive's isolation attempt"
+        );
+    }
+}
+
 /// H-7 fix (2026-08-06) regression tests: `RuntimeManager` spawn
 /// wiring around `fs_handles`.
 ///

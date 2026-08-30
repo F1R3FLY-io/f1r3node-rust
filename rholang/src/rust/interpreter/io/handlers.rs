@@ -38,7 +38,7 @@ use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 use super::dir_handle_table::{DirHandle, DirIter};
 use super::errors::*;
 use super::handle_table::{FileHandle, FileHandleTable, SHADOW_WAIT_TIMEOUT};
-// C-R1 review fix: `extract_ok_u64` is used from fs_open's is_replay
+// C-R1 review fix: `extract_ok_fd` is used from fs_open's is_replay
 // branch to reconstruct the leader's returned fd for shadow-handle
 // insertion.
 use super::lock::{AcquireOutcome, HolderId, LockError, LockId, LockMode, WaitPolicy};
@@ -933,7 +933,14 @@ impl FsProcesses {
             // Pre-fix: follower's fs_open short-circuited without
             // inserting into the fd table → follower's journal_write
             // no-op'd on unknown fd → leader/follower WAL divergence.
-            if let Some(fd) = extract_ok_u64(&previous) {
+            //
+            // 2026-08-30 review-follow-up: fd sites use
+            // `extract_ok_fd` (bit-preserving reinterpret) not
+            // `extract_ok_u64` (reject-negative).  Fds seeded from
+            // state-hash entropy commonly exceed i64::MAX and
+            // Rholang's GInt wraps to negative — see the docstring
+            // on `extract_ok_fd` for the PB-M-14 canary rationale.
+            if let Some(fd) = extract_ok_fd(&previous) {
                 // Only Consensus caps need shadow handles for
                 // journaling — Oracular writes don't append to the
                 // WAL either way.  But we insert regardless so any
@@ -3454,7 +3461,7 @@ impl FsProcesses {
     /// FSERR_BAD_ARG / FSERR_QUOTA_EXCEEDED / FSERR_IO shapes.
     ///
     /// Follower `is_replay = true`: shadow-insert at the leader's fd
-    /// (extracted via `extract_ok_u64`) so future replay-branch
+    /// (extracted via `extract_ok_fd`) so future replay-branch
     /// handlers can look up `(cmode, canon_path)` symmetrically.  Same
     /// contract as `fs_open`'s C-R1 shadow-handle logic.
     pub async fn fs_entries_stream_open(
@@ -3480,7 +3487,11 @@ impl FsProcesses {
             // Shadow-insert at the leader's fd so subsequent replay-
             // branch handlers (entriesStreamNext, entriesStreamClose)
             // can look up cmode / canon_path from the DirHandleTable.
-            if let Some(fd) = extract_ok_u64(&previous) {
+            //
+            // 2026-08-30 review-follow-up: use `extract_ok_fd` (bit-
+            // preserving reinterpret) for the same rationale as
+            // fs_open — see `extract_ok_fd`'s docstring.
+            if let Some(fd) = extract_ok_fd(&previous) {
                 if let (Some(root), Some(rel)) =
                     (RhoString::unapply(root_par), RhoString::unapply(rel_par))
                 {
