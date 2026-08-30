@@ -608,8 +608,6 @@ jobs:
           path: /tmp/test-logs/
           retention-days: 7
 
-  # Line coverage is report-only: it never gates a merge or release. It runs
-  # on pull-request heads so reviewers see per-crate percentages before merge.
   # Codecov upload stays off until a maintainer sets the ENABLE_CODECOV
   # variable and the CODECOV_TOKEN secret.
   coverage:
@@ -655,14 +653,11 @@ jobs:
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
 
-      - name: Install llvm-cov and nextest
+      - name: Install llvm-cov
         uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
         with:
-          tool: cargo-llvm-cov,nextest
+          tool: cargo-llvm-cov
 
-      # nextest, not `cargo test`: same runner as the test matrix. `clean`
-      # drops only the profraw so instrumented builds stay cached. Outputs go
-      # to target/coverage because `clean` empties llvm-cov's own report dir.
       - name: Measure coverage
         env:
           RUST_BACKTRACE: "1"
@@ -672,7 +667,7 @@ jobs:
           ulimit -n 65536
           mkdir -p target/coverage
           cargo llvm-cov clean
-          cargo llvm-cov nextest --release -p ${{ matrix.crate }} --no-tests=pass
+          cargo llvm-cov --release -p ${{ matrix.crate }} --lib --bins --no-report
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
             --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
@@ -730,13 +725,16 @@ jobs:
           path: /tmp/coverage
           merge-multiple: true
 
-      - name: Aggregate and publish summary
+      - name: Aggregate and enforce coverage
         shell: bash -euo pipefail {0}
         run: |
-          .github/scripts/coverage-summary.sh /tmp/coverage > target-coverage-summary.md
+          status=0
+          .github/scripts/coverage-summary.sh /tmp/coverage > target-coverage-summary.md || status=$?
           cat target-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
       - name: Upload summary
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-summary
@@ -750,7 +748,7 @@ jobs:
   # to success only when every shard succeeds.
   test_casper_gate:
     name: Test (casper)
-    needs: test_casper
+    needs: [test_casper, coverage_summary]
     # Skip (rather than fail) when the shards never ran — e.g. lint failed —
     # matching how the former single `Test (casper)` leg reported.
     if: always() && needs.test_casper.result != 'skipped'
@@ -765,7 +763,12 @@ jobs:
             echo "casper shard matrix concluded: $result"
             exit 1
           fi
-          echo "Both casper shards succeeded"
+          if [ "${{ github.event_name }}" = "pull_request" ] \
+            && [ "${{ needs.coverage_summary.result }}" != "success" ]; then
+            echo "unit-test coverage concluded: ${{ needs.coverage_summary.result }}"
+            exit 1
+          fi
+          echo "Casper shards and required pull-request coverage succeeded"
 
   # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.

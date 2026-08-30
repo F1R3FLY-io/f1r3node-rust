@@ -11,3 +11,15 @@ pub fn wrap_with_braces(expr: String) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_only_unwrapped_non_integer_expressions() {
+        assert_eq!(wrap_with_braces("42".into()), "42");
+        assert_eq!(wrap_with_braces("(name)".into()), "(name)");
+        assert_eq!(wrap_with_braces("name".into()), "(name)");
+    }
+}

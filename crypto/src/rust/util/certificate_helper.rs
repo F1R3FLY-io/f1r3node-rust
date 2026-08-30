@@ -452,3 +452,159 @@ impl CertificatePrinter {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generates_and_reads_certificates_and_keys() {
+        let directory = tempfile::tempdir().unwrap();
+        let (secret_key, public_key) = CertificateHelper::generate_key_pair();
+
+        assert_eq!(CertificateHelper::ELLIPTIC_CURVE_NAME, "secp256r1");
+        assert!(CertificateHelper::is_expected_elliptic_curve(&public_key));
+
+        let address = CertificateHelper::public_address(&public_key).unwrap();
+        let point = public_key.to_encoded_point(false);
+        assert_eq!(
+            address,
+            CertificateHelper::public_address_from_bytes(&point.as_bytes()[1..])
+        );
+
+        let certificate =
+            CertificateHelper::generate_certificate(&secret_key, &public_key).unwrap();
+        CertificateHelper::parse_certificate(&certificate).unwrap();
+
+        let certificate_pem = CertificatePrinter::print_certificate(&certificate);
+        CertificateHelper::parse_certificate_pem(&certificate_pem).unwrap();
+
+        let der_path = directory.path().join("certificate.der");
+        std::fs::write(&der_path, &certificate).unwrap();
+        CertificateHelper::from_file(der_path.to_str().unwrap()).unwrap();
+
+        let pem_path = directory.path().join("certificate.pem");
+        std::fs::write(&pem_path, certificate_pem).unwrap();
+        CertificateHelper::from_file(pem_path.to_str().unwrap()).unwrap();
+
+        let private_key_pem =
+            CertificatePrinter::print_private_key_from_secret(&secret_key).unwrap();
+        let key_path = directory.path().join("private-key.pem");
+        std::fs::write(&key_path, private_key_pem).unwrap();
+        let (loaded_secret_key, loaded_public_key) =
+            CertificateHelper::read_key_pair(key_path.to_str().unwrap()).unwrap();
+        assert_eq!(loaded_secret_key.to_bytes(), secret_key.to_bytes());
+        assert_eq!(
+            loaded_public_key.to_encoded_point(false),
+            public_key.to_encoded_point(false)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_certificate_and_key_data() {
+        let directory = tempfile::tempdir().unwrap();
+
+        assert!(CertificateHelper::parse_certificate(b"invalid").is_err());
+        assert!(CertificateHelper::parse_certificate_pem("invalid").is_err());
+        assert!(CertificateHelper::from_file("missing-certificate").is_err());
+
+        let binary_path = directory.path().join("binary-certificate");
+        std::fs::write(&binary_path, [0xff, 0xfe]).unwrap();
+        assert!(matches!(
+            CertificateHelper::from_file(binary_path.to_str().unwrap()),
+            Err(CertificateError::CertificateParsing(_))
+        ));
+
+        let invalid_base64_path = directory.path().join("invalid-base64.pem");
+        std::fs::write(
+            &invalid_base64_path,
+            "-----BEGIN PRIVATE KEY-----\n!\n-----END PRIVATE KEY-----",
+        )
+        .unwrap();
+        assert!(matches!(
+            CertificateHelper::read_key_pair(invalid_base64_path.to_str().unwrap()),
+            Err(CertificateError::InvalidPrivateKey(_))
+        ));
+
+        let invalid_der_path = directory.path().join("invalid-der.pem");
+        std::fs::write(
+            &invalid_der_path,
+            "-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----",
+        )
+        .unwrap();
+        assert!(matches!(
+            CertificateHelper::read_key_pair(invalid_der_path.to_str().unwrap()),
+            Err(CertificateError::InvalidPrivateKey(_))
+        ));
+    }
+
+    #[test]
+    fn normalizes_public_key_coordinates() {
+        let (_, public_key) = CertificateHelper::generate_key_pair();
+        let encoded = public_key.to_encoded_point(false).as_bytes().to_vec();
+        let coordinates = encoded[1..].to_vec();
+
+        assert_eq!(
+            CertificateHelper::normalize_public_key_coordinates(encoded).unwrap(),
+            coordinates
+        );
+
+        let mut zero_prefixed = vec![0];
+        zero_prefixed.extend_from_slice(&coordinates);
+        assert_eq!(
+            CertificateHelper::normalize_public_key_coordinates(zero_prefixed).unwrap(),
+            coordinates
+        );
+
+        assert!(CertificateHelper::normalize_public_key_coordinates(Vec::new()).is_err());
+        assert!(CertificateHelper::normalize_public_key_coordinates(vec![1; 63]).is_err());
+    }
+
+    #[test]
+    fn encodes_and_decodes_signatures() {
+        let signature = vec![1; 64];
+        let encoded = CertificateHelper::encode_signature_rs_to_der(&signature).unwrap();
+        assert_eq!(
+            CertificateHelper::decode_signature_der_to_rs(&encoded).unwrap(),
+            signature
+        );
+
+        let oversized = vec![1; 128];
+        let encoded = CertificateHelper::encode_signature_rs_to_der(&oversized).unwrap();
+        assert_eq!(
+            CertificateHelper::decode_signature_der_to_rs(&encoded).unwrap(),
+            vec![1; 64]
+        );
+
+        assert!(CertificateHelper::encode_signature_rs_to_der(&[]).is_err());
+        assert!(CertificateHelper::encode_signature_rs_to_der(&[1; 63]).is_err());
+        assert!(CertificateHelper::decode_signature_der_to_rs(&[]).is_err());
+        assert!(CertificateHelper::decode_signature_der_to_rs(&[1; 64]).is_err());
+
+        let mut content = Vec::new();
+        CertificateHelper::add_asn1_integer(&mut content, &[]).unwrap();
+        assert!(content.is_empty());
+
+        CertificateHelper::add_asn1_integer(&mut content, &[0, 0, 1]).unwrap();
+        assert_eq!(content, [0x02, 0x01, 0x01]);
+
+        content.clear();
+        CertificateHelper::add_asn1_integer(&mut content, &[0x80]).unwrap();
+        assert_eq!(content, [0x02, 0x02, 0x00, 0x80]);
+    }
+
+    #[test]
+    fn formats_pem_lines() {
+        let data = vec![7; 128];
+        let certificate = CertificatePrinter::print_certificate(&data);
+        let private_key = CertificatePrinter::print_private_key(&data);
+
+        assert!(certificate.starts_with("-----BEGIN CERTIFICATE-----\n"));
+        assert!(certificate.ends_with("\n-----END CERTIFICATE-----"));
+        assert!(private_key.starts_with("-----BEGIN PRIVATE KEY-----\n"));
+        assert!(private_key.ends_with("\n-----END PRIVATE KEY-----"));
+        assert!(CertificatePrinter::split_into_lines("abcdefgh", 3)
+            .iter()
+            .eq(["abc", "def", "gh"].iter()));
+    }
+}

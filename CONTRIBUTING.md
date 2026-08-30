@@ -68,10 +68,12 @@ cargo fmt --all -- --check
 cargo clippy --workspace
 cargo deny check
 cargo test --release        # CI runs this per-crate: cargo test --release -p <crate>
+just coverage               # requires cargo-llvm-cov and llvm-tools-preview
 ```
 
-If a check isn't available in your environment, say so in the PR description rather than
-skipping silently.
+The coverage gate uses unit tests only. Each crate and the weighted workspace total must have at least 80% line coverage.
+
+If a check is not available, identify the missing check in the pull request description.
 
 ## Reporting Issues
 

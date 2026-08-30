@@ -7,8 +7,7 @@
 # coverage-<crate>.lcov per crate, followed by the rendered summary table.
 #
 # Requires cargo-llvm-cov (cargo install cargo-llvm-cov --locked) and the
-# llvm-tools-preview component. nextest is reused; doctests are not
-# instrumented, same as the CI test matrix.
+# llvm-tools-preview component.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -31,10 +30,8 @@ ulimit -n 65536 2>/dev/null || true
 
 for crate in "${crates[@]}"; do
 	echo "=== $crate ==="
-	# Clean only the profraw so one crate's tests cannot inflate another
-	# crate's coverage; the instrumented build stays cached.
 	cargo llvm-cov clean
-	cargo llvm-cov nextest --release -p "$crate" --no-tests=pass
+	cargo llvm-cov --release -p "$crate" --lib --bins --no-report
 	cargo llvm-cov report --release -p "$crate" \
 		--json --summary-only --output-path "$out/coverage-$crate.json"
 	cargo llvm-cov report --release -p "$crate" \

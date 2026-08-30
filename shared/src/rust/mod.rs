@@ -160,3 +160,83 @@ pub mod serde_always_equal_bitset {
         Ok(Vec::new())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use prost::bytes::Bytes;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Encodings {
+        #[serde(with = "super::serde_bytes")]
+        bytes: Bytes,
+        #[serde(with = "super::serde_vec_bytes")]
+        bytes_vec: Vec<Bytes>,
+        #[serde(with = "super::serde_hex_bytes")]
+        hex_bytes: Bytes,
+        #[serde(with = "super::serde_hex_vec_u8")]
+        hex_vec: Vec<u8>,
+        #[serde(with = "super::serde_always_equal_bitset")]
+        ignored: Vec<u8>,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct MapEncoding {
+        #[serde(with = "super::serde_btreemap_bytes_i64")]
+        bytes_map: BTreeMap<Bytes, i64>,
+    }
+
+    #[test]
+    fn serializes_and_deserializes_byte_encodings() {
+        let value = Encodings {
+            bytes: Bytes::from_static(b"bytes"),
+            bytes_vec: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+            hex_bytes: Bytes::from_static(&[0xab, 0xcd]),
+            hex_vec: vec![0x12, 0x34],
+            ignored: vec![1, 2, 3],
+        };
+
+        let json = serde_json::to_string(&value).unwrap();
+        assert!(json.contains("\"hex_bytes\":\"abcd\""));
+        assert!(json.contains("\"hex_vec\":\"1234\""));
+
+        let decoded: Encodings = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.bytes, value.bytes);
+        assert_eq!(decoded.bytes_vec, value.bytes_vec);
+        assert_eq!(decoded.hex_bytes, value.hex_bytes);
+        assert_eq!(decoded.hex_vec, value.hex_vec);
+        assert!(decoded.ignored.is_empty());
+
+        let map = MapEncoding {
+            bytes_map: BTreeMap::from([
+                (Bytes::from_static(b"a"), 1),
+                (Bytes::from_static(b"b"), 2),
+            ]),
+        };
+        let encoded_map = bincode::serialize(&map).unwrap();
+        let decoded_map: MapEncoding = bincode::deserialize(&encoded_map).unwrap();
+        assert_eq!(decoded_map, map);
+    }
+
+    #[test]
+    fn rejects_invalid_hex_encodings() {
+        #[derive(Deserialize)]
+        struct HexBytes {
+            #[serde(rename = "value", with = "super::serde_hex_bytes")]
+            _value: Bytes,
+        }
+
+        #[derive(Deserialize)]
+        struct HexVec {
+            #[serde(rename = "value", with = "super::serde_hex_vec_u8")]
+            _value: Vec<u8>,
+        }
+
+        let bytes_result = serde_json::from_str::<HexBytes>(r#"{"value":"invalid"}"#);
+        let vec_result = serde_json::from_str::<HexVec>(r#"{"value":"invalid"}"#);
+        assert!(bytes_result.is_err());
+        assert!(vec_result.is_err());
+    }
+}

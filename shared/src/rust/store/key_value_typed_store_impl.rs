@@ -228,3 +228,185 @@ where
 
     fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct MemoryStore {
+        values: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
+    }
+
+    impl KeyValueStore for MemoryStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
+            let values = self.values.lock().unwrap();
+            Ok(keys.iter().map(|key| values.get(key).cloned()).collect())
+        }
+
+        fn put(&self, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
+            self.values.lock().unwrap().extend(pairs);
+            Ok(())
+        }
+
+        fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
+            let mut values = self.values.lock().unwrap();
+            if values.contains_key(&key) {
+                return Ok(false);
+            }
+            values.insert(key, value);
+            Ok(true)
+        }
+
+        fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
+            let mut values = self.values.lock().unwrap();
+            Ok(keys
+                .into_iter()
+                .filter(|key| values.remove(key).is_some())
+                .count())
+        }
+
+        fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> {
+            for (key, value) in self.values.lock().unwrap().clone() {
+                f(key, value);
+            }
+            Ok(())
+        }
+
+        fn iterate_while(
+            &self,
+            f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            for (key, value) in self.values.lock().unwrap().clone() {
+                if !f(key, value)? {
+                    break;
+                }
+            }
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
+
+        fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
+            Ok(self.values.lock().unwrap().clone())
+        }
+
+        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
+
+        fn non_empty(&self) -> Result<bool, KvStoreError> {
+            Ok(!self.values.lock().unwrap().is_empty())
+        }
+
+        fn size_bytes(&self) -> usize {
+            self.values
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| key.len() + value.len())
+                .sum()
+        }
+    }
+
+    fn typed_store() -> (Arc<MemoryStore>, KeyValueTypedStoreImpl<u32, String>) {
+        let raw = Arc::new(MemoryStore::default());
+        let typed = KeyValueTypedStoreImpl::new(raw.clone());
+        (raw, typed)
+    }
+
+    #[test]
+    fn encodes_and_decodes_values() {
+        let (raw, typed) = typed_store();
+        let encoded_key = typed.encode_key(&7).unwrap();
+        let encoded_value = typed.encode_value(&"seven".to_string()).unwrap();
+
+        assert_eq!(typed.decode_key(&encoded_key).unwrap(), 7);
+        assert_eq!(typed.decode_value(&encoded_value).unwrap(), "seven");
+        assert!(typed.decode_key(&vec![1]).is_err());
+        assert!(typed.decode_value(&vec![1]).is_err());
+        assert!(typed.raw_store().as_any().is::<MemoryStore>());
+        assert!(raw.as_any().is::<MemoryStore>());
+    }
+
+    #[test]
+    fn stores_gets_and_deletes_values() {
+        let (_, typed) = typed_store();
+        assert!(!typed.non_empty().unwrap());
+        assert_eq!(typed.get_one(&1).unwrap(), None);
+        assert_eq!(typed.get_or_else(1, "fallback".into()).unwrap(), "fallback");
+        assert!(!typed.contains_key(1).unwrap());
+
+        typed.put_one(1, "one".into()).unwrap();
+        typed
+            .put(vec![(2, "two".into()), (3, "three".into())])
+            .unwrap();
+
+        assert!(typed.non_empty().unwrap());
+        assert_eq!(typed.get_one(&1).unwrap(), Some("one".into()));
+        assert_eq!(typed.get_unsafe(&2).unwrap(), "two");
+        assert!(matches!(
+            typed.get_unsafe(&9),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+        assert_eq!(typed.get_batch(&vec![1, 2]).unwrap(), vec!["one", "two"]);
+        assert!(matches!(
+            typed.get_batch(&vec![1, 9]),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+        assert_eq!(typed.get(&vec![1, 9]).unwrap(), vec![
+            Some("one".into()),
+            None
+        ]);
+        assert_eq!(typed.contains(vec![1, 9]).unwrap(), vec![true, false]);
+        assert_eq!(typed.get_or_else(1, "fallback".into()).unwrap(), "one");
+
+        typed.delete(vec![1, 9]).unwrap();
+        assert_eq!(typed.get_one(&1).unwrap(), None);
+    }
+
+    #[test]
+    fn inserts_only_absent_values() {
+        let (_, typed) = typed_store();
+        assert!(typed.put_one_if_absent(1, "one".into()).unwrap());
+        assert!(!typed.put_one_if_absent(1, "changed".into()).unwrap());
+        typed
+            .put_if_absent(vec![(1, "changed".into()), (2, "two".into())])
+            .unwrap();
+
+        assert_eq!(typed.get_unsafe(&1).unwrap(), "one");
+        assert_eq!(typed.get_unsafe(&2).unwrap(), "two");
+    }
+
+    #[test]
+    fn scans_and_collects_values() {
+        let (_, typed) = typed_store();
+        typed
+            .put(vec![
+                (1, "one".into()),
+                (2, "two".into()),
+                (3, "three".into()),
+            ])
+            .unwrap();
+
+        assert!(typed.any_value(|value| Ok(value == "two")).unwrap());
+        assert!(!typed.any_value(|value| Ok(value == "missing")).unwrap());
+        assert!(matches!(
+            typed.any_value(|_| Err(KvStoreError::InvalidArgument("stop".into()))),
+            Err(KvStoreError::InvalidArgument(_))
+        ));
+
+        let mut collected = typed
+            .collect(|(key, value)| (*key % 2 == 1).then(|| (*key, value.clone())))
+            .unwrap();
+        collected.sort();
+        assert_eq!(collected, vec![(1, "one".into()), (3, "three".into())]);
+
+        let values = typed.to_map().unwrap();
+        assert_eq!(values.len(), 3);
+        assert_eq!(values.get(&2), Some(&"two".to_string()));
+    }
+}
