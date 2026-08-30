@@ -183,7 +183,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         );
                         return Ok(());
                     }
-                    let max_in_flight = max_blocks_in_processing();
+                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                     if self.blocks_in_processing.len() > max_in_flight {
                         self.blocks_in_processing.remove(&block_hash);
                         tracing::warn!(
@@ -404,9 +404,7 @@ pub struct RunningRecoveryContext {
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 }
 
-const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
-
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
 
 /// The stale-rejoin trigger: rejoin-from-approved-block only when the
 /// validator's own latest message is stale AND no peer block has arrived

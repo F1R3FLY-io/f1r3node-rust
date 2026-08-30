@@ -372,7 +372,6 @@ impl TestFixture {
         casper_shard_conf.height_constraint_threshold = i64::MAX;
         casper_shard_conf.deploy_lifespan = 50;
         casper_shard_conf.casper_version = 1;
-        casper_shard_conf.config_version = 1;
         casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond;
         casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond;
         casper_shard_conf.epoch_length = genesis_params.proof_of_stake.epoch_length;

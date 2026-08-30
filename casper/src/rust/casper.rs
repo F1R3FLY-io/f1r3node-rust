@@ -400,6 +400,10 @@ impl OnChainCasperState {
     }
 }
 
+/// Protocol version stamped into proposed block headers and judged against
+/// peers' blocks. Changes only with a coordinated protocol upgrade.
+pub const CASPER_PROTOCOL_VERSION: i64 = 1;
+
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
     /// Display/back-compat `f32` view of the fault-tolerance threshold θ. The
@@ -426,7 +430,6 @@ pub struct CasperShardConf {
     /// rule: the block carries exactly the deploys that executed in budget.
     pub deploy_play_budget_millis: i64,
     pub casper_version: i64,
-    pub config_version: i64,
     pub bond_minimum: i64,
     pub bond_maximum: i64,
     pub epoch_length: i32,
@@ -483,7 +486,6 @@ impl CasperShardConf {
             deploy_lifespan: 0,
             deploy_play_budget_millis: 0,
             casper_version: 0,
-            config_version: 0,
             bond_minimum: 0,
             bond_maximum: 0,
             epoch_length: 0,

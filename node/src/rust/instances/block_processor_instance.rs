@@ -1,17 +1,17 @@
 // See node/src/main/scala/coop/rchain/node/instances/BlockProcessorInstance.scala
 
-#[cfg(target_os = "linux")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use casper::rust::blocks::block_processor::{BlockProcessor, ValidationFailureDisposition};
+use casper::rust::blocks::block_processor::{
+    BlockProcessor, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
 use casper::rust::metrics_constants::{
     BLOCK_PROCESSING_ACTIVE_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
     BLOCK_PROCESSOR_METRICS_SOURCE,
 };
-use casper::rust::{ProposeFunction, ValidBlockProcessing};
+use casper::rust::ValidBlockProcessing;
 use comm::rust::transport::transport_layer::TransportLayer;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
@@ -19,85 +19,9 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use tokio::sync::mpsc;
 
-const MAX_BLOCKS_IN_PROCESSING_DEFAULT: usize = 512;
-const MAX_BLOCKS_IN_PROCESSING_ENV: &str = "F1R3_MAX_BLOCKS_IN_PROCESSING";
-const MAX_PARALLEL_BLOCKS_DEFAULT: usize = 2;
-const MAX_PARALLEL_BLOCKS_ENV: &str = "F1R3_MAX_PARALLEL_BLOCKS";
+/// Pipeline width; replay itself is serialized by the runtime's ReplayLock.
+const MAX_PARALLEL_BLOCKS: usize = 2;
 const BLOCK_PROCESSING_RESULT_QUEUE_CAPACITY: usize = 128;
-#[cfg(target_os = "linux")]
-static PROCESSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
-#[cfg(target_os = "linux")]
-static MALLOC_TRIM_EVERY_BLOCKS: OnceLock<usize> = OnceLock::new();
-static MAX_BLOCKS_IN_PROCESSING: OnceLock<usize> = OnceLock::new();
-static TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING: OnceLock<bool> = OnceLock::new();
-
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn malloc_trim(pad: usize) -> i32;
-}
-
-#[cfg(target_os = "linux")]
-fn malloc_trim_every_blocks() -> usize {
-    *MALLOC_TRIM_EVERY_BLOCKS.get_or_init(|| {
-        std::env::var("F1R3_MALLOC_TRIM_EVERY_BLOCKS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0)
-    })
-}
-
-fn max_blocks_in_processing() -> usize {
-    *MAX_BLOCKS_IN_PROCESSING.get_or_init(|| {
-        std::env::var(MAX_BLOCKS_IN_PROCESSING_ENV)
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(MAX_BLOCKS_IN_PROCESSING_DEFAULT)
-    })
-}
-
-fn configured_max_parallel_blocks(value: Option<&str>) -> usize {
-    value
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|v| *v > 0)
-        .map(|v| v.min(tokio::sync::Semaphore::MAX_PERMITS))
-        .unwrap_or(MAX_PARALLEL_BLOCKS_DEFAULT)
-}
-
-fn max_parallel_blocks() -> usize {
-    configured_max_parallel_blocks(std::env::var(MAX_PARALLEL_BLOCKS_ENV).ok().as_deref())
-}
-
-fn trigger_propose_after_block_processing_enabled() -> bool {
-    *TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING.get_or_init(|| {
-        std::env::var("F1R3_TRIGGER_PROPOSE_AFTER_BLOCK_PROCESSING")
-            .ok()
-            .map(|v| {
-                let normalized = v.trim().to_ascii_lowercase();
-                normalized == "1" || normalized == "true" || normalized == "yes"
-            })
-            .unwrap_or(false)
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn maybe_trim_allocator_after_block() {
-    let interval = malloc_trim_every_blocks();
-    if interval == 0 {
-        return;
-    }
-
-    let count = PROCESSED_BLOCKS.fetch_add(1, Ordering::Relaxed) + 1;
-    if count.is_multiple_of(interval) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let _ = malloc_trim(0);
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn maybe_trim_allocator_after_block() {}
 
 /// Ensures the in-flight marker is always cleared, even on early-return or
 /// panic.
@@ -151,10 +75,6 @@ pub struct BlockProcessorInstance<T: TransportLayer + Send + Sync + 'static> {
     pub block_processor: Arc<BlockProcessor<T>>,
 
     pub blocks_in_processing: Arc<DashSet<BlockHash>>,
-
-    pub trigger_propose_f: Option<Arc<ProposeFunction>>,
-
-    pub max_parallel_blocks: usize,
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
@@ -165,15 +85,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
         ),
         block_processor: Arc<BlockProcessor<T>>,
         blocks_in_processing: Arc<DashSet<BlockHash>>,
-        trigger_propose_f: Option<Arc<ProposeFunction>>,
     ) -> Self {
         Self {
             blocks_queue_rx,
             block_queue_tx,
             block_processor,
             blocks_in_processing,
-            trigger_propose_f,
-            max_parallel_blocks: max_parallel_blocks(),
         }
     }
 
@@ -198,22 +115,22 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                 block_queue_tx,
                 block_processor,
                 blocks_in_processing,
-                trigger_propose_f,
-                max_parallel_blocks,
             } = self;
 
-            tracing::info!(max_parallel_blocks, "Starting bounded block processing");
+            tracing::info!(
+                max_parallel_blocks = MAX_PARALLEL_BLOCKS,
+                "Starting bounded block processing"
+            );
             metrics::gauge!(
                 BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
                 "source" => BLOCK_PROCESSOR_METRICS_SOURCE
             )
-            .set(max_parallel_blocks as f64);
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(max_parallel_blocks));
+            .set(MAX_PARALLEL_BLOCKS as f64);
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_BLOCKS));
 
             while let Some((casper, block)) = blocks_queue_rx.recv().await {
                 let block_processor = block_processor.clone();
                 let blocks_in_processing = blocks_in_processing.clone();
-                let trigger_propose_f = trigger_propose_f.clone();
                 let block_queue_tx = block_queue_tx.clone();
                 let casper = casper.clone();
                 let result_tx = result_tx.clone();
@@ -227,7 +144,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                     if !blocks_in_processing.contains(&block.block_hash) {
                         // Fallback for legacy enqueue paths: mark before processing.
                         blocks_in_processing.insert(block.block_hash.clone());
-                        let max_in_flight = max_blocks_in_processing();
+                        let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                         if blocks_in_processing.len() > max_in_flight {
                             // Ensure in-flight marker is always cleared, even when ack cleanup
                             // fails.
@@ -325,8 +242,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 
                     // Step 6 (from Scala): Get dependency-free blocks from buffer and enqueue them
                     // Equivalent to: c.getDependencyFreeFromBuffer
-                    // In Scala, if this fails, the stream short-circuits and triggerProposeF won't
-                    // be called
                     match casper.get_dependency_free_from_buffer() {
                         Ok(buffer_pendants) => {
                             if !buffer_pendants.is_empty() {
@@ -357,7 +272,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     continue;
                                 }
                                 if blocks_in_processing.insert(pendant_hash.clone()) {
-                                    let max_in_flight = max_blocks_in_processing();
+                                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                                     if blocks_in_processing.len() > max_in_flight {
                                         blocks_in_processing.remove(&pendant_hash);
                                         tracing::warn!(
@@ -393,63 +308,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                     );
                                 }
                             }
-
-                            // Only call trigger_propose if get_dependency_free_from_buffer
-                            // succeeded and this path is explicitly
-                            // enabled. Heartbeat proposer is the
-                            // default liveness path to avoid propose storms under heavy replay.
-                            if trigger_propose_after_block_processing_enabled() {
-                                if let Some(trigger_propose) = trigger_propose_f {
-                                    // Skip trigger if local validator is not currently bonded.
-                                    // This avoids repeated ReadOnlyMode propose attempts on
-                                    // non-bonded nodes.
-                                    let is_bonded_validator =
-                                        if let Some(validator) = casper.get_validator() {
-                                            match casper.get_snapshot().await {
-                                                Ok(snapshot) => snapshot
-                                                    .on_chain_state
-                                                    .active_validators
-                                                    .contains(&validator.public_key.bytes),
-                                                Err(err) => {
-                                                    tracing::warn!(
-                                                        "Failed to get Casper snapshot for \
-                                                         trigger-propose bond check: {}",
-                                                        err
-                                                    );
-                                                    false
-                                                }
-                                            }
-                                        } else {
-                                            false
-                                        };
-
-                                    if is_bonded_validator {
-                                        // Clone the Arc and cast to trait object
-                                        let casper_arc: Arc<dyn MultiParentCasper + Send + Sync> =
-                                            Arc::clone(&casper)
-                                                as Arc<dyn MultiParentCasper + Send + Sync>;
-                                        match trigger_propose(casper_arc, true).await {
-                                            Ok(_) => {}
-                                            Err(err) => {
-                                                tracing::error!(error = %err, "propose trigger after block processing failed")
-                                            }
-                                        }
-                                    } else {
-                                        tracing::debug!(
-                                            "Skipping trigger propose after block processing: \
-                                             validator is not bonded"
-                                        );
-                                    }
-                                }
-                            }
                         }
                         Err(err) => {
-                            tracing::error!(error = %err, "dependency-free block buffer retrieval failed; skipping propose trigger");
-                            // Don't call trigger_propose if get_dependency_free_from_buffer failed
+                            tracing::error!(error = %err, "dependency-free block buffer retrieval failed");
                         }
                     }
-
-                    maybe_trim_allocator_after_block();
 
                     drop(permit);
                 });
@@ -482,8 +345,7 @@ enum BlockProcessOutcome {
 /// 2. checkIfWellFormedAndStore
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
-/// 5. Enqueue dependency-free blocks from buffer
-/// 6. Trigger propose if configured
+/// 5. Enqueue dependency-free blocks from buffer (in the outer loop)
 async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
@@ -647,30 +509,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     Ok(BlockProcessOutcome::Processed(block, validation_result))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parallel_block_limit_defaults_to_two() {
-        assert_eq!(configured_max_parallel_blocks(None), 2);
-        assert_eq!(configured_max_parallel_blocks(Some("")), 2);
-        assert_eq!(configured_max_parallel_blocks(Some("0")), 2);
-        assert_eq!(configured_max_parallel_blocks(Some("invalid")), 2);
-    }
-
-    #[test]
-    fn parallel_block_limit_accepts_positive_values() {
-        assert_eq!(configured_max_parallel_blocks(Some("1")), 1);
-        assert_eq!(configured_max_parallel_blocks(Some("4")), 4);
-    }
-
-    #[test]
-    fn parallel_block_limit_clamps_to_semaphore_max() {
-        let max = usize::MAX.to_string();
-        assert_eq!(
-            configured_max_parallel_blocks(Some(&max)),
-            tokio::sync::Semaphore::MAX_PERMITS
-        );
-    }
-}
+const _: () = assert!(
+    MAX_PARALLEL_BLOCKS >= 1 && MAX_PARALLEL_BLOCKS <= tokio::sync::Semaphore::MAX_PERMITS,
+    "parallel width must be a valid semaphore permit count"
+);

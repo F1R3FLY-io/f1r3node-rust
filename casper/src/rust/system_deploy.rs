@@ -1,5 +1,6 @@
 /// System deploy marker constants.
-/// System deploy IDs are 33 bytes: [32-byte blockHash][1-byte marker]
+/// System deploy IDs are 33 bytes: [32-byte blockHash][1-byte marker].
+/// Consensus-bearing: they identify system deploys in blocks' rejected sets.
 
 /// Marker for slash system deploys
 pub const SLASH_MARKER: u8 = 0x01;

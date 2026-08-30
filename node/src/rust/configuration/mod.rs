@@ -23,6 +23,8 @@ pub mod builder {
     use std::env;
     use std::path::PathBuf;
 
+    use casper::rust::blocks::proposer::block_creator::FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS;
+
     use super::*;
     use crate::rust::configuration::commandline::ConfigMapper;
 
@@ -308,6 +310,45 @@ pub mod builder {
             );
         }
 
+        // I3: the width cap only bounds validity-window burn during a stall
+        // if it sits at or below the citability depth.
+        let width_cap = node_conf
+            .casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks;
+        if max_parent_depth != i32::MAX && width_cap > max_parent_depth as i64 {
+            return Err(eyre::eyre!(
+                "casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks ({}) \
+                exceeds casper.max-parent-depth ({}): a width cap above the citability \
+                depth cannot stop validity-window burn during a stall, which is its only \
+                job. Set the cap at or below max-parent-depth (with margin for proposals \
+                already in flight)",
+                width_cap,
+                max_parent_depth,
+            ));
+        }
+        // I4: a cap at or below the hard finality-lag tier inverts the
+        // backpressure ladder — legitimate in tests, surprising in production.
+        if width_cap <= FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS {
+            warnings.push(format!(
+                "casper.heartbeat.advanced.empty-frontier-max-unfinalized-blocks ({}) is \
+                at or below the hard finality-lag backpressure tier ({}): the width cap \
+                engages before the backpressure ladder that is meant to precede it",
+                width_cap, FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS,
+            ));
+        }
+        // I4 tail: mpd < deploy-lifespan.
+        if max_parent_depth != i32::MAX
+            && node_conf.casper.deploy_lifespan <= max_parent_depth as i64
+        {
+            warnings.push(format!(
+                "casper.deploy-lifespan ({}) is at or below casper.max-parent-depth ({}): \
+                deploys can expire inside the citability window",
+                node_conf.casper.deploy_lifespan, max_parent_depth,
+            ));
+        }
+
         Ok(warnings)
     }
 
@@ -462,7 +503,7 @@ mod heartbeat_conf_hocon_tests {
         assert_eq!(cfg.advanced.frontier_chase_max_lag, 20);
         assert_eq!(cfg.advanced.pending_deploy_max_lag, 7);
         assert_eq!(cfg.advanced.deploy_recovery_max_lag, 64);
-        assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 64);
+        assert_eq!(cfg.advanced.empty_frontier_max_unfinalized_blocks, 12);
     }
 
     #[test]
@@ -630,7 +671,12 @@ mod embedded_defaults_tests {
         );
 
         // 4 x 1s = 4s window against a 500ms anchor: under the 10x margin.
+        // The width cap follows mpd down to keep the I3 check satisfied.
         cfg.casper.max_parent_depth = 4;
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 4;
         cfg.casper.heartbeat_conf.check_interval = Duration::from_secs(1);
         let warnings = builder::validate_config(&cfg).expect("validate");
         assert!(
@@ -731,6 +777,71 @@ mod embedded_defaults_tests {
         );
     }
 
+    /// I3/I4 width-cap geometry: shipped values pass silently, a cap above
+    /// max-parent-depth fails startup, a cap at or below the hard tier warns.
+    #[test]
+    fn width_cap_geometry_is_validated_at_startup() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let shipped = builder::validate_config(&base).expect("shipped geometry must validate");
+        assert!(
+            !shipped
+                .iter()
+                .any(|w| w.contains("empty-frontier-max-unfinalized-blocks")
+                    || (w.contains("deploy-lifespan") && w.contains("max-parent-depth"))),
+            "shipped geometry must be silent on the width-cap checks, got {shipped:?}"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 64;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "a width cap above max-parent-depth must fail startup"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper.max_parent_depth = i32::MAX;
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 64;
+        assert!(
+            builder::validate_config(&cfg).is_ok(),
+            "a disabled depth check leaves no citability depth for the cap to violate"
+        );
+
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = 4;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("empty-frontier-max-unfinalized-blocks")
+                    && w.contains("backpressure")),
+            "a cap at or below the hard backpressure tier must warn, got {warnings:?}"
+        );
+
+        let mut cfg = base;
+        cfg.casper.deploy_lifespan = 15;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("deploy-lifespan") && w.contains("citability window")),
+            "a lifespan at or below max-parent-depth must warn, got {warnings:?}"
+        );
+    }
+
     /// The full heartbeat block, pinned twice over: the SHIPPED defaults.conf
     /// values, and the serde fallbacks a sparse operator conf (omitting every
     /// optional heartbeat key) lands on. The two must be identical — a
@@ -758,7 +869,7 @@ mod embedded_defaults_tests {
         assert_eq!(shipped.advanced.frontier_chase_max_lag, 20);
         assert_eq!(shipped.advanced.pending_deploy_max_lag, 20);
         assert_eq!(shipped.advanced.deploy_recovery_max_lag, 64);
-        assert_eq!(shipped.advanced.empty_frontier_max_unfinalized_blocks, 64);
+        assert_eq!(shipped.advanced.empty_frontier_max_unfinalized_blocks, 12);
 
         let sparse: casper::rust::casper_conf::HeartbeatConf = hocon::HoconLoader::new()
             .load_str(

@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -28,7 +28,6 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::env;
 use tokio::sync::mpsc;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
@@ -179,38 +178,29 @@ pub(crate) fn post_validation(status: &ValidBlockProcessing) -> PostValidation {
 const SETTLED_ADMISSION_BUDGET: u64 = 512;
 
 const CASPER_BUFFER_PRUNE_INTERVAL_MS: u64 = 5_000;
+/// Must exceed the dependency re-request clock, or pruning fights recovery.
 const CASPER_BUFFER_STALE_TTL_MS: u64 = 180_000;
 const CASPER_BUFFER_MAX_APPROX_NODES: usize = 16_384;
 const CASPER_BUFFER_MAX_PRUNE_BATCH: usize = 512;
-const CASPER_BUFFER_MAX_APPROX_NODES_ENV: &str = "F1R3_CASPER_BUFFER_MAX_APPROX_NODES";
-const CASPER_BUFFER_STALE_TTL_MS_ENV: &str = "F1R3_CASPER_BUFFER_STALE_TTL_MS";
-const CASPER_BUFFER_MAX_PRUNE_BATCH_ENV: &str = "F1R3_CASPER_BUFFER_MAX_PRUNE_BATCH";
-const CASPER_BUFFER_PRUNE_INTERVAL_MS_ENV: &str = "F1R3_CASPER_BUFFER_PRUNE_INTERVAL_MS";
 const CASPER_BUFFER_STALE_PRUNED_METRIC: &str = "casper.buffer.stale-pruned";
 const CASPER_BUFFER_OVERFLOW_PRUNED_METRIC: &str = "casper.buffer.overflow-pruned";
 const CASPER_BUFFER_APPROX_NODES_METRIC: &str = "casper.buffer.approx-nodes";
 const CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC: &str = "casper.buffer.dependency-loop-pruned";
-const MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT: u32 = 32;
-const MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV: &str = "F1R3_MISSING_DEPENDENCY_ATTEMPTS_MAX";
-const VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT: u32 = 32;
-const VALIDATION_ERROR_ATTEMPTS_MAX_ENV: &str = "F1R3_VALIDATION_ERROR_ATTEMPTS_MAX";
-const MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT: u64 = 120_000;
-const MISSING_DEPENDENCY_QUARANTINE_MS_ENV: &str = "F1R3_MISSING_DEPENDENCY_QUARANTINE_MS";
+const MISSING_DEPENDENCY_ATTEMPTS_MAX: u32 = 32;
+/// Hard-error attempt cap per buffered block. Public so tests exercise the
+/// bound the block-processing loop relies on.
+pub const VALIDATION_ERROR_ATTEMPTS_MAX: u32 = 32;
+const MISSING_DEPENDENCY_QUARANTINE_MS: u64 = 120_000;
+/// Distinct from the missing-dependency pause: the two ledgers pace
+/// different recoveries.
+const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
+/// Admission cap on the shared in-flight block set. Must not exceed the
+/// node's block-processor queue capacity.
+pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-const MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT: u64 = 64;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-const MALLOC_TRIM_INTERVAL_BLOCKS_ENV: &str = "F1R3_MALLOC_TRIM_EVERY_BLOCKS";
+const MALLOC_TRIM_INTERVAL_BLOCKS: u64 = 64;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 static MALLOC_TRIM_BLOCK_COUNTER: AtomicU64 = AtomicU64::new(0);
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-static MALLOC_TRIM_INTERVAL_BLOCKS: OnceLock<u64> = OnceLock::new();
-static CASPER_BUFFER_MAX_APPROX_NODES_CFG: OnceLock<usize> = OnceLock::new();
-static CASPER_BUFFER_STALE_TTL_MS_CFG: OnceLock<u64> = OnceLock::new();
-static CASPER_BUFFER_MAX_PRUNE_BATCH_CFG: OnceLock<usize> = OnceLock::new();
-static CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG: OnceLock<u64> = OnceLock::new();
-static MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
-static VALIDATION_ERROR_ATTEMPTS_MAX_CFG: OnceLock<u32> = OnceLock::new();
-static MISSING_DEPENDENCY_QUARANTINE_MS_CFG: OnceLock<u64> = OnceLock::new();
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" {
@@ -218,55 +208,9 @@ unsafe extern "C" {
 }
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn malloc_trim_interval_blocks() -> u64 {
-    *MALLOC_TRIM_INTERVAL_BLOCKS.get_or_init(|| {
-        env::var_or(
-            MALLOC_TRIM_INTERVAL_BLOCKS_ENV,
-            MALLOC_TRIM_INTERVAL_BLOCKS_DEFAULT,
-        )
-    })
-}
-
-fn casper_buffer_max_approx_nodes() -> usize {
-    *CASPER_BUFFER_MAX_APPROX_NODES_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_MAX_APPROX_NODES_ENV,
-            CASPER_BUFFER_MAX_APPROX_NODES,
-        )
-    })
-}
-
-fn casper_buffer_stale_ttl_ms() -> u64 {
-    *CASPER_BUFFER_STALE_TTL_MS_CFG
-        .get_or_init(|| env::var_or(CASPER_BUFFER_STALE_TTL_MS_ENV, CASPER_BUFFER_STALE_TTL_MS))
-}
-
-fn casper_buffer_max_prune_batch() -> usize {
-    *CASPER_BUFFER_MAX_PRUNE_BATCH_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_MAX_PRUNE_BATCH_ENV,
-            CASPER_BUFFER_MAX_PRUNE_BATCH,
-        )
-    })
-}
-
-fn casper_buffer_prune_interval_ms() -> u64 {
-    *CASPER_BUFFER_PRUNE_INTERVAL_MS_CFG.get_or_init(|| {
-        env::var_or(
-            CASPER_BUFFER_PRUNE_INTERVAL_MS_ENV,
-            CASPER_BUFFER_PRUNE_INTERVAL_MS,
-        )
-    })
-}
-
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn maybe_trim_allocator_after_block() {
-    let interval = malloc_trim_interval_blocks();
-    if interval == 0 {
-        return;
-    }
     let n = MALLOC_TRIM_BLOCK_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-    if n.is_multiple_of(interval) {
+    if n.is_multiple_of(MALLOC_TRIM_INTERVAL_BLOCKS) {
         use crate::rust::metrics_constants::ALLOCATOR_TRIM_TOTAL_METRIC;
         // Best-effort return of free heap pages to OS to limit RSS ratcheting.
         unsafe {
@@ -279,38 +223,6 @@ fn maybe_trim_allocator_after_block() {
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn maybe_trim_allocator_after_block() {}
-
-/// Hard-error attempt cap per buffered block. Public so tests exercise the
-/// bound the block-processing loop relies on.
-pub fn validation_error_attempts_max() -> u32 {
-    *VALIDATION_ERROR_ATTEMPTS_MAX_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            VALIDATION_ERROR_ATTEMPTS_MAX_ENV,
-            VALIDATION_ERROR_ATTEMPTS_MAX_DEFAULT,
-            |v: &u32| *v > 0,
-        )
-    })
-}
-
-fn missing_dependency_attempts_max() -> u32 {
-    *MISSING_DEPENDENCY_ATTEMPTS_MAX_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            MISSING_DEPENDENCY_ATTEMPTS_MAX_ENV,
-            MISSING_DEPENDENCY_ATTEMPTS_MAX_DEFAULT,
-            |v: &u32| *v > 0,
-        )
-    })
-}
-
-fn missing_dependency_quarantine_ms() -> u64 {
-    *MISSING_DEPENDENCY_QUARANTINE_MS_CFG.get_or_init(|| {
-        env::var_or_filtered(
-            MISSING_DEPENDENCY_QUARANTINE_MS_ENV,
-            MISSING_DEPENDENCY_QUARANTINE_MS_DEFAULT,
-            |v: &u64| *v > 0,
-        )
-    })
-}
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
@@ -412,7 +324,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             tracing::debug!(
                 "Skipping block {} due to missing-dependency quarantine ({}ms).",
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                missing_dependency_quarantine_ms()
+                MISSING_DEPENDENCY_QUARANTINE_MS
             );
             metrics::counter!(CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => "quarantine")
                 .increment(1);
@@ -441,7 +353,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 tracing::warn!(
                     "Throttling block {} after {} missing-dependency checks (keeping in buffer).",
                     PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                    missing_dependency_attempts_max()
+                    MISSING_DEPENDENCY_ATTEMPTS_MAX
                 );
                 metrics::counter!(CASPER_BUFFER_DEPENDENCY_LOOP_PRUNED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => "attempts")
                     .increment(1);
@@ -840,7 +752,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let last_prune = self.casper_buffer_last_prune_ms.load(Ordering::Relaxed);
-        let prune_interval_ms = casper_buffer_prune_interval_ms();
+        let prune_interval_ms = CASPER_BUFFER_PRUNE_INTERVAL_MS;
         if now_ms.saturating_sub(last_prune) < prune_interval_ms {
             return Ok(());
         }
@@ -848,9 +760,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             .store(now_ms, Ordering::Relaxed);
 
         let (stale_pruned, overflow_pruned) = self.casper_buffer.enforce_limits(
-            casper_buffer_max_approx_nodes(),
-            casper_buffer_stale_ttl_ms(),
-            casper_buffer_max_prune_batch(),
+            CASPER_BUFFER_MAX_APPROX_NODES,
+            CASPER_BUFFER_STALE_TTL_MS,
+            CASPER_BUFFER_MAX_PRUNE_BATCH,
             prune_interval_ms,
         )?;
         let approx_nodes = self.casper_buffer.approx_node_count();
@@ -1150,7 +1062,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         })?;
         let next = attempts.entry(block_hash.clone()).or_insert(0);
         *next = next.saturating_add(1);
-        Ok(*next >= missing_dependency_attempts_max())
+        Ok(*next >= MISSING_DEPENDENCY_ATTEMPTS_MAX)
     }
 
     fn clear_missing_dependency_attempts(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
@@ -1187,7 +1099,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let until = now_ms.saturating_add(missing_dependency_quarantine_ms());
+        let until = now_ms.saturating_add(MISSING_DEPENDENCY_QUARANTINE_MS);
         let mut quarantine = self
             .missing_dependency_quarantine_until
             .lock()
@@ -1243,7 +1155,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             })?;
             let next = attempts.entry(block_hash.clone()).or_insert(0);
             *next = next.saturating_add(1);
-            if *next >= validation_error_attempts_max() {
+            if *next >= VALIDATION_ERROR_ATTEMPTS_MAX {
                 attempts.remove(block_hash);
                 true
             } else {
@@ -1252,7 +1164,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         };
 
         let until = std::time::Instant::now()
-            + std::time::Duration::from_millis(missing_dependency_quarantine_ms());
+            + std::time::Duration::from_millis(VALIDATION_ERROR_QUARANTINE_MS);
         let mut quarantine = self.validation_error_quarantine_until.lock().map_err(|_| {
             CasperError::RuntimeError(
                 "Failed to acquire validation_error_quarantine_until lock".to_string(),

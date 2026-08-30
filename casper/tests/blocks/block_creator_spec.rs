@@ -177,7 +177,6 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
         epoch_length: 0,
@@ -523,7 +522,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
+async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
     crate::init_logger();
 
     let validator_sk = DEFAULT_VALIDATOR_SKS[0].clone();
@@ -544,10 +543,12 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
         .await
         .expect("block store");
     let mut snapshot = create_snapshot(20, validator_id);
+    // Above the old compiled ceiling (128): the conf key is the single
+    // count bound, so 150 must be honored, not clamped.
     snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block = 777_777;
+        .max_user_deploys_per_block = 150;
     snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
     let deploys: Vec<Signed<DeployData>> = (1..=160)
         .map(|n| create_deploy(n, None, &validator_sk))
@@ -573,8 +574,8 @@ async fn ordinary_deploy_selection_is_bounded_when_config_is_huge() {
 
     assert_eq!(
         prepared.deploys.len(),
-        128,
-        "ordinary deploy proposals must remain bounded when config is huge"
+        150,
+        "the configured cap is the single count bound — no hidden ceiling"
     );
     assert!(prepared.cap_hit);
 }

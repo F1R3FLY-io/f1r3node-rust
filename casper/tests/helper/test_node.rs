@@ -1126,7 +1126,6 @@ impl TestNode {
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
-            config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,

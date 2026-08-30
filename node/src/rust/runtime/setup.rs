@@ -37,6 +37,11 @@ use crate::rust::web::reporting_routes::{ReportingHttpRoutes, ReportingRoutes};
 const PROPOSER_QUEUE_MAX_PENDING: usize = 1_024;
 const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
 
+const _: () = assert!(
+    casper::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING
+        <= BLOCK_PROCESSOR_QUEUE_MAX_PENDING
+);
+
 type ProposerQueueEntry = (
     Arc<dyn Casper + Send + Sync>,
     bool,

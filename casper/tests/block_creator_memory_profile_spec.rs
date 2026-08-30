@@ -110,7 +110,6 @@ fn create_snapshot_with_parent(
     shard_conf.deploy_lifespan = DEPLOY_LIFESPAN;
     shard_conf.max_number_of_parents = 10;
     shard_conf.casper_version = 1;
-    shard_conf.config_version = 1;
     shard_conf.bond_minimum = 0;
     shard_conf.bond_maximum = i64::MAX;
     shard_conf.disable_validator_progress_check = false;

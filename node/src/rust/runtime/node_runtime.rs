@@ -615,14 +615,7 @@ impl NodeRuntime {
         }
 
         // Block processor instance (Tier 2: Critical)
-        // Clone for heartbeat before moving into block processor
-        let trigger_propose_for_heartbeat = trigger_propose_f.clone();
-        let trigger_propose_opt =
-            if self.node_conf.autopropose && self.node_conf.casper.heartbeat_conf.enabled {
-                trigger_propose_f
-            } else {
-                None
-            };
+        let trigger_propose_for_heartbeat = trigger_propose_f;
 
         let bpi_block_queue_tx = block_processor_queue_tx.clone();
 
@@ -638,7 +631,6 @@ impl NodeRuntime {
                     (block_processor_queue_rx, bpi_block_queue_tx),
                     Arc::new(block_processor),
                     block_processor_state,
-                    trigger_propose_opt,
                 );
 
                 // BlockProcessorInstance::create spawns the processing task and returns a result receiver

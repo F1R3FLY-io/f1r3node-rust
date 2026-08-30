@@ -402,6 +402,9 @@ pub struct HeartbeatAdvancedConf {
         default = "default_deploy_recovery_max_lag"
     )]
     pub deploy_recovery_max_lag: i64,
+    /// Width cap on empty-frontier (heartbeat) proposals. Must satisfy
+    /// hard finality-lag backpressure (8) < cap <= max-parent-depth
+    /// (validated at startup).
     #[serde(
         rename = "empty-frontier-max-unfinalized-blocks",
         deserialize_with = "de_non_negative_i64",
@@ -427,7 +430,7 @@ fn default_pending_deploy_max_lag() -> i64 { 20 }
 
 fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
-fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
+fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 12 }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {

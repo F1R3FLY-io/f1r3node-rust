@@ -57,7 +57,6 @@ fn mk_casper_snapshot(
         height_constraint_threshold: 0,
         deploy_lifespan: 50,
         casper_version: 1,
-        config_version: 1,
         bond_minimum: 0,
         bond_maximum: i64::MAX,
         epoch_length: 0,

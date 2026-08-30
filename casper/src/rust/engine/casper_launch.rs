@@ -84,9 +84,7 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
 }
 
-const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
-
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
+use crate::rust::blocks::block_processor::MAX_BLOCKS_IN_PROCESSING;
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// Helper method to create MultiParentCasper instance
@@ -178,8 +176,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             } else {
                 conf.deploy_play_budget.as_millis() as i64
             },
-            casper_version: 1,
-            config_version: 1,
+            casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
             bond_minimum: conf.genesis_block_data.bond_minimum,
             bond_maximum: conf.genesis_block_data.bond_maximum,
             epoch_length: conf.genesis_block_data.epoch_length,
@@ -342,7 +339,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         );
                         continue;
                     }
-                    let max_in_flight = max_blocks_in_processing();
+                    let max_in_flight = MAX_BLOCKS_IN_PROCESSING;
                     if blocks_in_processing.len() > max_in_flight {
                         blocks_in_processing.remove(&block_hash);
                         tracing::warn!(
