@@ -708,7 +708,7 @@ mod tests {
         // `catch_unwind` around an async block requires poll-based
         // catching — easier to catch on the join.  Run in a
         // spawned task and expect a panic.
-        let handle = tokio::spawn(async move { result.await });
+        let handle = tokio::spawn(result);
         let outcome = handle.await;
         assert!(
             outcome.is_err(),

@@ -498,7 +498,6 @@ mod tests {
         // Server produces a response.
         let response = tokio::task::spawn_blocking({
             let store = store.clone();
-            let h = h;
             move || serve_payload(&h, &store).expect("serve_payload")
         })
         .await

@@ -3961,7 +3961,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Header claims 5 hashes, body has 0.
         let path = dir.path().join("bad.hashes");
-        std::fs::write(&path, &[0, 0, 0, 5]).unwrap();
+        std::fs::write(&path, [0, 0, 0, 5]).unwrap();
         let set = read_hashes_sidecar(&path).unwrap();
         assert!(set.is_empty());
         // Header claims 1 hash, body has 16 bytes (too short).
