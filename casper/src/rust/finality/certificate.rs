@@ -10,12 +10,10 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::validator::{Validator, ValidatorSerde};
 use parking_lot::Mutex;
 use prost::bytes::Bytes;
-use shared::rust::store::key_value_store::KvStoreError;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore};
 
 use crate::rust::casper_conf::FinalizerConf;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::finalizer::Finalizer;
 use crate::rust::safety::clique_oracle::FtThreshold;
 
 #[derive(Debug, thiserror::Error)]
@@ -242,10 +240,41 @@ fn parent_floor_frontier_is_valid<E>(
     Ok(true)
 }
 
+fn state_is_preserved(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    predecessor: &BlockHash,
+    target: &BlockHash,
+) -> Result<bool, CasperError> {
+    let predecessor_metadata = dag
+        .lookup(predecessor)?
+        .ok_or_else(|| CasperError::BlockNotHeld(predecessor.clone()))?;
+    let target_metadata = dag
+        .lookup(target)?
+        .ok_or_else(|| CasperError::BlockNotHeld(target.clone()))?;
+    let predecessor_floor = crate::rust::finality::floor::Floor {
+        hash: predecessor.clone(),
+        block_number: predecessor_metadata.block_number,
+    };
+    let target_floor = crate::rust::finality::floor::Floor {
+        hash: target.clone(),
+        block_number: target_metadata.block_number,
+    };
+    let mut memo = std::collections::HashMap::new();
+    crate::rust::finality::floor::state_contains(
+        dag,
+        block_store,
+        &target_floor,
+        &predecessor_floor,
+        &mut memo,
+    )
+}
+
 pub(crate) fn validate_candidate_parent_frontier(
     parents: &[BlockHash],
     commitment: &FinalizedFloorCommitment,
     dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
     approved_genesis: &BlockMessage,
 ) -> Result<(), FinalizationCertificateError> {
     if parents.is_empty() {
@@ -276,7 +305,7 @@ pub(crate) fn validate_candidate_parent_frontier(
         &commitment.floor_hash,
         &parent_floors,
         |left, right| dag.is_dag_ancestor(left, right).map_err(CasperError::from),
-        |left, right| crate::rust::finality::floor::is_state_preserved(dag, left, right),
+        |left, right| state_is_preserved(dag, block_store, left, right),
     )? {
         return Err(invalid(
             "candidate finalized floor does not preserve one comparable parent-floor chain",
@@ -297,6 +326,7 @@ pub(crate) fn select_predecessor_certificate_carrier(
     predecessor_post_state: &BlockHash,
     protocol_version: i64,
     dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
     approved_genesis: &BlockMessage,
 ) -> Result<Option<PredecessorCertificateCarrier>, FinalizationCertificateError> {
     for block_hash in support {
@@ -322,7 +352,13 @@ pub(crate) fn select_predecessor_certificate_carrier(
         {
             continue;
         }
-        validate_candidate_parent_frontier(&metadata.parents, commitment, dag, approved_genesis)?;
+        validate_candidate_parent_frontier(
+            &metadata.parents,
+            commitment,
+            dag,
+            block_store,
+            approved_genesis,
+        )?;
         return Ok(Some(PredecessorCertificateCarrier {
             block_hash: block_hash.0.clone(),
             certificate_digest: commitment.certificate_digest.clone(),
@@ -335,12 +371,14 @@ fn validate_candidate_use(
     block: &BlockMessage,
     commitment: &FinalizedFloorCommitment,
     dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
     approved_genesis: &BlockMessage,
 ) -> Result<(), FinalizationCertificateError> {
     validate_candidate_parent_frontier(
         &block.header.parents_hash_list,
         commitment,
         dag,
+        block_store,
         approved_genesis,
     )
 }
@@ -348,6 +386,7 @@ fn validate_candidate_use(
 fn validate_accepted_predecessor_anchor(
     certificate: &FinalizationCertificate,
     dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
     approved_genesis: &BlockMessage,
     expected_protocol_version: i64,
 ) -> Result<(), FinalizationCertificateError> {
@@ -418,6 +457,7 @@ fn validate_accepted_predecessor_anchor(
         &carrier_metadata.parents,
         carrier_commitment,
         dag,
+        block_store,
         approved_genesis,
     )
 }
@@ -453,8 +493,9 @@ impl VerificationWork {
 async fn validate_decision(
     certificate: &FinalizationCertificate,
     dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
     ftt: FtThreshold,
-    finalizer_conf: &FinalizerConf,
+    _finalizer_conf: &FinalizerConf,
 ) -> Result<(), FinalizationCertificateError> {
     let predecessor = &certificate.predecessor_floor_hash.0;
     let target = &certificate.target_floor_hash.0;
@@ -481,8 +522,7 @@ async fn validate_decision(
         || !dag
             .is_dag_ancestor(predecessor, target)
             .map_err(CasperError::from)?
-        || !crate::rust::finality::floor::is_state_preserved(dag, predecessor, target)
-            .map_err(CasperError::from)?
+        || !state_is_preserved(dag, block_store, predecessor, target)?
     {
         return Err(invalid(
             "target does not preserve and extend its certified predecessor",
@@ -505,22 +545,14 @@ async fn validate_decision(
     if target == predecessor {
         return Ok(());
     }
-    let selected = Finalizer::run_with_context_bounded(
-        dag,
-        ftt,
-        predecessor,
-        predecessor_metadata.block_number,
-        &context,
-        |_| async { Ok::<(), KvStoreError>(()) },
-        finalizer_conf,
-        Some(FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION),
-    )
-    .await
-    .map_err(|error| match error {
-        CasperError::CertificateVerificationWorkExceeded { .. } => invalid(error.to_string()),
-        other => FinalizationCertificateError::Local(other),
-    })?;
-    if selected.as_ref().map(|(hash, _)| hash) != Some(target) {
+    let mut tips = latest.values().cloned().collect::<Vec<_>>();
+    tips.sort();
+    tips.dedup();
+    let selected =
+        crate::rust::finality::floor::finalized_floor(dag, block_store, &tips, &latest, ftt)
+            .await
+            .map_err(FinalizationCertificateError::Local)?;
+    if selected.hash != *target {
         return Err(invalid(
             "exact finalizer did not select the committed target",
         ));
@@ -619,7 +651,7 @@ pub async fn verify(
     let certificate_digest = certificate.digest();
     if candidate_use_before_chain_cache(
         block_store.is_finalization_certificate_verified(&certificate_digest),
-        || validate_candidate_use(block, commitment, dag, approved_genesis),
+        || validate_candidate_use(block, commitment, dag, block_store, approved_genesis),
     )? {
         return Ok(());
     }
@@ -636,10 +668,11 @@ pub async fn verify(
     validate_accepted_predecessor_anchor(
         certificate,
         dag,
+        block_store,
         approved_genesis,
         expected_protocol_version,
     )?;
-    validate_decision(certificate, dag, ftt, finalizer_conf).await?;
+    validate_decision(certificate, dag, block_store, ftt, finalizer_conf).await?;
     let mut work = VerificationWork::new();
     let expected_finalized = expected_newly_finalized(certificate, dag, &mut work)?;
     if certificate.finalized_manifest_digest
@@ -681,6 +714,8 @@ mod tests {
     use std::time::Duration;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use crypto::rust::hash::blake2b256::Blake2b256;
     use models::rust::block_hash::{BlockHash, BlockHashSerde};
     use models::rust::block_metadata::{AdmissionRejectionReason, BlockMetadata};
@@ -734,6 +769,8 @@ mod tests {
                 rejected_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: Vec::new(),
             sender: Bytes::new(),
@@ -793,6 +830,7 @@ mod tests {
             finalized_floor_commitment: Some(commitment),
             admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
+            merge_base: Bytes::new(),
         };
         if accepted {
             crate::rust::test_metadata::certify(metadata, BondGeneration::GENESIS)
@@ -879,12 +917,24 @@ mod tests {
             deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                 InMemoryKeyValueStore::new(),
             )))),
-            deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
                 InMemoryKeyValueStore::new(),
-            )))),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
         }
+    }
+
+    fn block_store() -> KeyValueBlockStore {
+        KeyValueBlockStore::new(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
     }
 
     #[test]
@@ -977,6 +1027,7 @@ mod tests {
         validate_accepted_predecessor_anchor(
             &certificate,
             &dag,
+            &block_store(),
             &genesis,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
@@ -995,6 +1046,7 @@ mod tests {
             &genesis.body.state.post_state_hash,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             &dag,
+            &block_store(),
             &genesis,
         )
         .unwrap();
@@ -1013,6 +1065,7 @@ mod tests {
             &genesis.body.state.post_state_hash,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             &dag,
+            &block_store(),
             &genesis,
         )
         .unwrap();
@@ -1025,6 +1078,7 @@ mod tests {
             &genesis.body.state.post_state_hash,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             &dag,
+            &block_store(),
             &genesis,
         )
         .unwrap();
@@ -1047,6 +1101,7 @@ mod tests {
             &genesis.body.state.post_state_hash,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             &dag,
+            &block_store(),
             &genesis,
         )
         .unwrap();
@@ -1062,6 +1117,7 @@ mod tests {
         validate_accepted_predecessor_anchor(
             &first,
             &dag,
+            &block_store(),
             &genesis,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
@@ -1071,6 +1127,7 @@ mod tests {
         validate_accepted_predecessor_anchor(
             &second,
             &dag,
+            &block_store(),
             &genesis,
             crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         )
@@ -1082,6 +1139,7 @@ mod tests {
             validate_accepted_predecessor_anchor(
                 &spliced,
                 &dag,
+                &block_store(),
                 &genesis,
                 crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             ),
@@ -1099,6 +1157,7 @@ mod tests {
             validate_accepted_predecessor_anchor(
                 &certificate,
                 &rejected,
+                &block_store(),
                 &genesis,
                 crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             ),
@@ -1110,6 +1169,7 @@ mod tests {
             validate_accepted_predecessor_anchor(
                 &certificate,
                 &mismatched,
+                &block_store(),
                 &genesis,
                 crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             ),
@@ -1208,6 +1268,7 @@ mod tests {
                 &genesis.body.state.post_state_hash,
                 crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 &dag,
+                &block_store(),
                 &genesis,
             )
             .unwrap();

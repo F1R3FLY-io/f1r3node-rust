@@ -136,7 +136,7 @@ run_hypothesis_sage_replay() {
         --rust-fixtures-out "$rust_fixtures_out"
     SLASHING_REPLAY_JSON="$fixture_out" \
         SLASHING_RUST_FIXTURES_JSON="$rust_fixtures_out" \
-        cargo test -p casper generated_
+        cargo nextest run -p casper generated_
 }
 
 run_coverage() {
@@ -193,7 +193,7 @@ run_apalache() {
 
 write_run_metadata
 triage_fuzz_artifacts
-cargo test -p casper slash_authorization_regressions
+cargo nextest run -p casper slash_authorization_regressions
 
 if cargo fuzz --help >/dev/null 2>&1; then
     for target in "${FUZZ_TARGETS[@]}"; do

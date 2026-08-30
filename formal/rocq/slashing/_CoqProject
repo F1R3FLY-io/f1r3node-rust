@@ -10,8 +10,8 @@
 #         and engine/multi_parent_casper/{dispatch,validation_dispatcher}.rs
 #         (the former multi_parent_casper_impl.rs was split into engine/ in ab66b87e)
 # Companion docs:
-#   docs/theory/slashing/slashing-specification.md  (normative spec)
-#   docs/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
+#   docs/casper/theory/slashing/slashing-specification.md  (normative spec)
+#   docs/casper/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
 # 29 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #

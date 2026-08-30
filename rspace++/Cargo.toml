@@ -22,6 +22,7 @@ heed = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
+arc-swap = { workspace = true }
 imbl = { workspace = true }
 prost = { workspace = true }
 bit-set = "0.5.3"

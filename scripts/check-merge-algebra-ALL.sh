@@ -26,12 +26,12 @@
 #      SKIPPED if cargo is absent.
 #   4. Diagrams (fail-soft) — renders the dossier's PlantUML set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is
-#      absent OR docs/theory/merge-algebra/diagrams/*.puml do not exist yet (the
+#      absent OR docs/casper/theory/merge-algebra/diagrams/*.puml do not exist yet (the
 #      dossier is built separately).
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/Wolfram
 # step) into .github/workflows/* — an earlier formal-CI workflow was deliberately
-# removed. See docs/theory/merge-algebra/merge-algebra-verification.md.
+# removed. See docs/casper/theory/merge-algebra/merge-algebra-verification.md.
 #
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
@@ -41,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROCQ_DIR="$REPO_ROOT/formal/rocq/merge_algebra"
 Z3_DIR="$REPO_ROOT/formal/z3/merge_algebra"
-DIAG_DIR="$REPO_ROOT/docs/theory/merge-algebra/diagrams"
+DIAG_DIR="$REPO_ROOT/docs/casper/theory/merge-algebra/diagrams"
 ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
 LOG_DIR="$REPO_ROOT/target/verification/merge-algebra"
 mkdir -p "$LOG_DIR"
@@ -173,7 +173,7 @@ if command -v plantuml >/dev/null 2>&1; then
     done
     [[ "$diag_ok" == "1" ]] && pass "all $n_puml PlantUML diagrams render clean (populated SVG, no stderr)"
   else
-    skip "no .puml sources in docs/theory/merge-algebra/diagrams (dossier built separately)"
+    skip "no .puml sources in docs/casper/theory/merge-algebra/diagrams (dossier built separately)"
   fi
 else
   skip "no plantuml on PATH"

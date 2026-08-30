@@ -220,6 +220,7 @@ async fn certified_outcome_must_match_insert_mode_before_any_state_changes() {
             InsertMode::Normal => rejected_outcome(&block),
             InsertMode::Invalid => accepted_outcome(&block),
             InsertMode::ApprovedGenesis => unreachable!(),
+            InsertMode::SettledHistory => unreachable!(),
         };
         buffer.put_pendant(hash.clone()).unwrap();
         let error = atomic_insert_then_buffer(

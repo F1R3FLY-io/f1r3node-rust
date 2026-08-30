@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use casper::rust::casper::CasperShardConf;
-use casper::rust::util::mergeable_channels_gc::collect_garbage;
+use casper::rust::util::mergeable_channels_gc::{collect_garbage, GcSweep};
 
 use crate::helper::block_dag_storage_fixture::with_genesis;
 use crate::helper::block_generator::{build_block_at_height, step};
@@ -67,7 +67,8 @@ async fn collection_deletes_only_the_safe_authenticated_execution() {
             assert!(runtime_manager.has_mergeable_entry(&chain[1]).unwrap());
 
             let runtime_manager = Arc::new(runtime_manager);
-            let deleted = collect_garbage(&dag, &block_store, &runtime_manager, &conf)
+            let mut sweep = GcSweep::new();
+            let deleted = collect_garbage(&mut sweep, &dag, &block_store, &runtime_manager, &conf)
                 .await
                 .unwrap();
 
@@ -75,7 +76,7 @@ async fn collection_deletes_only_the_safe_authenticated_execution() {
             assert!(!runtime_manager.has_mergeable_entry(&chain[0]).unwrap());
             assert!(runtime_manager.has_mergeable_entry(&chain[1]).unwrap());
 
-            let repeated = collect_garbage(&dag, &block_store, &runtime_manager, &conf)
+            let repeated = collect_garbage(&mut sweep, &dag, &block_store, &runtime_manager, &conf)
                 .await
                 .unwrap();
             assert_eq!(repeated, 0);

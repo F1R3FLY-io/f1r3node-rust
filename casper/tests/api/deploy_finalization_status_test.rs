@@ -5,14 +5,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    InsertMode, KeyValueDagRepresentation,
+};
+use block_storage::rust::dag::deploy_lifecycle_types::{TerminalRecord, TerminalState};
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::api::deploy_finalization_status::{self, DeployFinalizationState};
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use casper::rust::finality::deploy_lifecycle::DeployLifecycle;
 use crypto::rust::public_key::PublicKey;
+use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
@@ -41,8 +47,52 @@ impl TestContext {
     }
 }
 
+async fn observe_lifecycle(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    block: &BlockMessage,
+    deploy_lifespan: i64,
+) {
+    DeployLifecycle::default()
+        .observe_block(dag, block_store, block, deploy_lifespan, None, 0)
+        .await
+        .expect("lifecycle observation");
+}
+
+fn put_terminal(
+    dag: &KeyValueDagRepresentation,
+    sig: &[u8],
+    state: TerminalState,
+    rejection_count: u32,
+    latest_height: i64,
+    latest_block_hash: &[u8],
+) {
+    dag.put_deploy_terminal_if_absent(&crate::legacy_deploy_id(sig), TerminalRecord {
+        state,
+        rejection_count,
+        latest_height,
+        latest_block_hash: latest_block_hash.to_vec(),
+    })
+    .expect("terminal lifecycle record");
+}
+
+fn resolve_legacy(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_id: &[u8],
+    known_block_hash: Option<&models::rust::block_hash::BlockHash>,
+) -> eyre::Result<deploy_finalization_status::DeployFinalizationStatus> {
+    deploy_finalization_status::resolve(
+        dag,
+        block_store,
+        &crate::legacy_deploy_id(deploy_id),
+        known_block_hash,
+    )
+}
+
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
+        divergence_monitor: node.casper.divergence_monitor.clone(),
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),
@@ -50,8 +100,8 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
-        pending_cosigner_metadata: node.casper.pending_cosigner_metadata.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
+        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
@@ -64,6 +114,8 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         certificate_verification_schedule: std::sync::Arc::new(
             casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
         ),
+        finalizer_task_in_progress: node.casper.finalizer_task_in_progress.clone(),
+        finalizer_task_queued: node.casper.finalizer_task_queued.clone(),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -88,9 +140,10 @@ async fn unknown_sig_returns_pending_with_empty_fields() {
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
     let unknown_sig = vec![0xAA; 32];
-    let status = BlockAPI::deploy_finalization_status(&engine_cell, &unknown_sig)
-        .await
-        .expect("resolver should not fail");
+    let status =
+        BlockAPI::deploy_finalization_status(&engine_cell, &crate::legacy_deploy_id(&unknown_sig))
+            .await
+            .expect("resolver should not fail");
 
     assert_eq!(status.state, DeployFinalizationState::Pending);
     assert_eq!(status.rejection_count, 0);
@@ -119,12 +172,9 @@ async fn resolve_pure_function_returns_pending_for_unknown_sig() {
         .await
         .expect("fetch dag representation");
     let block_store = nodes[0].casper.block_store();
-    let deploy_lifespan = nodes[0].casper.casper_shard_conf().deploy_lifespan;
-
     let unknown_sig = vec![0xBB; 32];
-    let status =
-        deploy_finalization_status::resolve(&dag, block_store, deploy_lifespan, &unknown_sig)
-            .expect("resolve should not fail for unknown sig");
+    let status = resolve_legacy(&dag, block_store, &unknown_sig, None)
+        .expect("resolve should not fail for unknown sig");
 
     assert_eq!(status.state, DeployFinalizationState::Pending);
     assert_eq!(status.rejection_count, 0);
@@ -225,7 +275,7 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         None,
     );
     // Block C: merge of [A, B] with A as main parent.
-    let block_c = block_implicits::get_random_block(
+    let mut block_c = block_implicits::get_random_block(
         Some(2),
         Some(1),
         None,
@@ -241,6 +291,8 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    block_c.body.merge_base = block_a.block_hash.clone();
+    block_c.body.applied_from_scope = vec![deploy_b_sig.clone().into()];
 
     block_store.put_block_message(&block_a).expect("store A");
     block_store.put_block_message(&block_b).expect("store B");
@@ -262,11 +314,10 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         .get_representation()
         .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &block_c, 50).await;
 
-    let deploy_lifespan = 50i64;
     let status =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &deploy_b_sig)
-            .expect("resolve should not fail");
+        resolve_legacy(&dag, &block_store, &deploy_b_sig, None).expect("resolve should not fail");
 
     assert_eq!(
         status.state,
@@ -564,13 +615,34 @@ async fn resolve_and_resolve_batch_agree_across_states() {
         .get_representation()
         .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
-
-    let deploy_lifespan = 50i64;
+    put_terminal(
+        &dag,
+        &sig_clean_via_secondary,
+        TerminalState::Finalized,
+        0,
+        2,
+        &block_s.block_hash,
+    );
+    put_terminal(
+        &dag,
+        &sig_failed,
+        TerminalState::Failed,
+        0,
+        1,
+        &block_a.block_hash,
+    );
+    put_terminal(
+        &dag,
+        &sig_clean_canonical_reject_sibling,
+        TerminalState::Finalized,
+        1,
+        1,
+        &block_a.block_hash,
+    );
 
     // Per-sig single resolve.
     let single = |sig: &Bytes| {
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, sig)
-            .expect("resolve should not fail")
+        resolve_legacy(&dag, &block_store, sig, None).expect("resolve should not fail")
     };
     let single_clean_via_secondary = single(&sig_clean_via_secondary);
     let single_failed = single(&sig_failed);
@@ -621,15 +693,21 @@ async fn resolve_and_resolve_batch_agree_across_states() {
     );
 
     // Batched resolve over the same sigs in one BFS.
+    let id_clean_via_secondary = crate::legacy_deploy_id(&sig_clean_via_secondary);
+    let id_failed = crate::legacy_deploy_id(&sig_failed);
+    let id_clean_canonical_reject_canonical =
+        crate::legacy_deploy_id(&sig_clean_canonical_reject_canonical);
+    let id_clean_canonical_reject_sibling =
+        crate::legacy_deploy_id(&sig_clean_canonical_reject_sibling);
+    let id_unknown = crate::legacy_deploy_id(&sig_unknown);
     let mut sigs = HashSet::new();
-    sigs.insert(sig_clean_via_secondary.clone());
-    sigs.insert(sig_failed.clone());
-    sigs.insert(sig_clean_canonical_reject_canonical.clone());
-    sigs.insert(sig_clean_canonical_reject_sibling.clone());
-    sigs.insert(sig_unknown.clone());
+    sigs.insert(id_clean_via_secondary.clone());
+    sigs.insert(id_failed.clone());
+    sigs.insert(id_clean_canonical_reject_canonical.clone());
+    sigs.insert(id_clean_canonical_reject_sibling.clone());
+    sigs.insert(id_unknown.clone());
 
-    let batch = resolve_batch(&dag, &block_store, deploy_lifespan, &sigs)
-        .expect("resolve_batch should not fail");
+    let batch = resolve_batch(&dag, &block_store, &sigs).expect("resolve_batch should not fail");
 
     // Parity: every sig has a result, and that result equals the single-
     // sig result.
@@ -658,50 +736,50 @@ async fn resolve_and_resolve_batch_agree_across_states() {
         "clean_via_secondary",
         &single_clean_via_secondary,
         batch
-            .get(&sig_clean_via_secondary)
+            .get(&id_clean_via_secondary)
             .expect("batch missing clean_via_secondary"),
     );
     assert_parity(
         "failed",
         &single_failed,
-        batch.get(&sig_failed).expect("batch missing failed"),
+        batch.get(&id_failed).expect("batch missing failed"),
     );
     assert_parity(
         "clean_canonical_reject_canonical",
         &single_clean_canonical_reject_canonical,
         batch
-            .get(&sig_clean_canonical_reject_canonical)
+            .get(&id_clean_canonical_reject_canonical)
             .expect("batch missing clean_canonical_reject_canonical"),
     );
     assert_parity(
         "clean_canonical_reject_sibling",
         &single_clean_canonical_reject_sibling,
         batch
-            .get(&sig_clean_canonical_reject_sibling)
+            .get(&id_clean_canonical_reject_sibling)
             .expect("batch missing clean_canonical_reject_sibling"),
     );
     assert_parity(
         "unknown",
         &single_unknown,
-        batch.get(&sig_unknown).expect("batch missing unknown"),
+        batch.get(&id_unknown).expect("batch missing unknown"),
     );
 
     // Empty batch returns empty map (regression guard).
-    let empty = resolve_batch(&dag, &block_store, deploy_lifespan, &HashSet::new())
-        .expect("empty batch should not fail");
+    let empty =
+        resolve_batch(&dag, &block_store, &HashSet::new()).expect("empty batch should not fail");
     assert!(empty.is_empty(), "empty batch must return empty map");
 
     // Single-element batch matches single resolve (regression guard
     // for the single-input branch of `resolve_batch`).
     let mut single_set = HashSet::new();
-    single_set.insert(sig_clean_via_secondary.clone());
-    let one = resolve_batch(&dag, &block_store, deploy_lifespan, &single_set)
+    single_set.insert(id_clean_via_secondary.clone());
+    let one = resolve_batch(&dag, &block_store, &single_set)
         .expect("single-element batch should not fail");
     assert_eq!(one.len(), 1, "single-element batch must return one entry");
     assert_parity(
         "single-element-batch",
         &single_clean_via_secondary,
-        one.get(&sig_clean_via_secondary)
+        one.get(&id_clean_via_secondary)
             .expect("missing single-element entry"),
     );
 }
@@ -792,15 +870,14 @@ async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
     let dag = dag_storage
         .get_representation()
         .expect("get_representation");
+    observe_lifecycle(&dag, &block_store, &block_b, 0).await;
 
     // Lifespan = 0 makes the cutoff equal to valid_after_block_number (0),
     // so tip (1) > 0 → the buggy tip-based expiry triggers; LFB (0) is NOT
     // greater than 0 → the LFB-based expiry does NOT trigger. The fix is
     // visible in the difference.
-    let deploy_lifespan = 0i64;
     let status =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &deploy_sig)
-            .expect("resolve should not fail");
+        resolve_legacy(&dag, &block_store, &deploy_sig, None).expect("resolve should not fail");
 
     assert_eq!(
         status.state,
@@ -998,11 +1075,10 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         .get_representation()
         .expect("get_representation");
     dag.last_finalized_block_hash = block_d.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &block_d, 50).await;
 
-    let deploy_lifespan = 50i64;
     let status =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &sig_under_test)
-            .expect("resolve should not fail");
+        resolve_legacy(&dag, &block_store, &sig_under_test, None).expect("resolve should not fail");
 
     assert_eq!(
         status.state,
@@ -1156,11 +1232,10 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         .get_representation()
         .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &block_c, 50).await;
 
-    let deploy_lifespan = 50i64;
     let status =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &sig_under_test)
-            .expect("resolve should not fail");
+        resolve_legacy(&dag, &block_store, &sig_under_test, None).expect("resolve should not fail");
 
     assert_eq!(
         status.state,
@@ -1261,10 +1336,7 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
     let dag = dag_storage
         .get_representation()
         .expect("get_representation");
-    let deploy_lifespan = 50i64;
-
-    let result =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &corrupt_sig);
+    let result = resolve_legacy(&dag, &block_store, &corrupt_sig, Some(&block_a.block_hash));
 
     let err = result.expect_err(
         "indexed-but-missing-from-body must propagate Err so repeat_deploy fails-conservative",
@@ -1348,35 +1420,25 @@ async fn resolve_with_known_block_uses_fallback_block_when_deploy_index_misses()
         deploy_index_guard
             .delete(vec![Bytes::from(deploy_sig.clone()).into()])
             .expect("remove deploy index entry");
-        let occurrence_index_handle = dag_storage.deploy_occurrence_index_for_tests();
-        let occurrence_index_guard = occurrence_index_handle.write();
-        occurrence_index_guard
-            .delete(vec![Bytes::from(deploy_sig.clone()).into()])
-            .expect("remove deploy occurrence index entry");
     }
 
     let mut dag = dag_storage
         .get_representation()
         .expect("dag representation");
     dag.last_finalized_block_hash = block_a.block_hash.clone();
-    let deploy_lifespan = 50i64;
-
-    let without_known_block =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &deploy_sig)
-            .expect("index-miss resolve should not fail");
+    let without_known_block = resolve_legacy(&dag, &block_store, &deploy_sig, None)
+        .expect("index-miss resolve should not fail");
     assert_eq!(without_known_block.state, DeployFinalizationState::Pending);
-    assert!(without_known_block.latest_block_hash.is_none());
+    assert_eq!(
+        without_known_block.latest_block_hash,
+        Some(block_a.block_hash.clone())
+    );
 
-    let with_known_block = deploy_finalization_status::resolve_with_known_block(
-        &dag,
-        &block_store,
-        deploy_lifespan,
-        &deploy_sig,
-        Some(&block_a.block_hash),
-    )
-    .expect("known-block resolve should not fail");
+    let with_known_block =
+        resolve_legacy(&dag, &block_store, &deploy_sig, Some(&block_a.block_hash))
+            .expect("known-block resolve should not fail");
 
-    assert_eq!(with_known_block.state, DeployFinalizationState::Finalized);
+    assert_eq!(with_known_block.state, DeployFinalizationState::Pending);
     assert_eq!(
         with_known_block.latest_block_hash.as_ref(),
         Some(&block_a.block_hash),
@@ -1531,6 +1593,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         None,
     );
     block_c.body.rejected_deploys = vec![RejectedDeploy::legacy(sig_under_test.clone())];
+    block_c.body.merge_base = block_b.block_hash.clone();
 
     block_store.put_block_message(&block_a).expect("store A");
     block_store.put_block_message(&block_b).expect("store B");
@@ -1553,11 +1616,10 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         .get_representation()
         .expect("get_representation");
     dag.last_finalized_block_hash = block_c.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &block_c, 50).await;
 
-    let deploy_lifespan = 50i64;
     let status =
-        deploy_finalization_status::resolve(&dag, &block_store, deploy_lifespan, &sig_under_test)
-            .expect("resolve should not fail");
+        resolve_legacy(&dag, &block_store, &sig_under_test, None).expect("resolve should not fail");
 
     assert_eq!(
         status.state,
@@ -1577,9 +1639,7 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::{
-        ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
-    };
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeployReason};
 
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
@@ -1656,11 +1716,13 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    merge.body.rejected_deploys = vec![RejectedDeploy::occurrence(
+    merge.body.rejected_deploys = vec![crate::legacy_rejected_occurrence(
         sig.clone(),
         source_b.block_hash.clone(),
         RejectedDeployReason::DuplicateOccurrence,
     )];
+    merge.body.merge_base = genesis.block_hash.clone();
+    merge.body.applied_from_scope = vec![sig.clone()];
 
     for block in [&source_a, &source_b, &merge] {
         block_store.put_block_message(block).expect("store block");
@@ -1670,9 +1732,9 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
     }
     let mut dag = dag_storage.get_representation().expect("dag");
     dag.last_finalized_block_hash = merge.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &merge, 50).await;
 
-    let status = deploy_finalization_status::resolve(&dag, &block_store, 50, &sig)
-        .expect("source-aware resolve");
+    let status = resolve_legacy(&dag, &block_store, &sig, None).expect("source-aware resolve");
 
     assert_eq!(status.state, DeployFinalizationState::Finalized);
     assert_eq!(status.rejection_count, 1);
@@ -1684,9 +1746,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::{
-        ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
-    };
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeployReason};
 
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
@@ -1776,12 +1836,12 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    secondary_parent.body.rejected_deploys = vec![RejectedDeploy::occurrence(
+    secondary_parent.body.rejected_deploys = vec![crate::legacy_rejected_occurrence(
         sig.clone(),
         source_b.block_hash.clone(),
         RejectedDeployReason::DuplicateOccurrence,
     )];
-    let lfb = block_implicits::get_random_block(
+    let mut lfb = block_implicits::get_random_block(
         Some(3),
         Some(5),
         None,
@@ -1800,6 +1860,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         Some(genesis.shard_id.clone()),
         None,
     );
+    lfb.body.merge_base = main_parent.block_hash.clone();
 
     for block in [&source_a, &source_b, &main_parent, &secondary_parent, &lfb] {
         block_store.put_block_message(block).expect("store block");
@@ -1808,10 +1869,10 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
             .expect("insert block");
     }
     let mut dag = dag_storage.get_representation().expect("dag");
-    dag.last_finalized_block_hash = lfb.block_hash;
+    dag.last_finalized_block_hash = lfb.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &lfb, 50).await;
 
-    let status = deploy_finalization_status::resolve(&dag, &block_store, 50, &sig)
-        .expect("source-aware resolve");
+    let status = resolve_legacy(&dag, &block_store, &sig, None).expect("source-aware resolve");
 
     assert_eq!(status.state, DeployFinalizationState::Finalized);
     assert_eq!(status.rejection_count, 1);
@@ -1823,9 +1884,7 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
     use models::rust::block_implicits;
-    use models::rust::casper::protocol::casper_message::{
-        ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
-    };
+    use models::rust::casper::protocol::casper_message::{ProcessedDeploy, RejectedDeployReason};
 
     use crate::util::rholang::resources::{
         block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
@@ -1903,17 +1962,18 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
         None,
     );
     merge.body.rejected_deploys = vec![
-        RejectedDeploy::occurrence(
+        crate::legacy_rejected_occurrence(
             sig.clone(),
             source_a.block_hash.clone(),
             RejectedDeployReason::DuplicateOccurrence,
         ),
-        RejectedDeploy::occurrence(
+        crate::legacy_rejected_occurrence(
             sig.clone(),
             source_b.block_hash.clone(),
             RejectedDeployReason::DuplicateOccurrence,
         ),
     ];
+    merge.body.merge_base = genesis.block_hash.clone();
 
     for block in [&source_a, &source_b, &merge] {
         block_store.put_block_message(block).expect("store block");
@@ -1923,11 +1983,11 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
     }
     let mut dag = dag_storage.get_representation().expect("dag");
     dag.last_finalized_block_hash = merge.block_hash.clone();
+    observe_lifecycle(&dag, &block_store, &merge, 50).await;
 
-    let status = deploy_finalization_status::resolve(&dag, &block_store, 50, &sig)
-        .expect("source-aware resolve");
+    let status = resolve_legacy(&dag, &block_store, &sig, None).expect("source-aware resolve");
 
     assert_eq!(status.state, DeployFinalizationState::Pending);
     assert_eq!(status.rejection_count, 1);
-    assert_eq!(status.latest_block_hash, Some(merge.block_hash));
+    assert_eq!(status.latest_block_hash, None);
 }

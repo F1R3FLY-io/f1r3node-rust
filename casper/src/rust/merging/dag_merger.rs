@@ -9,6 +9,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     RejectedDeploy, RejectedDeployReason, StateEffectId,
 };
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
@@ -27,8 +28,7 @@ use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
 
 #[derive(Clone, Debug, Default)]
 pub struct MergeOccurrenceContext {
-    pub base_committed_sigs: HashSet<Bytes>,
-    pub scope_tombstones: BTreeMap<(Bytes, BlockHash), RejectedDeployReason>,
+    pub scope_tombstones: BTreeMap<(DeployLookupId, BlockHash), RejectedDeployReason>,
     pub require_exact_effects: bool,
 }
 
@@ -37,6 +37,9 @@ pub struct MergeResult {
     pub post_state: Blake2b256Hash,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub rejected_state_effects: Vec<StateEffectId>,
+    pub rejected_slash_occurrences: Vec<(Bytes, BlockHash)>,
+    pub applied_from_scope: HashSet<Bytes>,
+    pub merge_base: Option<BlockHash>,
 }
 
 fn insert_rejection_reason(
@@ -61,10 +64,13 @@ fn filter_occurrence_chains(
     let (retained, dropped): (Vec<_>, Vec<_>) = chains.into_iter().partition(|chain| {
         !chain.deploys_with_cost.0.iter().any(|deploy| {
             !is_system_deploy_id(&deploy.deploy_id)
-                && (context.base_committed_sigs.contains(&deploy.deploy_id)
-                    || context
-                        .scope_tombstones
-                        .contains_key(&(deploy.deploy_id.clone(), chain.source_block_hash.clone())))
+                && context.scope_tombstones.contains_key(&(
+                    DeployLookupId::V6(
+                        DeployIdV6::try_from(deploy.deploy_id.as_ref())
+                            .expect("validated protocol-v6 deploy identity"),
+                    ),
+                    chain.source_block_hash.clone(),
+                ))
         })
     });
     let mut rejections = Vec::new();
@@ -73,18 +79,19 @@ fn filter_occurrence_chains(
             if is_system_deploy_id(&deploy.deploy_id) {
                 continue;
             }
-            let exact_reason = context
-                .scope_tombstones
-                .get(&(deploy.deploy_id.clone(), chain.source_block_hash.clone()));
-            let reason = exact_reason.copied().unwrap_or_else(|| {
-                if context.base_committed_sigs.contains(&deploy.deploy_id) {
-                    RejectedDeployReason::DuplicateOccurrence
-                } else {
-                    RejectedDeployReason::CollateralChainDrop
-                }
-            });
-            rejections.push(RejectedDeploy::occurrence(
-                deploy.deploy_id.clone(),
+            let exact_reason = context.scope_tombstones.get(&(
+                DeployLookupId::V6(
+                    DeployIdV6::try_from(deploy.deploy_id.as_ref())
+                        .expect("validated protocol-v6 deploy identity"),
+                ),
+                chain.source_block_hash.clone(),
+            ));
+            let reason = exact_reason
+                .copied()
+                .unwrap_or(RejectedDeployReason::CollateralChainDrop);
+            rejections.push(RejectedDeploy::occurrence_v6(
+                DeployIdV6::try_from(deploy.deploy_id.as_ref())
+                    .expect("validated protocol-v6 deploy identity"),
                 chain.source_block_hash.clone(),
                 reason,
             ));
@@ -369,6 +376,52 @@ fn block_lineage_rejection_roots(rejected: &HashableSet<DeployChainIndex>) -> Ha
         .collect()
 }
 
+fn expand_legacy_block_lineage_rejections<E>(
+    to_merge: Vec<HashableSet<DeployChainIndex>>,
+    rejected: &mut HashableSet<DeployChainIndex>,
+    pinned: &HashSet<DeployChainIndex>,
+    mut is_ancestor: impl FnMut(&BlockHash, &BlockHash) -> Result<bool, E>,
+) -> Result<(Vec<HashableSet<DeployChainIndex>>, usize, usize), E> {
+    let rejected_blocks = block_lineage_rejection_roots(rejected);
+    if rejected_blocks.is_empty() {
+        return Ok((to_merge, 0, 0));
+    }
+
+    let mut descends_cache: HashMap<BlockHash, bool> = HashMap::new();
+    let mut descends_rejected = |block_hash: &BlockHash| -> Result<bool, E> {
+        if let Some(cached) = descends_cache.get(block_hash) {
+            return Ok(*cached);
+        }
+        let mut result = false;
+        for rejected_block in &rejected_blocks {
+            if rejected_block != block_hash && is_ancestor(rejected_block, block_hash)? {
+                result = true;
+                break;
+            }
+        }
+        descends_cache.insert(block_hash.clone(), result);
+        Ok(result)
+    };
+    let mut expanded = 0usize;
+    let mut retained = Vec::new();
+    for branch in to_merge {
+        #[allow(clippy::mutable_key_type)]
+        let mut kept: HashSet<DeployChainIndex> = HashSet::new();
+        for chain in branch.0 {
+            if !pinned.contains(&chain) && descends_rejected(&chain.source_block_hash)? {
+                expanded += 1;
+                rejected.0.insert(chain);
+            } else {
+                kept.insert(chain);
+            }
+        }
+        if !kept.is_empty() {
+            retained.push(HashableSet(kept));
+        }
+    }
+    Ok((retained, expanded, rejected_blocks.len()))
+}
+
 fn split_unavailable_branch_consumes(
     branch: HashableSet<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
@@ -611,6 +664,7 @@ fn split_unavailable_resolved_branches(
 /// reconciled by the number-channel fold and must not be rejected here;
 /// registry / TreeHashMap nodes are non-numeric and exempt. The kept writer is
 /// the lowest-ordered `DeployChainIndex`, so the choice is node-deterministic.
+#[allow(clippy::mutable_key_type)]
 fn split_overfilled_single_value_cells(
     resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
@@ -624,6 +678,7 @@ fn split_overfilled_single_value_cells(
     base_binary: &impl Fn(
         &Blake2b256Hash,
     ) -> Result<Vec<Vec<u8>>, rspace_plus_plus::rspace::errors::HistoryError>,
+    pinned: &HashSet<DeployChainIndex>,
 ) -> Result<HashableSet<DeployChainIndex>, rspace_plus_plus::rspace::errors::HistoryError> {
     let mut all_chains: Vec<DeployChainIndex> = resolved
         .to_merge
@@ -690,8 +745,14 @@ fn split_overfilled_single_value_cells(
         }
         if kept.len() + chg.added.len() > 1 {
             if let Some(prod) = producers.get(ch) {
-                for loser in prod.iter().skip(1) {
-                    rejected_seed.insert(loser.clone());
+                let mut ordered: Vec<&DeployChainIndex> = prod.iter().collect();
+                ordered.sort_by(|a, b| {
+                    (!pinned.contains(*a), std::cmp::Reverse(a.prior_rejections))
+                        .cmp(&(!pinned.contains(*b), std::cmp::Reverse(b.prior_rejections)))
+                        .then_with(|| a.cmp(b))
+                });
+                for loser in ordered.iter().skip(1) {
+                    rejected_seed.insert((*loser).clone());
                 }
             }
         }
@@ -775,45 +836,291 @@ fn resolve_conflicts_with_unavailable_retry(
     }
 }
 
+pub fn prior_rejection_counts<'a>(
+    records: impl IntoIterator<Item = &'a RejectedDeploy>,
+) -> HashMap<Bytes, u64> {
+    let mut exact = BTreeMap::new();
+    let mut counts = HashMap::new();
+    for record in records {
+        if record.has_provenance() {
+            exact
+                .entry((
+                    Bytes::copy_from_slice(record.deploy_id()),
+                    record.source_block_hash.clone(),
+                ))
+                .and_modify(|reason: &mut RejectedDeployReason| {
+                    *reason = reason.canonical_join(record.reason)
+                })
+                .or_insert(record.reason);
+        } else if !record.is_duplicate() {
+            *counts
+                .entry(Bytes::copy_from_slice(record.deploy_id()))
+                .or_insert(0) += 1;
+        }
+    }
+    for ((sig, _), reason) in exact {
+        if !matches!(
+            reason,
+            RejectedDeployReason::DuplicateOccurrence | RejectedDeployReason::ValidityWindowClosed
+        ) {
+            *counts.entry(sig).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+pub fn scope_prior_rejection_counts(
+    visible_blocks: impl IntoIterator<Item = BlockHash>,
+    records_of: impl Fn(&BlockHash) -> Result<Vec<RejectedDeploy>, CasperError>,
+) -> Result<HashMap<Bytes, u64>, CasperError> {
+    let mut records = Vec::new();
+    let mut seen = HashSet::new();
+    for block in visible_blocks {
+        if seen.insert(block.clone()) {
+            records.extend(records_of(&block)?);
+        }
+    }
+    Ok(prior_rejection_counts(records.iter()))
+}
+
+pub fn stamp_prior_rejections(chains: &mut [DeployChainIndex], counts: &HashMap<Bytes, u64>) {
+    for chain in chains {
+        chain.prior_rejections = chain
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|deploy| counts.get(&deploy.deploy_id).copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+    }
+}
+
+/// Attribute a merge failure to the chains that could have caused it, and log
+/// it as ONE error line carrying the merge context.
+///
+/// Reports, for the channel the error names: every surviving chain that
+/// removes on it (the candidates for the offending removal) with its source
+/// block and deploy sigs, every rejected chain that ADDS on it (a rejected
+/// producer is how a survivor's removal loses its backing), and the merge
+/// coordinates — base, base state, floor height, scope size,
+/// survivor/rejected counts.
+///
+/// Best-effort by construction: it runs only when the merge already failed, so
+/// a probe that cannot answer degrades the report rather than the error.
+fn explain_merge_failure(
+    err: &rspace_plus_plus::rspace::errors::HistoryError,
+    resolved: &conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    base: &BlockHash,
+    base_post_state: &Blake2b256Hash,
+    floor_block_number: i64,
+    scope: &Option<HashSet<BlockHash>>,
+) {
+    let message = err.to_string();
+    // The channel is the one datum the error always carries; use it to select
+    // the chains worth naming instead of dumping the whole survivor set.
+    let channel_hex: Option<String> = message
+        .split("channel ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(|s| s.trim_end_matches(':').to_string());
+
+    let describe = |chain: &DeployChainIndex| -> String {
+        let sigs: Vec<String> = chain
+            .deploys_with_cost
+            .0
+            .iter()
+            .map(|d| hex::encode(&d.deploy_id[..8.min(d.deploy_id.len())]))
+            .collect();
+        format!(
+            "src={}#{} sigs={:?}",
+            hex::encode(&chain.source_block_hash[..8.min(chain.source_block_hash.len())]),
+            chain.source_block_number,
+            sigs
+        )
+    };
+    let touches = |chain: &DeployChainIndex, want_added: bool| -> bool {
+        let Some(ref ch) = channel_hex else {
+            return false;
+        };
+        chain.state_changes.datums_changes.iter().any(|entry| {
+            hex::encode(entry.key().clone().bytes()) == *ch
+                && if want_added {
+                    !entry.value().added.is_empty()
+                } else {
+                    !entry.value().removed.is_empty()
+                }
+        })
+    };
+
+    let surviving_removers: Vec<String> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|b| b.0.iter())
+        .filter(|c| touches(c, false))
+        .take(8)
+        .map(describe)
+        .collect();
+    let rejected_producers: Vec<String> = resolved
+        .rejected
+        .0
+        .iter()
+        .filter(|c| touches(c, true))
+        .take(8)
+        .map(describe)
+        .collect();
+
+    tracing::error!(
+        target: "f1r3fly.merge.incoherence",
+        error = %message,
+        channel = channel_hex.as_deref().unwrap_or("unparsed"),
+        floor_block = floor_block_number,
+        base = %hex::encode(&base[..8.min(base.len())]),
+        base_state = %hex::encode(&base_post_state.clone().bytes()[..8]),
+        scope_blocks = scope.as_ref().map(|s| s.len()).unwrap_or(0),
+        surviving_chains = resolved.to_merge.iter().map(|b| b.0.len()).sum::<usize>(),
+        rejected_chains = resolved.rejected.0.len(),
+        surviving_removers_on_channel = ?surviving_removers,
+        rejected_producers_on_channel = ?rejected_producers,
+        "merge failed: applied diffs incoherent with the base — every propose over \
+         this scope will fail identically until the scope or the floor changes"
+    );
+}
+
+/// Merge-time validity-window rule, keyed on the merging block's FLOOR: a
+/// chain carrying a USER deploy whose window is closed at the floor
+/// (`valid_after <= floor_block_number - deploy_lifespan`) must not merge.
+/// A silent validator's stale tip stays mergeable indefinitely (below-floor
+/// sibling), so a within-window carrier can arrive arbitrarily late;
+/// executing it would land effects after the deploy's validity window
+/// closed and reopen a settled Expired verdict.
+///
+/// The floor — never the merge height — is the correct clock: for any
+/// VALIDLY included chain, inclusion height `h <= valid_after + lifespan`,
+/// so if the rule fires (`floor > valid_after + lifespan >= h`) the
+/// chain's block lies below the floor — and the base sits at or above the
+/// floor, so an in-scope chain of ordinary standing can never be hit. The rule
+/// fires exactly on the below-floor-sibling (late-carrier) class. The
+/// floor is a pure function of the block's parents and justifications, and
+/// justification-regression validation stops a proposer from faking a
+/// lower one, so once any canonical block's floor passes a deploy's
+/// window, every future canonical merge rejects its late carriers — which
+/// is what makes a floor-keyed `Expired` verdict terminal.
+///
+/// Rejected chains are recorded like any other loser; the block-expired
+/// selection filter uses the same bound, so recovery never re-proposes
+/// them. Chains with no window entries (system-only) are exempt.
+fn split_window_closed_chains(
+    chains: Vec<DeployChainIndex>,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+) -> (Vec<DeployChainIndex>, Vec<DeployChainIndex>) {
+    let earliest_valid_after = floor_block_number - deploy_lifespan;
+    chains.into_iter().partition(|chain| {
+        chain
+            .deploy_windows
+            .values()
+            .all(|valid_after| *valid_after > earliest_valid_after)
+    })
+}
+
+/// Split the scope's chains against the base lineage's combined event log:
+/// `(kept, rejected)`. A scope chain conflicting with the base loses by
+/// construction — the base is committed and cannot be adjudicated away, so
+/// this is a decision, not a cost preference, and it needs no fallback.
+///
+/// The other direction is structural and load-bearing for finality: the
+/// base's own content is never among the adjudicated chains at all (the
+/// scope is filtered to the band ABOVE the base before this runs), so a
+/// merge can never reject content of its own base lineage. Certification
+/// pins fork choice to the certified branch (heaviest-subtree descent), the
+/// certified branch is every honest proposer's base, and this invariant is
+/// what makes that chain of custody mean "certified content cannot be
+/// merged away" — see tests/merging/base_protection_spec.rs.
+pub fn partition_base_conflicts(
+    scope_chains: Vec<DeployChainIndex>,
+    base_event_log: &rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex,
+) -> (Vec<DeployChainIndex>, Vec<DeployChainIndex>) {
+    scope_chains
+        .into_iter()
+        .partition(|chain| !merging_logic::are_conflicting(&chain.event_log_index, base_event_log))
+}
+
+/// Merge the scope onto `base`.
+///
+/// `base` is the merging block's state parent — its main parent, or the
+/// finalized floor when that parent's state does not hold the floor's settled
+/// content. It is NOT the LFB, and has not been since the base moved off the
+/// floor; the merge only ever needed a committed state to build on and the
+/// block hash that names it.
 pub fn merge(
     dag: &KeyValueDagRepresentation,
-    lfb: &BlockHash,
-    lfb_post_state: &Blake2b256Hash,
+    base: &BlockHash,
+    base_post_state: &Blake2b256Hash,
     index: impl Fn(&BlockHash) -> Result<Vec<DeployChainIndex>, CasperError>,
     history_repository: &RhoHistoryRepository,
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
     disable_late_block_filtering: bool,
-    occurrence_context: MergeOccurrenceContext,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+    // True iff the sig's effect is already present in the BASE state. The
+    // dedup below seeds such sigs with an unbeatable freshest-copy
+    // sentinel so every scope copy drops: the settled copy lives in the
+    // base where scope-level dedup cannot see it, and without the seed the
+    // scope copy re-applies and doubles the deploy's cells.
+    sig_settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    // True iff the sig's effect is settled in one of the merging block's
+    // SETTLED FLOORS (the tripwire's own definition of settled). Derived
+    // from the block's frozen justification snapshot, so proposer and every
+    // replaying validator answer identically — the node-local finalized set
+    // is deliberately never consulted here. Chains all of whose user sigs
+    // are settled this way carry committed content the base state does not
+    // hold (a finalized sibling of the base): the merge must re-apply them,
+    // never reject them (#341).
+    sig_settled_in_floor: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    // Blocks on the BASE's own lineage that at least one other parent has not
+    // seen — the base's contribution since the parents diverged. Bounded by
+    // branch divergence, not by finality lag. Empty for a single-parent block,
+    // which has nothing to merge against.
+    base_lineage_blocks: &HashSet<BlockHash>,
+    // Per-sig prior-rejection counts derived from the records every block in
+    // the merge's view carries (issue #294). The caller assembles them from
+    // on-DAG data (see `scope_prior_rejection_counts`), so proposer and
+    // validators derive identical counts and adjudication stays
+    // consensus-deterministic. Losses outrank content ordering in both
+    // adjudication sites, so a repeatedly rejected deploy gains priority
+    // instead of starving to expiry.
+    prior_rejection_counts: &HashMap<Bytes, u64>,
+    occurrence_context: &MergeOccurrenceContext,
 ) -> Result<MergeResult, CasperError> {
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.ENTER",
-            lfb = %hex::encode(&lfb[..]),
-            lfb_post_state = %hex::encode(lfb_post_state.clone().bytes()),
+            base = %hex::encode(&base[..]),
+            base_post_state = %hex::encode(base_post_state.clone().bytes()),
             scope = %scope
                 .as_ref()
                 .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
             disable_late_block_filtering = disable_late_block_filtering);
     }
 
-    // Blocks to merge are all blocks in scope that are NOT the LFB or its ancestors.
-    // This includes:
-    // 1. Descendants of LFB (blocks built on top of LFB)
-    // 2. Siblings of LFB (blocks at same height but different branch) that are ancestors of the tips
+    // Blocks to merge are all blocks in scope that are NOT the base or on its
+    // main-parent chain. This includes:
+    // 1. Descendants of the base (blocks built on top of it)
+    // 2. Siblings of the base (same height, different branch) that are ancestors of the tips
     // Previously we only included descendants, which missed deploy effects from sibling branches.
     let actual_blocks: HashSet<BlockHash> = match &scope {
         Some(scope_blocks) => {
-            // Avoid unbounded full-DAG ancestor scans. Check each scope block against LFB directly.
+            // Avoid unbounded full-DAG ancestor scans. Check each scope block against the base directly.
             let mut result = HashSet::new();
             for candidate in scope_blocks {
-                if !dag.is_in_main_chain(candidate, lfb)? {
+                if !dag.is_in_main_chain(candidate, base)? {
                     result.insert(candidate.clone());
                 }
             }
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 let included: Vec<String> = result.iter().map(|b| hex::encode(&b[..])).collect();
-                // Scope blocks excluded from the merge set because they ARE in the
-                // LFB main chain (i.e. the LFB or its ancestors).
+                // Scope blocks excluded from the merge set because they ARE on the
+                // base's main chain (the base itself or one of its main-parent ancestors).
                 let excluded_in_main: Vec<String> = scope_blocks
                     .iter()
                     .filter(|b| !result.contains(*b))
@@ -829,8 +1136,8 @@ pub fn merge(
             result
         }
         None => {
-            // Legacy behavior: use descendants of LFB
-            let descendants = dag.descendants(lfb)?;
+            // Legacy behavior: use descendants of the base
+            let descendants = dag.descendants(base)?;
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                 tracing::debug!(target: "f1r3fly.merge.step", step = "merge.actual_blocks.LEGACY_DESCENDANTS",
                     n_descendants = descendants.len());
@@ -857,8 +1164,8 @@ pub fn merge(
 
     // Log the block sets for debugging
     tracing::info!(
-        "DagMerger.merge: LFB={}, scope={}, actualBlocks (above LFB)={}, lateBlocks={}",
-        hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
+        "DagMerger.merge: base={}, scope={}, actualBlocks (above base)={}, lateBlocks={}",
+        hex::encode(&base[..std::cmp::min(8, base.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
@@ -907,23 +1214,35 @@ pub fn merge(
             n_actual_chains = actual_set_vec.len(), n_late_chains = late_set_vec.len());
     }
 
-    // Accumulator for deploys that lose their chain via dedup but have no
-    // fresher copy elsewhere. These are treated the same as conflict-rejected
-    // deploys downstream — added to the rejected-deploy buffer so the
-    // recovery path can re-propose them in a subsequent block.
-    let mut dedup_rejections: Vec<RejectedDeploy> = Vec::new();
+    // Both sets are stamped: `resolve_conflicts` rejects every late chain
+    // outright today, but it receives both sequences and ranks on
+    // `prior_rejections`, so a late chain must never reach a loss-aware
+    // comparison carrying the constructor's zero instead of its record.
+    stamp_prior_rejections(&mut actual_set_vec, prior_rejection_counts);
+    stamp_prior_rejections(&mut late_set_vec, prior_rejection_counts);
+
+    let mut rejection_reasons: BTreeMap<(Bytes, BlockHash), RejectedDeployReason> = BTreeMap::new();
     let mut forced_rejected_chains: Vec<DeployChainIndex> = Vec::new();
 
-    if !actual_set_vec.is_empty()
-        && (!occurrence_context.base_committed_sigs.is_empty()
-            || !occurrence_context.scope_tombstones.is_empty())
-    {
+    if !actual_set_vec.is_empty() && !occurrence_context.scope_tombstones.is_empty() {
         let (retained, dropped, rejections) =
-            filter_occurrence_chains(std::mem::take(&mut actual_set_vec), &occurrence_context);
+            filter_occurrence_chains(std::mem::take(&mut actual_set_vec), occurrence_context);
         actual_set_vec = retained;
-        dedup_rejections.extend(rejections);
         forced_rejected_chains.extend(dropped);
+        for rejected in rejections {
+            insert_rejection_reason(
+                &mut rejection_reasons,
+                (
+                    Bytes::copy_from_slice(rejected.deploy_id()),
+                    rejected.source_block_hash,
+                ),
+                rejected.reason,
+            );
+        }
     }
+
+    // Memoized settled-in-base results, one probe per unique sig per merge.
+    let mut settled_checked: HashSet<Bytes> = HashSet::new();
 
     // Deploy de-duplication. When the same deploy ID appears in chains from
     // multiple blocks in scope — for example, because a previously-rejected
@@ -934,7 +1253,33 @@ pub fn merge(
     // against a pre-state that the fresh execution replaces.
     if !actual_set_vec.is_empty() {
         // Find the freshest source for each deploy_id across all chains.
+        // A sig whose effect is already SETTLED IN THE BASE is seeded with
+        // an unbeatable sentinel: the base itself is the freshest "copy",
+        // so every scope copy is stale and its chain drops. The settled
+        // copy sits in the base where scope-level dedup cannot see it —
+        // without the seed the scope copy re-applies and doubles the
+        // per-deploy cells. (The sentinel hash is empty, which no real
+        // chain source can equal, so the retain below never keeps a
+        // settled copy and the collateral pass correctly treats settled
+        // sigs as not-lost.)
         let mut latest_for_deploy: HashMap<Bytes, (i64, BlockHash)> = HashMap::new();
+        for chain in &actual_set_vec {
+            for deploy in &chain.deploys_with_cost.0 {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    continue;
+                }
+                if settled_checked.insert(deploy.deploy_id.clone())
+                    && sig_settled_in_base(&deploy.deploy_id)?
+                {
+                    tracing::info!(
+                        "DagMerger dedup: sig {} already settled in the base; dropping all scope copies",
+                        hex::encode(&deploy.deploy_id[..8.min(deploy.deploy_id.len())]),
+                    );
+                    latest_for_deploy
+                        .insert(deploy.deploy_id.clone(), (i64::MAX, BlockHash::new()));
+                }
+            }
+        }
         for chain in &actual_set_vec {
             for deploy in &chain.deploys_with_cost.0 {
                 let candidate = (chain.source_block_number, chain.source_block_hash.clone());
@@ -1027,11 +1372,11 @@ pub fn merge(
                 } else {
                     RejectedDeployReason::DuplicateOccurrence
                 };
-                dedup_rejections.push(RejectedDeploy::occurrence(
-                    deploy.deploy_id.clone(),
-                    chain.source_block_hash.clone(),
+                insert_rejection_reason(
+                    &mut rejection_reasons,
+                    (deploy.deploy_id.clone(), chain.source_block_hash.clone()),
                     reason,
-                ));
+                );
             }
         }
 
@@ -1069,44 +1414,154 @@ pub fn merge(
                 pre_dedup_count - post_dedup_count,
                 pre_dedup_count,
                 post_dedup_count,
-                dedup_rejections.len(),
+                dropped.len(),
             );
         }
         forced_rejected_chains.extend(dropped);
     }
 
-    if !forced_rejected_chains.is_empty() && !actual_set_vec.is_empty() {
-        let rejected_source_blocks: HashSet<BlockHash> = forced_rejected_chains
-            .iter()
-            .map(|chain| chain.source_block_hash.clone())
-            .collect();
-        let mut retained = Vec::new();
-        for chain in std::mem::take(&mut actual_set_vec) {
-            let mut stale = false;
-            for rejected_source in &rejected_source_blocks {
-                if rejected_source != &chain.source_block_hash
-                    && dag.is_dag_ancestor(rejected_source, &chain.source_block_hash)?
-                {
-                    stale = true;
+    // Settled-content protection (#341). Under multi-parent finality a
+    // SETTLED block — one whose effects live in the merging block's settled
+    // floors — can sit on a sibling branch of the base with its effects
+    // absent from the base state, and its chains then enter the scope like
+    // any other. Settled content is committed exactly like the base's — it
+    // must never lose a window split or a cost adjudication (a rejection
+    // here is what recovery later purges as "finalized canonical wins",
+    // vanishing settled state: the bridge-admin registry flake and the
+    // #341 bond loss; the caller's `assert_no_settled_rejection` tripwire
+    // hard-fails the merge if it happens anyway).
+    //
+    // The classifier is `sig_settled_in_floor` — the tripwire's own
+    // settled definition, derived from the merging block's frozen
+    // justification snapshot, so proposer and every replaying validator
+    // classify identically. The node-local finalized set is deliberately
+    // NOT consulted: it differs across nodes and in time, and a
+    // view-relative classifier would let two honest nodes compute
+    // different rejection sets for the same block. Carrier height alone
+    // cannot discriminate either: a silent validator's dead below-floor
+    // sibling is NOT settled and must stay subject to the window rule
+    // (tests/batch2/merge_window_spec.rs).
+    //
+    // Settled chains are held out of the window rule and the adjudication
+    // partitions below, re-joining the merge set afterward; an ordinary
+    // scope chain conflicting with settled content loses deterministically
+    // (same downstream path as a base conflict). Two mutually conflicting
+    // settled chains would be a finality-safety violation upstream: it is
+    // logged as an error for evidence and they fall through to ordinary
+    // adjudication rather than wedging the merge.
+    let mut settled_committed: Vec<DeployChainIndex> = Vec::new();
+    {
+        let mut settled_probe_cache: HashMap<Bytes, bool> = HashMap::new();
+        let mut sig_settled = |sig: &Bytes| -> Result<bool, CasperError> {
+            if let Some(cached) = settled_probe_cache.get(sig) {
+                return Ok(*cached);
+            }
+            let settled = sig_settled_in_floor(sig)?;
+            settled_probe_cache.insert(sig.clone(), settled);
+            Ok(settled)
+        };
+        let mut ordinary: Vec<DeployChainIndex> = Vec::new();
+        for chain in actual_set_vec {
+            let mut user_sigs = chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .filter(|d| !is_system_deploy_id(&d.deploy_id))
+                .peekable();
+            let mut settled = user_sigs.peek().is_some();
+            for deploy in user_sigs {
+                if !sig_settled(&deploy.deploy_id)? {
+                    settled = false;
                     break;
                 }
             }
-            if stale {
-                for deploy in &chain.deploys_with_cost.0 {
-                    if !is_system_deploy_id(&deploy.deploy_id) {
-                        dedup_rejections.push(RejectedDeploy::occurrence(
-                            deploy.deploy_id.clone(),
-                            chain.source_block_hash.clone(),
-                            RejectedDeployReason::CollateralChainDrop,
-                        ));
-                    }
-                }
-                forced_rejected_chains.push(chain);
+            if settled {
+                settled_committed.push(chain);
             } else {
-                retained.push(chain);
+                ordinary.push(chain);
             }
         }
-        actual_set_vec = retained;
+        actual_set_vec = ordinary;
+    }
+    let mut settled_log = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
+    for chain in &settled_committed {
+        settled_log = rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+            &settled_log,
+            &chain.event_log_index,
+        )
+        .map_err(CasperError::HistoryError)?;
+    }
+    for (i, first) in settled_committed.iter().enumerate() {
+        for second in settled_committed.iter().skip(i + 1) {
+            if merging_logic::are_conflicting(&first.event_log_index, &second.event_log_index) {
+                tracing::error!(
+                    target: "f1r3fly.merge.cpps",
+                    first_src = %hex::encode(&first.source_block_hash[..]),
+                    second_src = %hex::encode(&second.source_block_hash[..]),
+                    "finality-safety violation: two settled carriers hold conflicting \
+                     content; falling back to ordinary adjudication"
+                );
+            }
+        }
+    }
+    let (kept_ordinary, settled_conflicting) =
+        partition_base_conflicts(actual_set_vec, &settled_log);
+    actual_set_vec = kept_ordinary;
+    if !settled_conflicting.is_empty() {
+        tracing::debug!(
+            target: "f1r3fly.merge.cpps",
+            step = "merge.reject_conflicts_with_settled",
+            n_rejected = settled_conflicting.len(),
+            n_settled_chains = settled_committed.len(),
+            "scope chains conflicting with settled carriers' committed content"
+        );
+    }
+
+    // Merge-time validity-window rule (see split_window_closed_chains):
+    // closed-window chains join the LATE set — `resolve_conflicts` rejects
+    // late chains unconditionally (they reach the block's rejection record
+    // through the standard pair assembly) and rejects actual chains that
+    // depend on them; the stale-diff lineage expansion afterward covers
+    // state-lineage descendants. The floor-relative window is the
+    // deterministic lateness definition the legacy (nondeterministic,
+    // disabled) late-block query lacked. A chain both settled-in-base and
+    // window-closed was already dropped record-less by the dedup sentinel
+    // above — fine: its effect stands, a record would be dup-flagged
+    // testimony. Settled chains were split out above and are exempt: a
+    // settled carrier's content is committed regardless of its window.
+    let (in_window, window_rejected) =
+        split_window_closed_chains(actual_set_vec, floor_block_number, deploy_lifespan);
+    actual_set_vec = in_window;
+    if !window_rejected.is_empty() {
+        let earliest_valid_after = floor_block_number - deploy_lifespan;
+        for chain in &window_rejected {
+            for deploy in &chain.deploys_with_cost.0 {
+                if is_system_deploy_id(&deploy.deploy_id) {
+                    continue;
+                }
+                let reason = if chain
+                    .deploy_windows
+                    .get(&deploy.deploy_id)
+                    .is_some_and(|valid_after| *valid_after <= earliest_valid_after)
+                {
+                    RejectedDeployReason::ValidityWindowClosed
+                } else {
+                    RejectedDeployReason::CollateralChainDrop
+                };
+                insert_rejection_reason(
+                    &mut rejection_reasons,
+                    (deploy.deploy_id.clone(), chain.source_block_hash.clone()),
+                    reason,
+                );
+            }
+        }
+        tracing::info!(
+            target: "f1r3fly.merge.step",
+            "DagMerger window rule: rejected {} late chain(s) whose deploy validity window is closed at floor #{}",
+            window_rejected.len(),
+            floor_block_number,
+        );
+        late_set_vec.extend(window_rejected);
     }
 
     // Sort the deploy chain indices for deterministic iteration order
@@ -1133,7 +1588,7 @@ pub fn merge(
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.resolve_inputs",
             n_actual_chains = actual_set_vec.len(), n_late = late_set_vec.len(),
-            dedup_rejections = dedup_rejections.len());
+            forced_rejected = forced_rejected_chains.len());
         for (i, chain) in actual_set_vec.iter().enumerate() {
             let sigs: Vec<String> = chain
                 .deploys_with_cost
@@ -1156,7 +1611,79 @@ pub fn merge(
 
     // Keep as Vec for deterministic processing (ConflictSetMerger expects sorted Vecs)
     let actual_seq_all = actual_set_vec;
-    let late_seq_all = late_set_vec;
+    let mut late_seq_all = late_set_vec;
+    late_seq_all.extend(forced_rejected_chains);
+    late_seq_all.sort();
+
+    // The base's OWN contribution since the parents diverged, as one combined
+    // event log. `conflicts` compares two chains' event logs, and the base is
+    // not one of them — so once the base carries content of its own, nothing
+    // in conflict resolution can see it. An incoming chain's log was computed
+    // against a state that work is not in, so its surviving produce and the
+    // base's matching consume can land side by side un-COMM'd: a state no
+    // sequential execution reaches, and one that a later deploy can observe.
+    //
+    // A scope chain conflicting with the base loses by construction (see
+    // `partition_base_conflicts`).
+    let mut base_event_log =
+        rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::empty();
+    let mut base_lineage_sorted: Vec<&BlockHash> = base_lineage_blocks.iter().collect();
+    base_lineage_sorted.sort();
+    for block_hash in base_lineage_sorted {
+        for chain in index(block_hash)? {
+            base_event_log =
+                rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex::combine(
+                    &base_event_log,
+                    &chain.event_log_index,
+                )
+                .map_err(CasperError::HistoryError)?;
+        }
+    }
+    let (actual_seq_all, base_conflicting) =
+        partition_base_conflicts(actual_seq_all, &base_event_log);
+    if !base_conflicting.is_empty() {
+        tracing::debug!(
+            target: "f1r3fly.merge.cpps",
+            step = "merge.reject_conflicts_with_base",
+            n_rejected = base_conflicting.len(),
+            n_base_blocks = base_lineage_blocks.len(),
+            "scope chains conflicting with the base's own committed content"
+        );
+    }
+
+    // Settled chains re-join the merge set here, after the ordinary chains
+    // passed the base-conflict partition: settled content is committed, so
+    // it is never an input to that partition. A settled chain conflicting
+    // with the base's own committed content is committed-versus-committed —
+    // a finality-safety violation upstream. It is logged for evidence and
+    // falls through to ordinary adjudication (liveness over wedging); the
+    // caller's `assert_no_settled_rejection` tripwire hard-fails the merge
+    // if settled effects are in fact dropped.
+    let mut actual_seq_all = actual_seq_all;
+    for chain in &settled_committed {
+        if merging_logic::are_conflicting(&chain.event_log_index, &base_event_log) {
+            tracing::error!(
+                target: "f1r3fly.merge.cpps",
+                settled_src = %hex::encode(&chain.source_block_hash[..]),
+                "finality-safety violation: a settled carrier's content conflicts \
+                 with the base lineage's committed content; falling back to \
+                 ordinary adjudication"
+            );
+        }
+    }
+    actual_seq_all.extend(settled_committed.iter().cloned());
+    actual_seq_all.sort();
+    let actual_seq_all = actual_seq_all;
+
+    // Pin the settled chains. Pinning keeps a preferred writer as the
+    // keep-one survivor in the over-filled single-value-cell splitter; the
+    // main parent no longer needs it (its content is committed in the
+    // base), but a SETTLED chain competing in that splitter must win for
+    // the same reason the base's content must: it is committed. This is a
+    // preference inside an existing keep-one, never a veto — see the
+    // splitter's ordering comment.
+    #[allow(clippy::mutable_key_type)]
+    let pinned: HashSet<DeployChainIndex> = settled_committed.iter().cloned().collect();
 
     struct BranchDerived {
         user_deploy_ids: HashSet<Bytes>,
@@ -1215,7 +1742,7 @@ pub fn merge(
     // Create history reader for base state
     let history_reader = std::sync::Arc::new(
         history_repository
-            .get_history_reader(lfb_post_state)
+            .get_history_reader(base_post_state)
             .map_err(|e| CasperError::HistoryError(e))?,
     );
 
@@ -1382,7 +1909,7 @@ pub fn merge(
 
     let apply_trie_actions_fn = |actions| {
         history_repository
-            .reset(lfb_post_state)
+            .reset(base_post_state)
             .map(|reset_repo| reset_repo.do_checkpoint(actions))
             .map(|checkpoint| checkpoint.root())
             .map_err(|e| e.into())
@@ -1530,9 +2057,8 @@ pub fn merge(
             let event_logs: Vec<&rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex> =
                 chains_vec.iter().map(|c| &c.event_log_index).collect();
             #[allow(clippy::mutable_key_type)]
-            let depends_map =
+            let mut depends_map =
                 merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs);
-            let mut depends_map = depends_map;
             add_exact_state_dependencies(&chains_vec, &mut depends_map);
             let branches = merging_logic::gather_related_sets(&depends_map);
             if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
@@ -1558,10 +2084,12 @@ pub fn merge(
             late_seq,
             &depends_fn,
             &rejection_cost_f,
+            &|chain: &DeployChainIndex| chain.prior_rejections,
             &mergeable_channels_fn,
             &get_data_fn,
             &compute_branches_fn,
             &compute_conflict_map_fn,
+            &pinned,
         )
     };
 
@@ -1589,6 +2117,7 @@ pub fn merge(
                 &mergeable_channels_fn,
                 &|channel| history_reader.get_data(channel),
                 &|channel| history_reader.get_data_proj_binary(channel),
+                &pinned,
             )?;
             for chain in overfilled.0 {
                 rejected.0.insert(chain);
@@ -1604,7 +2133,11 @@ pub fn merge(
     )
     .map_err(CasperError::HistoryError)?;
 
-    for chain in forced_rejected_chains {
+    // Chains the base's own content precluded, and chains settled
+    // carriers' content precluded. Folded in here so they travel the
+    // ordinary rejection path — record, buffer, recovery — like any other
+    // adjudicated loser.
+    for chain in base_conflicting.into_iter().chain(settled_conflicting) {
         resolved.rejected.0.insert(chain);
     }
 
@@ -1617,55 +2150,30 @@ pub fn merge(
         );
     }
 
+    // Legacy chains have no exact effect witness. Their source block is the
+    // only available dependency boundary, so reject descendants that were
+    // computed from the rejected source state. Exact-effect chains use their
+    // physical dependencies instead. Expanding those chains by block lineage
+    // would delete independent concurrent effects from the same source block.
+    // Block ancestry is transitive, so one legacy-root pass covers all deeper
+    // descendants.
     {
-        let rejected_blocks = block_lineage_rejection_roots(&resolved.rejected);
-        if !rejected_blocks.is_empty() {
-            let mut descends_cache: HashMap<BlockHash, bool> = HashMap::new();
-            let mut descends_rejected = |block_hash: &BlockHash| -> Result<bool, CasperError> {
-                if let Some(cached) = descends_cache.get(block_hash) {
-                    return Ok(*cached);
-                }
-                let mut result = false;
-                for rejected_block in &rejected_blocks {
-                    if rejected_block != block_hash
-                        && dag.is_dag_ancestor(rejected_block, block_hash)?
-                    {
-                        result = true;
-                        break;
-                    }
-                }
-                descends_cache.insert(block_hash.clone(), result);
-                Ok(result)
-            };
-            let mut expanded = 0usize;
-            let mut new_to_merge = Vec::new();
-            for branch in std::mem::take(&mut resolved.to_merge) {
-                // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-                #[allow(clippy::mutable_key_type)]
-                let mut kept: HashSet<DeployChainIndex> = HashSet::new();
-                for chain in branch.0 {
-                    if descends_rejected(&chain.source_block_hash)? {
-                        expanded += 1;
-                        resolved.rejected.0.insert(chain);
-                    } else {
-                        kept.insert(chain);
-                    }
-                }
-                if !kept.is_empty() {
-                    new_to_merge.push(HashableSet(kept));
-                }
-            }
-            resolved.to_merge = new_to_merge;
-            if expanded > 0 {
-                tracing::info!(
-                    target: "f1r3fly.merge.step",
-                    step = "merge.reject_stale_diff_descendants",
-                    expanded_chains = expanded,
-                    rejected_source_blocks = rejected_blocks.len(),
-                    remaining_branches = resolved.to_merge.len(),
-                    "rejection expanded over block lineage to prevent stale-diff application"
-                );
-            }
+        let (to_merge, expanded, rejected_source_blocks) = expand_legacy_block_lineage_rejections(
+            std::mem::take(&mut resolved.to_merge),
+            &mut resolved.rejected,
+            &pinned,
+            |ancestor, descendant| dag.is_dag_ancestor(ancestor, descendant),
+        )?;
+        resolved.to_merge = to_merge;
+        if expanded > 0 {
+            tracing::info!(
+                target: "f1r3fly.merge.step",
+                step = "merge.reject_stale_diff_descendants",
+                expanded_chains = expanded,
+                rejected_source_blocks,
+                remaining_branches = resolved.to_merge.len(),
+                "rejection expanded over block lineage to prevent stale-diff application"
+            );
         }
     }
 
@@ -1743,6 +2251,19 @@ pub fn merge(
         }
     }
 
+    // The user sigs whose chains survived every rejection pass and are
+    // about to be APPLIED into the merged state. Returned to the caller:
+    // these effects are in the merged pre-state, so a deploy among them
+    // must not ALSO be executed fresh on top of it.
+    let applied_user_sigs: HashSet<Bytes> = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| chain.deploys_with_cost.0.iter())
+        .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
+        .map(|deploy| deploy.deploy_id.clone())
+        .collect();
+
     // Channels where MORE THAN ONE accepted chain contributes datum adds:
     // only these can exhibit cross-writer accumulation, so only these are
     // subject to the base-empty single-value-cell overfill guard.
@@ -1775,7 +2296,24 @@ pub fn merge(
         &compute_trie_actions_fn,
         &apply_trie_actions_fn,
     )
-    .map_err(|e| CasperError::HistoryError(e))?;
+    .map_err(|e| {
+        // A failure here is applied-diff incoherence: it repeats on every
+        // propose over the same scope, so the shard stops producing blocks.
+        // The error names a channel; everything needed to act on it — which
+        // surviving chain carries the offending removal, where that chain came
+        // from, and what the merge context was — is in scope RIGHT HERE and
+        // was previously recoverable only by re-running under a debug stream
+        // that produces gigabytes per minute. Emit it once, on the error path.
+        explain_merge_failure(
+            &e,
+            &resolved,
+            base,
+            base_post_state,
+            floor_block_number,
+            &scope,
+        );
+        CasperError::HistoryError(e)
+    })?;
 
     let rejected_state_effects: Vec<StateEffectId> = resolved
         .rejected
@@ -1796,10 +2334,12 @@ pub fn merge(
     let rejected = resolved.rejected;
 
     // Extract (rejected deploy ID, source block hash) pairs, split by kind.
-    // User deploys feed the rejected-deploy buffer for re-proposal. Rejected
-    // slash deploys remain observable here, while the proposer reconstructs
-    // authorized slash work from the complete invalid-evidence index and the
-    // canonical merged pre-state. Other system deploys are block-atomic.
+    // User deploys feed the rejected-deploy buffer for re-proposal. Slash
+    // deploys feed the block creator's dedup step so that the slash effect
+    // persists in the merge block's body regardless of cost-optimal rejection
+    // of the source chain. Non-slash system deploys (close block, heartbeat)
+    // are intentionally dropped here — they are atomic with their containing
+    // block and have no recovery semantics.
     let all_pairs: Vec<(Bytes, BlockHash)> = rejected
         .0
         .iter()
@@ -1813,44 +2353,34 @@ pub fn merge(
         })
         .collect();
 
-    let rejected_user_pairs: Vec<(Bytes, BlockHash)> = all_pairs
-        .iter()
-        .filter(|(id, _)| !is_system_deploy_id(id))
-        .cloned()
-        .collect();
+    for (id, src) in &all_pairs {
+        if !is_system_deploy_id(id) {
+            insert_rejection_reason(
+                &mut rejection_reasons,
+                (id.clone(), src.clone()),
+                RejectedDeployReason::MergeConflict,
+            );
+        }
+    }
     let mut rejected_slashes: Vec<(Bytes, BlockHash)> = all_pairs
         .into_iter()
         .filter(|(id, _)| is_slash_deploy_id(id))
         .collect();
-
-    let mut rejected_by_occurrence: BTreeMap<(Bytes, BlockHash), RejectedDeployReason> =
-        BTreeMap::new();
-    for (sig, source_block_hash) in rejected_user_pairs {
-        insert_rejection_reason(
-            &mut rejected_by_occurrence,
-            (sig, source_block_hash),
-            RejectedDeployReason::MergeConflict,
-        );
-    }
-    for rejected in dedup_rejections {
-        insert_rejection_reason(
-            &mut rejected_by_occurrence,
-            (rejected.sig, rejected.source_block_hash),
-            rejected.reason,
-        );
-    }
-    let rejected_user_deploys: Vec<RejectedDeploy> = rejected_by_occurrence
+    let rejected_user_deploys: Vec<RejectedDeploy> = rejection_reasons
         .into_iter()
         .map(|((sig, source_block_hash), reason)| {
-            RejectedDeploy::occurrence(sig, source_block_hash, reason)
+            RejectedDeploy::occurrence_v6(
+                DeployIdV6::try_from(sig.as_ref()).expect("validated protocol-v6 deploy identity"),
+                source_block_hash,
+                reason,
+            )
         })
         .collect();
-
     rejected_slashes.sort();
 
     tracing::debug!(
-        "DagMerger.merge: LFB={}, scope={}, actual={}, late={}, rejected_user={}, rejected_slash={}",
-        hex::encode(&lfb[..std::cmp::min(8, lfb.len())]),
+        "DagMerger.merge: base={}, scope={}, actual={}, late={}, rejected_user={}, rejected_slash={}",
+        hex::encode(&base[..std::cmp::min(8, base.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| s.len().to_string()),
@@ -1863,7 +2393,13 @@ pub fn merge(
     if !rejected_user_deploys.is_empty() {
         let rejected_str: Vec<_> = rejected_user_deploys
             .iter()
-            .map(|rejected| hex::encode(&rejected.sig[..std::cmp::min(8, rejected.sig.len())]))
+            .map(|record| {
+                format!(
+                    "{}({})",
+                    hex::encode(&record.deploy_id()[..std::cmp::min(8, record.deploy_id().len())]),
+                    record.reason.label(),
+                )
+            })
             .collect();
         tracing::info!(
             "DagMerger rejected {} user deploys: {}",
@@ -1895,6 +2431,9 @@ pub fn merge(
         post_state: new_state,
         rejected_deploys: rejected_user_deploys,
         rejected_state_effects,
+        rejected_slash_occurrences: rejected_slashes,
+        applied_from_scope: applied_user_sigs,
+        merge_base: Some(base.clone()),
     })
 }
 
@@ -2126,6 +2665,45 @@ mod tests {
     }
 
     #[test]
+    fn lineage_expansion_preserves_exact_concurrency_and_rejects_legacy_descendants() {
+        let exact_rejected = exact_chain(1, 1, StateChange::empty(), EventLogIndex::empty());
+        let legacy_rejected =
+            chain_with_event_log(2, 1, 1, StateChange::empty(), EventLogIndex::empty());
+        let exact_descendant = exact_chain(3, 2, StateChange::empty(), EventLogIndex::empty());
+        let legacy_descendant = exact_chain(4, 2, StateChange::empty(), EventLogIndex::empty());
+        let independent = exact_chain(5, 2, StateChange::empty(), EventLogIndex::empty());
+        let mut rejected = HashableSet(HashSet::from([exact_rejected, legacy_rejected]));
+        let to_merge = vec![HashableSet(HashSet::from([
+            exact_descendant.clone(),
+            legacy_descendant.clone(),
+            independent.clone(),
+        ]))];
+
+        let (retained, expanded, root_count) = expand_legacy_block_lineage_rejections(
+            to_merge,
+            &mut rejected,
+            &HashSet::new(),
+            |ancestor, descendant| {
+                Ok::<_, std::convert::Infallible>(
+                    (ancestor == &Bytes::from(vec![1; 32])
+                        && descendant == &exact_descendant.source_block_hash)
+                        || (ancestor == &Bytes::from(vec![2; 32])
+                            && descendant == &legacy_descendant.source_block_hash),
+                )
+            },
+        )
+        .expect("lineage expansion");
+
+        assert_eq!(expanded, 1);
+        assert_eq!(root_count, 1);
+        assert_eq!(retained.len(), 1);
+        assert!(retained[0].0.contains(&exact_descendant));
+        assert!(retained[0].0.contains(&independent));
+        assert!(!retained[0].0.contains(&legacy_descendant));
+        assert!(rejected.0.contains(&legacy_descendant));
+    }
+
+    #[test]
     fn indexed_exact_dependencies_are_input_order_invariant() {
         let channel = Blake2b256Hash::from_bytes(vec![0x64; 32]);
         let datum = vec![0xab; 32];
@@ -2248,7 +2826,7 @@ mod tests {
             deploy_ids
                 .iter()
                 .map(|deploy_id| DeployIdWithCost {
-                    deploy_id: Bytes::from(vec![*deploy_id]),
+                    deploy_id: Bytes::from(vec![*deploy_id; 32]),
                     cost: 1,
                 })
                 .collect(),
@@ -2264,12 +2842,19 @@ mod tests {
     }
 
     #[test]
-    fn base_committed_duplicate_rejects_complete_chain() {
-        let duplicate = Bytes::from(vec![1]);
-        let collateral = Bytes::from(vec![2]);
+    fn duplicate_tombstone_rejects_complete_chain() {
+        let duplicate = Bytes::from(vec![1; 32]);
+        let collateral = Bytes::from(vec![2; 32]);
         let context = MergeOccurrenceContext {
-            base_committed_sigs: HashSet::from([duplicate.clone()]),
-            scope_tombstones: BTreeMap::new(),
+            scope_tombstones: BTreeMap::from([(
+                (
+                    DeployLookupId::V6(
+                        DeployIdV6::try_from(duplicate.as_ref()).expect("v6 deploy id"),
+                    ),
+                    Bytes::from(vec![9; 32]),
+                ),
+                RejectedDeployReason::DuplicateOccurrence,
+            )]),
             require_exact_effects: true,
         };
         let (retained, dropped, rejections) =
@@ -2279,11 +2864,11 @@ mod tests {
         assert_eq!(dropped.len(), 1);
         assert_eq!(rejections.len(), 2);
         assert!(rejections.iter().any(|rejected| {
-            rejected.sig == duplicate
+            rejected.deploy_id() == duplicate.as_ref()
                 && rejected.reason == RejectedDeployReason::DuplicateOccurrence
         }));
         assert!(rejections.iter().any(|rejected| {
-            rejected.sig == collateral
+            rejected.deploy_id() == collateral.as_ref()
                 && rejected.reason == RejectedDeployReason::CollateralChainDrop
         }));
     }
@@ -2291,12 +2876,14 @@ mod tests {
     #[test]
     fn exact_tombstone_rejects_complete_chain_and_preserves_reason() {
         let source = Bytes::from(vec![7; 32]);
-        let named = Bytes::from(vec![3]);
-        let collateral = Bytes::from(vec![4]);
+        let named = Bytes::from(vec![3; 32]);
+        let collateral = Bytes::from(vec![4; 32]);
         let context = MergeOccurrenceContext {
-            base_committed_sigs: HashSet::new(),
             scope_tombstones: BTreeMap::from([(
-                (named.clone(), source),
+                (
+                    DeployLookupId::V6(DeployIdV6::try_from(named.as_ref()).expect("v6 deploy id")),
+                    source,
+                ),
                 RejectedDeployReason::MergeConflict,
             )]),
             require_exact_effects: true,
@@ -2307,10 +2894,11 @@ mod tests {
         assert!(retained.is_empty());
         assert_eq!(dropped.len(), 1);
         assert!(rejections.iter().any(|rejected| {
-            rejected.sig == named && rejected.reason == RejectedDeployReason::MergeConflict
+            rejected.deploy_id() == named.as_ref()
+                && rejected.reason == RejectedDeployReason::MergeConflict
         }));
         assert!(rejections.iter().any(|rejected| {
-            rejected.sig == collateral
+            rejected.deploy_id() == collateral.as_ref()
                 && rejected.reason == RejectedDeployReason::CollateralChainDrop
         }));
     }
@@ -2318,8 +2906,13 @@ mod tests {
     #[test]
     fn occurrence_filter_is_input_order_invariant() {
         let context = MergeOccurrenceContext {
-            base_committed_sigs: HashSet::from([Bytes::from(vec![1])]),
-            scope_tombstones: BTreeMap::new(),
+            scope_tombstones: BTreeMap::from([(
+                (
+                    DeployLookupId::V6(DeployIdV6::try_from(&[1; 32][..]).expect("v6 deploy id")),
+                    Bytes::from(vec![5; 32]),
+                ),
+                RejectedDeployReason::DuplicateOccurrence,
+            )]),
             require_exact_effects: true,
         };
         let left = multi_deploy_chain(&[1, 2], 5);
@@ -2586,6 +3179,7 @@ mod tests {
             &|_| BTreeMap::new(),
             &|_| Ok(Vec::new()),
             &|_| Ok(Vec::new()),
+            &HashSet::new(),
         )
         .expect("split overfilled cells");
 
@@ -2665,6 +3259,7 @@ mod tests {
             &|chain| chain.event_log_index.number_channels_data.clone(),
             &|_| Ok(Vec::new()),
             &|_| Ok(Vec::new()),
+            &HashSet::new(),
         )
         .expect("split mixed folded cells");
 
@@ -2830,10 +3425,12 @@ mod tests {
                 late_seq,
                 &|_, _| false,
                 &cost_optimal_rejection_alg(),
+                &|_| 0,
                 &|_| BTreeMap::new(),
                 &|_| Ok(Vec::new()),
                 &compute_branches,
                 &compute_conflict_map,
+                &HashSet::new(),
             )
         };
         let split_unavailable =
@@ -2928,10 +3525,12 @@ mod tests {
                 late_seq,
                 &depends,
                 &cost_optimal_rejection_alg(),
+                &|_| 0,
                 &|_| BTreeMap::new(),
                 &|_| Ok(Vec::new()),
                 &compute_branches,
                 &compute_conflict_map,
+                &HashSet::new(),
             )
         };
         let split_unavailable =

@@ -76,6 +76,7 @@ fn create_deploy(
             .unwrap_or(0)
     };
     let deploy_data = DeployData {
+        language: "rholang".to_string(),
         term: format!("new x in {{ x!({}) | for (_ <- x) {{ Nil }} }}", iteration),
         time_stamp: timestamp,
         valid_after_block_number: 0,
@@ -291,7 +292,6 @@ async fn run_block_creator_create_memory_profile() {
                 None,
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 &runtime_manager,
                 &mut block_store,
                 false,
@@ -635,10 +635,12 @@ async fn run_block_creator_phase_split_memory_profile() {
                 &latest_messages,
                 None,
                 None,
+                None,
+                None,
             )
             .await
             {
-                Ok(result) => result,
+                Ok(result) => (result.state, result.rejected_user),
                 Err(err) => {
                     error_count += 1;
                     if error_samples.len() < 5 {

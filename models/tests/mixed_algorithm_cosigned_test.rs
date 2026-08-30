@@ -20,6 +20,7 @@ use prost::Message;
 fn payload(time_stamp: i64) -> DeployData {
     DeployData {
         term: "Nil".to_string(),
+        language: "rholang".to_string(),
         time_stamp,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),

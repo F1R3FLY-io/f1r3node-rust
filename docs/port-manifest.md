@@ -5,7 +5,7 @@ Per-commit inventory of what to carry from the reference branch into the clean v
 **Source (reference):** `feat/floor-sealed-merge` — [PR #77](https://github.com/F1R3FLY-io/f1r3node-rust/pull/77) (consensus work = commits 26-79 + 2 new).
 **Target:** `sealed-floor-merge-wip` (off `feat/sealed-floor-merge-v2`).
 **Green-gate:** `casper/tests/batch2/map_cell_convergence_spec.rs`.
-**Companion narrative:** [`docs/sealed-floor-merge-v2-status.md`](./sealed-floor-merge-v2-status.md).
+**Companion narrative:** [`docs/sealed-floor-merge-v2-status.md`](./archive/sealed-floor-merge-v2-status.md).
 
 ## Current v2 status
 

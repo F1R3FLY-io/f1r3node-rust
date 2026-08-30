@@ -1,0 +1,110 @@
+{
+  "format": "f1r3fly-deploy-envelope-v6.1-test-vectors",
+  "protocolVersion": 6,
+  "authorizationFormatVersion": 393217,
+  "positive": {
+    "threshold2Of3Selected0And2": {
+      "term": "new return in { return!(\"v6.1\") }",
+      "language": "rholang",
+      "timestamp": 1800000000000,
+      "validAfterBlockNumber": 42,
+      "shardId": "root",
+      "expirationTimestamp": 1800000600000,
+      "authorityPresentations": [],
+      "intentHex": "00010100000000000000216e65772072657475726e20696e207b2072657475726e21282276362e312229207d000001a3185c5000000000000000002a0000000000000004726f6f7401000001a3186577c000000000",
+      "threshold": 2,
+      "presenceBitmapHex": "05",
+      "members": [
+        {
+          "memberIndex": 0,
+          "schemeId": 1,
+          "scheme": "secp256k1",
+          "privateKeyHex": "0101010101010101010101010101010101010101010101010101010101010101",
+          "publicKeyHex": "041b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639de5122d47a69a8e8d1",
+          "principalHex": "000100000041041b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639de5122d47a69a8e8d1",
+          "selected": true,
+          "signatureHex": "30440220486fda74ae514bfe06034dee498fc34f700980826ce2c62b0cde382107021fde02204cba8220fc4fdc14306a580372e2b92cacac6fdb44eb9419760f055f7d6d450b"
+        },
+        {
+          "memberIndex": 1,
+          "schemeId": 1,
+          "scheme": "secp256k1",
+          "privateKeyHex": "0202020202020202020202020202020202020202020202020202020202020202",
+          "publicKeyHex": "044d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d07662a3eada2d0fe208b6d257ceb0f064284662e857f57b66b54c198bd310ded36d0",
+          "principalHex": "000100000041044d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d07662a3eada2d0fe208b6d257ceb0f064284662e857f57b66b54c198bd310ded36d0",
+          "selected": false,
+          "signatureHex": ""
+        },
+        {
+          "memberIndex": 2,
+          "schemeId": 1,
+          "scheme": "secp256k1",
+          "privateKeyHex": "0303030303030303030303030303030303030303030303030303030303030303",
+          "publicKeyHex": "04531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe3379e92c265e71e481ba82a84675a47ac705a200fcd524e92d93b0e7386f26a5458",
+          "principalHex": "00010000004104531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe3379e92c265e71e481ba82a84675a47ac705a200fcd524e92d93b0e7386f26a5458",
+          "selected": true,
+          "signatureHex": "3045022100db8f424a4c3a974442e2a169da86e82cd7f5ada444203c135b78b20975d3c0d702206821cb7d36b8db0b4db96ac24f0e3c306562defea3a2762f7d1bda1e935e0d46"
+        }
+      ],
+      "signingHashHex": "6c76e7a952093bee623825e70ca42fc14c12c4d06ebdf5e9be60f52a58537fd6",
+      "deployIdHex": "287ad675f5fd90538c61608eb8844c3c1ff0981b748f66f28937578f5f331873",
+      "protobufHex": "12216e65772072657475726e20696e207b2072657475726e21282276362e312229207d1880a0f1c2b134502a5a04726f6f74620772686f6c616e6768c0ef95c3b1349a0120287ad675f5fd90538c61608eb8844c3c1ff0981b748f66f28937578f5f331873a201fb020881801812da0112d7010802124508011241041b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639de5122d47a69a8e8d1124508011241044d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d07662a3eada2d0fe208b6d257ceb0f064284662e857f57b66b54c198bd310ded36d012450801124104531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe3379e92c265e71e481ba82a84675a47ac705a200fcd524e92d93b0e7386f26a54581a01052248124630440220486fda74ae514bfe06034dee498fc34f700980826ce2c62b0cde382107021fde02204cba8220fc4fdc14306a580372e2b92cacac6fdb44eb9419760f055f7d6d450b224b080212473045022100db8f424a4c3a974442e2a169da86e82cd7f5ada444203c135b78b20975d3c0d702206821cb7d36b8db0b4db96ac24f0e3c306562defea3a2762f7d1bda1e935e0d46"
+    }
+  },
+  "negative": [
+    {
+      "id": "deploy-id-bit-flip",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "xor byte 0 of deployIdHex with 01",
+      "expectedError": "protocol-v6 DeployId mismatch"
+    },
+    {
+      "id": "bitmap-selects-too-few",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "replace presenceBitmapHex with 01 and retain only witness 0",
+      "expectedError": "quorum not met"
+    },
+    {
+      "id": "bitmap-unused-high-bit",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "replace presenceBitmapHex with 85",
+      "expectedError": "protocol-v6 presence bitmap is not canonical"
+    },
+    {
+      "id": "witness-index-disagrees-with-bitmap",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "replace witness memberIndex 2 with 1",
+      "expectedError": "protocol-v6 witnesses do not exactly match the presence bitmap"
+    },
+    {
+      "id": "noncanonical-policy-order",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "swap policy members 0 and 1 without changing their principal bytes",
+      "expectedError": "envelope signer order is not canonical"
+    },
+    {
+      "id": "duplicate-ground-across-schemes",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "use canonical principals (scheme 1,key 1),(scheme 1,key 3),(scheme 2,key 1)",
+      "expectedError": "protocol-v6 envelope has duplicate ground authority"
+    },
+    {
+      "id": "inactive-signature-scheme",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "replace member 1 schemeId with 5",
+      "expectedError": "protocol-v6 signature scheme is not active"
+    },
+    {
+      "id": "legacy-field-mixed-with-v6",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "set legacy sigAlgorithm to secp256k1",
+      "expectedError": "protocol-v6 deploy cannot contain legacy authorization fields"
+    },
+    {
+      "id": "noncanonical-high-s-signature",
+      "base": "threshold2Of3Selected0And2",
+      "mutation": "replace witness 0 with its mathematically valid high-S ECDSA twin",
+      "expectedError": "protocol-v6 signer at index 0 has a non-canonical signature"
+    }
+  ]
+}

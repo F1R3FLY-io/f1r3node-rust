@@ -125,7 +125,6 @@ impl TestNode {
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             self.allow_empty_blocks,
@@ -835,6 +834,39 @@ impl TestNode {
             None,
             test_network,
             finalization_rate,
+            50,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_network_with_deploy_lifespan(
+        genesis: GenesisContext,
+        network_size: usize,
+        synchrony_constraint_threshold: Option<f64>,
+        max_number_of_parents: Option<i32>,
+        max_parent_depth: Option<i32>,
+        with_read_only_size: Option<usize>,
+        deploy_lifespan: Option<i64>,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        crate::init_logger();
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis
+            .validator_sks()
+            .into_iter()
+            .take(network_size + with_read_only_size.unwrap_or(0))
+            .collect();
+        Self::network(
+            sks_to_use,
+            genesis,
+            synchrony_constraint_threshold.unwrap_or(0.0),
+            max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
+            max_parent_depth,
+            with_read_only_size.unwrap_or(0),
+            None,
+            test_network,
+            1,
+            deploy_lifespan.unwrap_or(50),
         )
         .await
     }
@@ -863,6 +895,7 @@ impl TestNode {
             Some(bootstrap_index),
             test_network,
             1,
+            50,
         )
         .await
     }
@@ -879,6 +912,7 @@ impl TestNode {
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
         finalization_rate: i32,
+        deploy_lifespan: i64,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -925,6 +959,7 @@ impl TestNode {
                 &genesis_context,
                 bootstrap_peer.clone(),
                 finalization_rate,
+                deploy_lifespan,
             )
             .await;
             nodes.push(node);
@@ -963,6 +998,7 @@ impl TestNode {
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
         finalization_rate: i32,
+        deploy_lifespan: i64,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1064,7 +1100,6 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1082,6 +1117,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -1102,6 +1138,7 @@ impl TestNode {
                 required_sigs: 0,
             },
             sigs: vec![],
+            floor_seed: None,
         };
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
@@ -1114,7 +1151,7 @@ impl TestNode {
             height_constraint_threshold: i64::MAX,
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
-            deploy_lifespan: 50,
+            deploy_lifespan,
             casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             config_version: 1,
             bond_minimum: 0,
@@ -1131,6 +1168,9 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            divergence_monitor: std::sync::Arc::new(
+                casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1138,10 +1178,10 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
-            pending_cosigner_metadata: std::sync::Arc::new(parking_lot::Mutex::new(
-                std::collections::HashMap::new(),
-            )),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: std::sync::Arc::new(
+                casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
@@ -1154,6 +1194,10 @@ impl TestNode {
             certificate_verification_schedule: std::sync::Arc::new(
                 casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
             ),
+            finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -1188,6 +1232,7 @@ impl TestNode {
             Some(RunningRecoveryContext {
                 connections_cell: connections_cell.clone(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running_engine)).await;
 

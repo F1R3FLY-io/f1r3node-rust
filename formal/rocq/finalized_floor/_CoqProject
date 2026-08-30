@@ -11,8 +11,8 @@
 #         engine/multi_parent_casper/snapshot,validate}.rs
 #         f1r3node-rust/block-storage/src/rust/dag/block_dag_key_value_storage.rs
 # Companion docs:
-#   docs/theory/finalized-floor/finalized-floor-specification.md   (normative spec)
-#   docs/theory/finalized-floor/finalized-floor-verification.md    (math + Rocq pointers)
+#   docs/casper/theory/finalized-floor/finalized-floor-specification.md   (normative spec)
+#   docs/casper/theory/finalized-floor/finalized-floor-verification.md    (math + Rocq pointers)
 #
 # Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
@@ -23,6 +23,7 @@
 #   Floor -> CliqueOracle        (frontier-cache transparency: warm up-walk == cold walk)
 #   Merge                        (semilattice merge algebra: determinism + no-lost-write)
 #   OccurrenceDisposition         (exact-source rejection + order independence)
+#   DeployIdentitySeparation      (protocol-tagged identity domain separation)
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
 #   AdmissionEffectAlignment     (status-record to runtime-effect refinement)
 #   EffectCausalClosure           (least exact-effect rejection closure)
@@ -46,6 +47,8 @@ theories/Floor.v
 theories/GuardBridge.v
 theories/Merge.v
 theories/OccurrenceDisposition.v
+theories/DeployIdentitySeparation.v
+theories/DeployOccurrenceStorage.v
 theories/FinalizedOccurrenceStatus.v
 theories/Recovery.v
 theories/MergeRecoveryCoherence.v

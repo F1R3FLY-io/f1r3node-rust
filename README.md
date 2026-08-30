@@ -1,49 +1,41 @@
 # F1R3node Rust
 
-[![Soak · master](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-soak.json)](https://f1r3fly-io.github.io/f1r3node-rust/)
-[![Soak · dev](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-soak-daily.json)](https://f1r3fly-io.github.io/f1r3node-rust/)
-[![Stability](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-stability.json)](https://f1r3fly-io.github.io/f1r3node-rust/)
-[![Performance](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-perf.json)](https://f1r3fly-io.github.io/f1r3node-rust/)
+[![Soak · master](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-soak.json)](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend)
+[![Soak · dev](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-soak-daily.json)](https://f1r3fly-io.github.io/f1r3node-rust/?series=daily)
+[![Stability](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-stability.json)](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend)
+[![Performance](https://img.shields.io/endpoint?url=https%3A%2F%2Ff1r3fly-io.github.io%2Ff1r3node-rust%2Fdata%2Fbadge-perf.json)](https://f1r3fly-io.github.io/f1r3node-rust/?series=weekend)
 
 Pure Rust implementation of the F1R3FLY blockchain node.
 
-This repository tracks the Rust node implementation that lives on `rust/dev` in the upstream `f1r3node` repository and documents it as a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
+This pure Rust repository supersedes and deprecates the previous hybrid Scala/Rust `f1r3node` implementation. It is a standalone Cargo workspace. Local development uses standard Rust tooling and native system packages only.
 
-## Project Status
+## Soak Dashboard
 
-The badges above report **shard behaviour under sustained load**. They do not report build status. GitHub already shows per-commit CI status on the repository home page, above the file list, and in each pull request. A badge that duplicates this status adds nothing. This space shows the signal that you cannot get anywhere else.
+The badges report shard results from sustained-load tests. They do not report build status.
 
-| Badge | Reads | From |
-| --- | --- | --- |
-| `soak · master` | `pass` / `regress` for the last ~60h weekend soak. This is the release gate | verdict |
-| `soak · dev` | same, for the last daily soak (up to 22h) | verdict |
-| `stability` | share of soak iterations that completed a full bring-up → load → finalize cycle, plus the iteration count | weekend soak |
-| `perf` | finalization p95 and iteration throughput | weekend soak |
+- `soak · master` shows the release verdict from the latest weekend run.
+- `soak · dev` shows the verdict from the latest daily run.
+- `stability` shows the percentage of iterations that passed the complete lifecycle.
+- `performance` shows finalization p95 and iteration throughput.
 
-### What these do and do not measure
+Open the [soak dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) for trends, run details, the tested commit, and the node version.
+Read the [soak benchmark guide](docs/soak-benchmarks.md) for badge definitions, lifecycle terms, pass criteria, telemetry, and release-gate behavior.
 
-**`stability` is a success rate, not uptime.** The soak builds a fresh shard for each iteration, drives load through it, and checks that deploys finalize. `99.5% · 193 iters` means 192 of 193 such cycles succeeded. Nothing here watches a long-lived deployment, so no claim is made about the availability of one.
+Use the [Actions tab](https://github.com/F1R3FLY-io/f1r3node-rust/actions) for build and test status.
+The [slashing test suite](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/slashing-tests.yml) runs separately from [`ci.yml`](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml).
 
-**Everything is a snapshot of the last completed soak.** The `master` figures can be up to a week old. The `dev` figures can be up to a day old. They describe one commit, not the current branch head. The [dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) names that commit and the node version it was built from.
+## Quick Start
 
-**`perf` is a readout, never a judgement.** It is always blue. Absolute latency and throughput have no fixed threshold in this project. The gate is week-over-week movement, and that verdict lives in the soak badges. A shard can be slow and still `pass` if it was equally slow last week. The dashboard's trend charts show that movement.
+Install the packages in [Development Setup](#development-setup). Then build, test, and start a local node:
 
-### Colours
+```bash
+cargo build
+cargo test
+just run-standalone
+```
 
-| Badge | Meaning |
-| --- | --- |
-| `soak` `pass` (green) | completed, nothing regressed past threshold |
-| `soak` `regress` (red) | at least one metric crossed its threshold. The dashboard lists which |
-| `soak` `14h/22h` (grey) | in flight; the number is progress, not a verdict |
-| `soak` `pass · no baseline` (yellow-green) | completed with no prior run to compare, so passing is not yet meaningful |
-| `stability` green to orange | advisory bands on the absolute rate: 100%, ≥99%, ≥95%, below |
-| any badge grey | mid-run, or no data published for that series yet |
-
-A `stability` of 100% alongside a red `soak · master` is consistent and worth understanding: every iteration passed, but something got measurably slower or heavier than the week before. The gate is relative; the stability band is absolute.
-
-Every badge is generated from the same `verdict.json` and `weekly-summary.json` the [dashboard](https://f1r3fly-io.github.io/f1r3node-rust/) renders, so a badge cannot disagree with the page behind it. The dashboard adds week-over-week history for failure rate, throughput, peak RSS and finalization latency, per series, with the commit and version for each run.
-
-For build and test status, use the commit status on the file listing above, or the [Actions tab](https://github.com/F1R3FLY-io/f1r3node-rust/actions). Note that the [Slashing test suite](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/slashing-tests.yml) is a separate workflow from [`ci.yml`](https://github.com/F1R3FLY-io/f1r3node-rust/actions/workflows/ci.yml).
+Use [`run-local/README.md`](run-local/README.md) for local-node options.
+Use [`docker/README.md`](docker/README.md) for Docker-based node and shard workflows.
 
 ## Overview
 
@@ -53,6 +45,8 @@ F1R3node Rust provides:
 - Proof-of-stake consensus and finalization via the `casper` crate
 - gRPC and HTTP APIs for deploys, proposals, status, and data queries
 - Docker and local standalone workflows for development and testing
+
+Use the [project glossary](docs/Glossary.md) for canonical protocol, consensus, execution, and verification terms.
 
 ## Formal Verification
 
@@ -79,7 +73,7 @@ documented in [docs/formal-verification.md](docs/formal-verification.md).
 | `shared` | Common storage traits, event helpers, metrics utilities |
 | `graphz` | Graph and DOT generation helpers |
 
-## Quick Start
+## Development Setup
 
 ### Prerequisites
 
@@ -95,7 +89,7 @@ Ubuntu or Debian:
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt-get update
-sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev liblmdb-dev build-essential gcc
+sudo apt-get install -y protobuf-compiler libprotobuf-dev pkg-config libssl-dev liblmdb-dev build-essential gcc ruby jq
 cargo install just
 ```
 
@@ -113,7 +107,7 @@ cargo install cargo-deny --locked   # one-time, required by the pre-commit deny 
 | Hook | When | Checks |
 | --- | --- | --- |
 | `pre-commit` | Every commit | `cargo fmt --check`, `cargo clippy -D warnings`, `cargo deny check` |
-| `pre-push` | Every push | `cargo clippy` (re-check), `cargo test --release` (per-crate) |
+| `pre-push` | Every push | CI script tests, `cargo clippy`, `cargo test --release` (per-crate) |
 
 Both hooks auto-skip in CI environments (the same gates run server-side in `.github/workflows/ci.yml`).
 
@@ -122,7 +116,7 @@ Both hooks auto-skip in CI environments (the same gates run server-side in `.git
 - All three pre-commit checks (fmt, clippy, deny) must pass.
 - The pre-push test suite must pass.
 - Do **not** use `git commit --no-verify` or `git push --no-verify`. The same checks run in CI; bypassing locally only defers the failure.
-- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local in-progress experimentation only. Every commit and push that reaches the remote must pass without skips.
+- The `SKIP_FMT` / `SKIP_CLIPPY` / `SKIP_DENY` / `SKIP_TESTS` / `SKIP_CI_TESTS` / `QUICK` / `TEST_CRATES` env-var skips are for local experiments only. Every remote commit must pass without skips.
 
 See [DEVELOPER.md](DEVELOPER.md#git-hooks) for the full skip-flag reference and `setup-hooks.sh --status` / `--remove` management commands.
 
@@ -200,6 +194,8 @@ To build a local image:
 | --- | --- |
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
+| [docs/Glossary.md](docs/Glossary.md) | Canonical project and protocol terminology |
+| [docs/soak-benchmarks.md](docs/soak-benchmarks.md) | Soak lifecycle, metrics, dashboard, and release gate |
 | [docs/vps-cloud-testing.md](docs/vps-cloud-testing.md) | Testbed setup guide: local Docker, generic SSH VPSes, or Oracle Cloud |
 | [docs/neutralCloud_benchmark_review.md](docs/neutralCloud_benchmark_review.md) | Provider-neutral cloud benchmark plan: distributed shard, integration tests, latency/throughput |
 | [run-local/README.md](run-local/README.md) | Local standalone node workflow without Docker |

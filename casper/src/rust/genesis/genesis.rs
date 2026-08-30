@@ -299,6 +299,11 @@ impl Genesis {
             &genesis.native_token_symbol,
             genesis.native_token_decimals,
         );
+        let blessed_terms = blessed_terms
+            .into_iter()
+            .map(|deploy| standard_deploys::protocol_envelope(deploy, genesis.version))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CasperError::RuntimeError)?;
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
             .compute_genesis(blessed_terms, genesis.timestamp, genesis.block_number)
@@ -350,6 +355,8 @@ impl Genesis {
             rejected_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         };
 
         let header = proto_util::block_header(Vec::new(), genesis.version, genesis.timestamp);

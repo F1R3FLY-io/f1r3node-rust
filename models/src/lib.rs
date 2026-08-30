@@ -1085,6 +1085,8 @@ impl PartialEq for UnfInstance {
             (UnfInstance::GDeployIdBody(a), UnfInstance::GDeployIdBody(b)) => a == b,
             (UnfInstance::GDeployerIdBody(a), UnfInstance::GDeployerIdBody(b)) => a == b,
             (UnfInstance::GSysAuthTokenBody(a), UnfInstance::GSysAuthTokenBody(b)) => a == b,
+            (UnfInstance::GAuthorityIdBody(a), UnfInstance::GAuthorityIdBody(b)) => a == b,
+            (UnfInstance::GPrincipalIdBody(a), UnfInstance::GPrincipalIdBody(b)) => a == b,
             _ => false,
         }
     }
@@ -1097,6 +1099,8 @@ impl Hash for UnfInstance {
             UnfInstance::GDeployIdBody(a) => a.hash(state),
             UnfInstance::GDeployerIdBody(a) => a.hash(state),
             UnfInstance::GSysAuthTokenBody(a) => a.hash(state),
+            UnfInstance::GAuthorityIdBody(a) => a.hash(state),
+            UnfInstance::GPrincipalIdBody(a) => a.hash(state),
         }
     }
 }
@@ -1132,6 +1136,27 @@ impl PartialEq for GSysAuthToken {
 impl Hash for GSysAuthToken {
     fn hash<H: Hasher>(&self, _state: &mut H) {
         // No fields to hash
+    }
+}
+
+impl PartialEq for GAuthorityId {
+    fn eq(&self, other: &Self) -> bool { self.id == other.id }
+}
+
+impl Hash for GAuthorityId {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.id.hash(state); }
+}
+
+impl PartialEq for GPrincipalId {
+    fn eq(&self, other: &Self) -> bool {
+        self.key_family == other.key_family && self.public_key == other.public_key
+    }
+}
+
+impl Hash for GPrincipalId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key_family.hash(state);
+        self.public_key.hash(state);
     }
 }
 

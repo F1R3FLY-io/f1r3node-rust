@@ -4,7 +4,8 @@
 //! that doesn't have serde derives by default.
 
 use models::casper::{DeployInfo, DeployInfoWithEventData, TransferInfo};
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::system_deploy_info::SingleReportSerde;
@@ -47,6 +48,12 @@ impl From<TransferInfoSerde> for TransferInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployInfoSerde {
+    #[serde(
+        default,
+        rename = "deployId",
+        deserialize_with = "deserialize_deploy_id"
+    )]
+    pub deploy_id: String,
     pub deployer: String,
     pub term: String,
     pub timestamp: i64,
@@ -65,9 +72,17 @@ pub struct DeployInfoSerde {
     pub transfers: Option<Vec<TransferInfoSerde>>,
 }
 
+fn deserialize_deploy_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where D: Deserializer<'de> {
+    let value = String::deserialize(deserializer)?;
+    hex::decode(&value).map_err(D::Error::custom)?;
+    Ok(value)
+}
+
 impl From<DeployInfo> for DeployInfoSerde {
     fn from(deploy: DeployInfo) -> Self {
         Self {
+            deploy_id: hex::encode(deploy.deploy_id),
             deployer: deploy.deployer,
             term: deploy.term,
             timestamp: deploy.timestamp,
@@ -88,10 +103,13 @@ impl From<DeployInfo> for DeployInfoSerde {
     }
 }
 
-impl From<DeployInfoSerde> for DeployInfo {
-    fn from(json: DeployInfoSerde) -> Self {
+impl TryFrom<DeployInfoSerde> for DeployInfo {
+    type Error = hex::FromHexError;
+
+    fn try_from(json: DeployInfoSerde) -> Result<Self, Self::Error> {
         let transfers_available = json.transfers.is_some();
-        DeployInfo {
+        Ok(DeployInfo {
+            deploy_id: hex::decode(&json.deploy_id)?.into(),
             deployer: json.deployer,
             term: json.term,
             timestamp: json.timestamp,
@@ -113,13 +131,14 @@ impl From<DeployInfoSerde> for DeployInfo {
             pre_state_hash: Default::default(),
             post_state_hash: Default::default(),
             admission_status: Default::default(),
-        }
+        })
     }
 }
 
 impl Default for DeployInfoSerde {
     fn default() -> Self {
         Self {
+            deploy_id: String::new(),
             deployer: String::new(),
             term: String::new(),
             timestamp: 0,
@@ -150,11 +169,66 @@ impl From<DeployInfoWithEventData> for DeployInfoWithEventDataSerde {
     }
 }
 
-impl From<DeployInfoWithEventDataSerde> for DeployInfoWithEventData {
-    fn from(data: DeployInfoWithEventDataSerde) -> Self {
-        Self {
-            deploy_info: data.deploy_info.map(|d| d.into()),
+impl TryFrom<DeployInfoWithEventDataSerde> for DeployInfoWithEventData {
+    type Error = hex::FromHexError;
+
+    fn try_from(data: DeployInfoWithEventDataSerde) -> Result<Self, Self::Error> {
+        Ok(Self {
+            deploy_info: data.deploy_info.map(DeployInfo::try_from).transpose()?,
             report: data.report.into_iter().map(|r| r.into()).collect(),
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::casper::DeployInfo;
+
+    use super::DeployInfoSerde;
+
+    #[test]
+    fn deploy_id_json_accepts_canonical_hex() {
+        let value = serde_json::json!({
+            "deployId": "00aaff",
+            "deployer": "",
+            "term": "Nil",
+            "timestamp": 0,
+            "sig": "",
+            "sigAlgorithm": "",
+            "validAfterBlockNumber": 0,
+            "cost": 0,
+            "errored": false,
+            "systemDeployError": "",
+            "transfers": []
+        });
+        let parsed: DeployInfoSerde = serde_json::from_value(value).expect("valid deploy id");
+        assert_eq!(parsed.deploy_id, "00aaff");
+    }
+
+    #[test]
+    fn deploy_id_json_rejects_non_hex_input() {
+        let value = serde_json::json!({
+            "deployId": "not-a-deploy-id",
+            "deployer": "",
+            "term": "Nil",
+            "timestamp": 0,
+            "sig": "",
+            "sigAlgorithm": "",
+            "validAfterBlockNumber": 0,
+            "cost": 0,
+            "errored": false,
+            "systemDeployError": "",
+            "transfers": []
+        });
+        assert!(serde_json::from_value::<DeployInfoSerde>(value).is_err());
+    }
+
+    #[test]
+    fn programmatic_deploy_info_conversion_rejects_non_hex_id() {
+        let value = DeployInfoSerde {
+            deploy_id: "not-a-deploy-id".to_string(),
+            ..DeployInfoSerde::default()
+        };
+        assert!(DeployInfo::try_from(value).is_err());
     }
 }

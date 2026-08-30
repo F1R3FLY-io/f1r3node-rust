@@ -6,7 +6,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use lazy_static::lazy_static;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::{
@@ -67,6 +67,24 @@ pub const CAPABILITIES_REGISTRY_PK: &str =
 // pk/sig are RE-DERIVED per-shard at genesis (substituted into Exchange.rhox);
 // the URI is content-addressed from the pk alone, hence stable across shards.
 pub const EXCHANGE_PK: &str = "3f9c1a7e8b2d4056f1a3c7e90b4d28f6a5c3e1b7d9f08264a3c5e7091bd4f628";
+
+const BLESSED_PRIVATE_KEYS: [&str; 15] = [
+    REGISTRY_PK,
+    VERSIONED_REGISTRY_PK,
+    LIST_OPS_PK,
+    EITHER_PK,
+    NON_NEGATIVE_NUMBER_PK,
+    MAKE_MINT_PK,
+    AUTH_KEY_PK,
+    SYSTEM_VAULT_PK,
+    MULTI_SIG_SYSTEM_VAULT_PK,
+    POS_GENERATOR_PK,
+    VAULTS_GENERATOR_PK,
+    STACK_PK,
+    TOKEN_METADATA_PK,
+    CAPABILITIES_REGISTRY_PK,
+    EXCHANGE_PK,
+];
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
@@ -134,6 +152,7 @@ fn to_deploy(
     let deploy_data = DeployData {
         time_stamp: timestamp,
         term: compiled_source.code,
+        language: "rholang".to_string(),
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
@@ -141,6 +160,32 @@ fn to_deploy(
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), sk).expect("Failed to create signed deploy")
+}
+
+pub fn protocol_envelope(
+    deploy: Signed<DeployData>,
+    protocol_version: i64,
+) -> Result<Cosigned<DeployData>, String> {
+    if protocol_version < models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION {
+        return Cosigned::from_single_signer(deploy).map_err(|error| error.to_string());
+    }
+
+    let private_key_hex = BLESSED_PRIVATE_KEYS
+        .iter()
+        .copied()
+        .find(|private_key_hex| to_public(private_key_hex) == deploy.pk)
+        .ok_or_else(|| {
+            format!(
+                "no blessed private key registered for public key {}",
+                hex::encode(&deploy.pk.bytes)
+            )
+        })?;
+    let private_key = PrivateKey::from_bytes(
+        &hex::decode(private_key_hex)
+            .map_err(|error| format!("invalid blessed private key: {error}"))?,
+    );
+    Cosigned::create_single_envelope(deploy.data, Box::new(Secp256k1), private_key)
+        .map_err(|error| error.to_string())
 }
 
 pub fn registry(shard_id: &str) -> Signed<DeployData> {

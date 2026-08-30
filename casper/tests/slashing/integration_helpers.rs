@@ -1,7 +1,7 @@
 // Shared helpers for the Track 2 production-path integration
 // tests and Track 3 triple-bisimilarity proptests.
 //
-// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 // (production-path integration), §14.5 (cross-tier bisim).
 // Plan-agent design from session ending at commit 030336a.
 
@@ -59,7 +59,7 @@ async fn compute_cost_accounted_checkpoint(
             )
         })
         .collect();
-    let (pre_state, _) = interpreter_util::compute_parents_post_state(
+    let pre_state = interpreter_util::compute_parents_post_state(
         &producing_node.block_store,
         parents.clone(),
         snapshot,
@@ -67,8 +67,11 @@ async fn compute_cost_accounted_checkpoint(
         &latest_messages,
         None,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
     )
-    .await?;
+    .await?
+    .state;
     let cosigned = deploys
         .into_iter()
         .map(Cosigned::from_single_signer)
@@ -92,7 +95,7 @@ async fn compute_cost_accounted_checkpoint(
         ),
     ))];
 
-    interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_admitted_with_effects(
         &mut producing_node.block_store,
         parents,
         outcome.admitted.clone(),
@@ -102,9 +105,20 @@ async fn compute_cost_accounted_checkpoint(
         block_data,
         invalid_blocks,
         Some(&producing_node.rejected_deploy_buffer),
+        None,
+        None,
         admission,
     )
-    .await
+    .await?;
+    Ok((
+        checkpoint.pre_state_hash,
+        checkpoint.post_state_hash,
+        checkpoint.deploys,
+        checkpoint.rejected_deploys,
+        checkpoint.rejected_state_effects,
+        checkpoint.system_deploys,
+        checkpoint.bonds,
+    ))
 }
 
 async fn validator_caches_at(
@@ -328,6 +342,8 @@ pub async fn equivocate_block(
         rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope: Vec::new(),
+        merge_base: Bytes::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -469,6 +485,8 @@ pub async fn propose_with_explicit_justifications(
         rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope: Vec::new(),
+        merge_base: Bytes::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -647,6 +665,8 @@ pub async fn propose_with_block_mutation(
         rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope: Vec::new(),
+        merge_base: Bytes::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -689,7 +709,7 @@ pub async fn propose_with_block_mutation(
 /// `is_neglected_equivocation_detected_with_update` fires and
 /// classifies as `InvalidBlock::NeglectedEquivocation`.
 ///
-/// Reference: docs/theory/slashing/design/14-test-plan.md §14.3.5
+/// Reference: docs/casper/theory/slashing/design/14-test-plan.md §14.3.5
 /// (production-path integration). Plan-agent designed Item 5 of
 /// the principled-resolution session.
 ///
@@ -800,6 +820,8 @@ pub async fn propose_neglecting_block(
         rejected_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
+        applied_from_scope: Vec::new(),
+        merge_base: Bytes::new(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),

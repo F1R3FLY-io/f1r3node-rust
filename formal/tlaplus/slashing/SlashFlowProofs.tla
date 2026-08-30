@@ -23,7 +23,7 @@
 (* it.                                                                      *)
 (*                                                                          *)
 (* Validate with:  tlapm SlashFlowProofs.tla                                *)
-(* Reference: docs/theory/slashing/slashing-verification.md §6, §7;         *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §6, §7;         *)
 (* cost-accounted-rho.tex (Slashing), Rocq ValidatorRedemption.             *)
 (****************************************************************************)
 

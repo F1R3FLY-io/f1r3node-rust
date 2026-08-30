@@ -392,6 +392,48 @@ EXPECTED_REFUTATION_WRAPPER[OslfLocatedTypingUpperModalUnsafe]=OslfLocatedTyping
 EXPECTED_REFUTATION_INVARIANT[OslfLocatedTypingUpperModalUnsafe]=ModalEvidenceSound
 EXPECTED_REFUTATION_WRAPPER[OslfLocatedTypingCandidateCreditUnsafe]=OslfLocatedTyping
 EXPECTED_REFUTATION_INVARIANT[OslfLocatedTypingCandidateCreditUnsafe]=AuthenticatedFundingOnly
+EXPECTED_REFUTATION_WRAPPER[ThresholdEnvelopeAuthorityUnboundSubsetUnsafe]=ThresholdEnvelopeAuthority
+EXPECTED_REFUTATION_INVARIANT[ThresholdEnvelopeAuthorityUnboundSubsetUnsafe]=DeployIdentityBindsStateTransition
+EXPECTED_REFUTATION_WRAPPER[ThresholdEnvelopeAuthorityPolicyAuthorityUnsafe]=ThresholdEnvelopeAuthority
+EXPECTED_REFUTATION_INVARIANT[ThresholdEnvelopeAuthorityPolicyAuthorityUnsafe]=UnsignedMembersHaveNoAuthority
+EXPECTED_REFUTATION_WRAPPER[ThresholdEnvelopeAuthorityMemberZeroUnsafe]=ThresholdEnvelopeAuthority
+EXPECTED_REFUTATION_INVARIANT[ThresholdEnvelopeAuthorityMemberZeroUnsafe]=UnsignedMembersHaveNoAuthority
+EXPECTED_REFUTATION_WRAPPER[ThresholdEnvelopeAuthorityPolicyDebitUnsafe]=ThresholdEnvelopeAuthority
+EXPECTED_REFUTATION_INVARIANT[ThresholdEnvelopeAuthorityPolicyDebitUnsafe]=UnsignedMembersAreNeverDebited
+EXPECTED_REFUTATION_WRAPPER[ThresholdEnvelopeAuthorityWitnessUnsafe]=ThresholdEnvelopeAuthority
+EXPECTED_REFUTATION_INVARIANT[ThresholdEnvelopeAuthorityWitnessUnsafe]=WitnessesSelectExactlyTheFunders
+EXPECTED_REFUTATION_WRAPPER[ThresholdEnvelopeAuthorityGroundAliasUnsafe]=ThresholdEnvelopeAuthority
+EXPECTED_REFUTATION_INVARIANT[ThresholdEnvelopeAuthorityGroundAliasUnsafe]=PolicyGroundOwnersAreUnique
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationAllAdmittedUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationAllAdmittedUnsafe]=ValidatedReplayUsesExactPartition
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationCountOnlyUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationCountOnlyUnsafe]=ValidatedReplayUsesExactPartition
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationPrimaryIdentityUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationPrimaryIdentityUnsafe]=DeployIdentityIsTypedAndInjective
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationLegacyWireFieldUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationLegacyWireFieldUnsafe]=StoredIdentityMatchesProtocolIdentity
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationRawEvidenceIdentityUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationRawEvidenceIdentityUnsafe]=EvidenceIdentityIsTypedAndInjective
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationRawReservationIdentityUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationRawReservationIdentityUnsafe]=ReservationIdentityIsTypedAndInjective
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationRawFeeIdentityUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationRawFeeIdentityUnsafe]=FeeIdentityIsTypedAndInjective
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationRawRngIdentityUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationRawRngIdentityUnsafe]=RngIdentityIsTypedAndInjective
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationUnconsumedEvidenceUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationUnconsumedEvidenceUnsafe]=EvidenceConsumptionIsExact
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationCallerContextUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationCallerContextUnsafe]=ValidatedReplayUsesAuthenticatedContext
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationEarlyPublishUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationEarlyPublishUnsafe]=PersistentEvidenceRequiresValidatedReplay
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationBareRowUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationBareRowUnsafe]=PersistentEvidenceRequiresValidatedReplay
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationPeerBytesUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationPeerBytesUnsafe]=PersistentEvidenceRequiresValidatedReplay
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationConflictOverwriteUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationConflictOverwriteUnsafe]=ConflictingWritesNeverOverwrite
+EXPECTED_REFUTATION_WRAPPER[ReplayAdmissionPublicationCacheFirstUnsafe]=ReplayAdmissionPublication
+EXPECTED_REFUTATION_INVARIANT[ReplayAdmissionPublicationCacheFirstUnsafe]=CacheFollowsDurablePublication
 
 # Collect all .cfg files whose paired .tla module exists.
 specs=()
@@ -420,7 +462,15 @@ for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
     fi
 done
 
-if [[ ${#specs[@]} -eq 0 && $matching_refutations -eq 0 ]]; then
+matching_external=0
+if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
+    matching_external=$((matching_external + 1))
+fi
+if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]]; then
+    matching_external=$((matching_external + 1))
+fi
+
+if [[ ${#specs[@]} -eq 0 && $matching_refutations -eq 0 && $matching_external -eq 0 ]]; then
     echo "No matching specs found" >&2
     exit 2
 fi
@@ -492,6 +542,83 @@ for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
         echo "$output" | tail -10 | sed 's/^/    /'
     fi
 done
+
+# Deterministic parallel reduction lives beside the runtime-isolation models
+# because it covers the interpreter/RSpace boundary rather than only economic
+# state. It is still a mandatory part of this gate: cost and replay evidence
+# cannot be canonical if competing COMMs commit by Tokio arrival order.
+REDUCTION_TLA_DIR="$REPO_ROOT/formal/tlaplus/deterministic_parallel_reduction"
+if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
+    reduction_module="$REDUCTION_TLA_DIR/DeterministicParallelReduction.tla"
+    reduction_safe="$REDUCTION_TLA_DIR/MC_DeterministicParallelReduction.cfg"
+    printf "  %-40s " "DeterministicParallelReduction"
+    reduction_output=$(tlc_run "$METADIR_ROOT/DeterministicParallelReduction" \
+        "$reduction_safe" "$reduction_module" -deadlock 2>&1 || true)
+    if grep -q "Model checking completed. No error has been found" <<<"$reduction_output"; then
+        echo "PASS"
+        passes=$((passes + 1))
+    else
+        echo "FAIL"
+        failures=$((failures + 1))
+        failed_specs+=("DeterministicParallelReduction")
+        echo "$reduction_output" | tail -10 | sed 's/^/    /'
+    fi
+
+    declare -A REDUCTION_UNSAFE_INVARIANTS=(
+        [arrival]="Inv_CommitRequiresCompleteFrontier"
+        [order]="Inv_ConflictComponentCommitsInOrder"
+        [checkpoint]="Inv_CheckpointAtQuiescence"
+        [serial]="Inv_FirstCommitRetainsDisjointParallelism"
+        [authority]="Inv_SharedAuthorityNeverRunsAsDisjoint"
+    )
+    for control in arrival order checkpoint serial authority; do
+        invariant="${REDUCTION_UNSAFE_INVARIANTS[$control]}"
+        config="$REDUCTION_TLA_DIR/MC_DeterministicParallelReduction_${control}_unsafe.cfg"
+        printf "  %-40s " "DeterministicParallelReduction_${control} (expected refutation)"
+        reduction_output=$(tlc_run "$METADIR_ROOT/DeterministicParallelReduction_${control}" \
+            "$config" "$reduction_module" -deadlock 2>&1 || true)
+        if grep -Fq "Invariant ${invariant} is violated" <<<"$reduction_output"; then
+            echo "PASS (refuted ${invariant})"
+            passes=$((passes + 1))
+            expected_refutations=$((expected_refutations + 1))
+        else
+            echo "FAIL (expected ${invariant} counterexample)"
+            failures=$((failures + 1))
+            failed_specs+=("DeterministicParallelReduction_${control}(expected-refutation)")
+            echo "$reduction_output" | tail -10 | sed 's/^/    /'
+        fi
+    done
+
+    boundary_module="$REDUCTION_TLA_DIR/EvaluationBoundary.tla"
+    boundary_safe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary.cfg"
+    printf "  %-40s " "EvaluationBoundary"
+    boundary_output=$(tlc_run "$METADIR_ROOT/EvaluationBoundary" \
+        "$boundary_safe" "$boundary_module" -deadlock 2>&1 || true)
+    if grep -q "Model checking completed. No error has been found" <<<"$boundary_output"; then
+        echo "PASS"
+        passes=$((passes + 1))
+    else
+        echo "FAIL"
+        failures=$((failures + 1))
+        failed_specs+=("EvaluationBoundary")
+        echo "$boundary_output" | tail -10 | sed 's/^/    /'
+    fi
+
+    boundary_unsafe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary_cancel_unsafe.cfg"
+    printf "  %-40s " "EvaluationBoundary_cancel (expected refutation)"
+    boundary_output=$(tlc_run "$METADIR_ROOT/EvaluationBoundary_cancel" \
+        "$boundary_unsafe" "$boundary_module" -deadlock 2>&1 || true)
+    if grep -Fq "Invariant Inv_CheckpointAtEvaluationQuiescence is violated" <<<"$boundary_output"; then
+        echo "PASS (refuted Inv_CheckpointAtEvaluationQuiescence)"
+        passes=$((passes + 1))
+        expected_refutations=$((expected_refutations + 1))
+    else
+        echo "FAIL (expected Inv_CheckpointAtEvaluationQuiescence counterexample)"
+        failures=$((failures + 1))
+        failed_specs+=("EvaluationBoundary_cancel(expected-refutation)")
+        echo "$boundary_output" | tail -10 | sed 's/^/    /'
+    fi
+fi
 
 # ─────────────────────────────────────────────────────────────────────────
 # Validator behavioral contract (Workstream E, stage E5): the arithmetic

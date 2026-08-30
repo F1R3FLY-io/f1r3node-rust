@@ -12,7 +12,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::signed::Signed;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block_default;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
@@ -208,6 +208,8 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
 #[async_trait]
 impl Casper for NoOpsCasperEffect {
+    async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
             "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
@@ -319,8 +321,6 @@ impl NoOpsCasperEffect {
 
     /// Add block to DAG storage and update latest messages (like Scala blockDagStorage.insert)
     pub fn add_to_dag(&mut self, block_hash: BlockHash) {
-        use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
-
         // Get the block from actual KeyValueBlockStore to add to DAG (preserving Scala test logic)
         if let Ok(Some(block)) = self.block_store.get(&block_hash) {
             // Add to DAG set
@@ -339,23 +339,6 @@ impl NoOpsCasperEffect {
                 Err(e) => tracing::error!(error = ?e, "block metadata DAG storage insert failed"),
             }
             drop(metadata_guard);
-
-            // Add deploy mappings
-            let deploy_hashes: Vec<DeployId> = block
-                .body
-                .deploys
-                .iter()
-                .map(|deploy| deploy.deploy.sig.clone().into())
-                .collect();
-            let deploy_entries: Vec<(DeployId, BlockHashSerde)> = deploy_hashes
-                .into_iter()
-                .map(|deploy_id| (deploy_id, BlockHashSerde(block.block_hash.clone())))
-                .collect();
-            let deploy_index_guard = self.block_dag_storage.deploy_index.write();
-            if let Err(e) = deploy_index_guard.put(deploy_entries) {
-                tracing::error!(error = ?e, "deploy index put failed");
-            }
-            drop(deploy_index_guard);
 
             // Update latest messages following BlockDagKeyValueStorage.insert logic
 

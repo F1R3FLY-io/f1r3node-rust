@@ -34,7 +34,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -216,7 +216,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_a_raw)
@@ -270,7 +270,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_b_raw)
@@ -323,7 +323,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (_merged_state, rejected_sigs) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![block_a.clone(), block_b.clone()],
         &snapshot,
@@ -331,13 +331,16 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         &latest_messages,
         None,
         Some(&rejected_deploy_buffer),
+        None,
+        None,
     )
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");
 
+    let rejected_sigs = merged.rejected_user;
     let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
         .iter()
-        .map(|rejected| rejected.sig.clone())
+        .map(|rejected| prost::bytes::Bytes::copy_from_slice(rejected.deploy_id()))
         .collect();
     let v_orphaned = rejected_set.contains(&sig_v);
     let w_orphaned = rejected_set.contains(&sig_w);
@@ -353,12 +356,12 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         w_orphaned,
         rejected_sigs
             .iter()
-            .map(|s| hex::encode(&s.sig[..std::cmp::min(8, s.sig.len())]))
+            .map(|s| hex::encode(&s.deploy_id()[..std::cmp::min(8, s.deploy_id().len())]))
             .collect::<Vec<_>>()
     );
     assert!(
         rejected_sigs.iter().any(|rejected| {
-            rejected.sig == sig_x
+            rejected.deploy_id() == sig_x.as_ref()
                 && rejected.reason
                     == models::rust::casper::protocol::casper_message::RejectedDeployReason::DuplicateOccurrence
         }),
@@ -373,7 +376,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     let buffer_contains = {
         let guard = rejected_deploy_buffer.lock().expect("buffer lock");
         guard
-            .contains_sig(orphaned_sig)
+            .contains_id(&crate::legacy_deploy_id(orphaned_sig))
             .expect("buffer.contains_sig")
     };
     assert!(
@@ -390,7 +393,9 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     // copy and isn't a recovery candidate.
     let buffer_has_x = {
         let guard = rejected_deploy_buffer.lock().expect("buffer lock");
-        guard.contains_sig(&sig_x).expect("buffer.contains_sig")
+        guard
+            .contains_id(&crate::legacy_deploy_id(&sig_x))
+            .expect("buffer.contains_sig")
     };
     assert!(
         !buffer_has_x,

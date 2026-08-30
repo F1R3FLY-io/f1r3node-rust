@@ -410,9 +410,9 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
     // non-conflicting multi-parent case above, whose merge block carries an
     // empty `rejected_deploys`.
     assert_eq!(single_parent_block.body.rejected_deploys.len(), 1);
-    let rejected_sig = &single_parent_block.body.rejected_deploys[0].sig;
+    let rejected_sig = single_parent_block.body.rejected_deploys[0].deploy_id();
     assert!(
-        *rejected_sig == deploys[0].sig || *rejected_sig == deploys[1].sig,
+        rejected_sig == deploys[0].sig.as_ref() || rejected_sig == deploys[1].sig.as_ref(),
         "the rejected deploy must be one of the two conflicting deploys (the @1 producer or the @1 & @2 join)"
     );
 

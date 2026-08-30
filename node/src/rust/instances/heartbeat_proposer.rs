@@ -1349,6 +1349,7 @@ mod tests {
                 finalized_floor_commitment: Some(finalized_floor_commitment),
                 admission_schema_version: ADMISSION_SCHEMA_VERSION,
                 approved_genesis: false,
+                merge_base: parents.first().cloned().unwrap_or_default(),
             };
 
             snapshot.dag.dag_set.insert(hash.clone());
@@ -1493,6 +1494,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 stale_recovery_min_interval: Duration::from_millis(0),
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
+                    frontier_chase_max_lag: 20,
                     pending_deploy_max_lag: 20,
                     deploy_recovery_max_lag: 64,
                     empty_frontier_max_unfinalized_blocks: 4,
@@ -1567,6 +1569,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 stale_recovery_min_interval: Duration::ZERO,
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
+                    frontier_chase_max_lag: 1,
                     pending_deploy_max_lag: 1,
                     deploy_recovery_max_lag: 1,
                     empty_frontier_max_unfinalized_blocks: 4,
@@ -1669,6 +1672,7 @@ mod tests {
                 self_propose_cooldown: Duration::from_secs(15),
                 stale_recovery_min_interval: Duration::from_secs(15),
                 advanced: casper::rust::casper_conf::HeartbeatAdvancedConf {
+                    frontier_chase_max_lag: 1,
                     pending_deploy_max_lag: 1,
                     deploy_recovery_max_lag: 1,
                     empty_frontier_max_unfinalized_blocks: 4,

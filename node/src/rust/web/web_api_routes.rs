@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -7,6 +9,7 @@ use serde::Deserialize;
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::web_api::{
     DataAtNameByBlockHashRequest, DeployResponse, PrepareRequest, PrepareResponse, RhoDataResponse,
+    WebApi,
 };
 use crate::rust::web::shared_handlers::{
     self, offload, ApiErrorResponse, AppError, AppJson, AppPath, AppQuery, AppState,
@@ -20,6 +23,13 @@ pub struct ViewQuery {
 #[derive(Debug, Deserialize)]
 pub struct BlockHashQuery {
     pub block_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeployerQuery {
+    /// Hex-encoded deployer public key. Empty/absent returns all pending
+    /// deploys regardless of deployer.
+    pub deployer: Option<String>,
 }
 
 pub struct WebApiRoutes;
@@ -54,6 +64,7 @@ impl WebApiRoutes {
                 "/deploy-finalization-status/{deploy_sig_hex}",
                 get(deploy_finalization_status_handler),
             )
+            .route("/pending-deploys", get(pending_deploys_handler))
             .route("/balance/{address}", get(balance_handler))
             .route("/registry/{uri}", get(registry_handler))
             .route("/validators", get(validators_handler))
@@ -283,7 +294,7 @@ pub async fn is_finalized_handler(
 }
 
 use crate::rust::api::web_api::{
-    BalanceResponse, EpochResponse, RegistryResponse, ValidatorsResponse,
+    BalanceResponse, EpochResponse, PendingDeploysJson, RegistryResponse, ValidatorsResponse,
 };
 
 #[utoipa::path(
@@ -311,6 +322,42 @@ pub async fn deploy_finalization_status_handler(
     match offload(move || async move { web_api.deploy_finalization_status(deploy_sig_hex).await })
         .await
     {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => AppError(e).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/pending-deploys",
+    params(
+        ("deployer" = Option<String>, Query, description = "Hex-encoded deployer public key; omit to return all pending deploys"),
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Bulk snapshot of the node-local pending-deploy queue (deploy_storage + rejected_deploy_buffer). Observers always answer empty",
+            body = PendingDeploysJson,
+        ),
+        (status = 400, description = "Invalid deployer hex (`invalid_public_key`)", body = ApiErrorResponse),
+        (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
+    ),
+    tag = "WebAPI"
+)]
+pub async fn pending_deploys_handler(
+    State(app_state): State<AppState>,
+    AppQuery(query): AppQuery<DeployerQuery>,
+) -> Response {
+    pending_deploys_logic(app_state.web_api.clone(), query).await
+}
+
+/// Core of `pending_deploys_handler`, split out so tests can exercise the
+/// exact handler path without constructing a full `AppState`.
+async fn pending_deploys_logic(
+    web_api: Arc<dyn WebApi + Send + Sync>,
+    query: DeployerQuery,
+) -> Response {
+    match offload(move || async move { web_api.get_pending_deploys(query.deployer).await }).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => AppError(e).into_response(),
     }
@@ -655,6 +702,58 @@ mod tests {
         ) -> eyre::Result<crate::rust::api::web_api::DeployFinalizationStatusJson> {
             unimplemented!()
         }
+        async fn get_pending_deploys(
+            &self,
+            deployer: Option<String>,
+        ) -> eyre::Result<crate::rust::api::web_api::PendingDeploysJson> {
+            use crate::rust::api::web_api::{PendingDeployJson, PendingDeploysJson};
+
+            let deploys = match deployer.as_deref() {
+                Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
+                    term: "for (x <- ch) { return!(x) }".to_string(),
+                    timestamp: 1770028092477,
+                    valid_after_block_number: 0,
+                    shard_id: String::new(),
+                    deployer: pk.to_string(),
+                    deploy_id: "aa11".to_string(),
+                    sig: "aa11".to_string(),
+                    sig_algorithm: "secp256k1".to_string(),
+                    expiration_timestamp: None,
+                    is_rejected: false,
+                }],
+                _ => vec![
+                    PendingDeployJson {
+                        term: "Nil".to_string(),
+                        timestamp: 1770028092477,
+                        valid_after_block_number: 0,
+                        shard_id: String::new(),
+                        deployer: "0487def456".to_string(),
+                        deploy_id: "aa11".to_string(),
+                        sig: "aa11".to_string(),
+                        sig_algorithm: "secp256k1".to_string(),
+                        expiration_timestamp: None,
+                        is_rejected: false,
+                    },
+                    PendingDeployJson {
+                        term: "@0!(42)".to_string(),
+                        timestamp: 1770028092478,
+                        valid_after_block_number: 0,
+                        shard_id: String::new(),
+                        deployer: "0499abc789".to_string(),
+                        deploy_id: "bb22".to_string(),
+                        sig: "bb22".to_string(),
+                        sig_algorithm: "secp256k1".to_string(),
+                        expiration_timestamp: None,
+                        is_rejected: true,
+                    },
+                ],
+            };
+            let total_available = deploys.len() as u32;
+            Ok(PendingDeploysJson {
+                deploys,
+                total_available,
+            })
+        }
         async fn get_balance(
             &self,
             _: String,
@@ -729,6 +828,15 @@ mod tests {
         let web_api: Arc<dyn WebApi + Send + Sync> = Arc::new(StubWebApi);
         Router::new()
             .route("/deploy/{deploy_id}", get(test_find_deploy_handler))
+            .route(
+                "/pending-deploys",
+                get(
+                    move |State(web_api): State<Arc<dyn WebApi + Send + Sync>>,
+                          AppQuery(query): AppQuery<DeployerQuery>| {
+                        pending_deploys_logic(web_api, query)
+                    },
+                ),
+            )
             .with_state(web_api)
     }
 
@@ -820,5 +928,49 @@ mod tests {
         // Unknown view falls back to full
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_pending_deploys_returns_all_when_no_deployer() {
+        let app = test_router();
+
+        let request: axum::http::Request<Body> = axum::http::Request::builder()
+            .uri("/pending-deploys")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_to_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(json["deploys"].as_array().unwrap().len(), 2);
+        assert_eq!(json["totalAvailable"], 2);
+        assert_eq!(json["deploys"][0]["isRejected"], false);
+        assert_eq!(json["deploys"][1]["isRejected"], true);
+        assert_eq!(json["deploys"][0]["deployer"], "0487def456");
+        assert_eq!(json["deploys"][1]["deployer"], "0499abc789");
+        assert_eq!(json["deploys"][0]["sigAlgorithm"], "secp256k1");
+    }
+
+    #[tokio::test]
+    async fn test_pending_deploys_filters_by_deployer() {
+        let app = test_router();
+
+        let request: axum::http::Request<Body> = axum::http::Request::builder()
+            .uri("/pending-deploys?deployer=0487def456")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = body_to_string(response.into_body()).await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+        assert_eq!(json["deploys"].as_array().unwrap().len(), 1);
+        assert_eq!(json["totalAvailable"], 1);
+        assert_eq!(json["deploys"][0]["deployer"], "0487def456");
     }
 }

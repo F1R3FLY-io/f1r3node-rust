@@ -70,6 +70,35 @@ struct BlockInfo {
 }
 
 impl BlockMetadataStore {
+    pub(crate) fn raw_store(
+        &self,
+    ) -> &Arc<dyn shared::rust::store::key_value_store::KeyValueStore> {
+        self.store.raw_store()
+    }
+
+    pub(crate) fn encode_add(
+        &self,
+        block_metadata: &BlockMetadata,
+    ) -> Result<(Vec<u8>, Vec<u8>), KvStoreError> {
+        block_metadata
+            .validate()
+            .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
+        Ok((
+            self.store
+                .encode_key(&BlockHashSerde(block_metadata.block_hash.clone()))?,
+            self.store.encode_value(block_metadata)?,
+        ))
+    }
+
+    pub(crate) fn apply_committed_add(&mut self, block_metadata: BlockMetadata) {
+        let block_hash = block_metadata.block_hash.clone();
+        let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
+        self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
+            self.dag_state.clone(),
+            block_info,
+        ));
+    }
+
     fn prune_finalized_cache_if_needed(state: &mut DagState) {
         let len = state.finalized_block_set.len();
         if len <= FINALIZED_BLOCK_CACHE_MAX {
@@ -134,20 +163,9 @@ impl BlockMetadataStore {
     }
 
     pub fn add(&mut self, block_metadata: BlockMetadata) -> Result<(), KvStoreError> {
-        block_metadata
-            .validate()
-            .map_err(|error| KvStoreError::InvalidArgument(error.to_string()))?;
-        let block_hash = block_metadata.block_hash.clone();
-        let block_info = Self::block_metadata_to_info(&block_hash, &block_metadata);
-
-        self.dag_state = Self::validate_dag_state(Self::add_block_to_dag_state(
-            self.dag_state.clone(),
-            block_info,
-        ));
-
-        // Update persistent block metadata store
-        self.store
-            .put_one(BlockHashSerde(block_hash), block_metadata)?;
+        let (key, value) = self.encode_add(&block_metadata)?;
+        self.store.raw_store().put_one(key, value)?;
+        self.apply_committed_add(block_metadata);
 
         Ok(())
     }

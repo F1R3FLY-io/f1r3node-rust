@@ -31,6 +31,7 @@ use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployAdmissionStatus, DeployData,
 };
+use models::rust::deploy_id::DeployLookupId;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
@@ -38,6 +39,12 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 type BondsFunction = fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>;
+
+fn only_deploy_id(block: &BlockMessage) -> DeployLookupId {
+    block.body.deploys[0]
+        .deploy_id_for_protocol(block.header.version)
+        .expect("block deploy identity")
+}
 
 struct TestContext {
     genesis: GenesisContext,
@@ -540,7 +547,6 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
         None,
         node.deploy_storage.clone(),
         node.rejected_deploy_buffer.clone(),
-        std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
         &node.runtime_manager,
         &mut node.block_store,
         true,
@@ -583,6 +589,8 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
         .add_block_from_deploys(std::slice::from_ref(&second))
         .await
         .expect("second sibling");
+    let first_id = only_deploy_id(&block_a);
+    let second_id = only_deploy_id(&block_b);
     let status_b_on_a = nodes[0]
         .process_block(block_b.clone())
         .await
@@ -620,8 +628,8 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
             .collect::<std::collections::HashSet<_>>();
         assert!(parent_hashes.contains(&block_a.block_hash));
         assert!(parent_hashes.contains(&block_b.block_hash));
-        assert!(snapshot.deploys_in_scope.contains(&first.sig));
-        assert!(snapshot.deploys_in_scope.contains(&second.sig));
+        assert!(snapshot.deploys_in_scope.contains(&first_id));
+        assert!(snapshot.deploys_in_scope.contains(&second_id));
     }
     let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), 0, &shard);
     let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), 0, &shard);
@@ -707,6 +715,8 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .add_block_from_deploys(std::slice::from_ref(&second))
         .await
         .expect("majority sibling");
+    let first_id = only_deploy_id(&block_a);
+    let second_id = only_deploy_id(&block_b);
     let status_b_on_a = nodes[0]
         .process_block(block_b.clone())
         .await
@@ -746,10 +756,10 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         parent_hashes,
         HashSet::from([block_a.block_hash.clone(), block_b.block_hash.clone()])
     );
-    assert!(snapshot.deploys_in_scope.contains(&first.sig));
-    assert!(snapshot.deploys_in_scope.contains(&second.sig));
-    assert!(!snapshot.rejected_in_scope.contains(&first.sig));
-    assert!(!snapshot.rejected_in_scope.contains(&second.sig));
+    assert!(snapshot.deploys_in_scope.contains(&first_id));
+    assert!(snapshot.deploys_in_scope.contains(&second_id));
+    assert!(!snapshot.rejected_in_scope.contains(&first_id));
+    assert!(!snapshot.rejected_in_scope.contains(&second_id));
 
     let settlement = nodes[0]
         .add_block_from_deploys(&[])
@@ -760,7 +770,7 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .body
         .rejected_deploys
         .iter()
-        .filter(|rejected| rejected.sig == first.sig)
+        .filter(|rejected| rejected.typed_deploy_id() == &first_id)
         .collect::<Vec<_>>();
     assert_eq!(first_rejections.len(), 1);
     assert_eq!(first_rejections[0].source_block_hash, block_a.block_hash);
@@ -769,7 +779,7 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .body
         .rejected_deploys
         .iter()
-        .all(|rejected| rejected.sig != second.sig));
+        .all(|rejected| rejected.typed_deploy_id() != &second_id));
     let settlement_status = nodes[1]
         .process_block(settlement.clone())
         .await
@@ -781,13 +791,13 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
             node.rejected_deploy_buffer
                 .lock()
                 .expect("rejected deploy buffer")
-                .contains_sig(&first.sig)
+                .contains_id(&first_id)
                 .expect("buffer lookup"),
             "validator {index} did not retain the exact rejected occurrence"
         );
         let recovery_snapshot = node.casper.get_snapshot().await.expect("recovery snapshot");
-        assert!(recovery_snapshot.rejected_in_scope.contains(&first.sig));
-        assert!(!recovery_snapshot.rejected_in_scope.contains(&second.sig));
+        assert!(recovery_snapshot.rejected_in_scope.contains(&first_id));
+        assert!(!recovery_snapshot.rejected_in_scope.contains(&second_id));
     }
 
     let recovery_snapshot = nodes[0]
@@ -829,11 +839,9 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         selected,
         HashSet::from([first.sig.clone(), fresh.sig.clone()])
     );
-    assert!(recovery_block
-        .body
-        .rejected_deploys
-        .iter()
-        .all(|rejected| rejected.sig != first.sig && rejected.sig != fresh.sig));
+    assert!(recovery_block.body.rejected_deploys.iter().all(|rejected| {
+        rejected.deploy_id() != first.sig.as_ref() && rejected.deploy_id() != fresh.sig.as_ref()
+    }));
     for (index, node) in nodes.iter_mut().enumerate() {
         if index != recovery_leader {
             let status = node
@@ -869,7 +877,7 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         recovery_block.body.state.block_number,
     );
     assert!(
-        casper::rust::finality::floor::is_state_preserved(
+        block_storage::rust::finality::state_preservation::is_state_preserved(
             &nodes[support_proposer]
                 .block_dag_storage
                 .get_representation()

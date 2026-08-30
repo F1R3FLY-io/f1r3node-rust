@@ -99,6 +99,10 @@ mod tests {
 
     #[async_trait]
     impl Casper for ValidatorAwareNoOpsCasper {
+        async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
+            self.inner.request_block_from_peers(hash).await
+        }
+
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
             self.inner.get_snapshot().await
         }
@@ -322,6 +326,7 @@ mod tests {
                     required_sigs: 0,
                 },
                 sigs: Vec::new(),
+                floor_seed: None,
             };
 
         fixture
@@ -444,6 +449,7 @@ mod tests {
                 required_sigs: 0,
             },
             sigs: Vec::new(),
+            floor_seed: None,
         };
 
         let finalization_requests = Arc::new(AtomicUsize::new(0));
@@ -469,6 +475,7 @@ mod tests {
             Some(RunningRecoveryContext {
                 connections_cell: fixture.connections_cell.clone(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
 
@@ -531,6 +538,7 @@ mod tests {
                 required_sigs: 0,
             },
             sigs: Vec::new(),
+            floor_seed: None,
         };
 
         let finalization_requests = Arc::new(AtomicUsize::new(0));
@@ -556,6 +564,7 @@ mod tests {
             Some(RunningRecoveryContext {
                 connections_cell: fixture.connections_cell.clone(),
             }),
+            None,
         );
         engine_cell.set(Arc::new(running)).await;
 

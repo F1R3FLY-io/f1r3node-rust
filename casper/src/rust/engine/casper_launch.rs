@@ -78,6 +78,11 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
     disable_state_exporter: bool,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 }
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
@@ -135,6 +140,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         standalone: bool,
+        state_items_tx: Option<
+            tokio::sync::mpsc::Sender<
+                models::rust::casper::protocol::casper_message::StoreItemsMessage,
+            >,
+        >,
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
@@ -145,6 +155,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             fault_tolerance_threshold_ppm: ProofOfStake::fault_tolerance_threshold_to_ppm(
                 conf.fault_tolerance_threshold,
             ),
+            finalizer_conf: crate::rust::casper_conf::FinalizerConf::default(),
             shard_name: conf.shard_name.clone(),
             parent_shard_id: conf.parent_shard_id.clone(),
             finalization_rate: conf.finalization_rate,
@@ -177,7 +188,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.finalizer.clone(),
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.synchrony_recovery_max_bypasses,
@@ -189,10 +199,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
-            // Phase 13: defaults match the previous hardcoded constants
-            // (`FINALIZER_BLOCKING_TIMEOUT = 15s`,
-            // `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
-            // gains corresponding fields, plumb them through here.
+            // Phase 13: default matches the previous hardcoded constant
+            // (`MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
+            // gains a corresponding field, plumb it through here.
             active_validators_cache_max_entries: 4096,
         };
 
@@ -222,6 +231,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             trim_state,
             disable_state_exporter,
             heartbeat_signal_ref,
+            state_items_tx,
         }
     }
 
@@ -294,7 +304,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     // because we additionally clean up the BlockRetriever's
                     // hash-tracking state (a launch-specific concern that
                     // the generic recon helper doesn't know about).
-                    // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+                    // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
                     if dag_contains {
                         tracing::warn!(
                             "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
@@ -437,6 +447,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             }),
             &self.engine_cell,
             &self.event_publisher,
+            self.state_items_tx.clone(),
         )
         .await?;
 
@@ -541,6 +552,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.runtime_manager.clone(),
             self.estimator.clone(),
             self.heartbeat_signal_ref.clone(),
+            self.state_items_tx.clone(),
         );
 
         self.engine_cell.set(Arc::new(genesis_validator)).await;
@@ -737,6 +749,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             &self.runtime_manager,
             &self.estimator,
             &self.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await?;
 

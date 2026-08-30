@@ -1,3 +1,6 @@
+use k256::ecdsa::Signature as Secp256k1Signature;
+use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::PublicKey as Secp256k1PublicKey;
 use prost::Message;
 
 use super::secp256k1_eth::Secp256k1Eth;
@@ -12,6 +15,7 @@ use crate::rust::public_key::PublicKey;
 pub trait ToMessage {
     type Type: Message;
     fn to_message(&self) -> Self::Type;
+    fn envelope_intent_v61(&self) -> Result<Vec<u8>, String>;
 }
 
 // See crypto/src/main/scala/coop/rchain/crypto/signatures/Signed.scala
@@ -52,6 +56,85 @@ pub enum CosignedError {
     PlusInvalidChosenBranch { got: i32 },
     #[error("WhyNot atom verification failed: optional atom presented but signature invalid")]
     WhyNotInvalidSignature,
+    #[error("envelope commitment has duplicate signer pk: {pk_hex}")]
+    DuplicateCommitmentSigner { pk_hex: String },
+    #[error("envelope signer order is not canonical at index {index}")]
+    NonCanonicalSignerOrder { index: usize },
+    #[error("legacy payload signatures do not authenticate a protocol-v6 envelope commitment")]
+    LegacyEnvelopeCommitmentUnavailable,
+    #[error("unsupported protocol-v6 signature algorithm: {algorithm}")]
+    UnsupportedEnvelopeSignatureAlgorithm { algorithm: String },
+    #[error("protocol-v6 signer at index {index} has a non-canonical public key")]
+    NonCanonicalEnvelopePublicKey { index: usize },
+    #[error("protocol-v6 signer at index {index} has a non-canonical signature")]
+    NonCanonicalEnvelopeSignature { index: usize },
+    #[error("protocol-v6 envelope has duplicate ground authority: {pk_hex}")]
+    DuplicateGroundAuthority { pk_hex: String },
+    #[error("protocol-v6 envelope intent is invalid: {message}")]
+    InvalidEnvelopeIntent { message: String },
+    #[error("protocol-v6 presence bitmap is invalid")]
+    InvalidEnvelopePresenceBitmap,
+}
+
+const ENVELOPE_COMMITMENT_DOMAIN: &[u8] = b"f1r3fly:casper:deploy-envelope:v6.1";
+const ENVELOPE_SIGNATURE_DOMAIN: &[u8] = b"f1r3fly:casper:deploy-envelope-signature:v6.1";
+const ENVELOPE_PROTOCOL_VERSION: u16 = 6;
+
+fn append_commitment_field(preimage: &mut Vec<u8>, bytes: &[u8]) {
+    preimage.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    preimage.extend_from_slice(bytes);
+}
+
+fn envelope_scheme_id(algorithm: &str) -> Result<u16, CosignedError> {
+    match algorithm {
+        "secp256k1" => Ok(1),
+        Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Ok(2),
+        _ => Err(CosignedError::UnsupportedEnvelopeSignatureAlgorithm {
+            algorithm: algorithm.to_string(),
+        }),
+    }
+}
+
+fn canonical_envelope_public_key(public_key: &[u8]) -> Option<Vec<u8>> {
+    let parsed = Secp256k1PublicKey::from_sec1_bytes(public_key).ok()?;
+    let canonical = parsed.to_encoded_point(false).as_bytes().to_vec();
+    (canonical.as_slice() == public_key).then_some(canonical)
+}
+
+fn canonical_envelope_signature(scheme_id: u16, signature: &[u8]) -> bool {
+    let parsed = match scheme_id {
+        1 => Secp256k1Signature::from_der(signature)
+            .ok()
+            .filter(|value| {
+                value.to_der().as_bytes() == signature && value.normalize_s().is_none()
+            }),
+        2 => Secp256k1Signature::from_slice(signature)
+            .ok()
+            .filter(|value| value.normalize_s().is_none()),
+        _ => None,
+    };
+    parsed.is_some()
+}
+
+fn principal_bytes(signer: &Cosigner, index: usize) -> Result<Vec<u8>, CosignedError> {
+    let scheme_id = envelope_scheme_id(&signer.sig_algorithm.name())?;
+    let public_key = canonical_envelope_public_key(&signer.pk.bytes)
+        .ok_or(CosignedError::NonCanonicalEnvelopePublicKey { index })?;
+    let mut encoded = Vec::with_capacity(2 + 4 + public_key.len());
+    encoded.extend_from_slice(&scheme_id.to_be_bytes());
+    encoded.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+    encoded.extend_from_slice(&public_key);
+    Ok(encoded)
+}
+
+fn presence_bitmap(signers: &[Cosigner]) -> Vec<u8> {
+    let mut bitmap = vec![0u8; signers.len().div_ceil(8)];
+    for (index, signer) in signers.iter().enumerate() {
+        if !signer.sig.is_empty() {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+    }
+    bitmap
 }
 
 /// One signer in a multi-signature deploy envelope. Sorted ascending by
@@ -75,6 +158,14 @@ impl PartialEq for Cosigner {
 }
 
 impl Eq for Cosigner {}
+
+impl Cosigner {
+    pub fn scheme_id_v61(&self) -> Result<u16, CosignedError> {
+        envelope_scheme_id(&self.sig_algorithm.name())
+    }
+
+    pub fn principal_bytes_v61(&self) -> Result<Vec<u8>, CosignedError> { principal_bytes(self, 0) }
+}
 
 impl std::hash::Hash for Cosigner {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -113,6 +204,25 @@ pub struct Cosigned<A> {
     /// the envelope so it survives ProcessedDeploy round-trip and replay.
     #[serde(default)]
     cosigner_threshold: u32,
+    #[serde(default)]
+    signing_domain: CosignedSigningDomain,
+}
+
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize
+)]
+pub enum CosignedSigningDomain {
+    #[default]
+    LegacyPayload,
+    EnvelopeV6,
 }
 
 impl<A: PartialEq> PartialEq for Cosigned<A> {
@@ -120,6 +230,7 @@ impl<A: PartialEq> PartialEq for Cosigned<A> {
         self.data == other.data
             && self.signers == other.signers
             && self.cosigner_threshold == other.cosigner_threshold
+            && self.signing_domain == other.signing_domain
     }
 }
 
@@ -132,10 +243,291 @@ impl<A: std::hash::Hash> std::hash::Hash for Cosigned<A> {
             signer.hash(state);
         }
         self.cosigner_threshold.hash(state);
+        self.signing_domain.hash(state);
     }
 }
 
 impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
+    pub fn validate_envelope_signer_order(signers: &[Cosigner]) -> Result<(), CosignedError> {
+        if signers.is_empty() {
+            return Err(CosignedError::EmptySignerList);
+        }
+        let principals = signers
+            .iter()
+            .enumerate()
+            .map(|(index, signer)| principal_bytes(signer, index))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, pair) in principals.windows(2).enumerate() {
+            match pair[0].cmp(&pair[1]) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => {
+                    return Err(CosignedError::DuplicateCommitmentSigner {
+                        pk_hex: hex::encode(&signers[index].pk.bytes),
+                    });
+                }
+                std::cmp::Ordering::Greater => {
+                    return Err(CosignedError::NonCanonicalSignerOrder { index: index + 1 });
+                }
+            }
+        }
+        for pair in signers.windows(2) {
+            if pair[0].pk.bytes == pair[1].pk.bytes {
+                return Err(CosignedError::DuplicateGroundAuthority {
+                    pk_hex: hex::encode(&pair[0].pk.bytes),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn canonical_envelope_signers(signers: &[Cosigner]) -> Result<Vec<Cosigner>, CosignedError> {
+        if signers.is_empty() {
+            return Err(CosignedError::EmptySignerList);
+        }
+        let mut canonical = signers
+            .iter()
+            .enumerate()
+            .map(|(index, signer)| Ok((principal_bytes(signer, index)?, signer.clone())))
+            .collect::<Result<Vec<_>, CosignedError>>()?;
+        canonical.sort_by(|left, right| left.0.cmp(&right.0));
+        for pair in canonical.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(CosignedError::DuplicateCommitmentSigner {
+                    pk_hex: hex::encode(&pair[0].1.pk.bytes),
+                });
+            }
+        }
+        let mut ground_owners = canonical
+            .iter()
+            .map(|(_, signer)| signer.pk.bytes.clone())
+            .collect::<Vec<_>>();
+        ground_owners.sort();
+        for pair in ground_owners.windows(2) {
+            if pair[0] == pair[1] {
+                return Err(CosignedError::DuplicateGroundAuthority {
+                    pk_hex: hex::encode(&pair[0]),
+                });
+            }
+        }
+        Ok(canonical.into_iter().map(|(_, signer)| signer).collect())
+    }
+
+    fn envelope_commitment_for_canonical(
+        data: &A,
+        signers: &[Cosigner],
+        cosigner_threshold: u32,
+        bitmap: &[u8],
+    ) -> Result<prost::bytes::Bytes, CosignedError> {
+        let total_signers = signers.len() as u32;
+        if cosigner_threshold < 1 || cosigner_threshold > total_signers {
+            return Err(CosignedError::InvalidQuorumThreshold {
+                threshold: cosigner_threshold,
+                total_signers,
+            });
+        }
+        if bitmap.len() != signers.len().div_ceil(8)
+            || bitmap.last().is_some_and(|last| {
+                let used = signers.len() % 8;
+                used != 0 && *last & !((1u8 << used) - 1) != 0
+            })
+        {
+            return Err(CosignedError::InvalidEnvelopePresenceBitmap);
+        }
+        let selected = bitmap.iter().map(|byte| byte.count_ones()).sum::<u32>();
+        if selected < cosigner_threshold
+            || (cosigner_threshold == total_signers && selected != total_signers)
+        {
+            return Err(CosignedError::QuorumNotMet {
+                threshold: cosigner_threshold,
+                valid_signers: selected,
+            });
+        }
+        let intent = data
+            .envelope_intent_v61()
+            .map_err(|message| CosignedError::InvalidEnvelopeIntent { message })?;
+        let mut policy = Vec::new();
+        if cosigner_threshold == total_signers {
+            policy.push(1);
+            policy.extend_from_slice(&total_signers.to_be_bytes());
+        } else {
+            policy.push(2);
+            policy.extend_from_slice(&cosigner_threshold.to_be_bytes());
+            policy.extend_from_slice(&total_signers.to_be_bytes());
+        }
+        for (index, signer) in signers.iter().enumerate() {
+            policy.extend_from_slice(&principal_bytes(signer, index)?);
+        }
+        let mut preimage = Vec::new();
+        append_commitment_field(&mut preimage, ENVELOPE_COMMITMENT_DOMAIN);
+        preimage.extend_from_slice(&ENVELOPE_PROTOCOL_VERSION.to_be_bytes());
+        append_commitment_field(&mut preimage, &intent);
+        append_commitment_field(&mut preimage, &policy);
+        preimage.extend_from_slice(&(bitmap.len() as u32).to_be_bytes());
+        preimage.extend_from_slice(bitmap);
+        Ok(Blake2b256::hash(preimage).into())
+    }
+
+    pub fn envelope_commitment_for(
+        data: &A,
+        signers: &[Cosigner],
+        cosigner_threshold: u32,
+    ) -> Result<prost::bytes::Bytes, CosignedError> {
+        let canonical = Self::canonical_envelope_signers(signers)?;
+        let bitmap = presence_bitmap(&canonical);
+        Self::envelope_commitment_for_canonical(data, &canonical, cosigner_threshold, &bitmap)
+    }
+
+    pub fn envelope_commitment_for_presence(
+        data: &A,
+        signers: &[Cosigner],
+        cosigner_threshold: u32,
+        bitmap: &[u8],
+    ) -> Result<prost::bytes::Bytes, CosignedError> {
+        let canonical = Self::canonical_envelope_signers(signers)?;
+        Self::envelope_commitment_for_canonical(data, &canonical, cosigner_threshold, bitmap)
+    }
+
+    pub fn envelope_commitment(&self) -> Result<prost::bytes::Bytes, CosignedError> {
+        if self.signing_domain != CosignedSigningDomain::EnvelopeV6 {
+            return Err(CosignedError::LegacyEnvelopeCommitmentUnavailable);
+        }
+        Self::envelope_commitment_for(&self.data, &self.signers, self.cosigner_threshold)
+    }
+
+    pub fn envelope_signing_hash(
+        data: &A,
+        signers: &[Cosigner],
+        cosigner_threshold: u32,
+        signature_algorithm: &str,
+    ) -> Result<Vec<u8>, CosignedError> {
+        let commitment = Self::envelope_commitment_for(data, signers, cosigner_threshold)?;
+        Self::envelope_signature_hash_for_commitment(&commitment, signature_algorithm)
+    }
+
+    pub fn envelope_signing_hash_for_presence(
+        data: &A,
+        signers: &[Cosigner],
+        cosigner_threshold: u32,
+        bitmap: &[u8],
+        signature_algorithm: &str,
+    ) -> Result<Vec<u8>, CosignedError> {
+        let commitment =
+            Self::envelope_commitment_for_presence(data, signers, cosigner_threshold, bitmap)?;
+        Self::envelope_signature_hash_for_commitment(&commitment, signature_algorithm)
+    }
+
+    fn envelope_signature_hash_for_commitment(
+        commitment: &[u8],
+        signature_algorithm: &str,
+    ) -> Result<Vec<u8>, CosignedError> {
+        let scheme_id = envelope_scheme_id(signature_algorithm)?;
+        let mut message = Vec::new();
+        append_commitment_field(&mut message, ENVELOPE_SIGNATURE_DOMAIN);
+        message.extend_from_slice(&ENVELOPE_PROTOCOL_VERSION.to_be_bytes());
+        message.extend_from_slice(&scheme_id.to_be_bytes());
+        message.extend_from_slice(commitment);
+        Ok(Signed::<A>::signature_hash(signature_algorithm, message))
+    }
+
+    pub fn from_envelope_signed_data(
+        data: A,
+        signers: Vec<Cosigner>,
+    ) -> Result<Self, CosignedError> {
+        let threshold = signers.len() as u32;
+        Self::from_envelope_signed_data_threshold_inner(data, signers, threshold)
+    }
+
+    pub fn create_single_envelope(
+        data: A,
+        signature_algorithm: Box<dyn SignaturesAlg>,
+        private_key: PrivateKey,
+    ) -> Result<Self, CosignedError>
+    where
+        A: Clone,
+    {
+        let mut signer = Cosigner {
+            pk: signature_algorithm.to_public(&private_key),
+            sig: prost::bytes::Bytes::from_static(&[1]),
+            sig_algorithm: signature_algorithm,
+        };
+        let signing_hash = Self::envelope_signing_hash(
+            &data,
+            std::slice::from_ref(&signer),
+            1,
+            &signer.sig_algorithm.name(),
+        )?;
+        signer.sig = signer
+            .sig_algorithm
+            .sign(&signing_hash, &private_key.bytes)
+            .into();
+        Self::from_envelope_signed_data_threshold(data, vec![signer], 1)
+    }
+
+    pub fn from_envelope_signed_data_threshold(
+        data: A,
+        signers: Vec<Cosigner>,
+        threshold: u32,
+    ) -> Result<Self, CosignedError> {
+        Self::from_envelope_signed_data_threshold_inner(data, signers, threshold)
+    }
+
+    fn from_envelope_signed_data_threshold_inner(
+        data: A,
+        signers: Vec<Cosigner>,
+        threshold: u32,
+    ) -> Result<Self, CosignedError> {
+        if signers.is_empty() {
+            return Err(CosignedError::EmptySignerList);
+        }
+        let total_signers = signers.len() as u32;
+        if threshold < 1 || threshold > total_signers {
+            return Err(CosignedError::InvalidQuorumThreshold {
+                threshold,
+                total_signers,
+            });
+        }
+        let canonical = Self::canonical_envelope_signers(&signers)?;
+        let commitment = Self::envelope_commitment_for(&data, &canonical, threshold)?;
+        let mut valid_signers = 0u32;
+        for (index, signer) in canonical.iter().enumerate() {
+            if signer.sig.is_empty() {
+                continue;
+            }
+            let scheme_id = envelope_scheme_id(&signer.sig_algorithm.name())?;
+            if !canonical_envelope_signature(scheme_id, &signer.sig) {
+                return Err(CosignedError::NonCanonicalEnvelopeSignature { index });
+            }
+            let mut message = Vec::new();
+            append_commitment_field(&mut message, ENVELOPE_SIGNATURE_DOMAIN);
+            message.extend_from_slice(&ENVELOPE_PROTOCOL_VERSION.to_be_bytes());
+            message.extend_from_slice(&scheme_id.to_be_bytes());
+            message.extend_from_slice(&commitment);
+            let hash = Signed::<A>::signature_hash(&signer.sig_algorithm.name(), message);
+            if !signer
+                .sig_algorithm
+                .verify(&hash, &signer.sig, &signer.pk.bytes)
+            {
+                return Err(CosignedError::SignatureVerifyFailed {
+                    index,
+                    pk_hex: hex::encode(&signer.pk.bytes),
+                });
+            }
+            valid_signers = valid_signers.saturating_add(1);
+        }
+        if valid_signers < threshold {
+            return Err(CosignedError::QuorumNotMet {
+                threshold,
+                valid_signers,
+            });
+        }
+        Ok(Self {
+            data,
+            signers: canonical,
+            cosigner_threshold: threshold,
+            signing_domain: CosignedSigningDomain::EnvelopeV6,
+        })
+    }
+
     /// Construct and validate a multi-signature envelope.
     ///
     /// The constructor enforces the three invariants listed in the
@@ -191,6 +583,7 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
             data,
             signers: canonical,
             cosigner_threshold: 0,
+            signing_domain: CosignedSigningDomain::LegacyPayload,
         })
     }
 
@@ -268,6 +661,7 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
             data,
             signers: canonical,
             cosigner_threshold: threshold,
+            signing_domain: CosignedSigningDomain::LegacyPayload,
         })
     }
 
@@ -290,7 +684,30 @@ impl<A: std::fmt::Debug + serde::Serialize + ToMessage> Cosigned<A> {
             data: signed.data,
             signers: vec![signer],
             cosigner_threshold: 0,
+            signing_domain: CosignedSigningDomain::LegacyPayload,
         })
+    }
+
+    pub fn is_envelope_bound(&self) -> bool {
+        self.signing_domain == CosignedSigningDomain::EnvelopeV6
+    }
+
+    pub fn presence_bitmap_v61(&self) -> Result<Vec<u8>, CosignedError> {
+        if !self.is_envelope_bound() {
+            return Err(CosignedError::LegacyEnvelopeCommitmentUnavailable);
+        }
+        Ok(presence_bitmap(&self.signers))
+    }
+
+    pub fn selected_signers_v61(&self) -> Result<Vec<&Cosigner>, CosignedError> {
+        if !self.is_envelope_bound() {
+            return Err(CosignedError::LegacyEnvelopeCommitmentUnavailable);
+        }
+        Ok(self
+            .signers
+            .iter()
+            .filter(|signer| !signer.sig.is_empty())
+            .collect())
     }
 
     /// Phase 2 M-of-N quorum threshold. 0 = N-of-N (Phase 1) semantics.
@@ -501,6 +918,7 @@ mod cosigned_tests {
     impl ToMessage for TestPayload {
         type Type = TestPayload;
         fn to_message(&self) -> Self::Type { self.clone() }
+        fn envelope_intent_v61(&self) -> Result<Vec<u8>, String> { Ok(self.encode_to_vec()) }
     }
 
     fn fresh_cosigner(payload: &TestPayload) -> Cosigner {
@@ -617,6 +1035,54 @@ mod cosigned_tests {
             sig: prost::bytes::Bytes::new(),
             sig_algorithm: Box::new(secp),
         }
+    }
+
+    fn v61_signers(
+        payload: &TestPayload,
+        member_count: usize,
+        selected: &[usize],
+        threshold: u32,
+    ) -> (Vec<Cosigner>, Vec<PrivateKey>) {
+        let secp = Secp256k1;
+        let mut members = (0..member_count)
+            .map(|_| {
+                let (private_key, public_key) = secp.new_key_pair();
+                (
+                    Cosigner {
+                        pk: public_key,
+                        sig: prost::bytes::Bytes::new(),
+                        sig_algorithm: Box::new(secp.clone()),
+                    },
+                    private_key,
+                )
+            })
+            .collect::<Vec<_>>();
+        members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
+        let mut bitmap = vec![0u8; member_count.div_ceil(8)];
+        for index in selected {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+        let unsigned = members
+            .iter()
+            .map(|(signer, _)| signer.clone())
+            .collect::<Vec<_>>();
+        for index in selected {
+            let hash = Cosigned::<TestPayload>::envelope_signing_hash_for_presence(
+                payload,
+                &unsigned,
+                threshold,
+                &bitmap,
+                &members[*index].0.sig_algorithm.name(),
+            )
+            .unwrap();
+            members[*index].0.sig = members[*index]
+                .0
+                .sig_algorithm
+                .sign(&hash, &members[*index].1.bytes)
+                .into();
+        }
+        let (signers, private_keys): (Vec<_>, Vec<_>) = members.into_iter().unzip();
+        (signers, private_keys)
     }
 
     #[test]
@@ -756,5 +1222,74 @@ mod cosigned_tests {
             Cosigned::from_single_signer(signed).expect("single-signer uplift must work");
         assert!(!cosigned.is_compound());
         assert_eq!(cosigned.signers().len(), 1);
+    }
+
+    #[test]
+    fn envelope_v61_binds_the_selected_subset() {
+        let payload = TestPayload {
+            term: "selected-subset".to_string(),
+            nonce: 1,
+        };
+        let (left_signers, _) = v61_signers(&payload, 3, &[0, 1], 2);
+        let right_bitmap = [0b0000_0110];
+        let left = Cosigned::from_envelope_signed_data_threshold(payload, left_signers.clone(), 2)
+            .expect("valid v6.1 envelope");
+        let right_commitment = Cosigned::<TestPayload>::envelope_commitment_for_presence(
+            left.data(),
+            &left_signers,
+            2,
+            &right_bitmap,
+        )
+        .unwrap();
+        assert_ne!(left.envelope_commitment().unwrap(), right_commitment);
+    }
+
+    #[test]
+    fn envelope_v61_binds_threshold_with_the_same_selected_subset() {
+        let payload = TestPayload {
+            term: "threshold-policy".to_string(),
+            nonce: 2,
+        };
+        let (signers, _) = v61_signers(&payload, 3, &[0, 1], 2);
+        let bitmap = [0b0000_0011];
+        let threshold_one = Cosigned::<TestPayload>::envelope_commitment_for_presence(
+            &payload, &signers, 1, &bitmap,
+        )
+        .unwrap();
+        let threshold_two = Cosigned::<TestPayload>::envelope_commitment_for_presence(
+            &payload, &signers, 2, &bitmap,
+        )
+        .unwrap();
+        assert_ne!(threshold_one, threshold_two);
+    }
+
+    #[test]
+    fn envelope_v61_selected_signers_exclude_unsigned_policy_members() {
+        let payload = TestPayload {
+            term: "no-unsigned-authority".to_string(),
+            nonce: 3,
+        };
+        let (signers, _) = v61_signers(&payload, 3, &[1, 2], 2);
+        let unsigned = signers[0].pk.clone();
+        let envelope = Cosigned::from_envelope_signed_data_threshold(payload, signers, 2)
+            .expect("valid v6.1 envelope");
+        let selected = envelope.selected_signers_v61().unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|signer| signer.pk != unsigned));
+    }
+
+    #[test]
+    fn envelope_v61_rejects_legacy_payload_signatures() {
+        let payload = TestPayload {
+            term: "domain-separation".to_string(),
+            nonce: 4,
+        };
+        let signer = fresh_cosigner(&payload);
+        let result = Cosigned::from_envelope_signed_data_threshold(payload, vec![signer], 1);
+        assert!(matches!(
+            result,
+            Err(CosignedError::SignatureVerifyFailed { .. })
+                | Err(CosignedError::NonCanonicalEnvelopeSignature { .. })
+        ));
     }
 }

@@ -11,7 +11,7 @@ use casper::rust::casper::CasperSnapshot;
 use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::{Estimator, ForkChoice};
-use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
+use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint_legacy_signer;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::block::state_hash::StateHash;
@@ -19,7 +19,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, FinalizationCertificate, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy,
+    ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -84,6 +84,13 @@ fn generated_candidate_context_digest(
     .unwrap()
     .digest()
     .clone()
+}
+
+#[derive(Clone, Default)]
+pub struct MergeFacts {
+    pub merge_base: Option<BlockHash>,
+    pub applied_from_scope: Vec<prost::bytes::Bytes>,
+    pub rejected_deploys: Vec<RejectedDeploy>,
 }
 
 pub async fn certified_fork_choice(
@@ -179,7 +186,7 @@ async fn compute_block_checkpoint(
         .collect();
 
     let (pre_state_hash, post_state_hash, processed_deploys, _, processed_system_deploys, _) =
-        compute_deploys_checkpoint(
+        compute_deploys_checkpoint_legacy_signer(
             block_store,
             parents,
             deploys,
@@ -424,7 +431,7 @@ pub fn create_block(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    create_block_with_system_deploys_at(
+    create_block_with_merge_facts_and_system_deploys_at(
         block_store,
         indexed_block_dag_storage,
         parents_hash_list,
@@ -439,6 +446,84 @@ pub fn create_block(
         seq_num,
         invalid,
         None,
+        None,
+        None,
+        now,
+    )
+}
+
+pub fn create_block_with_merge_facts(
+    block_store: &mut KeyValueBlockStore,
+    indexed_block_dag_storage: &mut IndexedBlockDagStorage,
+    parents_hash_list: Vec<BlockHash>,
+    genesis: &BlockMessage,
+    creator: Option<Validator>,
+    bonds: Option<Vec<Bond>>,
+    justifications: Option<std::collections::HashMap<Validator, BlockHash>>,
+    deploys: Option<Vec<ProcessedDeploy>>,
+    post_state_hash: Option<StateHash>,
+    shard_id: Option<String>,
+    pre_state_hash: Option<StateHash>,
+    seq_num: Option<i32>,
+    invalid: Option<bool>,
+    merge_facts: MergeFacts,
+) -> BlockMessage {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    create_block_with_merge_facts_and_system_deploys_at(
+        block_store,
+        indexed_block_dag_storage,
+        parents_hash_list,
+        genesis,
+        creator,
+        bonds,
+        justifications,
+        deploys,
+        post_state_hash,
+        shard_id,
+        pre_state_hash,
+        seq_num,
+        invalid,
+        Some(merge_facts),
+        None,
+        None,
+        now,
+    )
+}
+
+pub fn create_block_with_finalized_floor_certificate(
+    block_store: &mut KeyValueBlockStore,
+    indexed_block_dag_storage: &mut IndexedBlockDagStorage,
+    parents_hash_list: Vec<BlockHash>,
+    genesis: &BlockMessage,
+    creator: Validator,
+    bonds: Vec<Bond>,
+    justifications: std::collections::HashMap<Validator, BlockHash>,
+    certificate: FinalizationCertificate,
+) -> BlockMessage {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    create_block_with_merge_facts_and_system_deploys_at(
+        block_store,
+        indexed_block_dag_storage,
+        parents_hash_list,
+        genesis,
+        Some(creator),
+        Some(bonds),
+        Some(justifications),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(certificate),
         now,
     )
 }
@@ -458,6 +543,46 @@ pub fn create_block_with_system_deploys_at(
     seq_num: Option<i32>,
     invalid: Option<bool>,
     system_deploys: Option<Vec<ProcessedSystemDeploy>>,
+    time_stamp: i64,
+) -> BlockMessage {
+    create_block_with_merge_facts_and_system_deploys_at(
+        block_store,
+        indexed_block_dag_storage,
+        parents_hash_list,
+        genesis,
+        creator,
+        bonds,
+        justifications,
+        deploys,
+        post_state_hash,
+        shard_id,
+        pre_state_hash,
+        seq_num,
+        invalid,
+        None,
+        system_deploys,
+        None,
+        time_stamp,
+    )
+}
+
+fn create_block_with_merge_facts_and_system_deploys_at(
+    block_store: &mut KeyValueBlockStore,
+    indexed_block_dag_storage: &mut IndexedBlockDagStorage,
+    parents_hash_list: Vec<BlockHash>,
+    genesis: &BlockMessage,
+    creator: Option<Validator>,
+    bonds: Option<Vec<Bond>>,
+    justifications: Option<std::collections::HashMap<Validator, BlockHash>>,
+    deploys: Option<Vec<ProcessedDeploy>>,
+    post_state_hash: Option<StateHash>,
+    shard_id: Option<String>,
+    pre_state_hash: Option<StateHash>,
+    seq_num: Option<i32>,
+    invalid: Option<bool>,
+    merge_facts: Option<MergeFacts>,
+    system_deploys: Option<Vec<ProcessedSystemDeploy>>,
+    finalized_floor_certificate: Option<FinalizationCertificate>,
     time_stamp: i64,
 ) -> BlockMessage {
     let creator = creator.unwrap_or_else(default_validator);
@@ -491,9 +616,15 @@ pub fn create_block_with_system_deploys_at(
         system_deploys,
     );
 
+    let merge_facts = merge_facts.unwrap_or_default();
+    block.body.merge_base = merge_facts.merge_base.unwrap_or_default();
+    block.body.applied_from_scope = merge_facts.applied_from_scope;
+    block.body.rejected_deploys = merge_facts.rejected_deploys;
+
     if block.header.version >= casper::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
         let dag = indexed_block_dag_storage.get_representation().unwrap();
-        let certificate = generated_genesis_certificate(genesis, &dag);
+        let certificate = finalized_floor_certificate
+            .unwrap_or_else(|| generated_genesis_certificate(genesis, &dag));
         let context_digest = generated_candidate_context_digest(&block, genesis, &dag);
         block.header.finalized_floor = Some(certificate.commitment(context_digest));
         block.finalized_floor_certificate = Some(certificate);

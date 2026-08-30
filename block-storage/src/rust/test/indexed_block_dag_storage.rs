@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizationCertificate};
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
 use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+use crate::rust::finality::finalization_ledger::FinalizationHead;
 
 pub struct IndexedBlockDagStorage {
     underlying: BlockDagKeyValueStorage,
@@ -142,6 +143,16 @@ impl IndexedBlockDagStorage {
         self.underlying
             .record_directly_finalized(block_hash, ft_value, finalization_effect)
             .await
+    }
+
+    pub fn finalization_head(&self) -> Result<Option<FinalizationHead>, KvStoreError> {
+        self.underlying.finalization_head()
+    }
+
+    pub fn finalized_floor_certificate(
+        &self,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        self.underlying.finalized_floor_certificate()
     }
 
     pub fn lookup_by_id(&self, id: i64) -> Result<Option<BlockMessage>, KvStoreError> {

@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
@@ -15,8 +16,7 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    StateEffectId,
+    BlockMessage, Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy,
 };
 use models::rust::validator::Validator;
 use prost::Message;
@@ -38,6 +38,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteVector;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::BlockIndex;
@@ -66,6 +67,136 @@ struct MergeableKey {
     payload_hash: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ExploratoryDeployConfig {
+    pub max_concurrent: usize,
+    pub phlo_limit: i64,
+    pub execution_timeout: Duration,
+}
+
+impl ExploratoryDeployConfig {
+    /// Rejects a non-positive value rather than clamping it. A clamped `0`
+    /// yields a node that answers nothing on this endpoint — one phlogiston
+    /// fails every query on cost, a one-millisecond deadline times out every
+    /// query — with no diagnostic distinguishing that from a working node.
+    pub fn new(
+        max_concurrent: usize,
+        phlo_limit: i64,
+        execution_timeout: Duration,
+    ) -> Result<Self, CasperError> {
+        if max_concurrent == 0 {
+            return Err(CasperError::Other(
+                "exploratory-deploy-max-concurrent must be at least 1".to_string(),
+            ));
+        }
+        if phlo_limit <= 0 {
+            return Err(CasperError::Other(format!(
+                "exploratory-deploy-phlo-limit must be positive, got {}",
+                phlo_limit
+            )));
+        }
+        if execution_timeout.is_zero() {
+            return Err(CasperError::Other(
+                "exploratory-deploy-execution-timeout must be greater than zero".to_string(),
+            ));
+        }
+        Ok(Self {
+            max_concurrent,
+            phlo_limit,
+            execution_timeout,
+        })
+    }
+
+    /// Fixture for the test-only constructors. Deliberately not a `Default`
+    /// impl: the operator-facing default lives in `defaults.conf` and reaches
+    /// the runtime through `create_with_history_config`, so a second
+    /// authoritative-looking declaration in Rust could drift from it silently.
+    /// These values are not that default — they are only what the test
+    /// constructors have always used.
+    pub fn for_tests() -> Self {
+        Self {
+            max_concurrent: 1,
+            phlo_limit: 5_000_000,
+            execution_timeout: Duration::from_secs(15),
+        }
+    }
+}
+
+pub struct ReplayLock {
+    semaphore: Arc<Semaphore>,
+    consensus_waiters: std::sync::atomic::AtomicUsize,
+    consensus_ready: tokio::sync::Notify,
+}
+
+struct ConsensusReplayWaiter<'a>(&'a ReplayLock);
+
+impl Drop for ConsensusReplayWaiter<'_> {
+    fn drop(&mut self) {
+        self.0
+            .consensus_waiters
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0.consensus_ready.notify_waiters();
+    }
+}
+
+impl ReplayLock {
+    pub fn new() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+            consensus_waiters: std::sync::atomic::AtomicUsize::new(0),
+            consensus_ready: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub async fn acquire_consensus(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        self.consensus_waiters
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let waiter = ConsensusReplayWaiter(self);
+        let permit = self.semaphore.clone().acquire_owned().await;
+        drop(waiter);
+        permit
+    }
+
+    pub async fn acquire_reporting(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, tokio::sync::AcquireError> {
+        loop {
+            while self
+                .consensus_waiters
+                .load(std::sync::atomic::Ordering::Acquire)
+                > 0
+            {
+                let ready = self.consensus_ready.notified();
+                tokio::pin!(ready);
+                ready.as_mut().enable();
+                if self
+                    .consensus_waiters
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    > 0
+                {
+                    ready.await;
+                }
+            }
+            let permit = self.semaphore.clone().acquire_owned().await?;
+            if self
+                .consensus_waiters
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                return Ok(permit);
+            }
+            drop(permit);
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+impl Default for ReplayLock {
+    fn default() -> Self { Self::new() }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -90,6 +221,11 @@ pub struct RuntimeManager {
     pub parents_post_state_cache_order: Arc<Mutex<VecDeque<ParentsPostStateCacheKey>>>,
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
+    /// Optional state hash cache for skipping known replays
+    replay_lock: Arc<ReplayLock>,
+    exploratory_deploy_semaphore: Arc<Semaphore>,
+    exploratory_deploy_phlo_limit: i64,
+    exploratory_deploy_execution_timeout: Duration,
     pub external_services: ExternalServices,
 }
 
@@ -173,9 +309,42 @@ pub struct ParentsPostStateCacheKey {
     // sharing a cache entry.
     pub sorted_latest_messages: Vec<(Validator, BlockHash)>,
     pub disable_late_block_filtering: bool,
+    // Whether the computation ran with a rejected-deploy buffer attached.
+    // Buffer population is a side effect of the merge, not part of the
+    // cached value — a bufferless computation (exploratory deploy) must
+    // never satisfy a lookup from the create/validate path, or that
+    // path's buffer populate is silently skipped.
+    pub buffer_populated: bool,
 }
 
-pub type ParentsPostStateCacheVal = (StateHash, Vec<RejectedDeploy>, Vec<StateEffectId>);
+/// The merged pre-state a block builds on, with every fact the merge
+/// derived alongside it. One struct through the derivation, the
+/// parents-post-state cache, and the checkpoint path — the facts travel
+/// together or not at all: a consumer holding the state without the
+/// applied set cannot tell which deploys' effects that state already
+/// contains, and executing one of them again double-applies it.
+#[derive(Clone, Debug)]
+pub struct MergedPreState {
+    pub state: StateHash,
+    /// Rejected user deploys as full records — each names the carrier it
+    /// adjudicated and carries the formation-time duplicate flag. These
+    /// travel to the block body as-is; the record IS the consensus content.
+    pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
+    pub rejected_state_effects: Vec<models::rust::casper::protocol::casper_message::StateEffectId>,
+    pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
+    /// User sigs whose chains the merge APPLIED from scope: their effects
+    /// are in `state`, so executing any of them on top would double-apply.
+    /// Empty on the non-merging shapes (genesis, single parent, covering
+    /// parent), where effects arrive via a parent's post-state instead.
+    pub applied_from_scope: std::collections::HashSet<prost::bytes::Bytes>,
+    /// The block whose committed state `state` derives from: on the merged
+    /// path the main parent, or the floor when the main parent's state does
+    /// not hold the floor's settled content. `None` where the header already
+    /// determines it (genesis, single parent, covering parent).
+    pub merge_base: Option<BlockHash>,
+}
+
+pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
     const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
@@ -282,6 +451,22 @@ impl RuntimeManager {
         metrics::gauge!(REPLAY_CACHE_RETAINED_BYTES_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(stats.1 as f64);
         stats
+    }
+
+    fn try_acquire_exploratory_deploy_permit_with(
+        semaphore: Arc<Semaphore>,
+    ) -> Option<OwnedSemaphorePermit> {
+        semaphore.try_acquire_owned().ok()
+    }
+
+    pub fn try_acquire_exploratory_deploy_permit(&self) -> Option<OwnedSemaphorePermit> {
+        Self::try_acquire_exploratory_deploy_permit_with(self.exploratory_deploy_semaphore.clone())
+    }
+
+    pub fn replay_lock(&self) -> Arc<ReplayLock> { self.replay_lock.clone() }
+
+    pub fn exploratory_deploy_execution_timeout_value(&self) -> Duration {
+        self.exploratory_deploy_execution_timeout
     }
 
     pub fn trim_allocator() {
@@ -564,7 +749,13 @@ impl RuntimeManager {
         terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
         block_data: BlockData,
         invalid_blocks: HashMap<BlockHash, Validator>,
-    ) -> Result<(Vec<ProcessedDeploy>, Vec<prost::bytes::Bytes>), CasperError> {
+    ) -> Result<
+        (
+            Vec<ProcessedDeploy>,
+            Vec<models::rust::deploy_id::DeployLookupId>,
+        ),
+        CasperError,
+    > {
         let (execution, outcome) = self
             .state_bound_execution(start_hash, terms, block_data, invalid_blocks)
             .await?;
@@ -706,6 +897,10 @@ impl RuntimeManager {
             )
             .await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
+            tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_compute_state", rss_kb);
+        }
+
+        if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "complete", rss_kb);
         }
         Ok(result)
@@ -713,7 +908,7 @@ impl RuntimeManager {
 
     pub async fn compute_genesis(
         &self,
-        terms: Vec<Signed<DeployData>>,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
         block_time: i64,
         block_number: i64,
     ) -> Result<(StateHash, StateHash, Vec<ProcessedDeploy>), CasperError> {
@@ -755,39 +950,6 @@ impl RuntimeManager {
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
 
-        if !is_genesis {
-            let mut admission_runtime = self.spawn_runtime().await;
-            admission_runtime
-                .reset(&Blake2b256Hash::from_bytes_prost(start_hash))
-                .await?;
-            let admission_ops = RuntimeOps::new(admission_runtime);
-            let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
-                runtime_ops: &admission_ops,
-                pre_state_root: start_hash
-                    .as_ref()
-                    .try_into()
-                    .expect("consensus state roots are Blake2b-256"),
-            };
-            crate::rust::util::rholang::acceptance::verify_state_bound_replay_admission(
-                &terms,
-                &sender.bytes,
-                &reader,
-            )
-            .await
-            .map_err(|error| match error {
-                CasperError::InvalidCostSettlement(detail) => {
-                    CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
-                        terms.len(),
-                        terms.len(),
-                        0,
-                        0,
-                        detail,
-                    ))
-                }
-                other => other,
-            })?;
-        }
-
         let replay_cache_key = ReplayCacheKey::new(
             start_hash.clone(),
             sender.bytes.to_vec(),
@@ -817,6 +979,11 @@ impl RuntimeManager {
             }
         }
 
+        let _replay_permit = self
+            .replay_lock
+            .acquire_consensus()
+            .await
+            .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await;
         let runtime_ops = RuntimeOps::new(replay_runtime);
@@ -891,6 +1058,7 @@ impl RuntimeManager {
                 &block.body.deploys,
                 &BlockData::from_block(block),
                 &invalid_blocks,
+                block.header.version,
             )
             .await?
         };
@@ -940,6 +1108,7 @@ impl RuntimeManager {
         deploys: &[ProcessedDeploy],
         block_data: &BlockData,
         invalid_blocks: &HashMap<BlockHash, Validator>,
+        protocol_version: i64,
     ) -> Result<Vec<ProcessedDeploy>, CasperError> {
         let expected_admitted: Vec<ProcessedDeploy> = deploys
             .iter()
@@ -950,10 +1119,6 @@ impl RuntimeManager {
             .iter()
             .filter(|deploy| deploy.is_admission_rejected())
             .collect();
-        if expected_rejected.is_empty() {
-            return Ok(expected_admitted);
-        }
-
         let invalid_rejection = expected_rejected.iter().find(|deploy| {
             !deploy.is_failed
                 || deploy.cost.cost != 0
@@ -974,7 +1139,7 @@ impl RuntimeManager {
                     0,
                     format!(
                         "malformed funding-admission rejection record for deploy {}",
-                        hex::encode(&deploy.deploy.sig)
+                        hex::encode(deploy.deploy_id())
                     ),
                 ),
             ));
@@ -992,7 +1157,6 @@ impl RuntimeManager {
                 ))
             })?);
         }
-
         let replay = self
             .certify_state_bound_admission(start_hash, candidates, block_data, invalid_blocks)
             .await
@@ -1009,20 +1173,72 @@ impl RuntimeManager {
             .outcome()
             .admitted
             .iter()
-            .map(|deploy| deploy.primary().sig.clone())
-            .collect();
+            .map(|deploy| {
+                if protocol_version >= 6 {
+                    deploy
+                        .envelope_commitment()
+                        .map_err(|error| {
+                            CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
+                                expected_admitted.len(),
+                                0,
+                                expected_rejected.len(),
+                                0,
+                                error.to_string(),
+                            ))
+                        })
+                        .and_then(|bytes| {
+                            models::rust::deploy_id::DeployIdV6::try_from(bytes.as_ref())
+                                .map(models::rust::deploy_id::DeployLookupId::V6)
+                                .map_err(|error| {
+                                    CasperError::ReplayFailure(
+                                        ReplayFailure::replay_admission_mismatch(
+                                            expected_admitted.len(),
+                                            0,
+                                            expected_rejected.len(),
+                                            0,
+                                            error.to_string(),
+                                        ),
+                                    )
+                                })
+                        })
+                } else {
+                    Ok(models::rust::deploy_id::DeployLookupId::Legacy(
+                        models::rust::deploy_id::LegacyDeploySignature::new(
+                            deploy.primary().sig.to_vec(),
+                        ),
+                    ))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let expected_admitted_sigs: Vec<_> = expected_admitted
             .iter()
-            .map(|deploy| deploy.deploy.sig.clone())
-            .collect();
+            .map(|deploy| deploy.deploy_id_for_protocol(protocol_version))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
+                    expected_admitted.len(),
+                    0,
+                    expected_rejected.len(),
+                    0,
+                    error,
+                ))
+            })?;
         let mut replay_rejected = replay.outcome().rejected.clone();
         let mut expected_rejected_sigs: Vec<_> = expected_rejected
             .iter()
-            .map(|deploy| deploy.deploy.sig.clone())
-            .collect();
+            .map(|deploy| deploy.deploy_id_for_protocol(protocol_version))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                CasperError::ReplayFailure(ReplayFailure::replay_admission_mismatch(
+                    expected_admitted.len(),
+                    0,
+                    expected_rejected.len(),
+                    0,
+                    error,
+                ))
+            })?;
         replay_rejected.sort();
         expected_rejected_sigs.sort();
-
         if replay_admitted != expected_admitted_sigs || replay_rejected != expected_rejected_sigs {
             return Err(CasperError::ReplayFailure(
                 ReplayFailure::replay_admission_mismatch(
@@ -1035,7 +1251,6 @@ impl RuntimeManager {
                 ),
             ));
         }
-
         Ok(expected_admitted)
     }
 
@@ -1148,7 +1363,12 @@ impl RuntimeManager {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops
-            .play_exploratory_deploy(term, hash, deployer)
+            .play_exploratory_deploy_with_phlo_limit(
+                term,
+                hash,
+                deployer,
+                self.exploratory_deploy_phlo_limit,
+            )
             .await
     }
 
@@ -1480,12 +1700,28 @@ impl RuntimeManager {
             return Ok(());
         }
 
-        self.replay_block_from_consensus_data(
-            &block.body.state.pre_state_hash,
-            block,
-            Some(invalid_blocks),
-        )
-        .await?;
+        let computed_post_state = self
+            .replay_block_from_consensus_data(
+                &block.body.state.pre_state_hash,
+                block,
+                Some(invalid_blocks),
+            )
+            .await?;
+
+        // The entry is keyed by post-state, so a replay that reproduces a
+        // different one stores it where nobody looks. Name that case: it is a
+        // replay-determinism failure, not a storage failure, and the two need
+        // very different responses.
+        if computed_post_state != block.body.state.post_state_hash {
+            return Err(CasperError::RuntimeError(format!(
+                "recompute for block {} (seq={}) produced post-state {} but the block declares {}; \
+                 the mergeable entry was stored under the computed key",
+                hex::encode(&block.block_hash),
+                block.seq_num,
+                hex::encode(&computed_post_state),
+                hex::encode(&block.body.state.post_state_hash),
+            )));
+        }
 
         // Fail closed: the full-replay path persists the entry. If it is still
         // absent the merge would diverge across nodes, so surface it.
@@ -1654,7 +1890,7 @@ impl RuntimeManager {
             .into()
     }
 
-    pub fn create_with_space(
+    pub fn create_with_space_config(
         rspace: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         replay_rspace: ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         history_repo: RhoHistoryRepository,
@@ -1666,8 +1902,10 @@ impl RuntimeManager {
             >,
         >,
         external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
     ) -> RuntimeManager {
         let replay_cache_size = Self::max_replay_cache_entries();
+
         RuntimeManager {
             space: rspace,
             replay_space: replay_rspace,
@@ -1692,6 +1930,12 @@ impl RuntimeManager {
                     Self::max_replay_cache_bytes(),
                 ))
             }),
+            replay_lock: Arc::new(ReplayLock::new()),
+            exploratory_deploy_semaphore: Arc::new(Semaphore::new(
+                exploratory_deploy_config.max_concurrent,
+            )),
+            exploratory_deploy_phlo_limit: exploratory_deploy_config.phlo_limit,
+            exploratory_deploy_execution_timeout: exploratory_deploy_config.execution_timeout,
             external_services,
         }
     }
@@ -1712,6 +1956,9 @@ impl RuntimeManager {
         rt_manager
     }
 
+    /// Test-only entry point: supplies `ExploratoryDeployConfig::for_tests()`.
+    /// Production construction goes through `create_with_history_config` with
+    /// the operator's configuration.
     pub fn create_with_history(
         store: RSpaceStore,
         mergeable_store: MergeableStore,
@@ -1723,19 +1970,41 @@ impl RuntimeManager {
         >,
         external_services: ExternalServices,
     ) -> (RuntimeManager, RhoHistoryRepository) {
+        Self::create_with_history_config(
+            store,
+            mergeable_store,
+            mergeable_tags,
+            external_services,
+            ExploratoryDeployConfig::for_tests(),
+        )
+    }
+
+    pub fn create_with_history_config(
+        store: RSpaceStore,
+        mergeable_store: MergeableStore,
+        mergeable_tags: std::sync::Arc<
+            std::collections::HashMap<
+                Par,
+                rspace_plus_plus::rspace::merger::merging_logic::MergeType,
+            >,
+        >,
+        external_services: ExternalServices,
+        exploratory_deploy_config: ExploratoryDeployConfig,
+    ) -> (RuntimeManager, RhoHistoryRepository) {
         let (rspace, replay_rspace) =
             RSpace::create_with_replay(store, Arc::new(Box::new(Matcher)))
                 .expect("Failed to create RSpaceWithReplay");
 
         let history_repo = rspace.get_history_repository();
 
-        let runtime_manager = RuntimeManager::create_with_space(
+        let runtime_manager = RuntimeManager::create_with_space_config(
             rspace,
             replay_rspace,
             history_repo.clone(),
             mergeable_store,
             mergeable_tags,
             external_services,
+            exploratory_deploy_config,
         );
 
         (runtime_manager, history_repo)
@@ -1758,1185 +2027,92 @@ impl RuntimeManager {
 
 #[cfg(test)]
 mod tests {
-    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-    use crypto::rust::public_key::PublicKey;
-    use crypto::rust::signatures::secp256k1::Secp256k1;
-    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-    use models::rhoapi::PCost;
-    use models::rust::casper::protocol::casper_message::{
-        BlockMessage, Body, F1r3flyState, Header, ProduceEvent, SystemDeployData,
-    };
-    use proptest::prelude::*;
-    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use std::sync::Arc;
+    use std::time::Duration;
 
-    use super::*;
+    use tokio::sync::Semaphore;
 
-    fn deploy_data() -> DeployData {
-        DeployData {
-            term: "Nil".to_string(),
-            time_stamp: 0,
-            valid_after_block_number: 0,
-            shard_id: "root".to_string(),
-            expiration_timestamp: None,
-            authority_presentations: Vec::new(),
-        }
-    }
-
-    fn signed_deploy() -> Signed<DeployData> {
-        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
-        let (sk, _) = alg.new_key_pair();
-        Signed::create(deploy_data(), alg, sk).expect("signed deploy")
-    }
-
-    fn produce_event(tag: u8) -> Event {
-        Event::Produce(ProduceEvent {
-            channels_hash: vec![tag].into(),
-            hash: vec![tag, tag].into(),
-            persistent: false,
-            times_repeated: 0,
-            is_deterministic: true,
-            output_value: vec![vec![tag, tag, tag].into()],
-            failed: false,
-        })
-    }
-
-    fn state_bound_admission(block_data: BlockData) -> StateBoundAdmission {
-        StateBoundAdmission {
-            pre_state: vec![1; 32].into(),
-            block_data,
-            invalid_blocks: HashMap::new(),
-            outcome: crate::rust::util::rholang::acceptance::AdmissionOutcome::default(),
-            evidence: Arc::from(Vec::<ProcessedDeploy>::new()),
-            user_post_state: vec![1; 32].into(),
-            user_mergeable: Arc::from(Vec::<NumberChannelsEndVal>::new()),
-        }
-    }
+    use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager};
 
     #[test]
-    fn state_bound_admission_matches_only_its_exact_block_context() {
-        let block_data = BlockData {
-            time_stamp: 11,
-            block_number: 12,
-            sender: PublicKey::from_bytes(&[13, 14]),
-            seq_num: 15,
-        };
-        let admission = state_bound_admission(block_data.clone());
-        let invalid_blocks = HashMap::new();
+    fn exploratory_deploy_config_rejects_non_positive_values() {
+        assert!(ExploratoryDeployConfig::new(0, 5_000_000, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 0, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, -1, Duration::from_secs(15)).is_err());
+        assert!(ExploratoryDeployConfig::new(1, 5_000_000, Duration::ZERO).is_err());
 
-        assert!(admission.matches_context(&block_data, &invalid_blocks));
-
-        let mut changed = block_data.clone();
-        changed.time_stamp += 1;
-        assert!(!admission.matches_context(&changed, &invalid_blocks));
-
-        let mut changed = block_data.clone();
-        changed.block_number += 1;
-        assert!(!admission.matches_context(&changed, &invalid_blocks));
-
-        let mut changed = block_data.clone();
-        changed.sender = PublicKey::from_bytes(&[15, 16]);
-        assert!(!admission.matches_context(&changed, &invalid_blocks));
-
-        let mut changed = block_data.clone();
-        changed.seq_num += 1;
-        assert!(!admission.matches_context(&changed, &invalid_blocks));
-
-        let mut changed_invalid_blocks = HashMap::new();
-        changed_invalid_blocks.insert(vec![17; 32].into(), vec![18, 19].into());
-        assert!(!admission.matches_context(&block_data, &changed_invalid_blocks));
+        let valid =
+            ExploratoryDeployConfig::new(2, 42, Duration::from_millis(500)).expect("valid config");
+        assert_eq!(valid.max_concurrent, 2);
+        assert_eq!(valid.phlo_limit, 42);
+        assert_eq!(valid.execution_timeout, Duration::from_millis(500));
     }
 
-    #[test]
-    fn state_bound_admission_preserves_its_exact_pre_state() {
-        let admission = state_bound_admission(BlockData::empty());
+    #[tokio::test]
+    async fn consensus_replay_has_priority_over_queued_reporting() {
+        let lock = Arc::new(ReplayLock::new());
+        let first_consensus = lock.acquire_consensus().await.expect("Replay lock closed");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
-        assert_eq!(admission.pre_state(), &StateHash::from(vec![1; 32]));
-        assert_ne!(admission.pre_state(), &StateHash::from(vec![2; 32]));
-    }
-
-    fn close() -> super::super::system_deploy_enum::SystemDeployEnum {
-        super::super::system_deploy_enum::SystemDeployEnum::Close(
-            crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy::new(
-                Blake2b512Random::create_from_bytes(&[1]),
-            ),
-        )
-    }
-
-    fn slash() -> super::super::system_deploy_enum::SystemDeployEnum {
-        super::super::system_deploy_enum::SystemDeployEnum::Slash(
-            crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy {
-                invalid_block_hash: vec![2; 32].into(),
-                equivocation_block_hash: None,
-                pk: PublicKey::from_bytes(&[3]),
-                target_activation_epoch: 4,
-                target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
-                initial_rand: Blake2b512Random::create_from_bytes(&[5]),
-            },
-        )
-    }
-
-    #[test]
-    fn ordinary_checkpoint_synthesizes_and_validates_terminal_close() {
-        let block_data = BlockData {
-            time_stamp: 1,
-            block_number: 2,
-            sender: PublicKey::from_bytes(&[3]),
-            seq_num: 4,
-        };
-        let mut empty = Vec::new();
-        ensure_terminal_close(&mut empty, &block_data).unwrap();
-        assert_eq!(empty.len(), 1);
-        assert!(empty[0].as_close().is_some());
-
-        let mut terminal = vec![slash(), close()];
-        ensure_terminal_close(&mut terminal, &block_data).unwrap();
-
-        let mut nonterminal = vec![close(), slash()];
-        assert!(ensure_terminal_close(&mut nonterminal, &block_data).is_err());
-
-        let mut duplicate = vec![close(), close()];
-        assert!(ensure_terminal_close(&mut duplicate, &block_data).is_err());
-    }
-
-    #[test]
-    fn state_bound_admission_retains_the_complete_execution_witness() {
-        let mut witness = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
-        witness.pre_state_hash = vec![2; 32].into();
-        witness.post_state_hash = vec![3; 32].into();
-        let admission = StateBoundAdmission {
-            pre_state: vec![2; 32].into(),
-            block_data: BlockData::empty(),
-            invalid_blocks: HashMap::new(),
-            outcome: crate::rust::util::rholang::acceptance::AdmissionOutcome::default(),
-            evidence: Arc::from(vec![witness.clone()]),
-            user_post_state: witness.post_state_hash.clone(),
-            user_mergeable: Arc::from(vec![NumberChannelsEndVal::new()]),
-        };
-
-        assert_eq!(admission.evidence.as_ref(), std::slice::from_ref(&witness));
-        assert_eq!(admission.user_post_state, witness.post_state_hash);
-        assert_eq!(admission.user_mergeable.len(), 1);
-    }
-
-    fn processed_deploy(
-        deploy: Signed<DeployData>,
-        cost: u64,
-        deploy_log: Vec<Event>,
-    ) -> ProcessedDeploy {
-        ProcessedDeploy {
-            deploy,
-            cost: PCost { cost },
-            deploy_log,
-            is_failed: false,
-            system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-            authority_funding_certificate: None,
-            authority_cost_witness: None,
-            admission_status: Default::default(),
-        }
-    }
-
-    fn processed_deploy_with_authority_byte_event(cost: u64, kind: i32) -> ProcessedDeploy {
-        let mut processed = processed_deploy(signed_deploy(), cost, vec![produce_event(1)]);
-        processed.authority_cost_witness = Some(models::casper::CostAuthorityWitnessProto {
-            byte_events: vec![models::casper::CostAuthorityByteEventProto {
-                event_id: vec![3; 32].into(),
-                kind,
-                authority: Some(models::rhoapi::CostAuthority::default()),
-                amount: 5,
-            }],
-            ..Default::default()
+        let reporting_lock = lock.clone();
+        let reporting_tx = tx.clone();
+        let reporting = tokio::spawn(async move {
+            let _permit = reporting_lock
+                .acquire_reporting()
+                .await
+                .expect("Replay lock closed");
+            reporting_tx.send("reporting").expect("Receiver closed");
         });
-        processed
-    }
+        tokio::time::sleep(Duration::from_millis(10)).await;
 
-    fn block_with_processed_deploy(deploy: ProcessedDeploy) -> BlockMessage {
-        BlockMessage {
-            block_hash: Vec::<u8>::new().into(),
-            header: Header {
-                parents_hash_list: Vec::new(),
-                timestamp: 0,
-                version: 1,
-                extra_bytes: Vec::<u8>::new().into(),
-                sender_bond_generation: Some(
-                    models::rust::bond_generation::BondGeneration::GENESIS,
-                ),
-                objective_equivocation_evidence_delta: Vec::new(),
-                finalized_floor: None,
-            },
-            body: Body {
-                state: F1r3flyState {
-                    pre_state_hash: vec![0; 32].into(),
-                    post_state_hash: vec![1; 32].into(),
-                    bonds: Vec::new(),
-                    bond_generations: Vec::new(),
-                    active_validators: Vec::new(),
-                    block_number: 0,
-                },
-                deploys: vec![deploy],
-                rejected_deploys: Vec::new(),
-                rejected_state_effects: Vec::new(),
-                system_deploys: Vec::new(),
-                extra_bytes: Vec::<u8>::new().into(),
-            },
-            justifications: Vec::new(),
-            sender: vec![7].into(),
-            seq_num: 0,
-            sig: Vec::<u8>::new().into(),
-            sig_algorithm: "secp256k1".to_string(),
-            shard_id: "root".to_string(),
-            extra_bytes: Vec::<u8>::new().into(),
-            finalized_floor_certificate: None,
-        }
-    }
+        let consensus_lock = lock.clone();
+        let consensus = tokio::spawn(async move {
+            let _permit = consensus_lock
+                .acquire_consensus()
+                .await
+                .expect("Replay lock closed");
+            tx.send("consensus").expect("Receiver closed");
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        drop(first_consensus);
 
-    fn slash_system_deploy(tag: u8) -> ProcessedSystemDeploy {
-        ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(tag)],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: vec![tag; 32].into(),
-                equivocation_block_hash: None,
-                issuer_public_key: PublicKey::from_bytes(&[tag, tag + 1]),
-                target_activation_epoch: tag as i64,
-                target_bond_generation: models::rust::bond_generation::BondGeneration::GENESIS,
-            },
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        }
-    }
-
-    #[test]
-    fn mergeable_key_binds_complete_execution_identity() {
-        let block = block_with_processed_deploy(processed_deploy_with_authority_byte_event(3, 0));
-        let base_key = RuntimeManager::mergeable_key_bytes_for_block(&block).unwrap();
-
-        let mut changed = block.clone();
-        changed.body.state.pre_state_hash = vec![2; 32].into();
-        assert_ne!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-
-        let mut changed = block.clone();
-        changed.body.state.post_state_hash = vec![3; 32].into();
-        assert_ne!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-
-        let mut changed = block.clone();
-        changed.body.deploys[0].cost.cost += 1;
-        assert_ne!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-
-        let mut changed = block.clone();
-        changed.body.system_deploys.push(slash_system_deploy(9));
-        assert_ne!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-
-        let mut changed = block.clone();
-        changed.sender = vec![8].into();
-        assert_ne!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-
-        let mut changed = block.clone();
-        changed.seq_num += 1;
-        assert_ne!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-
-        let mut changed = block;
-        changed.block_hash = vec![10; 32].into();
-        assert_eq!(
-            base_key,
-            RuntimeManager::mergeable_key_bytes_for_block(&changed).unwrap()
-        );
-    }
-
-    proptest! {
-        #[test]
-        fn mergeable_key_separates_every_bound_identity_component(
-            pre_state in any::<[u8; 32]>(),
-            post_state in any::<[u8; 32]>(),
-            creator in proptest::collection::vec(any::<u8>(), 1..128),
-            seq_num in any::<i32>(),
-            payload_hash in any::<[u8; 32]>(),
-            component in 0usize..5,
-        ) {
-            let base = MergeableKey {
-                post_state_hash: StateHashSerde(StateHash::from(post_state.to_vec())),
-                pre_state_hash: StateHashSerde(StateHash::from(pre_state.to_vec())),
-                creator: creator.clone().into(),
-                seq_num,
-                payload_hash: payload_hash.to_vec(),
-            };
-            let mut changed_pre_state = pre_state;
-            let mut changed_post_state = post_state;
-            let mut changed_creator = creator;
-            let mut changed_payload_hash = payload_hash;
-            let mut changed_seq_num = seq_num;
-            match component {
-                0 => changed_pre_state[0] ^= 1,
-                1 => changed_post_state[0] ^= 1,
-                2 => changed_creator.push(0),
-                3 => changed_seq_num = changed_seq_num.wrapping_add(1),
-                _ => changed_payload_hash[0] ^= 1,
-            }
-            let changed = MergeableKey {
-                post_state_hash: StateHashSerde(StateHash::from(changed_post_state.to_vec())),
-                pre_state_hash: StateHashSerde(StateHash::from(changed_pre_state.to_vec())),
-                creator: changed_creator.into(),
-                seq_num: changed_seq_num,
-                payload_hash: changed_payload_hash.to_vec(),
-            };
-
-            let base_encoded = bincode::serialize(&base).unwrap();
-            let changed_encoded = bincode::serialize(&changed).unwrap();
-            prop_assert_ne!(&base_encoded, &changed_encoded);
-
-            let mut entries = std::collections::BTreeMap::from([
-                (base_encoded.clone(), 1u8),
-                (changed_encoded.clone(), 2u8),
-            ]);
-            prop_assert_eq!(entries.remove(&base_encoded), Some(1));
-            prop_assert_eq!(entries.get(&changed_encoded), Some(&2));
-            prop_assert_eq!(entries.len(), 1);
-        }
+        assert_eq!(rx.recv().await, Some("consensus"));
+        assert_eq!(rx.recv().await, Some("reporting"));
+        consensus.await.expect("Consensus task failed");
+        reporting.await.expect("Reporting task failed");
     }
 
     #[tokio::test]
-    async fn deleting_one_execution_preserves_a_legacy_key_alias() {
-        let manager = test_runtime_manager().await;
-        let target = block_with_processed_deploy(processed_deploy_with_authority_byte_event(3, 0));
-        let mut survivor = target.clone();
-        survivor.body.state.pre_state_hash = vec![2; 32].into();
-
-        let target_key = RuntimeManager::mergeable_key_bytes_for_block(&target).unwrap();
-        let survivor_key = RuntimeManager::mergeable_key_bytes_for_block(&survivor).unwrap();
-        assert_ne!(target_key, survivor_key);
-        manager
-            .mergeable_store
-            .put_one(target_key, Vec::new())
-            .unwrap();
-        manager
-            .mergeable_store
-            .put_one(survivor_key, Vec::new())
-            .unwrap();
-
-        assert!(manager.has_mergeable_entry(&target).unwrap());
-        assert!(manager.has_mergeable_entry(&survivor).unwrap());
-        assert!(manager.delete_mergeable_channels(&target).unwrap());
-        assert!(!manager.has_mergeable_entry(&target).unwrap());
-        assert!(manager.has_mergeable_entry(&survivor).unwrap());
-    }
-
-    async fn test_runtime_manager() -> RuntimeManager {
-        let mut kvm = InMemoryStoreManager::new();
-        let store = kvm.r_space_stores().await.expect("rspace stores");
-        let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+    async fn cancelled_consensus_waiter_releases_reporting() {
+        let lock = Arc::new(ReplayLock::new());
+        let reporting_permit = lock.acquire_reporting().await.expect("Replay lock closed");
+        let consensus_lock = lock.clone();
+        let consensus = tokio::spawn(async move { consensus_lock.acquire_consensus().await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        consensus.abort();
+        consensus
             .await
-            .expect("mergeable store");
-        RuntimeManager::create_with_history(
-            store,
-            mergeable_store,
-            Arc::new(HashMap::new()),
-            ExternalServices::noop(),
-        )
-        .0
-    }
+            .expect_err("Consensus task was not cancelled");
+        drop(reporting_permit);
 
-    fn compute_empty_index(manager: &RuntimeManager, block_hash: &BlockHash) -> BlockIndex {
-        let root = Blake2b256Hash::from_bytes(vec![0; 32]);
-        manager
-            .get_or_compute_block_index(
-                block_hash,
-                0,
-                &Vec::new(),
-                &Vec::new(),
-                &root,
-                &root,
-                &Vec::new(),
-            )
-            .expect("empty block index")
-    }
-
-    #[tokio::test]
-    async fn block_index_cache_enforces_entry_and_byte_accounting_invariants() {
-        let manager = test_runtime_manager().await;
-        let hashes: Vec<BlockHash> = (0..RuntimeManager::MAX_BLOCK_INDEX_CACHE_ENTRIES + 5)
-            .map(|index| index.to_le_bytes().to_vec().into())
-            .collect();
-
-        for hash in &hashes {
-            compute_empty_index(&manager, hash);
-        }
-
-        assert_eq!(
-            manager.block_index_cache.len(),
-            RuntimeManager::MAX_BLOCK_INDEX_CACHE_ENTRIES
-        );
-        assert!(!manager.has_cached_block_index(&hashes[0]));
-        assert!(manager.has_cached_block_index(hashes.last().expect("last hash")));
-        let retained = manager
-            .block_index_cache
-            .iter()
-            .map(|entry| entry.value().retained_bytes())
-            .sum::<usize>();
-        assert_eq!(
-            manager
-                .block_index_cache_retained_bytes
-                .load(Ordering::Acquire),
-            retained
-        );
-        assert!(retained <= RuntimeManager::MAX_BLOCK_INDEX_CACHE_BYTES);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_block_index_misses_commit_one_accounted_entry() {
-        let manager = Arc::new(test_runtime_manager().await);
-        let block_hash: BlockHash = vec![7; 32].into();
-        let tasks = (0..32)
-            .map(|_| {
-                let manager = manager.clone();
-                let block_hash = block_hash.clone();
-                tokio::spawn(async move { compute_empty_index(&manager, &block_hash) })
-            })
-            .collect::<Vec<_>>();
-
-        for task in tasks {
-            task.await.expect("cache task");
-        }
-
-        assert_eq!(manager.block_index_cache.len(), 1);
-        let retained = manager
-            .block_index_cache
-            .get(&block_hash)
-            .expect("cached block index")
-            .retained_bytes();
-        assert_eq!(
-            manager
-                .block_index_cache_retained_bytes
-                .load(Ordering::Acquire),
-            retained
-        );
-    }
-
-    #[derive(serde::Deserialize)]
-    struct V12FixtureSet {
-        fixtures: Vec<V12Fixture>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct V12Fixture {
-        id: String,
-        oracle_surface: String,
-        oracle_kind: String,
-        mutation_axis: String,
-        expected_total_cost: i64,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct V13FixtureSet {
-        fixtures: Vec<V13Fixture>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct V13Fixture {
-        id: String,
-        #[serde(default)]
-        semantic_oracle: String,
-        #[serde(default)]
-        expected_disposition: String,
-        #[serde(default)]
-        expected_total_cost: i64,
-        // DISABLED (2026-08-07 dev merge warning sweep) — never read; the
-        // fixture JSON's settlement blocks are consumed by the native
-        // settlement tests, not this deserializer. serde ignores unknown
-        // JSON keys, so parsing is unaffected.
-        // #[serde(default)]
-        // settlement: serde_json::Value,
-        #[serde(default)]
-        replay_mutations: Vec<String>,
-        #[serde(default)]
-        source_surface_status: String,
-        #[serde(default)]
-        source_facets: Vec<String>,
-        #[serde(default)]
-        source_anchor_digest: String,
-        #[serde(default)]
-        cross_surface_role: String,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct V14FixtureSet {
-        fixtures: Vec<V14Fixture>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct V14Fixture {
-        id: String,
-        #[serde(default)]
-        security_surface: String,
-        #[serde(default)]
-        expected_disposition: String,
-        #[serde(default)]
-        replay_mutations: Vec<String>,
-        #[serde(default)]
-        source_anchor_digest: String,
-        #[serde(default)]
-        source_anchor_status: String,
-        #[serde(default)]
-        auth_boundary: String,
-        #[serde(default)]
-        replay_boundary: String,
-        #[serde(default)]
-        slashing_authorization: serde_json::Value,
-        #[serde(default)]
-        dependency_advisory_id: String,
-        #[serde(default)]
-        secret_material_touched: bool,
-    }
-
-    fn horizon_v12_fixtures() -> Vec<V12Fixture> {
-        serde_json::from_str::<V12FixtureSet>(include_str!(
-            "../../../../../rholang/tests/accounting/horizon_v12_fixtures.json"
-        ))
-        .expect("embedded horizon v12 fixture schema")
-        .fixtures
-    }
-
-    fn horizon_v13_fixtures() -> Vec<V13Fixture> {
-        serde_json::from_str::<V13FixtureSet>(include_str!(
-            "../../../../../rholang/tests/accounting/horizon_v13_fixtures.json"
-        ))
-        .expect("embedded horizon v13 fixture schema")
-        .fixtures
-    }
-
-    fn horizon_v14_fixtures() -> Vec<V14Fixture> {
-        serde_json::from_str::<V14FixtureSet>(include_str!(
-            "../../../../../rholang/tests/accounting/horizon_v14_fixtures.json"
-        ))
-        .expect("embedded horizon v14 fixture schema")
-        .fixtures
-    }
-
-    // DISABLED (2026-08-07 dev merge warning sweep) — dead since the v13
-    // settlement assertions moved to the native settlement tests; kept
-    // commented out per the repo's disable-by-commenting rule.
-    // fn fixture_i64(value: &serde_json::Value, key: &str) -> i64 {
-    // value
-    // .get(key)
-    // .and_then(serde_json::Value::as_i64)
-    // .unwrap_or_else(|| panic!("fixture settlement must include {key}"))
-    // }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_cost_changes() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let right = processed_deploy(deploy, 4, vec![produce_event(1)]);
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
+        let _permit = tokio::time::timeout(Duration::from_secs(1), lock.acquire_reporting())
+            .await
+            .expect("Reporting remained blocked")
+            .expect("Replay lock closed");
     }
 
     #[test]
-    fn block_hash_changes_when_processed_deploy_cost_changes() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let right = processed_deploy(deploy, 4, vec![produce_event(1)]);
+    fn exploratory_deploy_permit_is_bounded_and_released() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let first = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore.clone());
+        assert!(first.is_some());
 
-        assert_ne!(
-            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(left)),
-            crate::rust::util::proto_util::hash_block(&block_with_processed_deploy(right))
-        );
-    }
+        let second = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore.clone());
+        assert!(second.is_none());
 
-    #[test]
-    fn replay_payload_hash_changes_when_user_signature_changes() {
-        let left = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
-        let right = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
+        drop(first);
 
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_failure_status_changes() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        right.is_failed = true;
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_system_error_changes() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        right.system_deploy_error = Some("forged settlement".to_string());
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_deploy_log_changes() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let right = processed_deploy(deploy, 3, vec![produce_event(2)]);
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_canonicalizes_user_deploy_log_order() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1), produce_event(2)]);
-        let right = processed_deploy(deploy, 3, vec![produce_event(2), produce_event(1)]);
-
-        assert_eq!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_user_state_witness_changes() {
-        let deploy = signed_deploy();
-        let left = processed_deploy(deploy.clone(), 3, vec![produce_event(1)]);
-        let mut right = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        right.post_state_hash = vec![9; 32].into();
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_binds_authority_byte_event_kind() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        let witness = models::casper::CostAuthorityWitnessProto {
-            byte_events: vec![models::casper::CostAuthorityByteEventProto {
-                event_id: vec![3; 32].into(),
-                kind: 0,
-                authority: Some(models::rhoapi::CostAuthority::default()),
-                amount: 5,
-            }],
-            ..Default::default()
-        };
-        left.authority_cost_witness = Some(witness);
-        let mut right = left.clone();
-        right.authority_cost_witness.as_mut().unwrap().byte_events[0].kind = 2;
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_binds_authority_certificate() {
-        let deploy = signed_deploy();
-        let mut left = processed_deploy(deploy, 3, vec![produce_event(1)]);
-        let certificate = models::casper::CostAuthorityFundingCertificateProto {
-            byte_cost_bound: 7,
-            ..Default::default()
-        };
-        left.authority_funding_certificate = Some(certificate);
-        let mut right = left.clone();
-        right
-            .authority_funding_certificate
-            .as_mut()
-            .unwrap()
-            .byte_cost_bound = 8;
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[left], &[], false),
-            RuntimeManager::replay_payload_hash(&[right], &[], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_system_deploy_log_changes() {
-        let left = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(1)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-        let right = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(2)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[], &[left], false),
-            RuntimeManager::replay_payload_hash(&[], &[right], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_canonicalizes_system_deploy_log_order() {
-        let left = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(1), produce_event(2)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-        let right = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(2), produce_event(1)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-
-        assert_eq!(
-            RuntimeManager::replay_payload_hash(&[], &[left], false),
-            RuntimeManager::replay_payload_hash(&[], &[right], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_system_deploy_kind_changes() {
-        let left = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(1)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-        let right = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(1)],
-            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[], &[left], false),
-            RuntimeManager::replay_payload_hash(&[], &[right], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_system_state_witness_changes() {
-        let left = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(1)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-        let right = ProcessedSystemDeploy::Succeeded {
-            event_list: vec![produce_event(1)],
-            system_deploy: SystemDeployData::Empty,
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: vec![9; 32].into(),
-        };
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[], &[left], false),
-            RuntimeManager::replay_payload_hash(&[], &[right], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_slash_fields_change() {
-        let left = slash_system_deploy(1);
-        let right = slash_system_deploy(2);
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[], &[left], false),
-            RuntimeManager::replay_payload_hash(&[], &[right], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_system_error_changes() {
-        let left = ProcessedSystemDeploy::Failed {
-            event_list: vec![produce_event(1)],
-            error_msg: "left".to_string(),
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-        let right = ProcessedSystemDeploy::Failed {
-            event_list: vec![produce_event(1)],
-            error_msg: "right".to_string(),
-            pre_state_hash: Vec::<u8>::new().into(),
-            post_state_hash: Vec::<u8>::new().into(),
-        };
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[], &[left], false),
-            RuntimeManager::replay_payload_hash(&[], &[right], false)
-        );
-    }
-
-    #[test]
-    fn replay_payload_hash_changes_when_genesis_flag_changes() {
-        let deploy = processed_deploy(signed_deploy(), 3, vec![produce_event(1)]);
-
-        assert_ne!(
-            RuntimeManager::replay_payload_hash(&[deploy.clone()], &[], false),
-            RuntimeManager::replay_payload_hash(&[deploy], &[], true)
-        );
-    }
-
-    #[test]
-    fn cost_accounting_v12_casper_replay_payload_oracles_hold() {
-        let fixtures = horizon_v12_fixtures()
-            .into_iter()
-            .filter(|fixture| fixture.oracle_surface == "casper_replay")
-            .collect::<Vec<_>>();
-        assert!(!fixtures.is_empty());
-
-        for fixture in fixtures {
-            assert_eq!(fixture.oracle_kind, "casper_replay_payload_hash");
-            let left = processed_deploy_with_authority_byte_event(3, 0);
-
-            let right = match fixture.mutation_axis.as_str() {
-                "authority_cost_witness" => processed_deploy_with_authority_byte_event(3, 2),
-                "signature" => processed_deploy_with_authority_byte_event(3, 0),
-                other => panic!(
-                    "unexpected v12 casper mutation axis {other} in {}",
-                    fixture.id
-                ),
-            };
-
-            assert_ne!(
-                RuntimeManager::replay_payload_hash(&[left], &[], false),
-                RuntimeManager::replay_payload_hash(&[right], &[], false),
-                "v12 casper replay fixture {} must reject mutation axis {}",
-                fixture.id,
-                fixture.mutation_axis
-            );
-        }
-    }
-
-    #[test]
-    fn cost_accounting_v12_slashing_replay_oracles_hold() {
-        let fixtures = horizon_v12_fixtures()
-            .into_iter()
-            .filter(|fixture| fixture.oracle_surface == "slashing")
-            .collect::<Vec<_>>();
-        assert!(!fixtures.is_empty());
-
-        for fixture in fixtures {
-            match fixture.oracle_kind.as_str() {
-                "slashing_replay_payload_hash" => {
-                    assert_ne!(
-                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
-                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
-                        "v12 slashing fixture {} must authenticate slashing fields",
-                        fixture.id
-                    );
-                }
-                "slashing_post_eval_isolation" => {
-                    let user_deploy = processed_deploy(
-                        signed_deploy(),
-                        fixture.expected_total_cost as u64,
-                        vec![produce_event(1)],
-                    );
-                    let with_slash = RuntimeManager::replay_payload_hash(
-                        &[user_deploy.clone()],
-                        &[slash_system_deploy(1)],
-                        false,
-                    );
-                    let without_slash =
-                        RuntimeManager::replay_payload_hash(&[user_deploy.clone()], &[], false);
-
-                    assert_ne!(
-                        with_slash, without_slash,
-                        "v12 slashing fixture {} must include system-deploy evidence",
-                        fixture.id
-                    );
-                    assert_eq!(
-                        user_deploy.cost.cost, fixture.expected_total_cost as u64,
-                        "v12 slashing fixture {} must not mutate user deploy cost",
-                        fixture.id
-                    );
-                }
-                other => panic!(
-                    "unexpected v12 slashing oracle kind {other} in {}",
-                    fixture.id
-                ),
-            }
-        }
-    }
-
-    #[test]
-    fn cost_accounting_v13_source_semantic_replay_payload_oracles_hold() {
-        let fixtures = horizon_v13_fixtures()
-            .into_iter()
-            .filter(|fixture| {
-                matches!(
-                    fixture.semantic_oracle.as_str(),
-                    "runtime_to_replay_authenticated_witness" | "replay_to_slashing_authentication"
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(!fixtures.is_empty());
-
-        for fixture in fixtures {
-            assert!(!fixture.source_anchor_digest.is_empty());
-            assert!(!fixture.cross_surface_role.is_empty());
-            match fixture.semantic_oracle.as_str() {
-                "runtime_to_replay_authenticated_witness" => {
-                    for field in [
-                        "processed_deploy_cost",
-                        "authority_cost_witness",
-                        "authority_byte_events",
-                        "replay_payload_hash",
-                    ] {
-                        assert!(
-                            fixture
-                                .replay_mutations
-                                .iter()
-                                .any(|mutation| mutation == field),
-                            "v13 fixture {} must include runtime/replay mutation field {}",
-                            fixture.id,
-                            field
-                        );
-                    }
-                    let left = processed_deploy_with_authority_byte_event(3, 0);
-                    let changed_cost = processed_deploy_with_authority_byte_event(4, 0);
-                    let changed_byte_event = processed_deploy_with_authority_byte_event(3, 2);
-                    let left_hash = RuntimeManager::replay_payload_hash(
-                        std::slice::from_ref(&left),
-                        &[],
-                        false,
-                    );
-                    assert_ne!(
-                        left_hash,
-                        RuntimeManager::replay_payload_hash(&[changed_cost], &[], false),
-                        "v13 fixture {} must authenticate runtime cost",
-                        fixture.id
-                    );
-                    assert_ne!(
-                        left_hash,
-                        RuntimeManager::replay_payload_hash(&[changed_byte_event], &[], false),
-                        "v13 fixture {} must authenticate authority byte events",
-                        fixture.id
-                    );
-                }
-                "replay_to_slashing_authentication" => {
-                    for field in ["slash_fields", "block_hash", "signature"] {
-                        assert!(
-                            fixture
-                                .replay_mutations
-                                .iter()
-                                .any(|mutation| mutation == field),
-                            "v13 fixture {} must include replay/slashing mutation field {}",
-                            fixture.id,
-                            field
-                        );
-                    }
-                    assert_ne!(
-                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
-                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
-                        "v13 fixture {} must authenticate slashing fields in replay payload",
-                        fixture.id
-                    );
-                }
-                other => panic!("unexpected v13 replay oracle {other} in {}", fixture.id),
-            }
-        }
-    }
-
-    #[test]
-    fn cost_accounting_v13_settlement_slashing_legacy_oracles_hold() {
-        let fixtures = horizon_v13_fixtures()
-            .into_iter()
-            .filter(|fixture| {
-                matches!(
-                    fixture.semantic_oracle.as_str(),
-                    "runtime_to_settlement_vault_conservation" | "legacy_to_runtime_quarantine"
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(!fixtures.is_empty());
-
-        for fixture in fixtures {
-            assert!(!fixture.source_anchor_digest.is_empty());
-            assert!(!fixture.cross_surface_role.is_empty());
-            match fixture.semantic_oracle.as_str() {
-                "runtime_to_settlement_vault_conservation" => {
-                    let user_deploy = processed_deploy(
-                        signed_deploy(),
-                        fixture.expected_total_cost as u64,
-                        vec![produce_event(1)],
-                    );
-                    assert_eq!(
-                        user_deploy.cost.cost, fixture.expected_total_cost as u64,
-                        "v13 fixture {} per-COMM runtime cost evidence must be preserved",
-                        fixture.id
-                    );
-                }
-                "legacy_to_runtime_quarantine" => {
-                    assert_eq!(fixture.source_surface_status, "absent");
-                    assert_eq!(fixture.expected_disposition, "source_absent");
-                    assert!(fixture
-                        .source_facets
-                        .iter()
-                        .any(|facet| facet == "legacy_quarantine"));
-                }
-                other => panic!(
-                    "unexpected v13 settlement/legacy oracle {other} in {}",
-                    fixture.id
-                ),
-            }
-        }
-    }
-
-    #[test]
-    fn cost_accounting_v14_replay_security_oracles_hold() {
-        let fixtures = horizon_v14_fixtures()
-            .into_iter()
-            .filter(|fixture| {
-                matches!(
-                    fixture.security_surface.as_str(),
-                    "api_to_runtime_replay"
-                        | "replay_cache_payload_binding"
-                        | "slashing_authorization"
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(!fixtures.is_empty());
-
-        for fixture in fixtures {
-            assert!(!fixture.source_anchor_digest.is_empty());
-            assert_eq!(fixture.source_anchor_status, "present");
-            assert!(!fixture.auth_boundary.is_empty());
-            assert!(!fixture.replay_boundary.is_empty());
-            assert!(fixture.dependency_advisory_id.is_empty());
-            assert!(!fixture.secret_material_touched);
-
-            match fixture.security_surface.as_str() {
-                "api_to_runtime_replay" | "replay_cache_payload_binding" => {
-                    for field in [
-                        "processed_deploy_cost",
-                        "authority_cost_witness",
-                        "authority_byte_events",
-                        "replay_payload_hash",
-                    ] {
-                        assert!(
-                            fixture
-                                .replay_mutations
-                                .iter()
-                                .any(|mutation| mutation == field),
-                            "v14 fixture {} must bind replay field {}",
-                            fixture.id,
-                            field
-                        );
-                    }
-                    let left = processed_deploy_with_authority_byte_event(3, 0);
-                    let changed_cost = processed_deploy_with_authority_byte_event(4, 0);
-                    let changed_byte_event = processed_deploy_with_authority_byte_event(3, 2);
-                    let left_hash = RuntimeManager::replay_payload_hash(
-                        std::slice::from_ref(&left),
-                        &[],
-                        false,
-                    );
-                    assert_ne!(
-                        left_hash,
-                        RuntimeManager::replay_payload_hash(&[changed_cost], &[], false),
-                        "v14 fixture {} must bind processed deploy cost",
-                        fixture.id
-                    );
-                    assert_ne!(
-                        left_hash,
-                        RuntimeManager::replay_payload_hash(&[changed_byte_event], &[], false),
-                        "v14 fixture {} must bind authority byte events",
-                        fixture.id
-                    );
-                }
-                "slashing_authorization" => {
-                    assert_eq!(fixture.expected_disposition, "replay_invalid");
-                    for field in [
-                        "slash_epoch",
-                        "slash_fields",
-                        "target_activation_epoch",
-                        "evidence_epoch",
-                        "parent_pre_state_bond",
-                        "block_hash",
-                        "signature",
-                    ] {
-                        assert!(
-                            fixture
-                                .replay_mutations
-                                .iter()
-                                .any(|mutation| mutation == field),
-                            "v14 fixture {} must include replay/slashing mutation field {}",
-                            fixture.id,
-                            field
-                        );
-                    }
-                    let auth = &fixture.slashing_authorization;
-                    let current_epoch = auth
-                        .get("current_epoch")
-                        .and_then(serde_json::Value::as_i64);
-                    assert_eq!(
-                        auth.get("evidence_epoch")
-                            .and_then(serde_json::Value::as_i64),
-                        current_epoch,
-                        "v14 fixture {} must bind evidence epoch to current epoch",
-                        fixture.id
-                    );
-                    assert_eq!(
-                        auth.get("target_activation_epoch")
-                            .and_then(serde_json::Value::as_i64),
-                        current_epoch,
-                        "v14 fixture {} must bind target activation epoch to current epoch",
-                        fixture.id
-                    );
-                    assert!(
-                        auth.get("parent_pre_state_bond")
-                            .and_then(serde_json::Value::as_i64)
-                            .unwrap_or(0)
-                            > 0,
-                        "v14 fixture {} must carry parent pre-state bond evidence",
-                        fixture.id
-                    );
-                    assert_ne!(
-                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(1)], false),
-                        RuntimeManager::replay_payload_hash(&[], &[slash_system_deploy(2)], false),
-                        "v14 fixture {} must authenticate slashing payload fields",
-                        fixture.id
-                    );
-                }
-                other => panic!(
-                    "unexpected v14 replay/slashing surface {other} in {}",
-                    fixture.id
-                ),
-            }
-        }
+        let third = RuntimeManager::try_acquire_exploratory_deploy_permit_with(semaphore);
+        assert!(third.is_some());
     }
 }

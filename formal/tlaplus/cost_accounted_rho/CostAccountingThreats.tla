@@ -78,7 +78,7 @@ BondSet == 0..1
    below requires committedDigest = actualDigest /\ committedCount = actualCount,
    and TamperDigest / TamperCount / ReplayTamperCannotStayAccepted treat per-op
    digest/count tampering as rejection-causing. Per TM-CA-151
-   (docs/theory/cost-accounting-threat-model.md) the per-operation cost-trace
+   (docs/casper/theory/cost-accounting-threat-model.md) the per-operation cost-trace
    digest / event-count / presence are DIAGNOSTIC ONLY and were removed from
    production consensus; the production consensus surface is total_cost (clamped
    on OOP) + status + post-state hash. The predicates/actions/invariants here

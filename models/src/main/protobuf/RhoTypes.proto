@@ -555,6 +555,8 @@ message GUnforgeable {
     GDeployId g_deploy_id_body = 2;
     GDeployerId g_deployer_id_body = 3;
     GSysAuthToken g_sys_auth_token_body = 4;
+    GAuthorityId g_authority_id_body = 5;
+    GPrincipalId g_principal_id_body = 6;
   }
 }
 
@@ -571,3 +573,12 @@ message GDeployerId {
 }
 
 message GSysAuthToken {}
+
+message GAuthorityId {
+  bytes id = 1;
+}
+
+message GPrincipalId {
+  uint32 keyFamily = 1;
+  bytes publicKey = 2;
+}

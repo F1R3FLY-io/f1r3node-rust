@@ -1,5 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/RhoRuntime.scala
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -34,6 +35,7 @@ use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
 use super::accounting::{BillableTokenEvent, RuntimeBudget};
+use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -1277,6 +1279,7 @@ async fn setup_reducer(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
+    reduction_coordinator: ReductionCoordinator,
 ) -> Arc<DebruijnInterpreter> {
     rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
         budget: cost.clone(),
@@ -1322,6 +1325,10 @@ async fn setup_reducer(
         mergeable_tags,
         metering: metering.clone(),
         substitute: Substitute { metering },
+        single_term_evaluations: Arc::new(AtomicU64::new(0)),
+        yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
+        spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
+        reduction_coordinator,
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -1426,6 +1433,11 @@ where
     assert!(res.iter().all(|s| s.is_none()));
 
     let raw_rspace: RhoISpace = Arc::new(Box::new(rspace));
+    let reduction_coordinator = ReductionCoordinator::default();
+    let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+        raw_rspace,
+        reduction_coordinator.clone(),
+    )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -1433,7 +1445,7 @@ where
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let reducer = setup_reducer(
-        raw_rspace,
+        scheduled_rspace,
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -1446,6 +1458,7 @@ where
         grpc_client_service,
         chromadb_service,
         cost,
+        reduction_coordinator,
     )
     .await;
 

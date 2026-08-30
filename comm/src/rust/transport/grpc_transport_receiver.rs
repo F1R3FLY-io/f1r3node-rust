@@ -659,6 +659,11 @@ impl GrpcTransportReceiver {
         // Create SSL session server interceptor
         let ssl_interceptor = SslSessionServerInterceptor::new(network_id.clone());
 
+        // A stalled handshake should not outlive the timeout the peer that
+        // opened it is actually using — captured before `rp_config` moves
+        // into `TransportLayerService::new` below.
+        let handshake_timeout = rp_config.default_timeout;
+
         // Create the transport layer service implementation
         let transport_service = TransportLayerService::new(
             network_id.clone(),
@@ -677,6 +682,7 @@ impl GrpcTransportReceiver {
         // Create F1r3fly server with custom TLS configuration
         let f1r3fly_server = F1r3flyServer::builder(network_id.clone(), &cert_pem, &key_pem, addr)
             .map_err(|e| CommError::ConfigError(format!("F1r3fly server creation failed: {}", e)))?
+            .handshake_timeout(handshake_timeout)
             // Configure TCP settings to match the previous tonic configuration
             .tcp_keepalive(Some(std::time::Duration::from_secs(600))) // 10 minutes
             .tcp_nodelay(true)

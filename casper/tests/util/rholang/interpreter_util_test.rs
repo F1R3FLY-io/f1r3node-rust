@@ -150,6 +150,7 @@ impl TestContext {
             .into_iter()
             .map(|d| ProcessedDeploy {
                 deploy: d,
+                envelope_commitment: Vec::<u8>::new().into(),
                 cost,
                 deploy_log: Vec::new(),
                 is_failed: false,
@@ -259,7 +260,7 @@ impl TestContext {
 
         // Note: In Scala .attempt wraps result in Either[Throwable, T]
         // In Rust, we return Result which is equivalent
-        interpreter_util::compute_deploys_checkpoint(
+        interpreter_util::compute_deploys_checkpoint_legacy_signer(
             block_store,
             parents,
             deploys,
@@ -1048,7 +1049,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1175,7 +1176,7 @@ contract @"recursionTest"(@list) = {
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1306,7 +1307,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1432,7 +1433,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1550,19 +1551,20 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     seq_num: (i + 1),
                 };
 
-                let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
-                    &mut block_store,
-                    vec![genesis.clone()],
-                    deploys,
-                    Vec::<SystemDeployEnum>::new(),
-                    &casper_snapshot,
-                    &runtime_manager,
-                    block_data,
-                    HashMap::new(),
-                    None,
-                )
-                .await
-                .expect("Failed to compute deploys checkpoint");
+                let deploys_checkpoint =
+                    interpreter_util::compute_deploys_checkpoint_legacy_signer(
+                        &mut block_store,
+                        vec![genesis.clone()],
+                        deploys,
+                        Vec::<SystemDeployEnum>::new(),
+                        &casper_snapshot,
+                        &runtime_manager,
+                        block_data,
+                        HashMap::new(),
+                        None,
+                    )
+                    .await
+                    .expect("Failed to compute deploys checkpoint");
 
                 let (
                     pre_state_hash,
@@ -1658,7 +1660,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1798,19 +1800,20 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     seq_num: (i + 1),
                 };
 
-                let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint(
-                    &mut block_store,
-                    vec![genesis.clone()],
-                    deploys,
-                    Vec::<SystemDeployEnum>::new(),
-                    &casper_snapshot,
-                    &runtime_manager,
-                    block_data,
-                    HashMap::new(),
-                    None,
-                )
-                .await
-                .expect("Failed to compute deploys checkpoint");
+                let deploys_checkpoint =
+                    interpreter_util::compute_deploys_checkpoint_legacy_signer(
+                        &mut block_store,
+                        vec![genesis.clone()],
+                        deploys,
+                        Vec::<SystemDeployEnum>::new(),
+                        &casper_snapshot,
+                        &runtime_manager,
+                        block_data,
+                        HashMap::new(),
+                        None,
+                    )
+                    .await
+                    .expect("Failed to compute deploys checkpoint");
 
                 let (
                     pre_state_hash,

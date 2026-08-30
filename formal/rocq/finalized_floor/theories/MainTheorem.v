@@ -39,6 +39,8 @@ From FinalizedFloor Require Import AccountableSafety.
 From FinalizedFloor Require Import Floor.
 From FinalizedFloor Require Import Merge.
 From FinalizedFloor Require Import OccurrenceDisposition.
+From FinalizedFloor Require Import DeployIdentitySeparation.
+From FinalizedFloor Require Import DeployOccurrenceStorage.
 From FinalizedFloor Require Import FinalizedOccurrenceStatus.
 From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import MergeRecoveryCoherence.
@@ -93,10 +95,10 @@ Theorem finalized_floor_merge_correct :
        exists g, walk_spine d b (blk_num b) = Some g /\ blk_main_parent g = None)
   /\
   (* T-MONO / L-ANC: finalization is downward-closed along ancestry. *)
-  (forall d c J b b', anc_of d b' b -> Finalized d c J b -> Finalized d c J b')
+  (forall d c J b b', anc_of d b' b -> CliqueOracle.Finalized d c J b -> CliqueOracle.Finalized d c J b')
   /\
   (* L-SNAP: finalization is monotone under snapshot growth. *)
-  (forall d c J J' b, snap_extends J' J -> Finalized d c J b -> Finalized d c J' b)
+  (forall d c J J' b, snap_extends J' J -> CliqueOracle.Finalized d c J b -> CliqueOracle.Finalized d c J' b)
   /\
   (* T-CACHE: the warm frontier up-walk equals the cold down-walk (no fork). *)
   (forall pivot band, AdjDC band ->
@@ -232,6 +234,32 @@ Proof.
             (conj rejection_order_independent one_winner_preserved))).
 Qed.
 
+Theorem finalized_floor_deploy_identity_separation_correct :
+  (forall payload,
+    {| identity_domain := Legacy; identity_payload := payload |} <>
+    {| identity_domain := V6; identity_payload := payload |})
+  /\
+  (forall tombstones payload,
+    ~ rejected tombstones
+        {| identity_domain := Legacy; identity_payload := payload |} ->
+    ~ rejected
+        (reject tombstones
+          {| identity_domain := V6; identity_payload := payload |})
+        {| identity_domain := Legacy; identity_payload := payload |})
+  /\
+  (forall tombstones payload,
+    ~ rejected tombstones
+        {| identity_domain := V6; identity_payload := payload |} ->
+    ~ rejected
+        (reject tombstones
+          {| identity_domain := Legacy; identity_payload := payload |})
+        {| identity_domain := V6; identity_payload := payload |}).
+Proof.
+  exact (conj equal_payload_cross_domain_ids_are_distinct
+          (conj v6_rejection_preserves_equal_payload_legacy_identity
+                legacy_rejection_preserves_equal_payload_v6_identity)).
+Qed.
+
 Theorem finalized_floor_occurrence_status_scope_correct :
   (forall records record,
      In record records ->
@@ -277,15 +305,21 @@ Qed.
 Theorem finalized_floor_recovery_leadership_correct :
   (forall validator_count finalized_height,
      validator_count > 0 ->
-     1 <= recovery_leader validator_count finalized_height <= validator_count)
+     1 <= inclusion_leader validator_count finalized_height <= validator_count)
   /\
   (forall validator_count finalized_height proposer_a proposer_b,
-     recovery_authorized validator_count finalized_height proposer_a ->
-     recovery_authorized validator_count finalized_height proposer_b ->
+     inclusion_authorized validator_count finalized_height proposer_a ->
+     inclusion_authorized validator_count finalized_height proposer_b ->
+     proposer_a = proposer_b)
+  /\
+  (forall carrier_owner proposer_a proposer_b,
+     recovery_custody_authorized carrier_owner proposer_a ->
+     recovery_custody_authorized carrier_owner proposer_b ->
      proposer_a = proposer_b).
 Proof.
-  exact (conj recovery_leader_in_validator_set
-          recovery_authorization_unique_per_finalized_view).
+  exact (conj inclusion_leader_in_validator_set
+          (conj inclusion_authorization_unique_per_finalized_view
+            recovery_custody_authorization_unique_per_carrier)).
 Qed.
 
 Theorem finalized_floor_merge_recovery_coherence_correct :
@@ -1116,12 +1150,12 @@ Theorem finalized_floor_thetaexact_advance_correct :
      every non-negative threshold, including θ = 0. *)
   (forall d c J b num den,
      (0 <= num)%Z -> (0 < den)%Z ->
-     Finalized_ft d c J b num den -> Finalized d c J b)
+     Finalized_ft d c J b num den -> CliqueOracle.Finalized d c J b)
   /\
   (* C5 / advancement: finalization is monotone as latest messages advance to
      DAG-descendants (generalizes the preservation-only L-SNAP). *)
   (forall d c J J' b,
-     snap_advances d J' J -> Finalized d c J b -> Finalized d c J' b)
+     snap_advances d J' J -> CliqueOracle.Finalized d c J b -> CliqueOracle.Finalized d c J' b)
   /\
   (* C5 / generalization: preservation ⇒ advancement, so the existing L-SNAP is
      the reflexive-descendant corollary of L_SNAP_advance. *)
@@ -1133,7 +1167,7 @@ Theorem finalized_floor_thetaexact_advance_correct :
      including the negative-θ sentinels. Independently, T-CACHE holds directly over `Finalized_ft` for all
      num via GuardBridge.BridgeFt.guard_constant_committee_transparent_ft.) *)
   (forall d c J b num den,
-     Finalized_ft_hg d c J b num den -> Finalized d c J b).
+     Finalized_ft_hg d c J b num den -> CliqueOracle.Finalized d c J b).
 Proof.
   exact (conj L_ANC_ft
           (conj L_SNAP_ft
@@ -1261,17 +1295,87 @@ Theorem finalized_floor_protocol_lifecycle_correct :
   /\
   (forall active_version block_version record,
     scope_admissible active_version block_version record ->
-    block_version = active_version).
+    block_version = active_version)
+  /\
+  (genesis_occurrence_identity current_protocol = ProtocolEnvelopeIdentity /\
+   genesis_execution_identity current_protocol = ProtocolEnvelopeIdentity /\
+   genesis_replay_identity current_protocol = ProtocolEnvelopeIdentity /\
+   genesis_replay_identity current_protocol =
+     genesis_execution_identity current_protocol /\
+   (forall public_key,
+     project_ground_custody (PrincipalDeployer 1 public_key) =
+     project_ground_custody (LegacyGroundDeployer public_key))).
 Proof.
   exact (conj current_ceremony_end_to_end
     (conj supported_recovery_end_to_end
       (conj unsupported_approved_fails_closed
         (conj legacy_approved_fails_closed
           (conj mismatched_candidate_is_not_approved
-            admissible_scope_uses_active_version))))).
+            (conj admissible_scope_uses_active_version
+              current_genesis_identity_end_to_end)))))).
 Qed.
 
 Print Assumptions finalized_floor_protocol_lifecycle_correct.
+
+Definition finalized_floor_funding_ground_custody_projection_correct :=
+  funding_ground_custody_projection_correct.
+
+Print Assumptions finalized_floor_funding_ground_custody_projection_correct.
+
+Definition typed_local_validation_recovery_contract : Prop :=
+  (forall history deferral artifact,
+    deferral_artifact deferral = Some artifact ->
+    certified_artifact (certify_deferral history deferral) = Some artifact)
+  /\
+  (forall history block_id state_id,
+    certify_deferral history (AwaitingBlock block_id) <>
+    certify_deferral history (AwaitingState state_id))
+  /\
+  (forall identity,
+    certify_deferral GenesisRooted (AwaitingBlock identity) =
+    LocalArtifactFault (MissingBlockArtifact identity))
+  /\
+  (forall identity,
+    certify_deferral GenesisRooted (AwaitingState identity) =
+    LocalArtifactFault (MissingStateArtifact identity))
+  /\
+  (forall history deferral,
+    certified_deferral_disposition (certify_deferral history deferral) = Pending)
+  /\
+  (forall state_id block_id,
+    recovery_releases
+      (MissingStateArtifact state_id)
+      (AwaitingBlock block_id) = false)
+  /\
+  (forall block_id state_id,
+    recovery_releases
+      (MissingBlockArtifact block_id)
+      (AwaitingState state_id) = false)
+  /\
+  (forall artifact outstanding candidate,
+    request_artifact artifact (request_artifact artifact outstanding) candidate =
+    request_artifact artifact outstanding candidate)
+  /\
+  (forall left right outstanding candidate,
+    request_artifact left (request_artifact right outstanding) candidate =
+    request_artifact right (request_artifact left outstanding) candidate).
+
+Theorem typed_local_validation_recovery_correct :
+  typed_local_validation_recovery_contract.
+Proof.
+  unfold typed_local_validation_recovery_contract.
+  exact (conj certified_deferral_preserves_artifact_identity
+    (conj block_and_state_deferrals_never_collapse
+      (conj genesis_guard_retains_typed_block_fault
+        (conj genesis_guard_retains_typed_state_fault
+          (conj typed_deferral_never_creates_objective_invalidity
+            (conj state_recovery_never_releases_block_waiter
+              (conj block_recovery_never_releases_state_waiter
+                (conj duplicate_recovery_request_is_idempotent
+                  independent_recovery_requests_commute)))))))).
+Qed.
+
+Print Assumptions typed_local_validation_recovery_correct.
 
 Theorem bootstrap_replay_and_local_fault_recovery_correct :
   (forall (Context Root : Type)
@@ -1292,7 +1396,9 @@ Theorem bootstrap_replay_and_local_fault_recovery_correct :
   /\
   (forall state,
     regular_parent_satisfied state = true ->
-    validation_disposition state = LocalFaultDeferral.Accepted).
+    validation_disposition state = LocalFaultDeferral.Accepted)
+  /\
+  typed_local_validation_recovery_contract.
 Proof.
   split.
   - intros Context Root replay history.
@@ -1300,7 +1406,8 @@ Proof.
   - exact (conj local_fault_preserves_consensus_disposition
       (conj local_fault_leaves_ready_queue
         (conj failed_recovery_does_not_restore_ready_state
-          regular_child_requires_valid_parent))).
+          (conj regular_child_requires_valid_parent
+            typed_local_validation_recovery_correct)))).
 Qed.
 
 Print Assumptions bootstrap_replay_and_local_fault_recovery_correct.

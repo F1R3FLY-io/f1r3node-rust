@@ -25,7 +25,7 @@ The byte tariff is a native safety refinement: the papers require finite,
 authority-backed work but deliberately do not prescribe a protobuf byte
 schedule.
 
-![End-to-end byte and authority lifecycle: a top-up changes only unreserved custody, admission freezes authority, byte, and fee allocations, RSpace charges before mutation, settlement burns exact cost and transfers the fee, and replay recomputes the same evidence.](../theory/diagrams/vault-backed-byte-accounting.svg)
+![End-to-end byte and authority lifecycle: a top-up changes only unreserved custody, admission freezes authority, byte, and fee allocations, RSpace charges before mutation, settlement burns exact cost and transfers the fee, and replay recomputes the same evidence.](../casper/theory/diagrams/vault-backed-byte-accounting.svg)
 
 ## Terms, units, and ledgers
 
@@ -112,7 +112,7 @@ byte credits.
 
 Every addition, multiplication, and integer conversion is checked. Overflow or
 insufficient capacity rejects before the affected mutation. See
-[Vault-backed quantitative byte accounting](../theory/cost-accounting-impl/vault-backed-byte-accounting.md)
+[Vault-backed quantitative byte accounting](../casper/theory/cost-accounting-impl/vault-backed-byte-accounting.md)
 for the exact canonical footprints and concurrency protocol.
 
 ## Unified admission and settlement
@@ -262,9 +262,9 @@ reservation is insufficient.
 Read [Wallet-funded process lifecycle](20-wallet-funded-processes.md) for the
 end-to-end user and operator workflow, including wallet refill and cryptographic
 ownership. Read
-[End-to-end cost authority and native RevVault settlement](../theory/cost-accounting-impl/end-to-end-authority-settlement.md)
+[End-to-end cost authority and native RevVault settlement](../casper/theory/cost-accounting-impl/end-to-end-authority-settlement.md)
 for the implementation contract and
-[Formal Verification of Cost-Accounted Rho](../theory/cost-accounted-rho-verification.md)
+[Formal Verification of Cost-Accounted Rho](../casper/theory/cost-accounted-rho-verification.md)
 for the proof catalog.
 
 ## References

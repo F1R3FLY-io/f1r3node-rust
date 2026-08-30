@@ -1,0 +1,94 @@
+' The ONE Sig enum bisected (F-A) — the funding-signature formers (g | #P | s∘s:
+' Unit, Ground, Quote, And) versus the value/capability type-logic connectives
+' (Plus ⊕, With &, Bang !, WhyNot ?, Lolly ⊸), plus the separate Threshold
+' admission quorum. The funding former
+' Ground(pk) is the §D2.9 funding key. is_funding_former() is the chokepoint:
+' funding formers flow to the supply pool Σ⟦s⟧; capability connectives are
+' rejected at deploy ingress, while Threshold lowers to a scalar quorum.
+'
+' Source of truth: docs/casper/theory/cost-accounting-impl/w1-surface-syntax-native-integration.md
+'                  (F-A; mod.rs Sig @1390, is_funding_former @1846).
+' Palette:  funding formers=mint #C8E6C9 · capability/value type-logic=indigo #C5CAE9
+'           is_funding_former() gate=amber #FFECB3 · supply pool Σ⟦s⟧=mint #C8E6C9
+'   arrows: funding/credit path=green #2E7D32 · capability reject=red #C62828
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/sig-funding-vs-capability.puml
+
+@startuml sig-funding-vs-capability
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam ArrowFontSize 11
+skinparam package {
+  BorderColor #444444
+}
+skinparam component {
+  BorderColor #333333
+}
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor     #666666
+title One Sig enum, two grammars (F-A) — funding formers (g | #P | s∘s) vs the value/capability type-logic
+
+package "Funding formers   (g | #P | s∘s)" #E8F5E9 {
+  component "Unit\n— multiplicative 1" as F_UNIT #C8E6C9
+  component "★ Ground(g)\n⟵ the public key\n(§D2.9 funding key)" as F_GROUND #C8E6C9
+  component "Quote(#P)\n— process hash" as F_QUOTE #C8E6C9
+  component "And(∘)\n— the tensor combinator" as F_AND #C8E6C9
+}
+
+package "Capability / value type-logic   (F-A: NOT deploy formers)" #E8EAF6 {
+  component "Plus  ⊕" as C_PLUS #C5CAE9
+  component "With  &" as C_WITH #C5CAE9
+  component "Bang  !" as C_BANG #C5CAE9
+  component "WhyNot  ?" as C_WHYNOT #C5CAE9
+  component "Lolly  ⊸" as C_LOLLY #C5CAE9
+}
+
+package "Admission-only quorum" #E3F2FD {
+  component "Top-level Threshold(k, members)\n— atomic candidate signers" as C_THRESH #BBDEFB
+  component "analyze_funding_algebra\n— validate and lower" as ADMIT #FFECB3
+  component "Cosigned scalar k-of-N" as QUORUM #BBDEFB
+}
+
+component "is_funding_former()\n— the funding chokepoint" as GATE #FFECB3
+component "Σ⟦s⟧  supply pool\nfrom_sig(s).par — the funded channel" as POOL #C8E6C9
+
+' Funding formers pass the gate and key the supply pool.
+F_UNIT   --> GATE
+F_GROUND --> GATE
+F_QUOTE  --> GATE
+F_AND    --> GATE
+GATE -[#2E7D32]-> POOL : funding former ⇒ admit\n(builds funding_sig, keys Σ⟦s⟧)
+
+' Threshold is admitted as a scalar quorum but never becomes a funding former.
+C_THRESH -[#1565C0]-> ADMIT
+ADMIT -[#1565C0]-> QUORUM
+
+' Capability connectives are rejected at deploy ingress (F-A).
+C_PLUS   -[#C62828]-> ADMIT
+C_WITH   -[#C62828]-> ADMIT
+C_BANG   -[#C62828]-> ADMIT
+C_WHYNOT -[#C62828]-> ADMIT
+C_LOLLY  -[#C62828]-> ADMIT
+note on link #FFEBEE
+  rejected at deploy ingress — F-A
+  (reflect to the value / type layer instead)
+end note
+
+note bottom of POOL #E8F5E9
+  funding_sig is built only from { Unit, Ground, Quote, And };
+  capability connectives reflect to the value/type layer;
+  Threshold affects admission only; neither enters Σ⟦s⟧.
+end note
+
+legend bottom
+  |= color |= meaning |
+  |<#C8E6C9>| funding former / supply pool Σ⟦·⟧ (g | #P | s∘s) |
+  |<#C5CAE9>| value / capability type-logic connective |
+  |<#BBDEFB>| admission-only quorum representation |
+  |<#FFECB3>| is_funding_former() control gate |
+  |<#2E7D32>| funding-admit / pool-keying path |
+  |<#C62828>| capability connective rejected at funding (F-A) |
+endlegend
+
+@enduml

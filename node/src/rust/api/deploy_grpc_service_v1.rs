@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::api::block_api::BlockAPI;
+use casper::rust::api::block_api::{BlockAPI, ExploratoryDeployRejection};
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::api::graph_generator::{GraphConfig, GraphzGenerator};
+use casper::rust::casper::DeployError;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
@@ -21,14 +22,16 @@ use models::casper::v1::{
     BlockInfoResponse, BlockResponse, BondStatusResponse, ContinuationAtNameResponse,
     DeployFinalizationStatusResponse, DeployResponse, EventInfoResponse, ExploratoryDeployResponse,
     FindDeployResponse, IsFinalizedResponse, LastFinalizedBlockResponse, MachineVerifyResponse,
-    PrivateNamePreviewResponse, RhoDataResponse, StatusResponse, VisualizeBlocksResponse,
+    PendingDeploysResponse, PrivateNamePreviewResponse, RhoDataResponse, StatusResponse,
+    VisualizeBlocksResponse,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BlocksQueryByHeight, BondStatusQuery, ContinuationAtNameQuery,
     DataAtNameByBlockQuery, DeployDataProto, DeployFinalizationStateProto,
     DeployFinalizationStatusInfo, DeployFinalizationStatusQuery, ExploratoryDeployQuery,
     FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery, MachineVerifyQuery,
-    PrivateNamePreviewQuery, ReportQuery, Status, VersionInfo, VisualizeDagQuery,
+    PendingDeployInfo, PendingDeploysQuery, PendingDeploysResponsePayload, PrivateNamePreviewQuery,
+    ReportQuery, Status, VersionInfo, VisualizeDagQuery,
 };
 use models::servicemodelapi::ServiceError;
 use tokio::time::{sleep, Duration};
@@ -150,6 +153,9 @@ impl DeployGrpcServiceV1Impl {
             Err(_) => return,
         };
 
+        // Cached when available, replayed only when the reporter is idle:
+        // block_report refuses rather than queues, so this never adds to the
+        // load it would be competing with.
         match self
             .block_report_api
             .block_report(block_hash_bytes, false)
@@ -163,15 +169,21 @@ impl DeployGrpcServiceV1Impl {
                     );
                 for deploy in &mut block_info.deploys {
                     deploy.transfers_available = true;
-                    if let Some(transfers) = transfers_by_deploy.get(&deploy.sig) {
+                    let deploy_id = if deploy.deploy_id.is_empty() {
+                        deploy.sig.clone()
+                    } else {
+                        hex::encode(&deploy.deploy_id)
+                    };
+                    if let Some(transfers) = transfers_by_deploy.get(&deploy_id) {
                         deploy.transfers = transfers.clone();
                     }
                 }
             }
             Err(_) => {
-                // Validators: transfers_available stays false (proto default),
-                // transfers stays empty Vec. Clients check transfers_available
-                // to distinguish "no transfers" from "unavailable."
+                // Validators, and a reporter busy with another replay:
+                // transfers_available stays false (proto default), transfers
+                // stays empty Vec. Clients check transfers_available to
+                // distinguish "no transfers" from "unavailable."
             }
         }
     }
@@ -282,7 +294,17 @@ impl DeployService for DeployGrpcServiceV1Impl {
         {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
-                error!("Deploy service method error do_deploy: {}", e);
+                let is_duplicate = e.chain().any(|cause| {
+                    matches!(
+                        cause.downcast_ref::<DeployError>(),
+                        Some(DeployError::DuplicateDeploy(_))
+                    )
+                });
+                if is_duplicate {
+                    tracing::debug!("Duplicate deploy rejected: {}", e);
+                } else {
+                    error!("Deploy service method error do_deploy: {}", e);
+                }
                 Self::create_error_deploy_response(e.into_service_error())
             }
         }
@@ -565,10 +587,23 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let request = request.into_inner();
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
+        let deploy_id =
+            match BlockAPI::deploy_lookup_id(&self.engine_cell, &request.deploy_id).await {
+                Ok(deploy_id) => deploy_id,
+                Err(error) => {
+                    return Ok(tonic::Response::new(FindDeployResponse {
+                        message: Some(models::casper::v1::find_deploy_response::Message::Error(
+                            error.into_service_error(),
+                        )),
+                        finalization_state: 0,
+                        rejection_count: 0,
+                    }));
+                }
+            };
 
         let mut attempt = 1;
         loop {
-            match BlockAPI::find_deploy(&self.engine_cell, &request.deploy_id.to_vec()).await {
+            match BlockAPI::find_deploy(&self.engine_cell, &deploy_id).await {
                 Ok(block_info) => {
                     let known_block_hash = hex::decode(&block_info.block_hash)
                         .ok()
@@ -576,7 +611,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
                     let (finalization_state, rejection_count) =
                         match BlockAPI::deploy_finalization_status_with_known_block(
                             &self.engine_cell,
-                            &request.deploy_id.to_vec(),
+                            &deploy_id,
                             known_block_hash.as_ref(),
                         )
                         .await
@@ -729,9 +764,22 @@ impl DeployService for DeployGrpcServiceV1Impl {
         request: tonic::Request<DeployFinalizationStatusQuery>,
     ) -> Result<tonic::Response<DeployFinalizationStatusResponse>, tonic::Status> {
         let request = request.into_inner();
+        let deploy_id =
+            match BlockAPI::deploy_lookup_id(&self.engine_cell, &request.deploy_sig).await {
+                Ok(deploy_id) => deploy_id,
+                Err(error) => {
+                    return Ok(tonic::Response::new(DeployFinalizationStatusResponse {
+                        message: Some(
+                            models::casper::v1::deploy_finalization_status_response::Message::Error(
+                                error.into_service_error(),
+                            ),
+                        ),
+                    }));
+                }
+            };
         match casper::rust::api::block_api::BlockAPI::deploy_finalization_status(
             &self.engine_cell,
-            &request.deploy_sig,
+            &deploy_id,
         )
         .await
         {
@@ -754,6 +802,57 @@ impl DeployService for DeployGrpcServiceV1Impl {
                 Ok(tonic::Response::new(DeployFinalizationStatusResponse {
                     message: Some(
                         models::casper::v1::deploy_finalization_status_response::Message::Error(
+                            e.into_service_error(),
+                        ),
+                    ),
+                }))
+            }
+        }
+    }
+
+    /// Bulk list of pending deploys (deploy_storage + rejected-recovery
+    /// buffer), optionally filtered by deployer public key. Empty
+    /// response on read-only nodes (Casper not initialised).
+    async fn get_pending_deploys(
+        &self,
+        request: tonic::Request<PendingDeploysQuery>,
+    ) -> Result<tonic::Response<PendingDeploysResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let deployer = if request.deployer_pubkey.is_empty() {
+            None
+        } else {
+            Some(request.deployer_pubkey.as_ref())
+        };
+
+        match BlockAPI::list_pending_deploys(&self.engine_cell, deployer).await {
+            Ok(snapshot) => {
+                let deploys: Vec<PendingDeployInfo> = snapshot
+                    .deploys
+                    .into_iter()
+                    .map(|(envelope, is_rejected)| PendingDeployInfo {
+                        deploy: Some(
+                            models::rust::casper::protocol::casper_message::DeployData::to_proto_cosigned(
+                                &envelope,
+                            ),
+                        ),
+                        is_rejected,
+                    })
+                    .collect();
+                let payload = PendingDeploysResponsePayload {
+                    deploys,
+                    total_available: snapshot.total_available,
+                };
+                Ok(tonic::Response::new(PendingDeploysResponse {
+                    message: Some(
+                        models::casper::v1::pending_deploys_response::Message::Payload(payload),
+                    ),
+                }))
+            }
+            Err(e) => {
+                error!("Deploy service method error get_pending_deploys: {}", e);
+                Ok(tonic::Response::new(PendingDeploysResponse {
+                    message: Some(
+                        models::casper::v1::pending_deploys_response::Message::Error(
                             e.into_service_error(),
                         ),
                     ),
@@ -834,6 +933,21 @@ impl DeployService for DeployGrpcServiceV1Impl {
             }
             Err(e) => {
                 error!("Deploy service method error exploratory_deploy: {}", e);
+                // Backpressure and deadline overrun have exact gRPC statuses, so
+                // they travel on the transport's own status channel instead of
+                // being flattened into `ServiceError`'s prose. The status is
+                // chosen from the error variant, so it agrees with the HTTP
+                // classification of the same failure by construction.
+                if let Some(rejection) = ExploratoryDeployRejection::classify(&e) {
+                    return Err(match rejection {
+                        ExploratoryDeployRejection::Busy { .. } => {
+                            tonic::Status::unavailable(e.to_string())
+                        }
+                        ExploratoryDeployRejection::Timeout { .. } => {
+                            tonic::Status::deadline_exceeded(e.to_string())
+                        }
+                    });
+                }
                 Ok(tonic::Response::new(ExploratoryDeployResponse {
                     message: Some(
                         models::casper::v1::exploratory_deploy_response::Message::Error(

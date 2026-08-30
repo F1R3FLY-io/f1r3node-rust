@@ -8,7 +8,7 @@ uptime_inputs_hash() {
   mapfile -t sources < <(
     cd "$ROOT"
     {
-      find docs/theory/uptime -type f -print
+      find docs/casper/theory/uptime -type f -print
       find formal/storm/uptime formal/tlaplus/uptime formal/mcrl2/uptime formal/wolfram/uptime -type f -print
       printf '%s\n' \
         scripts/check-tlc-source-binding.sh \

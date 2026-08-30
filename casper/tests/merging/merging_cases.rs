@@ -110,6 +110,8 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
                     rejected_state_effects: Vec::new(),
                     system_deploys: processed_system_deploys,
                     extra_bytes: Vec::<u8>::new().into(),
+                    applied_from_scope: Vec::new(),
+                    merge_base: Vec::<u8>::new().into(),
                 },
                 justifications: Vec::new(),
                 sender: state_transition_creator.bytes.clone(),

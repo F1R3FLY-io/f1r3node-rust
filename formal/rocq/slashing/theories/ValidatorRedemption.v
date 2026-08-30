@@ -8,7 +8,7 @@
    quarantined (slashed) validator.
 
    Cost-Accounted Rho Stage C / DR-3 / DR-7 / DR-12
-   (docs/theory/cost-accounting-impl/workstream-c-economic.md "Stage C",
+   (docs/casper/theory/cost-accounting-impl/workstream-c-economic.md "Stage C",
     stageb-minting-halt-interface.md Decision 4). The Rholang `redeemSlashed`
    is DOUBLE-gated (sysAuthToken AND a Rust-verified PoS-multisig quorum). The
    quorum verification is a Rust platform obligation (redeem_deploy.rs

@@ -66,6 +66,7 @@ pub fn event_is_invalid(event: &BillableTokenEvent) -> bool {
 pub fn deploy_data() -> DeployData {
     DeployData {
         term: "Nil".to_string(),
+        language: "rholang".to_string(),
         time_stamp: 0,
         valid_after_block_number: 0,
         shard_id: "root".to_string(),

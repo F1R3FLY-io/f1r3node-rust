@@ -648,7 +648,7 @@ Qed.
    uc_ca_046, uc_ca_047, uc_ca_048, uc_ca_049, uc_ca_054 below are stated over the
    *digest-inclusive* replay-payload model (rb_full_replay_payload / rb_cost_trace_*
    / rb_block_auth_payload / rb_replay_cache_key, defined in RuntimeBudgetRefinement.v).
-   Per TM-CA-151 (docs/theory/cost-accounting-threat-model.md) the per-operation
+   Per TM-CA-151 (docs/casper/theory/cost-accounting-threat-model.md) the per-operation
    cost_trace_digest / cost_trace_event_count / digest-presence are DIAGNOSTIC /
    TELEMETRY ONLY and are removed from production consensus (the replay comparison
    and the signed block-hash preimage). The production consensus surface is

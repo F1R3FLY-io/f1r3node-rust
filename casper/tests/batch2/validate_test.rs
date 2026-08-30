@@ -24,6 +24,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
     StateEffectId,
 };
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -1105,7 +1106,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
         );
-        block_m.body.rejected_deploys = vec![RejectedDeploy::occurrence(
+        block_m.body.rejected_deploys = vec![crate::legacy_rejected_occurrence(
             deploy_sig.clone(),
             block_x.block_hash.clone(),
             RejectedDeployReason::MergeConflict,
@@ -1140,8 +1141,8 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         // The snapshot flag mirrors what the recovery pipeline derives from
         // the on-chain record above; the validation exemption itself no
         // longer reads it (node-local), but keep it for realism.
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig);
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(crate::legacy_deploy_id(&deploy_sig));
         snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
@@ -1228,8 +1229,8 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         // gap is exactly that the repeat_deploy filter cannot distinguish
         // "rejected somewhere, recoverable" from "finalized somewhere,
         // non-recoverable" via this set alone.
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig);
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(crate::legacy_deploy_id(&deploy_sig));
         snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
@@ -3374,7 +3375,12 @@ async fn validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_depl
         tampered_rej
             .body
             .rejected_deploys
-            .push(RejectedDeploy::legacy(Bytes::from(vec![0xABu8; 64])));
+            .push(RejectedDeploy::occurrence_v6(
+                models::rust::deploy_id::DeployIdV6::try_from([0xAB; 32].as_slice())
+                    .expect("fixed-width v6 deploy identity"),
+                genesis.block_hash.clone(),
+                RejectedDeployReason::MergeConflict,
+            ));
 
         let mut snap_rej = mk_casper_snapshot(
             block_dag_storage

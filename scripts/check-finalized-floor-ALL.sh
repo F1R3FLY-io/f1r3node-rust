@@ -39,9 +39,9 @@
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire it (or any Rocq/TLA+/
 # Wolfram step) into .github/workflows/* — an earlier formal-CI workflow was
-# deliberately removed. See docs/theory/finalized-floor/finalized-floor-verification.md.
+# deliberately removed. See docs/casper/theory/finalized-floor/finalized-floor-verification.md.
 #
-# Companion doc: docs/theory/finalized-floor/finalized-floor-verification.md
+# Companion doc: docs/casper/theory/finalized-floor/finalized-floor-verification.md
 #
 # Env knobs:
 #   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
@@ -184,6 +184,7 @@ Print Assumptions finalized_floor_merge_correct.
 Print Assumptions finalized_floor_candidate_scope_rehome_correct.
 Print Assumptions finalized_floor_objective_evidence_sequence_boundary_correct.
 Print Assumptions finalized_floor_occurrence_correct.
+Print Assumptions finalized_floor_deploy_identity_separation_correct.
 Print Assumptions finalized_floor_occurrence_status_scope_correct.
 Print Assumptions finalized_floor_recovery_admission_correct.
 Print Assumptions finalized_floor_recovery_leadership_correct.
@@ -210,6 +211,7 @@ Print Assumptions Finalized_ft_hg_refines_Finalized.
 Print Assumptions guard_constant_committee_transparent_ft.
 Print Assumptions finalizer_progress_correct.
 Print Assumptions bootstrap_replay_and_local_fault_recovery_correct.
+Print Assumptions typed_local_validation_recovery_correct.
 Print Assumptions terminal_funding_admission_lifecycle_correct.
 Print Assumptions finalized_floor_effect_causal_closure_correct.
 Print Assumptions finalized_floor_state_lineage_correct.
@@ -999,7 +1001,7 @@ missing_buffer_unsafe|Inv_ObservedRejectionIsBuffered|non-atomic rejected-occurr
 suppress_recovery_unsafe|Inv_SelectedRecoveryIsNotSelfChainSuppressed|self-chain recovery suppression
 truncated_frontier_unsafe|Inv_SettlementUsesCompleteFrontier|truncated settlement frontier
 floor_regression_unsafe|Inv_FinalizedEffectNeverRegresses|finalized-effect regression
-nonleader_unsafe|Inv_OnlyCommittedViewLeaderRetries|nonleader recovery ownership
+nonleader_unsafe|Inv_OnlyCarrierOwnerRetries|non-owner recovery custody
 EOF
   if tlc_run "$(tlc_metadir ff_certified_floor_promotion)" "$TLA_DIR/MC_CertifiedFloorPromotion.cfg" "$TLA_DIR/CertifiedFloorPromotion.tla" >"$LOG_DIR/ff_tlc_certified_floor_promotion.log" 2>&1; then
     pass "TLA+ dual-certified universal causal floor promotion is arrival-order independent and live"
@@ -2266,7 +2268,7 @@ echo "== [6/8] PlantUML diagrams (fail-soft) =="
 # The dossier's diagram set must render cleanly: a populated SVG (closing </svg>),
 # no stderr from plantuml. Mirrors the slashing diagram convention. Doc-only, so
 # fail-soft; SKIPPED if plantuml is absent or no .puml sources exist yet.
-DIAG_DIR="$REPO_ROOT/docs/theory/finalized-floor/diagrams"
+DIAG_DIR="$REPO_ROOT/docs/casper/theory/finalized-floor/diagrams"
 if command -v plantuml >/dev/null 2>&1; then
   n_puml=$(find "$DIAG_DIR" -name '*.puml' 2>/dev/null | wc -l)
   if [[ "$n_puml" -gt 0 ]]; then
@@ -2282,7 +2284,7 @@ if command -v plantuml >/dev/null 2>&1; then
     done
     [[ "$diag_ok" == "1" ]] && pass "all $n_puml PlantUML diagrams render clean (populated SVG, no stderr)"
   else
-    skip "no .puml sources in docs/theory/finalized-floor/diagrams"
+    skip "no .puml sources in docs/casper/theory/finalized-floor/diagrams"
   fi
 else
   skip "no plantuml on PATH"
@@ -2480,7 +2482,7 @@ if command -v cargo >/dev/null 2>&1; then
   else
     skip "Loom finalized-floor cache: could not build the loom test in this cfg (fail-soft; see $LOG_DIR/ff_loom.log)"
   fi
-  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery; do
+  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery loom_local_validation_recovery loom_recovery_custody; do
     loom_protocol_log="$LOG_DIR/ff_${loom_protocol}.log"
     if env RUSTFLAGS='--cfg loom -C target-cpu=native' LOOM_MAX_PREEMPTIONS=3 \
       cargo test -p cost-accounting-loom-models --test "$loom_protocol" >"$loom_protocol_log" 2>&1; then

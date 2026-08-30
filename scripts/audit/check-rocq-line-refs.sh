@@ -38,7 +38,7 @@ declare -a THEORY_DIRS=(
     "${REPO}/formal/rocq/cost_accounted_rho/theories"
     "${REPO}/formal/rocq/validator/theories"
 )
-DOCS_DIR="${REPO}/docs/theory"
+DOCS_DIR="${REPO}/docs/casper/theory"
 QUIET=0
 if [[ "${1:-}" == "--quiet" ]]; then QUIET=1; fi
 

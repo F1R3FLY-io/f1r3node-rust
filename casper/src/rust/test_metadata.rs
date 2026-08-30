@@ -59,6 +59,8 @@ fn certify_with_decision(
             rejected_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         },
         justifications: metadata.justifications.clone(),
         sender: metadata.sender.clone(),

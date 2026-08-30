@@ -1,6 +1,6 @@
 //! `slash_authorization_paths` — differential testing of slash authorization.
 //!
-//! Reference: docs/theory/slashing/slashing-specification.md §9 + §10.
+//! Reference: docs/casper/theory/slashing/slashing-specification.md §9 + §10.
 //! Production code under test: `slashing_authorization::authorized_slash_candidates`
 //! and `validate_received_slash_deploys`.
 //!

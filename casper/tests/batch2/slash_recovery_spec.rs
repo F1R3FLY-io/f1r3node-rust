@@ -465,18 +465,20 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, _merged_rejected) =
-        casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
-            &nodes[1].block_store,
-            snapshot.parents.clone(),
-            &snapshot,
-            &nodes[1].runtime_manager,
-            &latest_messages,
-            None,
-            Some(&nodes[1].rejected_deploy_buffer),
-        )
-        .await
-        .expect("real merge to seed cache value");
+    let merged_state = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[1].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &nodes[1].runtime_manager,
+        &latest_messages,
+        None,
+        Some(&nodes[1].rejected_deploy_buffer),
+        None,
+        None,
+    )
+    .await
+    .expect("real merge to seed cache value")
+    .state;
 
     let merged_bonds = nodes[1]
         .runtime_manager
@@ -574,18 +576,20 @@ async fn canonical_prestate_zero_bond_is_not_proposal_work() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, _merged_rejected) =
-        casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
-            &nodes[1].block_store,
-            snapshot.parents.clone(),
-            &snapshot,
-            &nodes[1].runtime_manager,
-            &latest_messages,
-            None,
-            Some(&nodes[1].rejected_deploy_buffer),
-        )
-        .await
-        .expect("real merge to seed cache value");
+    let merged_state = casper::rust::util::rholang::interpreter_util::compute_parents_post_state(
+        &nodes[1].block_store,
+        snapshot.parents.clone(),
+        &snapshot,
+        &nodes[1].runtime_manager,
+        &latest_messages,
+        None,
+        Some(&nodes[1].rejected_deploy_buffer),
+        None,
+        None,
+    )
+    .await
+    .expect("real merge to seed cache value")
+    .state;
 
     let merged_bonds = nodes[1]
         .runtime_manager

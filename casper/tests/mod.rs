@@ -19,4 +19,31 @@ mod slashing;
 mod sync;
 mod util;
 
+pub fn legacy_deploy_id(bytes: &[u8]) -> models::rust::deploy_id::DeployLookupId {
+    models::rust::deploy_id::DeployLookupId::Legacy(
+        models::rust::deploy_id::LegacyDeploySignature::new(bytes.to_vec()),
+    )
+}
+
+pub fn pending_legacy(
+    deploy: crypto::rust::signatures::signed::Signed<
+        models::rust::casper::protocol::casper_message::DeployData,
+    >,
+) -> block_storage::rust::deploy::pending_deploy::PendingDeploy {
+    block_storage::rust::deploy::pending_deploy::PendingDeploy::from_legacy(deploy)
+        .expect("legacy pending deploy")
+}
+
+pub fn legacy_rejected_occurrence(
+    deploy_id: impl AsRef<[u8]>,
+    source_block_hash: models::rust::block_hash::BlockHash,
+    reason: models::rust::casper::protocol::casper_message::RejectedDeployReason,
+) -> models::rust::casper::protocol::casper_message::RejectedDeploy {
+    models::rust::casper::protocol::casper_message::RejectedDeploy::occurrence_legacy(
+        models::rust::deploy_id::LegacyDeploySignature::new(deploy_id.as_ref().to_vec()),
+        source_block_hash,
+        reason,
+    )
+}
+
 pub fn init_logger() { shared::rust::tracing_init::init_for_tests(); }

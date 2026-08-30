@@ -35,6 +35,7 @@ fn create_deploy(
     validator_sk: &PrivateKey,
 ) -> Signed<DeployData> {
     let deploy_data = DeployData {
+        language: "rholang".to_string(),
         term: format!("new x in {{ x!({}) }}", valid_after_block_number),
         time_stamp: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -168,7 +169,9 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
         .lock()
         .add(vec![deploy.clone()])
         .expect("add deploy");
-    snapshot.deploys_in_scope.insert(deploy.sig.clone());
+    snapshot
+        .deploys_in_scope
+        .insert(crate::legacy_deploy_id(&deploy.sig));
 
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
@@ -187,7 +190,9 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
         "ordinary deploy storage must not re-admit an already-seen deploy"
     );
 
-    snapshot.rejected_in_scope.insert(deploy.sig.clone());
+    snapshot
+        .rejected_in_scope
+        .insert(crate::legacy_deploy_id(&deploy.sig));
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
         21,
@@ -208,7 +213,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     rejected_deploy_buffer
         .lock()
         .expect("rejected buffer lock")
-        .add(vec![deploy.clone()])
+        .add(vec![crate::pending_legacy(deploy.clone())])
         .expect("add rejected deploy");
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
@@ -223,17 +228,21 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     .await
     .expect("prepare with rejected buffer");
     assert!(
-        prepared.deploys.contains(&deploy),
+        prepared.deploys.contains(&crate::pending_legacy(deploy.clone())),
         "rejected-buffer deploys with a visible rejection must be retryable while the rejected source remains in scope"
     );
     assert!(rejected_deploy_buffer
         .lock()
         .expect("rejected buffer lock")
-        .contains_sig(&deploy.sig)
+        .contains_id(&crate::legacy_deploy_id(&deploy.sig))
         .expect("contains rejected deploy"));
 
-    snapshot.rejected_in_scope.insert(deploy.sig.clone());
-    snapshot.deploys_in_scope.remove(&deploy.sig);
+    snapshot
+        .rejected_in_scope
+        .insert(crate::legacy_deploy_id(&deploy.sig));
+    snapshot
+        .deploys_in_scope
+        .remove(&crate::legacy_deploy_id(&deploy.sig));
     let prepared = block_creator::prepare_user_deploys(
         &snapshot,
         21,
@@ -247,7 +256,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
     .await
     .expect("prepare after merge rejection");
     assert!(
-        prepared.deploys.contains(&deploy),
+        prepared.deploys.contains(&crate::pending_legacy(deploy.clone())),
         "rejected-buffer deploys must remain recoverable once the earlier clean inclusion is no longer in unresolved scope"
     );
 }
@@ -320,7 +329,9 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
     .expect("prepare with user deploy leadership");
 
     assert!(
-        prepared.deploys.contains(&deploy),
+        prepared
+            .deploys
+            .contains(&crate::pending_legacy(deploy.clone())),
         "leaders must be able to propose ordinary deploys"
     );
 }
@@ -351,7 +362,9 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
     let in_scope = create_deploy(1, None, &validator_sk);
     let pending = create_deploy(2, None, &validator_sk);
 
-    snapshot.deploys_in_scope.insert(in_scope.sig.clone());
+    snapshot
+        .deploys_in_scope
+        .insert(crate::legacy_deploy_id(&in_scope.sig));
     deploy_storage
         .lock()
         .add(vec![in_scope.clone(), pending.clone()])
@@ -370,8 +383,8 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
     .await
     .expect("prepare deploys");
 
-    assert!(!prepared.deploys.contains(&in_scope));
-    assert!(prepared.deploys.contains(&pending));
+    assert!(!prepared.deploys.contains(&crate::pending_legacy(in_scope)));
+    assert!(prepared.deploys.contains(&crate::pending_legacy(pending)));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -523,7 +536,7 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
     rejected_deploy_buffer
         .lock()
         .expect("rejected buffer lock")
-        .add(recovered.clone())
+        .add(recovered.into_iter().map(crate::pending_legacy).collect())
         .expect("seed rejected deploys");
 
     let prepared = block_creator::prepare_user_deploys(
@@ -547,7 +560,7 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
     let selected_valid_after: HashSet<i64> = prepared
         .deploys
         .iter()
-        .map(|d| d.data.valid_after_block_number)
+        .map(|d| d.data().valid_after_block_number)
         .collect();
     let expected: HashSet<i64> = (1..=32).collect();
     assert_eq!(
@@ -588,8 +601,12 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
         .collect();
 
     for deploy in &rejected {
-        snapshot.deploys_in_scope.insert(deploy.sig.clone());
-        snapshot.rejected_in_scope.insert(deploy.sig.clone());
+        snapshot
+            .deploys_in_scope
+            .insert(crate::legacy_deploy_id(&deploy.sig));
+        snapshot
+            .rejected_in_scope
+            .insert(crate::legacy_deploy_id(&deploy.sig));
     }
     deploy_storage
         .lock()
@@ -639,7 +656,9 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
         .expect("block store");
     let snapshot = create_snapshot(100, validator_id, &block_store);
     let deploy = create_deploy(0, None, &validator_sk);
-    snapshot.deploys_in_scope.insert(deploy.sig.clone());
+    snapshot
+        .deploys_in_scope
+        .insert(crate::legacy_deploy_id(&deploy.sig));
     deploy_storage
         .lock()
         .add(vec![deploy.clone()])
@@ -689,7 +708,9 @@ async fn block_expired_rejected_deploy_is_terminal_even_with_visible_rejection()
         .expect("block store");
     let snapshot = create_snapshot(100, validator_id, &block_store);
     let deploy = create_deploy(0, None, &validator_sk);
-    snapshot.rejected_in_scope.insert(deploy.sig.clone());
+    snapshot
+        .rejected_in_scope
+        .insert(crate::legacy_deploy_id(&deploy.sig));
     deploy_storage
         .lock()
         .add(vec![deploy.clone()])
@@ -743,7 +764,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
     rejected_deploy_buffer
         .lock()
         .expect("rejected buffer lock")
-        .add(vec![deploy.clone()])
+        .add(vec![crate::pending_legacy(deploy.clone())])
         .expect("seed rejected deploys");
 
     let prepared = block_creator::prepare_user_deploys(
@@ -766,7 +787,7 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
     assert!(rejected_deploy_buffer
         .lock()
         .expect("rejected buffer lock")
-        .contains_sig(&deploy.sig)
+        .contains_id(&crate::legacy_deploy_id(&deploy.sig))
         .expect("contains rejected deploy"));
 
     let prepared = block_creator::prepare_user_deploys(
@@ -783,7 +804,9 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
     .expect("prepare recovered-only leadership");
 
     assert!(
-        prepared.deploys.contains(&deploy),
+        prepared
+            .deploys
+            .contains(&crate::pending_legacy(deploy.clone())),
         "leaders must be able to propose recovered deploys while ordinary deploys are deferred"
     );
 
@@ -801,7 +824,9 @@ async fn recovered_deploys_are_ignored_when_recovery_leadership_is_disabled() {
     .expect("prepare with recovery leadership");
 
     assert!(
-        prepared.deploys.contains(&deploy),
+        prepared
+            .deploys
+            .contains(&crate::pending_legacy(deploy.clone())),
         "leaders must be able to propose recovered deploys"
     );
 }
@@ -1026,9 +1051,9 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
     {
         let mut buf = rejected_deploy_buffer.lock().unwrap();
         buf.add(vec![
-            block_expired_deploy.clone(),
-            time_expired_deploy.clone(),
-            valid_deploy.clone(),
+            crate::pending_legacy(block_expired_deploy.clone()),
+            crate::pending_legacy(time_expired_deploy.clone()),
+            crate::pending_legacy(valid_deploy.clone()),
         ])
         .expect("Failed to add deploys to buffer");
 
@@ -1058,17 +1083,17 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
     {
         let buf = rejected_deploy_buffer.lock().unwrap();
         assert!(
-            !buf.contains_sig(&block_expired_deploy.sig)
+            !buf.contains_id(&crate::legacy_deploy_id(&block_expired_deploy.sig))
                 .expect("Failed to query buffer for block-expired sig"),
             "Block-expired recovered sig must NOT remain in the rejected-deploy buffer"
         );
         assert!(
-            !buf.contains_sig(&time_expired_deploy.sig)
+            !buf.contains_id(&crate::legacy_deploy_id(&time_expired_deploy.sig))
                 .expect("Failed to query buffer for time-expired sig"),
             "Time-expired sig must NOT remain in the rejected-deploy buffer after create"
         );
         assert!(
-            buf.contains_sig(&valid_deploy.sig)
+            buf.contains_id(&crate::legacy_deploy_id(&valid_deploy.sig))
                 .expect("Failed to query buffer for valid sig"),
             "Valid (unexpired) sig must remain in the rejected-deploy buffer"
         );

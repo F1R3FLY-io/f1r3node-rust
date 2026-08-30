@@ -331,7 +331,7 @@ Definition rb_cost_trace_commitment_valid
 (* ── Replay modes (TM-CA-151 diagnostic-refinement scoping) ───────────────────
    [rb_replay_mode] distinguishes the DIGEST-INCLUSIVE replay-authentication
    refinement from legacy replay. Per TM-CA-151
-   (docs/theory/cost-accounting-threat-model.md) the per-operation cost-trace
+   (docs/casper/theory/cost-accounting-threat-model.md) the per-operation cost-trace
    commitment — the digest, [rb_cost_trace_commitment_valid] — is DIAGNOSTIC /
    TELEMETRY ONLY. It was REMOVED from production consensus: the replay comparison
    and the signed block-hash preimage authenticate RSpace events + supply balances
@@ -3941,7 +3941,7 @@ Qed.
      [rb_total_cost].
 
    Headline obligations (the WD-D0 entries in
-   `docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`
+   `docs/casper/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`
    Decision 8 and `workstream-d-acceptance.md` D0):
    - [rb_pool_total_cost_eq_sum]: the reconciled pool's total cost equals the
      sum over lanes of [rb_total_cost] of each independently-reconciled lane

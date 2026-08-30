@@ -125,6 +125,7 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
                 time_stamp: timestamp,
                 valid_after_block_number: 1,
                 term,
+                language: "rholang".to_string(),
                 shard_id,
                 expiration_timestamp: None,
                 authority_presentations: Vec::new(),
@@ -140,6 +141,7 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
     let deploy_data_gen = signed_deploy_data_gen();
     deploy_data_gen.prop_map(|deploy_data| ProcessedDeploy {
         deploy: deploy_data,
+        envelope_commitment: ByteString::new(),
         cost: PCost { cost: 0 },
         deploy_log: Vec::new(),
         is_failed: false,
@@ -297,6 +299,8 @@ pub fn block_element_gen(
                         rejected_deploys: Vec::new(),
                         rejected_state_effects: Vec::new(),
                         extra_bytes: prost::bytes::Bytes::new(),
+                        applied_from_scope: Vec::new(),
+                        merge_base: prost::bytes::Bytes::new(),
                     },
                     justifications,
                     sender: validator.into(),

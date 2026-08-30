@@ -15,9 +15,6 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-// DISABLED (2026-08-07 dev merge warning sweep): only the commented-out
-// `to_signed_deploy` used this.
-// use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -74,7 +71,7 @@ pub trait WebApi {
     /// Find a deploy by ID with the specified view.
     async fn find_deploy(&self, deploy_id: String, view: ViewMode) -> Result<DeployResponse>;
 
-    /// Perform exploratory deploy
+    /// Perform exploratory deploy against the requested block or the LFB post-state.
     async fn exploratory_deploy(
         &self,
         term: String,
@@ -98,6 +95,10 @@ pub trait WebApi {
         &self,
         deploy_sig_hex: String,
     ) -> Result<DeployFinalizationStatusJson>;
+
+    /// Bulk snapshot of pending deploys (deploy_storage + rejected-recovery
+    /// buffer), optionally filtered by deployer public key (hex-encoded).
+    async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson>;
 
     /// Get balance for an address via exploratory deploy against SystemVault.
     /// Queries against `block_hash` if provided, otherwise LFB.
@@ -154,6 +155,43 @@ pub struct DeployFinalizationStatusJson {
     /// Hex-encoded block hash. Absent (`null`) when the deploy has never
     /// been included in any block.
     pub latest_block_hash: Option<String>,
+}
+
+/// JSON-serializable view of a single pending deploy.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingDeployJson {
+    #[serde(rename = "deployId")]
+    pub deploy_id: String,
+    pub term: String,
+    pub timestamp: i64,
+    #[serde(rename = "validAfterBlockNumber")]
+    pub valid_after_block_number: i64,
+    #[serde(rename = "shardId")]
+    pub shard_id: String,
+    /// Hex-encoded deployer public key.
+    pub deployer: String,
+    /// Hex-encoded deploy signature.
+    pub sig: String,
+    #[serde(rename = "sigAlgorithm")]
+    pub sig_algorithm: String,
+    #[serde(rename = "expirationTimestamp")]
+    pub expiration_timestamp: Option<i64>,
+    /// `true` when the deploy is in the rejected-recovery buffer
+    /// (recovering after a merge conflict); `false` when it is fresh in
+    /// deploy_storage (not yet proposed).
+    #[serde(rename = "isRejected")]
+    pub is_rejected: bool,
+}
+
+/// JSON-serializable view of a pending-deploys response.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PendingDeploysJson {
+    pub deploys: Vec<PendingDeployJson>,
+    /// Total count of pending deploys that matched the query before cap
+    /// truncation was applied. Compare with `deploys.len()` to detect
+    /// truncation.
+    #[serde(rename = "totalAvailable")]
+    pub total_available: u32,
 }
 
 fn deploy_state_json_label(
@@ -258,9 +296,12 @@ impl WebApiImpl {
         }
     }
 
-    /// Enrich a BlockInfoSerde with transfer data from BlockReportAPI.
-    /// On success: each deploy gets `Some(transfers)`.
-    /// On failure (validator node): each deploy gets `None` (field omitted).
+    /// Enrich a BlockInfoSerde with transfer data from the block report.
+    ///
+    /// A report gives each deploy `Some(transfers)`, where an empty vector means
+    /// the deploy moved nothing. Anything else — a validator node, a reporter busy
+    /// with another replay, pruned pre-state, or a store failure — gives `None`,
+    /// which omits the field rather than claiming the deploy had no transfers.
     async fn enrich_transfers(&self, serde: &mut BlockInfoSerde, block_hash_hex: String) {
         let deploys = match serde.deploys.as_mut() {
             Some(deploys) => deploys,
@@ -276,6 +317,11 @@ impl WebApiImpl {
                 return;
             }
         };
+        // Serves the cached report when there is one and replays only when the
+        // reporter is idle: block_report refuses rather than queues, so a read
+        // arriving during catch-up returns without waiting instead of adding to
+        // the load. A replay that does happen also caches, so ordinary reads
+        // repopulate what pre-caching missed.
         match self
             .block_report_api
             .block_report(block_hash_bytes, false)
@@ -285,9 +331,14 @@ impl WebApiImpl {
                 let transfers_by_deploy =
                     extract_transfers_from_report(&report, &self.transfer_unforgeable);
                 for deploy in deploys {
+                    let deploy_id = if deploy.deploy_id.is_empty() {
+                        &deploy.sig
+                    } else {
+                        &deploy.deploy_id
+                    };
                     deploy.transfers = Some(
                         transfers_by_deploy
-                            .get(&deploy.sig)
+                            .get(deploy_id)
                             .cloned()
                             .unwrap_or_default()
                             .into_iter()
@@ -344,19 +395,9 @@ impl WebApi for WebApiImpl {
             })
             .collect();
 
-        let total_elapsed = total_start.elapsed();
-        if total_elapsed >= STATUS_SLOW_THRESHOLD {
-            warn!(
-                ?total_elapsed,
-                ?rp_conf_elapsed,
-                ?connections_elapsed,
-                ?discovery_elapsed,
-                peers,
-                nodes,
-                "Web API status assembly is slow"
-            );
-        }
-
+        // Timed below, not above: this is the one step that waits on `global_lock`,
+        // so it is the step a slow-status warning most needs to name.
+        let lfb_start = Instant::now();
         let lfb_number = match BlockAPI::last_finalized_block(&self.engine_cell).await {
             Ok(block_info) => block_info
                 .block_info
@@ -365,6 +406,21 @@ impl WebApi for WebApiImpl {
                 .unwrap_or(-1),
             Err(_) => -1,
         };
+        let lfb_elapsed = lfb_start.elapsed();
+
+        let total_elapsed = total_start.elapsed();
+        if total_elapsed >= STATUS_SLOW_THRESHOLD {
+            warn!(
+                ?total_elapsed,
+                ?rp_conf_elapsed,
+                ?connections_elapsed,
+                ?discovery_elapsed,
+                ?lfb_elapsed,
+                peers,
+                nodes,
+                "Web API status assembly is slow"
+            );
+        }
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
@@ -418,13 +474,6 @@ impl WebApi for WebApiImpl {
     }
 
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
-        // Multi-sig-aware decode. For legacy single-sig requests
-        // (cosigners.is_empty()), this produces a one-element Cosigned
-        // envelope; the downstream BlockAPI::deploy_cosigned routes it
-        // through the legacy single-sig path inside the engine for
-        // byte-identical observable behavior. For multi-sig requests,
-        // the full canonical Cosigned envelope is constructed with
-        // per-signer signature verification.
         let cosigned_deploy = to_cosigned_deploy(&request)?;
         BlockAPI::deploy_cosigned(
             &self.engine_cell,
@@ -499,6 +548,8 @@ impl WebApi for WebApiImpl {
                 deploy_id
             )))
         })?;
+        let deploy_lookup_id =
+            BlockAPI::deploy_lookup_id(&self.engine_cell, &deploy_id_bytes).await?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
@@ -507,7 +558,7 @@ impl WebApi for WebApiImpl {
         let light_block: LightBlockInfo = {
             let mut attempt: u16 = 1;
             loop {
-                match BlockAPI::find_deploy(&self.engine_cell, &deploy_id_bytes).await {
+                match BlockAPI::find_deploy(&self.engine_cell, &deploy_lookup_id).await {
                     Ok(block) => break block,
                     Err(err) => {
                         let not_found = err.downcast_ref::<DeployNotFoundError>().is_some();
@@ -544,18 +595,21 @@ impl WebApi for WebApiImpl {
             .as_ref()
             .ok_or_else(|| eyre!("Block {} returned without deploys", light_block.block_hash))?;
 
-        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
-            eyre!(
-                "Deploy {} found in block {} but not in deploy list",
-                deploy_id,
-                light_block.block_hash
-            )
-        })?;
+        let deploy = deploys
+            .iter()
+            .find(|candidate| candidate.deploy_id == deploy_id)
+            .ok_or_else(|| {
+                eyre!(
+                    "Deploy {} found in block {} but not in deploy list",
+                    deploy_id,
+                    light_block.block_hash
+                )
+            })?;
 
         let is_full = view == ViewMode::Full;
         let finalization = BlockAPI::deploy_finalization_status_with_known_block(
             &self.engine_cell,
-            &deploy_id_bytes,
+            &deploy_lookup_id,
             Some(&known_block_hash),
         )
         .await?;
@@ -666,11 +720,64 @@ impl WebApi for WebApiImpl {
                 deploy_sig_hex
             )))
         })?;
-        let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
+        let deploy_id = BlockAPI::deploy_lookup_id(&self.engine_cell, &sig).await?;
+        let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &deploy_id).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
             rejection_count: status.rejection_count,
             latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+        })
+    }
+
+    async fn get_pending_deploys(&self, deployer: Option<String>) -> Result<PendingDeploysJson> {
+        let deployer_bytes = match deployer.as_deref() {
+            None => None,
+            Some(s) if s.trim_start_matches("0x").is_empty() => None,
+            Some(s) => {
+                let hex_str = s.trim_start_matches("0x");
+                Some(hex::decode(hex_str).map_err(|_| {
+                    eyre::Report::new(InvalidPublicKeyError(format!(
+                        "'{}' is not a valid hex deployer public key",
+                        s
+                    )))
+                })?)
+            }
+        };
+
+        let snapshot =
+            BlockAPI::list_pending_deploys(&self.engine_cell, deployer_bytes.as_deref()).await?;
+
+        let deploys = snapshot
+            .deploys
+            .into_iter()
+            .map(|(envelope, is_rejected)| {
+                let dd = envelope.data();
+                let signed = envelope.primary();
+                let deploy_id = if envelope.is_envelope_bound() {
+                    envelope
+                        .envelope_commitment()
+                        .expect("validated protocol-v6 envelope")
+                } else {
+                    signed.sig.clone()
+                };
+                PendingDeployJson {
+                    deploy_id: hex::encode(deploy_id),
+                    term: dd.term.clone(),
+                    timestamp: dd.time_stamp,
+                    valid_after_block_number: dd.valid_after_block_number,
+                    shard_id: dd.shard_id.clone(),
+                    deployer: hex::encode(&signed.pk.bytes),
+                    sig: hex::encode(&signed.sig),
+                    sig_algorithm: signed.sig_algorithm.name(),
+                    expiration_timestamp: dd.expiration_timestamp,
+                    is_rejected,
+                }
+            })
+            .collect();
+
+        Ok(PendingDeploysJson {
+            deploys,
+            total_available: snapshot.total_available,
         })
     }
 
@@ -1160,6 +1267,8 @@ pub enum RhoUnforg {
     UnforgPrivate { data: String },
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
+    UnforgAuthority { data: String },
+    UnforgPrincipal { key_family: u32, data: String },
     UnforgSysAuthToken,
 }
 
@@ -1173,13 +1282,12 @@ pub struct DeployRequest {
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
-    /// Additional cosigners beyond the primary. Empty (default) for legacy
-    /// single-signature deploys. When non-empty, the deploy is treated as
-    /// a multi-signature deploy and validated via `Cosigned::from_signed_data`
-    /// (per-signer signature verification, canonical pk-ascending sort,
-    /// no-duplicate check). D3 (DR-9): no per-signer phlo_share / share-sum.
+    /// Additional protocol-v6 policy members beyond the first member.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cosigners: Vec<CosignerJson>,
+    /// Selected-signature quorum. Omission encodes AllOf over every member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
 }
 
 /// JSON shape for one cosigner in a multi-signature [`DeployRequest`].
@@ -1189,9 +1297,8 @@ pub struct DeployRequest {
 pub struct CosignerJson {
     /// Cosigner public key (hex-encoded).
     pub pk: String,
-    /// Cosigner signature over the canonical deploy hash (hex-encoded).
-    /// Must be a valid signature against the same canonical message hash
-    /// used by the primary signer (`Signed::<DeployData>::signature_hash`).
+    /// Signature over the protocol-v6 envelope signing hash. Empty for an
+    /// unselected threshold-policy member.
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
@@ -1569,37 +1676,11 @@ fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
     }
 }
 
-// DISABLED (2026-08-07 dev merge warning sweep) — dead since the cosigned
-// path (`to_cosigned_deploy`, which uplifts the empty-cosigners case to a
-// one-element envelope) subsumed the legacy single-sig conversion; kept
-// commented out per the repo's disable-by-commenting rule.
-// /// Convert DeployRequest to Signed DeployData (legacy single-sig path).
-// /// Used only when `request.cosigners.is_empty()` — the multi-sig path
-// /// uses [`to_cosigned_deploy`].
-// fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-//     // Decode hex strings
-//     let pk_bytes = hex::decode(&request.deployer)
-//         .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-//
-//     let sig_bytes = hex::decode(&request.signature)
-//         .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-//
-//     let pk = PublicKey::from_bytes(&pk_bytes);
-//     let sig_alg = lookup_sig_algorithm(&request.sig_algorithm)?;
-//     let deploy_data = request.data.clone();
-//
-//     Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-//         .map_err(|e| eyre!("Invalid signature: {}", e))?
-//         .ok_or_else(|| eyre!("Failed to create signed deploy"))
-// }
-
-/// Convert DeployRequest to a [`Cosigned<DeployData>`] envelope. Handles
-/// both legacy single-signature requests (cosigners empty → one-element
-/// envelope) and multi-signature requests (cosigners non-empty → N-element
-/// envelope). Invariants enforced by `Cosigned::from_signed_data`:
+/// Convert DeployRequest to a protocol-v6 [`Cosigned<DeployData>`] envelope.
+/// Invariants enforced by `Cosigned::from_envelope_signed_data_threshold`:
 ///
-/// - Every signer's signature verifies against the canonical message hash.
-/// - Canonical pk-ascending sort; no duplicate cosigner public keys.
+/// - Every selected signature verifies against the scheme-bound envelope hash.
+/// - Canonical principal ordering with no duplicate ground authority.
 ///
 /// D3 (DR-9): no per-signer phlo_share and no share-sum invariant — funding is
 /// the per-signature supply pool Σ⟦s⟧.
@@ -1633,13 +1714,18 @@ fn to_cosigned_deploy(
         });
     }
 
-    Cosigned::from_signed_data(request.data.clone(), signers)
+    let threshold = request
+        .threshold
+        .unwrap_or_else(|| signers.len().try_into().unwrap_or(u32::MAX));
+    Cosigned::from_envelope_signed_data_threshold(request.data.clone(), signers, threshold)
         .map_err(|e| eyre!("Cosigned envelope validation failed: {}", e))
 }
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{
+    Bundle, Expr, GAuthorityId, GDeployId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable, Par,
+};
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
@@ -1658,6 +1744,15 @@ fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
         RhoUnforg::UnforgDeployer { data } => UnfInstance::GDeployerIdBody(GDeployerId {
             public_key: decode_hex(&data)?.into(),
         }),
+        RhoUnforg::UnforgAuthority { data } => UnfInstance::GAuthorityIdBody(GAuthorityId {
+            id: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgPrincipal { key_family, data } => {
+            UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family,
+                public_key: decode_hex(&data)?.into(),
+            })
+        }
         RhoUnforg::UnforgSysAuthToken => {
             use models::rhoapi::GSysAuthToken;
             UnfInstance::GSysAuthTokenBody(GSysAuthToken {})
@@ -1943,6 +2038,17 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
                 data: hex::encode(&deployer_id.public_key),
             },
         },
+        UnfInstance::GAuthorityIdBody(authority_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgAuthority {
+                data: hex::encode(&authority_id.id),
+            },
+        },
+        UnfInstance::GPrincipalIdBody(principal_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrincipal {
+                key_family: principal_id.key_family,
+                data: hex::encode(&principal_id.public_key),
+            },
+        },
         UnfInstance::GSysAuthTokenBody(_) => RhoExpr::ExprUnforg {
             data: RhoUnforg::UnforgSysAuthToken,
         },
@@ -1979,6 +2085,10 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
             RhoUnforg::UnforgPrivate { data } => data.clone(),
             RhoUnforg::UnforgDeploy { data } => data.clone(),
             RhoUnforg::UnforgDeployer { data } => data.clone(),
+            RhoUnforg::UnforgAuthority { data } => data.clone(),
+            RhoUnforg::UnforgPrincipal { key_family, data } => {
+                format!("{}:{}", key_family, data)
+            }
             RhoUnforg::UnforgSysAuthToken => "SysAuthToken".to_string(),
         },
         // Complex types: serialize to JSON string
@@ -2095,6 +2205,7 @@ mod tests {
         let request = DeployRequest {
             data: DeployData {
                 term: "contract".to_string(),
+                language: "rholang".to_string(),
                 time_stamp: 1234567890,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
@@ -2105,6 +2216,7 @@ mod tests {
             signature: "fedcba9876543210".to_string(),
             sig_algorithm: "secp256k1".to_string(),
             cosigners: Vec::new(),
+            threshold: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -2113,6 +2225,68 @@ mod tests {
         assert_eq!(request.deployer, deserialized.deployer);
         assert_eq!(request.signature, deserialized.signature);
         assert_eq!(request.sig_algorithm, deserialized.sig_algorithm);
+        assert_eq!(request.threshold, deserialized.threshold);
+    }
+
+    #[test]
+    fn rest_deploy_request_consumes_protocol_v61_threshold_signatures() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../test-vectors/deploy-envelope-v6.1.json"
+        ))
+        .expect("v6.1 vectors");
+        let vector = &vectors["positive"]["threshold2Of3Selected0And2"];
+        let members = vector["members"].as_array().expect("members");
+        let request = DeployRequest {
+            data: DeployData {
+                term: vector["term"].as_str().expect("term").to_string(),
+                language: vector["language"].as_str().expect("language").to_string(),
+                time_stamp: vector["timestamp"].as_i64().expect("timestamp"),
+                valid_after_block_number: vector["validAfterBlockNumber"]
+                    .as_i64()
+                    .expect("valid after"),
+                shard_id: vector["shardId"].as_str().expect("shard").to_string(),
+                expiration_timestamp: Some(
+                    vector["expirationTimestamp"].as_i64().expect("expiration"),
+                ),
+                authority_presentations: Vec::new(),
+            },
+            deployer: members[0]["publicKeyHex"]
+                .as_str()
+                .expect("public key")
+                .to_string(),
+            signature: members[0]["signatureHex"]
+                .as_str()
+                .expect("signature")
+                .to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+            cosigners: members[1..]
+                .iter()
+                .map(|member| CosignerJson {
+                    pk: member["publicKeyHex"]
+                        .as_str()
+                        .expect("public key")
+                        .to_string(),
+                    signature: member["signatureHex"]
+                        .as_str()
+                        .expect("signature")
+                        .to_string(),
+                    sig_algorithm: "secp256k1".to_string(),
+                })
+                .collect(),
+            threshold: Some(2),
+        };
+        let envelope = to_cosigned_deploy(&request).expect("v6.1 REST envelope");
+        assert!(envelope.is_envelope_bound());
+        assert_eq!(envelope.cosigner_threshold(), 2);
+        assert_eq!(envelope.selected_signers_v61().expect("selected").len(), 2);
+        assert_eq!(
+            hex::encode(envelope.envelope_commitment().expect("deploy id")),
+            vector["deployIdHex"].as_str().expect("deploy id")
+        );
+
+        let mut insufficient = request;
+        insufficient.threshold = Some(3);
+        assert!(to_cosigned_deploy(&insufficient).is_err());
     }
 
     #[test]
@@ -2410,6 +2584,42 @@ mod tests {
             }
             _ => panic!("Expected ExprUnforg with UnforgDeployer"),
         }
+    }
+
+    #[test]
+    fn test_unforg_from_proto_authority() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GAuthorityIdBody(GAuthorityId {
+                id: vec![0x0a, 0x0b, 0x0c],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgAuthority { ref data }
+            }) if data == "0a0b0c"
+        ));
+    }
+
+    #[test]
+    fn test_unforg_from_proto_principal() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 1,
+                public_key: vec![0x0d, 0x0e, 0x0f],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgPrincipal {
+                    key_family: 1,
+                    ref data
+                }
+            }) if data == "0d0e0f"
+        ));
     }
 
     #[test]

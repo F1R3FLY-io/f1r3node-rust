@@ -13,7 +13,7 @@
   a `theorem`, so the axiom gate validates these clauses just as it does the
   underlying obligations). The clause TYPE is the obligation it re-exports.
 
-  Contract ↔ obligation ↔ spec map (see docs/theory/cost-accounting-impl/
+  Contract ↔ obligation ↔ spec map (see docs/casper/theory/cost-accounting-impl/
   workstream-e-validator-contract.md for the full table):
     S1  token-present / reject-malformed   §6.3   ← FuelGateSafety (E3)
     S2  accept iff Σ_s ≥ Δ_s (decidable)    §7.6   ← LinearLogicResources (E2)

@@ -11,12 +11,12 @@ mapfile -d '' documentation < <(
     docs/models \
     docs/node \
     docs/rholang \
-    docs/theory/cost-accounting-impl \
-    docs/theory/finalized-floor \
-    docs/theory/fork-choice \
-    docs/theory/slashing \
+    docs/casper/theory/cost-accounting-impl \
+    docs/casper/theory/finalized-floor \
+    docs/casper/theory/fork-choice \
+    docs/casper/theory/slashing \
     -type f -name '*.md' -print0
-  find docs/theory -maxdepth 1 -type f -name 'cost-account*.md' -print0
+  find docs/casper/theory -maxdepth 1 -type f -name 'cost-account*.md' -print0
 )
 
 if [[ "${#documentation[@]}" -eq 0 ]]; then

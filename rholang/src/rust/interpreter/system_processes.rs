@@ -14,8 +14,13 @@ use crypto::rust::signatures::signed::Signed;
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::g_unforgeable::UnfInstance::{
+    GAuthorityIdBody, GDeployerIdBody, GPrincipalIdBody, GPrivateBody,
+};
+use models::rhoapi::{
+    Bundle, ETuple, Expr, GAuthorityId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable,
+    ListParWithRandom, Par, Var,
+};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::rholang::implicits::single_expr;
@@ -34,8 +39,8 @@ use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
-    RhoSysAuthToken, RhoUri,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
+    RhoSingleCustodyId, RhoString, RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
@@ -493,9 +498,16 @@ impl BlockData {
 }
 
 #[derive(Clone)]
+pub enum DeployAuthority {
+    Legacy(PublicKey),
+    Principal(GPrincipalId),
+    Compound(GAuthorityId),
+}
+
+#[derive(Clone)]
 pub struct DeployData {
     pub timestamp: i64,
-    pub deployer_id: PublicKey,
+    pub authority: DeployAuthority,
     pub deploy_id: Vec<u8>,
 }
 
@@ -503,7 +515,7 @@ impl DeployData {
     pub fn empty() -> Self {
         DeployData {
             timestamp: 0,
-            deployer_id: PublicKey::from_bytes(&[0]),
+            authority: DeployAuthority::Legacy(PublicKey::from_bytes(&[0])),
             deploy_id: vec![0],
         }
     }
@@ -511,27 +523,41 @@ impl DeployData {
     pub fn from_deploy(template: &Signed<casper_message::DeployData>) -> Self {
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: template.pk.clone(),
+            authority: DeployAuthority::Legacy(template.pk.clone()),
             deploy_id: template.sig.to_vec(),
         }
     }
 
-    /// Multi-signer variant. The `timestamp`, `deployer_id`, and `deploy_id`
-    /// are taken from the PRIMARY signer (`cosigned.primary()`), matching
-    /// the legacy single-sig semantics for `rho:system:deployId` and
-    /// `rho:system:deployerId`. Multi-cosigner introspection happens via
-    /// the separate `rho:system:cosigners` channel populated by
-    /// `normalizer_env_from_cosigned_deploy` — this struct intentionally
-    /// keeps the legacy primary-only shape so that downstream consumers
-    /// (PoS contract calls, slashing, etc.) see the same per-deploy
-    /// identity they always have.
     pub fn from_cosigned(
         template: &crypto::rust::signatures::signed::Cosigned<casper_message::DeployData>,
     ) -> Self {
+        if template.is_envelope_bound() {
+            let selected = template
+                .selected_signers_v61()
+                .expect("validated protocol-v6 selected signers");
+            let authority = if let [signer] = selected.as_slice() {
+                DeployAuthority::Principal(GPrincipalId {
+                    key_family: 1,
+                    public_key: signer.pk.bytes.to_vec(),
+                })
+            } else {
+                DeployAuthority::Compound(GAuthorityId {
+                    id: models::rust::normalizer_env::authority_id_v61(&selected),
+                })
+            };
+            return DeployData {
+                timestamp: template.data.time_stamp,
+                authority,
+                deploy_id: template
+                    .envelope_commitment()
+                    .expect("validated protocol-v6 envelope identity")
+                    .to_vec(),
+            };
+        }
         let primary = template.primary();
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: primary.pk.clone(),
+            authority: DeployAuthority::Legacy(primary.pk.clone()),
             deploy_id: primary.sig.to_vec(),
         }
     }
@@ -763,7 +789,7 @@ impl SystemProcesses {
             },
 
             "fromDeployerId" => {
-                match RhoDeployerId::unapply(second_par).map(VaultAddress::from_deployer_id) {
+                match RhoSingleCustodyId::unapply(second_par).map(VaultAddress::from_deployer_id) {
                     Some(Some(ra)) => RhoString::create_par(ra.to_base58()),
                     _ => Par::default(),
                 }
@@ -800,7 +826,7 @@ impl SystemProcesses {
             return Err(illegal_argument_error("deployer_id_ops"));
         };
 
-        let response = RhoDeployerId::unapply(second_par)
+        let response = RhoSingleCustodyId::unapply(second_par)
             .map(RhoByteArray::create_par)
             .unwrap_or_default();
 
@@ -1065,9 +1091,22 @@ impl SystemProcesses {
         };
 
         let data = deploy_data.read().await;
+        let authority = match &data.authority {
+            DeployAuthority::Legacy(public_key) => GUnforgeable {
+                unf_instance: Some(GDeployerIdBody(GDeployerId {
+                    public_key: public_key.bytes.to_vec(),
+                })),
+            },
+            DeployAuthority::Principal(principal) => GUnforgeable {
+                unf_instance: Some(GPrincipalIdBody(principal.clone())),
+            },
+            DeployAuthority::Compound(authority) => GUnforgeable {
+                unf_instance: Some(GAuthorityIdBody(authority.clone())),
+            },
+        };
         let output = vec![
             Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
+            Par::default().with_unforgeables(vec![authority]),
             RhoDeployId::create_par(data.deploy_id.clone()),
         ];
 

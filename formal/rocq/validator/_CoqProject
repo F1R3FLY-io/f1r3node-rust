@@ -16,7 +16,7 @@
 # just as it does the obligations they re-export.
 #
 # Contract <-> obligation <-> spec map (full table in
-# docs/theory/cost-accounting-impl/, also reproduced in Contract.v):
+# docs/casper/theory/cost-accounting-impl/, also reproduced in Contract.v):
 #   S1  token-present / reject-malformed   §6.3   <- FuelGateSafety
 #   S2  accept iff Σ_s ≥ Δ_s (decidable)   §7.6   <- LinearLogicResources
 #   S3  linear no-double-spend             §7.7   <- LinearLogicResources

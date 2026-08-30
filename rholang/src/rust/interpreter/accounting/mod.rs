@@ -2,7 +2,7 @@
 //!
 //! This runtime is the operational image of the Rocq Cost endofunctor/monad
 //! (`formal/rocq/cost_accounted_rho/`). The mapping is additive witnessing only —
-//! no behavioral change (see `docs/theory/cost-accounting-as-monad-correspondence.md`):
+//! no behavioral change (see `docs/casper/theory/cost-accounting-as-monad-correspondence.md`):
 //!  - η (unmetered embedding)   ↔ the system/unmetered budget mode
 //!    (`CostMonad.cost_eta`, `CAAdjunctions.cost_install`).
 //!  - μ (grade accumulation)    ↔ canonical operation-charge accumulation;
@@ -54,7 +54,7 @@ const COST_TRACE_DIGEST_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:cost-trace
 /// `SignatureChannel::from_sig` uses to derive the supply channel `Σ⟦s⟧`
 /// (`sig_canonical_bytes`), so a deploy's identity key for signature `s` and its
 /// supply channel are anchored to one canonical basis (no drift — see
-/// `docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`,
+/// `docs/casper/theory/cost-accounting-impl/supply-realization-c-d-handoff.md`,
 /// "Integration invariant"). Distinct from the channel domain only by this
 /// separator: `lane_hash` is a fixed-width evidence and purse-lookup key, while
 /// the channel is a `GPrivate`-keyed `Par`; both are pure functions of the same
@@ -1647,6 +1647,11 @@ impl RuntimeBudget {
         *self.signature.lock().expect("signature lock") = funding_sig;
     }
 
+    pub fn set_deploy_id_funded(&self, deploy_id: [u8; 32], funding_sig: Sig) {
+        *self.deploy_id.lock().expect("deploy id lock") = deploy_id;
+        *self.signature.lock().expect("signature lock") = funding_sig;
+    }
+
     pub fn signature(&self) -> Sig { self.signature.lock().expect("signature lock").clone() }
 
     pub fn deploy_id(&self) -> [u8; 32] { *self.deploy_id.lock().expect("deploy id lock") }
@@ -2070,6 +2075,25 @@ pub fn funding_sig_compound(pubkeys: &[&[u8]]) -> Sig {
 /// its `pk`, so a forger cannot present a victim's pk with a valid sig either.)
 pub fn funding_sig<A>(cosigned: &crypto::rust::signatures::signed::Cosigned<A>) -> Sig
 where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::ToMessage {
+    if cosigned.is_envelope_bound() {
+        let funders = cosigned
+            .selected_signers_v61()
+            .expect("validated protocol-v6 selected signers")
+            .into_iter()
+            .map(|signer| {
+                let mut ground = Vec::with_capacity(6 + signer.pk.bytes.len());
+                ground.extend_from_slice(&1u16.to_be_bytes());
+                ground.extend_from_slice(&(signer.pk.bytes.len() as u32).to_be_bytes());
+                ground.extend_from_slice(&signer.pk.bytes);
+                ground
+            })
+            .collect::<Vec<_>>();
+        let funder_refs = funders.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        return match funder_refs.as_slice() {
+            [single] => funding_sig_single(single),
+            _ => funding_sig_compound(&funder_refs),
+        };
+    }
     let funders: Vec<&[u8]> = cosigned
         .signers()
         .iter()
@@ -2317,7 +2341,7 @@ impl Sig {
     /// `cosigner_threshold` at ingress and NEVER kept as a funding-`Sig` former,
     /// so the funding grammar stays exactly `g|#P|s∘s` (paper- + Rocq-faithful).
     ///
-    /// F-A separation guard (`docs/theory/cost-accounting-impl/
+    /// F-A separation guard (`docs/casper/theory/cost-accounting-impl/
     /// f-a-funding-vs-capability-separation.md` §3/§6): the funding chokepoint
     /// (`casper/.../acceptance.rs::build_candidate_with_logic`) asserts this on
     /// the envelope `Sig`, and the supply-channel keying
@@ -2448,7 +2472,7 @@ pub struct SignatureChannel {
 impl SignatureChannel {
     /// Reflect a `Sig` onto its content-addressed substrate channel.
     ///
-    /// FUNDING PRECONDITION (F-A separation, `docs/theory/cost-accounting-impl/
+    /// FUNDING PRECONDITION (F-A separation, `docs/casper/theory/cost-accounting-impl/
     /// f-a-funding-vs-capability-separation.md` §3/§6/red-team M3): on every
     /// FUNDING path the argument is a funding-grammar `Sig`
     /// (`Sig::is_funding_former` — `g|#P|s∘s`). The six value/capability
@@ -3866,6 +3890,80 @@ mod funding_sig_tests {
             Box::new(Sig::Ground(pk2.to_vec())),
         );
         assert_eq!(funding_sig_compound(&[pk0, pk1, pk2]), expected);
+    }
+
+    #[test]
+    fn funding_sig_v61_uses_only_selected_typed_principals() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+        use models::rust::casper::protocol::casper_message::DeployData;
+
+        let secp = Secp256k1;
+        let mut members = (0..3)
+            .map(|_| {
+                let (private_key, public_key) = secp.new_key_pair();
+                (
+                    Cosigner {
+                        pk: public_key,
+                        sig: prost::bytes::Bytes::new(),
+                        sig_algorithm: Box::new(secp.clone()),
+                    },
+                    private_key,
+                )
+            })
+            .collect::<Vec<_>>();
+        members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
+        let bitmap = [0b0000_0110];
+        let data = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let unsigned = members
+            .iter()
+            .map(|(signer, _)| signer.clone())
+            .collect::<Vec<_>>();
+        for index in [1usize, 2] {
+            let hash = Cosigned::<DeployData>::envelope_signing_hash_for_presence(
+                &data,
+                &unsigned,
+                2,
+                &bitmap,
+                &members[index].0.sig_algorithm.name(),
+            )
+            .unwrap();
+            members[index].0.sig = members[index]
+                .0
+                .sig_algorithm
+                .sign(&hash, &members[index].1.bytes)
+                .into();
+        }
+        let envelope = Cosigned::from_envelope_signed_data_threshold(
+            data,
+            members.iter().map(|(signer, _)| signer.clone()).collect(),
+            2,
+        )
+        .unwrap();
+        let ground = |signer: &Cosigner| {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&1u16.to_be_bytes());
+            bytes.extend_from_slice(&(signer.pk.bytes.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&signer.pk.bytes);
+            Sig::Ground(bytes)
+        };
+
+        assert_eq!(
+            funding_sig(&envelope),
+            Sig::And(
+                Box::new(ground(&members[1].0)),
+                Box::new(ground(&members[2].0))
+            )
+        );
     }
 
     /// THE DECOUPLING (§D2.9): `set_deploy_signature_funded` leaves the

@@ -128,6 +128,7 @@ impl DeployRuntime {
 
             let d = DeployData {
                 term: code,
+                language: "rholang".to_string(),
                 time_stamp: now_ms,
                 valid_after_block_number: valid_after_block,
                 shard_id: shard_id.to_string(),

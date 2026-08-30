@@ -26,6 +26,7 @@ use casper::rust::util::construct_deploy;
 use casper::rust::validate::Validate;
 use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::RejectedDeploy;
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -66,6 +67,7 @@ fn mk_casper_snapshot(
     let on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map: HashMap::new(),
+        bond_generations: HashMap::new(),
         active_validators: vec![],
     };
 
@@ -155,8 +157,8 @@ async fn repeat_deploy_grants_exemption_on_parent_rejection_record() {
             .expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
 
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig.clone());
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(crate::legacy_deploy_id(&deploy_sig));
         snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
@@ -226,7 +228,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         // would otherwise re-include via the exemption path.
         {
             let mut buf = rejected_deploy_buffer.lock().unwrap();
-            buf.add(vec![signed_deploy.clone()])
+            buf.add(vec![crate::pending_legacy(signed_deploy.clone())])
                 .expect("Failed to add deploy to buffer");
         }
 
@@ -242,8 +244,12 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         // record scan walks the main-parent chain from here and must see D's
         // win in genesis.
         snapshot.parents = vec![genesis.clone()];
-        snapshot.deploys_in_scope.insert(deploy_sig.clone());
-        snapshot.rejected_in_scope.insert(deploy_sig.clone());
+        snapshot
+            .deploys_in_scope
+            .insert(crate::legacy_deploy_id(&deploy_sig));
+        snapshot
+            .rejected_in_scope
+            .insert(crate::legacy_deploy_id(&deploy_sig));
 
         let now_millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -266,11 +272,14 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         let included_sigs: Vec<String> = prepared
             .deploys
             .iter()
-            .map(|d| hex::encode(&d.sig))
+            .map(|d| hex::encode(d.deploy_id()))
             .collect();
 
         assert!(
-            !prepared.deploys.iter().any(|d| d.sig == deploy_sig),
+            !prepared
+                .deploys
+                .iter()
+                .any(|d| d.deploy_id() == &deploy_sig),
             "prepare_user_deploys must skip a buffered deploy whose effects are \
              already in canonical state (re-including it would be double-execution \
              and the resulting block would be slashed by `repeat_deploy`).\n\
@@ -375,8 +384,8 @@ async fn repeat_deploy_verdict_is_identical_across_divergent_local_views() {
             .get_representation()
             .expect("dag representation");
         let mut snapshot_a = mk_casper_snapshot(dag_a);
-        let rejected: DashSet<Bytes> = DashSet::new();
-        rejected.insert(deploy_sig.clone());
+        let rejected: DashSet<DeployLookupId> = DashSet::new();
+        rejected.insert(crate::legacy_deploy_id(&deploy_sig));
         snapshot_a.rejected_in_scope = Arc::new(rejected);
 
         // Validator B: same chain data, but its live view never surfaced the

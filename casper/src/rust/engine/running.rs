@@ -21,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use tokio::sync::mpsc;
 
 use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
 use crate::rust::casper::MultiParentCasper;
@@ -295,6 +296,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     Ok(())
                 }
             }
+            CasperMessage::StoreItemsMessage(items) => {
+                if let Some(tx) = &self.state_items_tx {
+                    if tx.try_send(items).is_err() {
+                        tracing::warn!(
+                            "state requester items queue full or closed; dropping chunk"
+                        );
+                    }
+                }
+                Ok(())
+            }
             CasperMessage::MergeableEntryRequest(req) => {
                 if self.disable_state_exporter {
                     tracing::debug!(
@@ -341,6 +352,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
     recovery_context: Option<RunningRecoveryContext>,
+    state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
 #[derive(Clone)]
@@ -362,6 +374,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         conf: RPConf,
         block_retriever: BlockRetriever<T>,
         recovery_context: Option<RunningRecoveryContext>,
+        state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
     ) -> Self {
         Running {
             block_processing_queue_tx,
@@ -375,6 +388,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             recovery_context,
+            state_items_tx,
         }
     }
 

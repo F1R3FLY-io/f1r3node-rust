@@ -41,6 +41,11 @@ pub enum ProposeFailure {
     },
     InternalDeployError,
     BugError,
+    /// The propose walk needed a block this node does not hold. This is
+    /// availability, not a bug: the proposer requests the named block from
+    /// peers and the heartbeat retries at normal cadence (no backoff
+    /// escalation) until the gap heals.
+    MissingBlock(Bytes),
     CheckConstraintsFailure(CheckProposeConstraintsFailure),
 }
 
@@ -57,6 +62,10 @@ pub enum CheckProposeConstraintsFailure {
     NotBonded,
     NotEnoughNewBlocks,
     TooFarAheadOfLastFinalized,
+    /// This node's history does not reach far enough to build a snapshot, so
+    /// there is nothing to propose from. Distinct from the constraints above:
+    /// those are decided FROM a snapshot, and this one is why there isn't one.
+    HistoryIncomplete,
 }
 
 /// Block creator result
@@ -96,6 +105,10 @@ impl CheckProposeConstraintsResult {
         CheckProposeConstraintsResult::Failure(
             CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
         )
+    }
+
+    pub fn history_incomplete() -> Self {
+        CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::HistoryIncomplete)
     }
 }
 
@@ -203,6 +216,11 @@ impl fmt::Display for ProposeStatus {
                     write!(f, "Proposal failed: internal deploy error")
                 }
                 ProposeFailure::BugError => write!(f, "Proposal failed: BugError"),
+                ProposeFailure::MissingBlock(hash) => write!(
+                    f,
+                    "Proposal failed: MissingBlock {} — requested from peers, retrying",
+                    hex::encode(&hash[..hash.len().min(8)])
+                ),
                 ProposeFailure::CheckConstraintsFailure(check_failure) => match check_failure {
                     CheckProposeConstraintsFailure::NotBonded => {
                         write!(f, "Proposal failed: validator is not bonded")
@@ -217,6 +235,13 @@ impl fmt::Display for ProposeStatus {
                         write!(
                             f,
                             "Proposal failed: too far ahead of the last finalized block"
+                        )
+                    }
+                    CheckProposeConstraintsFailure::HistoryIncomplete => {
+                        write!(
+                            f,
+                            "Proposal failed: this node's history does not reach far enough to \
+                             build a snapshot; it is still catching up"
                         )
                     }
                 },

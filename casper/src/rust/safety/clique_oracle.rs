@@ -59,9 +59,9 @@ impl FtThreshold {
 
 /// Exact rational finalization test: θ = num/den.
 ///
-/// The durable floor and LFB finalizer both require `(2q−S)/S > θ`. Cleared of
-/// denominators (S, den > 0), the test is `2·q·den > S·(den+num)`. `i128` so
-/// `2·q·den` and `S·(den+num)` (≤ ~2^84 for
+/// The durable floor and LFB use `(2q−S)/S ≥ θ`. Cleared of denominators
+/// (S, den > 0), the test is `2·q·den ≥ S·(den+num)`. `i128` keeps both
+/// sides exact for
 /// S ≤ i64::MAX, den = 10^6) never overflow, and `2·agreeing` near i64::MAX
 /// stays exact.
 ///
@@ -76,12 +76,12 @@ pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64) -> bo
     // the lower bound is -den here. The comparison math below is unchanged and is
     // exact across the full [-den, den] range.
     debug_assert!(den > 0 && s > 0 && (0..=s).contains(&q) && (-den..=den).contains(&num));
-    if (agreeing as i128) * 2 <= s as i128 {
+    if q <= 0 || (agreeing as i128) * 2 <= s as i128 {
         return false; // agreeing ≤ S/2 ⇒ MIN ⇒ not finalized
     }
     let lhs = 2i128 * q as i128 * den as i128;
     let rhs = s as i128 * (den as i128 + num as i128);
-    lhs > rhs
+    lhs >= rhs
 }
 
 pub struct CliqueOracleRunCache {
@@ -154,10 +154,16 @@ impl CliqueOracle {
     /// ```
     ///
     /// 1. get justification of validator b as per latest message of a (lmAjB)
-    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB are NOT in main chain
-    ///    with target message.
+    /// 2. check if any self justifications between latest message of b (lmB) and lmAjB
+    ///    DISAGREE with the target message. The test is two-sided by height:
+    ///    a visited block at or above the target's height disagrees iff the
+    ///    target is not on its spine (a rival estimate); a visited block
+    ///    BELOW the target's height disagrees iff it is not on the TARGET'S
+    ///    spine (a rival prefix). A below-target block on the target's own
+    ///    main chain is settled ancestry the window has not caught up past —
+    ///    ignorance, not disagreement — and must not veto the edge.
     ///
-    ///    If one found - this is a source of disagreement.
+    ///    If a disagreeing block is found - this is a source of disagreement.
     async fn never_eventually_see_disagreement(
         lm_b: &M,
         lm_a_j_b: &M,
@@ -211,6 +217,7 @@ impl CliqueOracle {
                 );
                 value
             };
+            let target_height = dag.lookup_unsafe(target_msg)?.block_number;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
@@ -224,21 +231,41 @@ impl CliqueOracle {
                     last_yield = Instant::now();
                 }
                 idx += 1;
-                // DAG-ancestry (multi-parent), matching `agree`. A
-                // self-justification of b that has NOT merged `target_msg`
-                // (target is not a DAG-ancestor via any parent path) is a genuine
-                // divergence; one that merged it agrees. Under the old
-                // single-main-parent check, a merge block whose main parent was a
-                // sibling looked like a disagreement even though it had merged
-                // the target — collapsing the clique on equal-weight forks.
-                // (`ancestor_cache` now memoizes this DAG-ancestry result,
-                // keyed by (target, hash); for single-parent histories it is
-                // identical to the prior main-chain result.)
+                // Main-chain membership, matching `agree`, decided by height.
+                //
+                // At or above the target's height: a self-justification of b
+                // whose SPINE does not pass through `target_msg` is a genuine
+                // divergence — b's chain left (or never held) the candidate,
+                // which is exactly the fork-choice flip the clique must not
+                // contain. Merging the target on a secondary parent is not
+                // agreement; counting it as such let both sides of a
+                // conflicting sibling pair keep full mutual cliques and
+                // certify together (the ucc 00e6a2e3 consensus halt).
+                //
+                // BELOW the target's height, the target can never be on the
+                // visited block's spine, so that test conflates two
+                // different prefixes: a block on the TARGET'S OWN main chain
+                // (settled ancestry the window has not caught up past —
+                // ignorance, not disagreement) and a rival prefix (a real
+                // divergent estimate). Only the rival prefix vetoes. The
+                // conflation held certification hostage to the STALEST
+                // window in the committee: one departed-era justification
+                // reaching below the candidate froze finality for 851 s in
+                // CI (stall instance i5, run 32397055615 — see
+                // tests/finalized_floor/oracle_stall_replay_spec.rs).
+                //
+                // (`ancestor_cache` memoizes the per-(target, hash) verdict:
+                // true = this visited block does not veto.)
                 let ancestor_key = (target_msg.clone(), hash.clone());
-                let target_is_ancestor = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
+                let no_disagreement = if let Some(cached) = ancestor_cache.get(&ancestor_key) {
                     *cached
                 } else {
-                    let value = dag.is_dag_ancestor(target_msg, &hash)?;
+                    let visited_height = dag.lookup_unsafe(&hash)?.block_number;
+                    let value = if visited_height < target_height {
+                        dag.is_in_main_chain(&hash, target_msg)?
+                    } else {
+                        dag.is_in_main_chain(target_msg, &hash)?
+                    };
                     CliqueOracle::bounded_cache_insert(
                         ancestor_cache,
                         ancestor_key,
@@ -247,7 +274,7 @@ impl CliqueOracle {
                     );
                     value
                 };
-                if !target_is_ancestor {
+                if !no_disagreement {
                     return Ok(true);
                 }
 
@@ -506,18 +533,22 @@ impl CliqueOracle {
             dag: &KeyValueDagRepresentation,
             latest_messages: &BTreeMap<V, M>,
         ) -> Result<bool, KvStoreError> {
-            // Multi-parent agreement: a validator agrees with `message` iff
-            // `message` is a DAG-ancestor of its latest message — i.e. the
-            // validator has MERGED `message` into its state via any parent
-            // path. The prior `is_in_main_chain` check counted only the
-            // single main-parent chain, which under-counts merges: an
-            // equal-weight concurrent fork that every validator has merged
-            // would still show <=1/2 agreeing weight and never finalize
-            // (the liveness wedge). For single-parent histories the two
-            // predicates coincide, so single-chain finality is unchanged.
+            // Agreement is CHAIN CHOICE, not merging: a validator agrees
+            // with `message` iff `message` is on the MAIN-PARENT SPINE of
+            // its latest message. A spine passes through exactly one block
+            // per height, so agreement is exclusive between same-height
+            // siblings — the property the clique theorem certifies (the
+            // estimator can never move off the candidate without >θ weight
+            // faulting). DAG ancestry is the wrong relation in a merging
+            // DAG: every block is eventually merged by everyone, so
+            // ancestry-agreement saturates and certifies BOTH sides of a
+            // conflicting sibling pair — two finalized floors then freeze
+            // at one height and every join derivation refuses forever (the
+            // ucc 00e6a2e3 consensus halt). Matches the Scala reference
+            // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
             latest_messages
                 .get(validator)
-                .map_or(Ok(false), |hash| dag.is_dag_ancestor(message, hash))
+                .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
         }
 
         let mut agreeing_map = HashMap::new();
@@ -533,7 +564,8 @@ impl CliqueOracle {
     /// EXACT deterministic finalization DECISION over a FROZEN snapshot — the
     /// integer-exact analog of [`CliqueOracle::ft_witnessed`]. Returns `true` iff
     /// the clique oracle certifies `target_msg` finalized at threshold `ftt` under
-    /// the exact rule `2·q·den > S·(den+num)` (see [`ft_decides_exact`]). Mirrors `ft_witnessed`'s
+    /// the exact rule `2·q·den ≥ S·(den+num)` (see [`ft_decides_exact`]).
+    /// Mirrors `ft_witnessed`'s
     /// contains / zero-stake / `agreeing ≤ S/2` short-circuits so the two agree
     /// everywhere except at the `f32` rounding boundary this replaces.
     pub async fn ft_witnessed_exact(
@@ -609,7 +641,7 @@ impl CliqueOracle {
     /// Finalizer decision + display value in one clique pass. Computes the max
     /// clique weight `q` and total stake `S` once and returns `(decision,
     /// ft_value)` where `decision` is the EXACT verdict
-    /// [`ft_decides_exact`]`(agreeing, q, S, num, den, strict)` and `ft_value` =
+    /// [`ft_decides_exact`]`(agreeing, q, S, num, den)` and `ft_value` =
     /// (2q−S)/S as `f32` for display/telemetry only. The `agreeing ≤ S/2`
     /// short-circuit returns `(false, MIN_FAULT_TOLERANCE)`, matching
     /// [`CliqueOracle::compute_output_with_cache`].
@@ -786,7 +818,7 @@ mod ft_decides_exact_tests {
     /// the tie is exact: S = 2·den, q = den+num ⇒
     /// 2q·den = 2(den+num)·den = S·(den+num).
     #[test]
-    fn boundary_tie_is_not_finalized() {
+    fn boundary_tie_is_finalized() {
         let den = FT_PPM_DEN;
         let num = 333_333;
         let s = 2 * den; // 2_000_000
@@ -796,10 +828,7 @@ mod ft_decides_exact_tests {
             s as i128 * (den as i128 + num as i128),
             "test setup must produce an exact tie"
         );
-        assert!(
-            !ft_decides_exact(s, q, s, num, den),
-            "exact tie must not finalize"
-        );
+        assert!(ft_decides_exact(s, q, s, num, den));
     }
 
     #[test]
@@ -865,11 +894,12 @@ mod ft_decides_exact_tests {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
         #[test]
-        fn strict_clique_minimum_matches_the_exact_integer_region(
+        fn inclusive_clique_minimum_matches_the_exact_integer_region(
             (stake, num, den) in threshold_case(),
         ) {
-            let q_min = ((stake as i128 * (den + num) as i128) / (2 * den) as i128
-                + 1) as i64;
+            let numerator = stake as i128 * (den + num) as i128;
+            let denominator = (2 * den) as i128;
+            let q_min = ((numerator + denominator - 1) / denominator) as i64;
             for clique in 0..=stake {
                 prop_assert_eq!(
                     ft_decides_exact(stake, clique, stake, num, den),
@@ -892,13 +922,13 @@ mod ft_decides_exact_tests {
         }
 
         #[test]
-        fn two_strict_certificates_force_overlap_above_the_fault_budget(
+        fn two_certificates_force_overlap_at_or_above_the_fault_budget(
             (stake, num, den, left, right) in two_certificate_case(),
         ) {
             prop_assert!(ft_decides_exact(stake, left, stake, num, den));
             prop_assert!(ft_decides_exact(stake, right, stake, num, den));
             let overlap = (left + right - stake).max(0);
-            prop_assert!(overlap as i128 * den as i128 > stake as i128 * num as i128);
+            prop_assert!(overlap as i128 * den as i128 >= stake as i128 * num as i128);
         }
     }
 }

@@ -170,7 +170,11 @@ tlc_require_unchanged_identity() {
 tlc_run() {
   local metadir="$1" config="$2" module="$3" source_hash recovery_identity
   local post_source_hash post_recovery_identity rc
+  local -a worker_args=()
   shift 3
+  if [[ "$TLC_WORKERS" != "1" ]]; then
+    worker_args=(-workers "$TLC_WORKERS")
+  fi
   mkdir -p "$metadir"
   source_hash="$(tlc_source_hash "$config" "$module")" || return 1
   recovery_identity="$(tlc_recovery_identity "$source_hash")" || return 1
@@ -179,7 +183,7 @@ tlc_run() {
   tlc_require_recovery_binding "$recovery_identity" "$@" || return $?
   if [[ -f "$TLC_JAR" ]]; then
     if tlc_bounded java "-Xmx$TLC_HEAP" -XX:+UseParallelGC -cp "$TLC_JAR" tlc2.TLC \
-        -fp "$TLC_FP" -seed "$TLC_SEED" -workers "$TLC_WORKERS" \
+        -fp "$TLC_FP" -seed "$TLC_SEED" "${worker_args[@]}" \
         -metadir "$metadir" -config "$config" "$@" "$module"; then
       rc=0
     else
@@ -188,7 +192,7 @@ tlc_run() {
   elif command -v tlc >/dev/null 2>&1; then
     if (
       export TLC_JAVA_OPTS="-Xmx$TLC_HEAP ${TLC_JAVA_OPTS:-}"
-      tlc_bounded tlc -fp "$TLC_FP" -seed "$TLC_SEED" -workers "$TLC_WORKERS" \
+      tlc_bounded tlc -fp "$TLC_FP" -seed "$TLC_SEED" "${worker_args[@]}" \
         -metadir "$metadir" -config "$config" "$@" "$module"
     ); then
       rc=0

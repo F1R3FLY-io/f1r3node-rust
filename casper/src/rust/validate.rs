@@ -1,6 +1,6 @@
 // References below to `formal/{rocq,tlaplus,sage}/slashing/`,
 // `FINDINGS.md`, `slashing-search-horizon.{md,sh}`, `slashing-traceability.md`,
-// `docs/theory/slashing/methodology/`, and `.mutants.toml` point at
+// `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 // See casper/src/main/scala/coop/rchain/casper/Validate.scala
@@ -67,6 +67,7 @@ use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::declared_parent_depths_valid;
+use crate::rust::finality::floor_context::FloorContext;
 use crate::rust::slashing_authorization::{
     epoch_for_block_number, validate_received_slash_deploys, CanonicalSlashAuthority,
     SlashAuthError,
@@ -338,7 +339,7 @@ impl Validate {
 
     // Validator ordering inside `block_summary` is consensus-critical and
     // has been audited as of `feature/slashing`. The order encoded below
-    // matches the spec in docs/theory/slashing/slashing-specification.md
+    // matches the spec in docs/casper/theory/slashing/slashing-specification.md
     // and is the same ordering proven correct in the corresponding Rocq
     // theorems for the `T-9.x` family.
     pub async fn block_summary(
@@ -352,6 +353,35 @@ impl Validate {
         depth_buffer: i32,
         block_store: &KeyValueBlockStore,
         disable_validator_progress_check: bool,
+    ) -> ValidBlockProcessing {
+        Self::block_summary_at_floor(
+            block,
+            genesis,
+            s,
+            shard_id,
+            expiration_threshold,
+            max_number_of_parents,
+            max_parent_depth,
+            depth_buffer,
+            block_store,
+            disable_validator_progress_check,
+            None,
+        )
+        .await
+    }
+
+    pub async fn block_summary_at_floor(
+        block: &BlockMessage,
+        genesis: &BlockMessage,
+        s: &mut CasperSnapshot,
+        shard_id: &str,
+        expiration_threshold: i32,
+        max_number_of_parents: i32,
+        max_parent_depth: i32,
+        depth_buffer: i32,
+        block_store: &KeyValueBlockStore,
+        disable_validator_progress_check: bool,
+        floor_ctx: Option<&FloorContext>,
     ) -> ValidBlockProcessing {
         use crate::rust::metrics_constants::*;
         macro_rules! __step {
@@ -399,7 +429,7 @@ impl Validate {
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-validation");
         match __step!(
             BLOCK_VALIDATION_REPEAT_DEPLOY_TIME_METRIC,
-            Self::repeat_deploy(block, s, block_store, expiration_threshold)
+            Self::repeat_deploy_at_floor(block, s, block_store, expiration_threshold, floor_ctx,)
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -488,12 +518,9 @@ impl Validate {
     /// Validate no deploy with the same sig has been produced in the chain.
     /// Agnostic of non-parent justifications.
     ///
-    /// Recovery exemption: a sig whose LATEST canonical disposition within
-    /// the BLOCK'S OWN parent scope is a merge rejection is a legitimate
-    /// recovery re-inclusion — the rejected-deploy buffer pipeline
-    /// re-proposes such deploys so their effects can land in canonical
-    /// state. Without this exemption, every recovery-path block would fail
-    /// `InvalidRepeatDeploy`.
+    /// Recovery exemption: a sig whose latest canonical disposition within
+    /// the block's parent scope is a merge rejection can be re-included only
+    /// after the rejection carrier is in the block's finalized floor.
     ///
     /// The exemption is a PURE FUNCTION OF THE BLOCK (its parents and the
     /// disposition records in their ancestry), never of the validating
@@ -505,8 +532,8 @@ impl Validate {
     /// network (the roaming `InvalidRepeatDeploy` Heavy Pipeline failures).
     ///
     /// The double-execution defense is preserved deterministically: if a
-    /// re-inclusion already WON above the rejection in the block's parent
-    /// scope, the latest disposition is a win — not exempt — and the
+    /// re-inclusion already won above the rejection in the block's parent
+    /// scope, the latest disposition is a win, and the
     /// ancestor scan below finds the canonical inclusion and flags the
     /// repeat. A win that exists only on a fork OUTSIDE the block's parent
     /// scope must NOT poison this block: judged in its own context the
@@ -518,8 +545,30 @@ impl Validate {
         block_store: &KeyValueBlockStore,
         expiration_threshold: i32,
     ) -> ValidBlockProcessing {
+        Self::repeat_deploy_at_floor(block, s, block_store, expiration_threshold, None)
+    }
+
+    pub fn repeat_deploy_at_floor(
+        block: &BlockMessage,
+        s: &mut CasperSnapshot,
+        block_store: &KeyValueBlockStore,
+        expiration_threshold: i32,
+        floor_ctx: Option<&FloorContext>,
+    ) -> ValidBlockProcessing {
         if block.body.deploys.is_empty() {
             return Either::Right(ValidBlock::Valid);
+        }
+
+        if block.header.version >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
+            for processed in &block.body.deploys {
+                if processed
+                    .deploy_id_for_protocol(block.header.version)
+                    .and_then(|_| processed.to_cosigned().map(|_| ()))
+                    .is_err()
+                {
+                    return Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat));
+                }
+            }
         }
 
         let mut block_sigs = HashSet::new();
@@ -527,7 +576,7 @@ impl Validate {
             .body
             .deploys
             .iter()
-            .any(|deploy| !block_sigs.insert(deploy.deploy.sig.clone()))
+            .any(|deploy| !block_sigs.insert(deploy.deploy_id().clone()))
         {
             return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
         }
@@ -544,34 +593,57 @@ impl Validate {
         let max_block_number = proto_util::max_block_number_metadata(&init_parents);
         let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
 
-        // Latest canonical dispositions within the block's parent scope,
-        // over the same expiration window the ancestor scan uses. This is
-        // exactly the record the proposer's admission logic consults
-        // (`canonical_won_sigs` from its parents), so proposer and every
-        // validator evaluate the same predicate on the same inputs.
-        let canonical_rejected =
-            match crate::rust::util::rholang::interpreter_util::canonical_rejected_sigs(
-                block_store,
-                &block.header.parents_hash_list,
-                earliest_block_number,
-            ) {
+        let mut exempt = HashSet::new();
+        if let Some(context) = floor_ctx {
+            let rejected = match context.rejected_sigs(block_store, earliest_block_number) {
                 Ok(sigs) => sigs,
-                Err(e) => return Either::Left(BlockError::BlockException(e)),
+                Err(error) => return Either::Left(BlockError::BlockException(error)),
             };
+            for processed_deploy in &block.body.deploys {
+                let deploy_id = match processed_deploy.deploy_id_for_protocol(block.header.version)
+                {
+                    Ok(deploy_id) => deploy_id,
+                    Err(error) => {
+                        return Either::Left(BlockError::BlockException(CasperError::RuntimeError(
+                            error,
+                        )))
+                    }
+                };
+                if !rejected.contains(&deploy_id) {
+                    continue;
+                }
+                match context.retry_gate_open(
+                    &s.dag,
+                    block_store,
+                    earliest_block_number,
+                    &deploy_id,
+                ) {
+                    Ok(true) => {
+                        exempt.insert(processed_deploy.deploy_id().clone());
+                    }
+                    Ok(false) => {
+                        return Either::Left(BlockError::Invalid(
+                            InvalidBlock::PrematureDeployRetry,
+                        ));
+                    }
+                    Err(error) => return Either::Left(BlockError::BlockException(error)),
+                }
+            }
+        }
 
         let deploy_key_set: HashSet<Vec<u8>> = block
             .body
             .deploys
             .iter()
-            .filter(|pd| !canonical_rejected.contains(&pd.deploy.sig))
-            .map(|pd| pd.deploy.sig.to_vec())
+            .filter(|processed_deploy| !exempt.contains(processed_deploy.deploy_id()))
+            .map(|pd| pd.deploy_id().to_vec())
             .collect();
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
         }
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
-        let maybe_duplicated_block_metadata = dag_ops::bf_traverse_find(
+        let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
             |block_metadata| {
                 proto_util::get_parent_metadatas_above_block_number(
@@ -579,12 +651,16 @@ impl Validate {
                     earliest_block_number,
                     &s.dag,
                 )
-                .unwrap_or_default()
             },
             |block_metadata| {
-                block_store.has_any_deploy_sig_unsafe(&block_metadata.block_hash, &deploy_key_set)
+                block_store
+                    .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
+                    .map_err(CasperError::from)
             },
-        );
+        ) {
+            Ok(found) => found,
+            Err(error) => return Either::Left(BlockError::BlockException(error)),
+        };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
@@ -600,15 +676,30 @@ impl Validate {
       // such a deploy, the index is corrupt — surface as infrastructure
       // failure rather than panicking the validator on hostile or
       // corrupted state.
-      let duplicated_deploy = match duplicated_deploys
-        .iter()
-        .map(|processed_deploy| &processed_deploy.deploy)
-        .find(|deploy| deploy_key_set.contains(deploy.sig.as_ref()))
-      {
-        Some(d) => d,
+      let mut matching_deploy = None;
+      for processed_deploy in &duplicated_deploys {
+        let deploy_id = match processed_deploy
+          .deploy_id_for_protocol(duplicated_block.header.version)
+        {
+          Ok(deploy_id) => deploy_id,
+          Err(error) => {
+            return BlockError::BlockException(CasperError::RuntimeError(format!(
+              "InvalidRepeatDeploy could not decode the indexed deploy identity in block {}: {}",
+              block_hash_string,
+              error,
+            )));
+          }
+        };
+        if deploy_key_set.contains(deploy_id.as_bytes()) {
+          matching_deploy = Some(&processed_deploy.deploy);
+          break;
+        }
+      }
+      let duplicated_deploy = match matching_deploy {
+        Some(deploy) => deploy,
         None => {
           tracing::error!(
-            "InvalidRepeatDeploy duplicate-deploy invariant violated: deploy-index claims block {} carries a deploy whose signature collides with current block {}, but no such deploy exists in that block's deploy list",
+            "InvalidRepeatDeploy duplicate-deploy invariant violated: deploy-index claims block {} carries a deploy whose identity collides with current block {}, but no such deploy exists in that block's deploy list",
             block_hash_string,
             current_block_hash_string
           );
@@ -625,7 +716,7 @@ impl Validate {
       let timestamp_string = duplicated_deploy.data.time_stamp.to_string();
 
       let message = format!(
-        "found deploy [{}] (user {}, millisecond timestamp {})] with the same sig in the block {} as current block {}",
+        "found deploy [{}] (user {}, millisecond timestamp {})] with the same identity in the block {} as current block {}",
         term,
         &deployer_string,
         timestamp_string,
@@ -950,7 +1041,7 @@ impl Validate {
             .body
             .deploys
             .iter()
-            .any(|pd| !is_system_deploy_id(&pd.deploy.sig));
+            .any(|pd| !is_system_deploy_id(pd.deploy_id()));
         // Slash deploys are liveness-critical recovery actions and must not be blocked
         // by empty-block progress checks.
         let has_slash_system_deploys = b.body.system_deploys.iter().any(|system_deploy| {
@@ -1204,7 +1295,7 @@ impl Validate {
     ///   author's behavior. Propagate as `BlockError::BlockException(e)`;
     ///   do NOT slash the block sender for a fault attributable to local
     ///   infrastructure. Bug-fix rationale: see
-    ///   docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
+    ///   docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
@@ -1222,7 +1313,7 @@ impl Validate {
     /// errors — can be unit-tested from integration tests.
     ///
     /// See `slash_deploy_authorization` for the full rationale and
-    /// docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
+    /// docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14
     /// ("Error routing") for the design contract this helper enforces.
     pub fn route_slash_validation_outcome(
         block: &BlockMessage,
@@ -1270,7 +1361,7 @@ impl Validate {
     /// Proven sound by `t_9_6_self_regression_detected`,
     /// `t_9_6_self_regression_complete`, and `t_9_6_self_regression_in_dag` in
     /// `formal/rocq/slashing/theories/BugFixSelfRegression.v`. See also
-    /// `docs/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
+    /// `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1295,7 +1386,7 @@ impl Validate {
                 // Self-regression is checked here too: include the sender's
                 // self-justification so a block that points back to its own
                 // earlier sequence number is detected as JustificationRegression.
-                // See docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
+                // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {
@@ -1561,6 +1652,7 @@ mod merge_recovery_validation_tests {
                 required_sigs: 0,
             },
             sigs: Vec::new(),
+            floor_seed: None,
         }
     }
 
@@ -1600,7 +1692,11 @@ mod merge_recovery_validation_tests {
                 sig: Secp256k1.sign(&candidate_digest, &private_key.bytes).into(),
             })
             .collect();
-        ApprovedBlock { candidate, sigs }
+        ApprovedBlock {
+            candidate,
+            sigs,
+            floor_seed: None,
+        }
     }
 
     #[test]
@@ -1695,6 +1791,7 @@ mod merge_recovery_validation_tests {
                     required_sigs: 0,
                 },
                 sigs: Vec::new(),
+                floor_seed: None,
             };
 
             assert!(!Validate::approved_block(&approved, 0));
@@ -1742,6 +1839,7 @@ mod merge_recovery_validation_tests {
             finalized_floor_commitment: None,
             admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
+            merge_base: Bytes::new(),
         };
         let metadata = if invalid {
             crate::rust::test_metadata::certify_rejected(
@@ -1821,6 +1919,8 @@ mod merge_recovery_validation_tests {
                 rejected_state_effects: Vec::new(),
                 system_deploys,
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: vec![Justification {
                 validator: offender,

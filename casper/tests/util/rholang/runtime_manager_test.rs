@@ -4078,30 +4078,40 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
             let start_state = genesis_block.body.state.post_state_hash.clone();
+            let rejected_key = PrivateKey::from_bytes(&[0x51; 32]);
             let rejected = construct_deploy::source_deploy(
                 r#"new x in { x!(0) | for(@0 <- x){ @"rollback-proof"!(1) } }"#.to_string(),
                 1,
                 None,
                 None,
-                Some(PrivateKey::from_bytes(&[0x51; 32])),
+                Some(rejected_key.clone()),
                 None,
                 Some(genesis_block.shard_id.clone()),
             )
             .unwrap();
+            let accepted_key = genesis_context.genesis_vaults[0].0.clone();
             let accepted = construct_deploy::source_deploy(
                 r#"new x in { x!(0) | for(@0 <- x){ @"accepted-proof"!(1) } }"#.to_string(),
                 2,
                 None,
                 None,
-                Some(genesis_context.genesis_vaults[0].0.clone()),
+                Some(accepted_key.clone()),
                 None,
                 Some(genesis_block.shard_id.clone()),
             )
             .unwrap();
-            let rejected =
-                crypto::rust::signatures::signed::Cosigned::from_single_signer(rejected).unwrap();
-            let accepted =
-                crypto::rust::signatures::signed::Cosigned::from_single_signer(accepted).unwrap();
+            let rejected = crypto::rust::signatures::signed::Cosigned::create_single_envelope(
+                rejected.data,
+                Box::new(Secp256k1),
+                rejected_key,
+            )
+            .unwrap();
+            let accepted = crypto::rust::signatures::signed::Cosigned::create_single_envelope(
+                accepted.data,
+                Box::new(Secp256k1),
+                accepted_key,
+            )
+            .unwrap();
             let rejected_funding = accounting::funding_sig(&rejected);
             let rejected_signature = sig_to_cost_signature(&rejected_funding).unwrap();
             let rejected_funding_channel = supply::supply_channel(&rejected_funding);
@@ -4147,10 +4157,12 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                 sender: genesis_context.validator_pks()[0].clone(),
                 seq_num: 2,
             };
-            let rejected_sig = rejected.primary().sig.clone();
             let accepted_sig = accepted.primary().sig.clone();
             let rejected_record =
                 ProcessedDeploy::admission_rejected(&rejected, seeded_state.clone());
+            let rejected_id = rejected_record
+                .deploy_id_for_protocol(genesis_block.header.version)
+                .unwrap();
             let admission = runtime_manager
                 .certify_state_bound_admission(
                     &seeded_state,
@@ -4169,7 +4181,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                     .collect::<Vec<_>>(),
                 vec![accepted_sig.clone()]
             );
-            assert_eq!(admission.outcome().rejected, vec![rejected_sig]);
+            assert_eq!(admission.outcome().rejected, vec![rejected_id]);
 
             let close = CloseBlockDeploy::new(
                 system_deploy_util::generate_close_deploy_random_seed_from_pk(
@@ -4229,6 +4241,8 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                     rejected_state_effects: Vec::new(),
                     system_deploys: processed_system,
                     extra_bytes: Vec::<u8>::new().into(),
+                    applied_from_scope: Vec::new(),
+                    merge_base: Vec::<u8>::new().into(),
                 },
                 justifications: Vec::new(),
                 sender: block_data.sender.bytes.clone(),
@@ -4305,7 +4319,10 @@ async fn candidate_minted_stack_cannot_fund_its_own_state_bound_settlement() {
                 .await
                 .unwrap();
             assert!(admission.outcome().admitted.is_empty());
-            assert_eq!(admission.outcome().rejected, vec![deploy_sig]);
+            assert_eq!(
+                admission.outcome().rejected,
+                vec![crate::legacy_deploy_id(&deploy_sig)]
+            );
 
             let close = CloseBlockDeploy::new(
                 system_deploy_util::generate_close_deploy_random_seed_from_pk(
@@ -4886,7 +4903,10 @@ async fn candidate_created_stack_cannot_supply_same_deploy_lollipop_byte_capacit
                 .await
                 .unwrap();
             assert!(deposit_admission.outcome().admitted.is_empty());
-            assert_eq!(deposit_admission.outcome().rejected, vec![deposit_id]);
+            assert_eq!(
+                deposit_admission.outcome().rejected,
+                vec![crate::legacy_deploy_id(&deposit_id)]
+            );
             assert!(deposit_admission.outcome().stack_pops.is_empty());
             assert!(deposit_admission.outcome().purse_stacks.is_empty());
             assert_eq!(deposit_admission.pre_state(), &start_state);
@@ -5611,7 +5631,7 @@ async fn state_bound_parser_rejection_has_no_processed_cost_evidence() {
                 .await
                 .unwrap();
             assert!(evidence.is_empty());
-            assert_eq!(rejected, vec![deploy_id]);
+            assert_eq!(rejected, vec![crate::legacy_deploy_id(&deploy_id)]);
             assert_eq!(
                 system_vault_balance(&runtime_manager, &start_state, &payer_address).await,
                 initial_payer
@@ -6555,6 +6575,8 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                     rejected_state_effects: Vec::new(),
                     system_deploys: processed_system_deploys,
                     extra_bytes: Vec::<u8>::new().into(),
+                    applied_from_scope: Vec::new(),
+                    merge_base: Vec::<u8>::new().into(),
                 },
                 justifications: Vec::new(),
                 sender: block_data.sender.bytes.clone(),
@@ -7216,7 +7238,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint, compute_parents_post_state,
+        compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
@@ -7348,7 +7370,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         .map(|d| d.deploy)
         .collect();
     let snapshot_a = mk_snapshot(&genesis_hash);
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         parents_a,
         deploys_a,
@@ -7433,7 +7455,7 @@ async fn bridge_query_survives_multi_parent_merge() {
 
     let parents_b = vec![genesis_block.clone()];
     let snapshot_b = mk_snapshot(&genesis_hash);
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         parents_b,
         Vec::new(),
@@ -7468,7 +7490,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_merge,
@@ -7476,9 +7498,13 @@ async fn bridge_query_survives_multi_parent_merge() {
         &latest_messages,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("merge parents");
+    let merged_state = merged.state;
+    let rejected = merged.rejected_user;
 
     assert!(
         rejected.is_empty(),
@@ -7529,7 +7555,7 @@ in {{
         .map(|d| d.deploy)
         .collect();
     let snapshot_q = mk_snapshot(&genesis_hash);
-    let (_, post_state_q, pd_q, _, _, _) = compute_deploys_checkpoint(
+    let (_, post_state_q, pd_q, _, _, _) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         parents_q,
         deploys_q,
@@ -7591,7 +7617,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint, compute_parents_post_state,
+        compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
@@ -7735,19 +7761,20 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             .map(|d| d.deploy)
             .collect();
         let snapshot_a = mk_snapshot(&genesis_hash);
-        let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
-            &mut block_store,
-            parents_a,
-            deploys_a,
-            Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
-            &snapshot_a,
-            &rm,
-            BlockData::from_block(&block_a_raw),
-            HashMap::new(),
-            None,
-        )
-        .await
-        .expect("compute block A");
+        let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) =
+            compute_deploys_checkpoint_legacy_signer(
+                &mut block_store,
+                parents_a,
+                deploys_a,
+                Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+                &snapshot_a,
+                &rm,
+                BlockData::from_block(&block_a_raw),
+                HashMap::new(),
+                None,
+            )
+            .await
+            .expect("compute block A");
 
         assert!(
             !pd_a[0].is_failed,
@@ -7801,19 +7828,20 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             .map(|d| d.deploy)
             .collect();
         let snapshot_b = mk_snapshot(&genesis_hash);
-        let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
-            &mut block_store,
-            parents_b,
-            deploys_b,
-            Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
-            &snapshot_b,
-            &rm,
-            BlockData::from_block(&block_b_raw),
-            HashMap::new(),
-            None,
-        )
-        .await
-        .expect("compute block B");
+        let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) =
+            compute_deploys_checkpoint_legacy_signer(
+                &mut block_store,
+                parents_b,
+                deploys_b,
+                Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+                &snapshot_b,
+                &rm,
+                BlockData::from_block(&block_b_raw),
+                HashMap::new(),
+                None,
+            )
+            .await
+            .expect("compute block B");
 
         assert!(
             !pd_b[0].is_failed,
@@ -8029,7 +8057,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_merge,
@@ -8037,9 +8065,13 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         &latest_messages,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("merge parents");
+    let merged_state = merged.state;
+    let rejected = merged.rejected_user;
 
     tracing::info!(
         "Merge result: rejected={}, merged_state={}",
@@ -8050,7 +8082,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     if !rejected.is_empty() {
         let rejected_sigs: Vec<String> = rejected
             .iter()
-            .map(|d| hex::encode(&d.sig[..std::cmp::min(8, d.sig.len())]))
+            .map(|d| hex::encode(&d.deploy_id()[..std::cmp::min(8, d.deploy_id().len())]))
             .collect();
         tracing::warn!(
             "CONFLICT DETECTED: {} deploys rejected: {:?}",
@@ -8401,7 +8433,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint, compute_parents_post_state,
+        compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
@@ -8537,7 +8569,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint(
+    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_a_raw)
@@ -8594,7 +8626,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint(
+    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         vec![genesis_block.clone()],
         proto_util::deploys(&block_b_raw)
@@ -8651,7 +8683,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_c, pd_c, _, sys_pd_c, bonds_c) = compute_deploys_checkpoint(
+    let (_, post_state_c, pd_c, _, sys_pd_c, bonds_c) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         vec![block_a.clone()],
         proto_util::deploys(&block_c_raw)
@@ -8702,7 +8734,7 @@ new deployId(`rho:system:deployId`) in {
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_d, pd_d, _, sys_pd_d, bonds_d) = compute_deploys_checkpoint(
+    let (_, post_state_d, pd_d, _, sys_pd_d, bonds_d) = compute_deploys_checkpoint_legacy_signer(
         &mut block_store,
         vec![block_b.clone()],
         proto_util::deploys(&block_d_raw)
@@ -8741,7 +8773,7 @@ new deployId(`rho:system:deployId`) in {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (merged_state, rejected) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![block_c.clone(), block_d.clone()],
         &snapshot_cd,
@@ -8749,12 +8781,18 @@ new deployId(`rho:system:deployId`) in {
         &latest_messages,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("merge [C, D]");
+    let merged_state = merged.state;
+    let rejected = merged.rejected_user;
 
-    let rejected_set: HashSet<prost::bytes::Bytes> =
-        rejected.iter().map(|item| item.sig.clone()).collect();
+    let rejected_set: HashSet<prost::bytes::Bytes> = rejected
+        .iter()
+        .map(|item| prost::bytes::Bytes::copy_from_slice(item.deploy_id()))
+        .collect();
     let ba_rejected = rejected_set.contains(&pd_a[0].deploy.sig);
     let bb_rejected = rejected_set.contains(&pd_b[0].deploy.sig);
     let bc_rejected = rejected_set.contains(&pd_c[0].deploy.sig);

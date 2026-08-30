@@ -131,6 +131,8 @@ impl GenesisBuilder {
             rejected_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: bytes::Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: bytes::Bytes::new(),
         };
 
         let header = Header {

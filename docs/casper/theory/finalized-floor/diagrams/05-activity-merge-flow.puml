@@ -1,0 +1,80 @@
+' Activity Diagram 05 — compute_parents_post_state: derive → scan → backstop.
+'
+' The merge driver's flow:
+'   derive floor(B) → compute Δ → Δ-backstop decision:
+'     Δ > 256 : propose PARKS (Err) / validate REJECTS (deterministic, no fork).
+'     Δ ≤ 256 : floor-bounded ancestor scan (H3, O(Δ), never cuts above floor)
+'               → merge fold (BitmaskOr semilattice + IntegerAdd checked group)
+'               → post_state = merge(floor.post_state, band writes).
+' The scope-size test |visible_blocks| > 512 is DEMOTED to a metric (not
+' node-deterministic) and must never gate admission.
+'
+' NOTE on node coloring in THIS PlantUML build: the correct form is the suffix
+' stereotype  ':label; <<#hex>>'  (verified by rendering).
+'
+' Source of truth for the H3 fix (section 3.3) in
+' docs/casper/theory/finalized-floor/finalized-floor-verification.md.
+'
+' Render:
+'   plantuml -tsvg docs/casper/theory/finalized-floor/diagrams/05-activity-merge-flow.puml
+
+@startuml 05-activity-merge-flow
+!theme plain
+
+skinparam activity {
+  BackgroundColor        #FFFFFF
+  BorderColor            #333333
+  ArrowColor             #444444
+  DiamondBackgroundColor #FFF8E1
+  DiamondBorderColor     #E65100
+}
+skinparam legendFontName "monospace"
+skinparam legendFontSize 10
+skinparam legendBackgroundColor #FFFFFF
+skinparam legendBorderColor #666666
+skinparam defaultFontName "monospace"
+skinparam defaultFontSize 10
+
+title compute_parents_post_state ── floor derive ▶ floor-bounded scan ▶ Δ-backstop
+
+' Node color legend (suffix <<#hex>> form):
+'   blue   (#BBDEFB) = derive / setup step
+'   red    (#FFCDD2) = deterministic backstop outcome (park / reject)
+'   green  (#C8E6C9 / #A5D6A7) = in-cap scan / fold / final post_state
+'   amber diamonds (#FFF8E1)   = decision
+
+start
+:derive floor(B)\nover frozen just(B); <<#BBDEFB>>
+:Δ = num(maxParent) − num(floor); <<#BBDEFB>>
+
+if (Δ > MAX_FLOOR_DISTANCE (256) ?) then (yes ── backstop)
+  note right #FFECB3
+    scope-size |visible_blocks| > 512
+    is DEMOTED to a metric — NOT
+    node-deterministic (branch width
+    differs across views), so it must
+    NEVER gate admission (only Δ does).
+  end note
+  if (propose or validate ?) then (propose)
+    :PARK the round (Err);\nretry once finality advances\n& Δ shrinks; <<#FFCDD2>>
+    kill
+  else (validate)
+    :block is deterministically INVALID\n(both sides compute the same Δ)\n⟹ REJECT — no fork; <<#FFCDD2>>
+    kill
+  endif
+else (no ── within cap)
+  :floor-bounded ancestor scan ──\ncollect band writes with\nblock_number ≥ floor\n(H3, O(Δ), NEVER cuts above floor); <<#C8E6C9>>
+  :merge fold ──\nBitmaskOr (semilattice, keep-all-bits)\n+ IntegerAdd (checked group); <<#C8E6C9>>
+  :post_state =\nmerge(floor.post_state, band writes); <<#A5D6A7>>
+  stop
+endif
+
+legend bottom
+  Rocq  Selection.scope_covers_band — the floor-bounded scan drops no parent
+  write with block_number ≥ floor (H3 coverage), and never cuts above the floor.
+  TLA⁺  FinalizedFloorScan.tla — H3 + T-PS over an UNCONSTRAINED parent set;
+  MC_FinalizedFloorScan.cfg (BadCut=0) PASSES; _bug.cfg (BadCut=1) is violated.
+  The lossy put_cached_parents_post_state substitution was deleted (S5 fix).
+endlegend
+
+@enduml

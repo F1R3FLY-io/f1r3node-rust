@@ -1,7 +1,7 @@
 ---
 doc_type: user_stories
-version: "1.0"
-last_updated: 2026-04-15
+version: "1.1"
+last_updated: 2026-08-19
 ---
 
 # User Stories
@@ -16,14 +16,14 @@ This document captures user stories that drive feature development. User stories
 **Format:** Each story follows the standard template:
 > As a [persona], I want [capability] so that [benefit].
 
+**User Stories Standard Reference** (canonical):
+[user-stories-standard.md](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md)
+
 ---
 
 ## Completed Stories
 
-<!-- Add completed user stories here -->
-
 ---
-
 
 #### US-004: 60-hour merge-recovery soak benchmark metrics
 
@@ -42,6 +42,22 @@ This document captures user stories that drive feature development. User stories
 ---
 
 ## Planned Stories
+
+#### US-005: Congruent Casper test infrastructure
+
+> As a **consensus developer writing Casper specs**, I want **one canonical test-node and test-network fixture tree with a common-caller interface** so that **specs exercise production-shaped behavior without duplicated helpers that drift apart and silently lose capabilities**.
+
+**Implemented in:** EPIC-015
+
+**Status:** Planned
+
+**Acceptance Criteria:**
+- [ ] A common caller creates a standalone test node or a configured test network without learning storage, runtime, transport, or consensus-construction details
+- [ ] Features that exist only in the duplicate `casper/tests` helper tree are ported to the canonical fixtures before the duplicate tree collapses to re-exports
+- [ ] The duplicate helper tree is removed and the two fixture trees can no longer diverge
+- [ ] Behavioral variation (parent limits, synchrony, read-only nodes, bootstrap selection, empty blocks, deploy lifespan) is explicit configuration with behavior tests
+
+---
 
 #### US-001: System-Integration Compatibility
 
@@ -125,3 +141,25 @@ User stories capture the **why** (user need and benefit). Epics capture the **wh
 
 - **Task Tracking:** `docs/ToDos.md`
 - **Completed Work:** `docs/CompletedTasks.md`
+- **User Stories Standard** (canonical): [user-stories-standard.md](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/user-stories-standard.md)
+
+## Story Template
+
+Use this template when adding new user stories:
+
+```markdown
+#### US-XXX: [Short Title]
+
+> As a **[persona]**, I want **[capability]** so that **[benefit]**.
+
+**Implemented in:** [EPIC-ID or "Planned"]
+
+**Acceptance Criteria:**
+- [ ] Criterion 1
+- [ ] Criterion 2
+- [ ] Criterion 3
+
+**Completed:** [Date or "Planned"]
+```
+
+---

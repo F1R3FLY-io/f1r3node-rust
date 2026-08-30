@@ -510,7 +510,7 @@ impl RuntimeOps {
      */
     pub async fn compute_genesis(
         &mut self,
-        terms: Vec<Signed<DeployData>>,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
         block_time: i64,
         block_number: i64,
     ) -> Result<
@@ -600,7 +600,11 @@ impl RuntimeOps {
         for cosigned in terms {
             let group_key = accounting::funding_sig(&cosigned).lane_hash();
             if closed_groups.contains(&group_key) {
-                outcome.rejected.push(cosigned.primary().sig.clone());
+                outcome
+                    .rejected
+                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
+                        &cosigned,
+                    ));
                 continue;
             }
             let pre_state_root: [u8; 32] = current_root.as_ref().try_into().map_err(|_| {
@@ -698,7 +702,11 @@ impl RuntimeOps {
                     .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
                     .await?;
                 closed_groups.insert(group_key);
-                outcome.rejected.push(cosigned.primary().sig.clone());
+                outcome
+                    .rejected
+                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
+                        &cosigned,
+                    ));
                 continue;
             };
 
@@ -723,7 +731,9 @@ impl RuntimeOps {
                 Err(CasperError::InvalidCostSettlement(reason)) => {
                     tracing::debug!(reason, "state-bound physical reservation rejected deploy");
                     closed_groups.insert(group_key);
-                    outcome.rejected.push(cosigned.primary().sig.clone());
+                    outcome.rejected.push(
+                        crate::rust::util::rholang::acceptance::admission_deploy_id(&cosigned),
+                    );
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -981,7 +991,11 @@ impl RuntimeOps {
                     .reset(&Blake2b256Hash::from_bytes_prost(&current_root))
                     .await?;
                 closed_groups.insert(group_key);
-                outcome.rejected.push(cosigned.primary().sig.clone());
+                outcome
+                    .rejected
+                    .push(crate::rust::util::rholang::acceptance::admission_deploy_id(
+                        &cosigned,
+                    ));
                 continue;
             };
 
@@ -1208,7 +1222,7 @@ impl RuntimeOps {
     pub async fn play_deploys_for_genesis(
         &mut self,
         start_hash: &StateHash,
-        terms: Vec<Signed<DeployData>>,
+        terms: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
     ) -> Result<(StateHash, Vec<(ProcessedDeploy, NumberChannelsEndVal)>), CasperError> {
         // Using tracing events for async - Span[F].withMarks("play-deploys") from Scala
         tracing::info!(target: "f1r3fly.casper.play_deploys_genesis", "play-deploys-genesis-started");
@@ -1218,13 +1232,7 @@ impl RuntimeOps {
 
         let mut res = Vec::with_capacity(terms.len());
         let mut current_root = start_hash.clone();
-        for deploy in terms {
-            let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
-                .map_err(|error| {
-                CasperError::RuntimeError(format!(
-                    "legacy uplift to Cosigned failed in genesis: {error}"
-                ))
-            })?;
+        for cosigned in terms {
             let (mut processed, mergeable, _) = self
                 .process_deploy_cosigned_with_budget_and_authority_mode(
                     cosigned,
@@ -1420,46 +1428,22 @@ impl RuntimeOps {
             .errors
             .iter()
             .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError));
-        let primary_sig = cosigned.primary().sig.clone();
-        let is_compound = cosigned.is_compound();
-        let extracted_threshold = cosigned.cosigner_threshold() as i32;
-        // For multi-sig deploys (§1.9): extract cosigner data BEFORE the
-        // `into_legacy_signed_unchecked` consumes the envelope, so the
-        // ProcessedDeploy carries the full cosigner list through block storage
-        // and replay. D3 (DR-9): no per-signer phlo_share.
-        let extracted_cosigners: Vec<models::casper::CompoundSigner> = if is_compound {
-            cosigned
-                .signers()
-                .iter()
-                .skip(1)
-                .map(|c| models::casper::CompoundSigner {
-                    pk: c.pk.bytes.clone().into(),
-                    sig: c.sig.clone(),
-                    sig_algorithm: c.sig_algorithm.name(),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // Reconstitute the legacy Signed<DeployData> shape for the
-        // `ProcessedDeploy.deploy` field. For single-sig (legacy uplift),
-        // this returns a byte-identical legacy envelope. For multi-sig,
-        // the additional cosigners survive via the `cosigners` field
-        // alongside, NOT through the inner Signed shape.
-        let legacy_signed = cosigned.into_legacy_signed_unchecked();
+        let deploy_id = crate::rust::util::rholang::acceptance::admission_deploy_id(&cosigned);
+        let preserved = ProcessedDeploy::empty_from_cosigned(&cosigned);
 
         let deploy_log = deploy_log
             .into_iter()
             .map(event_converter::to_casper_event)
             .collect::<Vec<_>>();
         let deploy_result = ProcessedDeploy {
-            deploy: legacy_signed,
+            deploy: preserved.deploy,
+            envelope_commitment: preserved.envelope_commitment,
             cost: Cost::to_proto(eval_result.cost),
             deploy_log,
             is_failed: !eval_succeeded,
             system_deploy_error: None,
-            cosigners: extracted_cosigners,
-            cosigner_threshold: extracted_threshold,
+            cosigners: preserved.cosigners,
+            cosigner_threshold: preserved.cosigner_threshold,
             pre_state_hash: StateHash::new(),
             post_state_hash: StateHash::new(),
             authority_funding_certificate: None,
@@ -1508,7 +1492,10 @@ impl RuntimeOps {
         if !eval_succeeded {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             if !exhausted || report_exhaustion {
-                interpreter_util::print_deploy_errors(&primary_sig, &eval_result.errors);
+                interpreter_util::print_deploy_errors(
+                    &Bytes::copy_from_slice(deploy_id.as_bytes()),
+                    &eval_result.errors,
+                );
             }
         }
 
@@ -1941,6 +1928,57 @@ impl RuntimeOps {
     /**
      * Evaluates exploratory (read-only) deploy
      */
+    pub async fn play_exploratory_deploy_with_phlo_limit(
+        &mut self,
+        term: String,
+        hash: &StateHash,
+        deployer: Option<PublicKey>,
+        phlo_limit: i64,
+    ) -> Result<(Vec<Par>, u64), CasperError> {
+        let data = DeployData {
+            term,
+            language: "rholang".to_string(),
+            time_stamp: 0,
+            valid_after_block_number: 0,
+            shard_id: String::new(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();
+        let deploy = Signed::create_unbound(
+            data,
+            deployer.unwrap_or(ephemeral_pk),
+            ephemeral_sk,
+            Box::new(Secp256k1),
+        )?;
+        let mut rand = Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp);
+        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: rand.next().into_iter().map(|b| b as u8).collect(),
+            })),
+        }]);
+        self.runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(hash))
+            .await?;
+        let cosigned = crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy)
+            .map_err(|error| {
+                CasperError::RuntimeError(format!(
+                    "exploratory deploy uplift to Cosigned failed: {error}"
+                ))
+            })?;
+        let eval_res = self
+            .evaluate_cosigned_with_budget(
+                &cosigned,
+                Cost::create(phlo_limit.max(0), "exploratory deploy limit"),
+            )
+            .await?;
+        if !eval_res.errors.is_empty() {
+            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
+        }
+        let cost = eval_res.cost.value.max(0) as u64;
+        Ok((self.get_data_par(&return_name).await, cost))
+    }
+
     pub async fn play_exploratory_deploy(
         &mut self,
         term: String,
@@ -1952,6 +1990,7 @@ impl RuntimeOps {
             // is metered by the in-calculus cost accounting, not a deploy field.
             let data = DeployData {
                 term,
+                language: "rholang".to_string(),
                 time_stamp: 0,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
@@ -2223,17 +2262,10 @@ impl RuntimeOps {
 
     pub(crate) async fn evaluate_genesis(
         &mut self,
-        deploy: &Signed<DeployData>,
+        cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> Result<EvaluateResult, CasperError> {
-        let cosigned =
-            crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy.clone())
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                        "legacy uplift to Cosigned failed in genesis replay: {e}"
-                    ))
-                })?;
         self.evaluate_cosigned_with_budget_and_authority_mode(
-            &cosigned,
+            cosigned,
             Cost::unsafe_max(),
             None,
             DefaultCostAuthority::Unit,
@@ -2308,7 +2340,15 @@ impl RuntimeOps {
         match default_authority {
             DefaultCostAuthority::Funders => {
                 let funding = accounting::funding_sig(cosigned);
-                if cosigned.is_compound() {
+                if cosigned.is_envelope_bound() {
+                    let deploy_id: [u8; 32] = cosigned
+                        .envelope_commitment()
+                        .expect("validated protocol-v6 envelope identity")
+                        .as_ref()
+                        .try_into()
+                        .expect("protocol-v6 deploy identity width");
+                    self.runtime.cost.set_deploy_id_funded(deploy_id, funding);
+                } else if cosigned.is_compound() {
                     let sigs: Vec<&[u8]> =
                         cosigned.signers().iter().map(|s| s.sig.as_ref()).collect();
                     self.runtime
@@ -2323,18 +2363,20 @@ impl RuntimeOps {
             DefaultCostAuthority::Unit => self.runtime.cost.reset_for_system_deploy(),
         }
 
-        let primary = cosigned.primary();
         // Production bounded play and replay pass the same finite
         // authority-derived capacity here. The unbounded default remains only
         // for non-consensus exploratory and system-facing callers that do not
         // produce an admitted user-deploy certificate.
+        let normalizer_env =
+            models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(cosigned);
+        let initial_rand = Tools::user_deploy_rng(cosigned);
         let result = self
             .runtime
             .evaluate_with_authority(
                 &cosigned.data.term,
                 budget,
-                models::rust::normalizer_env::normalizer_env_from_cosigned_deploy(cosigned),
-                Tools::unforgeable_name_rng(&primary.pk, cosigned.data.time_stamp),
+                normalizer_env,
+                initial_rand,
                 authority_allocation,
             )
             .await;

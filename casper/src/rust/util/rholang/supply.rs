@@ -123,7 +123,7 @@ pub fn decode_purse_inventory(
 /// atom bytes ⇒ equal channel) and compounds are permutation-invariant via
 /// `ParSortMatcher::sort_match` (accounting/mod.rs:1544-1612).
 ///
-/// PRECONDITION (F-A separation, red-team M3 — `docs/theory/cost-accounting-impl/
+/// PRECONDITION (F-A separation, red-team M3 — `docs/casper/theory/cost-accounting-impl/
 /// f-a-funding-vs-capability-separation.md` §3/§6): `sig` is a FUNDING-grammar
 /// signature (`Sig::is_funding_former` — `g|#P|s∘s`: `Unit`/`Ground`/`Quote`
 /// atoms folded by `And`). The value/capability type-logic connectives

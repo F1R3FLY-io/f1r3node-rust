@@ -8,6 +8,8 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 #[cfg(any(test, feature = "test-utils"))]
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+#[cfg(any(test, feature = "test-utils"))]
+use crypto::rust::signatures::signed::Cosigned;
 use crypto::rust::signatures::signed::Signed;
 #[cfg(any(test, feature = "test-utils"))]
 use lazy_static::lazy_static;
@@ -60,6 +62,7 @@ pub fn source_deploy(
 
     let data = DeployData {
         term: source,
+        language: "rholang".to_string(),
         time_stamp: timestamp,
         valid_after_block_number,
         shard_id,
@@ -118,12 +121,26 @@ pub fn basic_deploy_data(
     source_deploy_now(format!("@{}!({})", id, id), sec, None, shard_id)
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+pub fn envelope_from_deploy_data(
+    data: DeployData,
+    sec: Option<PrivateKey>,
+) -> Result<Cosigned<DeployData>, CasperError> {
+    Cosigned::create_single_envelope(
+        data,
+        Box::new(Secp256k1),
+        sec.unwrap_or_else(|| DEFAULT_SEC.clone()),
+    )
+    .map_err(|error| CasperError::SigningError(error.to_string()))
+}
+
 pub fn basic_processed_deploy(
     id: i32,
     shard_id: Option<String>,
 ) -> Result<ProcessedDeploy, CasperError> {
     basic_deploy_data(id, None, shard_id).map(|deploy| ProcessedDeploy {
         deploy,
+        envelope_commitment: prost::bytes::Bytes::new(),
         cost: PCost { cost: 0 },
         deploy_log: Vec::new(),
         is_failed: false,

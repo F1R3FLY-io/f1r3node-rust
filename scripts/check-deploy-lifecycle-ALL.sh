@@ -100,6 +100,28 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "TLA+ signature-only pre-fix failed for the wrong reason (see $LOG_DIR/occurrence_tlc_pre.log)"
   fi
+  if tlc_run "$(tlc_metadir occurrence_storage_post_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.cfg" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.tla" >"$LOG_DIR/occurrence_storage_tlc_post.log" 2>&1; then
+    pass "TLA+ atomic occurrence storage and strict fresh activation preserve concurrent state"
+    rm -f "$LOG_DIR/occurrence_storage_tlc_post.log"
+  else
+    fail "TLA+ occurrence storage did NOT pass (see $LOG_DIR/occurrence_storage_tlc_post.log)"
+  fi
+  if tlc_run "$(tlc_metadir occurrence_storage_atomic_pre_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage_non_atomic_pre_fix.cfg" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.tla" >"$LOG_DIR/occurrence_storage_atomic_pre.log" 2>&1; then
+    fail "TLA+ non-atomic occurrence storage should violate Inv_SummaryMatchesArchive but passed"
+  elif grep -q "Inv_SummaryMatchesArchive is violated" "$LOG_DIR/occurrence_storage_atomic_pre.log"; then
+    pass "TLA+ non-atomic occurrence storage reproduces partial admission"
+    rm -f "$LOG_DIR/occurrence_storage_atomic_pre.log"
+  else
+    fail "TLA+ non-atomic occurrence storage failed for the wrong reason (see $LOG_DIR/occurrence_storage_atomic_pre.log)"
+  fi
+  if tlc_run "$(tlc_metadir occurrence_storage_activation_pre_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage_partial_activation_pre_fix.cfg" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.tla" >"$LOG_DIR/occurrence_storage_activation_pre.log" 2>&1; then
+    fail "TLA+ permissive occurrence activation should violate Inv_FreshActivation but passed"
+  elif grep -q "Inv_FreshActivation is violated" "$LOG_DIR/occurrence_storage_activation_pre.log"; then
+    pass "TLA+ permissive occurrence activation reproduces legacy-state admission"
+    rm -f "$LOG_DIR/occurrence_storage_activation_pre.log"
+  else
+    fail "TLA+ permissive occurrence activation failed for the wrong reason (see $LOG_DIR/occurrence_storage_activation_pre.log)"
+  fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
@@ -138,12 +160,16 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     "recovered-deploy expiry bypass"
   recovery_negative_control \
     MC_DeployRecovery_multi_leader_pre_fix \
-    "Inv_OneRecoveryProposerPerFinalizedView is violated" \
-    "same-finalized-view retry storm"
+    "Inv_RetryHasCarrierOwnerCustody is violated" \
+    "foreign-carrier retry custody"
   recovery_negative_control \
     MC_DeployRecovery_heartbeat_pre_fix \
     "Temporal properties were violated" \
     "offline recovery-leader heartbeat suppression"
+  recovery_negative_control \
+    MC_DeployRecovery_parallel_owner_witness \
+    "Inv_NoParallelOwnerRecovery is violated" \
+    "parallel distinct-owner recovery witness"
   recovery_negative_control \
     MC_DeployRecovery_packaging_pre_fix \
     "Inv_SelectedRetrySurvivesSelfChainFilter is violated" \
@@ -152,6 +178,21 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     MC_DeployRecovery_rehome_pre_fix \
     "Inv_SelectedRehomeSurvivesCandidateFilter is violated" \
     "excluded-branch deploy dropped by raw self-chain filtering"
+
+  if tlc_run "$(tlc_metadir deploy_identity_post_gate)" "$RECOVERY_TLA_DIR/MC_DeployIdentitySeparation.cfg" "$RECOVERY_TLA_DIR/DeployIdentitySeparation.tla" >"$LOG_DIR/deploy_identity_tlc_post.log" 2>&1; then
+    pass "TLA+ protocol-tagged deploy identities isolate equal byte payloads"
+    rm -f "$LOG_DIR/deploy_identity_tlc_post.log"
+  else
+    fail "TLA+ tagged deploy identity separation did NOT pass (see $LOG_DIR/deploy_identity_tlc_post.log)"
+  fi
+  if tlc_run "$(tlc_metadir deploy_identity_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_DeployIdentitySeparation_raw_key_unsafe.cfg" "$RECOVERY_TLA_DIR/DeployIdentitySeparation.tla" >"$LOG_DIR/deploy_identity_tlc_unsafe.log" 2>&1; then
+    fail "raw-byte deploy identity should produce a counterexample but passed"
+  elif grep -q "Inv_CrossDomainRejectionIsolation is violated" "$LOG_DIR/deploy_identity_tlc_unsafe.log"; then
+    pass "raw-byte identity reproduces cross-protocol rejection aliasing"
+    rm -f "$LOG_DIR/deploy_identity_tlc_unsafe.log"
+  else
+    fail "raw-byte identity failed for the wrong reason (see $LOG_DIR/deploy_identity_tlc_unsafe.log)"
+  fi
 
   if tlc_run "$(tlc_metadir merge_recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.cfg" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.tla" >"$LOG_DIR/merge_recovery_tlc_post.log" 2>&1; then
     pass "TLA+ finalized-base receipts, exact tombstones, chain filtering, and effect projection are coherent"
@@ -306,11 +347,27 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   protocol_version_negative_control \
     MC_ProtocolVersionLifecycle_receiver_unsafe \
     "Inv_AllReceiversAccept is violated" \
-    "configured-v3 proposer versus approved-v1 receiver disagreement"
+    "configured-v6 proposer versus approved-v5 receiver disagreement"
   protocol_version_negative_control \
     MC_ProtocolVersionLifecycle_unsupported_unsafe \
     "Inv_ApprovedVersionSupported is violated" \
     "unsupported approved protocol admission"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_occurrence_unsafe \
+    "Inv_CurrentGenesisIdentityUnified is violated" \
+    "legacy occurrence identity in protocol-6 genesis"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_execution_unsafe \
+    "Inv_CurrentGenesisIdentityUnified is violated" \
+    "legacy execution identity in protocol-6 genesis"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_replay_unsafe \
+    "Inv_CurrentGenesisReplayDeterministic is violated" \
+    "legacy replay identity in protocol-6 genesis"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_custody_unsafe \
+    "Inv_CurrentGenesisCustodyProjection is violated" \
+    "missing principal-to-ground-custody projection"
 
   if tlc_run "$(tlc_metadir startup_metadata_preflight_post_gate)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_post.log" 2>&1; then
     pass "TLA+ startup metadata preflight verifies before Running and supervises asynchronous rejection"
@@ -354,7 +411,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   fi
 
   if tlc_run "$(tlc_metadir local_validation_recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_post.log" 2>&1; then
-    pass "TLA+ local faults defer bounded recovery and keep descendants dependency-gated"
+    pass "TLA+ parallel validators preserve typed block/state recovery, deduplicate requests, and keep descendants dependency-gated"
     rm -f "$LOG_DIR/local_validation_recovery_post.log"
   else
     fail "TLA+ local-validation recovery did NOT pass (see $LOG_DIR/local_validation_recovery_post.log)"
@@ -367,6 +424,33 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     rm -f "$LOG_DIR/local_validation_recovery_unsafe.log"
   else
     fail "ready-queue local-fault retention failed for the wrong reason (see $LOG_DIR/local_validation_recovery_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_identity_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_identity_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_identity_unsafe.log" 2>&1; then
+    fail "block/state artifact identity collapse should produce a counterexample but passed"
+  elif grep -q "Inv_DeferredNamesRequiredArtifact is violated" "$LOG_DIR/local_validation_recovery_identity_unsafe.log"; then
+    pass "TLA+ identity-collapse control reproduces a state-root waiter requesting the wrong block artifact"
+    rm -f "$LOG_DIR/local_validation_recovery_identity_unsafe.log"
+  else
+    fail "artifact-identity collapse failed for the wrong reason (see $LOG_DIR/local_validation_recovery_identity_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_drop_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_drop_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_drop_unsafe.log" 2>&1; then
+    fail "dropping a locally inconclusive block should produce a counterexample but passed"
+  elif grep -q "Inv_NoDeferredBlockIsDropped is violated" "$LOG_DIR/local_validation_recovery_drop_unsafe.log"; then
+    pass "TLA+ drop control reproduces loss of an inconclusive block before exact recovery"
+    rm -f "$LOG_DIR/local_validation_recovery_drop_unsafe.log"
+  else
+    fail "local-deferral drop control failed for the wrong reason (see $LOG_DIR/local_validation_recovery_drop_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_invalidity_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_invalidity_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_invalidity_unsafe.log" 2>&1; then
+    fail "mapping local artifact absence to objective invalidity should produce a counterexample but passed"
+  elif grep -q "Inv_LocalAbsenceNeverCreatesInvalidity is violated" "$LOG_DIR/local_validation_recovery_invalidity_unsafe.log"; then
+    pass "TLA+ invalidity control reproduces slashable classification from node-local artifact absence"
+    rm -f "$LOG_DIR/local_validation_recovery_invalidity_unsafe.log"
+  else
+    fail "local-absence invalidity control failed for the wrong reason (see $LOG_DIR/local_validation_recovery_invalidity_unsafe.log)"
   fi
 
   if tlc_run "$(tlc_metadir funding_admission_lifecycle_post_gate)" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle.cfg" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle.tla" >"$LOG_DIR/funding_admission_lifecycle_post.log" 2>&1; then
@@ -433,6 +517,95 @@ if command -v apalache-mc >/dev/null 2>&1; then
     rm -f "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"
   else
     fail "Apalache status-record negative control failed for the wrong reason (see $LOG_DIR/admission_effect_alignment_unsafe_apalache.log)"
+  fi
+
+  local_recovery_safe_log="$LOG_DIR/local_validation_recovery_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/local-recovery-safe" \
+      check \
+      --config=MC_LocalValidationRecoveryApalache.cfg \
+      --length=8 \
+      LocalValidationRecovery.tla) >"$local_recovery_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$local_recovery_safe_log"; then
+    pass "Apalache parallel typed local-validation recovery is safe through length 8"
+    rm -f "$local_recovery_safe_log"
+  else
+    fail "Apalache local-validation recovery failed (see $local_recovery_safe_log)"
+  fi
+
+  local_recovery_apalache_negative_control() {
+    local config="$1"
+    local length="$2"
+    local invariant="$3"
+    local label="$4"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length="$length" \
+        LocalValidationRecovery.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q "$invariant" "$log" \
+        && grep -q 'state invariant 0 violated' "$log" \
+        && grep -q 'The outcome is: Error' "$log"; then
+      pass "$label reproduces its Apalache counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryReadyUnsafeApalache \
+    2 \
+    Inv_NoImmediateSelfRequeue \
+    "ready-queue local-fault retention"
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryIdentityUnsafeApalache \
+    9 \
+    Inv_DeferredNamesRequiredArtifact \
+    "block/state artifact identity collapse"
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryDropUnsafeApalache \
+    2 \
+    Inv_NoDeferredBlockIsDropped \
+    "locally inconclusive block loss"
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryInvalidityUnsafeApalache \
+    2 \
+    Inv_LocalAbsenceNeverCreatesInvalidity \
+    "node-local absence classified as objective invalidity"
+
+  deploy_identity_safe_log="$LOG_DIR/deploy_identity_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/deploy-identity-safe" \
+      check \
+      --config=MC_DeployIdentitySeparation.cfg \
+      --length=2 \
+      DeployIdentitySeparation.tla) >"$deploy_identity_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$deploy_identity_safe_log"; then
+    pass "Apalache protocol-tagged deploy identities isolate equal byte payloads"
+    rm -f "$deploy_identity_safe_log"
+  else
+    fail "Apalache tagged deploy identity separation failed (see $deploy_identity_safe_log)"
+  fi
+
+  deploy_identity_unsafe_log="$LOG_DIR/deploy_identity_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/deploy-identity-unsafe" \
+      check \
+      --config=MC_DeployIdentitySeparation_raw_key_unsafe.cfg \
+      --length=1 \
+      DeployIdentitySeparation.tla) >"$deploy_identity_unsafe_log" 2>&1; then
+    fail "raw-byte deploy identity should produce an Apalache counterexample but passed"
+  elif grep -q 'Inv_CrossDomainRejectionIsolation' "$deploy_identity_unsafe_log" \
+      && grep -q 'state invariant 0 violated' "$deploy_identity_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$deploy_identity_unsafe_log"; then
+    pass "raw-byte identity reproduces cross-protocol rejection aliasing under Apalache"
+    rm -f "$deploy_identity_unsafe_log"
+  else
+    fail "raw-byte deploy identity failed for the wrong reason under Apalache (see $deploy_identity_unsafe_log)"
   fi
   rm -rf "$apalache_out"
 else

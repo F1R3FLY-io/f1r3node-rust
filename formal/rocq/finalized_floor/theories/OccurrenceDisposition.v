@@ -151,34 +151,60 @@ Proof.
   lia.
 Qed.
 
-Definition recovery_leader (validator_count finalized_height : nat) : nat :=
+Definition inclusion_leader (validator_count finalized_height : nat) : nat :=
   S (finalized_height mod validator_count).
 
-Definition recovery_authorized
+Definition inclusion_authorized
   (validator_count finalized_height proposer : nat) : Prop :=
   validator_count > 0 /\
-  proposer = recovery_leader validator_count finalized_height.
+  proposer = inclusion_leader validator_count finalized_height.
 
-Theorem recovery_leader_in_validator_set :
+Theorem inclusion_leader_in_validator_set :
   forall validator_count finalized_height,
     validator_count > 0 ->
-    1 <= recovery_leader validator_count finalized_height <= validator_count.
+    1 <= inclusion_leader validator_count finalized_height <= validator_count.
 Proof.
   intros validator_count finalized_height Hpositive.
-  unfold recovery_leader.
+  unfold inclusion_leader.
   pose proof (Nat.mod_upper_bound finalized_height validator_count) as Hbound.
   lia.
 Qed.
 
-Theorem recovery_authorization_unique_per_finalized_view :
+Theorem inclusion_authorization_unique_per_finalized_view :
   forall validator_count finalized_height proposer_a proposer_b,
-    recovery_authorized validator_count finalized_height proposer_a ->
-    recovery_authorized validator_count finalized_height proposer_b ->
+    inclusion_authorized validator_count finalized_height proposer_a ->
+    inclusion_authorized validator_count finalized_height proposer_b ->
     proposer_a = proposer_b.
 Proof.
   intros validator_count finalized_height proposer_a proposer_b Ha Hb.
-  unfold recovery_authorized in Ha, Hb.
+  unfold inclusion_authorized in Ha, Hb.
   destruct Ha as [_ Ha].
   destruct Hb as [_ Hb].
   now rewrite Ha, Hb.
+Qed.
+
+Definition recovery_custody_authorized
+  (carrier_owner proposer : nat) : Prop :=
+  proposer = carrier_owner.
+
+Theorem recovery_custody_authorization_unique_per_carrier :
+  forall carrier_owner proposer_a proposer_b,
+    recovery_custody_authorized carrier_owner proposer_a ->
+    recovery_custody_authorized carrier_owner proposer_b ->
+    proposer_a = proposer_b.
+Proof.
+  intros carrier_owner proposer_a proposer_b Ha Hb.
+  unfold recovery_custody_authorized in Ha, Hb.
+  now rewrite Ha, Hb.
+Qed.
+
+Theorem distinct_carrier_owners_recover_independently :
+  forall owner_a owner_b,
+    owner_a <> owner_b ->
+    recovery_custody_authorized owner_a owner_a /\
+    recovery_custody_authorized owner_b owner_b /\
+    owner_a <> owner_b.
+Proof.
+  intros owner_a owner_b Hdistinct.
+  repeat split; try reflexivity; exact Hdistinct.
 Qed.

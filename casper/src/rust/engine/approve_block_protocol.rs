@@ -371,9 +371,11 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
         &self,
         signatures: HashSet<SignatureWrapper>,
     ) -> Result<(), CasperError> {
+        // No seed: this block IS genesis, whose floor is itself.
         let approved_block = ApprovedBlock {
             candidate: self.candidate.clone(),
             sigs: signatures.into_iter().map(|s| s.0).collect(),
+            floor_seed: None,
         };
 
         // Set LastApprovedBlock

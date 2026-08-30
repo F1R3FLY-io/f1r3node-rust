@@ -20,6 +20,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
+use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
@@ -293,7 +294,7 @@ impl ReplayRuntimeOps {
         let mut deploy_results = Vec::new();
         let mut current_root = start_hash.clone();
         for term in terms {
-            let effect = format!("user:{}", hex::encode(&term.deploy.sig));
+            let effect = format!("user:{}", hex::encode(term.deploy_id()));
             let validate_witness = Self::validate_effect_pre_state(
                 &effect,
                 &term.pre_state_hash,
@@ -472,11 +473,15 @@ impl ReplayRuntimeOps {
 
         let dsig = if tracing::enabled!(target: "f1r3fly.casper.replay_rho_runtime", tracing::Level::DEBUG)
         {
-            hex::encode(&processed_deploy.deploy.sig[..8.min(processed_deploy.deploy.sig.len())])
+            hex::encode(&processed_deploy.deploy_id()[..8.min(processed_deploy.deploy_id().len())])
         } else {
             String::new()
         };
-        tracing::debug!(target: "f1r3fly.casper.replay_rho_runtime", deploy = %dsig, "replay.deploy ENTER (rig recorded COMMs)");
+        tracing::debug!(
+            target: "f1r3fly.casper.replay_rho_runtime",
+            deploy = %dsig,
+            "replay.deploy ENTER (rig recorded COMMs)"
+        );
         let rig_start = Instant::now();
         self.rig(processed_deploy).await?;
         metrics::histogram!(BLOCK_REPLAY_DEPLOY_RIG_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -563,6 +568,21 @@ impl ReplayRuntimeOps {
                     )
                 })?,
             false,
+        )?;
+        let pre_state_root: [u8; 32] = processed_deploy
+            .pre_state_hash
+            .as_ref()
+            .try_into()
+            .map_err(|_| {
+                CasperError::InvalidCostSettlement(
+                    "replay deploy pre-state root is not Blake2b-256".to_string(),
+                )
+            })?;
+        crate::rust::util::rholang::acceptance::verify_authority_reservation_id(
+            &cosigned,
+            pre_state_root,
+            certificate.program_hash,
+            certificate.reservation_id,
         )?;
         if witness.certificate_id != certificate.certificate_id() {
             return Err(CasperError::InvalidCostSettlement(
@@ -890,9 +910,10 @@ impl ReplayRuntimeOps {
                     .await?
             }
             None => {
-                self.runtime_ops
-                    .evaluate_genesis(&processed_deploy.deploy)
-                    .await?
+                let cosigned = processed_deploy
+                    .to_cosigned()
+                    .map_err(CasperError::InvalidCostSettlement)?;
+                self.runtime_ops.evaluate_genesis(&cosigned).await?
             }
         };
         let discard_start = Instant::now();
@@ -920,7 +941,7 @@ impl ReplayRuntimeOps {
 
         if !eval_successful {
             interpreter_util::print_deploy_errors(
-                &processed_deploy.deploy.sig,
+                processed_deploy.deploy_id(),
                 &user_eval_result.errors,
             );
             self.runtime_ops
@@ -1279,28 +1300,29 @@ impl ReplayRuntimeOps {
 
     pub async fn check_replay_data_with_fix(
         &self,
-        // https://f1r3fly.atlassian.net/browse/RCHAIN-3505
         eval_successful: bool,
     ) -> Result<(), ReplayFailure> {
         let check_start = Instant::now();
         let result = match self.runtime_ops.runtime.check_replay_data().await {
             Ok(()) => Ok(()),
-            Err(err) => {
-                let err_msg = err.to_string();
-                if err_msg.contains("unused") && err_msg.contains("COMM") {
-                    if !eval_successful {
-                        // Suppress UnusedCOMMEvent when eval was not successful
-                        Ok(())
-                    } else {
-                        Err(ReplayFailure::unused_comm_event(err_msg))
-                    }
-                } else {
-                    Err(ReplayFailure::internal_error(format!(
-                        "Replay check failed: {}",
-                        err
-                    )))
-                }
+            // A deploy whose evaluation failed is allowed to leave recorded COMM events
+            // unconsumed: the rollback restores the hot store, event log and produce counter, but
+            // not the replay-data multimap, so leftover entries are expected rather than a
+            // divergence. Matched on the variant — an earlier form compared rendered text and
+            // never fired, because the message renders "Unused COMM event" while the guard tested
+            // for a lowercase "unused".
+            Err(InterpreterError::RSpaceError(RSpaceError::UnusedCommEvent { .. }))
+                if !eval_successful =>
+            {
+                Ok(())
             }
+            Err(err @ InterpreterError::RSpaceError(RSpaceError::UnusedCommEvent { .. })) => {
+                Err(ReplayFailure::unused_comm_event(err.to_string()))
+            }
+            Err(err) => Err(ReplayFailure::internal_error(format!(
+                "Replay check failed: {}",
+                err
+            ))),
         };
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(check_start.elapsed().as_secs_f64());

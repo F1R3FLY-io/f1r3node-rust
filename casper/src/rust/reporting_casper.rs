@@ -15,22 +15,25 @@ use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::system_processes::{BlockData, Definition};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingRspace};
+use rspace_plus_plus::rspace::reporting_rspace::{ReportBatch, ReportingRspace};
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use shared::rust::ByteString;
+
+/// Reporting events for one phase-segment of a deploy's replay.
+type DeployReportEvents = Vec<ReportBatch<Par, BindPattern, ListParWithRandom, TaggedContinuation>>;
 
 /// Deploy details + reporting events
 #[derive(Clone, Debug)]
 pub struct DeployReportResult {
     pub processed_deploy: ProcessedDeploy,
-    pub events: Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    pub events: DeployReportEvents,
 }
 
 /// System deploy details + reporting events
 #[derive(Clone, Debug)]
 pub struct SystemDeployReportResult {
     pub processed_system_deploy: SystemDeployData,
-    pub events: Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    pub events: DeployReportEvents,
 }
 
 /// Aggregated replay results
@@ -68,6 +71,7 @@ pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
     block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
+    replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 }
 
@@ -77,6 +81,11 @@ impl ReportingCasper for RhoReporterCasper {
         use crate::rust::genesis::genesis::Genesis;
         use crate::rust::util::proto_util;
 
+        let _replay_permit = self
+            .replay_lock
+            .acquire_reporting()
+            .await
+            .map_err(|error| format!("Replay semaphore closed: {}", error))?;
         let reporting_rspace = ReportingRuntime::create_reporting_rspace(self.rspace_store.clone())
             .map_err(|e| format!("Failed to create reporting rspace: {}", e))?;
 
@@ -100,10 +109,9 @@ impl ReportingCasper for RhoReporterCasper {
             .block_store
             .get_approved_block()
             .map_err(|e| format!("Failed to get approved block: {}", e))?;
-
         let is_genesis = genesis
             .as_ref()
-            .map(|g| block.block_hash == g.candidate.block.block_hash)
+            .map(|approved| block.block_hash == approved.candidate.block.block_hash)
             .unwrap_or(false);
 
         let invalid_blocks_set = dag.invalid_blocks();
@@ -214,7 +222,7 @@ impl RhoReporterCasper {
                 "Replaying deploy for report"
             );
 
-            let effect = format!("user:{}", hex::encode(&term.deploy.sig));
+            let effect = format!("user:{}", hex::encode(term.deploy_id()));
             let validate_witness =
                 crate::rust::rholang::replay_runtime::ReplayRuntimeOps::validate_effect_pre_state(
                     &effect,
@@ -408,12 +416,14 @@ pub fn rho_reporter(
     rspace_store: &RSpaceStore,
     block_store: &KeyValueBlockStore,
     block_dag_storage: &BlockDagKeyValueStorage,
+    replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
         block_store: block_store.clone(),
         block_dag_storage: block_dag_storage.clone(),
+        replay_lock,
         external_services,
     })
 }
@@ -425,15 +435,9 @@ pub struct ReportingRuntime {
 }
 
 impl ReportingRuntime {
-    /// Get reporting events from the space
-    pub fn get_report(
-        &self,
-    ) -> Result<
-        Vec<Vec<ReportingEvent<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
-        RSpaceError,
-    > {
-        self.space.get_report()
-    }
+    /// Get reporting events from the space, segmented and tagged with
+    /// the phase that was in force when each segment was flushed.
+    pub fn get_report(&self) -> Result<DeployReportEvents, RSpaceError> { self.space.get_report() }
 
     /// Reset the runtime to a specific state hash
     pub async fn reset(

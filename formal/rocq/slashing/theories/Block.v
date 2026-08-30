@@ -56,7 +56,7 @@ Set Implicit Arguments.
    ═══════════════════════════════════════════════════════════════════════════
 
    Hashes are abstract identifiers. We model them as nat for decidable
-   equality. The bisimilarity argument is modulo this representation. *)
+   equality. Safety and refinement results are modulo this representation. *)
 
 Definition BlockHash := nat.
 

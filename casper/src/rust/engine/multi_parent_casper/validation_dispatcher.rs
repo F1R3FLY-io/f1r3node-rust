@@ -26,10 +26,13 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
-use crate::rust::block_status::{BlockError, CertifiedBlockValidation, InvalidBlock, ValidBlock};
+use crate::rust::block_status::{
+    BlockError, CertifiedBlockValidation, InvalidBlock, ValidBlock, ValidationDeferral,
+};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::equivocation_detector::EquivocationDetector;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::floor_context::FloorContext;
 use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
@@ -117,7 +120,11 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                     resolved_certificate = certificate;
                     &resolved_certificate
                 }
-                None => return Ok(CertifiedBlockValidation::MissingDependency),
+                None => {
+                    return Ok(CertifiedBlockValidation::MissingDependency(
+                        ValidationDeferral::AlreadyBuffered,
+                    ))
+                }
             },
         };
         if certificate.validate_commitment(commitment).is_err() {
@@ -163,7 +170,11 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 crate::rust::finality::certificate::FinalizationCertificateError::MissingDependency(
                     _,
                 ),
-            ) => return Ok(CertifiedBlockValidation::MissingDependency),
+            ) => {
+                return Ok(CertifiedBlockValidation::MissingDependency(
+                    ValidationDeferral::AlreadyBuffered,
+                ))
+            }
             Err(crate::rust::finality::certificate::FinalizationCertificateError::Local(error)) => {
                 return Ok(CertifiedBlockValidation::local_fault(error))
             }
@@ -212,11 +223,57 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         }
     };
 
+    let exact_latest_messages = block
+        .justifications
+        .iter()
+        .map(|justification| {
+            (
+                justification.validator.clone(),
+                justification.latest_block_hash.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if exact_latest_messages.len() != block.justifications.len() {
+        return CertifiedBlockValidation::certified(
+            block,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidFollows)),
+            baseline_authority,
+        );
+    }
+    let floor_ctx = if block.header.parents_hash_list.is_empty() {
+        None
+    } else {
+        match FloorContext::derive(
+            &snapshot.dag,
+            &this.block_store,
+            &block.header.parents_hash_list,
+            &exact_latest_messages,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                snapshot
+                    .on_chain_state
+                    .shard_conf
+                    .fault_tolerance_threshold_ppm,
+            ),
+            block.header.version,
+        )
+        .await
+        {
+            Ok(context) => Some(context),
+            Err(error) => {
+                return CertifiedBlockValidation::certified(
+                    block,
+                    Either::Left(BlockError::BlockException(error)),
+                    baseline_authority,
+                )
+            }
+        }
+    };
+
     let (block_summary_result, t1) = timed_step(
         "block-summary",
         BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC,
         async {
-            Ok(Validate::block_summary(
+            Ok(Validate::block_summary_at_floor(
                 block,
                 &this.approved_block,
                 snapshot,
@@ -227,6 +284,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 this.casper_shard_conf.mergeable_channels_gc_depth_buffer,
                 &this.block_store,
                 this.casper_shard_conf.disable_validator_progress_check,
+                floor_ctx.as_ref(),
             )
             .await)
         },
@@ -245,21 +303,6 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         "floor-authority",
         BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC,
         async {
-            let exact_latest_messages = block
-                .justifications
-                .iter()
-                .map(|justification| {
-                    (
-                        justification.validator.clone(),
-                        justification.latest_block_hash.clone(),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>();
-            if exact_latest_messages.len() != block.justifications.len() {
-                return Ok(Either::Left(BlockError::Invalid(
-                    InvalidBlock::InvalidFollows,
-                )));
-            }
             let context_result = if let Some(commitment) = block.header.finalized_floor.as_ref() {
                 crate::rust::causal_equivocation::CertifiedConsensusContext::for_frozen_floor(
                     &snapshot.dag,
@@ -269,6 +312,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
             } else {
                 crate::rust::causal_equivocation::CertifiedConsensusContext::for_candidate(
                     &snapshot.dag,
+                    &this.block_store,
                     &block.header.parents_hash_list,
                     &exact_latest_messages,
                     crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
@@ -330,6 +374,10 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
             snapshot,
             &this.runtime_manager,
             Some(&this.rejected_deploy_buffer),
+            floor_ctx.as_ref(),
+            this.validator_id
+                .as_ref()
+                .map(|identity| &identity.public_key.bytes),
         ),
     )
     .await?;
@@ -657,7 +705,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         // documents the lock-order contract (DAG global_lock A,
         // buffer state_lock B) and the on-resume reconciliation
         // closes any crash-window drift. See
-        // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         let updated_dag =
             block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
@@ -676,7 +724,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     };
 
     // Atomic read-modify-write on the equivocation tracker. See
-    // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
+    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
     let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
                            block: &BlockMessage,
                            bond_generation: BondGeneration|
@@ -716,7 +764,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     match status {
         status if status.is_slashable() => {
             // Every slashable status mints an EquivocationRecord. See
-            // docs/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
+            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
             record_evidence(&this.block_dag_storage, block, certificate.generation())?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,

@@ -5,7 +5,7 @@ CONSTANTS
     \* @type: Int;
     NumValidators,
     \* @type: Int;
-    RecoveryLeader,
+    CarrierOwner,
     \* @type: Bool;
     RetainAcceptedStale,
     \* @type: Bool;
@@ -19,17 +19,17 @@ CONSTANTS
     \* @type: Bool;
     PreserveFloorEffect,
     \* @type: Bool;
-    EnforceRecoveryLeader
+    EnforceCarrierCustody
 
 ASSUME /\ NumValidators \in Nat \ {0}
-       /\ RecoveryLeader \in 1..NumValidators
+       /\ CarrierOwner \in 1..NumValidators
        /\ RetainAcceptedStale \in BOOLEAN
        /\ CompleteParentFrontier \in BOOLEAN
        /\ ExactSourceTombstone \in BOOLEAN
        /\ PropagateRejectedBuffer \in BOOLEAN
        /\ PreserveSelectedRecovery \in BOOLEAN
        /\ PreserveFloorEffect \in BOOLEAN
-       /\ EnforceRecoveryLeader \in BOOLEAN
+       /\ EnforceCarrierCustody \in BOOLEAN
 
 Validators == 1..NumValidators
 Effects == {"A", "B", "Fresh"}
@@ -285,7 +285,7 @@ PublishRecovery(v) ==
     /\ ~recoveryPublished
     /\ v \in seenSettlement \intersect seenTombstone \intersect bufferedA
     /\ tombstoneSource = "A"
-    /\ IF EnforceRecoveryLeader THEN v = RecoveryLeader ELSE TRUE
+    /\ IF EnforceCarrierCustody THEN v = CarrierOwner ELSE TRUE
     /\ recoveryPublished' = TRUE
     /\ recoveryPublisher' = v
     /\ recoveryEffects' =
@@ -427,8 +427,8 @@ Inv_RetryRequiresLedgerAuthorization ==
         /\ recoveryPublisher \in bufferedA
         /\ tombstoneSource = "A"
 
-Inv_OnlyCommittedViewLeaderRetries ==
-    recoveryPublished => recoveryPublisher = RecoveryLeader
+Inv_OnlyCarrierOwnerRetries ==
+    recoveryPublished => recoveryPublisher = CarrierOwner
 
 Inv_SelectedRecoveryIsNotSelfChainSuppressed ==
     recoveryPublished => "A" \in recoveryEffects

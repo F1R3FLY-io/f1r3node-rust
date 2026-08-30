@@ -43,6 +43,10 @@ const BLOCK_PROCESSOR_QUEUE_MAX_PENDING: usize = 2_048;
 
 fn block_processor_queue_max_pending() -> usize { BLOCK_PROCESSOR_QUEUE_MAX_PENDING }
 
+fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool {
+    is_node_read_only || dev_mode
+}
+
 pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'static>(
     rp_connections: ConnectionsCell,
     rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
@@ -223,7 +227,9 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
     // Runtime manager (play and replay runtimes)
     let (runtime_manager, history_repo) = {
         use casper::rust::genesis::genesis::Genesis;
-        use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+        use casper::rust::util::rholang::runtime_manager::{
+            ExploratoryDeployConfig, RuntimeManager,
+        };
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         let rspace_stores = rnode_store_manager
@@ -233,11 +239,16 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
 
         let mergeable_store = RuntimeManager::mergeable_store(&mut rnode_store_manager).await?;
         tracing::debug!("[Setup] Creating RuntimeManager with history...");
-        let result = RuntimeManager::create_with_history(
+        let result = RuntimeManager::create_with_history_config(
             rspace_stores,
             mergeable_store,
             Arc::new(Genesis::default_mergeable_tags()),
             external_services.clone(),
+            ExploratoryDeployConfig::new(
+                conf.api_server.exploratory_deploy_max_concurrent,
+                conf.api_server.exploratory_deploy_phlo_limit,
+                conf.api_server.exploratory_deploy_execution_timeout,
+            )?,
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
@@ -258,6 +269,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                 &rspace_stores,
                 &block_store,
                 &block_dag_storage,
+                runtime_manager.replay_lock(),
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             )
         } else {
@@ -303,6 +315,23 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         .read()
         .map_err(|e| CasperError::Other(format!("Failed to read RPConf: {}", e)))?;
 
+    // Runtime state requester: fetches rspace roots named as missing while the
+    // node runs — the state a settled-history admission arrives without, and
+    // the state a deferred replay is waiting on. The processor names roots on
+    // `fetch_tx`; Running routes incoming StoreItemsMessage chunks to
+    // `items_tx`.
+    let state_requester_handles = {
+        let has_root_rm = runtime_manager.clone();
+        let has_root: casper::rust::engine::lfs_horizon_requester::HasRootFn =
+            Arc::new(move |root| has_root_rm.has_root(root));
+        casper::rust::engine::runtime_state_requester::spawn(
+            transport_layer.clone(),
+            rp_conf.clone(),
+            rspace_state_manager.importer.clone(),
+            has_root,
+        )
+    };
+
     // Block processor
     let block_processor = casper::rust::blocks::block_processor::new_block_processor(
         block_store.clone(),
@@ -312,6 +341,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         transport_layer.clone(),
         rp_connections.clone(),
         rp_conf.clone(),
+        Some(state_requester_handles.fetch_tx.clone()),
     );
 
     // Proposer instance
@@ -348,13 +378,6 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             block_store.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
-            // Multi-sig cosigner-metadata sidecar (§1.9.5). The casper
-            // instance owns the canonical sidecar; the proposer holds a
-            // shared Arc clone. In production, setup.rs constructs the
-            // casper-side sidecar first and threads it through both sides;
-            // this entry point creates the sidecar fresh for the proposer
-            // and the casper engine receives the same Arc.
-            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             block_retriever.clone(),
             transport_layer.clone(),
             rp_connections.clone(),
@@ -494,6 +517,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             conf.protocol_server.disable_state_exporter,
             heartbeat_signal_ref.clone(),
             conf.standalone,
+            Some(state_requester_handles.items_tx.clone()),
         )) as Arc<dyn CasperLaunch>
     };
     info!("CasperLaunch initialized");
@@ -552,31 +576,48 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         use futures::StreamExt;
         use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
-        let report_api = block_report_api.clone();
-        let transfer_unforgeable_for_events = transfer_unforgeable.clone();
-        let event_pub = event_publisher.clone();
         let is_ready_flag = is_ready.clone();
         let mut event_stream = event_publisher.consume();
+        const PREWARM_QUEUE_CAPACITY: usize = 64;
+        let (report_tx, mut report_rx) = tokio::sync::mpsc::channel::<
+            shared::rust::shared::f1r3fly_event::BlockFinalised,
+        >(PREWARM_QUEUE_CAPACITY);
+        let report_api = block_report_api.clone();
+        let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
+        let event_pub_for_reports = event_publisher.clone();
+        let prewarm_enabled = block_report_prewarm_enabled(is_node_read_only, conf.dev_mode);
+
+        tokio::spawn(async move {
+            while let Some(finalized) = report_rx.recv().await {
+                metrics::gauge!("block_report.prewarm_queue_depth", "source" => "node")
+                    .set(report_rx.len() as f64);
+                handle_block_finalized(
+                    report_api.clone(),
+                    transfer_unforgeable_for_reports.clone(),
+                    event_pub_for_reports.clone(),
+                    finalized.block_hash,
+                    finalized.block_number,
+                )
+                .await;
+            }
+        });
 
         tokio::spawn(async move {
             while let Some(event) = event_stream.next().await {
                 match &event {
-                    F1r3flyEvent::BlockFinalised(finalized) => {
-                        let api = report_api.clone();
-                        let unforgeable = transfer_unforgeable_for_events.clone();
-                        let publisher = event_pub.clone();
-                        let block_hash = finalized.block_hash.clone();
-                        let block_number = finalized.block_number;
-                        tokio::spawn(async move {
-                            handle_block_finalized(
-                                api,
-                                unforgeable,
-                                publisher,
-                                block_hash,
-                                block_number,
+                    F1r3flyEvent::BlockFinalised(finalized) if prewarm_enabled => {
+                        if report_tx.send(finalized.clone()).await.is_err() {
+                            metrics::counter!(
+                                "block_report.prewarm_skipped",
+                                "source" => "node",
+                                "reason" => "queue_closed"
                             )
-                            .await;
-                        });
+                            .increment(1);
+                            tracing::warn!(
+                                block_hash = %finalized.block_hash,
+                                "Block report prewarm queue closed"
+                            );
+                        }
                     }
                     F1r3flyEvent::EnteredRunningState(_) => {
                         is_ready_flag.store(true, std::sync::atomic::Ordering::Release);
@@ -817,6 +858,12 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         let gc_block_dag_storage = block_dag_storage.clone();
         let gc_block_store = block_store.clone();
         let gc_runtime_manager = Arc::new(runtime_manager.clone());
+        // tokio::sync::Mutex, not parking_lot: the fallback (non-multi-thread)
+        // path below holds the guard across the `collect_garbage().await`, and
+        // only a Send guard can cross an await point in this boxed future.
+        let gc_state = Arc::new(tokio::sync::Mutex::new(
+            casper::rust::util::mergeable_channels_gc::GcSweep::new(),
+        ));
         let gc_interval = conf.casper.mergeable_channels_gc_interval;
         let gc_casper_shard_conf = CasperShardConf {
             fault_tolerance_threshold: conf.casper.fault_tolerance_threshold,
@@ -849,7 +896,7 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             disable_validator_progress_check: conf.standalone,
             enable_mergeable_channel_gc: conf.casper.enable_mergeable_channel_gc,
             mergeable_channels_gc_depth_buffer: conf.casper.mergeable_channels_gc_depth_buffer,
-            finalizer_conf: conf.casper.finalizer.clone(),
+            finalizer_conf: casper::rust::casper_conf::FinalizerConf::default(),
             synchrony_recovery_stall_window: conf.casper.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.casper.synchrony_recovery_cooldown,
             synchrony_recovery_max_bypasses: conf.casper.synchrony_recovery_max_bypasses,
@@ -862,6 +909,10 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
             native_token_name: conf.casper.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.casper.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.casper.genesis_block_data.native_token_decimals,
+            // Phase 13 defaults centralized as named consts in
+            // `casper::rust::casper`. When `CasperConf` gains corresponding
+            // fields, plumb them through here; the consts are then the
+            // documented fallback.
             active_validators_cache_max_entries:
                 casper::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
@@ -874,24 +925,56 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                 let gc_block_store = gc_block_store.clone();
                 let gc_runtime_manager = gc_runtime_manager.clone();
                 let gc_casper_shard_conf = gc_casper_shard_conf.clone();
+                let gc_state = gc_state.clone();
                 let gc_interval = gc_interval;
 
                 Box::pin(async move {
                     // Sleep for the configured interval
                     tokio::time::sleep(gc_interval).await;
 
-                    // Run GC
-                    let dag = gc_block_dag_storage
-                        .get_representation()
-                        .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-                    mergeable_channels_gc::collect_garbage(
-                        &dag,
-                        &gc_block_store,
-                        &gc_runtime_manager,
-                        &gc_casper_shard_conf,
-                    )
-                    .await
-                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                    // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
+                    // common multi-thread runtime the whole pass (including the
+                    // blocking LMDB reads in `get_representation`/`block_store`)
+                    // runs inside `block_in_place`, driven via a nested `block_on`
+                    // — the standard pattern for calling async code from a
+                    // blocking context without starving other workers.
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(rt_handle)
+                            if rt_handle.runtime_flavor()
+                                == tokio::runtime::RuntimeFlavor::MultiThread =>
+                        {
+                            tokio::task::block_in_place(move || {
+                                let dag = gc_block_dag_storage
+                                    .get_representation()
+                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                                let mut gc_state = gc_state.blocking_lock();
+                                rt_handle
+                                    .block_on(mergeable_channels_gc::collect_garbage(
+                                        &mut gc_state,
+                                        &dag,
+                                        &gc_block_store,
+                                        &gc_runtime_manager,
+                                        &gc_casper_shard_conf,
+                                    ))
+                                    .map_err(|e| CasperError::RuntimeError(e.to_string()))
+                            })?;
+                        }
+                        _ => {
+                            let dag = gc_block_dag_storage
+                                .get_representation()
+                                .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                            let mut gc_state = gc_state.lock().await;
+                            mergeable_channels_gc::collect_garbage(
+                                &mut gc_state,
+                                &dag,
+                                &gc_block_store,
+                                &gc_runtime_manager,
+                                &gc_casper_shard_conf,
+                            )
+                            .await
+                            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+                        }
+                    }
 
                     Ok::<(), CasperError>(())
                 })
@@ -946,7 +1029,7 @@ async fn handle_block_finalized(
     block_hash: String,
     block_number: i64,
 ) {
-    use shared::rust::shared::f1r3fly_event::{DeployTransfers, F1r3flyEvent, TransferEvent};
+    use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 
     use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 
@@ -961,25 +1044,11 @@ async fn handle_block_finalized(
             return;
         }
     };
-    match report_api.block_report(block_hash_bytes, false).await {
+    match report_api.prewarm_block_report(block_hash_bytes).await {
         Ok(report) => {
             let transfers_by_deploy = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-            let deploy_transfers: Vec<DeployTransfers> = transfers_by_deploy
-                .into_iter()
-                .map(|(deploy_id, transfers)| DeployTransfers {
-                    deploy_id,
-                    transfers: transfers
-                        .into_iter()
-                        .map(|t| TransferEvent {
-                            from_addr: t.from_addr,
-                            to_addr: t.to_addr,
-                            amount: t.amount,
-                            success: t.success,
-                        })
-                        .collect(),
-                })
-                .collect();
+            let deploy_transfers = build_deploy_transfers(transfers_by_deploy);
 
             if !deploy_transfers.is_empty() {
                 if let Err(e) = event_publisher.publish(F1r3flyEvent::transfers_available(
@@ -996,12 +1065,108 @@ async fn handle_block_finalized(
             }
         }
         Err(e) => {
-            tracing::debug!(
+            // Nothing retries a pre-cache: the event has been consumed and no
+            // path revisits finalized blocks, so this block's transfers stay
+            // unavailable until something traces it by hand.
+            tracing::warn!(
                 target: "f1r3fly.node.transaction",
                 %block_hash,
                 error = %e,
-                "Block report pre-cache skipped (expected on validators)"
+                "Block report pre-cache failed; transfers for this block will be unavailable"
             );
         }
+    }
+}
+
+fn build_deploy_transfers(
+    transfers_by_deploy: std::collections::HashMap<String, Vec<models::casper::TransferInfo>>,
+) -> Vec<shared::rust::shared::f1r3fly_event::DeployTransfers> {
+    use shared::rust::shared::f1r3fly_event::{DeployTransfers, TransferEvent};
+
+    transfers_by_deploy
+        .into_iter()
+        .filter(|(_, transfers)| !transfers.is_empty())
+        .map(|(deploy_id, transfers)| DeployTransfers {
+            deploy_id,
+            transfers: transfers
+                .into_iter()
+                .map(|t| TransferEvent {
+                    from_addr: t.from_addr,
+                    to_addr: t.to_addr,
+                    amount: t.amount,
+                    success: t.success,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use models::casper::TransferInfo;
+
+    use super::{block_report_prewarm_enabled, build_deploy_transfers};
+
+    #[test]
+    fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
+        assert!(block_report_prewarm_enabled(true, false));
+        assert!(block_report_prewarm_enabled(false, true));
+        assert!(block_report_prewarm_enabled(true, true));
+        assert!(!block_report_prewarm_enabled(false, false));
+    }
+
+    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+        TransferInfo {
+            from_addr: from.to_string(),
+            to_addr: to.to_string(),
+            amount,
+            success: true,
+            fail_reason: String::new(),
+        }
+    }
+
+    #[test]
+    fn build_deploy_transfers_drops_deploys_with_no_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("deploy_with".to_string(), vec![transfer("a", "b", 10)]);
+        map.insert("deploy_without".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1, "only deploys with transfers are kept");
+        let entry = &out[0];
+        assert_eq!(entry.deploy_id, "deploy_with");
+        assert_eq!(entry.transfers.len(), 1);
+        assert_eq!(entry.transfers[0].amount, 10);
+    }
+
+    #[test]
+    fn build_deploy_transfers_returns_empty_when_no_deploy_has_transfers() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![]);
+        map.insert("d2".to_string(), vec![]);
+
+        let out = build_deploy_transfers(map);
+
+        assert!(
+            out.is_empty(),
+            "no event payload when no deploy in the block has transfers"
+        );
+    }
+
+    #[test]
+    fn build_deploy_transfers_preserves_multiple_transfers_per_deploy() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("d1".to_string(), vec![
+            transfer("a", "b", 1),
+            transfer("a", "c", 2),
+        ]);
+
+        let out = build_deploy_transfers(map);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].transfers.len(), 2);
+        assert_eq!(out[0].transfers[0].amount, 1);
+        assert_eq!(out[0].transfers[1].amount, 2);
     }
 }

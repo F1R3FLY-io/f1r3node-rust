@@ -19,16 +19,49 @@ yanked = "deny"
 
 # Specific advisories knowingly accepted. Each entry MUST justify why.
 ignore = [
-  # Unmaintained advisories accepted for now (transitive deps from upstream
-  # crates we don't own). Track upstream remediation; revisit on next sync.
-  "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
-  "RUSTSEC-2024-0387", # opentelemetry_api merged into opentelemetry
-  "RUSTSEC-2025-0141", # bincode 1.x (workspace dep; bincode 2.0 is breaking)
-  "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
-  "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
-  "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
-  "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (transitive via getset -> neli -> local-ip-address -> comm; no safe upgrade available)
-  "RUSTSEC-2026-0247", # bitmaps unmaintained (imbl + imbl-sized-chunks; upstream jneem/imbl#170 has no replacement release)
+  # rustls-webpki 0.101.7 (transitive via rustls 0.21 -> hyper-rustls 0.24
+  # -> reqwest 0.11 -> hocon / opentelemetry-zipkin). All three issues are
+  # reachable only after signature verification and require certificate
+  # misissuance to exploit. Cannot be patched without bumping hocon /
+  # opentelemetry — out of scope for this sync.
+  "RUSTSEC-2026-0049", # CRL distributionPoint matching (multi-dp certs ignore all but first)
+  "RUSTSEC-2026-0098", # URI name constraints
+  "RUSTSEC-2026-0099", # wildcard-name constraints
+  "RUSTSEC-2026-0104", # CRL parsing panic
+
+  # h2 0.3.27 (transitive via hyper 0.14 -> the same reqwest 0.11 chain as
+  # above). Low severity: unbounded queueing of empty DATA frames when
+  # streams are not drained. The fix landed only in h2 0.4.16; the 0.3 line
+  # has no patched release. The workspace h2 0.4.x copy is bumped to 0.4.16,
+  # so this ignore covers only the legacy 0.3 line. Remove when the
+  # reqwest 0.11 chain (hocon / opentelemetry-zipkin / rust-bert) is bumped.
+  "RUSTSEC-2026-0258", # h2 unbounded empty DATA frames (0.3 line unpatched)
+
+    # Unmaintained advisories accepted for now (transitive deps from upstream
+    # crates we don't own). Track upstream remediation; revisit on next sync.
+    "RUSTSEC-2025-0134", # rustls-pemfile (transitive via reqwest/tonic)
+    "RUSTSEC-2024-0387", # opentelemetry_api merged into opentelemetry
+    "RUSTSEC-2025-0141", # bincode 1.x (workspace dep; bincode 2.0 is breaking)
+    "RUSTSEC-2021-0141", # dotenv (transitive via openai-api-rs)
+    "RUSTSEC-2021-0153", # encoding (transitive via hocon -> nom)
+    "RUSTSEC-2024-0436", # paste proc-macro (transitive via metrics)
+    "RUSTSEC-2026-0247", # bitmaps (transitive via imbl, the rspace++ hot-store
+                         # persistent map; repo archived 2026-05-03, advisory
+                         # published 2026-08. No safe upgrade; imbl itself is
+                         # maintained — revisit if imbl replaces the dep)
+    "RUSTSEC-2024-0384", # instant unmaintained. Only reachable in the
+                         # standalone scripts/soak-charts crate (fastrand 1.x
+                         # via kernel-density-estimation -> charton), and only
+                         # as a wasm-target dependency — never compiled on the
+                         # publisher's linux targets. Unmatched (warning only)
+                         # in the workspace check, which shares this config.
+
+    # Feature-gated transitive deps, present only under --all-features (as CI runs
+    # cargo-deny). All reach the graph through rholang's optional rust-bert (ML)
+    # and chroma (vector store) features; none have a safe upgrade we own.
+    "RUSTSEC-2024-0437", # protobuf 2.x recursion crash (rust_tokenizers -> rust-bert -> rholang)
+    "RUSTSEC-2025-0119", # number_prefix unmaintained (indicatif -> cached-path -> rust-bert -> rholang)
+    "RUSTSEC-2026-0173", # proc-macro-error2 unmaintained (validator_derive -> validator -> chroma -> rholang)
 ]
 
 # ---------------------------------------------------------------------------

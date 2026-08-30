@@ -113,6 +113,14 @@ impl PrettyPrinter {
                     "DeployerId(0x{})",
                     hex::encode(id.public_key.clone())
                 )),
+                UnfInstance::GAuthorityIdBody(id) => {
+                    Ok(format!("AuthorityId(0x{})", hex::encode(id.id.clone())))
+                }
+                UnfInstance::GPrincipalIdBody(id) => Ok(format!(
+                    "PrincipalId({},0x{})",
+                    id.key_family,
+                    hex::encode(id.public_key.clone())
+                )),
                 UnfInstance::GSysAuthTokenBody(value) => {
                     Ok(format!("GSysAuthTokenBody({:?})", value))
                 }

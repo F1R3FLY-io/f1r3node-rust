@@ -69,18 +69,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
       - name: Run example-based tests
-        run: cargo test -p casper -- slashing::uc_
+        run: cargo nextest run -p casper slashing::uc_
 
   property-based:
     name: Property-based theorem tests
@@ -89,12 +93,16 @@ jobs:
     # of aborting early; 30 min was exceeded doing real work.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -112,7 +120,7 @@ jobs:
         env:
           PROPTEST_CASES: 2000
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+        run: cargo nextest run --release -p casper slashing::prop_t_ -- --skip slashing::prop_t_triple_bisim
       - name: Run triple-bisim property tests (serial, bounded cases)
         # The three triple-bisim tests each drive the full dispatch stack per
         # case and accumulate scoped LMDB envs monotonically. Run concurrently
@@ -131,7 +139,7 @@ jobs:
         env:
           PROPTEST_CASES: 25
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
+        run: cargo nextest run --release -p casper --test-threads=1 slashing::prop_t_triple_bisim
 
   pre-fix-regressions:
     name: Pre-fix regression backstops
@@ -141,25 +149,32 @@ jobs:
       matrix:
         bug: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
       - name: Run pre_fix_bug_${{ matrix.bug }}
-        run: cargo test -p casper -- slashing::pre_fix_bug_${{ matrix.bug }}
+        run: cargo nextest run -p casper slashing::pre_fix_bug_${{ matrix.bug }}
 
   loom-interleavings:
     name: Loom exhaustive interleaving (T-9.2)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Exhaustive interleaving flirts with 30 minutes and a timeout kill
+    # reports as "cancelled" — same lesson the TLA+ job learned. 60 keeps a
+    # slow run alive without masking a genuine hang for long.
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -167,6 +182,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: loom
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -175,7 +194,7 @@ jobs:
         env:
           LOOM_MAX_PREEMPTIONS: "3"
           LOOM_LOG: "off"
-        run: cargo test --release -p casper -- slashing::loom_t_9_2
+        run: cargo nextest run --release -p casper slashing::loom_t_9_2
 
   tla-model-check:
     name: TLA+ invariant check
@@ -190,7 +209,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Java + TLC
         # Pinned release + sha256 (same fail-closed pattern as the OCI CLI
         # installer pin in _integration-pipeline.yml): a moved or compromised
@@ -208,18 +227,20 @@ jobs:
       - name: Run TLA+ invariant suite
         env:
           TLA_TOOLS_JAR: /home/runner/.tla/tla2tools.jar
-          # Opt-in exhaustive tier: only a manual dispatch with
-          # run_exhaustive=true sets this; schedule and default dispatches
-          # keep gating on the fast tier alone.
           RUN_EXHAUSTIVE_TLA: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_exhaustive) && '1' || '0' }}
-        run: bash scripts/ci/check-tla-invariants.sh
+        run: |
+          args=(--tla)
+          if [[ "$RUN_EXHAUSTIVE_TLA" == "1" ]]; then
+            args+=(--exhaustive)
+          fi
+          bash scripts/ci/check-formal-invariants.sh "${args[@]}"
 
   rocq-build:
-    name: Rocq mechanization rebuild
+    name: Rocq slashing, fork-choice and rspace-guards rebuild
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rocq / Coq
         run: |
           sudo apt-get update
@@ -227,76 +248,17 @@ jobs:
           opam init --disable-sandboxing -y
           eval $(opam env)
           opam install -y coq
-      - name: Build Rocq slashing theories
+      - name: Run Rocq verification suite
         run: |
           eval $(opam env)
-          make -C formal/rocq/slashing -j1
-      - name: Verify no axioms or admits (textual pre-filter)
-        # Line-anchored so prose in comments (e.g. "per the no-Axiom rule")
-        # cannot trip the guard; only actual vernacular commands match. This
-        # is a fast heuristic with known false-negative gaps (mid-line
-        # `Admitted.`, `Admit Obligations.`, axioms pulled in via imports) —
-        # the kernel-level Print Assumptions step below is the authoritative
-        # gate. The explicit -d check keeps a moved/renamed theories/ from
-        # turning grep's exit 2 into a vacuous pass through `!`.
-        run: |
-          test -d formal/rocq/slashing/theories
-          ! grep -rnE "^[[:space:]]*(Axioms?|Admitted|Parameters?|Conjectures?|Hypothes[ie]s)\b" \
-            formal/rocq/slashing/theories/
-      - name: Verify capstone trust base is closed (Print Assumptions)
-        # Authoritative axiom-freedom check (kernel-level, cf. the README's
-        # "Verifying the trust base"): the kernel reports every axiom, admit,
-        # parameter, or imported assumption the capstone theorems transitively
-        # depend on, regardless of where or how it was introduced. Every
-        # capstone must print "Closed under the global context".
-        #
-        # The capstone list is GENERATED from MainTheorem.v (every
-        # `Theorem main_*`), mirroring scripts/check-slashing-ALL.sh, so the
-        # gate never drifts from the theorem set. (The previous fixed pair —
-        # main_bisimilarity_theorem/_strong — was retired with the DR-6
-        # bisimilarity removal; the headline is now
-        # main_slashing_algorithm_correct, one of the enumerated capstones.)
-        #
-        # Implemented as a coqc-compiled check file rather than `coqtop -e`:
-        # `coqtop -batch` exits after argument parsing without a reliable -e
-        # across versions (first CI attempt died in 40ms with no output), and
-        # coqc is already proven present by the make step above. Output is
-        # captured with -e suspended so the assumption listing always reaches
-        # the log, even when the check fails.
-        run: |
-          eval $(opam env)
-          cd formal/rocq/slashing
-          thms=$(grep -oE '^Theorem main_[A-Za-z0-9_]+' theories/MainTheorem.v | sed 's/^Theorem //')
-          n_thm=$(wc -l <<<"$thms")
-          if [ "$n_thm" -lt 1 ]; then
-            echo "FAIL: no 'Theorem main_*' capstones found in theories/MainTheorem.v — the gate would be vacuous."
-            exit 1
-          fi
-          { echo "From Slashing Require Import MainTheorem."
-            while IFS= read -r t; do echo "Print Assumptions $t."; done <<<"$thms"
-          } > "${RUNNER_TEMP}/CheckAssumptions.v"
-          set +e
-          out=$(coqc -Q theories Slashing "${RUNNER_TEMP}/CheckAssumptions.v" 2>&1)
-          status=$?
-          set -e
-          echo "$out"
-          if [ "$status" -ne 0 ]; then
-            echo "FAIL: assumption check did not run cleanly (coqc exit $status; output above)."
-            exit 1
-          fi
-          closed=$(grep -c "Closed under the global context" <<<"$out" || true)
-          if [ "$closed" -ne "$n_thm" ]; then
-            echo "FAIL: expected $n_thm closed trust bases, found $closed — a capstone depends on axioms/admits listed above."
-            exit 1
-          fi
-          echo "OK: all $n_thm main_* capstones closed under the global context."
+          bash scripts/ci/check-formal-invariants.sh --rocq
 
   search-horizon-smoke:
     name: Search-horizon smoke tier (10k fuzz runs)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -304,6 +266,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: fuzz
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -320,10 +286,10 @@ jobs:
   mutation-coverage:
     name: Mutation coverage (cargo-mutants, nightly only)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -342,12 +308,8 @@ jobs:
         # rely on the .mutants.toml include-list to scope to the
         # slashing modules only.
         env:
-          # The 7GB ubuntu-latest VM dies with a runner shutdown signal
-          # 30s-5min into the initial workspace build under cargo-mutants
-          # (nightlies 30992663244, 30895783563) — parallel rustc peak
-          # exceeds memory. Capping build concurrency keeps the peak
-          # inside the VM; the build is slower but the 240-minute job
-          # budget was never the binding constraint.
+          # The larger runner provides memory headroom for cargo-mutants;
+          # keep concurrency at 2 to bound peak memory during workspace builds.
           CARGO_BUILD_JOBS: 2
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
@@ -357,12 +319,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-02-09
       - uses: Swatinem/rust-cache@v2
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -375,7 +341,7 @@ jobs:
         env:
           PROPTEST_CASES: 10000
           PROPTEST_MAX_GLOBAL_REJECTS: 40960
-        run: cargo test --release -p casper -- slashing::prop_t_ --skip slashing::prop_t_triple_bisim
+        run: cargo nextest run --release -p casper slashing::prop_t_ -- --skip slashing::prop_t_triple_bisim
       - name: Run triple-bisim extended property tests (serial, bounded cases)
         # Same memory-exhaustion guard as the PR-gate job: the triple-bisim
         # trio run concurrently kills the hosted runner (see PR-gate step
@@ -385,7 +351,7 @@ jobs:
         env:
           PROPTEST_CASES: 100
           PROPTEST_MAX_GLOBAL_REJECTS: 8192
-        run: cargo test --release -p casper -- slashing::prop_t_triple_bisim --test-threads=1
+        run: cargo nextest run --release -p casper --test-threads=1 slashing::prop_t_triple_bisim
 
   search-horizon-nightly:
     name: Search-horizon nightly tier (1M fuzz runs)
@@ -393,7 +359,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -401,6 +367,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: fuzz
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - name: Install system dependencies
         run: |
           sudo apt-get update

@@ -1,7 +1,7 @@
 ---
 doc_type: todos
-version: "1.0"
-last_updated: 2026-08-05
+version: "1.1"
+last_updated: 2026-08-19
 mr_status:
   ready: false
   target_branch: master
@@ -32,6 +32,7 @@ This document tracks implementation work through **epics** (logical groupings of
      docs/work-logs/ for durable cross-agent notes, and keep this section to
      current operative facts only. -->
 
+- **System-integration PR #118 reviewed head repin prepared (2026-08-15).** PR #118 corrects four harness defects from f1r3node-rust CI run `31886226287`. FT convergence now requires `FT >= FTT` and monotonicity. Epoch-boundary bond blocks accept either valid closeBlock transition map. Phase 5 still requires exact activation. Retired log snapshots retain their owning test allowances without cross-test leakage. Bond assertions now use the finalization resolver's canonical deploy block instead of an orphaned first inclusion. Focused unit tests protect the log-scan bookkeeping. The local bonding suite passed in 208.90 seconds with 5,636 MB peak RSS. This branch pins all three `SYSTEM_INTEGRATION_REF` sites to immutable reviewed PR head `735a7b95a3af74677f9519a6f01049cbc004bca4`. It retains dedicated shards, canonical finalized-block selection, standard `--rss-ceiling-mb 10000` limits, and the weekend preflight's `45056` MB limit.
 - **PR #182** (`hotfix/renormalize-system-integration-pin-post-79` → `dev`, head `121029f1`) normalizes all three `SYSTEM_INTEGRATION_REF` sites to system-integration `main` `369d49df2f97e65b3d0ad869aa668a7383b11179` (the post-#79/#80 promotion). Multi-agent review posted 2026-08-01: approved 3-0 (anthropic abstained on an API billing error). This completes and supersedes the 2026-07-31T19:33 PDT handoff; the similarly named local branch `hotfix/normalize-system-integration-pin-post-79` is stale and has no PR.
 - **Soak memory envelope re-based; weekend soak awaiting 48GB VM (2026-08-10, claude-session-ecaee825).** The 2026-08-09 weekend-soak breaches (runs 31331480002/31332864501) were NOT a merge regression — local A/B exonerated master@eb4030c2 and the harness pin diff was empty; the 6-node shard's real envelope is 16.7–19.3GB. PR #217 (merged) raised SOAK_RSS_CEILING_MB→20480 / lowered floor→8192; run 31390673884 then showed 32GB cannot hold the envelope (orchestrator guardian, free 6524MB). FINAL (maintainer, both sessions): system-integration sets fleet default AMD64_MEM_GB=48 (branch hotfix/raise-soak-vm-memory there, awaiting push/PR/merge); this repo's hotfix/raise-soak-vm-memory then takes one commit: SYSTEM_INTEGRATION_REF bump ×3 sites + ceiling 20480→28672 + these doc updates, then re-dispatch weekend-60h. Budget follow-up RESOLVED (SI PR #99 verification): no dollar-denominated cap exists in the runner stack — all lifetime guards are time-based (reaper MAX_AGE_HOURS + soak-deadline-epoch exemption, cloud-init idle/wedge timeouts); the ~$12/~$33 figures in the TASK note below are cost ESTIMATES only, ≈$13 daily/≈$35 weekend at 48GB. Evidence: docs/work-logs/soak-rss-regression-2026-08-09.md (local).
 - **RESOLVED (2026-08-09): the hold below was overtaken — dev→master promoted via PR #213 and the weekend-soak pin question is moot under the re-based envelope above.** ~~Hold `dev` → `master` until the weekend soak snapshot is verified.~~ The Friday 19:30 Pacific scheduled `Merge Recovery Soak` run must exist with its `headSha` recorded, confirming it launched from the pre-normalization `master` (PR #181 pin `79262d8b`), before promoting. Merging first would silently move the weekend soak to the post-#79 `369d49df` pin. If no scheduled run appears, hold the promotion and investigate or manually dispatch from the intended pre-normalization `master`. Known discrepancy: scheduled runs initialize `target_ref=dev` although comments say the Friday weekend run targets `master` — treat the captured workflow `headSha`/pin and the resolved target SHA as separate evidence.
@@ -64,213 +65,616 @@ mr_status:
 
 ## Active Epics
 
-<!-- Epics ordered by priority. EPIC-011 is the current top priority. EPIC-001/002 are system-integration alignment (US-001). EPIC-003-008 are migration (US-002). -->
+<!-- Epics are ordered by priority. Work on the highest priority epic first. -->
 
 ---
 
-### EPIC-011: TLA+ Exhaustive Tier Red→Green (3-Validator Detector Coverage)
+### EPIC-013: Release Process and Deployment Trains
 
 ```yaml
 ---
-epic_id: EPIC-011
-title: "TLA+ Exhaustive Tier Red→Green (3-Validator Detector Coverage)"
+epic_id: EPIC-013
+title: "Release Process and Deployment Trains"
 status: in_progress
+priority: p1
+user_story: null
+blocked_by: []
+created_at: 2026-08-19
+claimed_by: claude-session-838e6241
+claimed_at: 2026-08-19T00:00:00Z
+tasks:
+  - id: TASK-013-1
+    title: "Specify and ratify the release process (docs/release-process.md)"
+    status: complete
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
+    notes:
+      - "All 13 Section 19 items ratified 2026-08-19. Two amendments: the regression verdict is advisory with maintainer review plus an OCI Notifications alert, and one infra-failure restart is permitted when 60h coverage is preserved."
+      - "Includes the soak terminology rename (60h stability soak, dev integration soak, Shard soak-in), the Section 17.1 trigger and duration table, and glossary entries."
+  - id: TASK-013-2
+    title: "Phase 1: evidence-only release automation"
+    status: complete
+    completed_at: 2026-08-19T00:00:00Z
+    branch: feature/release-process-implementation
+    notes:
+      - "release-evidence.yml generates exact-run evidence; release.yml and soak-in.yml are held-state stubs; release-evidence.sh plus unit tests and the test-release-workflows.sh contract guard are in place."
+  - id: TASK-013-3
+    title: "Phase 2: canary publication (canary-publish.yml)"
+    status: in_progress
+    branch: feature/release-phase2-canary-publication
+    blocked_by: []
+    notes:
+      - "Implemented as canary-publish.yml: workflow_run on CI completion publishes the immutable canary tag, prerelease, and Docker Hub images by digest from the run's own artifacts; ineligible runs skip cleanly. Evidence upgrades to publication_mode: canary via release-evidence.sh record-images. OCIR canary deferred to Phase 3 (registry location is secret material). Remains in_progress until the first live master run proves it."
+    acceptance:
+      - "canary-publish.yml publishes immutable canary tags, prereleases, and images from tested artifacts on release-eligible master runs"
+  - id: TASK-013-4
+    title: "Phase 3: artifact-based validation (candidate digest modes)"
+    status: in_progress
+    branch: feature/release-phase3-candidate-digest-validation
+    blocked_by: [TASK-013-5]
+    notes:
+      - "2026-08-22: stacked on Phase 4 (feature/release-phase4-promotion-controller). Registry decision ratified by the maintainer: OCIR is canonical for candidate gates, Docker Hub stays as the dual-published public mirror, no sync service."
+      - "canary-publish.yml pushes the same index to OCIR; evidence records images.ocir_index_digest, which the validator requires to equal the Docker Hub index digest. The OCIR repository path never enters evidence."
+      - "oci-validation.yml gains candidate_tag (exact-candidate mode); reusable-oci-validation.yml pulls each architecture image from OCIR by digest instead of building. merge-recovery-soak.yml gains candidate_tag, pulls the amd64 image by digest, and carries the tag through an in-window restart."
+      - "Both gate workflows publish Section 8.1 documents with release-gate-evidence.sh from a publish_candidate_evidence job under release-credentials, plus the release-candidate marker that resumes release.yml. test-release-gate-evidence.sh proves the writer against release-gates.sh."
+      - "promote-release.sh and release.yml copy the stable tag and latest into OCIR as well as Docker Hub."
+      - "The regress alert reuses the soak's existing ONS verdict email; promotion holds until maintainer-review.json is uploaded."
+      - "2026-08-22 multi-agent review of PR #325: gate documents carry candidate_evidence_sha256 and are written from the evidence file the run kept as a same-run artifact, never a re-downloaded release asset; release-gates.sh requires that digest to equal the evidence under evaluation. A candidate soak restart must name restart_of_run_id and match the original run's soak-window artifact (candidate, attempt 0, weekend, end epoch); coverage_preserved is true only for a verified restart."
+    acceptance:
+      - "merge-recovery-soak.yml and oci-validation.yml consume the candidate image digest without rebuilding"
+      - "The canary publisher publishes the same index digest to OCIR and Docker Hub, and evidence records the OCIR digest"
+      - "One exact-candidate OCI validation run and one candidate weekend soak publish Section 8.1 documents that release-gates.sh evaluates as pass"
+      - "Optional hardening: a read-only OCIR pull token replaces OCIR_AUTH_TOKEN in the soak and OCI validation pull steps (the OCIR_* secrets are repository-scoped and already readable there, verified 2026-08-22)"
+  - id: TASK-013-5
+    title: "Phase 4: stable promotion controller"
+    status: in_progress
+    branch: feature/release-phase4-promotion-controller
+    blocked_by: [TASK-013-3]
+    notes:
+      - "2026-08-22: release-gates.sh evaluates the eight Section 8 gates from JSON documents only (pass, hold, or fail; exit 0, 10, or 20) and promote-release.sh plans Section 11 steps 4 to 14 from observed stable state, verifies binaries, emits stable-release-evidence.json, and bumps the next version. release.yml replaces the held stub: a read-only gates job, then a promote job under release-credentials that copies the image by digest with imagetools create, creates the verified stable tag and release, moves latest, and opens the next-version pull request. test-release-gates.sh, test-promote-release.sh, and the updated test-release-workflows.sh contract guard run in CI."
+      - "Section 8.1 defines the gate-evidence contract that Phase 3 must publish as candidate prerelease assets. Until Phase 3 lands, the OCI, soak, and verdict gates hold, so no candidate is promotable end to end."
+      - "The regress-verdict OCI Notifications alert belongs to the soak workflow (Phase 3); the controller holds on regress until maintainer-review.json accepts it."
+      - "2026-08-22 multi-agent review of PR #323: fail-closed gate evaluation (a malformed document fails its gate, the report always holds all eight gates), API-verified run identity for the OCI and soak documents, API-verified reviewer permission for maintainer-review.json, resume verifies existing release assets and refuses when a newer stable exists, latest is verified after the move, the next-version step is idempotent and keeps the token out of the remote URL, and the workflow_run resume is bound to a default-branch dispatch of a gate workflow whose marker names the evidence source. Concurrency was already serialized by the concurrency group; documented in Section 11.1."
+    acceptance:
+      - "release.yml performs exact-candidate promotion via release-gates.sh and promote-release.sh"
+      - "A regress verdict publishes an OCI Notifications alert to the soak-report list and holds promotion for documented maintainer review"
+      - "The release-credentials environment exists with DOCKERHUB_USERNAME and DOCKERHUB_TOKEN and required reviewers"
+      - "One live promotion of a Phase 3 candidate publishes a stable tag, release, and image whose digest equals the candidate index"
+  - id: TASK-013-6
+    title: "Phase 5: Deployment Trains"
+    status: in_progress
+    branch: feature/release-phase5-deployment-trains
+    blocked_by: [TASK-013-4]
+    notes:
+      - "2026-08-22: release-train.sh validates schema 1 and 2 manifests, the member chain (bottom member targets integration_branch, each later member targets the preceding member), head ancestry from compare documents, merged-member merge-commit topology, the source version and publishing-only reservation, and picks or dispatches the ci.yml run for head_sha. deployment-train.yml runs Section 13.2 steps 1 to 9 from the default branch with actions:write only for the ci.yml dispatch and uploads the train-record artifact. test-release-train.sh covers 18 rejections; test-release-workflows.sh guards the workflow; ci.yml validates every manifest under .github/deployment-trains/."
+      - ".github/deployment-trains/key-contention.yml is the non-publishing rehearsal for #299 -> #312 -> #319 -> #311 at the heads observed 2026-08-22. The live stack currently fails the ancestry check: #311's head 6c70d818a predates #319's last two commits (325bbb28b, 80f0a3b6a). The rehearsal will reject until #311 is re-based on #319 and the manifest head_sha is updated."
+      - "Remaining for this task: train canary creation through canary-publish.yml (Section 4.2 tag format, train_id in evidence), train_gates evaluation in release-gates.sh from manifest required_gates, recorded-member-head reachability in promote-release.sh, and the Section 13.3 re-validation trigger after a member merge."
+      - "2026-08-22: release-process.md Section 13.1.1 adds schema_version 2 stack manifests. A stack train binds the top-of-stack head as its one candidate; members merge bottom-up with true merge commits. Setup steps 4 to 6 (member chain, head ancestry, merged-member topology) and the validator depend on no earlier phase; canary, digest-bound gates, and promotion depend on Phases 2 to 4."
+      - "2026-08-22 multi-agent review of PR #321: Section 13.2 is one numbered sequence; the member base rule points to the preceding member; merge method is re-validated after each member merge and every recorded member head is verified at promotion, which closes the force-push window; the CI filter text matches ci.yml."
+      - "blocked_by encodes the stack merge order PR #322 -> #323 (Phase 4) -> #325 (Phase 3) -> #321 (Phase 5), which is also the code-dependency order: Phase 3 implements the Section 8.1 contract Phase 4 defines. Phase 4 becomes operational end to end only after Phase 3 publishes gate documents; that is a runtime dependency, not a merge dependency."
+      - "ci.yml runs pull-request CI for bases dev, master, staging, trying, and feature/**. A member whose base is outside that set (fix/**, formal/**) gets no pull-request run; train setup requires one successful ci.yml run for head_sha from any event and dispatches one when none exists (Section 13.2 step 9)."
+      - "Rehearsal candidate for the stack-train step: the key-contention stack PR #299 -> #312 -> #319 -> #311 (EPIC-016), non-publishing, no version reservation."
+      - "2026-08-23 multi-agent review of PR #328: plan-ci also requires head_repository.full_name to match (the run list reports the base repository for every run); a merged member proves merge-commit reachability from integration_branch through a reach-<N>.json compare document; a member whose predecessor has merged may target integration_branch, because GitHub retargets the pull request when the merged branch is deleted; setup fails fast on a member head outside this repository. 23 rejection cases plus merged and retargeted acceptance paths."
+    acceptance:
+      - "deployment-train.yml validates manifests under .github/deployment-trains/ and starts trains"
+      - "The validator accepts schema_version 1 and 2, and rejects a stack member with a foreign base, broken head ancestry, or a squash or rebase merge"
+      - "Setup dispatches ci.yml on head_sha when no successful run exists for that SHA and records the run identifier as CI evidence"
+      - "One non-publishing single-train rehearsal completes"
+      - "One non-publishing stack-train rehearsal completes on a stacked pull-request set"
+      - "The cost-accounting train (PR #216) publishes first"
+  - id: TASK-013-7
+    title: "Phase 6: Shard soak-in scheduling"
+    status: in_progress
+    blocked_by: [EPIC-014]
+    notes:
+      - "The release trigger is implemented: soak-in.yml fires on stable release publication (prereleases gate out) while enrollment stays held until the EPIC-014 test net exists."
+    acceptance:
+      - "soak-in.yml gains a release trigger: one enrollment per stable release tag"
+      - "The deferred parameters (soak-in period length, Anchor criteria, test net composition) are set and ratified"
+---
+```
+
+**Context:** `docs/release-process.md` is the ratified specification. This PR (feature/release-process-implementation, PR #279) delivers TASK-013-1 and TASK-013-2; later phases follow the Section 18 migration plan on follow-on branches.
+
+---
+
+### EPIC-014: Test Net (Continuously Running Shards)
+
+```yaml
+---
+epic_id: EPIC-014
+title: "Test Net (Continuously Running Shards)"
+status: pending
+priority: p2
+user_story: null
+blocked_by: [EPIC-013]
+created_at: 2026-08-19
+tasks:
+  - id: TASK-014-1
+    title: "Design the test net (topology, lifecycle, upgrade path)"
+    status: pending
+  - id: TASK-014-2
+    title: "Stand up the test net on OCI from existing fleet tooling"
+    status: pending
+  - id: TASK-014-3
+    title: "Wire Shard soak-in enrollment and Anchor promotion into the test net"
+    status: pending
+  - id: TASK-014-4
+    title: "Open selected test net shards to partners and customers"
+    status: pending
+---
+```
+
+**Context:** Unlike the soaks, which create a fresh shard per iteration, this epic delivers the test net: shards that run continuously. **Mechanism sketch (brief by intent — a follow-on branch/PR carries the design):** long-lived OCI instances run stable releases as test net members, reusing the existing fleet tooling (runner launch, monitoring, ONS alerts, soak dashboard) as the foundation. Each weekly stable release enrolls new nodes through the Shard soak-in (`docs/release-process.md` Section 12); nodes that complete the soak period gain the Anchor role. The test net is primarily internal release-validation infrastructure and also serves select partners and customers. This epic delivers the test net that release-process Phase 6 requires; the deferred Shard soak-in parameters are set here.
+
+---
+
+### EPIC-012: Open-Issue Remediation PR Queue
+
+```yaml
+---
+epic_id: EPIC-012
+title: "Open-Issue Remediation PR Queue"
+status: pending
 priority: p0
 user_story: null
 blocked_by: []
-created_at: 2026-08-05
-claimed_by: claude-session-917f64e8
-claimed_at: 2026-08-05T00:00:00Z
-tasks:
-  - id: TASK-011-1
-    title: "Add run_exhaustive workflow_dispatch input to slashing-tests.yml"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T13:20:00Z
-    branch: fix/tla-3v-liveness-split
-    notes:
-      - "Implemented in commit 7e38ab1f; YAML validated, all 9 check-workflow-invariants.sh invariants pass. Local-only for now per maintainer — branch not pushed."
-    acceptance:
-      - "workflow_dispatch gains a boolean input run_exhaustive (default false)"
-      - "tla-model-check job sets RUN_EXHAUSTIVE_TLA=1 only when the input is true; push/pull_request/schedule behavior is unchanged (nightly keeps gating on the 8 fast configs)"
-      - "Change lives on a feature branch from dev (fix/tla-3v-liveness-split) so the exhaustive tier can be dispatched against the branch before anything merges"
-
-  - id: TASK-011-2
-    title: "Dispatch the exhaustive tier and capture the red run"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T13:58:00Z
-    blocked_by: [TASK-011-1]
-    notes:
-      - "RESCOPED to local-only per maintainer (2026-08-05): red baseline captured via RUN_EXHAUSTIVE_TLA=1 TLC_PER_CONFIG_TIMEOUT=6m locally instead of CI dispatch. Result: 8 fast configs OK; MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety each distinctly labeled TIMEOUT at the cap; run failed (red for the right reason). Full-45m evidence: 11 nightlies 2026-07-25..08-04 + 2026-08-04 local repro. CI-dispatch red baseline deferred to push time. Full log in TDD plan cycle_log (B1)."
-      - "DISCOVERED: script roll-up says 'FAILED: N config(s) violated invariants' for cap timeouts — mislabels timeout as violation; candidate fix tracked as TDD plan B7 pending ratification."
-    acceptance:
-      - "gh workflow run slashing-tests.yml --ref <branch> -f run_exhaustive=true executed (env -u GITHUB_TOKEN)"
-      - "Run goes red with all three exhaustive-tier configs (MC_EquivocationDetector, MC_EquivocationDetectorEager_3v, MC_EquivocationDetector_safety) reported as TIMEOUT at the 45m per-config cap — distinctly labeled as timeouts, not invariant violations"
-      - "Run URL and per-config outcomes recorded in the epic work log as the red baseline"
-
-  - id: TASK-011-3
-    title: "Split MC_EquivocationDetectorEager_3v into safety + bounded liveness configs"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T14:50:00Z
-    blocked_by: [TASK-011-2]
-    notes:
-      - "PREMISE CORRECTED 2026-08-05 (maintainer-ratified; supersedes the title and first acceptance line): MC_EquivocationDetectorEager_3v is already safety-only — the Eager rewrite checks liveness as the Inv_LivenessAsSafety invariant and the .cfg has no PROPERTY line, so its 45m timeouts are state-space cost (3v×3s×2b), not liveness-graph blowup. There is no split to make. Fix = bound-tightening: new MC_EquivocationDetectorEager_3v2s (3 validators × 2 seqnums × 2 blocks, full _3v invariant list, symmetry) for the nightly tier; full 3v×3s×2b stays exhaustive. The liveness/safety split remains valid for MC_EquivocationDetector (its .cfg has PROPERTY Live_DetectionComplete) — that is TASK-011-5's scope. TDD plan B2 (merged with B3) tracks execution."
-      - "GREEN 2026-08-05T14:48Z: MC_EquivocationDetectorEager_3v2s completes in 2m08s (57.2M states generated, 5.72M distinct, depth 37) with ZERO violations — first-ever completed detector check at 3 validators; the stop-on-violation contingency did not fire. Fast-tier regression suite clean (8/8 OK). Model files created; tier-list wiring is TASK-011-4."
-    acceptance:
-      - "formal/tlaplus/slashing/ gains MC_EquivocationDetectorEager_3v_safety.{tla,cfg} (INVARIANTS only) and MC_EquivocationDetectorEager_3v_liveness.{tla,cfg} (PROPERTIES, constants bounded to complete under the cap), mirroring the existing MC_EquivocationDetector_liveness pattern (~3s where the combined config times out)"
-      - "Both new configs still model 3 validators — bounding must not reduce validator count, or the coverage-gap fix is illusory"
-      - "Both complete locally well under TLC_PER_CONFIG_TIMEOUT=45m via scripts/ci/check-tla-invariants.sh"
-      - "CONTINGENCY: if the liveness config, completing for the first time at 3 validators, reports a genuine counterexample, this task stops and the trace is reported — green then comes from an algorithm/model fix investigated under a new task, not from tuning the model until it passes"
-
-  - id: TASK-011-4
-    title: "Restore _3v coverage to the nightly tier, sync docs, capture the green run"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T15:12:00Z
-    blocked_by: [TASK-011-3]
-    notes:
-      - "MC_EquivocationDetectorEager_3v2s added to POST_FIX_CONFIGS (one line); 14-test-plan §14.6/§14.9 synced to the corrected diagnosis. Local green run: 9/9 OK, _3v2s 128s, ~4.2 min total. Per the local-only rescope, the CI-dispatch green run is deferred to push time (TASK-011-5 / plan B6)."
-    acceptance:
-      - "scripts/ci/check-tla-invariants.sh adds the two new _3v configs to the default (nightly-gating) tier; combined MC_EquivocationDetectorEager_3v stays in the exhaustive tier as the unbounded reference"
-      - "docs/theory/slashing/design/14-test-plan.md §14.6/§14.9 updated to match the new tier membership"
-      - "Default-tier dispatch (or PR run) goes green with the _3v configs included; run URL recorded next to the red baseline"
-      - "Edits to check-tla-invariants.sh stay minimal to keep the pending PR #198 reconciliation conflict (namespaced entries + fail-on-missing) tractable"
-
-  - id: TASK-011-5
-    title: "Apply the same split to MC_EquivocationDetector"
-    status: complete
-    claimed_by: claude-session-917f64e8
-    completed_at: 2026-08-05T19:40:00Z
-    blocked_by: [TASK-011-4]
-    notes:
-      - "Split treatment landed 2026-08-05: MC_EquivocationDetector_liveness_2v (2v×1s×2b) verifies Live_DetectionComplete at 2 validators in 8s, wired into the nightly tier (10/10 green, ~4.3 min). Safety half (MC_EquivocationDetector_safety) already existed."
-      - "Exhaustive-dispatch acceptance resolved via the DOCUMENTED arm (CI run 31027278093 at 36ea59b8): 10 fast configs OK in CI, 3 unbounded references TIMEOUT at 45m with the corrected roll-up ('3 cap timeout(s), 0 violation-or-error(s)'); accepted-unbounded status documented in 14-test-plan §14.6 and the run_exhaustive input description. Green-on-schedule exhaustive coverage is the ratified follow-up (profile → measured caps → schedule), outside EPIC-011."
-    acceptance:
-      - "MC_EquivocationDetector gets the same safety/liveness split treatment once the _3v recipe is proven (its safety half, MC_EquivocationDetector_safety, already exists — the liveness half is the new work)"
-      - "Exhaustive tier dispatch goes fully green, or remaining timeouts are explicitly accepted and documented as unbounded-reference runs"
----
-```
-
-**Context:** The "TLA+ invariant check" nightly job was red on every run from its start (2026-07-25) until hotfix PR #201 — not from invariant violations, but because `MC_EquivocationDetector` and `MC_EquivocationDetectorEager_3v` hit the 45-minute per-config cap (interleaved liveness checking goes superlinear; locally reproduced over a 106M-state graph). PR #201 parked them behind `RUN_EXHAUSTIVE_TLA=1`, but no CI path sets that variable, so the exhaustive tier currently never runs anywhere. Meanwhile the nightly tier checks the inherently multi-validator equivocation property at ≤2 validators, because `_3v` is the only 3-validator detector model (flagged by spreston8 in the PR #201 review).
-
-**Plan (confirmed with maintainer 2026-08-05):** make the exhaustive tier dispatchable, run it **red** (honest timeout-red — TLC has never found a violation in these models; every config that completes, passes), then make it **green** via the causal liveness/safety split — not by raising the cap (see the causal-diagnosis-before-resources rule). The one open risk is deliberate: these liveness properties have never completed at 3 validators, so the split may surface a real counterexample, in which case the green path becomes an algorithm/model fix (TASK-011-3 contingency).
-
-**Scope:**
-
-- Included: dispatch input, red baseline run, `_3v` safety/liveness split, nightly-tier restoration, docs sync, follow-on `MC_EquivocationDetector` split
-- Excluded: raising `TLC_PER_CONFIG_TIMEOUT`; reducing validator count to make models cheap; the cargo-mutants nightly deadline overrun (separate, second independent nightly red — still untracked)
-- Coordination: touches `scripts/ci/check-tla-invariants.sh`, which the pending PR #198 reconciliation also modifies — keep tier-list edits minimal
-
----
-
-### EPIC-001: System-Integration Alignment
-
-```yaml
----
-epic_id: EPIC-001
-title: "System-Integration Alignment"
-status: in_progress
-priority: p1
-user_story: US-001
-blocked_by: []
-created_at: 2026-03-19
+created_at: 2026-08-12
 claimed_by: null
 claimed_at: null
+execution_contract:
+  base_branch: dev
+  task_unit: "one task = one branch = one pull request"
+  merge_policy: "Start each unblocked branch from current origin/dev; after a dependency merges, start or rebase its dependent branch onto the updated origin/dev. Do not silently stack unrelated tasks."
+  issue_policy: "Put Refs #N in every PR body. Because these PRs target dev rather than the default branch, close an issue only after the fix is promoted to master and its acceptance evidence is confirmed."
+  completion_policy: "A task reaches review only when its acceptance checks and focused regression tests pass; it reaches complete only when the PR is merged."
 tasks:
-  - id: TASK-001-1
-    title: "Align genesis wallets.txt with system-integration (20 wallets, validator3=500T)"
-    status: complete
-    acceptance:
-      - "docker/genesis/wallets.txt matches system-integration/genesis/wallets.txt (20 lines)"
-      - "Validator3 balance is 500000000000000000 (500T)"
-      - "All 12 additional test wallets present"
-
-  - id: TASK-001-2
-    title: "Standardize compose env var naming (F1R3FLY_RUST_IMAGE -> F1R3FLY_IMAGE)"
-    status: complete
-    acceptance:
-      - "All compose files use F1R3FLY_IMAGE instead of F1R3FLY_RUST_IMAGE"
-      - "DEVELOPER.md and docker/README.md updated"
-
-  - id: TASK-001-3
-    title: "Standardize Docker network name to f1r3fly-shard"
-    status: complete
-    acceptance:
-      - "shard.yml network named f1r3fly-shard"
-      - "observer.yml and validator4.yml reference f1r3fly-shard as external network"
-
-  - id: TASK-001-4
-    title: "Verify shard starts with updated genesis and network config"
-    status: complete
-    claimed_by: claude-session-epic009
-    completed_at: 2026-04-13T20:55:00Z
+  - id: TASK-012-1
+    title: "Contain AI system-contract failures without crashing the node"
+    status: pending
+    issues: [11]
+    base_branch: dev
+    branch: fix/ai-contract-failure-isolation
+    proposed_pr_title: "fix(rholang): isolate AI system-contract failures"
+    claimed_by: null
     blocked_by: []
     acceptance:
-      - "docker compose -f docker/shard.yml up succeeds"
-      - "Genesis ceremony completes with 20-wallet wallets.txt"
-      - "Observer and validator4 can join via f1r3fly-shard network"
-    notes:
-      - "All 3 written ACs verified end-to-end with locally built f1r3fly-rust:local image"
-      - "Bonding extension also verified: added validator4's REV address (1111La6tHaCt...jtEi3M) to wallets.txt as genesis funding, then deployed bond.rho signed by validator4, propose included in block with errored=false and cost=167749 phlo, bond-status flipped to 'Validator is bonded', validator4 proceeded to produce 6+ blocks via heartbeat"
-      - "Root cause of earlier insufficient-funds error: validator4.yml was designed for runtime bonding but validator4's REV address was never added to genesis wallets.txt. Fix is a single-line addition."
-      - "REV-address computation done via `node eval` on 1.know_ones_vaultaddress.rho (output in docker stdout of the evaluating node)"
----
-```
+      - "HTTP 5xx, timeout, and malformed responses from every external AI system contract become typed deploy failures rather than process panics"
+      - "The node remains responsive and can process a subsequent valid deploy"
+      - "Focused tests cover the failure path and successful recovery"
 
-**Context:** The `system-integration` repo orchestrates this node via Docker Compose and shardctl. It has a 6-phase migration plan (see `system-integration/docs/migration-to-rust-node.md`) to make f1r3node-rust the sole node implementation. Phase 1 requires genesis and compose alignment in this repo.
-
-**Scope:**
-
-- Genesis wallets.txt sync (critical blocker for system-integration Phase 1)
-- Compose env var and network name standardization
-- Validation that shard starts correctly
-
-**Notes:**
-
-- system-integration currently targets branch `dev` in its services.yml, but this repo uses `master` as its working branch. system-integration will need to update its branch reference.
-- standalone.yml keeps its own network name (`f1r3fly-standalone`) since it's isolated by design.
-
----
-
-### EPIC-002: Separate Monitoring from Shard Compose
-
-```yaml
----
-epic_id: EPIC-002
-title: "Separate Monitoring from Shard Compose"
-status: pending
-priority: p2
-user_story: US-001
-blocked_by: []
-created_at: 2026-03-19
-claimed_by: null
-claimed_at: null
-tasks:
-  - id: TASK-002-1
-    title: "Extract Prometheus and Grafana into docker/monitoring.yml"
-    status: complete
-    claimed_by: claude-session-epic009
-    completed_at: 2026-04-13T21:35:00Z
+  - id: TASK-012-2
+    title: "Align node readiness with Casper readiness"
+    status: pending
+    issues: [12]
+    base_branch: dev
+    branch: fix/casper-aware-readiness
+    proposed_pr_title: "fix(node): report ready only after Casper initialization"
+    claimed_by: null
+    blocked_by: []
     acceptance:
-      - "docker/monitoring.yml contains prometheus and grafana services"
-      - "monitoring.yml joins f1r3fly-shard as external network"
-      - "shard.yml no longer contains prometheus/grafana services"
-      - "docker/README.md updated to reflect new file"
+      - "The wait/readiness surface remains false until Casper can serve exploratory deploys"
+      - "Observer startup cannot report ready during the Casper-unavailable window"
+      - "Regression coverage reproduces the documented observer --wait sequence"
+
+  - id: TASK-012-3
+    title: "Reject stale-chain peers after a network-ID relaunch"
+    status: pending
+    issues: [13]
+    base_branch: dev
+    branch: fix/genesis-bound-peer-handshake
+    proposed_pr_title: "fix(network): bind peer sessions to genesis identity"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The peer handshake carries an immutable genesis/chain identity in addition to networkId"
+      - "Peers from an old chain with the same networkId are rejected before dependency fetching or block processing"
+      - "Compatibility and mixed-version rollout behavior are documented and tested"
+
+  - id: TASK-012-4
+    title: "Publish deb and rpm node packages from CI"
+    status: pending
+    issues: [14]
+    base_branch: dev
+    branch: feat/linux-package-artifacts
+    proposed_pr_title: "feat(ci): publish deb and rpm node packages"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Release CI builds amd64 and arm64 deb/rpm artifacts with the node binary, service definition, and default configuration"
+      - "Package installation, version reporting, and clean removal are smoke-tested"
+      - "Artifact naming and supported-platform documentation are updated"
+
+  - id: TASK-012-5
+    title: "Replace HOCON with a maintained configuration format"
+    status: pending
+    issues: [15]
+    base_branch: dev
+    branch: feat/config-format-migration
+    proposed_pr_title: "feat(config): migrate node configuration away from HOCON"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A maintained parser and canonical configuration format replace the unmaintained HOCON dependency"
+      - "Existing operator configuration has a documented compatibility or conversion path"
+      - "Configuration precedence, defaults, malformed-input behavior, and representative production configs are tested"
+
+  - id: TASK-012-6
+    title: "Extend DeployData parameters to all supported Rholang values"
+    status: pending
+    issues: [17]
+    base_branch: dev
+    branch: feat/deploy-parameter-types
+    proposed_pr_title: "feat(api): extend DeployData parameter value types"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "DeployData parameters support tuple, list, set, map, Nil, and URI values without lossy conversion"
+      - "Protobuf/JSON compatibility and deterministic normalization are covered"
+      - "Existing parameter clients remain compatible or receive a documented migration path"
+
+  - id: TASK-012-7
+    title: "Expose DeployData parameters through the observer Web API"
+    status: pending
+    issues: [16]
+    base_branch: dev
+    branch: feat/web-api-deploy-parameters
+    proposed_pr_title: "feat(web-api): expose DeployData parameters"
+    claimed_by: null
+    blocked_by: [TASK-012-6]
+    acceptance:
+      - "Observer HTTP responses expose the complete parameter representation introduced by TASK-012-6"
+      - "OpenAPI documentation and serialization tests cover every supported parameter type"
+      - "Responses for deploys without parameters remain backward compatible"
+
+  - id: TASK-012-8
+    title: "Exclude persistently nonparticipating validators from finality weight safely"
+    status: pending
+    issues: [18]
+    base_branch: dev
+    branch: fix/participation-based-finality-committee
+    proposed_pr_title: "fix(consensus): derive finality committee from finalized participation"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A validator that bonds and activates but never produces cannot stall finalization indefinitely"
+      - "Participation is derived from finalized evidence; young-DAG and minority-finalization safety are preserved"
+      - "Tests cover never-started, temporarily offline, resumed, and newly activated validators"
+
+  - id: TASK-012-9
+    title: "Synchronize canonical Rholang resources after the parser upgrade"
+    status: pending
+    issues: [19]
+    base_branch: dev
+    branch: chore/sync-rholang-resources
+    proposed_pr_title: "chore(rholang): sync canonical resource contracts"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "The listed system and test .rho files are reconciled with their canonical implementations"
+      - "Multi-binding and @=* pattern syntax are covered by parser regressions"
+      - "The full affected contract test suites pass and obsolete parser workarounds are removed"
+
+  - id: TASK-012-10
+    title: "Cache fault tolerance for finalized-block API queries"
+    status: pending
+    issues: [22]
+    base_branch: dev
+    branch: perf/cache-finalized-fault-tolerance
+    proposed_pr_title: "perf(block-api): cache finalized-block fault tolerance"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Finalized block metadata stores the computed fault-tolerance value at finalization time"
+      - "Block API queries use the cache only for finalized blocks and retain live computation for non-finalized blocks"
+      - "Correctness and deep-history performance regressions are tested"
+
+  - id: TASK-012-11
+    title: "Remove the 129-term random-split overflow"
+    status: pending
+    issues: [34]
+    base_branch: dev
+    branch: fix/rholang-random-split-overflow
+    proposed_pr_title: "fix(rholang): prevent random-split identifier overflow"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Par values at the 128/129/256 boundaries reduce without panic"
+      - "The split identifier uses a range-compatible type or returns a structured error"
+      - "Generated regression cases cover both CLI and interpreter paths"
+
+  - id: TASK-012-12
+    title: "Keep LFS-synced observers inside the imported DAG horizon"
+    status: pending
+    issues: [37]
+    base_branch: dev
+    branch: fix/lfs-observer-parent-horizon
+    proposed_pr_title: "fix(observer): bound post-LFS parent validation to imported history"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Normal block validation after LFS sync never requires DAG hashes or roots below the imported horizon"
+      - "A fresh observer catches up beyond approved-state height on a long-running shard"
+      - "The regression is distinct from reporter replay coverage in PR #210"
+
+  - id: TASK-012-13
+    title: "Install RhoSpecContract as a genesis resource"
+    status: pending
+    issues: [41]
+    base_branch: dev
+    branch: feat/genesis-rhospec-contract
+    proposed_pr_title: "feat(genesis): install the RhoSpec contract"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "RhoSpecContract is available from ordinary nodes without test-resource paths"
+      - "Genesis registration is deterministic and its URI is documented"
+      - "Existing RhoSpec tests consume the genesis-installed contract"
+
+  - id: TASK-012-14
+    title: "Resolve the PR #488 deferred review checklist"
+    status: pending
+    issues: [44]
+    base_branch: dev
+    branch: refactor/rejected-deploy-storage-followups
+    proposed_pr_title: "refactor(casper): resolve rejected-deploy review follow-ups"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Every still-applicable item in issue #44 is implemented or dispositioned explicitly in the PR body"
+      - "Duplicated deploy/rejected-deploy storage logic is consolidated without weakening encapsulation"
+      - "Recovery-cycle, persistence, and storage regressions pass"
+
+  - id: TASK-012-15
+    title: "Resolve the PR #491 mergeable-channel review checklist"
+    status: pending
+    issues: [46]
+    base_branch: dev
+    branch: refactor/mergeable-channel-followups
+    proposed_pr_title: "refactor(rspace): resolve mergeable-channel review follow-ups"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Every still-applicable item in issue #46 is implemented or dispositioned explicitly in the PR body"
+      - "Tag identity derivation has one source of truth and hot-path avoidable allocations are removed"
+      - "Mergeable-channel semantic and performance regressions pass"
+
+  - id: TASK-012-16
+    title: "Widen token vault arithmetic to BigInt"
+    status: pending
+    issues: [49]
+    base_branch: dev
+    branch: feat/bigint-token-vaults
+    proposed_pr_title: "feat(rholang): support BigInt token vault balances"
+    claimed_by: null
+    blocked_by: [TASK-012-9]
+    acceptance:
+      - "NonNegativeNumber and MakeMint support balances and transfers above 2^63-1"
+      - "New registry URIs provide an explicit protocol migration boundary"
+      - "10^30 round-trip, negative-value rejection, bridge compatibility, and genesis determinism are tested"
+
+  - id: TASK-012-17
+    title: "Characterize and improve intra-deploy Par execution scaling"
+    status: pending
+    issues: [50]
+    base_branch: dev
+    branch: perf/rholang-par-scaling
+    proposed_pr_title: "perf(rholang): address intra-deploy Par scaling"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "A reproducible benchmark separates reducer serialization, RSpace contention, replay overhead, and scheduler limits"
+      - "The PR either implements a measurable bounded speedup or documents and enforces the intended sequential contract"
+      - "Play/replay determinism and cost accounting remain unchanged"
+
+  - id: TASK-012-18
+    title: "Accept and print unsuffixed floating-point literals consistently"
+    status: pending
+    issues: [75]
+    base_branch: dev
+    branch: fix/rholang-float-literals
+    proposed_pr_title: "fix(rholang): normalize floating-point literal syntax"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Unsuffixed and f64-suffixed literals parse to the same f64 value"
+      - "Printing has one canonical round-trippable representation"
+      - "Parser, normalizer, protobuf, and CLI round-trip boundaries are tested"
+
+  - id: TASK-012-19
+    title: "Instrument finality-frontier and long-running merge cost"
+    status: pending
+    issues: [45, 105]
+    base_branch: dev
+    branch: perf/instrument-finality-frontier
+    proposed_pr_title: "perf(consensus): instrument frontier and merge-cost growth"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Metrics separate finalizer/oracle time, merge-scope construction, fallback rate, frontier width, and per-block storage cost"
+      - "A bounded automated scenario reproduces the growth signature from both issues"
+      - "The evidence identifies which subsequent fix owns each bottleneck rather than inferring causality from wall-clock latency"
+
+  - id: TASK-012-20
+    title: "Bound finality work as the unfinalized frontier grows"
+    status: pending
+    issues: [105]
+    base_branch: dev
+    branch: fix/bounded-finality-frontier
+    proposed_pr_title: "fix(consensus): bound finality work over the DAG frontier"
+    claimed_by: null
+    blocked_by: [TASK-012-19]
+    acceptance:
+      - "Empty-block finalization latency no longer grows monotonically with frontier width"
+      - "Any incremental cache or bound is invalidated deterministically on DAG/finality changes"
+      - "Long-running empty-block and adversarial wide-frontier regressions pass without weakening finality safety"
+
+  - id: TASK-012-21
+    title: "Prevent long-running multi-parent merge-scope degradation"
+    status: pending
+    issues: [45]
+    base_branch: dev
+    branch: fix/bounded-merge-scope-growth
+    proposed_pr_title: "fix(casper): bound long-running multi-parent merge scope"
+    claimed_by: null
+    blocked_by: [TASK-012-19, TASK-012-20]
+    acceptance:
+      - "Multi-parent merge remains the normal path after thousands of heartbeat blocks"
+      - "merge_scope_too_large fallback does not grow to dominate steady-state operation"
+      - "A multi-hour-equivalent accelerated regression preserves state and finalization progress"
+
+  - id: TASK-012-22
+    title: "Profile the exhaustive TLA+ configurations without guessed caps"
+    status: pending
+    issues: [206]
+    base_branch: dev
+    branch: ci/profile-exhaustive-tla
+    proposed_pr_title: "ci(formal): profile exhaustive TLA configurations"
+    claimed_by: null
+    blocked_by: [EPIC-011]
+    acceptance:
+      - "All three exhaustive configurations run uncapped on a sufficiently large runner"
+      - "Wall-clock, peak memory, state count, and completion/violation outcomes are recorded per configuration"
+      - "The PR contains no blind timeout increase and proposes measured caps only for configurations that complete"
+
+  - id: TASK-012-23
+    title: "Schedule an expected-green exhaustive formal-verification tier"
+    status: pending
+    issues: [206]
+    base_branch: dev
+    branch: ci/schedule-exhaustive-tla
+    proposed_pr_title: "ci(formal): schedule measured exhaustive TLA coverage"
+    claimed_by: null
+    blocked_by: [TASK-012-22]
+    acceptance:
+      - "Completable exhaustive configurations run on a nightly or weekly schedule with evidence-derived caps"
+      - "MC_EquivocationDetector receives an explicit retire/manual-reference/alternative-engine disposition"
+      - "Timeout, violation, infrastructure failure, and success remain distinct outcomes"
+
+  - id: TASK-012-24
+    title: "Measure cgroup-accounted memory during high-cap load"
+    status: pending
+    issues: [244]
+    base_branch: dev
+    branch: perf/cgroup-memory-observability
+    proposed_pr_title: "perf(soak): report cgroup-accounted node memory"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Load reports capture cgroup memory.current/usageBytes alongside workingSetBytes and container restart reason"
+      - "Fast LMDB mmap or allocator spikes are visible before an OOM kill"
+      - "A cap 60-75 sweep records the actual memory ceiling and distinguishes budget pressure from a leak"
+
+  - id: TASK-012-25
+    title: "Remove the post-jemalloc high-load OOM ceiling"
+    status: pending
+    issues: [244]
+    base_branch: dev
+    branch: fix/jemalloc-high-load-memory
+    proposed_pr_title: "fix(node): bound allocator memory under concurrent load"
+    claimed_by: null
+    blocked_by: [TASK-012-24]
+    acceptance:
+      - "The fix follows measured evidence: tune jemalloc, reduce allocation-heavy hot paths, or change the supported resource envelope explicitly"
+      - "The affected profile completes the agreed cap sweep without OOM restart"
+      - "The #146 throughput/lock-contention improvement is retained"
+
+  - id: TASK-012-26
+    title: "Deduplicate protocol and runtime constants"
+    status: pending
+    issues: [245]
+    base_branch: dev
+    branch: refactor/shared-node-constants
+    proposed_pr_title: "refactor(node): consolidate duplicated protocol constants"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Shared LFS backoff, retry, API threshold, keepalive, cache, and page-size values have one named source or an explicit documented distinction"
+      - "Requester/responder agreement values cannot drift across sibling modules"
+      - "Behavior remains unchanged and focused tests assert the shared values"
+
+  - id: TASK-012-27
+    title: "Move operator-tunable constants into configuration"
+    status: pending
+    issues: [245]
+    base_branch: dev
+    branch: feat/configurable-runtime-limits
+    proposed_pr_title: "feat(config): expose runtime cache and retry limits"
+    claimed_by: null
+    blocked_by: [TASK-012-26, TASK-012-5]
+    acceptance:
+      - "Runtime-manager caches, block-retriever timings/caps, startup deadlines, and network timeouts are configurable with safe defaults"
+      - "Configuration names, units, bounds, and disabled-value semantics are documented"
+      - "Default behavior matches the pre-change constants and invalid values fail closed"
+
+  - id: TASK-012-28
+    title: "Finish safe legacy-name migration with compatibility fallbacks"
+    status: pending
+    issues: [246]
+    base_branch: dev
+    branch: chore/f1r3fly-name-cleanup
+    proposed_pr_title: "chore(node): finish the F1R3FLY naming migration"
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "Key/config/data paths, binary naming, metrics service tag, user-facing token text, tests, and scripts use F1R3FLY names"
+      - "Existing rnode.conf, key, and data paths have a warning-backed compatibility fallback for one release"
+      - "rho:rchain alias behavior is decided, implemented consistently, and documented"
+
+  - id: TASK-012-29
+    title: "Introduce a compatible successor to the rnode peer URI scheme"
+    status: pending
+    issues: [246]
+    base_branch: dev
+    branch: feat/f1r3fly-peer-uri-scheme
+    proposed_pr_title: "feat(network): introduce the f1r3fly peer URI scheme"
+    claimed_by: null
+    blocked_by: [TASK-012-28]
+    acceptance:
+      - "Nodes parse both legacy rnode:// and new f1r3fly:// addresses during a documented transition window"
+      - "Nodes emit the new scheme only when compatibility permits"
+      - "Mixed-version discovery, bootstrap configuration, CLI parsing, and eventual legacy-removal criteria are tested and documented"
+  - id: TASK-012-30
+    title: "Bind ephemeral CI runners to the run that launched them"
+    status: pending
+    issues: []
+    base_branch: dev
+    branch: fix/ci-ephemeral-runner-run-binding
+    proposed_pr_title: "fix(ci): bind ephemeral runners to their launching run"
+    claimed_by: null
+    blocked_by: []
     notes:
-      - "Verbatim service-block move; same container names, ports, volumes, env"
-      - "Also updated Justfile shard-down to include monitoring.yml teardown"
-      - "Also updated docker/vps-cloud-testing.md Part A to reflect opt-in monitoring"
+      - "2026-08-23: three Heavy Pipelines overlapped (#316 re-run, #328, #329). Launch Ephemeral Runners starts exactly two amd64 and two arm64 VMs per run, but GitHub assigns queued jobs to runners by label only, so the pool is shared. PR #328's amd64-docker job took PR #329's second amd64 VM (ci-eph-...-042856-6d1807) five minutes before #329's integration jobs queued; #329's amd64-subprocess then waited with no runner until the run was cancelled and re-run in full. Same symptom as the re-run-failed-jobs trap, different cause."
+      - "The per-run label is the minimal fix: launch-runner.sh registers each VM with an extra label run-<GITHUB_RUN_ID>, and the ephemeral jobs add that label to runs-on. Idle VMs from another run then never match."
+    acceptance:
+      - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
+      - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
+      - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
 ---
 ```
 
-**Context:** system-integration manages monitoring as a separate compose file (`compose/monitoring.yml`). Aligning this repo's structure makes compose files directly usable as upstream sources during the migration (Phase 3).
+**Context:** An audit on 2026-08-12 compared all 43 open issues with all 28 open PRs. Nineteen issues had substantive open-PR coverage, including partial or stacked fixes. The 24 issues represented here had no open PR that addressed their remaining scope. Mere GitHub cross-references were not treated as coverage: PR #224 explicitly excludes the underlying #105 frontier behavior, PR #210 explicitly excludes #37's normal block-processing path, and #18's own analysis says its participation-based core fix remains outstanding.
+
+**PR/branch workflow:**
+
+1. Select the first unblocked `pending` task by priority and dependency order.
+2. Fetch `origin/dev`, create exactly the task's proposed branch from that tip, and set `status: in_progress`, `claimed_by`, and `claimed_at`.
+3. Keep the branch scoped to the listed issue(s). If investigation proves multiple independently reviewable fixes are required, add new TASK-012 entries before opening extra PRs rather than expanding the branch silently.
+4. Open one PR to `dev` using `proposed_pr_title`; include `Refs #N`, acceptance evidence, and explicit non-goals.
+5. Set the task to `review` and record `pr`, validation evidence, and any replacement dependency.
+6. After merge, set `status: complete`. Start dependent branches from the new `origin/dev`, not from the merged feature branch.
+7. When the fix reaches `master`, confirm production/default-branch acceptance evidence and close the referenced issue manually if GitHub did not.
+
+**Merge waves:**
+
+- **Wave A — independent and bounded:** TASK-012-1 through TASK-012-6, TASK-012-8 through TASK-012-19, TASK-012-24, TASK-012-26, and TASK-012-28 may proceed independently from fresh `origin/dev` branches.
+- **Wave B — evidence or API dependent:** TASK-012-7, TASK-012-20, TASK-012-22, TASK-012-25, TASK-012-27, and TASK-012-29 start only after their declared blockers merge.
+- **Wave C — cumulative behavior:** TASK-012-21 and TASK-012-23 start last in their respective chains and must validate the merged behavior, not a stacked approximation.
 
 **Scope:**
 
-- Move prometheus and grafana service definitions from `docker/shard.yml` to `docker/monitoring.yml`
-- Update documentation
+- Included: branch/PR-sized implementation work for open issues lacking an addressing PR as of the audit.
+- Excluded: the 19 issues already addressed by open PRs; issue closure before promotion to `master`; unrelated cleanup discovered while implementing a task.
 
 ---
 
@@ -437,59 +841,6 @@ tasks:
 - Docker image renamed from `f1r3fly-rust-node` to `f1r3fly-rust`
 - Version drops the `rust-` tag prefix (no longer needed in a Rust-only repo)
 - Run tests per-crate to avoid LMDB lock contention (see commit f2b4b5f)
-
----
-
-### EPIC-005: Issue Migration
-
-```yaml
----
-epic_id: EPIC-005
-title: "Issue Migration"
-status: complete
-priority: p1
-user_story: US-002
-blocked_by: [EPIC-004]
-created_at: 2026-04-09
-claimed_by: claude-session-migrate
-claimed_at: 2026-04-17T19:35:00Z
-completed_at: 2026-04-17T19:35:00Z
-tasks:
-  - id: TASK-005-1
-    title: "Migrate 22 Rust-relevant issues to f1r3node-rust"
-    status: complete
-    claimed_by: claude-session-migrate
-    completed_at: 2026-04-17T19:35:00Z
-    acceptance:
-      - "22 Rust-relevant issues created on f1r3node-rust as #5-#26 with original context"
-      - "Each new issue has migration header with source #, author, filed date, and link"
-      - "Original labels (bug/enhancement/question) preserved where applicable"
-      - "Original issues on f1r3node received redirect comments pointing to new issue numbers"
-    notes:
-      - "Spec called for 22 total (16 Rust-specific + 6 triage/design); actual open count was 22"
-      - "#437 excluded from migration — already fixed on rust/staging by commit 89ac4a7a, closed with reference"
-      - "Mapping table: /tmp/issue-migration/issue-map.tsv"
-
-  - id: TASK-005-2
-    title: "Close 5 Scala-only issues on f1r3node"
-    status: complete
-    claimed_by: claude-session-migrate
-    completed_at: 2026-04-17T19:35:00Z
-    acceptance:
-      - "Issues #452, #366, #321, #221 closed with deprecation comment (reason: not planned)"
-      - "Comment directs reporter to f1r3node-rust if bug still reproduces there"
-      - "phase_3_issues.status set to 'complete' in /tmp/migrationPlan.md"
-    notes:
-      - "#184 from the original spec was already closed pre-migration (unrelated genesis refactor), so effective count is 4 Scala + 1 already-fixed (#437) = 5 closures"
----
-```
-
-**Context:** Transfer the 27 open issues from f1r3node to their appropriate destinations. 22 issues migrate to f1r3node-rust, 5 Scala-only issues are closed.
-
-**Scope:**
-
-- Included: Issue creation, cross-referencing, closing Scala issues
-- Excluded: Fixing any of the migrated issues
 
 ---
 
@@ -878,9 +1229,217 @@ tasks:
 
 ---
 
+### EPIC-015: Casper Test Infrastructure Congruence
+
+```yaml
+---
+epic_id: EPIC-015
+title: "Casper Test Infrastructure Congruence"
+status: pending
+priority: p2
+user_story: US-005
+blocked_by: []
+created_at: 2026-08-11
+claimed_by: null
+claimed_at: null
+tasks:
+  - id: TASK-015-1
+    title: "Deepen the Casper test node"
+    status: pending
+    priority: p2
+    discovered_in: docs/work-logs/casper-test-node-congruence-baseline-2026-08-19.md
+    notes:
+      - "Baseline 2026-08-19: the duplicate casper/tests helper tree and the canonical casper/src/rust/test_utils tree diverged by roughly 1,000 lines; the duplicate tree holds create_network_with_deploy_lifespan and the MultiParentCasper-typed accessor, which the canonical tree lacks. The first consolidation attempt (976b7a252, PR #230) is superseded. See the discovered_in work log for the full baseline and provenance."
+    glossary_terms:
+      - docs/Glossary.md#test-node
+      - docs/Glossary.md#block-proposal
+      - docs/Glossary.md#block-validation
+    dependency_category: local-substitutable
+    accepted_design: common-caller
+    tdd_plan: docs/tdd-plans/casper-test-node-2026-08-11T02-59-57Z.md
+    acceptance:
+      - "Standalone and network scenarios exercise production-shaped behavior through the test node interface documented at docs/Glossary.md#test-node"
+      - "The common caller can create a standalone test node or a configured test network without learning storage, runtime, transport, or consensus-construction details"
+      - "The test network interface exercises block proposal, publication, propagation, synchronization, and block validation while preserving existing observable outcomes"
+      - "Empty-block behavior, bootstrap selection, parent limits, synchrony settings, and read-only nodes remain expressible as explicit configuration with behavior tests"
+      - "Focused inspection required by tests crosses named test node accessors; tests do not initialize or copy fields of the consensus implementation"
+      - "Local storage, runtime, and transport stand-ins remain at internal seams; tests do not mock internal collaborators"
+      - "Features that exist only in the duplicate tree (at minimum create_network_with_deploy_lifespan and the MultiParentCasper-typed accessor) are ported to the canonical fixtures before the duplicate tree collapses to re-exports"
+      - "Old duplicate fixture tests are replaced rather than layered, and removing the duplicate helper tree does not move construction complexity into callers"
+      - "Each TDD cycle covers one behavior at a time, and test names cite docs/Glossary.md#test-node plus any applicable block-proposal or block-validation anchor"
+---
+```
+
+**Context:** Candidate C1 from the Casper architecture regression diagnosis was accepted with the common-caller design. Two independently evolving helper trees currently expose overlapping test-node behavior, while integration tests retain direct access to consensus implementation fields.
+
+**Scope:**
+
+- Included: one canonical test-node module, standalone and configured-network entry points, network scenario operations, focused inspection accessors, caller migration, and duplicate-tree removal
+- Excluded: changing consensus semantics, reopening settled slashing decisions, introducing remote ports, or implementing deploy-admission and block-validation candidates C2 and C3
+
+---
+
+### EPIC-016: Key-Contention Starvation Close-Out
+
+```yaml
+---
+epic_id: EPIC-016
+title: "Key-Contention Starvation Close-Out"
+status: pending
+priority: p1
+user_story: null
+issues: [294, 317, 104]
+blocked_by: []
+created_at: 2026-08-22
+updated_at: 2026-08-22
+claimed_by: null
+claimed_at: null
+execution_contract:
+  base_branch: feat/key-contention-phase2
+  branch: fix/key-contention-base-bias
+  stack: "PR #299 (phase 1) -> PR #312 (phase 2) -> this branch -> PR #311 (formal, merges last). PR #311 merges this branch's production changes without history rewriting and discharges the dag_merger.rs claim against the final head."
+  issue_policy: "Put Refs #294, #317, and #104 in the PR body. Close #294 only after every valid proposer schedule has deterministic termination and the fix is promoted to master."
+  ratified_2026_08_22:
+    - "The protected-cell cardinality invariant is enforced at block validation (REPLAY). This is a validation-rule change."
+    - "A protected single-value cell is authenticated by mergeable tag metadata only. Untagged integer datums are ordinary Rholang."
+    - "Typed rejection reasons travel on the wire in RejectedDeploy. Node-local deferral (BlockNotHeld) is never a wire reason."
+    - "The 2026-08-22 CI failure is not C1 soak evidence. It had no frontier-lease escape and no rival contention."
+tasks:
+  - id: TASK-016-1
+    title: "Authenticated single-value-cell classification"
+    status: pending
+    priority: p1
+    issues: [104]
+    discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "Two classifiers exist today: binary_data_is_single_number in dag_merger.rs and check_single_value_cell_not_overfilled in rholang_merging_logic.rs. Both classify by datum shape, which is guessable from content."
+      - "The Rocq section Overfill in formal/rocq/merge_algebra/theories/ConflictSoundness.v proves guard detection at merge time only. Its header must state that boundary. That edit belongs to PR #311."
+    acceptance:
+      - "One classifier in rholang/src/rust/interpreter/merging/rholang_merging_logic.rs decides protection from authenticated mergeable tag metadata, never from datum shape"
+      - "rholang_merging_logic.rs carries cbc=mandatory in .gitattributes"
+      - "A unit test shows two integer datums on an untagged channel merge without rejection, and a second produce onto a tagged number cell is rejected"
+      - "The shared-shard reproduction recipe in the discovered_in work log no longer rejects"
+
+  - id: TASK-016-2
+    title: "Use a fresh channel per shared-shard deploy in system-integration"
+    status: pending
+    priority: p1
+    issues: [294]
+    discovered_in: docs/work-logs/shared-shard-single-number-cell-starvation-2026-08-22.md
+    claimed_by: null
+    blocked_by: []
+    repo: system-integration
+    notes:
+      - "_deploy_and_wait in test_web_api.py deploys @{2000+i}!(i) from one key in 16 tests. Only the second write to each channel is hazardous, so the failing test moves with xdist ordering."
+      - "Cross-repo change. Commit in a system-integration session, then bump SYSTEM_INTEGRATION_REF at all three sites here."
+      - "Handed off 2026-08-22 as SI-TASK-016-2 in system-integration docs/ToDos.md: branch fix/shared-shard-fresh-deploy-channels off dev, PR title fix(shared): deploy onto a fresh channel per _deploy_and_wait call. The system-integration agent owns branch, commit, and PR; it posts the merged SHA back in that entry."
+      - "2026-08-22: system-integration PR #127 merged to dev (5e6dbfbb) and promoted to main via PR #128. SYSTEM_INTEGRATION_REF repinned at all three sites (.github/oci-validation.env, _integration-pipeline.yml, merge-recovery-soak.yml) from 56884ab to main 3e5b5eb89, which also carries the PR #129 shard-port reservation fixes. Three-run gate not yet run."
+      - "This fixture fix hides the trigger. It does not repair the lineage-dependent semantics; TASK-016-1 and TASK-016-3 do."
+    acceptance:
+      - "Each _deploy_and_wait call produces onto a channel no other test in the shared shard writes"
+      - "Three consecutive green runs of the four integration matrices on dev after the repin"
+
+  - id: TASK-016-3
+    title: "Enforce protected-cell cardinality at block validation"
+    status: pending
+    priority: p1
+    issues: [104, 294]
+    claimed_by: null
+    blocked_by: [TASK-016-1]
+    notes:
+      - "Composed invariant (PR #311): for every accepted block and every authenticated protected number cell, the block post-state holds at most one datum, regardless of block partition, parent order, main-parent identity, carrier lineage, retry count, proposer identity, or PLAY versus REPLAY."
+      - "A produce-only write that lands through the main-parent lineage never reaches the merge guard. Validation of the block's own deploy effects against its pre-state closes that path."
+      - "This is a consensus-visible validation-rule change. It needs upgrade coordination and a decision-record row. It supersedes the C1 acceptance line that forbids validation changes for this one rule."
+    acceptance:
+      - "A block whose own deploys push a protected cell past one datum is invalid at REPLAY on every validator"
+      - "The same admissibility decision results for two produces in one carrier block and for each produce in a separate block"
+      - "The negative control from PR #311 (merge-only guard, main-parent admission off, second produce through lineage) fails validation on the repaired head"
+      - "The enforcement file carries cbc=mandatory"
+      - "Decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md names the validation change and its coordination cost"
+
+  - id: TASK-016-4
+    title: "Typed rejection reasons and retry eligibility"
+    status: pending
+    priority: p1
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-1]
+    notes:
+      - "RejectedDeploy carries only sig, duplicate, and carrier. Recovery and loss priority cannot tell a retryable loss from a terminal one, so a permanently unsafe deploy gains unbounded priority."
+      - "Reason table (PR #311): CollateralChainDrop retryable; MergeConflict retryable; DuplicateOccurrence not retryable; SafetyInvariantViolation terminal. Missing consensus history is deferral, never a rejection reason."
+      - "The reason field changes block-body encoding. Every validator must derive the same reason from authenticated inputs or InvalidRejectedDeploy disagrees."
+    acceptance:
+      - "RejectedDeploy in CasperMessage.proto carries a reason enum with the four wire reasons"
+      - "Each merge rejection site assigns one deterministic reason, and block validation recomputes the same reason"
+      - "prior_rejections counts retryable losses only"
+      - "Recovery does not re-package a deploy whose latest rejection is terminal, and the deploy lifecycle reports the terminal state"
+      - "The encoding change is named as a hard fork in the PR body"
+
+  - id: TASK-016-5
+    title: "Implement the C1 base-bias remedy over the admissible parent set"
+    status: pending
+    priority: p1
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-3, TASK-016-4]
+    notes:
+      - "Option C1 from the remedy ladder: a proposer whose parent set holds a sibling carrying a chain with strictly more retryable prior rejections declares that sibling as parents[0]."
+      - "GuardBridge.v proves promotion is deterministic but not that the promoted parent is state-safe. A parent is promotable only when its post-state passes the TASK-016-3 validation."
+      - "PR #312 Limits: no proof of termination under fixed-proposer main-parent base bias. The ignored fixed-proposer test in casper/tests/batch2/loss_priority_spec.rs is the expected-RED sentinel."
+    acceptance:
+      - "C1 selects from the admissible parent set only and considers retryable rejections only"
+      - "The fixed-proposer sentinel test is no longer ignored and passes"
+      - "Fork choice stays deploy-content-blind (Principle P4); parent promotion is proposer policy computed from authenticated data"
+      - "Decision-record row in docs/casper/CONSENSUS_PHILOSOPHY.md marks C1 ratified"
+
+  - id: TASK-016-6
+    title: "Enable User Contract Concurrency and fail on contention expiry"
+    status: pending
+    priority: p2
+    issues: [294]
+    claimed_by: null
+    blocked_by: [TASK-016-5]
+    notes:
+      - "User Contract Concurrency was waived as a merge gate for PR #299 and PR #312. The waiver requires this follow-up."
+    acceptance:
+      - "The ucc integration matrix runs by default instead of skipping"
+      - "A contention expiry fails the run"
+      - "Three consecutive green runs"
+
+  - id: TASK-016-7
+    title: "Run three consecutive 60-minute contention soaks"
+    status: pending
+    priority: p2
+    issues: [294, 317]
+    claimed_by: null
+    blocked_by: [TASK-016-5, TASK-016-6]
+    notes:
+      - "Ratified in PR #312: each soak uses both supported providers. Start C2 only if one soak expires a valid deploy after retry_frontier_escape."
+      - "The 2026-08-22 shared-shard CI failure is not soak evidence for or against C1."
+    acceptance:
+      - "Three consecutive soaks on the final phase-2 head with no expired valid deploy"
+      - "Soak run IDs and head SHA recorded in this task"
+---
+```
+
+**Context:** PR #299 removed content-deterministic adjudication and PR #312 added merged-frontier retry packaging with a three-block lease. Neither proves termination under fixed-proposer main-parent base bias. The 2026-08-22 CI analysis found a third facet: the single-value-cell guard is a local merge lemma whose production bridge is incomplete. A produce-only second write lands through the main-parent lineage without reaching the guard, the cell then holds two datums, and loss priority cannot reorder a chain that has no rival. The repair is an authenticated classifier, validation-time enforcement, and typed rejection reasons so that C1 promotes only state-safe carriers of retryable losses.
+
+**Scope:**
+
+- Included: the authenticated classifier, REPLAY enforcement, wire rejection reasons with retry eligibility, C1 over the admissible parent set, the sentinel flip, UCC enablement, the soak evidence, and the system-integration fixture handoff
+- Excluded: C2 and C3 (C3 stays rejected: fork choice must remain deploy-content-blind), the formal composition proofs and cardinality-aware state models (PR #311), and the Rocq section Overfill header edit (PR #311)
+
+---
+
 ## Epic Dependency Graph
 
-```
+```text
+EPIC-011 (TLA exhaustive baseline, complete) ─> EPIC-012 / TASK-012-22
+EPIC-012 (open-issue PR queue)              (all other lanes start independently)
+PR #299 ─> PR #312 ─> EPIC-016 (key-contention close-out) ─> PR #311 (formal, merges last)
+
 EPIC-001 (system-integration alignment)    EPIC-003 (f1r3node: merge critical PRs)
 EPIC-002 (monitoring separation)               |
                                                  v
@@ -904,7 +1463,7 @@ EPIC-002 (monitoring separation)               |
 ## Task States
 
 | Status | Meaning | Next Action |
-| -------- | --------- | ------------- |
+|--------|---------|-------------|
 | `pending` | Not started | Available to claim |
 | `in_progress` | Being worked on | Continue or handoff |
 | `blocked` | Waiting on dependency | Check `blocked_by` |
@@ -916,11 +1475,10 @@ EPIC-002 (monitoring separation)               |
 ## Workflow
 
 1. **Find next task**: Use `/nextTask` to identify the highest priority unclaimed task
-2. **Claim task**: Set `claimed_by` and `status: in_progress`
+2. **Claim task**: Use the [Implementer Identification](https://gitlab.com/smart-assets.io/gitlab-profile/-/blob/master/docs/common/stigmergic-collaboration.md#implementer-identification) format for `claimed_by`. Set `status: in_progress`
 3. **Implement**: Use `/implement` to execute with full context
 4. **Complete**: Mark `status: complete` when acceptance criteria met
-5. **Signal**: Update completion signals in `/tmp/migrationPlan.md`
-6. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
+5. **Move epic**: When all tasks complete, move epic to `docs/CompletedTasks.md`
 
 ---
 

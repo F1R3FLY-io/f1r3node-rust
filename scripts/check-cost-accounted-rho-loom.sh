@@ -31,6 +31,10 @@
 #     optimistic retry and crash/restart without lost updates, and unique
 #     bounded shared-worker ownership
 #     (↔ MultiShardResourceIsolation).
+#   - complete deterministic reduction frontiers, canonical competing-COMM
+#     order, compound-authority conflict components, and checkpoint exclusion
+#     while a frontier or detached child is in flight
+#     (↔ DeterministicParallelReduction).
 #
 # Fail-soft: absent cargo is reported and skipped (exit 0). A loom run that
 # explores an interleaving violating an assertion IS a failure.
@@ -66,6 +70,6 @@ if [ "$rc" -ne 0 ] || [ "${fails:-1}" != "0" ]; then
 fi
 
 passed="$(printf '%s\n' "$out" | grep -oE '[0-9]+ passed' | awk '{s+=$1} END{print s+0}')"
-echo "  loom: all interleavings explored, $passed passed / 0 failed (admission + COMM + located-byte + sponsor-registry + stack-introduction + redemption custody + merge-evidence + block-heap lifecycle + validator publication/restart + multi-shard root isolation/restart)."
+echo "  loom: all interleavings explored, $passed passed / 0 failed (admission + deterministic reduction frontiers/authority/cancellation + COMM + located-byte + sponsor-registry + stack-introduction + redemption custody + merge-evidence + block-heap lifecycle + validator publication/restart + multi-shard root isolation/restart)."
 echo "Loom concurrency cross-witness passed."
 exit 0

@@ -166,7 +166,7 @@ Qed.
    ═══════════════════════════════════════════════════════════════════════════
 
    Cost-Accounted Rho Stage C (DR-3 / DR-7;
-   docs/theory/cost-accounting-impl/workstream-c-economic.md "Stage C",
+   docs/casper/theory/cost-accounting-impl/workstream-c-economic.md "Stage C",
    stageb-minting-halt-interface.md Decision 4). The LANDED Rholang `slash`
    (casper/src/main/resources/PoS.rhox:784-889) replaced the legacy "transfer
    the forfeited stake to the Coop vault" effect with a TWO-EFFECT slash:

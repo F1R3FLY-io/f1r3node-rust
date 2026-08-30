@@ -11,17 +11,19 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId,
     KeyValueDagRepresentation,
 };
+use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, Justification,
 };
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -70,12 +72,14 @@ pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
 /// a separate concern.
 pub const UNLIMITED_PARENTS: i32 = -1;
 
+/// `Display` is implemented by hand below, so variants intentionally omit `#[error(...)]`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployError {
     ParsingError(String),
     MissingUser,
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
+    DuplicateDeploy(DeployId),
 }
 
 impl DeployError {
@@ -88,6 +92,7 @@ impl DeployError {
     }
 
     pub fn signature_verification_failed() -> Self { DeployError::SignatureVerificationFailed }
+    pub fn duplicate_deploy(deploy_id: DeployId) -> Self { DeployError::DuplicateDeploy(deploy_id) }
 }
 
 impl Display for DeployError {
@@ -99,12 +104,17 @@ impl Display for DeployError {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }
             DeployError::SignatureVerificationFailed => write!(f, "Signature verification failed"),
+            DeployError::DuplicateDeploy(deploy_id) => {
+                write!(f, "Deploy already known: {}", hex::encode(deploy_id))
+            }
         }
     }
 }
 
 #[async_trait]
 pub trait Casper {
+    async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError>;
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError>;
 
     fn request_finalization(&self) -> Result<(), CasperError>;
@@ -229,12 +239,19 @@ pub trait MultiParentCasper: Casper + Send + Sync {
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
+    /// The shard's genesis block hash when this node holds or has learned it.
+    /// Defaulted to `None` so effect mocks need no genesis wiring.
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
     /// Read-only access to the shard configuration. Used by APIs that need
     /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
     /// finalization status.
     fn casper_shard_conf(&self) -> &CasperShardConf;
 
-    fn rejected_deploy_buffer_contains_sig(&self, _sig: &[u8]) -> Result<bool, CasperError> {
+    fn rejected_deploy_buffer_contains(
+        &self,
+        _deploy_id: &models::rust::deploy_id::DeployLookupId,
+    ) -> Result<bool, CasperError> {
         Ok(false)
     }
 
@@ -254,6 +271,23 @@ pub trait MultiParentCasper: Casper + Send + Sync {
         _snapshot: &CasperSnapshot,
     ) -> Result<bool, CasperError> {
         self.has_pending_deploys_in_storage().await
+    }
+
+    /// Bulk snapshot of pending deploys from both `deploy_storage` (fresh,
+    /// not yet proposed) and `rejected_deploy_buffer` (recovering after a
+    /// merge conflict). Each entry is paired with an `is_rejected` flag
+    /// (`true` = recovery backlog, `false` = fresh).
+    ///
+    /// The queue is **node-local**: deploys never gossip, so an observer
+    /// node always answers empty (it rejects `doDeploy`). For cross-node
+    /// deploy status, use `deployFinalizationStatus` — it is DAG-derived
+    /// and consistent across nodes. This API is for validator-side
+    /// introspection of the local proposer pool.
+    ///
+    /// Default returns an empty Vec — used by `NoopEngine` and other
+    /// engine states where `with_casper()` returns `None`.
+    async fn list_pending_deploys(&self) -> Result<Vec<(Cosigned<DeployData>, bool)>, CasperError> {
+        Ok(Vec::new())
     }
 }
 
@@ -327,6 +361,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 
     let finalization_worker_limit = casper_shard_conf.finalizer_conf.max_parallel_workers;
     Ok(MultiParentCasperImpl {
+        divergence_monitor: std::sync::Arc::new(
+            crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+        ),
         block_retriever,
         event_publisher,
         runtime_manager,
@@ -334,10 +371,10 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store,
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
-        pending_cosigner_metadata: Arc::new(parking_lot::Mutex::new(
-            std::collections::HashMap::new(),
-        )),
         rejected_deploy_buffer,
+        deploy_lifecycle: Arc::new(
+            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+        ),
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,
@@ -354,6 +391,8 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
                 finalization_worker_limit,
             ),
         ),
+        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -384,12 +423,12 @@ pub struct CasperSnapshot {
     pub invalid_blocks: HashMap<BlockHash, Validator>,
     /// Signatures of deploys seen in ancestry window.
     /// Keeping signatures avoids retaining full deploy payloads in long-lived snapshots.
-    pub deploys_in_scope: Arc<DashSet<Bytes>>,
+    pub deploys_in_scope: Arc<DashSet<DeployLookupId>>,
     /// Signatures of deploys that appeared in a merge block's rejected_deploys list
     /// within the ancestry window. Intersects with `deploys_in_scope` when a deploy
     /// was executed in one block and rejected during a descendant merge; the block
     /// creator uses this set to know which in-scope deploys are eligible for re-inclusion.
-    pub rejected_in_scope: Arc<DashSet<Bytes>>,
+    pub rejected_in_scope: Arc<DashSet<DeployLookupId>>,
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub finalized_floor_bonds: Vec<Bond>,
@@ -631,6 +670,10 @@ pub mod test_helpers {
         }
 
         pub fn new(snapshot: CasperSnapshot, lfb: BlockMessage) -> Self {
+            let block_store = Self::create_test_block_store();
+            block_store
+                .put(snapshot.last_finalized_block.clone(), &lfb)
+                .expect("store test LFB");
             Self {
                 snapshot,
                 lfb,
@@ -645,6 +688,10 @@ pub mod test_helpers {
             lfb: BlockMessage,
             pending_deploy_count: usize,
         ) -> Self {
+            let block_store = Self::create_test_block_store();
+            block_store
+                .put(snapshot.last_finalized_block.clone(), &lfb)
+                .expect("store test LFB");
             Self {
                 snapshot,
                 lfb,
@@ -688,11 +735,15 @@ pub mod test_helpers {
                 deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                     InMemoryKeyValueStore::new(),
                 )))),
-                deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(
-                    Arc::new(InMemoryKeyValueStore::new()),
-                ))),
+                deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
+                    InMemoryKeyValueStore::new(),
+                ))
+                .unwrap(),
                 floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
                 frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+                lifecycle: Arc::new(RwLock::new(
+                    block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+                )),
             };
 
             CasperSnapshot::new(dag)
@@ -772,6 +823,10 @@ pub mod test_helpers {
 
         fn request_finalization(&self) -> Result<(), CasperError> {
             self.finalization_requests.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> {
             Ok(())
         }
 

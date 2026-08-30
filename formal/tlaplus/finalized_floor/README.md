@@ -3,9 +3,9 @@
 This directory contains the explicit-state and symbolic transition models for
 Casper finalized-floor derivation, state preservation, validator recovery, and
 parallel validation. The normative protocol description is
-[`docs/theory/finalized-floor/finalized-floor-specification.md`](../../../docs/theory/finalized-floor/finalized-floor-specification.md),
+[`docs/casper/theory/finalized-floor/finalized-floor-specification.md`](../../../docs/casper/theory/finalized-floor/finalized-floor-specification.md),
 and the proof and execution evidence is cataloged in
-[`docs/theory/finalized-floor/finalized-floor-verification.md`](../../../docs/theory/finalized-floor/finalized-floor-verification.md).
+[`docs/casper/theory/finalized-floor/finalized-floor-verification.md`](../../../docs/casper/theory/finalized-floor/finalized-floor-verification.md).
 
 ## Model families
 
@@ -109,9 +109,11 @@ selection and occurrence recovery. Three validators independently receive
 accepted siblings `A` and `B`; after `B` becomes the floor, `A` remains a causal
 input but ceases to be a finality vote. An exact `{A, B}` settlement emits a
 source-bound tombstone for `A`, every observer records that occurrence in the
-rejected buffer, and only the committed-view recovery leader may publish the
-fresh rehome. Finalization must preserve `B` and converge on the effects of
-`A`, `B`, and the fresh work.
+rejected buffer, and only the rejected source carrier owner may publish the
+fresh rehome. Distinct carrier owners can recover independent sources in
+parallel. Ordinary heartbeat proposals still use committed-view leader
+rotation. Finalization must preserve `B` and converge on the effects of `A`,
+`B`, and the fresh work.
 
 TLC exhausts 1,508 generated / 451 distinct states to depth 20 and checks
 `RecoveryCompletes` under weak fairness. Apalache checks every safety invariant
@@ -119,7 +121,7 @@ through bound 14, which reaches a complete settlement, rehome, and finalization
 path. Seven controls independently drop the accepted stale sibling, truncate
 the settlement frontier, replace the source identity with a signature-only
 tombstone, omit rejected buffering, suppress selected recovery, regress the
-floor effect, or permit a nonleader retry. TLC and Apalache reject every control
+floor effect, or permit a non-owner retry. TLC and Apalache reject every control
 for its designated invariant.
 
 The executable refinements are the staged Rust regression

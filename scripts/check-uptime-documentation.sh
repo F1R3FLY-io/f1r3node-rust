@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-mapfile -d '' documentation < <(find docs/theory/uptime -type f -name '*.md' -print0)
+mapfile -d '' documentation < <(find docs/casper/theory/uptime -type f -name '*.md' -print0)
 
 if [[ "${#documentation[@]}" -eq 0 ]]; then
   printf 'error: no uptime documentation found\n' >&2
@@ -47,7 +47,7 @@ if [[ "$failures" -ne 0 ]]; then
   exit 1
 fi
 
-projection_register="docs/theory/uptime/shard-failure-modes.md"
+projection_register="docs/casper/theory/uptime/shard-failure-modes.md"
 required_projection_markers=(
   "## Projection and regression model inventory"
   "shard reliability CTMC"
@@ -87,7 +87,7 @@ jq -e '
   exit 1
 }
 
-for diagram in docs/theory/uptime/diagrams/*.puml; do
+for diagram in docs/casper/theory/uptime/diagrams/*.puml; do
   svg="${diagram%.puml}.svg"
   test -s "$svg" || {
     printf 'error: missing rendered uptime diagram: %s\n' "$svg" >&2

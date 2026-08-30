@@ -29,13 +29,19 @@ impl From<BlockEventInfo> for BlockEventInfoSerde {
     }
 }
 
-impl From<BlockEventInfoSerde> for BlockEventInfo {
-    fn from(data: BlockEventInfoSerde) -> Self {
-        Self {
+impl TryFrom<BlockEventInfoSerde> for BlockEventInfo {
+    type Error = hex::FromHexError;
+
+    fn try_from(data: BlockEventInfoSerde) -> Result<Self, Self::Error> {
+        Ok(Self {
             block_info: data.block_info.map(|b| b.into()),
-            deploys: data.deploys.into_iter().map(|d| d.into()).collect(),
+            deploys: data
+                .deploys
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             system_deploys: data.system_deploys.into_iter().map(|s| s.into()).collect(),
             post_state_hash: data.post_state_hash.into(),
-        }
+        })
     }
 }

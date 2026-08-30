@@ -9,7 +9,7 @@ CONSTANTS
     ValidAfter,
     OccurrenceAware,
     EnforceExpiry,
-    SingleLeader,
+    OwnerCustody,
     HeartbeatsContinue,
     PreserveSelectedRecovery,
     CandidateScoped,
@@ -25,6 +25,7 @@ RetryRecords ==
      proposalView : 0..(MaxHeight - 1),
      blockHeight : 1..MaxHeight,
      sourceFree : BOOLEAN,
+     custodySource : Sources,
      historicalSelfChain : BOOLEAN,
      unexpired : BOOLEAN,
      survivesSelfChainFilter : BOOLEAN]
@@ -73,6 +74,11 @@ RetrySourceFree(v) ==
     THEN CandidateActiveSources(v) = {}
     ELSE LocalActiveSources(v) = {}
 
+CustodyCandidates(v) ==
+    IF OwnerCustody
+    THEN {source \in visibleTombstones[v] : source.validator = v}
+    ELSE visibleTombstones[v]
+
 InWindowAt(blockHeight) ==
     /\ ValidAfter < blockHeight
     /\ blockHeight < ValidAfter + Lifespan
@@ -90,17 +96,20 @@ CandidateBlockHeight(v) == observedProposalHeights[v] + 1
 RetryEligible(v) ==
     /\ CandidateBlockHeight(v) <= MaxHeight
     /\ DispositionAllowsRetry(v)
+    /\ CustodyCandidates(v) /= {}
     /\ IF EnforceExpiry
        THEN InWindowAt(CandidateBlockHeight(v))
        ELSE TRUE
 
 PrepareRetry(v) ==
+    \E custodySource \in CustodyCandidates(v) :
     LET record ==
         [validator |-> v,
          finalizedView |-> observedFinalizedHeights[v],
          proposalView |-> observedProposalHeights[v],
          blockHeight |-> CandidateBlockHeight(v),
          sourceFree |-> RetrySourceFree(v),
+         custodySource |-> custodySource,
          historicalSelfChain |-> LocalActiveSources(v) /= {},
          unexpired |-> InWindowAt(CandidateBlockHeight(v)),
          survivesSelfChainFilter |->
@@ -111,9 +120,6 @@ PrepareRetry(v) ==
     /\ v \in OnlineValidators
     /\ RetryEligible(v)
     /\ ~\E pending \in pendingRetries : pending.validator = v
-    /\ IF SingleLeader
-       THEN v = LeaderAt(observedFinalizedHeights[v])
-       ELSE TRUE
     /\ pendingRetries' = pendingRetries \union {record}
     /\ UNCHANGED
        <<proposalHeight,
@@ -370,21 +376,23 @@ Inv_SelectedRehomeSurvivesCandidateFilter ==
     \A pending \in pendingRetries :
         pending.historicalSelfChain => pending.survivesSelfChainFilter
 
-Inv_OneRecoveryProposerPerFinalizedView ==
-    \A view \in 0..MaxHeight :
+Inv_OneRecoveryProposerPerCarrier ==
+    \A source \in Sources :
         Cardinality(
-            {pending \in pendingRetries : pending.finalizedView = view}
+            {pending \in pendingRetries : pending.custodySource = source}
         ) <= 1
 
-Inv_RecoveryLeaderIsCommittedViewDerived ==
+Inv_RetryHasCarrierOwnerCustody ==
     \A pending \in pendingRetries :
-        pending.validator = LeaderAt(pending.finalizedView)
+        pending.validator = pending.custodySource.validator
 
-Inv_CrossViewRetriesAreBounded ==
-    Cardinality(pendingRetries) =
-        Cardinality(
-            {pending.finalizedView : pending \in pendingRetries}
-        )
+Inv_ParallelRecoveryIsSourceDistinct ==
+    \A left \in pendingRetries, right \in pendingRetries :
+        left /= right /\ left.finalizedView = right.finalizedView
+        => left.custodySource /= right.custodySource
+
+Inv_PendingRetriesBoundedByCustodyOwners ==
+    Cardinality(pendingRetries) <= NumValidators
 
 Inv_OnePendingRetryPerValidator ==
     \A v \in ValidatorSet :
@@ -409,4 +417,12 @@ RecoveryCommittedOrExpired ==
 
 Live_RecoveryOrExpiry ==
     NeedsRecovery ~> RecoveryCommittedOrExpired
+
+Live_FinalizationProgress ==
+    finalizedHeight < MaxHeight ~> finalizedHeight = MaxHeight
+
+Inv_NoParallelOwnerRecovery ==
+    Cardinality(
+        {pending \in pendingRetries : pending.finalizedView = finalizedHeight}
+    ) < 2
 =============================================================================

@@ -5,9 +5,9 @@
 # control a first-class citizen of computation.
 #
 # Source: cost-accounted-rho.pdf (Meredith)
-# Companion doc: docs/theory/cost-accounted-rho-verification.md
+# Companion doc: docs/casper/theory/cost-accounted-rho-verification.md
 #
-# 117 modules with kernel-checked theorem bodies. The development is
+# 120 modules with kernel-checked theorem bodies. The development is
 # parameterized over a single
 # hash_process function and 3 structural/cryptographic hypotheses on
 # it; all consensus-critical results (ca_cost_deterministic,
@@ -214,6 +214,8 @@ theories/Replication.v
 # RuntimeBudgetRefinement; Qed-closed Map-in-MVar PoS-refinement +
 # FIFO drain conservation theorems).
 theories/MultiSignerRefinement.v
+theories/ThresholdEnvelopeAuthority.v
+theories/ReplayAdmissionPublication.v
 
 # Level 4a6: Publication-derived linear-resource calculus (depends on
 # CostAccountedSyntax). Mechanizes the mixed unrestricted/linear resource
@@ -467,6 +469,7 @@ theories/EvaluationTransactionIsolation.v
 theories/MergeableEvidenceAuthentication.v
 theories/BlockHeapLifecycle.v
 theories/MultiShardConcurrency.v
+theories/DeterministicParallelReduction.v
 
 # CA-P-178 — the generic nearness gate near(I,J) on the rho object
 # (continued-gslt-cost-v2 §"The nominal surface" + the R1/R2/R3 premise

@@ -1027,6 +1027,10 @@ async fn clear_connections_loop(
     use comm::rust::transport::transport_layer::TransportLayer;
     use tokio::time::sleep;
 
+    let mut liveness = comm::rust::rp::connect::PeerLivenessTracker::new(
+        node_conf.peers_discovery.heartbeat_failure_threshold,
+    )?;
+
     loop {
         tracing::debug!("clearConnectionsLoop: Starting iteration");
 
@@ -1095,6 +1099,7 @@ async fn clear_connections_loop(
             &rp_conf,
             &transport,
             &*node_discovery,
+            &mut liveness,
         )
         .await
         {

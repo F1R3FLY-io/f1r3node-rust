@@ -70,6 +70,7 @@ impl TestContext {
 async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
     // Create engine and engine_cell (Scala lines 40-41)
     let casper_for_engine = Arc::new(MultiParentCasperImpl {
+        divergence_monitor: node.casper.divergence_monitor.clone(),
         block_retriever: node.casper.block_retriever.clone(),
         event_publisher: node.casper.event_publisher.clone(),
         runtime_manager: node.casper.runtime_manager.clone(),
@@ -77,8 +78,8 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         block_store: node.casper.block_store.clone(),
         block_dag_storage: node.casper.block_dag_storage.clone(),
         deploy_storage: node.casper.deploy_storage.clone(),
-        pending_cosigner_metadata: node.casper.pending_cosigner_metadata.clone(),
         rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
+        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
         casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
         validator_id: node.casper.validator_id.clone(),
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
@@ -91,6 +92,8 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
         certificate_verification_schedule: std::sync::Arc::new(
             casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
         ),
+        finalizer_task_in_progress: node.casper.finalizer_task_in_progress.clone(),
+        finalizer_task_queued: node.casper.finalizer_task_queued.clone(),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
         deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(

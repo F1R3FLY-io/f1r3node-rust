@@ -409,15 +409,73 @@ impl From<ReportProtoSerde> for ReportProto {
     }
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    ToSchema,
+    Default
+)]
+pub enum ReportPhaseSerde {
+    #[default]
+    #[serde(rename = "REPORT_PHASE_UNSPECIFIED")]
+    Unspecified,
+    #[serde(rename = "REPORT_PHASE_PRECHARGE")]
+    Precharge,
+    #[serde(rename = "REPORT_PHASE_USER")]
+    User,
+    #[serde(rename = "REPORT_PHASE_REFUND")]
+    Refund,
+}
+
+/// Proto `phase` field (`i32`) -> serde mirror. An unknown discriminant
+/// decodes as `Unspecified` so a future-added phase never breaks the
+/// JSON consumer.
+impl From<i32> for ReportPhaseSerde {
+    fn from(value: i32) -> Self {
+        use models::casper::ReportPhase as P;
+        match value {
+            v if v == P::Precharge as i32 => Self::Precharge,
+            v if v == P::User as i32 => Self::User,
+            v if v == P::Refund as i32 => Self::Refund,
+            _ => Self::Unspecified,
+        }
+    }
+}
+
+/// Serde mirror -> proto `phase` field (`i32`).
+impl From<ReportPhaseSerde> for i32 {
+    fn from(phase: ReportPhaseSerde) -> Self {
+        use models::casper::ReportPhase as P;
+        match phase {
+            ReportPhaseSerde::Unspecified => P::Unspecified as i32,
+            ReportPhaseSerde::Precharge => P::Precharge as i32,
+            ReportPhaseSerde::User => P::User as i32,
+            ReportPhaseSerde::Refund => P::Refund as i32,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SingleReportSerde {
     pub events: Vec<ReportProtoSerde>,
+    /// The execution phase this segment belongs to. `Unspecified` for
+    /// reports produced before the marker was introduced, and for
+    /// system-deploy segments. Consumers must treat `Unspecified` as
+    /// "fall back to the positional path".
+    #[serde(default)]
+    pub phase: ReportPhaseSerde,
 }
 
 impl From<SingleReport> for SingleReportSerde {
     fn from(data: SingleReport) -> Self {
         Self {
             events: data.events.into_iter().map(|e| e.into()).collect(),
+            phase: data.phase.into(),
         }
     }
 }
@@ -426,6 +484,7 @@ impl From<SingleReportSerde> for SingleReport {
     fn from(data: SingleReportSerde) -> Self {
         Self {
             events: data.events.into_iter().map(|e| e.into()).collect(),
+            phase: data.phase.into(),
         }
     }
 }

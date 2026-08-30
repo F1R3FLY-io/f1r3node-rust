@@ -307,6 +307,9 @@ pub enum AdmissionRejectionReason {
     ContainsFutureDeploy = 24,
     NotOfInterest = 25,
     LowDeployCost = 26,
+    PrematureDeployRetry = 27,
+    AdmissibleEquivocation = 28,
+    IgnorableEquivocation = 29,
 }
 
 impl TryFrom<u32> for AdmissionRejectionReason {
@@ -340,6 +343,9 @@ impl TryFrom<u32> for AdmissionRejectionReason {
             24 => Ok(Self::ContainsFutureDeploy),
             25 => Ok(Self::NotOfInterest),
             26 => Ok(Self::LowDeployCost),
+            27 => Ok(Self::PrematureDeployRetry),
+            28 => Ok(Self::AdmissibleEquivocation),
+            29 => Ok(Self::IgnorableEquivocation),
             _ => Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(
                 value,
             )),
@@ -647,6 +653,8 @@ pub struct BlockMetadata {
     pub finalized_floor_commitment: Option<FinalizedFloorCommitment>,
     pub admission_schema_version: u32,
     pub approved_genesis: bool,
+    #[serde(with = "shared::rust::serde_bytes", default)]
+    pub merge_base: Bytes,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -777,6 +785,7 @@ impl PartialEq for BlockMetadata {
             && self.finalized_floor_commitment == other.finalized_floor_commitment
             && self.admission_schema_version == other.admission_schema_version
             && self.approved_genesis == other.approved_genesis
+            && self.merge_base == other.merge_base
     }
 }
 
@@ -811,6 +820,7 @@ impl std::hash::Hash for BlockMetadata {
         self.finalized_floor_commitment.hash(state);
         self.admission_schema_version.hash(state);
         self.approved_genesis.hash(state);
+        self.merge_base.hash(state);
     }
 }
 
@@ -902,6 +912,7 @@ impl BlockMetadata {
             finalized_floor_commitment,
             admission_schema_version: proto.admission_schema_version,
             approved_genesis: proto.approved_genesis,
+            merge_base: proto.merge_base,
         };
         metadata.validate()?;
         Ok(metadata)
@@ -969,6 +980,7 @@ impl BlockMetadata {
                 .finalized_floor_commitment
                 .as_ref()
                 .map(FinalizedFloorCommitment::to_proto),
+            merge_base: self.merge_base.clone(),
         }
     }
 
@@ -1056,6 +1068,7 @@ impl BlockMetadata {
             finalized_floor_commitment: b.header.finalized_floor.clone(),
             admission_schema_version: ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
+            merge_base: b.body.merge_base.clone(),
         }
     }
 
@@ -1191,6 +1204,7 @@ mod tests {
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),
+                language: "rholang".to_string(),
                 time_stamp: 0,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
@@ -1203,6 +1217,7 @@ mod tests {
         .unwrap();
         ProcessedDeploy {
             deploy,
+            envelope_commitment: Bytes::new(),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed,
@@ -1248,6 +1263,8 @@ mod tests {
                 rejected_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: Vec::new(),
             sender: Bytes::from(vec![2; validator::LENGTH]),
@@ -1323,6 +1340,8 @@ mod tests {
                     },
                 ],
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: Vec::new(),
             sender: Bytes::from(vec![2; validator::LENGTH]),
@@ -1563,7 +1582,7 @@ mod tests {
 
     #[test]
     fn every_stable_admission_rejection_code_round_trips() {
-        for code in 1..=26 {
+        for code in 1..=29 {
             let reason = AdmissionRejectionReason::try_from(code).unwrap();
             assert_eq!(reason as u32, code);
         }
@@ -1572,8 +1591,8 @@ mod tests {
             Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(0))
         );
         assert_eq!(
-            AdmissionRejectionReason::try_from(27),
-            Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(27))
+            AdmissionRejectionReason::try_from(30),
+            Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(30))
         );
     }
 

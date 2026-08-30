@@ -10,6 +10,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, FinalizationCertificate,
 };
+use models::rust::deploy_id::DeployIdV6;
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
@@ -34,7 +35,8 @@ impl KeyValueBlockStore {
     const DECOMPRESS_BUFFER_RETAIN_BYTES: usize = 65_536;
     const MAX_STORED_BLOCK_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
     const DEPLOY_SIG_CACHE_MAX_ENTRIES: usize = 1_024;
-    const MIN_DEPLOY_SIG_BYTES: usize = 32;
+    const DEPLOY_ID_PROTOCOL_VERSION: i64 = 6;
+    const MIN_LEGACY_DEPLOY_SIG_BYTES: usize = 32;
 
     pub fn new(
         store: Arc<dyn KeyValueStore>,
@@ -126,26 +128,59 @@ impl KeyValueBlockStore {
         self.get(block_hash).expect(&err_msg).expect(&err_msg)
     }
 
-    /// Fast path used by repeat-deploy checks to avoid full BlockMessage conversion.
+    /// Fast path used by deploy scans to avoid full BlockMessage conversion.
+    /// A block that is not stored reports `false` — callers that cannot treat
+    /// an unread block as an answer want `has_any_deploy_sig_strict`.
     pub fn has_any_deploy_sig(
         &self,
         block_hash: &BlockHash,
         deploy_sigs: &HashSet<Vec<u8>>,
     ) -> Result<bool, KvStoreError> {
+        Ok(self
+            .has_any_deploy_sig_opt(block_hash, deploy_sigs)?
+            .unwrap_or(false))
+    }
+
+    /// As `has_any_deploy_sig`, but a block whose body is absent is a storage
+    /// gap rather than a negative answer. The duplicate scan in
+    /// `Validate::repeat_deploy` reads a `false` as "this ancestor does not
+    /// carry the sig", so conflating the two admits the repeat it exists to
+    /// reject — and after an LFS restore the DAG legitimately knows about
+    /// blocks whose bodies were never downloaded.
+    pub fn has_any_deploy_sig_strict(
+        &self,
+        block_hash: &BlockHash,
+        deploy_sigs: &HashSet<Vec<u8>>,
+    ) -> Result<bool, KvStoreError> {
+        self.has_any_deploy_sig_opt(block_hash, deploy_sigs)?
+            .ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "BlockStore is missing hash: {}",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                ))
+            })
+    }
+
+    /// `None` when the block is not in the store; `Some(has_any)` otherwise.
+    fn has_any_deploy_sig_opt(
+        &self,
+        block_hash: &BlockHash,
+        deploy_sigs: &HashSet<Vec<u8>>,
+    ) -> Result<Option<bool>, KvStoreError> {
         if deploy_sigs.is_empty() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let key = block_hash.to_vec();
         if let Some(has_any) = Self::cached_has_any_deploy_sig(&key, deploy_sigs) {
-            return Ok(has_any);
+            return Ok(Some(has_any));
         }
 
         let bytes = match self.store.get_one(&key)? {
             Some(bytes) => bytes,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
+        let (protocol_version, body) = Self::decode_block_deploy_sigs(&bytes)?;
         let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
         let mut has_any = false;
         for processed_deploy in body.deploys {
@@ -155,25 +190,24 @@ impl KeyValueBlockStore {
                     "Missing deploy field".to_string(),
                 ))
             })?;
-            let sig = deploy.sig;
-            if sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", sig.len()),
-                )));
-            }
-            if deploy_sigs.contains(&sig) {
+            let deploy_id = Self::wire_deploy_id(protocol_version, deploy).map_err(|cause| {
+                KvStoreError::SerializationError(Self::error_block(block_hash.clone(), cause))
+            })?;
+            if deploy_sigs.contains(&deploy_id) {
                 has_any = true;
             }
-            block_deploy_sigs.push(sig);
+            block_deploy_sigs.push(deploy_id);
         }
         Self::cache_deploy_sigs(key, block_deploy_sigs);
-        Ok(has_any)
+        Ok(Some(has_any))
     }
 
-    /// Fetch rejected deploy signatures for a block without decoding a full BlockMessage.
-    /// Returns the `body.rejected_deploys[*].sig` values. Most blocks have none; only
-    /// multi-parent merge blocks that dropped a conflicting deploy populate this list.
+    /// Fetch kept rejected-deploy identities without decoding a full block.
+    /// Returns the protocol-selected `sig` or `deployIdV6` field of
+    /// non-duplicate records only: a duplicate-flagged record discarded a
+    /// redundant copy and does not dispute the identity's standing win, so
+    /// disposition readers skip it. Most blocks have none; only multi-parent
+    /// merge blocks that dropped a conflicting deploy populate this list.
     pub fn rejected_deploy_sigs(
         &self,
         block_hash: &BlockHash,
@@ -183,12 +217,21 @@ impl KeyValueBlockStore {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
-        let sigs = body.rejected_deploys.into_iter().map(|r| r.sig).collect();
+        let (protocol_version, body) = Self::decode_block_deploy_sigs(&bytes)?;
+        let sigs = body
+            .rejected_deploys
+            .into_iter()
+            .filter(|rejected| !rejected.duplicate)
+            .map(|rejected| {
+                Self::wire_rejected_deploy_id(protocol_version, rejected).map_err(|cause| {
+                    KvStoreError::SerializationError(Self::error_block(block_hash.clone(), cause))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Some(sigs))
     }
 
-    /// Fetch deploy signatures for a block without decoding a full BlockMessage.
+    /// Fetch protocol-selected deploy identities without decoding a full block.
     /// Uses the same bounded shared cache as `has_any_deploy_sig`.
     pub fn deploy_sigs(
         &self,
@@ -204,7 +247,7 @@ impl KeyValueBlockStore {
             None => return Ok(None),
         };
 
-        let body = Self::decode_block_deploy_sigs(&bytes)?;
+        let (protocol_version, body) = Self::decode_block_deploy_sigs(&bytes)?;
         let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
         for processed_deploy in body.deploys {
             let deploy = processed_deploy.deploy.ok_or_else(|| {
@@ -213,30 +256,15 @@ impl KeyValueBlockStore {
                     "Missing deploy field".to_string(),
                 ))
             })?;
-            if deploy.sig.len() < Self::MIN_DEPLOY_SIG_BYTES {
-                return Err(KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    format!("Invalid deploy signature length: {}", deploy.sig.len()),
-                )));
-            }
-            block_deploy_sigs.push(deploy.sig);
+            block_deploy_sigs.push(Self::wire_deploy_id(protocol_version, deploy).map_err(
+                |cause| {
+                    KvStoreError::SerializationError(Self::error_block(block_hash.clone(), cause))
+                },
+            )?);
         }
 
         Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
         Ok(Some(block_deploy_sigs))
-    }
-
-    pub fn has_any_deploy_sig_unsafe(
-        &self,
-        block_hash: &BlockHash,
-        deploy_sigs: &HashSet<Vec<u8>>,
-    ) -> bool {
-        let err_msg = format!(
-            "BlockStore is missing hash: {}",
-            PrettyPrinter::build_string_bytes(block_hash),
-        );
-        self.has_any_deploy_sig(block_hash, deploy_sigs)
-            .expect(&err_msg)
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
@@ -454,6 +482,19 @@ impl KeyValueBlockStore {
         }
     }
 
+    /// Key-existence check against the underlying store, skipping the
+    /// decompression and protobuf decode that `contains` (via `get`) pays.
+    /// The cheap availability probe for callers revalidating cached
+    /// per-block facts against THIS store.
+    pub fn contains_key(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self
+            .store
+            .contains(&vec![block_hash.to_vec()])?
+            .first()
+            .copied()
+            .unwrap_or(false))
+    }
+
     fn error_approved_block(cause: String) -> String {
         format!("Approved block decoding error. Cause: {}", cause)
     }
@@ -533,7 +574,7 @@ impl KeyValueBlockStore {
         })
     }
 
-    fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<BlockDeploySigsBody, KvStoreError> {
+    fn decode_block_deploy_sigs(bytes: &[u8]) -> Result<(i64, BlockDeploySigsBody), KvStoreError> {
         use std::io::Cursor;
 
         use prost::encoding::decode_varint;
@@ -573,9 +614,16 @@ impl KeyValueBlockStore {
             let decode_result = BlockMessageDeploySigIndex::decode(&*output)
                 .map_err(|err| KvStoreError::SerializationError(err.to_string()))
                 .and_then(|proto| {
-                    proto.body.ok_or_else(|| {
+                    let protocol_version = proto
+                        .header
+                        .ok_or_else(|| {
+                            KvStoreError::SerializationError("Missing header field".to_string())
+                        })?
+                        .version;
+                    let body = proto.body.ok_or_else(|| {
                         KvStoreError::SerializationError("Missing body field".to_string())
-                    })
+                    })?;
+                    Ok((protocol_version, body))
                 });
 
             if output_buf.capacity() > max_retain_bytes {
@@ -585,6 +633,68 @@ impl KeyValueBlockStore {
 
             decode_result
         })
+    }
+
+    fn wire_deploy_id(
+        protocol_version: i64,
+        deploy: BlockDeploySigsDeploy,
+    ) -> Result<Vec<u8>, String> {
+        if protocol_version >= Self::DEPLOY_ID_PROTOCOL_VERSION {
+            if !deploy.sig.is_empty() {
+                return Err("protocol-v6 deploy contains a legacy signature identity".to_string());
+            }
+            if deploy.deploy_id.len() != DeployIdV6::LENGTH {
+                return Err(format!(
+                    "protocol-v6 deploy identity must be {} bytes, got {}",
+                    DeployIdV6::LENGTH,
+                    deploy.deploy_id.len()
+                ));
+            }
+            Ok(deploy.deploy_id)
+        } else {
+            if !deploy.deploy_id.is_empty() {
+                return Err("pre-v6 deploy contains a protocol-v6 identity".to_string());
+            }
+            if deploy.sig.len() < Self::MIN_LEGACY_DEPLOY_SIG_BYTES {
+                return Err(format!(
+                    "invalid legacy deploy signature length: {}",
+                    deploy.sig.len()
+                ));
+            }
+            Ok(deploy.sig)
+        }
+    }
+
+    fn wire_rejected_deploy_id(
+        protocol_version: i64,
+        rejected: BlockDeploySigsRejectedDeploy,
+    ) -> Result<Vec<u8>, String> {
+        if protocol_version >= Self::DEPLOY_ID_PROTOCOL_VERSION {
+            if !rejected.sig.is_empty() {
+                return Err(
+                    "protocol-v6 rejected deploy contains a legacy signature identity".to_string(),
+                );
+            }
+            if rejected.deploy_id_v6.len() != DeployIdV6::LENGTH {
+                return Err(format!(
+                    "protocol-v6 rejected deploy identity must be {} bytes, got {}",
+                    DeployIdV6::LENGTH,
+                    rejected.deploy_id_v6.len()
+                ));
+            }
+            Ok(rejected.deploy_id_v6)
+        } else {
+            if !rejected.deploy_id_v6.is_empty() {
+                return Err("pre-v6 rejected deploy contains a protocol-v6 identity".to_string());
+            }
+            if rejected.sig.len() < Self::MIN_LEGACY_DEPLOY_SIG_BYTES {
+                return Err(format!(
+                    "invalid legacy rejected-deploy signature length: {}",
+                    rejected.sig.len()
+                ));
+            }
+            Ok(rejected.sig)
+        }
     }
 
     fn block_proto_to_bytes(block_proto: &BlockMessageProto) -> Vec<u8> {
@@ -661,8 +771,16 @@ struct DeploySigCache {
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct BlockMessageDeploySigIndex {
+    #[prost(message, optional, tag = "2")]
+    header: Option<BlockDeploySigsHeader>,
     #[prost(message, optional, tag = "3")]
     body: Option<BlockDeploySigsBody>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct BlockDeploySigsHeader {
+    #[prost(int64, tag = "6")]
+    version: i64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -683,12 +801,18 @@ struct BlockDeploySigsProcessedDeploy {
 struct BlockDeploySigsDeploy {
     #[prost(bytes = "vec", tag = "4")]
     sig: Vec<u8>,
+    #[prost(bytes = "vec", tag = "19")]
+    deploy_id: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct BlockDeploySigsRejectedDeploy {
     #[prost(bytes = "vec", tag = "1")]
     sig: Vec<u8>,
+    #[prost(bool, tag = "2")]
+    duplicate: bool,
+    #[prost(bytes = "vec", tag = "6")]
+    deploy_id_v6: Vec<u8>,
 }
 
 // See block-storage/src/test/scala/coop/rchain/blockstorage/KeyValueBlockStoreSpec.scala
@@ -734,6 +858,8 @@ mod tests {
     }
 
     impl KeyValueStore for MockKeyValueStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             self.update_input_keys(keys.to_vec());
             Ok(vec![self.get_result.clone()])
@@ -752,6 +878,18 @@ mod tests {
                 .unwrap()
                 .extend(kv_pairs.iter().map(|(_, v)| v.clone()));
             Ok(())
+        }
+
+        fn put_one_if_absent(
+            &self,
+            key: shared::rust::ByteBuffer,
+            value: shared::rust::ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            if self.get_result.is_some() {
+                return Ok(false);
+            }
+            self.put(vec![(key, value)])?;
+            Ok(true)
         }
 
         fn delete(&self, _keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -796,11 +934,21 @@ mod tests {
     pub struct NotImplementedKV;
 
     impl KeyValueStore for NotImplementedKV {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         fn get(&self, _keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
             todo!()
         }
 
         fn put(&self, _kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+            todo!()
+        }
+
+        fn put_one_if_absent(
+            &self,
+            _key: ByteBuffer,
+            _value: ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
             todo!()
         }
 
@@ -838,6 +986,7 @@ mod tests {
         ApprovedBlock {
             candidate,
             sigs: vec![],
+            floor_seed: None,
         }
     }
 
@@ -1221,7 +1370,7 @@ mod tests {
             None,
             None,
             None,
-            None,
+            Some(5),
             None,
             None,
             None,
@@ -1256,6 +1405,171 @@ mod tests {
             .unwrap();
         assert!(!repeated_lookup);
         assert_eq!(*input_keys.lock().unwrap(), vec![block.block_hash.to_vec()]);
+    }
+
+    #[test]
+    fn protocol_v6_deploy_and_rejection_indexes_use_explicit_id_fields() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let mut block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(6),
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        block.block_hash = Bytes::from(vec![0xA6; 32]);
+        let deploy_id = vec![0xD6; DeployIdV6::LENGTH];
+        let rejected_id = vec![0xE6; DeployIdV6::LENGTH];
+        let mut proto = block.to_proto();
+        let body = proto.body.as_mut().unwrap();
+        let deploy = body.deploys[0].deploy.as_mut().unwrap();
+        deploy.sig = Bytes::new();
+        deploy.deploy_id = deploy_id.clone().into();
+        body.rejected_deploys
+            .push(models::casper::RejectedDeployProto {
+                deploy_id_v6: rejected_id.clone().into(),
+                ..Default::default()
+            });
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&proto);
+        let kv = MockKeyValueStore::new(Some(block_bytes));
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        assert!(bs
+            .has_any_deploy_sig(&block.block_hash, &HashSet::from([deploy_id.clone()]))
+            .unwrap());
+        assert_eq!(
+            bs.deploy_sigs(&block.block_hash).unwrap(),
+            Some(vec![deploy_id])
+        );
+        assert_eq!(
+            bs.rejected_deploy_sigs(&block.block_hash).unwrap(),
+            Some(vec![rejected_id])
+        );
+    }
+
+    #[test]
+    fn protocol_version_rejects_mixed_wire_identity_fields() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let mut block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(6),
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        block.block_hash = Bytes::from(vec![0xB6; 32]);
+        let mut proto = block.to_proto();
+        proto.body.as_mut().unwrap().deploys[0]
+            .deploy
+            .as_mut()
+            .unwrap()
+            .deploy_id = vec![0xC6; DeployIdV6::LENGTH].into();
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&proto);
+        let kv = MockKeyValueStore::new(Some(block_bytes));
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        let error = bs.deploy_sigs(&block.block_hash).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("protocol-v6 deploy contains a legacy signature identity"));
+    }
+
+    proptest! {
+        #[test]
+        fn wire_deploy_identity_selection_is_total_and_protocol_directed(
+            protocol_version in -2i64..10,
+            legacy in proptest::collection::vec(any::<u8>(), 0..80),
+            envelope in proptest::collection::vec(any::<u8>(), 0..80),
+        ) {
+            let expected = if protocol_version >= KeyValueBlockStore::DEPLOY_ID_PROTOCOL_VERSION {
+                legacy.is_empty() && envelope.len() == DeployIdV6::LENGTH
+            } else {
+                envelope.is_empty()
+                    && legacy.len() >= KeyValueBlockStore::MIN_LEGACY_DEPLOY_SIG_BYTES
+            };
+            let actual = KeyValueBlockStore::wire_deploy_id(
+                protocol_version,
+                BlockDeploySigsDeploy {
+                    sig: legacy.clone(),
+                    deploy_id: envelope.clone(),
+                },
+            );
+            prop_assert_eq!(actual.is_ok(), expected);
+            if let Ok(identity) = actual {
+                prop_assert_eq!(
+                    identity,
+                    if protocol_version >= KeyValueBlockStore::DEPLOY_ID_PROTOCOL_VERSION {
+                        envelope
+                    } else {
+                        legacy
+                    }
+                );
+            }
+        }
+
+        #[test]
+        fn wire_rejected_identity_selection_is_total_and_protocol_directed(
+            protocol_version in -2i64..10,
+            legacy in proptest::collection::vec(any::<u8>(), 0..80),
+            envelope in proptest::collection::vec(any::<u8>(), 0..80),
+            duplicate in any::<bool>(),
+        ) {
+            let expected = if protocol_version >= KeyValueBlockStore::DEPLOY_ID_PROTOCOL_VERSION {
+                legacy.is_empty() && envelope.len() == DeployIdV6::LENGTH
+            } else {
+                envelope.is_empty()
+                    && legacy.len() >= KeyValueBlockStore::MIN_LEGACY_DEPLOY_SIG_BYTES
+            };
+            let actual = KeyValueBlockStore::wire_rejected_deploy_id(
+                protocol_version,
+                BlockDeploySigsRejectedDeploy {
+                    sig: legacy.clone(),
+                    duplicate,
+                    deploy_id_v6: envelope.clone(),
+                },
+            );
+            prop_assert_eq!(actual.is_ok(), expected);
+            if let Ok(identity) = actual {
+                prop_assert_eq!(
+                    identity,
+                    if protocol_version >= KeyValueBlockStore::DEPLOY_ID_PROTOCOL_VERSION {
+                        envelope
+                    } else {
+                        legacy
+                    }
+                );
+            }
+        }
     }
 
     #[test]

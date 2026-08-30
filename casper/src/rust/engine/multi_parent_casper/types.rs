@@ -17,6 +17,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 // Phase 9 (A-3): the deploy-storage handle migrates to
 // `parking_lot::Mutex` (no poison propagation, faster acquire).
@@ -36,7 +37,6 @@ use models::rust::validator::Validator;
 // `std::sync::Mutex` (held purely synchronously inside the
 // proposer / validator flows, never across `.await`).
 use parking_lot::Mutex as PlMutex;
-use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::casper::CasperShardConf;
@@ -46,19 +46,6 @@ use crate::rust::finality::certificate::CertificateVerificationSchedule;
 use crate::rust::finality::finalization_schedule::FinalizationSchedule;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
-
-/// Cosigner metadata for an in-flight multi-signature deploy, held in the
-/// `pending_cosigner_metadata` sidecar map keyed by primary signature.
-///
-/// `cosigners` is the canonical-order list of cosigners EXCLUDING the
-/// primary (primary lives in the legacy `Signed<DeployData>` already stored
-/// in `deploy_storage`). It round-trips the wire `CompoundSigner` data
-/// (proto field 14) from `DeployDataProto`. D3 (DR-9): no per-signer
-/// phlo_share.
-#[derive(Clone, Debug)]
-pub struct PendingCosignerMetadata {
-    pub cosigners: Vec<models::casper::CompoundSigner>,
-}
 
 // Phase 13 (TC-2): the previous `MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES`
 // constant is now `CasperShardConf::active_validators_cache_max_entries`;
@@ -90,29 +77,15 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
-    /// In-memory side-map of cosigner metadata for in-flight multi-signature
-    /// deploys, keyed by the primary signer's signature bytes (the same key
-    /// `KeyValueDeployStorage` uses for the legacy `Signed<DeployData>` pool).
-    /// Populated by `block_admission::admit_deploy_cosigned` when a compound
-    /// `Cosigned<DeployData>` deploy is submitted; consulted by
-    /// `block_creator` (proposer-side) to reconstruct the full Cosigned
-    /// envelope when handing deploys off to the runtime fan-out. Drained
-    /// alongside `deploy_storage.remove(...)` when blocks finalize, by
-    /// `admit_handle_valid_block`. Empty for single-signature deploys.
-    ///
-    /// The side-map design (per §1.9.5) deliberately preserves the legacy
-    /// `KeyValueDeployStorage` shape — selection-by-primary-signer is the
-    /// right semantics for the proposer, so cosigner data lives in this
-    /// memory-resident sidecar rather than forcing a full storage migration.
-    /// Node restarts lose in-flight cosigner metadata (clients resubmit
-    /// unfinalized deploys); this matches the §1.9.5 greenfield policy.
-    pub pending_cosigner_metadata:
-        Arc<PlMutex<std::collections::HashMap<Bytes, PendingCosignerMetadata>>>,
     /// Persistence buffer for in-scope-but-rejected deploys, surfaced from
     /// dev (EPOCH-004). Held under `std::sync::Mutex` because all accesses
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    /// The deploy-lifecycle register's volatile half (threshold schedule +
+    /// clocks); persisted state lives in the DAG storage's lifecycle
+    /// tables. Driven from block admission.
+    pub deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     // TODO: this should be read from chain, for now read from startup options - OLD
@@ -124,6 +97,16 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub recovery_sync_active: Arc<AtomicBool>,
     pub finalization_schedule: Arc<FinalizationSchedule>,
     pub certificate_verification_schedule: Arc<CertificateVerificationSchedule>,
+    /// Escalates a persistent containment hold (the shard finalizing floors
+    /// this node's LFB is not contained in) to a finality-divergence ERROR
+    /// and metric. See `finalization_runner::DivergenceMonitor`.
+    pub divergence_monitor:
+        Arc<crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor>,
+    /// Single-flight guard for background finalizer scheduling from propose path.
+    pub finalizer_task_in_progress: Arc<AtomicBool>,
+    /// Indicates a finalizer run was requested while another run was still in progress.
+    /// The next queued run will execute immediately after the current one finishes.
+    pub finalizer_task_queued: Arc<AtomicBool>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.
@@ -137,7 +120,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// synchronously across read-modify-write of the cache cell.
     ///
     /// Merge of dev: tuple carries both scope sets — the trailing
-    /// `Arc<DashSet<Bytes>>` is the `rejected_in_scope` companion set
+    /// `Arc<DashSet<DeployLookupId>>` is the `rejected_in_scope` companion set
     /// to `deploys_in_scope`, used by `validate.rs::repeat_deploy` and
     /// `block_creator.rs` to distinguish in-scope deploys that were
     /// merge-rejected (and therefore eligible for re-inclusion) from
@@ -148,8 +131,8 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
                 u64,
                 BlockHash,
                 Vec<BlockHash>,
-                Arc<dashmap::DashSet<Bytes>>,
-                Arc<dashmap::DashSet<Bytes>>,
+                Arc<dashmap::DashSet<DeployLookupId>>,
+                Arc<dashmap::DashSet<DeployLookupId>>,
             )>,
         >,
     >,

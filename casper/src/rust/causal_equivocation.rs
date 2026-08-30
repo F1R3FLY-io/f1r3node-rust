@@ -213,13 +213,19 @@ impl CertifiedConsensusContext {
 
     pub async fn for_candidate(
         dag: &KeyValueDagRepresentation,
+        block_store: &block_storage::rust::key_value_block_store::KeyValueBlockStore,
         parents: &[BlockHash],
         exact_latest_messages: &BTreeMap<Validator, BlockHash>,
         ftt: crate::rust::safety::clique_oracle::FtThreshold,
     ) -> Result<Self, CasperError> {
-        let floor =
-            crate::rust::finality::floor::finalized_floor(dag, parents, exact_latest_messages, ftt)
-                .await?;
+        let floor = crate::rust::finality::floor::finalized_floor(
+            dag,
+            block_store,
+            parents,
+            exact_latest_messages,
+            ftt,
+        )
+        .await?;
         let closure_roots = std::iter::once(&floor.hash)
             .chain(parents.iter())
             .chain(exact_latest_messages.values())
@@ -985,6 +991,7 @@ mod tests {
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
     use models::rust::block_metadata::{AdmissionRejectionReason, BlockMetadata};
     use models::rust::bond_generation::BondGeneration;
     use models::rust::casper::protocol::casper_message::{
@@ -1074,6 +1081,7 @@ mod tests {
             finalized_floor_commitment: None,
             admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
             approved_genesis: false,
+            merge_base: Bytes::new(),
         };
         match rejection {
             Some(reason) => crate::rust::test_metadata::certify_rejected(
@@ -1115,11 +1123,16 @@ mod tests {
             deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
                 InMemoryKeyValueStore::new(),
             )))),
-            deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
                 InMemoryKeyValueStore::new(),
-            )))),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+            lifecycle: Arc::new(RwLock::new(
+                block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
+                ),
+            )),
         }
     }
 
@@ -1155,6 +1168,8 @@ mod tests {
                 rejected_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
             },
             justifications: Vec::new(),
             sender,

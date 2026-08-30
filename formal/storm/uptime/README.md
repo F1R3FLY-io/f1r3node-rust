@@ -37,7 +37,7 @@ requested without a current, complete calibrated profile.
 
 The exact field-by-field relationship between the historical observations and
 the current model is recorded in
-[`docs/theory/uptime/verification.md`](../../../docs/theory/uptime/verification.md#historical-evidence-mapping-to-the-current-model).
+[`docs/casper/theory/uptime/verification.md`](../../../docs/casper/theory/uptime/verification.md#historical-evidence-mapping-to-the-current-model).
 That mapping permits topology and guard reconstruction plus held-out aggregate
 outcome validation; it explicitly forbids deriving CTMC transition rates,
 continuous lifetime, or cause allocation from the available iteration counts

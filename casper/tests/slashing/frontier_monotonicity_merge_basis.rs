@@ -1,6 +1,6 @@
 // Frontier monotonicity under merge: union(direct) closures conservatively.
 //
-// Maps to: docs/theory/slashing/slashing-specification.md §14 (frontier
+// Maps to: docs/casper/theory/slashing/slashing-specification.md §14 (frontier
 // properties). Theorems: T-11 (neglect closure).
 // Reference: formal/sage/objective_frontier_model.sage.
 //

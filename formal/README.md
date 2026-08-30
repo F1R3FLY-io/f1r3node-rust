@@ -10,7 +10,7 @@ the model transition to production code.
 The process, proof ladder, and verified-area matrix are maintained in
 [`docs/formal-verification.md`](../docs/formal-verification.md). Cost-accounting
 claim identifiers and their proof/test artifacts are indexed in
-[`docs/theory/cost-accounted-rho-verification.md`](../docs/theory/cost-accounted-rho-verification.md).
+[`docs/casper/theory/cost-accounted-rho-verification.md`](../docs/casper/theory/cost-accounted-rho-verification.md).
 
 ## Source families
 
@@ -129,6 +129,15 @@ classifier in
 and three memory-order refinements live in
 [`loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs`](loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs).
 
+[`tlaplus/deploy_occurrence/DeployOccurrenceStorage.tla`](tlaplus/deploy_occurrence/DeployOccurrenceStorage.tla)
+models strict fresh-v6 activation, atomic admission, crashes, terminal compaction,
+late validator observations, and concurrent reads. The non-atomic and permissive-
+activation configurations are required counterexamples. Rocq proves typed identity
+separation, archive idempotence, reducer convergence, and terminal archive retention in
+[`rocq/finalized_floor/theories/DeployOccurrenceStorage.v`](rocq/finalized_floor/theories/DeployOccurrenceStorage.v).
+The implementation interleavings are in
+[`block-storage/tests/loom_deploy_occurrence_store.rs`](../block-storage/tests/loom_deploy_occurrence_store.rs).
+
 [`tlaplus/finalized_floor/StaleSiblingRecovery.tla`](tlaplus/finalized_floor/StaleSiblingRecovery.tla)
 composes the boundary that the parent-projection and occurrence-recovery models
 previously checked separately. It interleaves three validators from accepted
@@ -178,6 +187,35 @@ and production-backed randomized, pinned, and diamond regressions live in
 [`casper/tests/fork_choice/prop_ghost_argmax.rs`](../casper/tests/fork_choice/prop_ghost_argmax.rs).
 The local entry point is
 [`scripts/check-fork-choice-ALL.sh`](../scripts/check-fork-choice-ALL.sh).
+
+## Deterministic reducer concurrency
+
+[`tlaplus/deterministic_parallel_reduction/DeterministicParallelReduction.tla`](tlaplus/deterministic_parallel_reduction/DeterministicParallelReduction.tla)
+models a complete intra-deploy communication frontier, transitive channel and
+linear-authority conflict components, canonical conflicting commitment, and
+parallel execution of truly disjoint work. Its five unsafe configurations
+independently remove the complete frontier, canonical order, checkpoint
+quiescence, disjoint parallelism, or authority-region conflicts.
+
+[`tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla`](tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla)
+models cancellation ownership separately: a shared evaluation permit remains
+owned while detached children are live, and checkpoint requires the exclusive
+permit. The unsafe configuration releases ownership with the cancelled root
+and checkpoints before child mutations complete.
+
+TLC exhausts both finite state spaces. Apalache independently checks the
+complete ten-step reduction horizon and four-step evaluation horizon and
+reproduces all six targeted defect traces.
+
+The unbounded algebraic refinement is
+[`rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v`](rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v).
+It proves disjoint commutation, compound-authority overlap independent of
+encoding order, the canonical minimal counterexample, causal path monotonicity,
+and cancellation/checkpoint exclusion without assumptions. Bounded Rust memory
+schedules are exhausted by
+[`loom/cost_accounting/tests/loom_deterministic_reduction_frontier.rs`](loom/cost_accounting/tests/loom_deterministic_reduction_frontier.rs).
+The production contract and regression mapping are documented in
+[`docs/casper/theory/cost-accounting-impl/deterministic-parallel-reduction.md`](../docs/casper/theory/cost-accounting-impl/deterministic-parallel-reduction.md).
 
 ## Long-horizon uptime evidence
 

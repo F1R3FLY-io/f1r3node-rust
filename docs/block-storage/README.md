@@ -94,7 +94,7 @@ unit tests), `key_value_block_store.rs` (property unit),
 `casper_buffer_key_value_storage.rs` (Tokio async), and
 `doubly_linked_dag_operations.rs` (DAG unit tests). The corresponding TLA+,
 Rocq, and Loom evidence is cataloged in
-[`finalization-atomicity-and-recovery.md`](../theory/finalized-floor/finalization-atomicity-and-recovery.md).
+[`finalization-atomicity-and-recovery.md`](../casper/theory/finalized-floor/finalization-atomicity-and-recovery.md).
 
 **See also:** [block-storage/ crate](../../block-storage/)
 

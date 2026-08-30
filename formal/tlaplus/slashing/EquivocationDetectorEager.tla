@@ -41,7 +41,7 @@
 (*    With 2 validators this halves the explored state space; with 3 it    *)
 (*    is a 6× reduction.                                                    *)
 (*                                                                          *)
-(* Reference: docs/theory/slashing/slashing-verification.md §10.            *)
+(* Reference: docs/casper/theory/slashing/slashing-verification.md §10.            *)
 (****************************************************************************)
 
 EXTENDS Integers, Sequences, FiniteSets, TLC

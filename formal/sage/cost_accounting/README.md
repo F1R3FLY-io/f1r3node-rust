@@ -39,7 +39,7 @@ sage formal/sage/cost_accounting/scenario_search/corpus_generator.sage -- --json
 ```
 
 The JSON records use the same classification vocabulary as
-`docs/theory/cost-accounting-search-horizon.md`. Each record also carries
+`docs/casper/theory/cost-accounting-search-horizon.md`. Each record also carries
 its threat family, expected invariants, Rust reproducer metadata, and
 promotion target so generated findings can be triaged without guessing.
 

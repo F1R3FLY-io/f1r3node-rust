@@ -440,6 +440,126 @@ run_expected_violation mergeable-evidence-main-spine-only-unsafe \
   "ignoring advancement through a secondary parent is independently refuted" \
   SecondaryParentRetirementComplete \
   --config=MergeableEvidenceAuthenticationMainSpineUnsafe.cfg --length=0 MergeableEvidenceAuthentication.tla || overall=1
+run_check threshold-envelope-authority \
+  "exact threshold-subset commitment, signer-only funding, typed custody, and validator agreement" \
+  --config=ThresholdEnvelopeAuthorityApalache.cfg --length=9 ThresholdEnvelopeAuthority.tla || overall=1
+run_expected_violation threshold-envelope-unbound-subset-unsafe \
+  "omitting the selected presence bitmap from deploy identity is independently refuted" \
+  DeployIdentityBindsStateTransition \
+  --config=ThresholdEnvelopeAuthorityUnboundSubsetUnsafe.cfg --length=0 ThresholdEnvelopeAuthority.tla || overall=1
+run_expected_violation threshold-envelope-policy-authority-unsafe \
+  "granting unsigned policy members runtime authority is independently refuted" \
+  UnsignedMembersHaveNoAuthority \
+  --config=ThresholdEnvelopeAuthorityPolicyAuthorityUnsafe.cfg --length=0 ThresholdEnvelopeAuthority.tla || overall=1
+run_expected_violation threshold-envelope-member-zero-unsafe \
+  "using policy member zero as compound deploy authority is independently refuted" \
+  UnsignedMembersHaveNoAuthority \
+  --config=ThresholdEnvelopeAuthorityMemberZeroUnsafe.cfg --length=0 ThresholdEnvelopeAuthority.tla || overall=1
+run_expected_violation threshold-envelope-policy-debit-unsafe \
+  "debiting unsigned policy members is independently refuted" \
+  UnsignedMembersAreNeverDebited \
+  --config=ThresholdEnvelopeAuthorityPolicyDebitUnsafe.cfg --length=0 ThresholdEnvelopeAuthority.tla || overall=1
+run_expected_violation threshold-envelope-witness-unsafe \
+  "accepting witnesses outside the committed presence bitmap is independently refuted" \
+  WitnessesSelectExactlyTheFunders \
+  --config=ThresholdEnvelopeAuthorityWitnessUnsafe.cfg --length=0 ThresholdEnvelopeAuthority.tla || overall=1
+run_expected_violation threshold-envelope-ground-alias-unsafe \
+  "counting one custody owner twice through two prehash schemes is independently refuted" \
+  PolicyGroundOwnersAreUnique \
+  --config=ThresholdEnvelopeAuthorityGroundAliasUnsafe.cfg --length=0 ThresholdEnvelopeAuthority.tla || overall=1
+run_check replay-admission-publication \
+  "parallel validators require exact typed admission before durable replay evidence and cache publication" \
+  --config=ReplayAdmissionPublicationApalache.cfg --length=7 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-all-admitted-unsafe \
+  "bypassing recomputation for an all-admitted partition is independently refuted" \
+  ValidatedReplayUsesExactPartition \
+  --config=ReplayAdmissionPublicationAllAdmittedUnsafe.cfg --length=3 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-count-only-unsafe \
+  "accepting processed evidence by count instead of ordered identity is independently refuted" \
+  ValidatedReplayUsesExactPartition \
+  --config=ReplayAdmissionPublicationCountOnlyUnsafe.cfg --length=3 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-primary-identity-unsafe \
+  "keying protocol-v6 replay by a legacy primary signature is independently refuted" \
+  DeployIdentityIsTypedAndInjective \
+  --config=ReplayAdmissionPublicationPrimaryIdentityUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-legacy-wire-field-unsafe \
+  "reading the empty legacy signature field instead of the protocol-v6 deploy ID is independently refuted" \
+  StoredIdentityMatchesProtocolIdentity \
+  --config=ReplayAdmissionPublicationLegacyWireFieldUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-raw-evidence-identity-unsafe \
+  "keying state-bound evidence by the empty protocol-v6 primary witness is independently refuted" \
+  EvidenceIdentityIsTypedAndInjective \
+  --config=ReplayAdmissionPublicationRawEvidenceIdentityUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-raw-reservation-identity-unsafe \
+  "keying vault reservations by the empty protocol-v6 primary witness is independently refuted" \
+  ReservationIdentityIsTypedAndInjective \
+  --config=ReplayAdmissionPublicationRawReservationIdentityUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-raw-fee-identity-unsafe \
+  "keying fee regions by the empty protocol-v6 primary witness is independently refuted" \
+  FeeIdentityIsTypedAndInjective \
+  --config=ReplayAdmissionPublicationRawFeeIdentityUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-raw-rng-identity-unsafe \
+  "seeding private names from the empty protocol-v6 primary witness is independently refuted" \
+  RngIdentityIsTypedAndInjective \
+  --config=ReplayAdmissionPublicationRawRngIdentityUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-unconsumed-evidence-unsafe \
+  "accepting unconsumed state-bound evidence is independently refuted" \
+  EvidenceConsumptionIsExact \
+  --config=ReplayAdmissionPublicationUnconsumedEvidenceUnsafe.cfg --length=0 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-caller-context-unsafe \
+  "allowing caller-supplied invalid-block context is independently refuted" \
+  ValidatedReplayUsesAuthenticatedContext \
+  --config=ReplayAdmissionPublicationCallerContextUnsafe.cfg --length=3 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-early-publish-unsafe \
+  "publishing replay evidence before validation is independently refuted" \
+  PersistentEvidenceRequiresValidatedReplay \
+  --config=ReplayAdmissionPublicationEarlyPublishUnsafe.cfg --length=2 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-bare-row-unsafe \
+  "treating a bare storage row as validated replay evidence is independently refuted" \
+  PersistentEvidenceRequiresValidatedReplay \
+  --config=ReplayAdmissionPublicationBareRowUnsafe.cfg --length=1 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-peer-bytes-unsafe \
+  "publishing unauthenticated peer bytes is independently refuted" \
+  PersistentEvidenceRequiresValidatedReplay \
+  --config=ReplayAdmissionPublicationPeerBytesUnsafe.cfg --length=1 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-conflict-overwrite-unsafe \
+  "overwriting a conflicting execution row is independently refuted" \
+  ConflictingWritesNeverOverwrite \
+  --config=ReplayAdmissionPublicationConflictOverwriteUnsafe.cfg --length=6 ReplayAdmissionPublication.tla || overall=1
+run_expected_violation replay-admission-cache-first-unsafe \
+  "publishing cache state before durable evidence is independently refuted" \
+  CacheFollowsDurablePublication \
+  --config=ReplayAdmissionPublicationCacheFirstUnsafe.cfg --length=2 ReplayAdmissionPublication.tla || overall=1
+run_check deterministic-parallel-reduction \
+  "complete causal frontiers preserve canonical COMM results, located-authority exclusion, and disjoint parallelism" \
+  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction.cfg --length=10 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_expected_violation deterministic-parallel-reduction-arrival-unsafe \
+  "committing an incomplete arrival frontier is independently refuted" \
+  Inv_CommitRequiresCompleteFrontier \
+  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_arrival_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_expected_violation deterministic-parallel-reduction-order-unsafe \
+  "arbitrary commitment inside a conflict component is independently refuted" \
+  Inv_ConflictComponentCommitsInOrder \
+  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_order_unsafe_Apalache.cfg --length=6 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_expected_violation deterministic-parallel-reduction-checkpoint-unsafe \
+  "checkpointing before the reduction frontier is quiescent is independently refuted" \
+  Inv_CheckpointAtQuiescence \
+  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_checkpoint_unsafe_Apalache.cfg --length=1 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_expected_violation deterministic-parallel-reduction-serial-unsafe \
+  "global serialization that discards independent branch concurrency is independently refuted" \
+  Inv_FirstCommitRetainsDisjointParallelism \
+  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_serial_unsafe_Apalache.cfg --length=6 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_expected_violation deterministic-parallel-reduction-authority-unsafe \
+  "classifying operations with an overlapping purse region as disjoint is independently refuted" \
+  Inv_SharedAuthorityNeverRunsAsDisjoint \
+  --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_authority_unsafe_Apalache.cfg --length=7 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_check deterministic-evaluation-boundary \
+  "the evaluation epoch permit covers detached children and excludes partial checkpoints" \
+  --config=../deterministic_parallel_reduction/MC_EvaluationBoundary.cfg --length=4 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
+run_expected_violation deterministic-evaluation-boundary-cancel-unsafe \
+  "releasing the evaluation permit when only the root future is cancelled is independently refuted" \
+  Inv_CheckpointAtEvaluationQuiescence \
+  --config=../deterministic_parallel_reduction/MC_EvaluationBoundary_cancel_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
 run_check block-heap-lifecycle \
   "concurrent block completion bounds reclaimable heap without changing committed semantics" \
   --config=BlockHeapLifecycleApalache.cfg --length=12 BlockHeapLifecycle.tla || overall=1

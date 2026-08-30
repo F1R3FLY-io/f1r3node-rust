@@ -16,7 +16,7 @@ The production implementation refines their RevVault, wallet, purse, located
 stack, and phlogiston roles onto F1R3node's existing `SystemVault`, RSpace, and
 Casper architecture. It does not introduce a second token or ledger.
 
-![A sponsor funds authenticated outer and continuation purses, a gateway activates the retained lollipop capability, validators certify and settle each lane independently, and replay reproduces the same roots.](../theory/diagrams/d2-9-funding-flow-sequence.svg)
+![A sponsor funds authenticated outer and continuation purses, a gateway activates the retained lollipop capability, validators certify and settle each lane independently, and replay reproduces the same roots.](../casper/theory/diagrams/d2-9-funding-flow-sequence.svg)
 
 ## Actors, assets, and authority
 
@@ -85,38 +85,46 @@ The important cryptographic representations are:
 
 ### Deploy signatures and cosigned envelopes
 
-The client deterministically serializes `DeployDataProto`, including authority
-presentations, and signs the algorithm-specific message hash. Production deploy
-algorithms are `secp256k1` and `secp256k1:eth`; Schnorr and FROST are available
-only when the experimental feature is compiled. Ed25519 deploy signing is
-disabled.
+Protocol-v6.1 clients construct a canonical intent, authorization policy, and
+selected-member bitmap, then commit them into a 32-byte `DeployIdV6`. Each
+selected principal signs a scheme-separated message containing that identity.
+See [Protocol-v6.1 deploy identity and authority](../casper/theory/cost-accounting-impl/deploy-envelope-v6-1.md)
+for the exact bytes and validation algorithm.
+
+Production deploy algorithms are `secp256k1` and `secp256k1:eth`. Schnorr,
+FROST, and Ed25519 have allocated wire identifiers but are consensus-inactive;
+compiling an experimental feature cannot activate them.
 
 For a cosigned deploy, the node:
 
-1. orders signers by raw public-key bytes;
-2. rejects duplicate public keys;
-3. verifies every non-placeholder signature over the same canonical deploy
-message;
-4. checks an explicit threshold when the envelope is $`M`$-of-$`N`$; and
-5. derives funding authority only from signers whose signatures were present
-   and verified.
+1. canonicalizes each `(scheme, public key)` principal and orders principals by
+   their encoded bytes;
+2. rejects duplicate principals and duplicate underlying ground authorities;
+3. binds the complete policy and exact selected-member bitmap into
+   `DeployIdV6`;
+4. requires witnesses to correspond exactly to set bitmap bits and verifies
+   each witness under its declared active scheme;
+5. checks `AllOf` or an explicit $`M`$-of-$`N`$ threshold; and
+6. derives Rholang authority and RevVault funding only from selected verified
+   members.
 
 An empty threshold placeholder can describe the membership set but cannot make
 the corresponding wallet pay. This prevents an attacker from naming a victim's
 public key as an unsigned funding source.
 
-For `secp256k1`, the signing digest is Blake2b-256 of the canonical protobuf
-preimage and the signature uses DER-encoded ECDSA. For `secp256k1:eth`, the
-digest is Keccak-256 of the Ethereum length-prefixed canonical preimage and the
-wire signature is fixed-width $`r\mathbin\|s`$. The algorithm name is itself
-part of envelope interpretation, so validators do not guess between encodings.
-Experimental Schnorr and FROST variants use their own domain-separated hashes.
+For `secp256k1`, the signing digest is Blake2b-256 of the canonical v6.1
+signing preimage and the signature is strict minimal low-`s` DER. For
+`secp256k1:eth`, the digest is Keccak-256 after applying the Ethereum personal
+message prefix to the same domain-separated preimage, and the signature is the
+fixed-width low-`s` value $`r\mathbin\|s`$. Validators derive the algorithm
+from the policy member and never probe alternate encodings.
 
-The stable single-signer funding identity is `Ground(public_key)`, not the
-per-deploy wire signature. Consequently the same signer reaches the same purse
-across deployments. Multiple verified funders form a canonical left-associated
-compound authority; settlement retains the configured deterministic
-apportionment and never depends on arrival order.
+The stable funding identity is the selected principal's key-family ground
+authority, not the per-deploy signature. Consequently the same signer reaches
+the same purse across deployments, and native and Ethereum secp256k1 signing
+for the same key cannot double-count that purse. Multiple selected funders form
+one canonical compound authority; an unsigned policy member never contributes
+authority or funding.
 
 ### Vault-address derivation
 
@@ -142,18 +150,38 @@ authentication path.
 
 ### Reservation and certificate commitments
 
-State-bound admission derives a reservation identity with Blake2b-256 over a
-domain separator, the authenticated pre-state root, canonical program hash, and
-primary deploy signature:
+State-bound admission derives a reservation identity from the protocol-selected
+deployment identity. Protocol v6 has one formula for both prepared and
+provisional admission paths:
 
 ```text
 reservation_id := Blake2b256(
-    "f1r3node:vault-cost-reservation:v1" ||
+    "f1r3node:vault-cost-reservation:v2" ||
     pre_state_root ||
     program_hash ||
-    primary_signature
+    DeployIdV6
 )
 ```
+
+This binding prevents two threshold envelopes with the same empty member-zero
+witness from sharing a reservation. Replay independently canonicalizes the
+program and rejects a certificate unless its reservation matches the verified
+pre-state root, program hash, and `DeployIdV6` before any vault or RSpace
+mutation.
+
+Pre-v6 replay remains byte-compatible with both historical paths. Prepared
+reservations use the `v1` domain followed by the pre-state root, program hash,
+and primary signature. The older provisional path uses Blake2b-256 of the
+primary signature alone. These legacy forms are accepted only for legacy
+envelopes; neither is a valid protocol-v6 reservation.
+
+Fee authority is versioned by the same boundary. Legacy fee regions and event
+identities retain the primary-signature `v2` encoding. Protocol v6 derives a
+region scope with `f1r3node:cost-accounted-rho:deploy-scope:v1` and an event
+identity with `f1r3node:cost-accounted-rho:fee-event:v3`, each followed by the
+32-byte `DeployIdV6`. The private-name random-number generator (RNG) likewise uses
+`f1r3node:user-deploy-unforgeable:v6 || DeployIdV6`; legacy execution retains
+the original public-key-and-timestamp seed.
 
 Authority protocol version 8 derives the certificate identifier with a separate
 domain. The preimage commits to:
@@ -218,7 +246,7 @@ not permitted by the process design.
 
 ## Lifecycle overview
 
-![The runtime freezes one certificate-bound budget, charges every compute and byte event before mutation, atomically settles exact cost, and leaves later top-ups for later admissions.](../theory/diagrams/runtime-budget-lifecycle.svg)
+![The runtime freezes one certificate-bound budget, charges every compute and byte event before mutation, atomically settles exact cost, and leaves later top-ups for later admissions.](../casper/theory/diagrams/runtime-budget-lifecycle.svg)
 
 ### 1. Create or recover a wallet
 
@@ -594,9 +622,9 @@ remains a scalar projection; applications must not infer exact settlement from
 
 See [Cost-accounted Rholang](13-cost-model.md) for the two-dimensional cost
 semantics, [Vaults and Tokens](12-vaults-and-tokens.md) for contract APIs,
-[End-to-end native settlement](../theory/cost-accounting-impl/end-to-end-authority-settlement.md)
+[End-to-end native settlement](../casper/theory/cost-accounting-impl/end-to-end-authority-settlement.md)
 for the architecture contract, and
-[Formal Verification of Cost-Accounted Rho](../theory/cost-accounted-rho-verification.md)
+[Formal Verification of Cost-Accounted Rho](../casper/theory/cost-accounted-rho-verification.md)
 for the proof catalog.
 
 ## References

@@ -15,7 +15,6 @@ use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
     compute_deploys_checkpoint_with_effects, compute_parents_post_state,
-    compute_parents_post_state_with_effects,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -399,7 +398,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_without_skew, rejected_without_skew) = compute_parents_post_state(
+    let merged_without_skew = compute_parents_post_state(
         &block_store,
         parents.clone(),
         &snapshot_without_skew,
@@ -407,9 +406,13 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_without_skew,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state without finalized skew");
+    let state_without_skew = merged_without_skew.state;
+    let rejected_without_skew = merged_without_skew.rejected_user;
 
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
@@ -433,7 +436,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         .iter()
         .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
         .collect();
-    let (state_with_skew, rejected_with_skew) = compute_parents_post_state(
+    let merged_with_skew = compute_parents_post_state(
         &block_store,
         parents,
         &snapshot_with_skew,
@@ -441,9 +444,13 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_with_skew,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state with finalized skew");
+    let state_with_skew = merged_with_skew.state;
+    let rejected_with_skew = merged_with_skew.rejected_user;
 
     assert_eq!(
         state_without_skew, state_with_skew,
@@ -466,7 +473,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
     runtime_manager.clear_block_index_cache();
 
     let reversed_parents = vec![b3.clone(), b2.clone()];
-    let (state_reversed_order, rejected_reversed_order) = compute_parents_post_state(
+    let merged_reversed_order = compute_parents_post_state(
         &block_store,
         reversed_parents,
         &snapshot_without_skew,
@@ -474,9 +481,13 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         &latest_messages_without_skew,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state with reversed parent order");
+    let state_reversed_order = merged_reversed_order.state;
+    let rejected_reversed_order = merged_reversed_order.rejected_user;
 
     assert_eq!(
         state_without_skew, state_reversed_order,
@@ -795,7 +806,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 
-    let (merged_state, rejected) = compute_parents_post_state(
+    let merged = compute_parents_post_state(
         &block_store,
         vec![cover.clone(), side.clone()],
         &snapshot,
@@ -803,9 +814,13 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         &latest_messages,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("Failed to compute parents post-state");
+    let merged_state = merged.state;
+    let rejected = merged.rejected_user;
 
     assert!(
         rejected.is_empty(),
@@ -844,19 +859,22 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     runtime_manager.parents_post_state_cache.clear();
     runtime_manager.clear_block_index_cache();
 
-    let (rebased_state, rebased_rejected, rebased_rejected_state_effects) =
-        compute_parents_post_state_with_effects(
-            &block_store,
-            vec![stale.clone()],
-            &snapshot,
-            &runtime_manager,
-            &latest_messages,
-            None,
-            None,
-            None,
-        )
-        .await
-        .expect("Failed to rebase the stale merge on its finalized state floor");
+    let rebased = compute_parents_post_state(
+        &block_store,
+        vec![stale.clone()],
+        &snapshot,
+        &runtime_manager,
+        &latest_messages,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("Failed to rebase the stale merge on its finalized state floor");
+    let rebased_state = rebased.state;
+    let rebased_rejected = rebased.rejected_user;
+    let rebased_rejected_state_effects = rebased.rejected_state_effects;
 
     assert!(rebased_rejected
         .iter()
@@ -1076,6 +1094,8 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         &snapshot,
         &runtime_manager,
         &latest_messages,
+        None,
+        None,
         None,
         None,
     )

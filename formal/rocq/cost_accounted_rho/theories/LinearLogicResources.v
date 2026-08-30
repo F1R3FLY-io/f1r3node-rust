@@ -534,7 +534,7 @@ Qed.
    This section formalises the funding side of the acceptance gate that the
    Rust analyzer [rholang/.../accounting/delta_sigma.rs] (WD-D1) implements, and
    discharges the supply-realization obligations registered in
-   [docs/theory/cost-accounting-impl/supply-realization-c-d-handoff.md],
+   [docs/casper/theory/cost-accounting-impl/supply-realization-c-d-handoff.md],
    Decision 8.
 
    The demand here is the PURE [delta_s] of the cost-accounted-rho paper

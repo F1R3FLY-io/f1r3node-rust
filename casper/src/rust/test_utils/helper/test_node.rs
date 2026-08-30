@@ -28,7 +28,6 @@ use models::rust::casper::protocol::casper_message::{
 };
 // Phase 9 (A-3): deploy_storage uses parking_lot::Mutex.
 use parking_lot::Mutex as PlMutex;
-use prost::bytes::Bytes;
 use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -165,18 +164,12 @@ impl TestNode {
             CasperError::RuntimeError("No validator identity available".to_string())
         })?;
 
-        // Create block using block_creator. Pending-cosigner-metadata
-        // sidecar is empty here because this is a test-helper entry path
-        // that doesn't admit multi-sig deploys through admit_deploy_cosigned.
-        let empty_cosigner_metadata =
-            std::sync::Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
         block_creator::create(
             &snapshot,
             &validator,
             None, // dummy_deploy_opt
             self.deploy_storage.clone(),
             self.rejected_deploy_buffer.clone(),
-            empty_cosigner_metadata,
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
             false,
@@ -1109,12 +1102,6 @@ impl TestNode {
 
         let _ = test_network.add_peer(&current_peer_node);
 
-        // Multi-sig cosigner-metadata sidecar (§1.9.5). Shared `Arc` between
-        // the MultiParentCasperImpl and the proposer's ProductionBlockCreator
-        // so admission-time writes are visible at proposal-time reads.
-        let pending_cosigner_metadata =
-            Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-
         // Proposer
         let validator_id_opt = if is_read_only {
             None
@@ -1130,7 +1117,6 @@ impl TestNode {
                 block_store.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
-                pending_cosigner_metadata.clone(),
                 block_retriever.clone(),
                 tle.clone(),
                 connections_cell.clone(),
@@ -1148,6 +1134,7 @@ impl TestNode {
             tle.clone(),
             connections_cell.clone(),
             rp_conf.clone(),
+            None,
         );
 
         let block_processor = BlockProcessor::new(bp_dependencies);
@@ -1173,6 +1160,7 @@ impl TestNode {
                 required_sigs: 0,
             },
             sigs: vec![],
+            floor_seed: None,
         };
 
         let shard_conf = CasperShardConf {
@@ -1204,6 +1192,9 @@ impl TestNode {
         };
 
         let casper_impl = MultiParentCasperImpl {
+            divergence_monitor: std::sync::Arc::new(
+                crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
+            ),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
             runtime_manager: Arc::new(runtime_manager.clone()),
@@ -1211,13 +1202,17 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
-            pending_cosigner_metadata: pending_cosigner_metadata.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            deploy_lifecycle: Arc::new(
+                crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
             finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             finalization_schedule: Arc::new(
                 crate::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
@@ -1231,8 +1226,8 @@ impl TestNode {
                     u64,
                     BlockHash,
                     Vec<BlockHash>,
-                    Arc<DashSet<Bytes>>,
-                    Arc<DashSet<Bytes>>,
+                    Arc<DashSet<models::rust::deploy_id::DeployLookupId>>,
+                    Arc<DashSet<models::rust::deploy_id::DeployLookupId>>,
                 )>,
             )),
             active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -1246,6 +1241,7 @@ impl TestNode {
         let casper_for_engine = {
             let casper_guard = casper.clone();
             Arc::new(MultiParentCasperImpl {
+                divergence_monitor: casper_guard.divergence_monitor.clone(),
                 block_retriever: casper_guard.block_retriever.clone(),
                 event_publisher: casper_guard.event_publisher.clone(),
                 runtime_manager: casper_guard.runtime_manager.clone(),
@@ -1253,13 +1249,15 @@ impl TestNode {
                 block_store: casper_guard.block_store.clone(),
                 block_dag_storage: casper_guard.block_dag_storage.clone(),
                 deploy_storage: casper_guard.deploy_storage.clone(),
-                pending_cosigner_metadata: casper_guard.pending_cosigner_metadata.clone(),
                 rejected_deploy_buffer: casper_guard.rejected_deploy_buffer.clone(),
+                deploy_lifecycle: casper_guard.deploy_lifecycle.clone(),
                 casper_buffer_storage: casper_guard.casper_buffer_storage.clone(),
                 validator_id: casper_guard.validator_id.clone(),
                 casper_shard_conf: casper_guard.casper_shard_conf.clone(),
                 approved_block: casper_guard.approved_block.clone(),
                 finalization_in_progress: casper_guard.finalization_in_progress.clone(),
+                finalizer_task_in_progress: casper_guard.finalizer_task_in_progress.clone(),
+                finalizer_task_queued: casper_guard.finalizer_task_queued.clone(),
                 recovery_sync_active: casper_guard.recovery_sync_active.clone(),
                 finalization_schedule: casper_guard.finalization_schedule.clone(),
                 certificate_verification_schedule: casper_guard

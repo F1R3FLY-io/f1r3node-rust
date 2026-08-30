@@ -118,9 +118,6 @@ pub struct CasperConf {
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
 
-    #[serde(rename = "finalizer", default)]
-    pub finalizer: FinalizerConf,
-
     #[serde(
         rename = "synchrony-recovery-stall-window",
         deserialize_with = "de_duration",
@@ -514,8 +511,18 @@ pub struct HeartbeatConf {
         default = "default_stale_recovery_min_interval"
     )]
     pub stale_recovery_min_interval: Duration,
-    /// When pending deploys land, opens a grace window during which the lag cap
-    /// relaxes to `advanced.deploy_recovery_max_lag`.
+    /// Time without a new finalized block before one additional, deterministic
+    /// convergence proposal is allowed. This does not delay or replace the
+    /// routine stale-LFB recovery governed by `max_lfb_age`.
+    #[serde(
+        rename = "finality-progress-timeout",
+        deserialize_with = "de_duration",
+        default = "default_finality_progress_timeout"
+    )]
+    pub finality_progress_timeout: Duration,
+    /// When pending deploys land, opens a grace window during which lag caps
+    /// relax to `advanced.deploy_recovery_max_lag` and self-propose-cooldown
+    /// is bypassable. Burst-tolerance budget.
     #[serde(
         rename = "deploy-finalization-grace",
         deserialize_with = "de_duration",
@@ -532,18 +539,24 @@ impl Default for HeartbeatConf {
         Self {
             enabled: false,
             check_interval: Duration::from_secs(5),
-            max_lfb_age: Duration::from_secs(15),
+            max_lfb_age: Duration::from_secs(5),
             self_propose_cooldown: default_self_propose_cooldown(),
             stale_recovery_min_interval: default_stale_recovery_min_interval(),
+            finality_progress_timeout: default_finality_progress_timeout(),
             deploy_finalization_grace: default_deploy_finalization_grace(),
             advanced: HeartbeatAdvancedConf::default(),
         }
     }
 }
 
-fn default_self_propose_cooldown() -> Duration { Duration::from_secs(15) }
+// Code fallbacks MUST equal the shipped defaults.conf values (pinned by the
+// embedded-defaults test): a sparse operator conf omitting a key must get
+// the same behavior every tested deployment runs, not an untested stranger.
+fn default_self_propose_cooldown() -> Duration { Duration::from_secs(3) }
 
-fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(12) }
+fn default_stale_recovery_min_interval() -> Duration { Duration::from_secs(3) }
+
+fn default_finality_progress_timeout() -> Duration { Duration::from_secs(30) }
 
 fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 
@@ -559,6 +572,14 @@ fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 /// `cap < 0` is never true, leaving pending deploys unproposed).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeartbeatAdvancedConf {
+    /// When this validator is already ahead of LFB, how many blocks of lag
+    /// tolerate before frontier-follow proposing is throttled.
+    #[serde(
+        rename = "frontier-chase-max-lag",
+        deserialize_with = "de_non_negative_i64",
+        default = "default_frontier_chase_max_lag"
+    )]
+    pub frontier_chase_max_lag: i64,
     /// If the validator has pending deploys but is already > N blocks
     /// ahead of LFB, suppress pending-deploy proposing. Prevents lag
     /// amplification: more deploys → more blocks → wider DAG → slower
@@ -596,12 +617,15 @@ pub struct HeartbeatAdvancedConf {
 impl Default for HeartbeatAdvancedConf {
     fn default() -> Self {
         Self {
+            frontier_chase_max_lag: default_frontier_chase_max_lag(),
             pending_deploy_max_lag: default_pending_deploy_max_lag(),
             deploy_recovery_max_lag: default_deploy_recovery_max_lag(),
             empty_frontier_max_unfinalized_blocks: default_empty_frontier_max_unfinalized_blocks(),
         }
     }
 }
+
+fn default_frontier_chase_max_lag() -> i64 { 20 }
 
 fn default_pending_deploy_max_lag() -> i64 { 20 }
 
@@ -656,7 +680,6 @@ where D: serde::Deserializer<'de> {
     }
     Ok(value)
 }
-
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
     use serde::de::Error as _;

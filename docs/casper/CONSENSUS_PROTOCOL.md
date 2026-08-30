@@ -111,7 +111,7 @@ block-height activation, node-local accounting switch, A/B mode, or mixed-versio
 running interval. The TLA+ and Rocq models are cataloged in
 [`docs/formal-verification.md`](../formal-verification.md); the normative rules
 are in
-[`docs/theory/finalized-floor/finalized-floor-specification.md`](../theory/finalized-floor/finalized-floor-specification.md#52-protocol-version-lifecycle).
+[`docs/casper/theory/finalized-floor/finalized-floor-specification.md`](theory/finalized-floor/finalized-floor-specification.md#52-protocol-version-lifecycle).
 
 ### Key Design Point
 
@@ -286,7 +286,7 @@ when it satisfies a live request, parses with canonical bounded shape, and hashe
 to the requested digest. Concurrent duplicate responses converge on the same
 content-addressed record and schedule the waiting block at most once. The full
 state machine and implementation mapping are in
-[`finalization-certificate-retrieval.md`](../theory/finalized-floor/finalization-certificate-retrieval.md).
+[`finalization-certificate-retrieval.md`](theory/finalized-floor/finalization-certificate-retrieval.md).
 
 ---
 
@@ -454,7 +454,7 @@ The exact cardinality still fails closed. This projection does not alter block
 bytes, parent selection, clique voting, fault tolerance, or finality; it ensures
 that an observable zero-effect rejection cannot make a valid parent impossible
 to index for the next proposal. See DR-53 and
-[`admission-effect-alignment.md`](../theory/cost-accounting-impl/admission-effect-alignment.md).
+[`admission-effect-alignment.md`](theory/cost-accounting-impl/admission-effect-alignment.md).
 
 ---
 
@@ -522,7 +522,7 @@ proof wakes when an eligible carrier for that exact floor and state is admitted,
 independent of its digest. These rules preserve asynchronous validator
 concurrency without adding a vote, changing clique weight, or canonicalizing
 node-local evidence. The complete rule and verification evidence are in
-[Witness-equivalent certificate carriers](../theory/finalized-floor/certificate-carrier-equivalence.md).
+[Witness-equivalent certificate carriers](theory/finalized-floor/certificate-carrier-equivalence.md).
 
 Dependency maintenance is not a consensus vote and does not impose a validator
 ordering. Each local maintenance invocation freezes its visible ordinary-block
@@ -578,11 +578,11 @@ neither projection. Classifying floor ancestry before those intrinsic checks
 would let a multiply-invalid stale block masquerade as an admissible parent.
 
 The complete normative rules and their TLA+/Apalache, Rocq, and Rust evidence are
-in the [finalized-floor specification](../theory/finalized-floor/finalized-floor-specification.md)
-and [verification dossier](../theory/finalized-floor/finalized-floor-verification.md).
+in the [finalized-floor specification](theory/finalized-floor/finalized-floor-specification.md)
+and [verification dossier](theory/finalized-floor/finalized-floor-verification.md).
 The publication transaction, recovery cursors, effect receipts, and concurrency
 boundary are specified in
-[Atomic finalization and crash recovery](../theory/finalized-floor/finalization-atomicity-and-recovery.md).
+[Atomic finalization and crash recovery](theory/finalized-floor/finalization-atomicity-and-recovery.md).
 
 ### Fault Tolerance Values
 
@@ -669,6 +669,12 @@ observing it cannot authorize a local support proposal.
 
 ### Recovery permits and leader rotation
 
+This section specifies finality-recovery heartbeat proposals. It does not
+authorize a rejected deploy retry. A rejected source carrier gives retry
+custody only to that carrier's sender. Distinct carrier owners can retry
+independent work concurrently. Ordinary inclusion and heartbeat permits keep
+their deterministic leader rotation.
+
 The heartbeat derives one canonical authority committee from the captured LFB's
 post-state using the same `floor_committee` function used by proposal and receive
 authority. It filters the LFB-state PoS bonds to active validators, then orders
@@ -747,7 +753,7 @@ reservation, or settlement evidence; its forced follow-up rescans current
 storage against a fresh snapshot. Consequently, the liveness repair cannot
 double-charge, rescue an underfunded occurrence with a later top-up, or change
 the deterministic state transition. See
-[End-to-end cost authority and native RevVault settlement](../theory/cost-accounting-impl/end-to-end-authority-settlement.md#proposal-scheduling-and-settlement-independence).
+[End-to-end cost authority and native RevVault settlement](theory/cost-accounting-impl/end-to-end-authority-settlement.md#proposal-scheduling-and-settlement-independence).
 
 ### Synchrony Recovery
 

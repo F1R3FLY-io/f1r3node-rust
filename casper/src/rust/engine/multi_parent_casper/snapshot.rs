@@ -12,14 +12,14 @@ use std::time::SystemTime;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::pending_deploy::PendingDeploy;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
+use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
-use prost::bytes::Bytes;
 use shared::rust::dag::dag_ops;
 
 use super::types::MultiParentCasperImpl;
@@ -255,7 +255,7 @@ fn local_rejected_buffer_has_recoverable_deploys(
     deploy_lifespan: i64,
     protocol_version: i64,
 ) -> Result<bool, CasperError> {
-    let buffered_deploys: HashSet<Signed<DeployData>> = {
+    let buffered_deploys: HashSet<PendingDeploy> = {
         let buffer_guard = rejected_deploy_buffer
             .lock()
             .map_err(|err| CasperError::LockError(err.to_string()))?;
@@ -272,9 +272,9 @@ fn local_rejected_buffer_has_recoverable_deploys(
     let candidates: Vec<_> = buffered_deploys
         .iter()
         .filter(|deploy| {
-            deploy.data.valid_after_block_number < current_block_number
-                && deploy.data.valid_after_block_number > earliest_block_number
-                && !deploy.data.is_expired_at(current_time_millis)
+            deploy.data().valid_after_block_number < current_block_number
+                && deploy.data().valid_after_block_number > earliest_block_number
+                && !deploy.data().is_expired_at(current_time_millis)
         })
         .collect();
     if candidates.is_empty() {
@@ -282,7 +282,7 @@ fn local_rejected_buffer_has_recoverable_deploys(
     }
     let scan_floor = candidates
         .iter()
-        .map(|deploy| deploy.data.valid_after_block_number)
+        .map(|deploy| deploy.data().valid_after_block_number)
         .min()
         .map(|height| height.min(earliest_block_number))
         .unwrap_or(earliest_block_number);
@@ -296,7 +296,7 @@ fn local_rejected_buffer_has_recoverable_deploys(
 
     Ok(candidates
         .iter()
-        .any(|deploy| !canonical_won.contains(&deploy.sig)))
+        .any(|deploy| !canonical_won.contains(deploy.typed_deploy_id())))
 }
 
 fn deploy_scope_cache_key_matches(
@@ -654,6 +654,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // up-front and borrow into the LCA call.
     let parent_hashes: Vec<BlockHash> = parents.iter().map(|b| b.block_hash.clone()).collect();
     let parent_metas = dag.lookups_unsafe(parent_hashes.clone())?;
+    let approved_meta =
+        models::rust::block_metadata::BlockMetadata::from_block(&this.approved_block, None, None);
 
     let lca = if parent_metas.is_empty() {
         this.approved_block.block_hash.clone()
@@ -661,6 +663,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         crate::rust::util::dag_operations::DagOperations::lowest_universal_common_ancestor_many(
             &parent_metas,
             &dag,
+            &approved_meta,
         )
         .await?
         .block_hash
@@ -699,7 +702,10 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
 
     let (deploys_in_scope, rejected_in_scope) = {
         let current_dag_generation = this.block_dag_storage.current_generation();
-        let cached: Option<(Arc<dashmap::DashSet<Bytes>>, Arc<dashmap::DashSet<Bytes>>)> = {
+        let cached: Option<(
+            Arc<dashmap::DashSet<DeployLookupId>>,
+            Arc<dashmap::DashSet<DeployLookupId>>,
+        )> = {
             // C16: `deploys_in_scope_cache` is a `parking_lot::Mutex` —
             // no poison propagation, `.lock()` returns the guard
             // directly. The prior `std::sync::Mutex` migration's
@@ -748,7 +754,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             // `InvalidRepeatDeploy` detection.
             let neighbor_fn = |block_metadata: &models::rust::block_metadata::BlockMetadata| -> Result<
                 Vec<models::rust::block_metadata::BlockMetadata>,
-                shared::rust::store::key_value_store::KvStoreError,
+                CasperError,
             > {
                 proto_util::get_parent_metadatas_above_block_number(
                     block_metadata,
@@ -761,17 +767,21 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
 
             let all_deploys = Arc::new(dashmap::DashSet::new());
             for block_metadata in traversal_result {
-                let block_deploy_sigs = this
+                let block = this
                     .block_store
-                    .deploy_sigs(&block_metadata.block_hash)?
+                    .get(&block_metadata.block_hash)?
                     .ok_or_else(|| {
-                    CasperError::RuntimeError(format!(
-                        "Missing block {} during deploys_in_scope traversal",
-                        PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
-                    ))
-                })?;
-                for deploy_sig in block_deploy_sigs {
-                    all_deploys.insert(deploy_sig.into());
+                        CasperError::RuntimeError(format!(
+                            "Missing block {} during deploys_in_scope traversal",
+                            PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
+                        ))
+                    })?;
+                for deploy in &block.body.deploys {
+                    all_deploys.insert(
+                        deploy
+                            .deploy_id_for_protocol(block.header.version)
+                            .map_err(CasperError::RuntimeError)?,
+                    );
                 }
             }
 
@@ -782,7 +792,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 earliest_block_number,
                 this.casper_shard_conf.casper_version,
             )?;
-            let all_rejected: Arc<dashmap::DashSet<Bytes>> =
+            let all_rejected: Arc<dashmap::DashSet<DeployLookupId>> =
                 Arc::new(canonical_rejected.into_iter().collect());
 
             // C16: parking_lot::Mutex — no poison propagation.
@@ -889,6 +899,7 @@ mod tests {
         BlockDagKeyValueStorage, InsertMode,
     };
     use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+    use block_storage::rust::deploy::pending_deploy::PendingDeploy;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use models::rust::block_implicits;
     use models::rust::block_metadata::BlockMetadata;
@@ -1367,7 +1378,11 @@ mod tests {
         rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .add(vec![expired, old, future])
+            .add(vec![
+                PendingDeploy::from_legacy(expired).expect("expired pending deploy"),
+                PendingDeploy::from_legacy(old).expect("old pending deploy"),
+                PendingDeploy::from_legacy(future).expect("future pending deploy"),
+            ])
             .expect("seed buffer");
 
         assert!(!local_rejected_buffer_has_recoverable_deploys(
@@ -1378,7 +1393,7 @@ mod tests {
             20,
             now,
             50,
-            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION - 1,
         )
         .expect("check unselectable backlog"));
 
@@ -1392,7 +1407,9 @@ mod tests {
         rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .add(vec![fresh])
+            .add(vec![
+                PendingDeploy::from_legacy(fresh).expect("fresh pending deploy")
+            ])
             .expect("seed fresh");
 
         assert!(local_rejected_buffer_has_recoverable_deploys(
@@ -1403,7 +1420,7 @@ mod tests {
             20,
             now,
             50,
-            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION - 1,
         )
         .expect("check selectable backlog"));
     }
@@ -1448,7 +1465,9 @@ mod tests {
         rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .add(vec![canonical])
+            .add(vec![
+                PendingDeploy::from_legacy(canonical).expect("canonical pending deploy")
+            ])
             .expect("seed buffer");
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -1463,7 +1482,7 @@ mod tests {
             20,
             now,
             50,
-            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION - 1,
         )
         .expect("check canonical backlog"));
     }

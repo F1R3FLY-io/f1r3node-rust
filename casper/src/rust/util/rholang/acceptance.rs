@@ -2,7 +2,7 @@
 //!
 //! The CONSENSUS-CRITICAL block-assembly funding gate of the Cost-Accounted Rho
 //! Calculus (spec `publications/cost-accounting/cost-accounted-rho.tex` §7.6/§7.7;
-//! authoritative design `docs/theory/cost-accounting-impl/wd-d2-acceptance-gate.md`).
+//! authoritative design `docs/casper/theory/cost-accounting-impl/wd-d2-acceptance-gate.md`).
 //! Wires three landed pieces into one decision:
 //!   * the PURE per-signature demand analyzer `Δ_s` + Split/Join supply closure
 //!     (`rholang/.../accounting/delta_sigma.rs`, WD-D1);
@@ -62,7 +62,7 @@
 //! debit `Σ⟦s⟧ -= Σ Δ_s`. The SAME function runs on play and replay
 //! ([`recompute_settlement_debits`]) ⇒ byte-identical debits (fork safety).
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
@@ -76,6 +76,7 @@ use models::casper::{
 use models::rhoapi::{CostAuthority, CostSignature, Par};
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::{
@@ -129,8 +130,8 @@ pub struct AdmissionOutcome {
     /// `compute_deploys_checkpoint_cosigned` so execution order matches the
     /// order the funding decision was made in.
     pub admitted: Vec<Cosigned<DeployData>>,
-    /// The PRIMARY signatures of gate-rejected deploys.
-    pub rejected: Vec<Bytes>,
+    /// The typed identities of gate-rejected deploys.
+    pub rejected: Vec<DeployLookupId>,
     /// The per-lane cost debit, keyed by `SigKey` (= `Sig::lane_hash`). The
     /// physical draw may consume prepaid located stacks or canonical
     /// SystemVault balance and is recomputed identically on replay.
@@ -144,6 +145,91 @@ pub struct AdmissionOutcome {
     pub fee_debits: BTreeMap<SigKey, SettlementDebit>,
     pub stack_pops: BTreeMap<[u8; 32], u64>,
     pub purse_stacks: BTreeMap<[u8; 32], supply::PurseStack>,
+}
+
+pub(crate) fn admission_deploy_id(deploy: &Cosigned<DeployData>) -> DeployLookupId {
+    if deploy.is_envelope_bound() {
+        let commitment = deploy
+            .envelope_commitment()
+            .expect("envelope-bound admission candidate");
+        DeployLookupId::V6(
+            DeployIdV6::try_from(commitment.as_ref())
+                .expect("validated protocol-v6 admission identity"),
+        )
+    } else {
+        DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.primary().sig.to_vec()))
+    }
+}
+
+fn v6_authority_reservation_id(
+    deploy: &Cosigned<DeployData>,
+    pre_state_root: [u8; 32],
+    program_hash: [u8; 32],
+) -> [u8; 32] {
+    let mut reservation_entropy = Vec::new();
+    reservation_entropy.extend_from_slice(b"f1r3node:vault-cost-reservation:v2");
+    reservation_entropy.extend_from_slice(&pre_state_root);
+    reservation_entropy.extend_from_slice(&program_hash);
+    reservation_entropy.extend_from_slice(
+        &deploy
+            .envelope_commitment()
+            .expect("validated protocol-v6 reservation identity"),
+    );
+    Blake2b256::hash(reservation_entropy)
+        .try_into()
+        .expect("Blake2b-256 digest length")
+}
+
+fn prepared_authority_reservation_id(
+    deploy: &Cosigned<DeployData>,
+    pre_state_root: [u8; 32],
+    program_hash: [u8; 32],
+) -> [u8; 32] {
+    if deploy.is_envelope_bound() {
+        return v6_authority_reservation_id(deploy, pre_state_root, program_hash);
+    }
+    let mut reservation_entropy = Vec::new();
+    reservation_entropy.extend_from_slice(b"f1r3node:vault-cost-reservation:v1");
+    reservation_entropy.extend_from_slice(&pre_state_root);
+    reservation_entropy.extend_from_slice(&program_hash);
+    reservation_entropy.extend_from_slice(&deploy.primary().sig);
+    Blake2b256::hash(reservation_entropy)
+        .try_into()
+        .expect("Blake2b-256 digest length")
+}
+
+fn provisional_authority_reservation_id(
+    deploy: &Cosigned<DeployData>,
+    pre_state_root: [u8; 32],
+    program_hash: [u8; 32],
+) -> [u8; 32] {
+    if deploy.is_envelope_bound() {
+        v6_authority_reservation_id(deploy, pre_state_root, program_hash)
+    } else {
+        Blake2b256::hash(deploy.primary().sig.to_vec())
+            .try_into()
+            .expect("Blake2b-256 digest length")
+    }
+}
+
+pub(crate) fn verify_authority_reservation_id(
+    deploy: &Cosigned<DeployData>,
+    pre_state_root: [u8; 32],
+    program_hash: [u8; 32],
+    actual: [u8; 32],
+) -> Result<(), CasperError> {
+    let prepared = prepared_authority_reservation_id(deploy, pre_state_root, program_hash);
+    let valid = actual == prepared
+        || (!deploy.is_envelope_bound()
+            && actual
+                == provisional_authority_reservation_id(deploy, pre_state_root, program_hash));
+    if valid {
+        Ok(())
+    } else {
+        Err(CasperError::InvalidCostSettlement(
+            "authority certificate reservation identity is invalid".to_string(),
+        ))
+    }
 }
 
 /// The replay-recomputed debits: the COST settlement (burned) and the FEE carve
@@ -916,14 +1002,8 @@ pub async fn prepare_authority_reservation(
     let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
         .try_into()
         .expect("Blake2b-256 digest length");
-    let mut reservation_entropy = Vec::new();
-    reservation_entropy.extend_from_slice(b"f1r3node:vault-cost-reservation:v1");
-    reservation_entropy.extend_from_slice(&supply_reader.pre_state_root());
-    reservation_entropy.extend_from_slice(&program_hash);
-    reservation_entropy.extend_from_slice(deploy.primary().sig.as_ref());
-    let reservation_id: [u8; 32] = Blake2b256::hash(reservation_entropy)
-        .try_into()
-        .expect("Blake2b-256 digest length");
+    let reservation_id =
+        prepared_authority_reservation_id(deploy, supply_reader.pre_state_root(), program_hash);
 
     let mut signatures = static_authority_signatures(&canonical)
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
@@ -1063,14 +1143,8 @@ pub async fn prepare_state_bound_authority_reservation(
     let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
         .try_into()
         .expect("Blake2b-256 digest length");
-    let mut reservation_entropy = Vec::new();
-    reservation_entropy.extend_from_slice(b"f1r3node:vault-cost-reservation:v1");
-    reservation_entropy.extend_from_slice(&supply_reader.pre_state_root());
-    reservation_entropy.extend_from_slice(&program_hash);
-    reservation_entropy.extend_from_slice(deploy.primary().sig.as_ref());
-    let reservation_id: [u8; 32] = Blake2b256::hash(reservation_entropy)
-        .try_into()
-        .expect("Blake2b-256 digest length");
+    let reservation_id =
+        prepared_authority_reservation_id(deploy, supply_reader.pre_state_root(), program_hash);
 
     let fee_event = fee_authority_event(deploy)?;
     let mut funding_events = witness.events.clone();
@@ -1226,12 +1300,8 @@ async fn canonical_program_for_deploy(
     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     let canonical = RhoGslt.canonicalize_for_funding(&normalized);
     let urn_map = supply_reader.urn_map().await?;
-    resolve_lexical_names_for_funding(
-        &canonical,
-        Tools::unforgeable_name_rng(&deploy.primary().pk, deploy.data().time_stamp),
-        &urn_map,
-    )
-    .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))
+    resolve_lexical_names_for_funding(&canonical, Tools::user_deploy_rng(deploy), &urn_map)
+        .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))
 }
 
 #[derive(Clone, Copy)]
@@ -1256,18 +1326,16 @@ struct RealizedCost {
 }
 
 /// Re-impose the consensus-canonical deploy order on a `HashSet`-sourced
-/// candidate list. VERBATIM the `block_creator.rs:315-324` comparator:
-/// `valid_after_block_number`, then `time_stamp`, then the primary `sig` bytes
-/// (the stable tie-breaker). For a `Cosigned`, the primary signature is
-/// `primary().sig` — equal to the on-disk `ProcessedDeploy.deploy.sig`, so play
-/// and replay sort identically.
+/// candidate list. The order is `valid_after_block_number`, then `time_stamp`,
+/// then the protocol-selected typed deploy identity, so play and replay sort
+/// identically without treating a v6 witness as the deployment identity.
 pub fn canonical_sort(deploys: &mut [Cosigned<DeployData>]) {
     deploys.sort_by(|a, b| {
         a.data()
             .valid_after_block_number
             .cmp(&b.data().valid_after_block_number)
             .then_with(|| a.data().time_stamp.cmp(&b.data().time_stamp))
-            .then_with(|| a.primary().sig.cmp(&b.primary().sig))
+            .then_with(|| admission_deploy_id(a).cmp(&admission_deploy_id(b)))
     });
 }
 
@@ -1275,7 +1343,7 @@ fn state_bound_evidence(
     ordered: &[Cosigned<DeployData>],
     processed: &[ProcessedDeploy],
     initial_root: [u8; 32],
-) -> Result<BTreeMap<Vec<u8>, VecDeque<StateBoundCostEvidence>>, CasperError> {
+) -> Result<BTreeMap<DeployLookupId, VecDeque<StateBoundCostEvidence>>, CasperError> {
     if ordered.len() != processed.len() {
         return Err(CasperError::InvalidCostSettlement(format!(
             "state-bound evidence count {} does not match candidate count {}",
@@ -1285,7 +1353,8 @@ fn state_bound_evidence(
     }
 
     let mut expected_pre = initial_root;
-    let mut evidence = BTreeMap::<Vec<u8>, VecDeque<StateBoundCostEvidence>>::new();
+    let mut evidence = BTreeMap::<DeployLookupId, VecDeque<StateBoundCostEvidence>>::new();
+    let mut seen = BTreeSet::new();
     for (candidate, witness) in ordered.iter().zip(processed) {
         let reconstructed = witness
             .to_cosigned()
@@ -1335,8 +1404,15 @@ fn state_bound_evidence(
                     .to_string(),
             ));
         }
+        let deploy_id = admission_deploy_id(candidate);
+        if matches!(deploy_id, DeployLookupId::V6(_)) && !seen.insert(deploy_id.clone()) {
+            return Err(CasperError::InvalidCostSettlement(
+                "state-bound candidate set contains a duplicate protocol-v6 deploy identity"
+                    .to_string(),
+            ));
+        }
         evidence
-            .entry(candidate.primary().sig.to_vec())
+            .entry(deploy_id)
             .or_default()
             .push_back(StateBoundCostEvidence {
                 cost,
@@ -1371,7 +1447,7 @@ where
     let funding: Sig = accounting::funding_sig(&cosigned);
 
     // F-A funding/capability separation (gate invariant (a) — red-team M2,
-    // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+    // `docs/casper/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
     // §3/§6): the funding `Sig` that keys an authority lane MUST be a
     // funding-grammar signature (`g|#P|s∘s` = `Unit`/`Ground`/`Quote` atoms
     // folded by `And`). A value/capability type-logic connective
@@ -1456,9 +1532,8 @@ where
             let program_hash: [u8; 32] = Blake2b256::hash(desugared.encode_to_vec())
                 .try_into()
                 .expect("Blake2b-256 digest length");
-            let reservation_id: [u8; 32] = Blake2b256::hash(cosigned.primary().sig.to_vec())
-                .try_into()
-                .expect("Blake2b-256 digest length");
+            let reservation_id =
+                provisional_authority_reservation_id(&cosigned, pre_state_root, program_hash);
             let certified = reservation.map(|allocation| CertifiedDemand {
                 canonical: desugared,
                 funding,
@@ -1796,7 +1871,7 @@ where
 /// pool has zero supply and cannot fund positive demand or the fixed fee.
 ///
 /// Returns the [`AdmissionOutcome`]: admitted envelopes in canonical order, the
-/// rejected primary sigs, and the per-pool settlement debits.
+/// rejected typed deploy identities, and the per-pool settlement debits.
 pub async fn admit_by_funding(
     deploys: Vec<Cosigned<DeployData>>,
     supply_reader: &dyn SupplyReader,
@@ -1811,15 +1886,33 @@ pub(crate) fn fee_authority_event(
 ) -> Result<AuthorityEvent<SigKey>, CasperError> {
     let signature = sig_to_cost_signature(&accounting::funding_sig(deploy))
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-    let region = cost_region(&signature, deploy.primary().sig.as_ref(), u32::MAX)
+    let deploy_id = admission_deploy_id(deploy);
+    let region_scope = match &deploy_id {
+        DeployLookupId::Legacy(signature) => signature.as_bytes().to_vec(),
+        DeployLookupId::V6(deploy_id) => {
+            let mut scope = Vec::new();
+            scope.extend_from_slice(b"f1r3node:cost-accounted-rho:deploy-scope:v1");
+            scope.extend_from_slice(deploy_id.as_ref());
+            Blake2b256::hash(scope)
+        }
+    };
+    let region = cost_region(&signature, &region_scope, u32::MAX)
         .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
     let authority = canonical_authority(&CostAuthority {
         regions: vec![region],
     })
     .map_err(|error| CasperError::InvalidCostSettlement(error.to_string()))?;
-    let mut identity = Vec::with_capacity(deploy.primary().sig.len() + 32);
-    identity.extend_from_slice(b"f1r3node:cost-accounted-rho:fee-event:v2");
-    identity.extend_from_slice(deploy.primary().sig.as_ref());
+    let mut identity = Vec::new();
+    match &deploy_id {
+        DeployLookupId::Legacy(signature) => {
+            identity.extend_from_slice(b"f1r3node:cost-accounted-rho:fee-event:v2");
+            identity.extend_from_slice(signature.as_bytes());
+        }
+        DeployLookupId::V6(deploy_id) => {
+            identity.extend_from_slice(b"f1r3node:cost-accounted-rho:fee-event:v3");
+            identity.extend_from_slice(deploy_id.as_ref());
+        }
+    }
     Ok(AuthorityEvent {
         event_id: authority_digest(&Blake2b256::hash(identity), "fee event identity")?,
         debit: authority_demand(&authority)
@@ -1915,8 +2008,9 @@ async fn admit_state_bound_authority(
     let mut pool_signatures = BTreeMap::new();
 
     for (index, deploy) in ordered.into_iter().enumerate() {
+        let deploy_id = admission_deploy_id(&deploy);
         let evidence = state_bounds
-            .get_mut(deploy.primary().sig.as_ref())
+            .get_mut(&deploy_id)
             .and_then(VecDeque::pop_front)
             .ok_or_else(|| {
                 CasperError::InvalidCostSettlement(
@@ -1947,6 +2041,11 @@ async fn admit_state_bound_authority(
             Some(&evidence),
         );
         candidates.push((index, candidate, evidence, fee_event));
+    }
+    if state_bounds.values().any(|queue| !queue.is_empty()) {
+        return Err(CasperError::InvalidCostSettlement(
+            "state-bound authority evidence was not consumed exactly once".to_string(),
+        ));
     }
 
     let mut channels = BTreeMap::new();
@@ -1992,7 +2091,7 @@ async fn admit_state_bound_authority(
             closed_groups.insert(candidate.sig_key);
             outcome
                 .rejected
-                .push(candidate.cosigned.primary().sig.clone());
+                .push(admission_deploy_id(&candidate.cosigned));
             continue;
         }
         let physical_settlement = match allocate_physical_settlement(
@@ -2003,7 +2102,7 @@ async fn admit_state_bound_authority(
             Ok(settlement) => settlement,
             Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
                 closed_groups.insert(candidate.sig_key);
-                outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+                outcome.rejected.push(admission_deploy_id(&candidate.cosigned));
                 continue;
             }
             Err(error) => {
@@ -2022,7 +2121,7 @@ async fn admit_state_bound_authority(
             Ok(draw) => draw,
             Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
                 closed_groups.insert(candidate.sig_key);
-                outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+                outcome.rejected.push(admission_deploy_id(&candidate.cosigned));
                 continue;
             }
             Err(error) => return Err(CasperError::InvalidCostSettlement(error.to_string())),
@@ -2034,7 +2133,7 @@ async fn admit_state_bound_authority(
             Ok(draw) => draw,
             Err(rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority) => {
                 closed_groups.insert(candidate.sig_key);
-                outcome.rejected.push(candidate.cosigned.primary().sig.clone());
+                outcome.rejected.push(admission_deploy_id(&candidate.cosigned));
                 continue;
             }
             Err(error) => {
@@ -2122,14 +2221,14 @@ impl StateBoundAuthoritySession {
             && !self.closed_groups.contains(&key);
         if !valid {
             self.closed_groups.insert(key);
-            self.outcome.rejected.push(deploy.primary().sig.clone());
+            self.outcome.rejected.push(admission_deploy_id(deploy));
         }
         valid
     }
 
     pub fn reject_exhausted(&mut self, deploy: &Cosigned<DeployData>) {
         self.closed_groups.insert(Self::group_key(deploy));
-        self.outcome.rejected.push(deploy.primary().sig.clone());
+        self.outcome.rejected.push(admission_deploy_id(deploy));
     }
 
     async fn load_signatures(
@@ -2228,7 +2327,7 @@ impl StateBoundAuthoritySession {
                 rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority,
             ) => {
                 self.closed_groups.insert(Self::group_key(deploy));
-                self.outcome.rejected.push(deploy.primary().sig.clone());
+                self.outcome.rejected.push(admission_deploy_id(deploy));
                 return Ok(false);
             }
             Err(error) => {
@@ -2247,7 +2346,7 @@ impl StateBoundAuthoritySession {
                 rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority,
             ) => {
                 self.closed_groups.insert(Self::group_key(deploy));
-                self.outcome.rejected.push(deploy.primary().sig.clone());
+                self.outcome.rejected.push(admission_deploy_id(deploy));
                 return Ok(false);
             }
             Err(error) => return Err(CasperError::InvalidCostSettlement(error.to_string())),
@@ -2264,7 +2363,7 @@ impl StateBoundAuthoritySession {
                 rholang::rust::interpreter::accounting::authority::AuthorityError::InsufficientAuthority,
             ) => {
                 self.closed_groups.insert(Self::group_key(deploy));
-                self.outcome.rejected.push(deploy.primary().sig.clone());
+                self.outcome.rejected.push(admission_deploy_id(deploy));
                 return Ok(false);
             }
             Err(error) => {
@@ -2276,9 +2375,8 @@ impl StateBoundAuthoritySession {
         let program_hash: [u8; 32] = Blake2b256::hash(canonical.encode_to_vec())
             .try_into()
             .expect("Blake2b-256 digest length");
-        let reservation_id: [u8; 32] = Blake2b256::hash(deploy.primary().sig.to_vec())
-            .try_into()
-            .expect("Blake2b-256 digest length");
+        let reservation_id =
+            provisional_authority_reservation_id(deploy, pre_state_root, program_hash);
         let certificate = FundingCertificate {
             protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
             program_hash,
@@ -2529,7 +2627,7 @@ async fn admit_by_funding_internal<L, P>(
     supply_reader: &dyn SupplyReader,
     logic: &L,
     policy: &P,
-    mut state_bounds: Option<&mut BTreeMap<Vec<u8>, VecDeque<StateBoundCostEvidence>>>,
+    mut state_bounds: Option<&mut BTreeMap<DeployLookupId, VecDeque<StateBoundCostEvidence>>>,
 ) -> Result<AdmissionOutcome, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
@@ -2544,11 +2642,18 @@ where
     let mut outcome = AdmissionOutcome::default();
     let mut candidates: Vec<Candidate> = Vec::with_capacity(ordered.len());
     let pre_state_root = supply_reader.pre_state_root();
+    let mut seen_v6 = BTreeSet::new();
     for cosigned in ordered {
+        let deploy_id = admission_deploy_id(&cosigned);
+        if matches!(deploy_id, DeployLookupId::V6(_)) && !seen_v6.insert(deploy_id.clone()) {
+            return Err(CasperError::InvalidCostSettlement(
+                "candidate set contains a duplicate protocol-v6 deploy identity".to_string(),
+            ));
+        }
         let evidence = match state_bounds.as_deref_mut() {
             Some(bounds) => Some(
                 bounds
-                    .get_mut(cosigned.primary().sig.as_ref())
+                    .get_mut(&deploy_id)
                     .and_then(VecDeque::pop_front)
                     .ok_or_else(|| {
                         CasperError::InvalidCostSettlement(
@@ -2563,10 +2668,18 @@ where
         if candidate.malformed {
             outcome
                 .rejected
-                .push(candidate.cosigned.primary().sig.clone());
+                .push(admission_deploy_id(&candidate.cosigned));
         } else {
             candidates.push(candidate);
         }
+    }
+    if state_bounds
+        .as_deref()
+        .is_some_and(|bounds| bounds.values().any(|queue| !queue.is_empty()))
+    {
+        return Err(CasperError::InvalidCostSettlement(
+            "state-bound cost evidence was not consumed exactly once".to_string(),
+        ));
     }
 
     // 3. Group into a BTreeMap<SigKey, Vec<Candidate>> — deterministic group
@@ -2707,7 +2820,7 @@ where
                 prefix_open = false;
                 outcome
                     .rejected
-                    .push(candidate.cosigned.primary().sig.clone());
+                    .push(admission_deploy_id(&candidate.cosigned));
             }
         }
 
@@ -2862,9 +2975,17 @@ async fn recompute_authority_settlement_debits(
     let mut ordered = Vec::with_capacity(processed.len());
     let mut pool_signatures = BTreeMap::new();
     let mut expected_pre = supply_reader.pre_state_root();
+    let mut seen_v6 = BTreeSet::new();
 
     for deploy in processed {
         let cosigned = deploy.to_cosigned().map_err(CasperError::RuntimeError)?;
+        let deploy_id = admission_deploy_id(&cosigned);
+        if matches!(deploy_id, DeployLookupId::V6(_)) && !seen_v6.insert(deploy_id) {
+            return Err(CasperError::InvalidCostSettlement(
+                "processed authority evidence contains a duplicate protocol-v6 deploy identity"
+                    .to_string(),
+            ));
+        }
         let witness = authority_witness_from_proto(
             deploy.authority_cost_witness.as_ref().ok_or_else(|| {
                 CasperError::InvalidCostSettlement(
@@ -2907,6 +3028,12 @@ async fn recompute_authority_settlement_debits(
                 "authority certificate protocol or program binding is invalid".to_string(),
             ));
         }
+        verify_authority_reservation_id(
+            &cosigned,
+            witness.pre_state_root,
+            program_hash,
+            certificate.reservation_id,
+        )?;
         let demand = match &certificate.demand {
             DemandBound::Exact(demand) => demand,
             DemandBound::FiniteUpperBound { bound, proof } if !proof.is_empty() => bound,
@@ -3134,8 +3261,8 @@ async fn recompute_settlement_debits_internal<L, P>(
     supply_reader: &dyn SupplyReader,
     logic: &L,
     policy: &P,
-    mut state_bounds: Option<&mut BTreeMap<Vec<u8>, VecDeque<StateBoundCostEvidence>>>,
-    mut realized: Option<BTreeMap<Vec<u8>, VecDeque<RealizedCost>>>,
+    mut state_bounds: Option<&mut BTreeMap<DeployLookupId, VecDeque<StateBoundCostEvidence>>>,
+    mut realized: Option<BTreeMap<DeployLookupId, VecDeque<RealizedCost>>>,
 ) -> Result<RecomputedDebits, CasperError>
 where
     L: OslfResourceLogic<RhoGslt>,
@@ -3160,15 +3287,22 @@ where
     let mut signatures_by_key: BTreeMap<SigKey, CostSignature> = BTreeMap::new();
     let mut group_envelopes: BTreeMap<SigKey, Sig> = BTreeMap::new();
     let admitted_count = admitted.len();
+    let mut seen_v6 = BTreeSet::new();
     for (replay_index, cosigned) in admitted.into_iter().enumerate() {
         // SAME shared `funding_sig` the play-side gate (`build_candidate_with_logic`)
         // keys by — so replay reconstructs the byte-identical `Sig::Ground(pk)` /
         // `And`-fold, hence the byte-identical settlement-debit map.
         let funding = accounting::funding_sig(&cosigned);
+        let deploy_id = admission_deploy_id(&cosigned);
+        if matches!(deploy_id, DeployLookupId::V6(_)) && !seen_v6.insert(deploy_id.clone()) {
+            return Err(CasperError::InvalidCostSettlement(
+                "replay set contains a duplicate protocol-v6 deploy identity".to_string(),
+            ));
+        }
         let evidence = match state_bounds.as_deref_mut() {
             Some(bounds) => Some(
                 bounds
-                    .get_mut(cosigned.primary().sig.as_ref())
+                    .get_mut(&deploy_id)
                     .and_then(VecDeque::pop_front)
                     .ok_or_else(|| {
                         CasperError::InvalidCostSettlement(
@@ -3206,7 +3340,7 @@ where
         let realized_cost = if let Some(realized) = realized.as_mut() {
             Some(
                 realized
-                    .get_mut(candidate.cosigned.primary().sig.as_ref())
+                    .get_mut(&deploy_id)
                     .and_then(VecDeque::pop_front)
                     .ok_or_else(|| {
                         CasperError::InvalidCostSettlement(
@@ -3287,6 +3421,22 @@ where
             .entry(candidate.sig_key)
             .or_insert_with(|| (candidate.channel.clone(), 0));
         fee_entry.1 = fee_entry.1.saturating_add(1);
+    }
+    if state_bounds
+        .as_deref()
+        .is_some_and(|bounds| bounds.values().any(|queue| !queue.is_empty()))
+    {
+        return Err(CasperError::InvalidCostSettlement(
+            "state-bound replay evidence was not consumed exactly once".to_string(),
+        ));
+    }
+    if realized
+        .as_ref()
+        .is_some_and(|costs| costs.values().any(|queue| !queue.is_empty()))
+    {
+        return Err(CasperError::InvalidCostSettlement(
+            "realized replay evidence was not consumed exactly once".to_string(),
+        ));
     }
     for envelope in group_envelopes.values() {
         collect_decompositions(envelope, &mut decompositions, &mut channels_by_key);
@@ -3442,7 +3592,8 @@ mod tests {
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
-    use crypto::rust::signatures::signed::Signed;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use crypto::rust::signatures::signed::{Cosigner, Signed};
     use models::rust::casper::protocol::casper_message::DeployData;
     use proptest::prelude::*;
     use rholang::rust::interpreter::accounting::authority::{
@@ -3580,6 +3731,7 @@ mod tests {
     fn cosigned(term: &str, sig: &[u8], vabn: i64, ts: i64) -> Cosigned<DeployData> {
         let data = DeployData {
             term: term.to_string(),
+            language: "rholang".to_string(),
             time_stamp: ts,
             valid_after_block_number: vabn,
             shard_id: String::new(),
@@ -3600,11 +3752,283 @@ mod tests {
         Cosigned::from_single_signer(signed).expect("from_single_signer is infallible")
     }
 
+    fn v6_threshold_envelope_with_term(term: &str, selected: &[usize]) -> Cosigned<DeployData> {
+        let algorithm = Secp256k1;
+        let mut members = (11_u8..15)
+            .map(|value| {
+                let private_key = PrivateKey::from_bytes(&[value; 32]);
+                (
+                    Cosigner {
+                        pk: algorithm.to_public(&private_key),
+                        sig: Bytes::new(),
+                        sig_algorithm: Box::new(algorithm.clone()),
+                    },
+                    private_key,
+                )
+            })
+            .collect::<Vec<_>>();
+        members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
+        let mut bitmap = vec![0_u8; members.len().div_ceil(8)];
+        for index in selected {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+        let data = DeployData {
+            term: term.to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 17,
+            valid_after_block_number: 3,
+            shard_id: "root".to_string(),
+            expiration_timestamp: Some(101),
+            authority_presentations: Vec::new(),
+        };
+        let unsigned = members
+            .iter()
+            .map(|(signer, _)| signer.clone())
+            .collect::<Vec<_>>();
+        for index in selected {
+            let signing_hash = Cosigned::<DeployData>::envelope_signing_hash_for_presence(
+                &data,
+                &unsigned,
+                2,
+                &bitmap,
+                &members[*index].0.sig_algorithm.name(),
+            )
+            .unwrap();
+            members[*index].0.sig = members[*index]
+                .0
+                .sig_algorithm
+                .sign(&signing_hash, &members[*index].1.bytes)
+                .into();
+        }
+        Cosigned::from_envelope_signed_data_threshold(
+            data,
+            members.into_iter().map(|(signer, _)| signer).collect(),
+            2,
+        )
+        .unwrap()
+    }
+
+    fn v6_threshold_envelope(selected: &[usize]) -> Cosigned<DeployData> {
+        v6_threshold_envelope_with_term("Nil", selected)
+    }
+
     /// `n` parallel sends `@0!(0) | … | @0!(0)` ⇒ Δ = n (each send is one
     /// token-consuming COMM; see `delta_sigma::demand`).
     fn n_sends(n: usize) -> String {
         let one = "@0!(0)";
         std::iter::repeat_n(one, n).collect::<Vec<_>>().join(" | ")
+    }
+
+    #[test]
+    fn legacy_identity_derivations_remain_byte_identical() {
+        let deploy = cosigned("Nil", b"legacy-identity", 3, 17);
+        let pre_state_root = [21; 32];
+        let program_hash = [22; 32];
+
+        let mut prepared = b"f1r3node:vault-cost-reservation:v1".to_vec();
+        prepared.extend_from_slice(&pre_state_root);
+        prepared.extend_from_slice(&program_hash);
+        prepared.extend_from_slice(&deploy.primary().sig);
+        assert_eq!(
+            prepared_authority_reservation_id(&deploy, pre_state_root, program_hash),
+            Blake2b256::hash(prepared).as_slice()
+        );
+        assert_eq!(
+            provisional_authority_reservation_id(&deploy, pre_state_root, program_hash),
+            Blake2b256::hash(deploy.primary().sig.to_vec()).as_slice()
+        );
+
+        let event = fee_authority_event(&deploy).unwrap();
+        let signature = sig_to_cost_signature(&accounting::funding_sig(&deploy)).unwrap();
+        let expected_region = cost_region(&signature, &deploy.primary().sig, u32::MAX).unwrap();
+        assert_eq!(event.authority.regions, vec![expected_region]);
+        let mut fee_identity = b"f1r3node:cost-accounted-rho:fee-event:v2".to_vec();
+        fee_identity.extend_from_slice(&deploy.primary().sig);
+        assert_eq!(event.event_id.as_slice(), Blake2b256::hash(fee_identity));
+
+        assert!(verify_authority_reservation_id(
+            &deploy,
+            pre_state_root,
+            program_hash,
+            prepared_authority_reservation_id(&deploy, pre_state_root, program_hash),
+        )
+        .is_ok());
+        assert!(verify_authority_reservation_id(
+            &deploy,
+            pre_state_root,
+            program_hash,
+            provisional_authority_reservation_id(&deploy, pre_state_root, program_hash),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn protocol_v6_identity_derivations_do_not_collapse_empty_primary_witnesses() {
+        let first = v6_threshold_envelope(&[1, 2]);
+        let second = v6_threshold_envelope(&[2, 3]);
+        assert!(first.signers()[0].sig.is_empty());
+        assert!(second.signers()[0].sig.is_empty());
+        assert_ne!(admission_deploy_id(&first), admission_deploy_id(&second));
+
+        let pre_state_root = [31; 32];
+        let program_hash = [32; 32];
+        let first_reservation =
+            prepared_authority_reservation_id(&first, pre_state_root, program_hash);
+        let second_reservation =
+            prepared_authority_reservation_id(&second, pre_state_root, program_hash);
+        let mut expected_reservation = b"f1r3node:vault-cost-reservation:v2".to_vec();
+        expected_reservation.extend_from_slice(&pre_state_root);
+        expected_reservation.extend_from_slice(&program_hash);
+        expected_reservation.extend_from_slice(&first.envelope_commitment().unwrap());
+        assert_eq!(
+            first_reservation.as_slice(),
+            Blake2b256::hash(expected_reservation)
+        );
+        assert_eq!(
+            first_reservation,
+            provisional_authority_reservation_id(&first, pre_state_root, program_hash)
+        );
+        assert_ne!(first_reservation, second_reservation);
+        assert!(verify_authority_reservation_id(
+            &first,
+            pre_state_root,
+            program_hash,
+            first_reservation,
+        )
+        .is_ok());
+        assert!(verify_authority_reservation_id(
+            &first,
+            pre_state_root,
+            program_hash,
+            second_reservation,
+        )
+        .is_err());
+
+        let first_fee = fee_authority_event(&first).unwrap();
+        let second_fee = fee_authority_event(&second).unwrap();
+        let first_id = first.envelope_commitment().unwrap();
+        let mut expected_fee = b"f1r3node:cost-accounted-rho:fee-event:v3".to_vec();
+        expected_fee.extend_from_slice(&first_id);
+        assert_eq!(
+            first_fee.event_id.as_slice(),
+            Blake2b256::hash(expected_fee)
+        );
+        let mut expected_scope = b"f1r3node:cost-accounted-rho:deploy-scope:v1".to_vec();
+        expected_scope.extend_from_slice(&first_id);
+        let expected_region = cost_region(
+            &sig_to_cost_signature(&accounting::funding_sig(&first)).unwrap(),
+            &Blake2b256::hash(expected_scope),
+            u32::MAX,
+        )
+        .unwrap();
+        assert_eq!(first_fee.authority.regions, vec![expected_region]);
+        assert_ne!(first_fee.event_id, second_fee.event_id);
+        assert_ne!(
+            first_fee.authority.regions[0].instance_id,
+            second_fee.authority.regions[0].instance_id
+        );
+        assert_ne!(
+            Tools::user_deploy_rng(&first),
+            Tools::user_deploy_rng(&second)
+        );
+    }
+
+    #[tokio::test]
+    async fn protocol_v6_duplicate_candidate_identity_is_rejected() {
+        let deploy = v6_threshold_envelope(&[1, 2]);
+        let error = admit_by_funding(vec![deploy.clone(), deploy], &MockSupplyReader::new())
+            .await
+            .expect_err("duplicate v6 identities must fail closed");
+        assert!(error
+            .to_string()
+            .contains("duplicate protocol-v6 deploy identity"));
+    }
+
+    #[test]
+    fn state_bound_evidence_rejects_missing_and_extra_entries() {
+        let deploy = cosigned("Nil", b"evidence-cardinality", 0, 10);
+        let processed = processed(&deploy, 0);
+        assert!(state_bound_evidence(std::slice::from_ref(&deploy), &[], [42; 32]).is_err());
+        assert!(state_bound_evidence(&[], &[processed], [42; 32]).is_err());
+    }
+
+    #[test]
+    fn state_bound_evidence_rejects_duplicate_protocol_v6_identity() {
+        let deploy = v6_threshold_envelope(&[1, 2]);
+        let first = processed(&deploy, 0);
+        let mut second = first.clone();
+        second.pre_state_hash = Bytes::from_static(&[43; 32]);
+        second.post_state_hash = Bytes::from_static(&[44; 32]);
+        let mut certificate = authority_certificate_from_proto(
+            second.authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        certificate.pre_state_root = [43; 32];
+        certificate.reservation_id =
+            provisional_authority_reservation_id(&deploy, [43; 32], certificate.program_hash);
+        let mut witness =
+            authority_witness_from_proto(second.authority_cost_witness.as_ref().unwrap(), false)
+                .unwrap();
+        witness.pre_state_root = [43; 32];
+        witness.post_state_root = [44; 32];
+        witness.certificate_id = certificate.certificate_id();
+        second.authority_funding_certificate = Some(authority_certificate_to_proto(&certificate));
+        second.authority_cost_witness = Some(authority_witness_to_proto(&witness));
+
+        let error = state_bound_evidence(&[deploy.clone(), deploy], &[first, second], [42; 32])
+            .expect_err("duplicate v6 evidence identities must fail closed");
+        assert!(error
+            .to_string()
+            .contains("duplicate protocol-v6 deploy identity"));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn protocol_v6_identity_derivations_are_injective_over_distinct_payloads(
+            left in any::<u64>(),
+            right in any::<u64>(),
+        ) {
+            prop_assume!(left != right);
+            let first = v6_threshold_envelope_with_term(&format!("@0!({left})"), &[1, 2]);
+            let second = v6_threshold_envelope_with_term(&format!("@0!({right})"), &[1, 2]);
+            prop_assert_ne!(admission_deploy_id(&first), admission_deploy_id(&second));
+            prop_assert_ne!(
+                provisional_authority_reservation_id(&first, [51; 32], [52; 32]),
+                provisional_authority_reservation_id(&second, [51; 32], [52; 32]),
+            );
+            prop_assert_ne!(
+                fee_authority_event(&first).unwrap().event_id,
+                fee_authority_event(&second).unwrap().event_id,
+            );
+            prop_assert_ne!(Tools::user_deploy_rng(&first), Tools::user_deploy_rng(&second));
+        }
+
+        #[test]
+        fn legacy_reservation_formulas_are_preserved_for_arbitrary_inputs(
+            signature in proptest::collection::vec(any::<u8>(), 1..96),
+            pre_state_root in proptest::array::uniform32(any::<u8>()),
+            program_hash in proptest::array::uniform32(any::<u8>()),
+        ) {
+            let deploy = cosigned("Nil", &signature, 0, 10);
+            let mut prepared = b"f1r3node:vault-cost-reservation:v1".to_vec();
+            prepared.extend_from_slice(&pre_state_root);
+            prepared.extend_from_slice(&program_hash);
+            prepared.extend_from_slice(&signature);
+            let actual_prepared =
+                prepared_authority_reservation_id(&deploy, pre_state_root, program_hash);
+            let actual_provisional =
+                provisional_authority_reservation_id(&deploy, pre_state_root, program_hash);
+            prop_assert_eq!(
+                actual_prepared.as_slice(),
+                Blake2b256::hash(prepared),
+            );
+            prop_assert_eq!(
+                actual_provisional.as_slice(),
+                Blake2b256::hash(signature),
+            );
+        }
     }
 
     #[tokio::test]
@@ -3900,7 +4324,7 @@ mod tests {
         assert_eq!(default.admitted.len(), 1);
         assert!(default.rejected.is_empty());
         assert!(denied.admitted.is_empty());
-        assert_eq!(denied.rejected, vec![deploy.primary().sig.clone()]);
+        assert_eq!(denied.rejected, vec![admission_deploy_id(&deploy)]);
         assert!(denied.debits.is_empty());
     }
 
@@ -3947,7 +4371,7 @@ mod tests {
         .unwrap();
 
         assert!(outcome.admitted.is_empty());
-        assert_eq!(outcome.rejected, vec![deploy.primary().sig.clone()]);
+        assert_eq!(outcome.rejected, vec![admission_deploy_id(&deploy)]);
     }
 
     struct VerifiedFiniteLogic;
@@ -4045,7 +4469,7 @@ mod tests {
             Some(1)
         );
         assert!(rejected.admitted.is_empty());
-        assert_eq!(rejected.rejected, vec![deploy.primary().sig.clone()]);
+        assert_eq!(rejected.rejected, vec![admission_deploy_id(&deploy)]);
     }
 
     struct ZeroDemandLogic;
@@ -4138,11 +4562,7 @@ mod tests {
             "test program hash",
         )
         .unwrap();
-        let reservation_id = authority_digest(
-            &Blake2b256::hash(cosigned.primary().sig.to_vec()),
-            "test reservation identity",
-        )
-        .unwrap();
+        let reservation_id = provisional_authority_reservation_id(cosigned, [42; 32], program_hash);
         let certificate = FundingCertificate {
             protocol_version: AUTHORITY_ACCOUNTING_PROTOCOL_VERSION,
             program_hash,
@@ -4179,19 +4599,16 @@ mod tests {
             physical_draws,
             born_stacks: Vec::new(),
         };
+        let preserved = ProcessedDeploy::empty_from_cosigned(cosigned);
         ProcessedDeploy {
-            deploy: Signed {
-                data: cosigned.data().clone(),
-                pk: cosigned.primary().pk.clone(),
-                sig: cosigned.primary().sig.clone(),
-                sig_algorithm: cosigned.primary().sig_algorithm.clone(),
-            },
+            deploy: preserved.deploy,
+            envelope_commitment: preserved.envelope_commitment,
             cost: models::rhoapi::PCost { cost },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
-            cosigners: Vec::new(),
-            cosigner_threshold: 0,
+            cosigners: preserved.cosigners,
+            cosigner_threshold: preserved.cosigner_threshold,
             pre_state_hash: Bytes::from_static(&[42; 32]),
             post_state_hash: Bytes::from_static(&[43; 32]),
             authority_funding_certificate: Some(authority_certificate_to_proto(&certificate)),
@@ -4480,6 +4897,33 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_a_tampered_reservation_identity() {
+        let deploy = cosigned(&n_sends(1), b"tampered-reservation", 0, 10);
+        let mut reader = MockSupplyReader::new();
+        reader.set(b"tampered-reservation", 2);
+        let mut processed = processed(&deploy, 1);
+        let mut certificate = authority_certificate_from_proto(
+            processed.authority_funding_certificate.as_ref().unwrap(),
+        )
+        .unwrap();
+        certificate.reservation_id[0] ^= 1;
+        let mut witness =
+            authority_witness_from_proto(processed.authority_cost_witness.as_ref().unwrap(), false)
+                .unwrap();
+        witness.certificate_id = certificate.certificate_id();
+        processed.authority_funding_certificate =
+            Some(authority_certificate_to_proto(&certificate));
+        processed.authority_cost_witness = Some(authority_witness_to_proto(&witness));
+
+        let error = recompute_state_bound_settlement_debits(&[processed], &reader)
+            .await
+            .expect_err("reservation identity mutation must fail replay");
+        assert!(error
+            .to_string()
+            .contains("reservation identity is invalid"));
     }
 
     #[tokio::test]
@@ -5188,7 +5632,7 @@ mod tests {
             outcome.admitted.is_empty(),
             "absent signer wallet ⇒ rejected"
         );
-        assert_eq!(outcome.rejected, vec![deploy.primary().sig.clone()]);
+        assert_eq!(outcome.rejected, vec![admission_deploy_id(&deploy)]);
         assert!(outcome.debits.is_empty(), "rejected ⇒ no debit");
     }
 
@@ -5284,6 +5728,7 @@ mod tests {
 
         let data = DeployData {
             term: n_sends(2),
+            language: "rholang".to_string(),
             time_stamp: 10,
             valid_after_block_number: 0,
             shard_id: String::new(),
@@ -5661,6 +6106,7 @@ mod tests {
 
         let data = DeployData {
             term: term.to_string(),
+            language: "rholang".to_string(),
             time_stamp: ts,
             valid_after_block_number: vabn,
             shard_id: String::new(),
@@ -5711,6 +6157,7 @@ mod tests {
 
         let data = DeployData {
             term: term.to_string(),
+            language: "rholang".to_string(),
             time_stamp: ts,
             valid_after_block_number: vabn,
             shard_id: String::new(),
@@ -6201,7 +6648,7 @@ mod tests {
         );
         assert_eq!(
             outcome.rejected[0],
-            underfunded.primary().sig,
+            admission_deploy_id(&underfunded),
             "the REJECTED deploy is the underfunded one (beta)"
         );
 

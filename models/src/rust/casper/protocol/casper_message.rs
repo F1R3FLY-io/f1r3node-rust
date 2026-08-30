@@ -15,6 +15,7 @@ use crate::rhoapi::PCost;
 use crate::rust::block_hash::{BlockHash, BlockHashSerde};
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::casper::pretty_printer::PrettyPrinter;
+use crate::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use crate::rust::validator::ValidatorSerde;
 use crate::rust::{block_hash, validator};
 
@@ -42,6 +43,8 @@ pub enum CasperMessage {
     StoreItemsMessage(StoreItemsMessage),
     MergeableEntryRequest(MergeableEntryRequest),
     MergeableEntryResponse(MergeableEntryResponse),
+    FloorCacheRequest(FloorCacheRequest),
+    FloorCacheResponse(FloorCacheResponse),
 }
 
 impl CasperMessage {
@@ -137,6 +140,14 @@ impl CasperMessage {
 
     pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
         CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_request(proto: FloorCacheRequestProto) -> Self {
+        CasperMessage::FloorCacheRequest(FloorCacheRequest::from_proto(proto))
+    }
+
+    pub fn from_floor_cache_response(proto: FloorCacheResponseProto) -> Self {
+        CasperMessage::FloorCacheResponse(FloorCacheResponse::from_proto(proto))
     }
 }
 
@@ -326,10 +337,122 @@ impl BlockApproval {
     }
 }
 
+/// Ask a peer for its cached finalized-floor values for the named blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheRequest {
+    pub hashes: Vec<ByteString>,
+}
+
+impl FloorCacheRequest {
+    pub fn from_proto(proto: FloorCacheRequestProto) -> Self {
+        Self {
+            hashes: proto.hashes,
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheRequestProto {
+        FloorCacheRequestProto {
+            hashes: self.hashes,
+        }
+    }
+}
+
+/// One block's cached floor and frontier, as the responder derived them when
+/// it validated the block.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheEntry {
+    pub block_hash: ByteString,
+    pub floor_hash: ByteString,
+    pub frontier_hash: ByteString,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloorCacheResponse {
+    pub entries: Vec<FloorCacheEntry>,
+    /// The shard's genesis block hash; empty when the responder does not
+    /// hold it.
+    pub genesis_hash: ByteString,
+    /// The genesis block itself; absent when the responder does not hold
+    /// it. Verified against `genesis_hash` by the receiver before storing.
+    pub genesis_block: Option<BlockMessage>,
+}
+
+impl FloorCacheResponse {
+    pub fn from_proto(proto: FloorCacheResponseProto) -> Self {
+        Self {
+            entries: proto
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntry {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+            genesis_hash: proto.genesis_hash,
+            genesis_block: proto
+                .genesis_block
+                .and_then(|block| BlockMessage::from_proto(block).ok()),
+        }
+    }
+
+    pub fn to_proto(self) -> FloorCacheResponseProto {
+        FloorCacheResponseProto {
+            entries: self
+                .entries
+                .into_iter()
+                .map(|entry| FloorCacheEntryProto {
+                    block_hash: entry.block_hash,
+                    floor_hash: entry.floor_hash,
+                    frontier_hash: entry.frontier_hash,
+                })
+                .collect(),
+            genesis_hash: self.genesis_hash,
+            genesis_block: self.genesis_block.map(|block| block.to_proto()),
+        }
+    }
+}
+
+/// The anchor's finalized floor and frontier, carried with the approved block
+/// so a restored node can start deriving forward from them.
+///
+/// Each block is named by hash AND number: the number sizes the receiver's
+/// download window, which it must fix before it holds any block to look up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinalizedFloorSeed {
+    pub floor_hash: ByteString,
+    pub floor_number: i64,
+    pub frontier_hash: ByteString,
+    pub frontier_number: i64,
+}
+
+impl FinalizedFloorSeed {
+    pub fn from_proto(proto: FinalizedFloorSeedProto) -> Self {
+        Self {
+            floor_hash: proto.floor_hash,
+            floor_number: proto.floor_number,
+            frontier_hash: proto.frontier_hash,
+            frontier_number: proto.frontier_number,
+        }
+    }
+
+    pub fn to_proto(self) -> FinalizedFloorSeedProto {
+        FinalizedFloorSeedProto {
+            floor_hash: self.floor_hash,
+            floor_number: self.floor_number,
+            frontier_hash: self.frontier_hash,
+            frontier_number: self.frontier_number,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ApprovedBlock {
     pub candidate: ApprovedBlockCandidate,
     pub sigs: Vec<Signature>,
+    /// Absent from peers that predate the seed, and from the non-trim response
+    /// (a node syncing from genesis derives its own floors).
+    pub floor_seed: Option<FinalizedFloorSeed>,
 }
 
 impl ApprovedBlock {
@@ -341,6 +464,7 @@ impl ApprovedBlock {
                     .ok_or_else(|| "Missing candidate field".to_string())?,
             )?,
             sigs: proto.sigs,
+            floor_seed: proto.floor_seed.map(FinalizedFloorSeed::from_proto),
         })
     }
 
@@ -348,6 +472,7 @@ impl ApprovedBlock {
         ApprovedBlockProto {
             candidate: Some(self.candidate.to_proto()),
             sigs: self.sigs,
+            floor_seed: self.floor_seed.map(FinalizedFloorSeed::to_proto),
         }
     }
 }
@@ -1008,6 +1133,7 @@ pub enum RejectedDeployReason {
     MergeConflict,
     DuplicateOccurrence,
     CollateralChainDrop,
+    ValidityWindowClosed,
 }
 
 impl RejectedDeployReason {
@@ -1017,16 +1143,19 @@ impl RejectedDeployReason {
             Self::MergeConflict => "merge_conflict",
             Self::DuplicateOccurrence => "duplicate_occurrence",
             Self::CollateralChainDrop => "collateral_chain_drop",
+            Self::ValidityWindowClosed => "validity_window_closed",
         }
     }
 
     pub fn canonical_join(self, other: Self) -> Self {
         use RejectedDeployReason::{
             CollateralChainDrop, DuplicateOccurrence, MergeConflict, Unspecified,
+            ValidityWindowClosed,
         };
 
         match (self, other) {
             (DuplicateOccurrence, _) | (_, DuplicateOccurrence) => DuplicateOccurrence,
+            (ValidityWindowClosed, _) | (_, ValidityWindowClosed) => ValidityWindowClosed,
             (MergeConflict, _) | (_, MergeConflict) => MergeConflict,
             (CollateralChainDrop, _) | (_, CollateralChainDrop) => CollateralChainDrop,
             (Unspecified, Unspecified) => Unspecified,
@@ -1045,6 +1174,9 @@ impl RejectedDeployReason {
             RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop => {
                 Self::CollateralChainDrop
             }
+            RejectedDeployReasonProto::RejectedDeployReasonValidityWindowClosed => {
+                Self::ValidityWindowClosed
+            }
         }
     }
 
@@ -1060,13 +1192,16 @@ impl RejectedDeployReason {
             Self::CollateralChainDrop => {
                 RejectedDeployReasonProto::RejectedDeployReasonCollateralChainDrop as i32
             }
+            Self::ValidityWindowClosed => {
+                RejectedDeployReasonProto::RejectedDeployReasonValidityWindowClosed as i32
+            }
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
-    pub sig: ByteString,
+    deploy_id: DeployLookupId,
     pub source_block_hash: BlockHash,
     pub reason: RejectedDeployReason,
 }
@@ -1074,39 +1209,107 @@ pub struct RejectedDeploy {
 impl RejectedDeploy {
     pub fn legacy(sig: ByteString) -> Self {
         Self {
-            sig,
+            deploy_id: DeployLookupId::Legacy(LegacyDeploySignature::new(sig.to_vec())),
             source_block_hash: ByteString::new(),
             reason: RejectedDeployReason::Unspecified,
         }
     }
 
-    pub fn occurrence(
-        sig: ByteString,
+    pub fn occurrence_legacy(
+        sig: LegacyDeploySignature,
         source_block_hash: BlockHash,
         reason: RejectedDeployReason,
     ) -> Self {
         Self {
-            sig,
+            deploy_id: DeployLookupId::Legacy(sig),
             source_block_hash,
             reason,
         }
     }
 
-    pub fn has_provenance(&self) -> bool { !self.source_block_hash.is_empty() }
-
-    pub fn from_proto(proto: RejectedDeployProto) -> Self {
+    pub fn occurrence_v6(
+        deploy_id: DeployIdV6,
+        source_block_hash: BlockHash,
+        reason: RejectedDeployReason,
+    ) -> Self {
         Self {
-            sig: proto.sig,
-            source_block_hash: proto.source_block_hash,
-            reason: RejectedDeployReason::from_proto(proto.reason),
+            deploy_id: DeployLookupId::V6(deploy_id),
+            source_block_hash,
+            reason,
         }
     }
 
+    pub fn deploy_id(&self) -> &[u8] { self.deploy_id.as_bytes() }
+
+    pub fn typed_deploy_id(&self) -> &DeployLookupId { &self.deploy_id }
+
+    pub fn has_provenance(&self) -> bool { !self.source_block_hash.is_empty() }
+
+    pub fn is_duplicate(&self) -> bool { self.reason == RejectedDeployReason::DuplicateOccurrence }
+
+    pub fn from_proto(proto: RejectedDeployProto) -> Result<Self, String> {
+        let deploy_id = match (proto.sig.is_empty(), proto.deploy_id_v6.is_empty()) {
+            (false, true) => DeployLookupId::Legacy(LegacyDeploySignature::new(proto.sig.to_vec())),
+            (true, false) => DeployLookupId::V6(
+                DeployIdV6::try_from(proto.deploy_id_v6.as_ref())
+                    .map_err(|error| error.to_string())?,
+            ),
+            (false, false) => {
+                return Err(
+                    "rejected deploy cannot contain both legacy and v6 identities".to_string(),
+                );
+            }
+            (true, true) => return Err("rejected deploy identity is missing".to_string()),
+        };
+        if !proto.source_block_hash.is_empty()
+            && !proto.carrier.is_empty()
+            && proto.source_block_hash != proto.carrier
+        {
+            return Err("rejected deploy source and compatibility carrier disagree".to_string());
+        }
+        let source_block_hash = if proto.source_block_hash.is_empty() {
+            proto.carrier
+        } else {
+            proto.source_block_hash
+        };
+        let reason = RejectedDeployReason::from_proto(proto.reason);
+        let reason = if reason == RejectedDeployReason::Unspecified && proto.duplicate {
+            RejectedDeployReason::DuplicateOccurrence
+        } else if reason == RejectedDeployReason::Unspecified && !source_block_hash.is_empty() {
+            RejectedDeployReason::MergeConflict
+        } else {
+            reason
+        };
+        if proto.duplicate != (reason == RejectedDeployReason::DuplicateOccurrence)
+            && proto.reason != RejectedDeployReasonProto::RejectedDeployReasonUnspecified as i32
+        {
+            return Err(
+                "rejected deploy reason and compatibility duplicate flag disagree".to_string(),
+            );
+        }
+        Ok(Self {
+            deploy_id,
+            source_block_hash,
+            reason,
+        })
+    }
+
     pub fn to_proto(self) -> RejectedDeployProto {
+        let duplicate = self.is_duplicate();
+        let (sig, deploy_id_v6) = match self.deploy_id {
+            DeployLookupId::Legacy(sig) => (ByteString::from(sig.into_bytes()), ByteString::new()),
+            DeployLookupId::V6(deploy_id) => (
+                ByteString::new(),
+                ByteString::copy_from_slice(deploy_id.as_ref()),
+            ),
+        };
         RejectedDeployProto {
-            sig: self.sig,
+            sig,
+            duplicate,
+            carrier: self.source_block_hash.clone(),
             source_block_hash: self.source_block_hash,
             reason: self.reason.to_proto(),
+            deploy_id_v6,
         }
     }
 }
@@ -1152,6 +1355,8 @@ pub struct Body {
     pub rejected_state_effects: Vec<StateEffectId>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
+    pub applied_from_scope: Vec<ByteString>,
+    pub merge_base: ByteString,
 }
 
 impl Body {
@@ -1171,7 +1376,7 @@ impl Body {
                 .rejected_deploys
                 .into_iter()
                 .map(|r| RejectedDeploy::from_proto(r))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             rejected_state_effects: proto
                 .rejected_state_effects
                 .into_iter()
@@ -1183,6 +1388,8 @@ impl Body {
                 .map(|s| ProcessedSystemDeploy::from_proto(s))
                 .collect::<Result<Vec<ProcessedSystemDeploy>, String>>()?,
             extra_bytes: proto.extra_bytes,
+            applied_from_scope: proto.applied_from_scope,
+            merge_base: proto.merge_base,
         })
     }
 
@@ -1213,6 +1420,8 @@ impl Body {
                 .map(|s| s.to_proto())
                 .collect(),
             extra_bytes: self.extra_bytes.clone(),
+            applied_from_scope: self.applied_from_scope.clone(),
+            merge_base: self.merge_base.clone(),
         }
     }
 }
@@ -1356,6 +1565,7 @@ impl ValidatorBondGeneration {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessedDeploy {
     pub deploy: Signed<DeployData>,
+    pub envelope_commitment: ByteString,
     pub cost: PCost,
     pub deploy_log: Vec<Event>,
     pub is_failed: bool,
@@ -1364,10 +1574,8 @@ pub struct ProcessedDeploy {
     /// Empty for legacy single-signature deploys. Round-trips through
     /// `DeployDataProto.cosigners` (proto field 14 on `deploy`).
     pub cosigners: Vec<crate::casper::CompoundSigner>,
-    /// M-of-N quorum threshold (Phase 2). 0 = N-of-N semantics (every
-    /// signer's signature must verify); k > 0 = at least k signatures
-    /// must verify. Round-trips through `DeployDataProto.cosigner_threshold`
-    /// (proto field 16).
+    /// M-of-N quorum threshold. Protocol v6 uses an explicit value in
+    /// `1..=N`. Zero is reserved for the pre-v6 N-of-N encoding.
     pub cosigner_threshold: i32,
     pub pre_state_hash: ByteString,
     pub post_state_hash: ByteString,
@@ -1414,6 +1622,7 @@ impl ProcessedDeploy {
     pub fn empty(deploy: Signed<DeployData>) -> Self {
         Self {
             deploy,
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -1435,7 +1644,16 @@ impl ProcessedDeploy {
     pub fn empty_from_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> Self {
-        let primary = cosigned.primary();
+        let primary_index = if cosigned.is_envelope_bound() {
+            cosigned
+                .signers()
+                .iter()
+                .position(|signer| !signer.sig.is_empty())
+                .expect("validated protocol-v6 envelope has a selected signer")
+        } else {
+            0
+        };
+        let primary = &cosigned.signers()[primary_index];
         let deploy = Signed {
             data: cosigned.data.clone(),
             pk: primary.pk.clone(),
@@ -1447,8 +1665,9 @@ impl ProcessedDeploy {
             cosigned
                 .signers()
                 .iter()
-                .skip(1)
-                .map(|c| crate::casper::CompoundSigner {
+                .enumerate()
+                .filter(|(index, _)| *index != primary_index)
+                .map(|(_, c)| crate::casper::CompoundSigner {
                     pk: c.pk.bytes.clone().into(),
                     sig: c.sig.clone(),
                     sig_algorithm: c.sig_algorithm.name(),
@@ -1459,14 +1678,19 @@ impl ProcessedDeploy {
         };
         Self {
             deploy,
+            envelope_commitment: if cosigned.is_envelope_bound() {
+                cosigned
+                    .envelope_commitment()
+                    .expect("envelope-bound Cosigned invariant")
+            } else {
+                ByteString::new()
+            },
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
             cosigners,
-            // empty_from_cosigned has no view of the runtime threshold —
-            // callers needing M-of-N must set the field after construction.
-            cosigner_threshold: 0,
+            cosigner_threshold: i32::try_from(cosigned.cosigner_threshold()).unwrap_or(i32::MAX),
             pre_state_hash: ByteString::new(),
             post_state_hash: ByteString::new(),
             authority_funding_certificate: None,
@@ -1494,6 +1718,33 @@ impl ProcessedDeploy {
         self.admission_status == DeployAdmissionStatus::Rejected
     }
 
+    pub fn deploy_id(&self) -> &ByteString {
+        if self.envelope_commitment.is_empty() {
+            &self.deploy.sig
+        } else {
+            &self.envelope_commitment
+        }
+    }
+
+    pub fn deploy_id_v6(&self) -> Result<crate::rust::deploy_id::DeployIdV6, String> {
+        crate::rust::deploy_id::DeployIdV6::try_from(self.envelope_commitment.as_ref())
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn deploy_id_for_protocol(
+        &self,
+        protocol_version: i64,
+    ) -> Result<crate::rust::deploy_id::DeployLookupId, String> {
+        if protocol_version >= 6 {
+            self.deploy_id_v6()
+                .map(crate::rust::deploy_id::DeployLookupId::V6)
+        } else {
+            Ok(crate::rust::deploy_id::DeployLookupId::Legacy(
+                crate::rust::deploy_id::LegacyDeploySignature::new(self.deploy.sig.to_vec()),
+            ))
+        }
+    }
+
     /// Reconstitute the [`Cosigned<DeployData>`] envelope from on-disk
     /// `ProcessedDeploy` shape. For legacy deploys (`cosigners.is_empty()`),
     /// uplifts via `Cosigned::from_single_signer` for byte-identical replay
@@ -1504,57 +1755,65 @@ impl ProcessedDeploy {
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
-        if self.cosigners.is_empty() {
-            // Legacy single-sig path: byte-identical to single-sig replay.
-            Cosigned::from_single_signer(self.deploy.clone())
-                .map_err(|e| format!("legacy uplift to Cosigned failed: {}", e))
-        } else {
-            // Multi-sig: rebuild signer list with full re-verification.
-            let primary = Cosigner {
-                pk: self.deploy.pk.clone(),
-                sig: self.deploy.sig.clone(),
-                sig_algorithm: self.deploy.sig_algorithm.clone(),
-            };
-            let mut signers = Vec::with_capacity(1 + self.cosigners.len());
-            signers.push(primary);
-            for cs in &self.cosigners {
-                let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
-                    format!(
-                        "Unknown cosigner signature algorithm: {} for cosigner pk={}",
-                        cs.sig_algorithm,
-                        hex::encode(&cs.pk)
-                    )
-                })?;
-                signers.push(Cosigner {
-                    pk: PublicKey::from_bytes(&cs.pk),
-                    sig: cs.sig.clone(),
-                    sig_algorithm: alg,
-                });
-            }
-            // Phase 2 dispatch on threshold; preserves replay determinism
-            // because the threshold is a wire-level constant captured at
-            // proposal time.
-            if self.cosigner_threshold > 0 {
-                Cosigned::from_signed_data_threshold(
-                    self.deploy.data.clone(),
-                    signers,
-                    self.cosigner_threshold as u32,
+        let mut signers = Vec::with_capacity(1 + self.cosigners.len());
+        signers.push(Cosigner {
+            pk: self.deploy.pk.clone(),
+            sig: self.deploy.sig.clone(),
+            sig_algorithm: self.deploy.sig_algorithm.clone(),
+        });
+        for cs in &self.cosigners {
+            let alg = SignaturesAlgFactory::apply(&cs.sig_algorithm).ok_or_else(|| {
+                format!(
+                    "Unknown cosigner signature algorithm: {} for cosigner pk={}",
+                    cs.sig_algorithm,
+                    hex::encode(&cs.pk)
                 )
-                .map_err(|e| {
-                    format!(
-                        "ProcessedDeploy to_cosigned threshold reconstruction failed (threshold={}): {}",
-                        self.cosigner_threshold, e
-                    )
-                })
-            } else {
-                Cosigned::from_signed_data(self.deploy.data.clone(), signers).map_err(|e| {
-                    format!("ProcessedDeploy to_cosigned reconstruction failed: {}", e)
-                })
+            })?;
+            signers.push(Cosigner {
+                pk: PublicKey::from_bytes(&cs.pk),
+                sig: cs.sig.clone(),
+                sig_algorithm: alg,
+            });
+        }
+        if !self.envelope_commitment.is_empty() {
+            if self.cosigner_threshold < 1 {
+                return Err(
+                    "ProcessedDeploy v6 envelope requires an explicit positive threshold"
+                        .to_string(),
+                );
             }
+            let envelope = Cosigned::from_envelope_signed_data_threshold(
+                self.deploy.data.clone(),
+                signers,
+                self.cosigner_threshold as u32,
+            )
+            .map_err(|error| format!("ProcessedDeploy v6 envelope invalid: {error}"))?;
+            if envelope
+                .envelope_commitment()
+                .map_err(|error| format!("ProcessedDeploy v6 envelope invalid: {error}"))?
+                != self.envelope_commitment
+            {
+                return Err("ProcessedDeploy envelope commitment mismatch".to_string());
+            }
+            Ok(envelope)
+        } else if self.cosigners.is_empty() {
+            Cosigned::from_single_signer(self.deploy.clone())
+                .map_err(|error| format!("legacy uplift to Cosigned failed: {error}"))
+        } else if self.cosigner_threshold > 0 {
+            Cosigned::from_signed_data_threshold(
+                self.deploy.data.clone(),
+                signers,
+                self.cosigner_threshold as u32,
+            )
+            .map_err(|error| format!("legacy threshold envelope invalid: {error}"))
+        } else {
+            Cosigned::from_signed_data(self.deploy.data.clone(), signers)
+                .map_err(|error| format!("legacy envelope invalid: {error}"))
         }
     }
 
     pub fn to_deploy_info(self) -> DeployInfo {
+        let deploy_id = self.deploy_id().clone();
         DeployInfo {
             deployer: PrettyPrinter::build_string_no_limit(&self.deploy.pk.bytes),
             term: self.deploy.data.term.clone(),
@@ -1572,6 +1831,7 @@ impl ProcessedDeploy {
             pre_state_hash: self.pre_state_hash,
             post_state_hash: self.post_state_hash,
             admission_status: self.admission_status.to_proto(),
+            deploy_id,
         }
     }
 
@@ -1584,10 +1844,42 @@ impl ProcessedDeploy {
         // only the primary signer; the cosigners[] populate the
         // ProcessedDeploy fields directly so the multi-sig shape survives
         // serialization.
-        let cosigners = deploy_proto.cosigners.clone();
-        let cosigner_threshold = deploy_proto.cosigner_threshold;
-        Ok(Self {
-            deploy: DeployData::from_proto(deploy_proto)?,
+        let mut cosigners = deploy_proto.cosigners.clone();
+        let mut cosigner_threshold = deploy_proto.cosigner_threshold;
+        let envelope_commitment = deploy_proto.deploy_id.clone();
+        let deploy = if envelope_commitment.is_empty() {
+            DeployData::from_proto(deploy_proto)?
+        } else {
+            let envelope = DeployData::from_proto_cosigned(deploy_proto)?;
+            let selected_index = envelope
+                .signers()
+                .iter()
+                .position(|signer| !signer.sig.is_empty())
+                .ok_or_else(|| "protocol-v6 envelope has no selected signer".to_string())?;
+            let selected = &envelope.signers()[selected_index];
+            cosigner_threshold = i32::try_from(envelope.cosigner_threshold())
+                .map_err(|_| "protocol-v6 threshold exceeds i32".to_string())?;
+            cosigners = envelope
+                .signers()
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != selected_index)
+                .map(|(_, signer)| crate::casper::CompoundSigner {
+                    pk: signer.pk.bytes.clone().into(),
+                    sig: signer.sig.clone(),
+                    sig_algorithm: signer.sig_algorithm.name(),
+                })
+                .collect();
+            Signed {
+                data: envelope.data.clone(),
+                pk: selected.pk.clone(),
+                sig: selected.sig.clone(),
+                sig_algorithm: selected.sig_algorithm.clone(),
+            }
+        };
+        let processed = Self {
+            deploy,
+            envelope_commitment,
             cost: proto.cost.ok_or_else(|| "Missing cost field".to_string())?,
             deploy_log: proto
                 .deploy_log
@@ -1609,16 +1901,25 @@ impl ProcessedDeploy {
             authority_funding_certificate: proto.authority_funding_certificate,
             authority_cost_witness: proto.authority_cost_witness,
             admission_status: DeployAdmissionStatus::from_proto(proto.admission_status),
-        })
+        };
+        processed.to_cosigned()?;
+        Ok(processed)
     }
 
     pub fn to_proto(self) -> ProcessedDeployProto {
-        let mut deploy_proto = DeployData::to_proto(self.deploy);
-        // Re-attach the cosigner metadata that lives at the
-        // ProcessedDeploy level into the inner DeployDataProto so the
-        // wire shape carries it through block-storage round-trip.
-        deploy_proto.cosigners = self.cosigners;
-        deploy_proto.cosigner_threshold = self.cosigner_threshold;
+        let mut deploy_proto = if self.envelope_commitment.is_empty() {
+            DeployData::to_proto(self.deploy.clone())
+        } else {
+            DeployData::to_proto_cosigned(
+                &self
+                    .to_cosigned()
+                    .expect("validated ProcessedDeploy v6.1 envelope"),
+            )
+        };
+        if self.envelope_commitment.is_empty() {
+            deploy_proto.cosigners = self.cosigners.clone();
+            deploy_proto.cosigner_threshold = self.cosigner_threshold;
+        }
         ProcessedDeployProto {
             deploy: Some(deploy_proto),
             cost: Some(self.cost),
@@ -1972,6 +2273,7 @@ impl ProcessedSystemDeploy {
 )]
 pub struct DeployData {
     pub term: String,
+    pub language: String,
     #[serde(rename = "timestamp")]
     pub time_stamp: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -1987,6 +2289,115 @@ pub struct DeployData {
 impl ToMessage for DeployData {
     type Type = DeployDataProto;
     fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
+    fn envelope_intent_v61(&self) -> Result<Vec<u8>, String> {
+        self.validate_authority_presentations()?;
+        if self.language != "rholang" {
+            return Err("protocol-v6 deploy language must be rholang".to_string());
+        }
+        let timestamp = u64::try_from(self.time_stamp)
+            .map_err(|_| "protocol-v6 deploy timestamp must be nonnegative".to_string())?;
+        let valid_after = u64::try_from(self.valid_after_block_number)
+            .map_err(|_| "protocol-v6 valid-after block must be nonnegative".to_string())?;
+        if self.shard_id.is_empty() {
+            return Err("protocol-v6 shard ID must be nonempty".to_string());
+        }
+        let mut intent = Vec::new();
+        intent.extend_from_slice(&1u16.to_be_bytes());
+        intent.push(1);
+        append_deploy_intent_field(&mut intent, self.term.as_bytes());
+        intent.extend_from_slice(&timestamp.to_be_bytes());
+        intent.extend_from_slice(&valid_after.to_be_bytes());
+        append_deploy_intent_field(&mut intent, self.shard_id.as_bytes());
+        match self.expiration_timestamp {
+            None => intent.push(0),
+            Some(expiration) if expiration > 0 => {
+                intent.push(1);
+                intent.extend_from_slice(&(expiration as u64).to_be_bytes());
+            }
+            Some(_) => {
+                return Err("protocol-v6 expiration timestamp must be positive".to_string());
+            }
+        }
+        intent.extend_from_slice(&(self.authority_presentations.len() as u32).to_be_bytes());
+        for presentation in &self.authority_presentations {
+            append_deploy_intent_field(&mut intent, &canonical_cost_signature_bytes(presentation)?);
+        }
+        Ok(intent)
+    }
+}
+
+fn append_deploy_intent_field(output: &mut Vec<u8>, bytes: &[u8]) {
+    output.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    output.extend_from_slice(bytes);
+}
+
+fn canonical_cost_signature_bytes(
+    signature: &crate::rhoapi::CostSignature,
+) -> Result<Vec<u8>, String> {
+    use crate::rhoapi::cost_signature::Value;
+    use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+    use crate::rust::rholang::sorter::sortable::Sortable;
+
+    let mut encoded = Vec::new();
+    match signature.value.as_ref() {
+        Some(Value::Unit(true)) => encoded.push(0),
+        Some(Value::Ground(bytes)) => {
+            encoded.push(1);
+            append_deploy_intent_field(&mut encoded, bytes);
+        }
+        Some(Value::Quote(par)) => {
+            let canonical = ParSortMatcher::sort_match(par).term;
+            if canonical != *par {
+                return Err("authority quote must contain a canonical process".to_string());
+            }
+            encoded.push(2);
+            append_deploy_intent_field(&mut encoded, &canonical.encode_to_vec());
+        }
+        Some(Value::Name(par)) => {
+            let canonical = ParSortMatcher::sort_match(par).term;
+            if canonical != *par {
+                return Err("authority name must contain a canonical process".to_string());
+            }
+            encoded.push(3);
+            append_deploy_intent_field(&mut encoded, &canonical.encode_to_vec());
+        }
+        Some(Value::Compound(compound)) => {
+            let mut children = Vec::new();
+            for child in &compound.elements {
+                match child.value.as_ref() {
+                    Some(Value::Compound(_)) | Some(Value::Unit(_)) => {
+                        return Err(
+                            "authority compound must be flat and contain no unit".to_string()
+                        );
+                    }
+                    _ => children.push(canonical_cost_signature_bytes(child)?),
+                }
+            }
+            if children.len() < 2 {
+                return Err("authority compound must contain at least two elements".to_string());
+            }
+            let supplied = children.clone();
+            children.sort();
+            if children != supplied {
+                return Err("authority compound elements must be canonically ordered".to_string());
+            }
+            encoded.push(4);
+            encoded.extend_from_slice(&(children.len() as u32).to_be_bytes());
+            for child in children {
+                append_deploy_intent_field(&mut encoded, &child);
+            }
+        }
+        Some(Value::BoundLevel(_)) => {
+            return Err(
+                "authority presentation contains an unresolved bound signature".to_string(),
+            );
+        }
+        Some(Value::Unit(false)) => {
+            return Err("authority presentation contains a false unit".to_string());
+        }
+        None => return Err("authority presentation is missing its signature".to_string()),
+    }
+    Ok(encoded)
 }
 
 /// Internal helper for walking a `SigCompound` expression and collecting
@@ -2050,6 +2461,7 @@ impl DeployData {
     fn _from_proto(proto: DeployDataProto) -> Self {
         Self {
             term: proto.term,
+            language: proto.language,
             time_stamp: proto.timestamp,
             valid_after_block_number: proto.valid_after_block_number,
             shard_id: proto.shard_id,
@@ -2101,7 +2513,7 @@ impl DeployData {
             if &canonical != signature {
                 return Err("authority presentations must contain canonical signatures".to_string());
             }
-            let encoded = canonical.encode_to_vec();
+            let encoded = canonical_cost_signature_bytes(&canonical)?;
             if previous.as_ref().is_some_and(|prior| prior >= &encoded) {
                 return Err(
                     "authority presentations must be strictly ordered and unique".to_string(),
@@ -2150,10 +2562,16 @@ impl DeployData {
     /// D3 (DR-9): there is no per-signer `phlo_share` and no share-sum
     /// invariant — authority is resolved from canonical vault custody and
     /// prepaid located stacks.
-    pub fn from_proto_cosigned(
+    pub fn from_proto_cosigned_legacy(
         proto: DeployDataProto,
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        if !proto.deploy_id.is_empty() || proto.authorization_v61.is_some() {
+            return Err(
+                "legacy deploy cannot contain protocol-v6 authorization fields".to_string(),
+            );
+        }
 
         if let Some(sig_algebra) = proto.sig_algebra.clone() {
             let data = DeployData::_from_proto(proto);
@@ -2220,6 +2638,139 @@ impl DeployData {
                     )
                 })
         }
+    }
+
+    pub fn from_proto_cosigned(
+        proto: DeployDataProto,
+    ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
+        use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+
+        use crate::casper::authorization_policy_v61::Policy;
+
+        if proto.deploy_id.len() != DeployIdV6::LENGTH {
+            return Err("protocol-v6 deploy requires a 32-byte DeployId".to_string());
+        }
+        if !proto.deployer.is_empty()
+            || !proto.sig.is_empty()
+            || !proto.sig_algorithm.is_empty()
+            || !proto.cosigners.is_empty()
+            || proto.cosigner_threshold != 0
+            || proto.sig_algebra.is_some()
+        {
+            return Err(
+                "protocol-v6 deploy cannot contain legacy authorization fields".to_string(),
+            );
+        }
+        let authorization = proto
+            .authorization_v61
+            .as_ref()
+            .ok_or_else(|| "protocol-v6 deploy authorization is missing".to_string())?;
+        if authorization.format_version != 0x0006_0001 {
+            return Err("protocol-v6 deploy authorization format is not v6.1".to_string());
+        }
+        let policy = authorization
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.policy.as_ref())
+            .ok_or_else(|| "protocol-v6 deploy authorization policy is missing".to_string())?;
+        let (members, threshold) = match policy {
+            Policy::AllOf(policy) => {
+                let count = u32::try_from(policy.members.len())
+                    .map_err(|_| "protocol-v6 signer count exceeds u32".to_string())?;
+                if count == 0 {
+                    return Err("protocol-v6 AllOf policy must contain members".to_string());
+                }
+                (&policy.members, count)
+            }
+            Policy::Threshold(policy) => {
+                let count = u32::try_from(policy.members.len())
+                    .map_err(|_| "protocol-v6 signer count exceeds u32".to_string())?;
+                if policy.minimum == 0 || policy.minimum >= count {
+                    return Err("protocol-v6 threshold must satisfy 1 <= k < N".to_string());
+                }
+                (&policy.members, policy.minimum)
+            }
+        };
+        let expected_bitmap_len = members.len().div_ceil(8);
+        if authorization.presence_bitmap.len() != expected_bitmap_len
+            || authorization.presence_bitmap.last().is_some_and(|last| {
+                let used = members.len() % 8;
+                used != 0 && *last & !((1u8 << used) - 1) != 0
+            })
+        {
+            return Err("protocol-v6 presence bitmap is not canonical".to_string());
+        }
+        let selected_indices = authorization
+            .presence_bitmap
+            .iter()
+            .enumerate()
+            .flat_map(|(byte_index, byte)| {
+                (0..8).filter_map(move |bit| {
+                    ((*byte & (1 << bit)) != 0).then_some(byte_index * 8 + bit)
+                })
+            })
+            .filter(|index| *index < members.len())
+            .collect::<Vec<_>>();
+        if authorization.witnesses.len() != selected_indices.len()
+            || authorization
+                .witnesses
+                .iter()
+                .zip(&selected_indices)
+                .any(|(witness, expected)| {
+                    witness.signature.is_empty() || witness.member_index as usize != *expected
+                })
+        {
+            return Err(
+                "protocol-v6 witnesses do not exactly match the presence bitmap".to_string(),
+            );
+        }
+        let mut witness_iter = authorization.witnesses.iter().peekable();
+        let signers = members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                let algorithm_name = match SignatureSchemeV61::try_from(member.scheme)
+                    .unwrap_or(SignatureSchemeV61::Unspecified)
+                {
+                    SignatureSchemeV61::Secp256k1 => "secp256k1",
+                    SignatureSchemeV61::Secp256k1Eth => "secp256k1:eth",
+                    _ => return Err("protocol-v6 signature scheme is not active".to_string()),
+                };
+                let signature = if witness_iter
+                    .peek()
+                    .is_some_and(|witness| witness.member_index as usize == index)
+                {
+                    witness_iter
+                        .next()
+                        .expect("peeked witness")
+                        .signature
+                        .clone()
+                } else {
+                    ByteString::new()
+                };
+                Ok(Cosigner {
+                    pk: PublicKey::from_bytes(&member.public_key),
+                    sig: signature,
+                    sig_algorithm: SignaturesAlgFactory::apply(algorithm_name)
+                        .expect("active protocol-v6 signature scheme"),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Cosigned::<DeployData>::validate_envelope_signer_order(&signers)
+            .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?;
+        let expected_commitment = proto.deploy_id.clone();
+        let data = DeployData::_from_proto(proto);
+        data.validate_authority_presentations()?;
+        let envelope = Cosigned::from_envelope_signed_data_threshold(data, signers, threshold)
+            .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?;
+        if envelope
+            .envelope_commitment()
+            .map_err(|error| format!("protocol-v6 envelope validation failed: {error}"))?
+            != expected_commitment
+        {
+            return Err("protocol-v6 DeployId mismatch".to_string());
+        }
+        Ok(envelope)
     }
 
     /// Validates the admission algebra accepted at the deploy boundary. `Atom`
@@ -2366,6 +2917,7 @@ impl DeployData {
     fn _to_proto(dd: DeployData) -> DeployDataProto {
         DeployDataProto {
             term: dd.term,
+            language: String::new(),
             timestamp: dd.time_stamp,
             valid_after_block_number: dd.valid_after_block_number,
             shard_id: dd.shard_id,
@@ -2381,6 +2933,7 @@ impl DeployData {
     pub fn to_proto_ref(dd: &Signed<DeployData>) -> DeployDataProto {
         DeployDataProto {
             term: dd.data.term.clone(),
+            language: dd.data.language.clone(),
             timestamp: dd.data.time_stamp,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
@@ -2402,38 +2955,85 @@ impl DeployData {
     pub fn to_proto_cosigned(
         cosigned: &crypto::rust::signatures::signed::Cosigned<DeployData>,
     ) -> DeployDataProto {
-        let primary = cosigned.primary();
-        let is_compound = cosigned.is_compound();
-        let cosigners_proto: Vec<crate::casper::CompoundSigner> = if is_compound {
-            cosigned
-                .signers()
-                .iter()
-                .skip(1) // primary occupies fields 1/4/5; cosigners[] is the rest
-                .map(|c| crate::casper::CompoundSigner {
-                    pk: c.pk.bytes.clone().into(),
-                    sig: c.sig.clone(),
-                    sig_algorithm: c.sig_algorithm.name(),
-                })
-                .collect()
+        if !cosigned.is_envelope_bound() {
+            let primary = cosigned.primary();
+            return DeployDataProto {
+                term: cosigned.data.term.clone(),
+                language: cosigned.data.language.clone(),
+                timestamp: cosigned.data.time_stamp,
+                valid_after_block_number: cosigned.data.valid_after_block_number,
+                shard_id: cosigned.data.shard_id.clone(),
+                deployer: primary.pk.bytes.clone().into(),
+                sig: primary.sig.clone(),
+                sig_algorithm: primary.sig_algorithm.name(),
+                expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
+                authority_presentations: cosigned.data.authority_presentations.clone(),
+                cosigners: cosigned
+                    .signers()
+                    .iter()
+                    .skip(1)
+                    .map(|signer| crate::casper::CompoundSigner {
+                        pk: signer.pk.bytes.clone().into(),
+                        sig: signer.sig.clone(),
+                        sig_algorithm: signer.sig_algorithm.name(),
+                    })
+                    .collect(),
+                cosigner_threshold: i32::try_from(cosigned.cosigner_threshold())
+                    .unwrap_or(i32::MAX),
+                ..Default::default()
+            };
+        }
+
+        use crate::casper::authorization_policy_v61::Policy;
+        let members = cosigned
+            .signers()
+            .iter()
+            .map(|signer| crate::casper::PrincipalV61 {
+                scheme: i32::from(signer.scheme_id_v61().expect("validated v6.1 scheme")),
+                public_key: signer.pk.bytes.clone().into(),
+            })
+            .collect::<Vec<_>>();
+        let threshold = cosigned.cosigner_threshold();
+        let policy = if threshold == members.len() as u32 {
+            Policy::AllOf(crate::casper::AllOfPolicyV61 { members })
         } else {
-            Vec::new()
+            Policy::Threshold(crate::casper::ThresholdPolicyV61 {
+                minimum: threshold,
+                members,
+            })
         };
+        let witnesses = cosigned
+            .signers()
+            .iter()
+            .enumerate()
+            .filter(|(_, signer)| !signer.sig.is_empty())
+            .map(|(index, signer)| crate::casper::SignatureWitnessV61 {
+                member_index: index as u32,
+                signature: signer.sig.clone(),
+            })
+            .collect();
         DeployDataProto {
             term: cosigned.data.term.clone(),
+            language: cosigned.data.language.clone(),
             timestamp: cosigned.data.time_stamp,
             valid_after_block_number: cosigned.data.valid_after_block_number,
             shard_id: cosigned.data.shard_id.clone(),
-            deployer: primary.pk.bytes.clone().into(),
-            sig: primary.sig.clone(),
-            sig_algorithm: primary.sig_algorithm.name(),
             expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
             authority_presentations: cosigned.data.authority_presentations.clone(),
-            cosigners: cosigners_proto,
-            // Single-signer / N-of-N round-trip emits 0 (legacy semantics).
-            // M-of-N round-trip requires the caller to set this directly on
-            // the proto AFTER calling this routine; the Cosigned envelope
-            // does not carry the threshold value through the data path.
-            cosigner_threshold: 0,
+            deploy_id: cosigned
+                .envelope_commitment()
+                .expect("envelope-bound Cosigned invariant"),
+            authorization_v61: Some(crate::casper::DeployAuthorizationV61 {
+                format_version: 0x0006_0001,
+                policy: Some(crate::casper::AuthorizationPolicyV61 {
+                    policy: Some(policy),
+                }),
+                presence_bitmap: cosigned
+                    .presence_bitmap_v61()
+                    .expect("envelope-bound Cosigned invariant")
+                    .into(),
+                witnesses,
+            }),
             ..Default::default()
         }
     }
@@ -2818,15 +3418,16 @@ impl MergeableEntryResponse {
 // `checked_total_phlo_charge_value` / `refund_amount_for_token_cost_value`)
 // are removed with the escrow model. The replacement supply-side
 // no-underflow kani proof lives with the settlement writer (Commit 2 fuzz/
-// kani retarget — see `docs/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`
+// kani retarget — see `docs/casper/theory/cost-accounting-impl/d3-replace-phlo-with-tokens.md`
 // §Sequencing, Commit 2).
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::secp256k1_eth::Secp256k1Eth;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-    use crypto::rust::signatures::signed::Signed;
+    use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed};
     use proptest::prelude::*;
     use prost::bytes::Bytes;
 
@@ -3109,12 +3710,142 @@ mod tests {
     fn deploy_data() -> DeployData {
         DeployData {
             term: "Nil".to_string(),
+            language: "rholang".to_string(),
             time_stamp: 0,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             authority_presentations: Vec::new(),
         }
+    }
+
+    fn v61_envelope(selected: &[usize], threshold: u32) -> Cosigned<DeployData> {
+        let secp = Secp256k1;
+        let mut members = (0..3)
+            .map(|_| {
+                let (private_key, public_key) = secp.new_key_pair();
+                (
+                    Cosigner {
+                        pk: public_key,
+                        sig: Bytes::new(),
+                        sig_algorithm: Box::new(secp.clone()),
+                    },
+                    private_key,
+                )
+            })
+            .collect::<Vec<(Cosigner, PrivateKey)>>();
+        members.sort_by_key(|(signer, _)| signer.principal_bytes_v61().unwrap());
+        let mut bitmap = vec![0u8; members.len().div_ceil(8)];
+        for index in selected {
+            bitmap[index / 8] |= 1 << (index % 8);
+        }
+        let unsigned = members
+            .iter()
+            .map(|(signer, _)| signer.clone())
+            .collect::<Vec<_>>();
+        let data = deploy_data();
+        for index in selected {
+            let hash = Cosigned::<DeployData>::envelope_signing_hash_for_presence(
+                &data,
+                &unsigned,
+                threshold,
+                &bitmap,
+                &members[*index].0.sig_algorithm.name(),
+            )
+            .unwrap();
+            members[*index].0.sig = members[*index]
+                .0
+                .sig_algorithm
+                .sign(&hash, &members[*index].1.bytes)
+                .into();
+        }
+        Cosigned::from_envelope_signed_data_threshold(
+            data,
+            members.into_iter().map(|(signer, _)| signer).collect(),
+            threshold,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn v61_wire_round_trip_preserves_authorization_and_identity() {
+        let envelope = v61_envelope(&[0, 2], 2);
+        let proto = DeployData::to_proto_cosigned(&envelope);
+        let decoded = DeployData::from_proto_cosigned(proto).unwrap();
+        assert_eq!(decoded, envelope);
+        assert_eq!(
+            decoded.envelope_commitment().unwrap(),
+            envelope.envelope_commitment().unwrap()
+        );
+    }
+
+    #[test]
+    fn v61_wire_rejects_signer_order_presence_and_legacy_mutations() {
+        let envelope = v61_envelope(&[0, 2], 2);
+        let proto = DeployData::to_proto_cosigned(&envelope);
+
+        let mut reordered = proto.clone();
+        let policy = reordered
+            .authorization_v61
+            .as_mut()
+            .unwrap()
+            .policy
+            .as_mut()
+            .unwrap()
+            .policy
+            .as_mut()
+            .unwrap();
+        let crate::casper::authorization_policy_v61::Policy::Threshold(policy) = policy else {
+            panic!("expected threshold policy");
+        };
+        policy.members.swap(0, 1);
+        assert!(DeployData::from_proto_cosigned(reordered).is_err());
+
+        let mut presence = proto.clone();
+        let mut bitmap = presence
+            .authorization_v61
+            .as_ref()
+            .unwrap()
+            .presence_bitmap
+            .to_vec();
+        bitmap[0] ^= 0b0000_0010;
+        presence.authorization_v61.as_mut().unwrap().presence_bitmap = bitmap.into();
+        assert!(DeployData::from_proto_cosigned(presence).is_err());
+
+        let mut coexistence = proto;
+        coexistence.sig = Bytes::from_static(b"legacy");
+        assert!(DeployData::from_proto_cosigned(coexistence).is_err());
+    }
+
+    #[test]
+    fn v61_wire_rejects_noncanonical_threshold_n_of_n() {
+        let envelope = v61_envelope(&[0, 1, 2], 3);
+        let mut proto = DeployData::to_proto_cosigned(&envelope);
+        let authorization = proto.authorization_v61.as_mut().unwrap();
+        let policy = authorization.policy.as_mut().unwrap();
+        let crate::casper::authorization_policy_v61::Policy::AllOf(all_of) =
+            policy.policy.take().unwrap()
+        else {
+            panic!("expected all-of policy");
+        };
+        policy.policy = Some(crate::casper::authorization_policy_v61::Policy::Threshold(
+            crate::casper::ThresholdPolicyV61 {
+                minimum: all_of.members.len() as u32,
+                members: all_of.members,
+            },
+        ));
+        assert!(DeployData::from_proto_cosigned(proto).is_err());
+    }
+
+    #[test]
+    fn v61_processed_deploy_primary_is_an_authenticated_witness() {
+        let envelope = v61_envelope(&[1, 2], 2);
+        let unsigned = envelope.signers()[0].pk.clone();
+        let processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+
+        assert_ne!(processed.deploy.pk, unsigned);
+        assert!(!processed.deploy.sig.is_empty());
+        assert_eq!(processed.to_cosigned().unwrap(), envelope);
     }
 
     fn authority_signature(tag: u8) -> crate::rhoapi::CostSignature {
@@ -3196,14 +3927,14 @@ mod tests {
 
     #[test]
     fn rejected_deploy_occurrence_round_trips_through_proto() {
-        let rejected = RejectedDeploy::occurrence(
-            Bytes::from_static(b"deploy"),
+        let rejected = RejectedDeploy::occurrence_legacy(
+            LegacyDeploySignature::new(b"deploy".to_vec()),
             Bytes::from_static(b"source"),
             RejectedDeployReason::DuplicateOccurrence,
         );
 
         assert_eq!(
-            RejectedDeploy::from_proto(rejected.clone().to_proto()),
+            RejectedDeploy::from_proto(rejected.clone().to_proto()).unwrap(),
             rejected
         );
     }
@@ -3234,6 +3965,8 @@ mod tests {
             rejected_state_effects: effects.clone(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         };
 
         let decoded = Body::from_proto(body.to_proto()).unwrap();
@@ -3299,12 +4032,15 @@ mod tests {
     fn legacy_rejected_deploy_proto_remains_readable() {
         let proto = RejectedDeployProto {
             sig: Bytes::from_static(b"deploy"),
+            duplicate: false,
+            carrier: Bytes::new(),
             source_block_hash: Bytes::new(),
             reason: 0,
+            deploy_id_v6: Bytes::new(),
         };
 
         assert_eq!(
-            RejectedDeploy::from_proto(proto),
+            RejectedDeploy::from_proto(proto).unwrap(),
             RejectedDeploy::legacy(Bytes::from_static(b"deploy"))
         );
     }
@@ -3603,6 +4339,7 @@ mod tests {
     fn processed_deploy_cosigner_threshold_roundtrips_through_proto() {
         let processed = ProcessedDeploy {
             deploy: signed_deploy(deploy_data()),
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 0 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -3627,6 +4364,7 @@ mod tests {
         let deploy = Signed::create(deploy_data(), algorithm, private_key).unwrap();
         let processed = ProcessedDeploy {
             deploy,
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 1 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -3674,6 +4412,7 @@ mod tests {
         let post_state = ByteString::from_static(&[6; 32]);
         let processed = ProcessedDeploy {
             deploy: signed_deploy(deploy_data()),
+            envelope_commitment: ByteString::new(),
             cost: PCost { cost: 12 },
             deploy_log: Vec::new(),
             is_failed: false,
@@ -3722,7 +4461,7 @@ mod tests {
     // =================================================================
     // F-A funding/capability separation — INGRESS REJECT (c) tests.
     //
-    // `docs/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
+    // `docs/casper/theory/cost-accounting-impl/f-a-funding-vs-capability-separation.md`
     // §3/§6: the deploy-decode path
     // (`from_proto_cosigned_with_sig_algebra`) REJECTS the five value/capability
     // type-logic connectives (`Plus` ⊕ / `With` & / `Bang` ! / `WhyNot` ? /
@@ -3941,8 +4680,10 @@ mod tests {
             cosigner_threshold: 0, // N-of-N
             sig_algebra: None,
             authority_presentations: Vec::new(),
+            deploy_id: ByteString::new(),
+            authorization_v61: None,
         };
-        let cosigned = DeployData::from_proto_cosigned(proto)
+        let cosigned = DeployData::from_proto_cosigned_legacy(proto)
             .expect("flat N-of-N (no sig_algebra) must decode unchanged post-F-A");
         assert_eq!(cosigned.signers().len(), 2);
         assert!(cosigned.is_compound());
@@ -3954,6 +4695,7 @@ mod tests {
         let algebra = atom_compound(&payload);
         let proto = DeployDataProto {
             term: payload.term.clone(),
+            language: payload.language.clone(),
             timestamp: payload.time_stamp,
             valid_after_block_number: payload.valid_after_block_number,
             shard_id: payload.shard_id.clone(),
@@ -3968,7 +4710,7 @@ mod tests {
             ..Default::default()
         };
 
-        let cosigned = DeployData::from_proto_cosigned(proto)
+        let cosigned = DeployData::from_proto_cosigned_legacy(proto)
             .expect("sig algebra must completely override the flat envelope fields");
         assert_eq!(cosigned.signers().len(), 1);
     }
@@ -3986,6 +4728,7 @@ mod tests {
         let base = DeployDataProto {
             deployer: primary_pk.bytes.clone().into(),
             term: payload.term,
+            language: payload.language,
             timestamp: payload.time_stamp,
             sig: Bytes::from(secp.sign(&hash, &primary_sk.bytes)),
             sig_algorithm: Secp256k1::name(),
@@ -4000,19 +4743,19 @@ mod tests {
             ..Default::default()
         };
 
-        let cosigned = DeployData::from_proto_cosigned(base.clone())
+        let cosigned = DeployData::from_proto_cosigned_legacy(base.clone())
             .expect("one valid signer must satisfy a one-of-two threshold");
         assert_eq!(cosigned.cosigner_threshold(), 1);
 
         let mut negative = base.clone();
         negative.cosigner_threshold = -1;
-        assert!(DeployData::from_proto_cosigned(negative)
+        assert!(DeployData::from_proto_cosigned_legacy(negative)
             .unwrap_err()
             .contains("Invalid cosigner_threshold"));
 
         let mut excessive = base;
         excessive.cosigner_threshold = 3;
-        assert!(DeployData::from_proto_cosigned(excessive)
+        assert!(DeployData::from_proto_cosigned_legacy(excessive)
             .unwrap_err()
             .contains("Invalid cosigner_threshold"));
     }
@@ -4176,5 +4919,146 @@ mod tests {
                 .expect_err("no threshold policy can be nested under a tensor");
             prop_assert!(err.contains("top-level admission connective"));
         }
+    }
+
+    fn candidate() -> ApprovedBlockCandidate {
+        ApprovedBlockCandidate {
+            block: BlockMessage {
+                block_hash: Bytes::from_static(b"anchor"),
+                header: Header {
+                    parents_hash_list: vec![],
+                    timestamp: 0,
+                    version: 0,
+                    extra_bytes: Bytes::new(),
+                    sender_bond_generation: None,
+                    objective_equivocation_evidence_delta: vec![],
+                    finalized_floor: None,
+                },
+                body: Body {
+                    state: F1r3flyState {
+                        pre_state_hash: Bytes::new(),
+                        post_state_hash: Bytes::new(),
+                        bonds: vec![],
+                        bond_generations: vec![],
+                        active_validators: vec![],
+                        block_number: 87,
+                    },
+                    deploys: vec![],
+                    rejected_deploys: vec![],
+                    rejected_state_effects: vec![],
+                    system_deploys: vec![],
+                    extra_bytes: Bytes::new(),
+                    applied_from_scope: vec![],
+                    merge_base: Bytes::new(),
+                },
+                justifications: vec![],
+                sender: Bytes::new(),
+                seq_num: 0,
+                sig: Bytes::new(),
+                sig_algorithm: String::new(),
+                shard_id: "root".to_string(),
+                extra_bytes: Bytes::new(),
+                finalized_floor_certificate: None,
+            },
+            required_sigs: 0,
+        }
+    }
+
+    /// The finalized-floor cache travels with the LFS window. A restored node
+    /// cannot derive floors for blocks below its anchor — the derivation
+    /// recurses through history it deliberately does not keep — and without
+    /// them every sibling-branch validation crawls gap-by-gap toward genesis.
+    /// The responder computed these values when it validated the blocks; the
+    /// numbers are hashes only, a few KB for a window whose size is constant
+    /// in chain height.
+    #[test]
+    fn the_floor_cache_survives_the_wire() {
+        let entry = FloorCacheEntry {
+            block_hash: Bytes::from_static(b"window-block"),
+            floor_hash: Bytes::from_static(b"its-floor"),
+            frontier_hash: Bytes::from_static(b"its-frontier"),
+        };
+        let request = FloorCacheRequest {
+            hashes: vec![Bytes::from_static(b"window-block")],
+        };
+        let response = FloorCacheResponse {
+            entries: vec![entry],
+            genesis_hash: Bytes::from_static(b"the-genesis"),
+            genesis_block: Some(crate::rust::block_implicits::get_random_block_default()),
+        };
+
+        assert_eq!(
+            FloorCacheRequest::from_proto(request.clone().to_proto()),
+            request,
+            "the requested hash set must survive the wire"
+        );
+        assert_eq!(
+            FloorCacheResponse::from_proto(response.clone().to_proto()),
+            response,
+            "every entry must survive intact: the receiver writes these into the \
+             same caches its own validation would have filled"
+        );
+    }
+
+    /// The seed rides on the ApprovedBlock, never inside its candidate: the
+    /// candidate's serialized bytes are what the genesis ceremony signs and
+    /// what `Validate::approved_block` re-derives to verify, so a field added
+    /// there would put unsigned peer-supplied data inside the signed envelope
+    /// and make two ceremony participants disagree on the digest.
+    #[test]
+    fn the_floor_seed_survives_the_wire_and_the_candidate_digest_does_not_move() {
+        let seed = FinalizedFloorSeed {
+            floor_hash: Bytes::from_static(b"floor"),
+            floor_number: 37,
+            frontier_hash: Bytes::from_static(b"frontier"),
+            frontier_number: 41,
+        };
+        let seeded = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: Some(seed.clone()),
+        };
+        let bare = ApprovedBlock {
+            candidate: candidate(),
+            sigs: vec![],
+            floor_seed: None,
+        };
+
+        assert_eq!(
+            ApprovedBlock::from_proto(seeded.clone().to_proto()).expect("round trip"),
+            seeded,
+            "the seed must survive the wire intact: the receiver sizes its download \
+             window from these numbers before it requests a single block"
+        );
+        assert_eq!(
+            ApprovedBlock::from_proto(bare.clone().to_proto()).expect("round trip"),
+            bare,
+            "a peer that sends no seed must decode as no seed, not as a zero floor"
+        );
+
+        assert_eq!(
+            seeded
+                .to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            bare.to_proto()
+                .candidate
+                .expect("candidate")
+                .encode_to_vec(),
+            "seeding must not shift one byte of the candidate: those bytes are the \
+             ceremony's signed payload"
+        );
+    }
+
+    #[test]
+    fn rejected_deploy_decodes_legacy_wire_format() {
+        let legacy = [0x0a, 0x03, b's', b'i', b'g'];
+        let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
+        let record = RejectedDeploy::from_proto(decoded).unwrap();
+
+        assert_eq!(record.deploy_id(), b"sig");
+        assert!(!record.is_duplicate());
+        assert!(record.source_block_hash.is_empty());
     }
 }

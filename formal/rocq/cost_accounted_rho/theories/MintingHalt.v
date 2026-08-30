@@ -3,7 +3,7 @@
    ═══════════════════════════════════════════════════════════════════════════
 
    Cost-Accounted Rho Stage C halt INTERFACE (proved at Stage B; DR-3 / DR-13,
-   docs/theory/cost-accounting-impl/stageb-minting-halt-interface.md Decision 4).
+   docs/casper/theory/cost-accounting-impl/stageb-minting-halt-interface.md Decision 4).
 
    Slashing halts a validator's phlogiston minting via the "mintingHalted" set
    (modeled as [pb_halted] in MintingInjection.v's [pos_state]); the Stage-B

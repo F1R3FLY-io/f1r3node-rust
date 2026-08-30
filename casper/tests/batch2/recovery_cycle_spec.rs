@@ -16,6 +16,7 @@
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_id::{DeployLookupId, LegacyDeploySignature};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -277,7 +278,7 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| rd.sig.clone())
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     assert!(
         !rejected_sigs.iter().any(|s| *s == sig_a || *s == sig_b),
@@ -299,7 +300,9 @@ async fn d3_same_key_benign_deploys_merge_without_precharge_conflict() {
     for sig in [&sig_a, &sig_b] {
         assert!(
             representation
-                .lookup_by_deploy_id(&sig.to_vec())
+                .lookup_by_deploy_id(&DeployLookupId::Legacy(LegacyDeploySignature::new(
+                    sig.to_vec(),
+                )))
                 .ok()
                 .flatten()
                 .is_some(),
@@ -409,7 +412,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| rd.sig.clone())
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     let conflicting_rejections = deploys
         .iter()
@@ -659,7 +662,7 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
                 .body
                 .rejected_deploys
                 .iter()
-                .any(|rejected| rejected.sig == **sig)
+                .any(|rejected| rejected.deploy_id() == sig.as_ref())
         })
         .cloned()
         .collect();
@@ -747,7 +750,7 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
         .body
         .rejected_deploys
         .iter()
-        .find(|rejected| rejected.sig == rejected_sig)
+        .find(|rejected| rejected.deploy_id() == rejected_sig.as_ref())
         .expect("merge carries the rejected transfer record");
     assert!(
         rejected_record.has_provenance(),
@@ -856,7 +859,7 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
         let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
         assert!(
             buffer_guard
-                .contains_sig(&rejected_sig)
+                .contains_id(&crate::legacy_deploy_id(&rejected_sig))
                 .expect("buffer.contains_sig"),
             "validator {index}'s rejected-deploy buffer must contain the merge-rejected \
              transfer {} after validating merge_block",
@@ -916,8 +919,14 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             scan_floor,
         )
         .expect("canonical recovery disposition");
+    let rejected_deploy_id = DeployLookupId::from_protocol_bytes(
+        recovery_snapshot.on_chain_state.shard_conf.casper_version,
+        &rejected_sig,
+    )
+    .expect("protocol deploy identity");
     assert!(
-        !canonical_won.contains(&rejected_sig) && canonical_rejected.contains(&rejected_sig),
+        !canonical_won.contains(&rejected_deploy_id)
+            && canonical_rejected.contains(&rejected_deploy_id),
         "exact merge tombstone must make the rejected source canonically rejected"
     );
 
@@ -982,7 +991,7 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
             assert!(
                 buffer_guard
-                    .contains_sig(&rejected_sig)
+                    .contains_id(&crate::legacy_deploy_id(&rejected_sig))
                     .expect("buffer.contains_sig"),
                 "validator {index} evicted recovered sig {} before finalized-WON",
                 hex::encode(&rejected_sig)
@@ -1003,8 +1012,12 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
         .body
         .rejected_deploys
         .iter()
-        .filter(|rd| recovery_body_sigs.contains(&rd.sig))
-        .map(|rd| rd.sig.clone())
+        .filter(|rd| {
+            recovery_body_sigs
+                .iter()
+                .any(|sig| sig.as_ref() == rd.deploy_id())
+        })
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     assert!(
         overlapping.is_empty(),
@@ -1021,7 +1034,9 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
     for sig in [&surviving_sig_1, &surviving_sig_2] {
         assert!(
             representation
-                .lookup_by_deploy_id(&sig.to_vec())
+                .lookup_by_deploy_id(&DeployLookupId::Legacy(LegacyDeploySignature::new(
+                    sig.to_vec(),
+                )))
                 .ok()
                 .flatten()
                 .is_some(),

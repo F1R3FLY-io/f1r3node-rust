@@ -5,12 +5,12 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::{fs, io, process};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use dashmap::DashSet;
 use lazy_static::lazy_static;
@@ -368,91 +368,8 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use std::collections::BTreeSet;
-    use std::sync::Arc;
-
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-    use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
-    use models::rust::block_hash::BlockHashSerde;
-    use models::rust::block_metadata::BlockMetadata;
-    use models::rust::bond_generation::BondGeneration;
-    use models::rust::equivocation_record::SequenceNumber;
-    use models::rust::validator::ValidatorSerde;
-    use parking_lot::RwLock;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-
-    let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get block-metadata store: {:?}",
-            e
-        ))
-    })?;
-    let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
-        KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-    let block_metadata_store = BlockMetadataStore::new(block_metadata_db)?;
-
-    let equivocation_tracker_kv_store = kvm
-        .store("equivocation-tracker-v5".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get equivocation-tracker store: {:?}",
-                e
-            ))
-        })?;
-    let equivocation_tracker_db: KeyValueTypedStoreImpl<
-        (ValidatorSerde, BondGeneration, SequenceNumber),
-        BTreeSet<BlockHashSerde>,
-    > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
-    let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
-
-    let latest_messages_kv_store = kvm
-        .store("latest-messages".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get latest-messages store: {:?}",
-                e
-            ))
-        })?;
-    let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
-        KeyValueTypedStoreImpl::new(latest_messages_kv_store);
-
-    let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get invalid-blocks store: {:?}",
-            e
-        ))
-    })?;
-    let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
-        KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
-
-    let deploy_index_kv_store = kvm.store("deploy-index".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get deploy-index store: {:?}",
-            e
-        ))
-    })?;
-    let deploy_index_db: KeyValueTypedStoreImpl<
-        block_storage::rust::dag::block_dag_key_value_storage::DeployId,
-        BlockHashSerde,
-    > = KeyValueTypedStoreImpl::new(deploy_index_kv_store);
-
-    Ok(BlockDagKeyValueStorage::from_parts(
-        Arc::new(RwLock::new(())),
-        latest_messages_db,
-        Arc::new(RwLock::new(block_metadata_store)),
-        Arc::new(RwLock::new(deploy_index_db)),
-        Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
-            InMemoryKeyValueStore::new(),
-        )))),
-        invalid_blocks_db,
-        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        equivocation_tracker_store,
-        Arc::new(AtomicU64::new(0)),
-    ))
+    BlockDagKeyValueStorage::new(kvm).await
 }
 
 pub async fn key_value_deploy_storage_from_dyn(
@@ -475,9 +392,19 @@ pub async fn key_value_deploy_storage_from_dyn(
     })?;
     let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
+    let envelope_storage_kv_store = kvm
+        .store("deploy_envelope_storage_v6".to_string())
+        .await
+        .map_err(|error| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get deploy envelope store: {error:?}"
+            ))
+        })?;
+    let envelope_storage_db = KeyValueTypedStoreImpl::new(envelope_storage_kv_store);
 
     Ok(KeyValueDeployStorage {
         store: deploy_storage_db,
+        envelope_store: envelope_storage_db,
     })
 }
 
@@ -652,11 +579,15 @@ fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         deploy_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
             InMemoryKeyValueStore::new(),
         )))),
-        deploy_occurrence_index: Arc::new(RwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+        deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
             InMemoryKeyValueStore::new(),
-        )))),
+        ))
+        .unwrap(),
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        lifecycle: Arc::new(RwLock::new(
+            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
+        )),
     }
 }
 

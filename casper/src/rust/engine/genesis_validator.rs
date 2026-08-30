@@ -67,6 +67,14 @@ pub struct GenesisValidator<T: TransportLayer + Send + Sync + Clone + 'static> {
     seen_candidates: Arc<Mutex<SeenCandidates>>,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+    /// Handed through to Initializing on late-joiner recovery: a genesis
+    /// validator that missed the ceremony LFS-restores like any joiner and
+    /// needs the runtime state requester the same way.
+    state_items_tx: Option<
+        tokio::sync::mpsc::Sender<
+            models::rust::casper::protocol::casper_message::StoreItemsMessage,
+        >,
+    >,
 }
 
 struct SeenCandidates {
@@ -131,6 +139,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
+        state_items_tx: Option<
+            tokio::sync::mpsc::Sender<
+                models::rust::casper::protocol::casper_message::StoreItemsMessage,
+            >,
+        >,
     ) -> Self {
         Self {
             block_processing_queue_tx,
@@ -157,6 +170,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
                 genesis_seen_candidates_max_entries(),
             ))),
             heartbeat_signal_ref,
+            state_items_tx,
         }
     }
 
@@ -229,6 +243,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.runtime_manager,
             &self.estimator,
             &self.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await
     }
@@ -290,6 +305,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisValidator<T> {
             &self.runtime_manager,
             &self.estimator,
             &self.heartbeat_signal_ref,
+            self.state_items_tx.clone(),
         )
         .await
     }

@@ -29,6 +29,7 @@ use std::collections::HashSet;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::interpreter_util::canonical_won_sigs;
 use models::rust::casper::protocol::casper_message::Bond;
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -40,7 +41,10 @@ const EARLIEST: i64 = -1_000_000;
 
 /// The production recovery-apply (block_creator.rs:181-184): keep only the pool
 /// signatures whose latest disposition across the scope is NOT a WIN.
-fn recover(canonical_won: &HashSet<Bytes>, pool: &HashSet<Bytes>) -> HashSet<Bytes> {
+fn recover(
+    canonical_won: &HashSet<DeployLookupId>,
+    pool: &HashSet<DeployLookupId>,
+) -> HashSet<DeployLookupId> {
     pool.iter()
         .filter(|sig| !canonical_won.contains(*sig))
         .cloned()
@@ -93,6 +97,11 @@ async fn recovery_effect_is_applied_at_most_once() {
             None,
             None,
         );
+        let id_won = b1.body.deploys[0]
+            .deploy_id_for_protocol(b1.header.version)
+            .expect("winning deploy identity");
+        let id_loser = DeployLookupId::from_protocol_bytes(b1.header.version, &sig_loser)
+            .expect("losing deploy identity");
 
         // Production record over each scope.
         let won_at_genesis =
@@ -106,31 +115,31 @@ async fn recovery_effect_is_applied_at_most_once() {
         // IS reflected after b1 includes it (applied once), and a never-applied loser is
         // never reflected.
         assert!(
-            !won_at_genesis.contains(&sig_won),
+            !won_at_genesis.contains(&id_won),
             "the effect is not canonically-won before it is applied"
         );
         assert!(
-            won_at_b1.contains(&sig_won),
+            won_at_b1.contains(&id_won),
             "the effect is canonically-won exactly once after b1 includes it"
         );
         assert!(
-            !won_at_b1.contains(&sig_loser),
+            !won_at_b1.contains(&id_loser),
             "a never-applied loser is never canonically-won"
         );
 
-        let pool: HashSet<Bytes> = HashSet::from([sig_won.clone(), sig_loser.clone()]);
+        let pool = HashSet::from([id_won.clone(), id_loser.clone()]);
 
         // Before the effect wins it is recoverable; after it wins recovery DROPS it (and
         // keeps the loser) — the effect is applied at most once.
         let recovered_before = recover(&won_at_genesis, &pool);
         assert!(
-            recovered_before.contains(&sig_won),
+            recovered_before.contains(&id_won),
             "the effect is eligible for recovery before it wins"
         );
         let recovered_after = recover(&won_at_b1, &pool);
         assert_eq!(
             recovered_after,
-            HashSet::from([sig_loser.clone()]),
+            HashSet::from([id_loser.clone()]),
             "after the effect wins, recovery drops it and keeps the loser (no double-apply)"
         );
 
@@ -171,7 +180,7 @@ async fn recovery_effect_is_applied_at_most_once() {
             canonical_won_sigs(&block_store, std::slice::from_ref(&b2.block_hash), EARLIEST)
                 .expect("canonical_won_sigs over the b2 scope");
         assert!(
-            won_at_b2.contains(&sig_won),
+            won_at_b2.contains(&id_won),
             "the winning effect stays reflected exactly once across the extended scope"
         );
     })

@@ -19,7 +19,7 @@ use rholang::rust::interpreter::system_processes::BlockData;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
-use crate::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
+use crate::rust::util::rholang::interpreter_util::compute_deploys_checkpoint_legacy_signer;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use crate::rust::util::{construct_deploy, proto_util};
@@ -78,7 +78,7 @@ async fn compute_block_checkpoint(
         .collect();
 
     let (pre_state_hash, post_state_hash, processed_deploys, _, processed_system_deploys, _) =
-        compute_deploys_checkpoint(
+        compute_deploys_checkpoint_legacy_signer(
             block_store,
             parents,
             deploys,

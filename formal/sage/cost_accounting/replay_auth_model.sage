@@ -10,7 +10,7 @@ load(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "scenario_schem
 # TM-CA-151 — DIAGNOSTIC-REFINEMENT LEVEL (not the production consensus surface).
 # This model authenticates a *digest-inclusive* replay payload: FIELDS includes
 # `digest`, `digest_present`, and `event_count`. Per TM-CA-151
-# (docs/theory/cost-accounting-threat-model.md) those per-operation cost-trace
+# (docs/casper/theory/cost-accounting-threat-model.md) those per-operation cost-trace
 # quantities are DIAGNOSTIC/TELEMETRY ONLY and were removed from production
 # consensus (the replay comparison and the signed block-hash preimage). The
 # production consensus surface is total_cost (clamped to initial on OOP) +
