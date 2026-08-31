@@ -163,8 +163,56 @@ else
 	fi
 fi
 
-printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB\n' \
-	"$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB"
+# Disk twin of the memory floor (issue #378). Weekend runs 33254400407 and
+# 33278321865 filled the soak VM's default ~47GB boot volume 9-12h in: the
+# runner worker died on ENOSPC writing its own _diag log, and the last
+# iteration before death failed "121 deploy(s) not finalized within 45s" —
+# a full disk masquerading as a finalization regression. Memory had a
+# guardian, warn band and durable last words; disk had nothing.
+# SOAK_DISK_FREE_FLOOR_MB overrides; 0 disables the floor.
+DISK_FREE_FLOOR_MB="${SOAK_DISK_FREE_FLOOR_MB:-4096}"
+if ! [[ "$DISK_FREE_FLOOR_MB" =~ ^[0-9]+$ ]]; then
+	printf 'SOAK_DISK_FREE_FLOOR_MB must be a non-negative integer\n' >&2
+	exit 2
+fi
+# Hygiene runs when free space sinks into floor+band, BEFORE the floor
+# breaches: pruning between iterations is cheap, while a breach ends the run.
+DISK_HYGIENE_BAND_MB="${SOAK_DISK_HYGIENE_BAND_MB:-4096}"
+if ! [[ "$DISK_HYGIENE_BAND_MB" =~ ^[0-9]+$ ]]; then
+	printf 'SOAK_DISK_HYGIENE_BAND_MB must be a non-negative integer\n' >&2
+	exit 2
+fi
+
+# Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
+# session dirs and the runner's _diag all live on the one boot volume, so one
+# probe stands for them all.
+disk_free_mb() {
+	df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 { print int($4) }'
+}
+
+# Reclaim space that accumulates across iterations without touching anything
+# an active session owns. Exited rnode containers and their writable layers,
+# dangling images and orphaned networks are per-iteration leftovers (a failed
+# `compose up` leaks all three); the docker build cache is dead weight once
+# the image under test is built and loaded; /tmp compose/genesis files older
+# than an hour belong to no live iteration (an iteration runs ~10 minutes).
+# Never prunes tagged images (the image under test) or running containers.
+reclaim_disk_space() {
+	local before after
+	before="$(disk_free_mb)"
+	if command -v docker >/dev/null 2>&1; then
+		docker container prune -f >/dev/null 2>&1 || true
+		docker network prune -f >/dev/null 2>&1 || true
+		docker image prune -f >/dev/null 2>&1 || true
+		docker builder prune -af >/dev/null 2>&1 || true
+	fi
+	find /tmp -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+	after="$(disk_free_mb)"
+	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
+}
+
+printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB; disk free floor=%sMB (hygiene band +%sMB)\n' \
+	"$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
 
 if [ "$RUN_BENCHMARKS" = "true" ] && [ -z "$NODE_REPO_DIR" ]; then
 	printf 'SOAK_NODE_REPO_DIR is required when SOAK_RUN_BENCHMARKS=true\n' >&2
@@ -724,7 +772,7 @@ cleanup_soak_processes() {
 	[ -z "$ITERATION_FIFO" ] || rm -f "$ITERATION_FIFO"
 }
 trap cleanup_soak_processes EXIT
-if [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; then
+if { [ "$HOST_FREE_FLOOR_MB" -gt 0 ] && [ -r /proc/meminfo ]; } || [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
 	(
 		# Run 33136185540 (2026-08-28): the kernel OOM killer chose
 		# Runner.Worker while this guardian's 3-sample window was still
@@ -798,10 +846,41 @@ print(json.dumps(tags))
 		hard_floor_mb=$((HOST_FREE_FLOOR_MB / 2))
 		[ "$hard_floor_mb" -ge 1 ] || hard_floor_mb=1
 		warn_floor_mb=$((HOST_FREE_FLOOR_MB + ${SOAK_HOST_WARN_BAND_MB:-4096}))
+		disk_over=0
+		disk_hard_floor_mb=$((DISK_FREE_FLOOR_MB / 2))
+		[ "$disk_hard_floor_mb" -ge 1 ] || disk_hard_floor_mb=1
 		last_stamp=0
 		sample_n=0
 		while :; do
 			sleep 5
+			# Disk twin of the memory floor below (issue #378): same
+			# 3-consecutive-sample soft floor, same single-sample hard floor
+			# at half, same kill-then-marker order, same durable tag last
+			# words. Killing the nodes on a disk breach stops the writers
+			# while the runner still has bytes left for its own _diag log —
+			# on runs 33254400407/33278321865 those bytes ran out and the
+			# breach became a vanished runner instead of a recorded failure.
+			if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+				disk_mb="$(disk_free_mb)"
+				if [ -n "$disk_mb" ]; then
+					if [ "$disk_mb" -ge "$DISK_FREE_FLOOR_MB" ]; then
+						disk_over=0
+					else
+						disk_over=$((disk_over + 1))
+						if [ "$disk_mb" -lt "$disk_hard_floor_mb" ] || [ "$disk_over" -ge 3 ]; then
+							pkill -9 -f '/tmp/rnode' 2>/dev/null || true
+							docker ps -q --filter 'name=rnode.' 2>/dev/null | xargs -r docker kill 2>/dev/null || true
+							printf 'orchestrator disk guardian: host free disk %sMB < floor %sMB (hard floor %sMB, consecutive %s); killed all node processes and containers to protect the runner\n' \
+								"$disk_mb" "$DISK_FREE_FLOOR_MB" "$disk_hard_floor_mb" "$disk_over" >"$HOST_GUARDIAN_BREACH"
+							guardian_stamp_health_tag disk-breach "$disk_mb"
+							exit 0
+						fi
+					fi
+				fi
+			fi
+			if [ "$HOST_FREE_FLOOR_MB" -le 0 ]; then
+				continue
+			fi
 			free_mb="$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo 2>/dev/null)"
 			[ -n "$free_mb" ] || continue
 			# Every 3rd sample (15s): fresh nodes appear at iteration
@@ -840,8 +919,9 @@ print(json.dumps(tags))
 		done
 	) &
 	HOST_GUARDIAN_PID=$!
-	printf 'orchestrator host guardian watching MemAvailable floor %sMB (hard floor %sMB, warn %sMB; pid %s)\n' \
-		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" "$HOST_GUARDIAN_PID"
+	printf 'orchestrator host guardian watching MemAvailable floor %sMB (hard floor %sMB, warn %sMB) and disk free floor %sMB (hard floor %sMB); pid %s\n' \
+		"$HOST_FREE_FLOOR_MB" "$((HOST_FREE_FLOOR_MB / 2))" "$((HOST_FREE_FLOOR_MB + 4096))" \
+		"$DISK_FREE_FLOOR_MB" "$((DISK_FREE_FLOOR_MB / 2))" "$HOST_GUARDIAN_PID"
 fi
 
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
@@ -856,6 +936,31 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			>"$OUTPUT_DIR/early-exit.txt"
 		FAILURES="$((FAILURES + 1))"
 		break
+	fi
+	# Iteration-boundary disk hygiene (issue #378): reclaim per-iteration
+	# leftovers while free space is merely low, so the guardian floor above
+	# is the backstop and not the routine outcome. If hygiene cannot lift
+	# free space back over the floor, end the run here — cleanly, with df
+	# evidence — rather than start an iteration whose nodes will write into
+	# a nearly full disk and fail with a misleading consensus verdict.
+	if [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+		DISK_MB="$(disk_free_mb)"
+		if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$((DISK_FREE_FLOOR_MB + DISK_HYGIENE_BAND_MB))" ]; then
+			printf 'free disk %sMB inside hygiene band (floor %sMB + band %sMB); reclaiming\n' \
+				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
+			reclaim_disk_space
+			DISK_MB="$(disk_free_mb)"
+			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
+				EARLY_EXIT_REASON="host_protection_breach"
+				df -Pm "$OUTPUT_DIR" >"$OUTPUT_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				printf 'orchestrator disk floor: free disk %sMB < floor %sMB after hygiene; ending soak (fail-closed)\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: disk floor: free %sMB < floor %sMB after hygiene\n' \
+					"$DISK_MB" "$DISK_FREE_FLOOR_MB" >"$OUTPUT_DIR/early-exit.txt"
+				FAILURES="$((FAILURES + 1))"
+				break
+			fi
+		fi
 	fi
 	if [ -e "$SIGNAL_FILE" ]; then
 		SIGNAL="$(tr -d '[:space:]' <"$SIGNAL_FILE" 2>/dev/null || true)"
@@ -1007,6 +1112,18 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 				BREACH_LINE="$(grep -m1 -E \
 					'Host-protection guardian breach|Resource ceiling breached|host-protection watchdog killed' \
 					"$ITERATION_DIR/pytest.log" 2>/dev/null || true)"
+			fi
+		fi
+		# Fourth channel (issue #378): an iteration that fails while free
+		# disk is under the floor is an infrastructure failure, whatever the
+		# assertion text says. Run 33254400407's last iteration reported
+		# "121 deploy(s) not finalized within 45s" — nodes writing to a full
+		# disk, not a finalization regression. Label it and fail closed.
+		if [ -z "$BREACH_LINE" ] && [ "$DISK_FREE_FLOOR_MB" -gt 0 ]; then
+			DISK_MB="$(disk_free_mb)"
+			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
+				df -Pm "$OUTPUT_DIR" >"$ITERATION_DIR/disk-floor-breach.txt" 2>/dev/null || true
+				BREACH_LINE="iteration $ITERATIONS failed with free disk ${DISK_MB}MB < floor ${DISK_FREE_FLOOR_MB}MB; infrastructure, not a workload verdict"
 			fi
 		fi
 		if [ -n "$BREACH_LINE" ]; then
