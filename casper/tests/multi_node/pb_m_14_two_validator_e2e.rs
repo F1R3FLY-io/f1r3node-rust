@@ -676,16 +676,14 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     .await
     .expect("capture_consensus_writes must succeed on the recorded deploy");
 
-    let reproduced = captured
-        .get(&payload_hash)
-        .expect(
-            "scratch replay's capture map MUST contain the requested \
+    let reproduced = captured.get(&payload_hash).expect(
+        "scratch replay's capture map MUST contain the requested \
              payload_hash.  If missing: either the deploy did no \
              Consensus writes at all (unlikely — the leader's WAL \
              confirmed one), or the scratch replay diverged from the \
              leader's execution (state-dependent write with mismatched \
              pre-state).",
-        );
+    );
     assert_eq!(
         reproduced.as_slice(),
         PAYLOAD,
@@ -725,4 +723,366 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     // bearing_shape` in wal_payload_sync.rs freezes the source-level
     // shape; this behavioral pin proves the runtime effect.)
     let _isolation_witness = InMemoryPayloadStore::new(); // Compile-time trap that the type still exists.
+}
+
+/// DD-7b-2 (a) Tier 3 pseudo-joiner E2E canary (2026-08-30): drives
+/// the boot subscriber's apply flow on a FRESH joiner whose local
+/// PayloadLookup and block_dag_storage are both empty, forcing the
+/// enumerator to fall through both Option 1 (Tier 1: local lookup)
+/// and Option 2 (Tier 2: block-storage replay) into Tier 3 (peer
+/// fetch).  Verifies the full chain:
+///
+///   producer records a Consensus write
+///     → producer's `pending_wal_slices` populates
+///     → snapshot round-trips through `write_snapshot` +
+///       `read_snapshot_bytes` + `decode_wal_slice`
+///     → joiner's `apply_wal_slice_after_fetch` misses Tier 1 (None
+///       PayloadLookup) and Tier 2 (empty block_dag_storage), so
+///       every unique payload hash is enqueued for peer fetch
+///     → pre-injected "peer served" bytes on the retriever satisfy
+///       the poll loop
+///     → applier writes the payload bytes to disk under the
+///       allowed_roots whitelist.
+///
+/// # Why "pseudo-joiner" not a full two-node cross-transport test
+///
+/// The handoff explicitly scoped this canary to option (b) — stand
+/// up a fresh runtime + block-storage from scratch and drive the
+/// boot subscriber directly.  A full two-node wire-protocol variant
+/// (producer serves the payload via `HasWalPayloadRequest` /
+/// `WalPayloadResponse`) is DD-7b-3 territory (block-processing
+/// catch-up detector, larger scope).  The pseudo-joiner harness
+/// covers the load-bearing "fresh joiner reconstructs file state
+/// from a snapshot + peer bytes" property without needing the wire.
+///
+/// # Harness shape
+///
+/// Reuses `create_network_with_fs_provisioning(2, ...)` for cheap
+/// cloneable RuntimeManager + BlockDagKeyValueStorage + KVBlockStore.
+/// Node 0 is the producer (executes the deploy).  Node 1 is the
+/// pseudo-joiner — deliberately NEVER receives the block via
+/// `process_block`, so its block_dag_storage / block_store /
+/// runtime_manager stay at genesis.  That empty state IS the Tier 2
+/// miss the canary exercises.
+///
+/// # Assertions
+///
+/// 1. `BootApplyReport.enumerated.resolved_locally == 0` — no local
+///    reducer hits.  A regression that either (a) started passing
+///    a populated PayloadLookup by default, or (b) let Option 2
+///    silently hit against genesis-only block storage, would trip
+///    this pin.
+///
+/// 2. `BootApplyReport.enumerated.enqueued_for_fetch >= 1` — at
+///    least one payload fell through to the peer-fetch tier.  This
+///    is the canary's core positive — proves the enumerator's
+///    fall-through logic works end-to-end.
+///
+/// 3. `sidecar_populated == enqueued_for_fetch` — every enqueued
+///    hash resolved (via the pre-injected "peer bytes").  A
+///    regression in `take_bytes` or `is_complete` would leave the
+///    sidecar underpopulated and either fail here or bail earlier
+///    with `PayloadFetchTimeout` / `MissingResolvedHash`.
+///
+/// 4. On-disk file bytes match the deployed PAYLOAD after boot —
+///    the applier actually consumed the sidecar and wrote to disk.
+///    The file is intentionally reset to empty bytes between
+///    producer emission and joiner boot so that surviving PAYLOAD
+///    at the end proves the applier's write happened (not the
+///    producer's earlier write).
+///
+/// 5. Joiner's block_dag_storage.lookup_payload_source(hash) still
+///    returns None after boot — the joiner never inserted the
+///    producer's deploy, so its payload_source_index remains
+///    empty.  If a future refactor caused the boot flow to
+///    accidentally populate the joiner's index (e.g., by chaining
+///    through the applier), this pin would trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use casper::rust::engine::wal_payload_retriever::WalPayloadRetriever;
+    use casper::rust::engine::wal_payload_sync::{
+        apply_wal_slice_after_fetch, Option2ReducerContext, WalPayloadSyncDriver,
+    };
+    use crypto::rust::hash::blake2b256::Blake2b256;
+    use rholang::rust::interpreter::io::snapshot::{
+        decode_wal_slice, read_snapshot_bytes, write_snapshot,
+    };
+
+    // ---- shared fs setup (matches pb_m_14_two_validator pattern) ----
+    let shared_root = tempfile::tempdir().expect("shared_root tempdir");
+    let file_path = shared_root.path().join("data.bin");
+    std::fs::write(&file_path, b"").expect("seed empty file");
+    let canon_path = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon_path.clone(),
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Consensus,
+    )
+    .expect("bundle entry construction");
+    let bundle = vec![entry];
+
+    let genesis = GenesisBuilder::new()
+        .with_fs_bundle(bundle)
+        .with_consensus_fs_snapshot_cadence(Some(1))
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("build genesis with fs bundle");
+
+    let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
+    let register_root = canon_path
+        .parent()
+        .expect("bundle path has parent")
+        .to_path_buf();
+
+    let mk_provisioning = |node_ix: usize| -> TestFsProvisioning {
+        let payload_dir: PathBuf = per_node_root
+            .path()
+            .join(format!("node-{node_ix}-wal_payload_store"));
+        TestFsProvisioning {
+            root_paths: vec![register_root.clone()],
+            payload_dir,
+        }
+    };
+
+    let fs_provisionings = vec![Some(mk_provisioning(0)), Some(mk_provisioning(1))];
+
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
+            .await
+            .expect("two-validator network with fs provisioning");
+
+    // ---- Producer (node 0) executes Consensus write --------------------
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let deploy_src = format!(
+        r#"
+new rl(`rho:registry:lookup`), fsCh, ackCh in {{
+  rl!(`{fs_uri}`, *fsCh) |
+  for (@(_, fs) <- fsCh) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for (@reply <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
+        ackCh!(reply)
+      }}
+    }}
+  }}
+}}
+"#,
+        fs_uri = fs_uri,
+        payload_hex = PAYLOAD_HEX,
+    );
+    let deploy = construct_deploy::source_deploy_now(deploy_src, None, None, Some(shard_id))
+        .expect("sign fs-write deploy");
+    let block = nodes[0]
+        .add_block_from_deploys(&[deploy])
+        .await
+        .expect("producer creates + adds Consensus-write block");
+    let post_state_key = block.body.state.post_state_hash.to_vec();
+
+    // ---- Producer's WAL slice — the input to the snapshot -------------
+    let (_producer_block_number, wal_entries) = {
+        let guard = nodes[0].runtime_manager.pending_wal_slices.read().await;
+        guard.get(&post_state_key).cloned().unwrap_or_else(|| {
+            panic!(
+                "producer missing pending_wal_slices entry for post_state_hash {:?}",
+                hex::encode(&post_state_key),
+            )
+        })
+    };
+    assert!(
+        !wal_entries.is_empty(),
+        "producer's WAL slice must be non-empty (Stat + Write from openFile + writeByteArray)"
+    );
+
+    // ---- Reset the on-disk file to prove the applier's write ---------
+    // Under shared-fs both nodes point at the same on-disk file, so
+    // the producer's write already landed at `canon_path`.  Blanking
+    // the file here proves that PAYLOAD at the end came from the
+    // joiner's applier, not a leftover producer write.
+    std::fs::write(&canon_path, b"").expect("reset on-disk file to empty");
+    assert_eq!(
+        std::fs::read(&canon_path).unwrap(),
+        b"",
+        "post-reset file must be empty before boot flow runs"
+    );
+
+    // ---- Snapshot round-trip through on-disk format --------------------
+    // `write_snapshot` is the same primitive the leader's SnapshotWriter
+    // invokes at LFB advance; `read_snapshot_bytes` + `decode_wal_slice`
+    // is what the boot subscriber invokes on completion.  Round-tripping
+    // through disk (not just passing the Vec<WalEntry> in-memory) proves
+    // the encode/decode path handles a real producer's WAL entries.
+    let snapshot_dir = tempfile::tempdir().expect("snapshot_dir tempdir");
+    let (_snapshot_path, atomic_root, _merkle_root) =
+        write_snapshot(snapshot_dir.path(), &wal_entries).expect("write_snapshot");
+    let snapshot_bytes =
+        read_snapshot_bytes(snapshot_dir.path(), &atomic_root).expect("read_snapshot_bytes");
+    let decoded_wal = decode_wal_slice(&snapshot_bytes).expect("decode_wal_slice");
+    assert_eq!(
+        decoded_wal, wal_entries,
+        "decode(encode(wal)) must round-trip byte-identically — a snapshot format \
+         drift would surface here before the applier runs"
+    );
+
+    // Sanity: the decoded WAL contains at least one Write/WriteAt.
+    // The boot flow itself handles observation-only entries (Stat,
+    // Read, ...) — the enumerator skips them because their
+    // `PayloadRef::Hash` is a consensus-verification target (follower
+    // re-executes the syscall + rehashes + compares), NOT a peer-
+    // fetch target.  See `WalOp::is_observation_only` in wal.rs and
+    // the observation-op skip filter in `enumerate_and_enqueue_
+    // payloads` + `apply_wal_slice_after_fetch` in wal_payload_sync.rs.
+    use rholang::rust::interpreter::io::wal::WalOp;
+    assert!(
+        decoded_wal
+            .iter()
+            .any(|e| matches!(e.op, WalOp::Write | WalOp::WriteAt)),
+        "decoded WAL must contain at least one Write/WriteAt (the Consensus \
+         write from the deploy) — a missing mutation would defeat the canary"
+    );
+
+    // ---- Payload hash — one entry per unique payload_ref --------------
+    // The Consensus write contributes one PayloadRef::Hash(Blake2b256(PAYLOAD)).
+    let payload_hash: [u8; 32] = {
+        let h = Blake2b256::hash(PAYLOAD.to_vec());
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h);
+        out
+    };
+
+    // ---- Joiner-side driver + "peer served bytes" pre-injection -------
+    // Fresh WalPayloadSyncDriver with no history of prior fetches.  We
+    // pre-inject the payload bytes via `mark_resolved` BEFORE calling
+    // the boot flow — this simulates the wire-protocol effect (peer
+    // ships bytes in a WalPayloadResponse) without driving the full
+    // request/response machinery.  The enumerator will still call
+    // `enqueue_payload` for each Tier-3 miss (since payload_lookup =
+    // None), but `enqueue`'s `or_insert` skips the entry we already
+    // pre-populated with bytes: Some, so `is_complete` returns true
+    // on the first poll and the applier runs immediately.
+    let joiner_driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+        WalPayloadRetriever::new(),
+    )));
+    let injected = joiner_driver
+        .retriever
+        .mark_resolved(payload_hash, PAYLOAD.to_vec())
+        .await;
+    assert!(
+        injected,
+        "pre-injection must succeed — a false return means Blake2b256(PAYLOAD) \
+         disagrees with the hash we computed, which would be a bug in this test"
+    );
+
+    // ---- Option 2 context uses joiner's (empty) block storage --------
+    // Both `block_dag_storage` and `block_store` are TestNode's own —
+    // node 1 never processed the producer's block, so its indices are
+    // at genesis only.  Tier 2 will miss cleanly on `lookup_payload_
+    // source(payload_hash)` returning Ok(None).
+    let option2_ctx = Option2ReducerContext {
+        block_storage: nodes[1].block_dag_storage.clone(),
+        block_store: nodes[1].block_store.clone(),
+        runtime_manager: Arc::new(nodes[1].runtime_manager.clone()),
+    };
+
+    // Sanity: confirm the joiner's block_dag_storage really is empty
+    // for our target hash BEFORE the boot flow runs.  A regression in
+    // `create_network_with_fs_provisioning` that accidentally shared
+    // block storage across TestNodes would trip this pin.
+    let pre_boot_lookup = nodes[1]
+        .block_dag_storage
+        .lookup_payload_source(&payload_hash)
+        .expect("lookup_payload_source must not error");
+    assert!(
+        pre_boot_lookup.is_none(),
+        "joiner's payload_source_index must be empty before boot — got {:?}",
+        pre_boot_lookup.as_ref().map(hex::encode)
+    );
+
+    // ---- Drive the boot apply flow ------------------------------------
+    // Identity path_map: producer's canon_path IS the joiner's target
+    // (shared-fs).  allowed_roots restricts writes to `register_root`
+    // (the parent of canon_path) — exercises the Phase 7b-2 8cd8510f5
+    // whitelist plumbing.  Tight timeout + poll interval because we
+    // pre-injected bytes; the poll loop should exit on the first
+    // iteration.
+    let report = apply_wal_slice_after_fetch(
+        Arc::clone(&joiner_driver),
+        decoded_wal,
+        |p| p.to_path_buf(),
+        vec![register_root.clone()],
+        Duration::from_secs(5),
+        Duration::from_millis(25),
+        None, // Tier 1: no PayloadLookup → miss for every hash.
+        Some(option2_ctx),
+    )
+    .await
+    .expect("boot flow must succeed on the pseudo-joiner happy path");
+
+    // ---- Assertion 1: Tier 1 + Tier 2 both missed --------------------
+    assert_eq!(
+        report.enumerated.resolved_locally, 0,
+        "no local reducer hits expected — payload_lookup was None and \
+         option2_ctx's block storage was empty.  A non-zero here means \
+         either the reducer wired in a default lookup or Option 2's \
+         chain resolved despite genesis-only block storage."
+    );
+
+    // ---- Assertion 2: Tier 3 fall-through fired ----------------------
+    assert!(
+        report.enumerated.enqueued_for_fetch >= 1,
+        "expected at least one payload enqueued for peer fetch (Tier 3 \
+         fall-through), got {}.  A zero here means either the WAL had no \
+         PayloadRef::Hash entries (unlikely — the Consensus write always \
+         produces one) or the enumerator short-circuited before enqueueing.",
+        report.enumerated.enqueued_for_fetch,
+    );
+
+    // ---- Assertion 3: sidecar populated for every enqueued hash ------
+    assert_eq!(
+        report.sidecar_populated, report.enumerated.enqueued_for_fetch,
+        "sidecar must contain bytes for every enqueued hash — the pre-\
+         injected retriever state guarantees `is_complete` on the first \
+         poll and `take_bytes` succeeds for every hash.  A mismatch \
+         indicates a regression in the driver's take_bytes / is_complete \
+         contract."
+    );
+
+    // ---- Assertion 4: on-disk bytes match PAYLOAD post-boot ----------
+    // The applier's Write branch opens with `create: true, truncate:
+    // false`, seeks to `entry.offset`, and writes the payload.  Since
+    // we reset the file to empty above, the file's final length equals
+    // `entry.offset + PAYLOAD.len()` — and offset is 0 for a fresh
+    // openFile with mode "rw" (no O_APPEND on the Consensus path).
+    let on_disk = std::fs::read(&canon_path).expect("read applied file back");
+    assert_eq!(
+        on_disk, PAYLOAD,
+        "on-disk bytes after joiner boot must match PAYLOAD — the applier \
+         restored the write via the peer-fetch tier"
+    );
+
+    // ---- Assertion 5: joiner's payload_source_index stays empty ------
+    // The boot flow must not accidentally populate the joiner's index.
+    // Option 2's scratch replay isolates via `share_payload_source_
+    // recorder(None)` override; the applier itself never touches the
+    // index.  A regression that chained the wrong direction would show
+    // up as an extra entry here.
+    let post_boot_lookup = nodes[1]
+        .block_dag_storage
+        .lookup_payload_source(&payload_hash)
+        .expect("lookup_payload_source must not error post-boot");
+    assert!(
+        post_boot_lookup.is_none(),
+        "joiner's payload_source_index must STAY empty after boot flow — \
+         found unexpected entry {:?}.  A non-None here means either \
+         Option 2's scratch replay leaked into the joiner's index (the \
+         a3a3f4cd2 fix regressed) or the applier gained a side-effect \
+         on the index.",
+        post_boot_lookup.as_ref().map(hex::encode),
+    );
 }
