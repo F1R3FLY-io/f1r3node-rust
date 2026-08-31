@@ -2531,4 +2531,570 @@ mod tests {
             "complex keys should serialize to non-empty string"
         );
     }
+
+    fn int_par(value: i64) -> Par {
+        Par {
+            exprs: vec![Expr {
+                expr_instance: Some(ExprInstance::GInt(value)),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn as_json(expr: &RhoExpr) -> serde_json::Value { serde_json::to_value(expr).unwrap() }
+
+    #[test]
+    fn test_expr_from_expr_proto_extended_numerics() {
+        let double = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GDouble(2.5f64.to_bits())),
+        });
+        assert!(matches!(double, Some(RhoExpr::ExprFloat { data }) if data == 2.5));
+
+        let big_int = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GBigInt(vec![0x01, 0x00])),
+        });
+        assert!(matches!(big_int, Some(RhoExpr::ExprBigInt { data }) if data == "256"));
+
+        let big_rat = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GBigRat(models::rhoapi::GBigRational {
+                numerator: vec![0x03],
+                denominator: vec![0x07],
+            })),
+        });
+        assert!(matches!(
+            big_rat,
+            Some(RhoExpr::ExprBigRat { numerator, denominator })
+            if numerator == "3" && denominator == "7"
+        ));
+
+        let fixed_point = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::GFixedPoint(models::rhoapi::GFixedPoint {
+                unscaled: vec![0x7b],
+                scale: 2,
+            })),
+        });
+        assert!(matches!(
+            fixed_point,
+            Some(RhoExpr::ExprFixedPoint { value, scale: 2 }) if value == "123"
+        ));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_unary_operators() {
+        use models::rhoapi::{ENeg, ENot};
+
+        let not = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(int_par(1)),
+            })),
+        })
+        .unwrap();
+        assert_eq!(
+            as_json(&not),
+            serde_json::json!({"ExprNot": {"data": {"ExprInt": {"data": 1}}}})
+        );
+
+        let neg = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::ENegBody(ENeg {
+                p: Some(int_par(2)),
+            })),
+        })
+        .unwrap();
+        assert!(matches!(neg, RhoExpr::ExprNeg { .. }));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_binary_operators() {
+        use models::rhoapi::{
+            EAnd, EDiv, EEq, EGt, EGte, ELt, ELte, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
+            EPercentPercent, EPlus, EPlusPlus,
+        };
+
+        let plus = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(int_par(1)),
+                p2: Some(int_par(2)),
+            })),
+        })
+        .unwrap();
+        assert_eq!(
+            as_json(&plus),
+            serde_json::json!({"ExprPlus": {
+                "left": {"ExprInt": {"data": 1}},
+                "right": {"ExprInt": {"data": 2}},
+            }})
+        );
+
+        let cases = vec![
+            (
+                ExprInstance::EMinusBody(EMinus {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprMinus",
+            ),
+            (
+                ExprInstance::EMultBody(EMult {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprMult",
+            ),
+            (
+                ExprInstance::EDivBody(EDiv {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprDiv",
+            ),
+            (
+                ExprInstance::EModBody(EMod {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprMod",
+            ),
+            (
+                ExprInstance::ELtBody(ELt {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprLt",
+            ),
+            (
+                ExprInstance::ELteBody(ELte {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprLte",
+            ),
+            (
+                ExprInstance::EGtBody(EGt {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprGt",
+            ),
+            (
+                ExprInstance::EGteBody(EGte {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprGte",
+            ),
+            (
+                ExprInstance::EEqBody(EEq {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprEq",
+            ),
+            (
+                ExprInstance::ENeqBody(ENeq {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprNeq",
+            ),
+            (
+                ExprInstance::EAndBody(EAnd {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprAnd",
+            ),
+            (
+                ExprInstance::EOrBody(EOr {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprOr",
+            ),
+            (
+                ExprInstance::EPlusPlusBody(EPlusPlus {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprConcat",
+            ),
+            (
+                ExprInstance::EPercentPercentBody(EPercentPercent {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprInterpolate",
+            ),
+            (
+                ExprInstance::EMinusMinusBody(EMinusMinus {
+                    p1: Some(int_par(1)),
+                    p2: Some(int_par(2)),
+                }),
+                "ExprDiff",
+            ),
+        ];
+
+        for (instance, expected_variant) in cases {
+            let result = expr_from_expr_proto(Expr {
+                expr_instance: Some(instance),
+            })
+            .unwrap();
+            let json = as_json(&result);
+            assert!(
+                json.get(expected_variant).is_some(),
+                "expected {expected_variant}, got {json}"
+            );
+            assert_eq!(json[expected_variant]["left"]["ExprInt"]["data"], 1);
+            assert_eq!(json[expected_variant]["right"]["ExprInt"]["data"], 2);
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_matches_and_method() {
+        use models::rhoapi::{EMatches, EMethod};
+
+        let matches_expr = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMatchesBody(EMatches {
+                target: Some(int_par(1)),
+                pattern: Some(int_par(2)),
+            })),
+        })
+        .unwrap();
+        let json = as_json(&matches_expr);
+        assert_eq!(json["ExprMatches"]["target"]["ExprInt"]["data"], 1);
+        assert_eq!(json["ExprMatches"]["pattern"]["ExprInt"]["data"], 2);
+
+        let method_expr = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EMethodBody(EMethod {
+                method_name: "nth".to_string(),
+                target: Some(int_par(1)),
+                arguments: vec![int_par(2), int_par(3)],
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+        match method_expr {
+            RhoExpr::ExprMethod { name, args, target } => {
+                assert_eq!(name, "nth");
+                assert_eq!(args.len(), 2);
+                assert!(matches!(*target, RhoExpr::ExprInt { data: 1 }));
+            }
+            other => panic!("expected ExprMethod, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_var_instances() {
+        use models::rhoapi::var::VarInstance;
+        use models::rhoapi::{EVar, Var};
+
+        let var_of = |instance: Option<VarInstance>| {
+            expr_from_expr_proto(Expr {
+                expr_instance: Some(ExprInstance::EVarBody(EVar {
+                    v: instance.map(|var_instance| Var {
+                        var_instance: Some(var_instance),
+                    }),
+                })),
+            })
+            .unwrap()
+        };
+
+        assert!(matches!(
+            var_of(Some(VarInstance::BoundVar(3))),
+            RhoExpr::ExprVar { index: 3 }
+        ));
+        assert!(matches!(
+            var_of(Some(VarInstance::FreeVar(2))),
+            RhoExpr::ExprVar { index: 2 }
+        ));
+        assert!(matches!(
+            var_of(Some(VarInstance::Wildcard(
+                models::rhoapi::var::WildcardMsg {}
+            ))),
+            RhoExpr::ExprVar { index: -1 }
+        ));
+        assert!(matches!(var_of(None), RhoExpr::ExprVar { index: -1 }));
+    }
+
+    #[test]
+    fn test_expr_from_expr_proto_pathmap_and_zipper() {
+        use models::rhoapi::{EPathMap, EZipper};
+
+        let pathmap = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(EPathMap {
+                ps: vec![int_par(1), int_par(2)],
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+        assert!(matches!(&pathmap, RhoExpr::ExprList { data } if data.len() == 2));
+
+        let zipper = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper {
+                pathmap: Some(EPathMap {
+                    ps: vec![int_par(1)],
+                    ..Default::default()
+                }),
+                current_path: vec![vec![0xaa]],
+                ..Default::default()
+            })),
+        })
+        .unwrap();
+        match zipper {
+            RhoExpr::ExprTuple { data } => {
+                assert_eq!(data.len(), 2);
+                assert!(matches!(&data[0], RhoExpr::ExprList { data } if data.len() == 1));
+                assert!(matches!(&data[1], RhoExpr::ExprList { data }
+                        if matches!(&data[0], RhoExpr::ExprBytes { data } if data == "aa")));
+            }
+            other => panic!("expected ExprTuple, got {:?}", other),
+        }
+
+        let empty_zipper = expr_from_expr_proto(Expr {
+            expr_instance: Some(ExprInstance::EZipperBody(EZipper::default())),
+        })
+        .unwrap();
+        assert!(matches!(
+            &empty_zipper,
+            RhoExpr::ExprTuple { data }
+            if matches!(&data[0], RhoExpr::ExprList { data } if data.is_empty())
+        ));
+    }
+
+    #[test]
+    fn test_expr_from_par_proto_process_par_is_unknown_process() {
+        let par = Par {
+            sends: vec![models::rhoapi::Send::default()],
+            ..Default::default()
+        };
+        let result = expr_from_par_proto(par);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnknown { type_name }) if type_name == "Process"
+        ));
+    }
+
+    #[test]
+    fn test_par_to_expr_none_falls_back_to_nil_unknown() {
+        let result = par_to_expr(None);
+        assert!(matches!(result, RhoExpr::ExprUnknown { type_name } if type_name == "Nil"));
+    }
+
+    #[test]
+    fn test_unforg_from_proto_sys_auth_token() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GSysAuthTokenBody(
+                models::rhoapi::GSysAuthToken {},
+            )),
+        };
+        let result = unforg_from_proto(unforg);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgSysAuthToken
+            })
+        ));
+    }
+
+    #[test]
+    fn test_to_par_builds_unforgeable_for_each_variant() {
+        let private = to_par(RhoUnforg::UnforgPrivate {
+            data: "0102".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(
+            private.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GPrivateBody(body) if body.id == vec![1u8, 2]
+        ));
+
+        let deploy = to_par(RhoUnforg::UnforgDeploy {
+            data: "0304".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(
+            deploy.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GDeployIdBody(body) if body.sig == vec![3u8, 4]
+        ));
+
+        let deployer = to_par(RhoUnforg::UnforgDeployer {
+            data: "0506".to_string(),
+        })
+        .unwrap();
+        assert!(matches!(
+            deployer.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GDeployerIdBody(body) if body.public_key == vec![5u8, 6]
+        ));
+
+        let token = to_par(RhoUnforg::UnforgSysAuthToken).unwrap();
+        assert!(matches!(
+            token.unforgeables[0].unf_instance.as_ref().unwrap(),
+            UnfInstance::GSysAuthTokenBody(_)
+        ));
+    }
+
+    #[test]
+    fn test_to_par_rejects_invalid_hex() {
+        let result = to_par(RhoUnforg::UnforgPrivate {
+            data: "not-hex".to_string(),
+        });
+        assert!(result.unwrap_err().to_string().contains("Invalid hex"));
+    }
+
+    #[test]
+    fn test_validate_and_decode_pubkey() {
+        let bad_hex = validate_and_decode_pubkey("zz");
+        assert!(bad_hex
+            .unwrap_err()
+            .to_string()
+            .contains("invalid public key hex"));
+
+        let bad_key = validate_and_decode_pubkey("0102");
+        assert!(bad_key.is_err());
+
+        let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+        let valid = validate_and_decode_pubkey(&hex::encode(&pk.bytes)).unwrap();
+        assert_eq!(valid, pk.bytes.to_vec());
+    }
+
+    fn sample_deploy_data() -> DeployData {
+        DeployData {
+            term: "new x in { x!(1) }".to_string(),
+            time_stamp: 1,
+            phlo_price: 1,
+            phlo_limit: 1000,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+        }
+    }
+
+    #[test]
+    fn test_to_signed_deploy_accepts_a_correctly_signed_request() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let signed = Signed::create(sample_deploy_data(), Box::new(Secp256k1), sk).unwrap();
+
+        let request = DeployRequest {
+            data: signed.data.clone(),
+            deployer: hex::encode(&signed.pk.bytes),
+            signature: hex::encode(&signed.sig),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+
+        let result = to_signed_deploy(&request).unwrap();
+        assert_eq!(result.sig, signed.sig);
+        assert_eq!(result.pk.bytes, signed.pk.bytes);
+    }
+
+    #[test]
+    fn test_to_signed_deploy_error_paths() {
+        let base = DeployRequest {
+            data: sample_deploy_data(),
+            deployer: "zz".to_string(),
+            signature: "00".to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+        };
+        assert!(to_signed_deploy(&base)
+            .unwrap_err()
+            .to_string()
+            .contains("Public key is not valid base16"));
+
+        let bad_sig_hex = DeployRequest {
+            deployer: "00".to_string(),
+            signature: "zz".to_string(),
+            ..base.clone()
+        };
+        assert!(to_signed_deploy(&bad_sig_hex)
+            .unwrap_err()
+            .to_string()
+            .contains("Signature is not valid base16"));
+
+        let unsupported_alg = DeployRequest {
+            deployer: "00".to_string(),
+            signature: "00".to_string(),
+            sig_algorithm: "rot13".to_string(),
+            ..base.clone()
+        };
+        assert!(to_signed_deploy(&unsupported_alg)
+            .unwrap_err()
+            .to_string()
+            .contains("Signature algorithm not supported"));
+
+        let (_sk, pk) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+        let wrong_sig = DeployRequest {
+            deployer: hex::encode(&pk.bytes),
+            signature: "0011".to_string(),
+            ..base
+        };
+        assert!(to_signed_deploy(&wrong_sig).is_err());
+    }
+
+    #[test]
+    fn test_web_api_error_display() {
+        assert_eq!(
+            WebApiError::BlockApiError("a".to_string()).to_string(),
+            "Block API error: a"
+        );
+        assert_eq!(
+            WebApiError::SignatureError("b".to_string()).to_string(),
+            "Signature error: b"
+        );
+        assert_eq!(
+            WebApiError::InvalidFormat("c".to_string()).to_string(),
+            "Invalid format: c"
+        );
+    }
+
+    #[test]
+    fn test_deploy_state_json_labels() {
+        use casper::rust::api::deploy_finalization_status::DeployFinalizationState as S;
+        assert_eq!(deploy_state_json_label(S::Finalized), "Finalized");
+        assert_eq!(deploy_state_json_label(S::Failed), "Failed");
+        assert_eq!(deploy_state_json_label(S::Pending), "Pending");
+        assert_eq!(deploy_state_json_label(S::Expired), "Expired");
+    }
+
+    #[test]
+    fn test_to_rho_data_response_converts_pars_and_keeps_cost() {
+        let response = to_rho_data_response(vec![int_par(9)], LightBlockInfo::default(), 42);
+        assert_eq!(response.cost, 42);
+        assert_eq!(response.expr.len(), 1);
+        assert!(matches!(response.expr[0], RhoExpr::ExprInt { data: 9 }));
+    }
+
+    #[test]
+    fn test_extract_key_from_expr_remaining_variants() {
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprFloat { data: 1.5 }),
+            "1.5"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprBigInt {
+                data: "12345".to_string()
+            }),
+            "12345"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgDeploy {
+                    data: "dd".to_string()
+                }
+            }),
+            "dd"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgDeployer {
+                    data: "ee".to_string()
+                }
+            }),
+            "ee"
+        );
+        assert_eq!(
+            extract_key_from_expr(&RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgSysAuthToken
+            }),
+            "SysAuthToken"
+        );
+    }
 }

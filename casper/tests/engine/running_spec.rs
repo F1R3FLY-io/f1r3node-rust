@@ -575,4 +575,236 @@ mod tests {
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
         );
     }
+
+    #[tokio::test]
+    async fn duplicate_block_message_is_enqueued_only_once() {
+        let fixture = TestFixture::new().await;
+        let block_message = get_random_block(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        );
+        let signed_block = fixture.validator_id.sign_block(&block_message);
+
+        for _ in 0..2 {
+            fixture
+                .engine
+                .handle(
+                    fixture.local.clone(),
+                    CasperMessage::BlockMessage(signed_block.clone()),
+                )
+                .await
+                .unwrap();
+        }
+
+        let mut rx = fixture.block_processing_queue_rx.lock().await;
+        let mut enqueued = 0usize;
+        while let Ok((_, block)) = rx.try_recv() {
+            if block.block_hash == signed_block.block_hash {
+                enqueued += 1;
+            }
+        }
+        assert_eq!(
+            enqueued, 1,
+            "a block already queued/in-processing must not be enqueued again"
+        );
+    }
+
+    #[tokio::test]
+    async fn block_request_for_an_absent_block_sends_no_response() {
+        let fixture = TestFixture::new().await;
+        let block_request = BlockRequest {
+            hash: Bytes::from_static(b"absent-block-hash"),
+        };
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::BlockRequest(block_request),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            0,
+            "an absent block yields silence, not an error response"
+        );
+    }
+
+    #[tokio::test]
+    async fn trimmed_approved_block_request_serves_the_last_finalized_block() {
+        let fixture = TestFixture::new().await;
+        let genesis_block = fixture.genesis.clone();
+        fixture
+            .block_store
+            .put(genesis_block.block_hash.clone(), &genesis_block)
+            .expect("Failed to put genesis block");
+
+        let approved_block_request =
+            models::rust::casper::protocol::casper_message::ApprovedBlockRequest {
+                identifier: "test".to_string(),
+                trim_state: true,
+            };
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::ApprovedBlockRequest(approved_block_request),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 1);
+        let sent_request = fixture.transport_layer.pop_request().unwrap();
+        if let CasperMessage::ApprovedBlock(sent_msg) = to_casper_message(sent_request.msg) {
+            assert_eq!(
+                sent_msg.candidate.block, genesis_block,
+                "the trimmed response anchors on the last finalized block"
+            );
+        } else {
+            panic!("Expected ApprovedBlock");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_approved_block_available_and_unrouted_store_items_are_accepted() {
+        let fixture = TestFixture::new().await;
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::NoApprovedBlockAvailable(
+                    models::rust::casper::protocol::casper_message::NoApprovedBlockAvailable {
+                        identifier: "test".to_string(),
+                        node_identifier: "peer".to_string(),
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::StoreItemsMessage(
+                    models::rust::casper::protocol::casper_message::StoreItemsMessage {
+                        start_path: vec![],
+                        last_path: vec![],
+                        history_items: vec![],
+                        data_items: vec![],
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            0,
+            "neither message produces an outbound request"
+        );
+    }
+
+    #[tokio::test]
+    async fn floor_cache_request_over_the_cap_is_ignored() {
+        let fixture = TestFixture::new().await;
+        let hashes: Vec<BlockHash> = (0..4_097u32)
+            .map(|i| Bytes::from(format!("floor-cache-flood-{i}").into_bytes()))
+            .collect();
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::FloorCacheRequest(
+                    models::rust::casper::protocol::casper_message::FloorCacheRequest { hashes },
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            0,
+            "an over-cap request must not become a scan or a response"
+        );
+    }
+
+    #[tokio::test]
+    async fn floor_cache_request_answers_with_only_fully_cached_entries() {
+        let fixture = TestFixture::new().await;
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::FloorCacheRequest(
+                    models::rust::casper::protocol::casper_message::FloorCacheRequest {
+                        hashes: vec![Bytes::from_static(b"floor-cache-uncached-hash")],
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture.transport_layer.request_count(),
+            1,
+            "a within-cap request is answered even when no entry is cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn mergeable_entry_request_for_an_absent_block_is_silent() {
+        let fixture = TestFixture::new().await;
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::MergeableEntryRequest(
+                    models::rust::casper::protocol::casper_message::MergeableEntryRequest {
+                        block_hash: Bytes::from_static(b"absent-mergeable-block"),
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn init_can_only_run_once() {
+        let fixture = TestFixture::new().await;
+
+        fixture
+            .engine
+            .init()
+            .await
+            .expect("first init must succeed");
+        let second = fixture.engine.init().await;
+        assert!(second.is_err(), "a second init call must be rejected");
+    }
+
+    #[tokio::test]
+    async fn tips_update_is_a_no_op_without_a_casper_engine() {
+        let fixture = TestFixture::new().await;
+        let engine_cell = Arc::new(EngineCell::init());
+
+        update_fork_choice_tips_if_stuck(
+            &engine_cell,
+            &fixture.transport_layer,
+            &fixture.connections_cell,
+            &fixture.rp_conf_ask,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 0);
+    }
 }
