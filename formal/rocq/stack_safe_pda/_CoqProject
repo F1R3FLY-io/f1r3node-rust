@@ -12,3 +12,5 @@ theories/AccountingDemand.v
 theories/ChannelImage.v
 theories/PathMapReversePruneTeardown.v
 theories/PathMapReversePruneTeardownMutants.v
+theories/CandidateProductPathContinuation.v
+theories/CandidateProductPathContinuationMutants.v
