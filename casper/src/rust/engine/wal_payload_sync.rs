@@ -463,6 +463,20 @@ where
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
     let mut stats = EnumerateStats::default();
     for entry in wal_slice {
+        // Observation-only ops (Stat/Read/... — see
+        // `WalOp::is_observation_only`) carry `PayloadRef::Hash` for
+        // follower-side re-executed-syscall verification, NOT for
+        // peer fetch.  Skipping them here keeps the fetch protocol
+        // from waiting on bytes no peer's payload_store has —
+        // otherwise a mixed-op WAL (openFile emits Stat + fs_write
+        // emits Write) would deadlock joiner boot at
+        // `PayloadFetchTimeout` waiting for Stat's reply hash.
+        // Matches `apply_wal_to_fresh_tree`'s applier skip list
+        // and the reducer_cache / sidecar loops in
+        // `apply_wal_slice_after_fetch`.
+        if entry.op.is_observation_only() {
+            continue;
+        }
         let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
             continue;
         };
@@ -542,14 +556,16 @@ where
 /// subscriber`'s call sites in each.
 #[derive(Clone)]
 pub struct Option2ReducerContext {
-    pub block_storage: block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
+    pub block_storage:
+        block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     pub block_store: block_storage::rust::key_value_block_store::KeyValueBlockStore,
     pub runtime_manager: Arc<crate::rust::util::rholang::runtime_manager::RuntimeManager>,
 }
 
 impl std::fmt::Debug for Option2ReducerContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Option2ReducerContext").finish_non_exhaustive()
+        f.debug_struct("Option2ReducerContext")
+            .finish_non_exhaustive()
     }
 }
 
@@ -764,6 +780,14 @@ where
     {
         let mut seen: HashSet<[u8; 32]> = HashSet::new();
         for entry in &wal {
+            // Observation-only ops' hashes are verification targets,
+            // not fetch targets (see `WalOp::is_observation_only`).
+            // Skipping keeps Tier 1 / Tier 2 lookups from consulting
+            // hashes no local store can resolve and aligns with the
+            // enumerator + sidecar filters below.
+            if entry.op.is_observation_only() {
+                continue;
+            }
             if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
                 if seen.insert(h) {
                     unique_hashes.push(h);
@@ -857,6 +881,14 @@ where
     let mut sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
     for entry in &wal {
+        // Observation-only ops' hashes are never enqueued (see the
+        // enumerator + reducer_cache loops above), so demanding
+        // bytes for them here would surface as
+        // `MissingResolvedHash` for something we never fetched.
+        // Same skip list keeps this loop in lock-step.
+        if entry.op.is_observation_only() {
+            continue;
+        }
         let Some(PayloadRef::Hash(h)) = entry.payload_ref else {
             continue;
         };
@@ -1034,7 +1066,7 @@ pub async fn capture_consensus_writes_by_replaying_deploy(
     // mutability on the FileHandleTable slot is per-runtime).
     let capture = Arc::new(InMemoryPayloadStore::new());
     runtime.fs_handles.share_payload_store(Some(
-        capture.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+        capture.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>
     ));
     // DD-7b-2 (a) Option 2 review-fix (2026-08-29): disable the
     // payload-source recorder on this scratch runtime so
@@ -1059,14 +1091,11 @@ pub async fn capture_consensus_writes_by_replaying_deploy(
     // Reset the scratch runtime to the source block's pre-state so
     // state-dependent writes reproduce identically to the leader.
     let start_root = Blake2b256Hash::from_bytes_prost(pre_state_hash);
-    runtime
-        .reset(&start_root)
-        .await
-        .map_err(|e| {
-            crate::rust::errors::CasperError::RuntimeError(format!(
-                "capture_consensus_writes: reset to pre-state failed: {e}"
-            ))
-        })?;
+    runtime.reset(&start_root).await.map_err(|e| {
+        crate::rust::errors::CasperError::RuntimeError(format!(
+            "capture_consensus_writes: reset to pre-state failed: {e}"
+        ))
+    })?;
 
     let mut ops = ReplayRuntimeOps::new_from_runtime(runtime);
     // replay_deploy_e_with_snapshot handles rig() internally.
@@ -1365,13 +1394,12 @@ mod tests {
         // through to fetch.  New signature (DD-7b-2 (a)):
         // FnMut(&WalEntry) -> Option<Vec<u8>>.
         let hash_b = hash_of(b"b");
-        let stats = enumerate_and_enqueue_payloads(&driver, &entries, |entry| {
-            match entry.payload_ref {
+        let stats =
+            enumerate_and_enqueue_payloads(&driver, &entries, |entry| match entry.payload_ref {
                 Some(PayloadRef::Hash(h)) if h == hash_b => Some(b"b".to_vec()),
                 _ => None,
-            }
-        })
-        .await;
+            })
+            .await;
         assert_eq!(stats.enqueued_for_fetch, 2);
         assert_eq!(stats.resolved_locally, 1);
         assert_eq!(driver.pending_count().await, 2);
@@ -1437,10 +1465,8 @@ mod tests {
             .collect();
         // Reducer looks up bytes from a captured map keyed by the
         // entry's payload_ref hash.
-        let table: std::collections::HashMap<[u8; 32], Vec<u8>> = payloads
-            .iter()
-            .map(|p| (hash_of(p), p.to_vec()))
-            .collect();
+        let table: std::collections::HashMap<[u8; 32], Vec<u8>> =
+            payloads.iter().map(|p| (hash_of(p), p.to_vec())).collect();
         let stats = enumerate_and_enqueue_payloads(&driver, &entries, |entry| {
             if let Some(PayloadRef::Hash(h)) = entry.payload_ref {
                 table.get(&h).cloned()
@@ -1525,11 +1551,10 @@ mod tests {
             outcome: WalOutcome::Success,
         };
         // Reducer bug: returns garbage instead of the real bytes.
-        let stats =
-            enumerate_and_enqueue_payloads(&driver, std::slice::from_ref(&entry), |_| {
-                Some(b"garbage bytes".to_vec())
-            })
-            .await;
+        let stats = enumerate_and_enqueue_payloads(&driver, std::slice::from_ref(&entry), |_| {
+            Some(b"garbage bytes".to_vec())
+        })
+        .await;
         assert_eq!(stats.enqueued_for_fetch, 1);
         assert_eq!(stats.resolved_locally, 0);
         assert_eq!(driver.pending_count().await, 1);
@@ -1668,7 +1693,11 @@ mod tests {
     // pins.  Composes enumerate → fetch → sidecar → applier.
     // -----------------------------------------------------------
 
-    fn write_entry(path: &str, off: u64, payload: &[u8]) -> rholang::rust::interpreter::io::wal::WalEntry {
+    fn write_entry(
+        path: &str,
+        off: u64,
+        payload: &[u8],
+    ) -> rholang::rust::interpreter::io::wal::WalEntry {
         use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
         WalEntry {
             op: WalOp::WriteAt,
@@ -1694,7 +1723,9 @@ mod tests {
         let target = dir.path().join("target.bin");
         std::fs::write(&target, vec![0u8; 32]).unwrap();
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         let payload_a = b"AAAA".to_vec();
         let payload_b = b"BBBB".to_vec();
         driver
@@ -1748,7 +1779,9 @@ mod tests {
         let target = dir.path().join("untouched.bin");
         std::fs::write(&target, vec![0u8; 16]).unwrap();
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         // Do NOT mark_resolved — the payload will stay pending.
         let payload = b"never-arrives".to_vec();
         let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
@@ -1767,7 +1800,9 @@ mod tests {
         .expect_err("expect timeout");
 
         assert!(
-            matches!(err, BootApplyError::PayloadFetchTimeout { pending_count: 1 }),
+            matches!(err, BootApplyError::PayloadFetchTimeout {
+                pending_count: 1
+            }),
             "got {err:?}"
         );
         // Target unchanged.
@@ -1784,7 +1819,9 @@ mod tests {
         let target = dir.path().join("dedup.bin");
         std::fs::write(&target, vec![0u8; 32]).unwrap();
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         let payload = b"REPEATED".to_vec();
         driver
             .retriever
@@ -1812,7 +1849,10 @@ mod tests {
         .expect("apply with dedup");
 
         assert_eq!(report.wal_entries, 3);
-        assert_eq!(report.sidecar_populated, 1, "one unique hash → one sidecar entry");
+        assert_eq!(
+            report.sidecar_populated, 1,
+            "one unique hash → one sidecar entry"
+        );
         // All three writes landed.
         let got = std::fs::read(&target).unwrap();
         assert_eq!(&got[0..8], payload.as_slice());
@@ -2019,11 +2059,12 @@ mod tests {
                 comm::rust::rp::connect::Connections::from_vec(vec![local]),
             )),
         };
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         let transport = Arc::new(TransportLayerStub::new());
 
-        let tick =
-            spawn_periodic_tick(Arc::clone(&driver), transport, rp_conf, connections_cell);
+        let tick = spawn_periodic_tick(Arc::clone(&driver), transport, rp_conf, connections_cell);
         // Immediately raise stop; loop should exit at the next
         // select boundary (the initial `interval.tick().await`
         // yields, then the select! polls the notified() branch
@@ -2031,8 +2072,12 @@ mod tests {
         tick.stop.stop();
         // Give the runtime a moment; then join with a strict
         // timeout to catch a wedged tick loop.
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), tick.join_handle).await;
-        assert!(result.is_ok(), "tick loop must exit within timeout after stop");
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), tick.join_handle).await;
+        assert!(
+            result.is_ok(),
+            "tick loop must exit within timeout after stop"
+        );
     }
 
     /// Cloning the `WalPayloadTickStop` and raising the clone
@@ -2062,14 +2107,16 @@ mod tests {
                 comm::rust::rp::connect::Connections::from_vec(vec![local]),
             )),
         };
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         let transport = Arc::new(TransportLayerStub::new());
 
-        let tick =
-            spawn_periodic_tick(Arc::clone(&driver), transport, rp_conf, connections_cell);
+        let tick = spawn_periodic_tick(Arc::clone(&driver), transport, rp_conf, connections_cell);
         let stop_clone = tick.stop.clone();
         stop_clone.stop();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), tick.join_handle).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), tick.join_handle).await;
         assert!(result.is_ok(), "cloned stop handle must exit the tick loop");
     }
 
@@ -2084,7 +2131,9 @@ mod tests {
         std::fs::write(src_dir.path().join("f.bin"), vec![0u8; 8]).unwrap();
         std::fs::write(dst_dir.path().join("f.bin"), vec![0u8; 8]).unwrap();
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         let payload = b"redir".to_vec();
         driver
             .retriever
@@ -2113,7 +2162,10 @@ mod tests {
         .expect("apply with path_map");
 
         // src untouched.
-        assert_eq!(std::fs::read(src_dir.path().join("f.bin")).unwrap(), vec![0u8; 8]);
+        assert_eq!(
+            std::fs::read(src_dir.path().join("f.bin")).unwrap(),
+            vec![0u8; 8]
+        );
         // dst reflects the write.
         let got = std::fs::read(dst_dir.path().join("f.bin")).unwrap();
         assert_eq!(&got[..payload.len()], payload.as_slice());
@@ -2148,7 +2200,9 @@ mod tests {
         assert_eq!(payload_hash, hash_of(&payload));
         let lookup: Arc<dyn PayloadLookup> = Arc::new(store);
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         let wal = vec![write_entry(target.to_str().unwrap(), 0, &payload)];
 
         let report = apply_wal_slice_after_fetch(
@@ -2190,7 +2244,9 @@ mod tests {
         let store = InMemoryPayloadStore::new();
         let lookup: Arc<dyn PayloadLookup> = Arc::new(store);
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         // Pre-resolve the payload directly on the retriever so
         // the poll loop short-circuits (test-harness convenience:
         // simulate "peer fetch already happened").
@@ -2255,7 +2311,9 @@ mod tests {
         store.insert_with_hash(real_hash, b"totally-wrong-bytes".to_vec());
         let lookup: Arc<dyn PayloadLookup> = Arc::new(store);
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         // Pre-resolve the CORRECT bytes on the retriever so the
         // peer-fetch fallback path is what `is_complete()` sees.
         driver
@@ -2315,7 +2373,9 @@ mod tests {
 
         let lookup: Arc<dyn PayloadLookup> = Arc::new(AlwaysErrStore);
 
-        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(WalPayloadRetriever::new())));
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
         // Pre-resolve the CORRECT bytes on the retriever so the
         // peer-fetch fallback path lets is_complete() short-circuit.
         let payload = b"peer-served-after-err".to_vec();
@@ -2530,14 +2590,17 @@ mod tests {
     // ---------------------------------------------------------------
 
     async fn empty_option2_ctx() -> Option2ReducerContext {
+        use rholang::rust::interpreter::external_services::ExternalServices;
         use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
         use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-        use rholang::rust::interpreter::external_services::ExternalServices;
 
         let mut kvm = InMemoryStoreManager::new();
-        let block_storage = block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(&mut kvm)
+        let block_storage =
+            block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(
+                &mut kvm,
+            )
             .await
             .expect("in-memory DAG storage");
         let block_store =

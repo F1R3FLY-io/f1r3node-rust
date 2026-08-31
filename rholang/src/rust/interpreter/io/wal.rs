@@ -254,6 +254,45 @@ pub enum WalOp {
     EntriesStreamNext,
 }
 
+impl WalOp {
+    /// True iff this op is an observation-only WAL entry —
+    /// Read/ReadAt/Stat/Entries/Size/EntriesStreamNext — whose
+    /// `payload_ref: PayloadRef::Hash(...)` records the hash of a
+    /// Rholang reply Par for CONSENSUS VERIFICATION by the follower
+    /// (re-execute the syscall + rehash + compare).  These hashes
+    /// are NEVER served by any peer's payload_store; the fetch
+    /// protocol does not participate in observation-op verification.
+    ///
+    /// Callers:
+    /// - `wal_applier::apply_wal_to_fresh_tree` skips these ops
+    ///   entirely at file-state reconstruction time (nothing to
+    ///   mutate).
+    /// - Boot-time payload enumerator + sidecar build
+    ///   (`enumerate_and_enqueue_payloads`,
+    ///   `apply_wal_slice_after_fetch`) skip these ops so their
+    ///   hashes are never enqueued for peer fetch and never
+    ///   demanded from the sidecar — a pre-fix enumerator that
+    ///   enqueued them would time out at `PayloadFetchTimeout`
+    ///   waiting for bytes that no peer has.
+    ///
+    /// The complementary predicate for "op that MAY need sidecar
+    /// bytes at boot" is `!self.is_observation_only()` — mutation
+    /// ops that consult the payload sidecar (Write/WriteAt today;
+    /// future ops MAY join by carrying a `PayloadRef::Hash` that
+    /// resolves to persisted bytes).
+    pub const fn is_observation_only(self) -> bool {
+        matches!(
+            self,
+            WalOp::Read
+                | WalOp::ReadAt
+                | WalOp::Stat
+                | WalOp::Entries
+                | WalOp::Size
+                | WalOp::EntriesStreamNext
+        )
+    }
+}
+
 /// Reference to write payload bytes.  The MVP uses `Hash` only; the
 /// `DeployRef` optimization lands with the block-context plumbing
 /// slice.
@@ -740,6 +779,73 @@ impl Wal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Freezes the classification of every `WalOp` variant into
+    /// "observation-only" vs. "mutation".  The predicate is
+    /// load-bearing in the boot-time payload flow
+    /// (`casper::rust::engine::wal_payload_sync::enumerate_and_enqueue_
+    /// payloads` and the two loops inside
+    /// `apply_wal_slice_after_fetch`) because observation-op
+    /// `PayloadRef::Hash` entries are follower-side verification
+    /// targets whose bytes NO peer's payload_store serves — a
+    /// mis-classification either (a) re-opens the pre-2026-08-30
+    /// `PayloadFetchTimeout` bug when a currently-observation op is
+    /// re-classified as a mutation, or (b) causes the applier to
+    /// silently skip a currently-mutation op if it's re-classified
+    /// as observation-only.
+    ///
+    /// When adding a new `WalOp` variant, extend BOTH arms of this
+    /// pin (the observation-only match + the mutation exhaustive
+    /// list below) so the classification is a deliberate call, not
+    /// a default.
+    #[test]
+    fn wal_op_observation_classification_is_frozen() {
+        // Observation-only — hashes are for follower re-execution
+        // verification, never fetched from peers.
+        for op in [
+            WalOp::Read,
+            WalOp::ReadAt,
+            WalOp::Stat,
+            WalOp::Entries,
+            WalOp::Size,
+            WalOp::EntriesStreamNext,
+        ] {
+            assert!(
+                op.is_observation_only(),
+                "op {op:?} must be observation-only — a regression here \
+                 would cause the boot enumerator to enqueue its reply hash \
+                 for peer fetch, deadlocking joiner boot at \
+                 `PayloadFetchTimeout` because no peer's payload_store \
+                 serves observation reply bytes"
+            );
+        }
+        // Mutations — carry state-mutating semantics; if any of them
+        // has a `PayloadRef::Hash`, the sidecar/enumerator DO need
+        // the bytes (Write / WriteAt via `store.persist(...)` in
+        // journal_write).
+        for op in [
+            WalOp::Write,
+            WalOp::WriteAt,
+            WalOp::Truncate,
+            WalOp::Chmod,
+            WalOp::Chown,
+            WalOp::RemoveFile,
+            WalOp::RemoveDir,
+            WalOp::Rename,
+            WalOp::CopyFile,
+        ] {
+            assert!(
+                !op.is_observation_only(),
+                "op {op:?} must NOT be observation-only — the applier and \
+                 sidecar loops need this op to participate in the \
+                 payload-bytes flow (Write / WriteAt journal their bytes \
+                 via `store.persist(...)`; Truncate / Chmod / ... consult \
+                 entry metadata rather than sidecar bytes but still \
+                 mutate disk).  A regression here would cause the \
+                 applier to silently skip this op's mutation."
+            );
+        }
+    }
 
     #[test]
     fn payload_ref_hash_matches_blake2b256() {
