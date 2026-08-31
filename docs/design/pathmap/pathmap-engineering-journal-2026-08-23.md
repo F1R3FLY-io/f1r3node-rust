@@ -3606,10 +3606,10 @@ geometric causal control scales with exponent 1.99273. Prefix-local publication 
 observation.
 
 The successor exact 20,000-bind release gate completes in 7.52 s at 151,408 KiB peak RSS and zero
-swap. `set_channel` and snapshot reconstruction disappear below uProf's displayed 0.13% top-100
+swap. `set_channel` and snapshot reconstruction disappear below uProf's displayed 0.14% top-100
 sampling floor. Report-only Heaptrack exposes a separate once-per-root final teardown: PathMap
 line-list split/drop paths still dominate allocation-call count, and guarded `AnchorRoot::drop` is
-0.53% self / 64.99% inclusive sampled CPU time. That result is a new follow-up boundary, not a
+0.69% self / 63.90% inclusive sampled CPU time. That result is a new follow-up boundary, not a
 reason to retain the former per-channel teardown.
 
 **INTERPRETATION.** CoW should preserve immutable versions, not serve as a substitute for a

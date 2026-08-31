@@ -11477,8 +11477,9 @@ exponent 1.00258. Every row preserves exact distinct/cardinality/loaded counts.
 
 The exact release 20,000-bind gate passes in 7.52 s at 151,408 KiB peak RSS with zero swap. In the
 successor AMD uProf report, `set_channel` and snapshot reconstruction are absent from the 100
-hottest functions, whose floor is 0.13% sampled CPU time. Report-only Heaptrack identifies a
-separate final-root cost: guarded Bag `AnchorRoot::drop` remains 0.53% self / 64.99% inclusive and
+hottest functions, whose floor is 0.14% sampled CPU time. Report-only Heaptrack identifies a
+separate final-root cost; final-coordinate AMD uProf measures guarded Bag `AnchorRoot::drop` at
+0.69% self / 63.90% inclusive, and
 PathMap line-list split/drop paths account for 23,208,116 process-wide allocation calls. It now
 occurs once rather than once per channel; its allocation efficiency remains a separately tracked
 follow-up.

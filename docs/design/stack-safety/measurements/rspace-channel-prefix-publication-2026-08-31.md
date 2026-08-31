@@ -50,13 +50,14 @@ linear channel-loading curve over the registered ladder.
 The exact release gate passes at 20,000 binds in 7.52 s with 151,408 KiB peak RSS and zero swap.
 Before the repair, AMD uProf attributed 99.90% inclusive CPU time to `set_channel`,
 `InMemHotStoreState::from_snapshot`, and guarded `AnchorRoot::drop`. In the successor, `set_channel`
-and `from_snapshot` are absent from the 100 hottest functions (the report's 0.13% sampling floor).
+and `from_snapshot` are absent from the 100 hottest functions (the report's 0.14% sampling floor).
 
 Report-only Heaptrack recorded 33,318,622 allocation calls, 376,232 temporary allocations, and 69
 reported leaks for the complete successor process. The prefix-local publication appears only as
 linear construction work. The single final guarded Bag teardown remains prominent: PathMap
-line-list split/drop paths account for 23,208,116 allocation calls and `AnchorRoot::drop` has 0.53%
-self / 64.99% inclusive sampled CPU time. This is a distinct, once-per-root teardown cost exposed
+line-list split/drop paths account for 23,208,116 allocation calls and final-coordinate AMD uProf
+measures `AnchorRoot::drop` at 0.69% self / 63.90% inclusive sampled CPU time. This is a distinct,
+once-per-root teardown cost exposed
 after removing the per-channel repetition; it is not evidence that the old quadratic publication
 remains.
 
@@ -81,8 +82,8 @@ zero-swap cap. The exhaustive formal-to-executable mapping is
 - Raw TSV SHA-256: `eef41c4b8528abd062e2d2d955e6821381bcbd5127518c09a428e4c9d4f8aeb3`.
 - Baseline AMD uProf CSV SHA-256:
   `7e5c35cd8b0f143e391c992d0e8900b9e984f730cafe6336e2754462e33b29e2`.
-- Successor AMD uProf CSV SHA-256:
-  `8f1929bd7763031f4d7c578391e4ac95dfe564555c22c3dbd82768ddfd7f1cc2`.
+- Final-code successor AMD uProf CSV SHA-256:
+  `a99fb2966da779be0be57fcd4acf6e85b45bf89dd5a11ed84156c4801a0638aa`.
 - Successor Heaptrack recording SHA-256:
   `44cf88802d8c4fe9f93d43bcba515aeb01182b4da9d336215084c2382d1f4105`.
 - Profiled release executable SHA-256:
