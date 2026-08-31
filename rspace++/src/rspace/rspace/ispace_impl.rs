@@ -150,7 +150,12 @@ where
             history_reader.base(),
         );
 
-        *self.store.write().expect("store write lock") = Arc::new(hot_store);
+        // Invariant this relies on: no produce/consume can be concurrently
+        // in flight while store/event_log/produce_counter are swapped here —
+        // callers already only clone the store Arc and drop any lock
+        // immediately, so a reader that started before this swap keeps
+        // running against the old store either way.
+        self.store.store(Arc::new(hot_store));
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
         self.restore_produce_counter(checkpoint.produce_counter);
 

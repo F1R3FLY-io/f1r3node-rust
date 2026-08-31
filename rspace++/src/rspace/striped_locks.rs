@@ -1,15 +1,17 @@
 // Fixed-size striped-lock scheme shared by `RSpace` and `ReplayRSpace`.
 //
-// 256 pre-allocated mutexes, channel hash % NUM_LOCK_STRIPES -> stripe
-// index, replacing a growing DashMap<u64, Mutex> (PR #72 fixed this for
-// RSpace's phase_a_locks/phase_b_locks; issue #43 ported the same fix to
+// Pre-allocated mutexes, channel hash % NUM_LOCK_STRIPES -> stripe index,
+// replacing a growing DashMap<u64, Mutex> (PR #72 fixed this for RSpace's
+// phase_a_locks/phase_b_locks; issue #43 ported the same fix to
 // ReplayRSpace, which had been left on the pre-#72 DashMap). Extracted here
 // because both types otherwise carried verbatim copies of this machinery.
+//
+// 256 -> 4096
 
 use std::hash::Hash;
 use std::sync::Arc;
 
-pub(crate) const NUM_LOCK_STRIPES: usize = 256;
+pub(crate) const NUM_LOCK_STRIPES: usize = 4096;
 
 pub(crate) struct HeldLock {
     _guard: tokio::sync::OwnedMutexGuard<()>,
@@ -46,7 +48,21 @@ pub(crate) async fn acquire_locks(
 
     let mut held: Vec<HeldLock> = Vec::with_capacity(indices.len());
     for idx in indices {
-        let guard = stripes[idx].clone().lock_owned().await;
+        // Fast path: try_lock_owned() first. Measured under `rholang-par`
+        // (many concurrent par-branches, each mostly on its own private
+        // stripe) the stripe is free the overwhelming majority of the time —
+        // going through lock_owned().await unconditionally, even when
+        // uncontended, was adding real wall-clock cost around the .await
+        // point itself (not genuine mutex contention — confirmed by direct
+        // measurement) that dominated `phase_a wait` at high fork counts.
+        // Only the genuinely-contended case falls through to the slow
+        // .await path. See issues/02-intra-deploy-par-mutex-rspace.md
+        // items 16-19 (F1R3FLY-io/f1r3node-rust#50) for the measurements
+        // behind this change.
+        let guard = match stripes[idx].clone().try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => stripes[idx].clone().lock_owned().await,
+        };
         held.push(HeldLock { _guard: guard });
     }
 
