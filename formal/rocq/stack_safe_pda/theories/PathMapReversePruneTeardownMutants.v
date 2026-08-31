@@ -210,6 +210,233 @@ Theorem kill_error_precedence_inversion :
   select_failure false true true true true.
 Proof. discriminate. Qed.
 
+(** Failure-strengthening controls for the named-policy/quarantine extension. *)
+Definition mutant_accept_caller_closure
+    (request : teardown_policy_request) : option named_teardown_policy :=
+  match request with
+  | RequestNamedPolicy policy => Some policy
+  | RequestCallerClosure => Some UnitSetPolicy
+  end.
+
+Theorem kill_unsealed_caller_closure_policy :
+  mutant_accept_caller_closure RequestCallerClosure <>
+  resolve_teardown_policy RequestCallerClosure.
+Proof. discriminate. Qed.
+
+Definition mutant_panicking_policy_dispatch
+    (_ : payload) : policy_dispatch_outcome := PolicyUnwound.
+
+Theorem kill_panicking_production_policy_dispatch :
+  mutant_panicking_policy_dispatch (MapPar 7 [11; 12]) <>
+  dispatch_registered_policy (MapPar 7 [11; 12]).
+Proof. discriminate. Qed.
+
+Definition mutant_unquarantined_fail_stop (subject : trie)
+    : quarantined_teardown_result :=
+  QuarantinedTeardownResult ProcessFailStopped []
+    (tree_edges subject) (payload_count subject) false 0 0 0 0.
+
+Theorem kill_raw_header_outside_fail_stop_quarantine :
+  quarantine_retains_raw_header
+    (mutant_unquarantined_fail_stop topology_only_comb) <>
+  quarantine_retains_raw_header
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired true topology_only_comb).
+Proof. discriminate. Qed.
+
+Definition mutant_explicit_drop_with_live_topology (subject : trie)
+    : quarantined_teardown_result :=
+  QuarantinedTeardownResult LiveCompleted []
+    (tree_edges subject) (payload_count subject) false 1 0 1 0.
+
+Theorem kill_explicit_raw_drop_with_live_edges :
+  ~ explicit_raw_drop_is_empty
+      (mutant_explicit_drop_with_live_topology topology_only_comb).
+Proof. unfold explicit_raw_drop_is_empty. vm_compute. intuition discriminate. Qed.
+
+Definition mutant_recover_after_unexpected_panic (subject : trie)
+    : quarantined_teardown_result :=
+  QuarantinedTeardownResult LiveCompleted []
+    (tree_edges subject) (payload_count subject) true 0 0 1 0.
+
+Theorem kill_recoverable_continuation_after_unexpected_panic :
+  quarantine_process
+    (mutant_recover_after_unexpected_panic topology_only_comb) <>
+  quarantine_process
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired true topology_only_comb).
+Proof. discriminate. Qed.
+
+Theorem kill_silent_live_process_quarantine_leak :
+  ~ no_live_process_quarantine_leak
+      (mutant_recover_after_unexpected_panic topology_only_comb).
+Proof.
+  unfold no_live_process_quarantine_leak. simpl.
+  intro claimed. specialize (claimed eq_refl). discriminate.
+Qed.
+
+Definition mutant_recursive_drop_on_panic (subject : trie)
+    : quarantined_teardown_result :=
+  QuarantinedTeardownResult ProcessFailStopped []
+    (tree_edges subject) (payload_count subject) false 0
+    (tree_edges subject) 0 0.
+
+Theorem kill_recursive_raw_drop_during_fail_stop :
+  quarantine_recursive_raw_drops
+    (mutant_recursive_drop_on_panic topology_only_comb) <>
+  quarantine_recursive_raw_drops
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired true topology_only_comb).
+Proof. vm_compute. discriminate. Qed.
+
+Definition mutant_skip_par_handoff : list teardown_event :=
+  [DetachOriginal (MapPar 7 [11; 12])].
+
+Definition mutant_duplicate_par_handoff : list teardown_event :=
+  [DetachOriginal (MapPar 7 [11; 12]);
+   QueueParPda 7 [11; 12]; QueueParPda 7 [11; 12]].
+
+Theorem kill_skipped_par_handoff :
+  queued_par_jobs mutant_skip_par_handoff <>
+  queued_par_jobs (dispose_payload (MapPar 7 [11; 12])).
+Proof. vm_compute. discriminate. Qed.
+
+Theorem kill_duplicated_par_handoff :
+  queued_par_jobs mutant_duplicate_par_handoff <>
+  queued_par_jobs (dispose_payload (MapPar 7 [11; 12])).
+Proof. vm_compute. discriminate. Qed.
+
+Definition mutant_unique_anchor_allocation (subject : trie)
+    : quarantined_teardown_result :=
+  completed_quarantined_teardown subject 1.
+
+Theorem kill_unique_anchor_teardown_allocation :
+  quarantine_allocation_attempts
+    (mutant_unique_anchor_allocation topology_only_comb) <>
+  quarantine_allocation_attempts
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired false topology_only_comb).
+Proof. discriminate. Qed.
+
+Definition mutant_continue_after_cross_anchor_allocation_failure
+    (subject : trie) : quarantined_teardown_result :=
+  completed_quarantined_teardown subject 1.
+
+Theorem kill_cross_anchor_allocation_failure_continuation :
+  quarantine_process
+    (mutant_continue_after_cross_anchor_allocation_failure
+      topology_only_comb) <>
+  quarantine_process
+    (run_quarantined_teardown CrossAnchorCowTeardown
+      AllocationFailed false topology_only_comb).
+Proof. discriminate. Qed.
+
+Inductive quarantine_mutant : Type :=
+| UnsealedCallerClosurePolicy
+| PanickingProductionPolicyDispatch
+| RawHeaderOutsideFailStopQuarantine
+| ExplicitDropWithLiveTopology
+| RecoverAfterUnexpectedPanic
+| SilentLiveQuarantineLeak
+| RecursiveRawDropDuringFailStop
+| SkippedParHandoff
+| DuplicatedParHandoff
+| UniqueAnchorAllocation
+| CrossAnchorAllocationContinuation.
+
+Definition all_quarantine_mutants : list quarantine_mutant :=
+  [UnsealedCallerClosurePolicy;
+   PanickingProductionPolicyDispatch;
+   RawHeaderOutsideFailStopQuarantine;
+   ExplicitDropWithLiveTopology;
+   RecoverAfterUnexpectedPanic;
+   SilentLiveQuarantineLeak;
+   RecursiveRawDropDuringFailStop;
+   SkippedParHandoff;
+   DuplicatedParHandoff;
+   UniqueAnchorAllocation;
+   CrossAnchorAllocationContinuation].
+
+Definition quarantine_mutant_killed (mutant : quarantine_mutant) : Prop :=
+  match mutant with
+  | UnsealedCallerClosurePolicy =>
+      mutant_accept_caller_closure RequestCallerClosure <>
+      resolve_teardown_policy RequestCallerClosure
+  | PanickingProductionPolicyDispatch =>
+      mutant_panicking_policy_dispatch (MapPar 7 [11; 12]) <>
+      dispatch_registered_policy (MapPar 7 [11; 12])
+  | RawHeaderOutsideFailStopQuarantine =>
+      quarantine_retains_raw_header
+        (mutant_unquarantined_fail_stop topology_only_comb) <>
+      quarantine_retains_raw_header
+        (run_quarantined_teardown UniqueAnchorTeardown
+          NoAllocationRequired true topology_only_comb)
+  | ExplicitDropWithLiveTopology =>
+      ~ explicit_raw_drop_is_empty
+          (mutant_explicit_drop_with_live_topology topology_only_comb)
+  | RecoverAfterUnexpectedPanic =>
+      quarantine_process
+        (mutant_recover_after_unexpected_panic topology_only_comb) <>
+      quarantine_process
+        (run_quarantined_teardown UniqueAnchorTeardown
+          NoAllocationRequired true topology_only_comb)
+  | SilentLiveQuarantineLeak =>
+      ~ no_live_process_quarantine_leak
+          (mutant_recover_after_unexpected_panic topology_only_comb)
+  | RecursiveRawDropDuringFailStop =>
+      quarantine_recursive_raw_drops
+        (mutant_recursive_drop_on_panic topology_only_comb) <>
+      quarantine_recursive_raw_drops
+        (run_quarantined_teardown UniqueAnchorTeardown
+          NoAllocationRequired true topology_only_comb)
+  | SkippedParHandoff =>
+      queued_par_jobs mutant_skip_par_handoff <>
+      queued_par_jobs (dispose_payload (MapPar 7 [11; 12]))
+  | DuplicatedParHandoff =>
+      queued_par_jobs mutant_duplicate_par_handoff <>
+      queued_par_jobs (dispose_payload (MapPar 7 [11; 12]))
+  | UniqueAnchorAllocation =>
+      quarantine_allocation_attempts
+        (mutant_unique_anchor_allocation topology_only_comb) <>
+      quarantine_allocation_attempts
+        (run_quarantined_teardown UniqueAnchorTeardown
+          NoAllocationRequired false topology_only_comb)
+  | CrossAnchorAllocationContinuation =>
+      quarantine_process
+        (mutant_continue_after_cross_anchor_allocation_failure
+          topology_only_comb) <>
+      quarantine_process
+        (run_quarantined_teardown CrossAnchorCowTeardown
+          AllocationFailed false topology_only_comb)
+  end.
+
+Theorem every_quarantine_mutant_has_a_causal_counterexample : forall mutant,
+  quarantine_mutant_killed mutant.
+Proof.
+  intro mutant. destruct mutant; cbn.
+  - apply kill_unsealed_caller_closure_policy.
+  - apply kill_panicking_production_policy_dispatch.
+  - apply kill_raw_header_outside_fail_stop_quarantine.
+  - apply kill_explicit_raw_drop_with_live_edges.
+  - apply kill_recoverable_continuation_after_unexpected_panic.
+  - apply kill_silent_live_process_quarantine_leak.
+  - apply kill_recursive_raw_drop_during_fail_stop.
+  - apply kill_skipped_par_handoff.
+  - apply kill_duplicated_par_handoff.
+  - apply kill_unique_anchor_teardown_allocation.
+  - apply kill_cross_anchor_allocation_failure_continuation.
+Qed.
+
+Theorem quarantine_mutant_registry_is_unique_complete_and_exact :
+  NoDup all_quarantine_mutants /\
+  Forall quarantine_mutant_killed all_quarantine_mutants /\
+  length all_quarantine_mutants = 11.
+Proof.
+  repeat split.
+  - repeat constructor; simpl; intuition discriminate.
+  - repeat constructor; apply every_quarantine_mutant_has_a_causal_counterexample.
+Qed.
+
 Inductive teardown_mutant : Type :=
 | ValueOnlyWalk
 | MissingBarrier

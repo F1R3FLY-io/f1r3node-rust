@@ -91,6 +91,148 @@ pub fn executable_root_payload_step(
     }
 }
 
+/** Raw-header ownership surrounding the reverse-prune machine.  A live raw
+    header remains quarantined until both counters reach zero.  A fail-stop
+    state has no continuation and never invokes ordinary recursive Drop. */
+#[derive(Copy, Clone)]
+pub struct QuarantineState {
+    pub remaining_edges: u64,
+    pub remaining_payloads: u64,
+    pub raw_header_quarantined: bool,
+    pub explicit_raw_drops: u64,
+    pub ordinary_recursive_raw_drops: u64,
+    pub live_continuations: u64,
+    pub fail_stopped: bool,
+    pub allocation_attempts: u64,
+}
+
+/** The only executable raw-header release transition. */
+pub fn executable_drop_proven_empty_header(
+    state: QuarantineState,
+) -> (result: QuarantineState)
+    requires
+        state.raw_header_quarantined,
+        state.remaining_edges == 0,
+        state.remaining_payloads == 0,
+        state.explicit_raw_drops < u64::MAX,
+        state.ordinary_recursive_raw_drops == 0,
+        !state.fail_stopped,
+    ensures
+        !result.raw_header_quarantined,
+        result.remaining_edges == 0,
+        result.remaining_payloads == 0,
+        result.explicit_raw_drops == state.explicit_raw_drops + 1,
+        result.ordinary_recursive_raw_drops == 0,
+        result.live_continuations == state.live_continuations,
+        !result.fail_stopped,
+        result.allocation_attempts == state.allocation_attempts,
+{
+    QuarantineState {
+        raw_header_quarantined: false,
+        explicit_raw_drops: state.explicit_raw_drops + 1,
+        ..state
+    }
+}
+
+/** Unexpected panic is terminal.  The header stays quarantined for operating-
+    system reclamation; execution cannot resume and recursive Drop is never
+    selected. */
+pub fn executable_unexpected_panic_fail_stop(
+    state: QuarantineState,
+) -> (result: QuarantineState)
+    requires
+        state.raw_header_quarantined,
+        state.ordinary_recursive_raw_drops == 0,
+    ensures
+        result.fail_stopped,
+        result.raw_header_quarantined,
+        result.live_continuations == 0,
+        result.explicit_raw_drops == state.explicit_raw_drops,
+        result.ordinary_recursive_raw_drops == 0,
+        result.remaining_edges == state.remaining_edges,
+        result.remaining_payloads == state.remaining_payloads,
+        result.allocation_attempts == state.allocation_attempts,
+{
+    QuarantineState {
+        fail_stopped: true,
+        live_continuations: 0,
+        ..state
+    }
+}
+
+/** Unique-anchor teardown performs no integration allocation. */
+pub fn executable_unique_anchor_allocation_free(
+    state: QuarantineState,
+) -> (result: QuarantineState)
+    requires
+        state.raw_header_quarantined,
+        !state.fail_stopped,
+    ensures
+        result.allocation_attempts == state.allocation_attempts,
+        result.raw_header_quarantined == state.raw_header_quarantined,
+        result.remaining_edges == state.remaining_edges,
+        result.remaining_payloads == state.remaining_payloads,
+        result.explicit_raw_drops == state.explicit_raw_drops,
+        result.ordinary_recursive_raw_drops == state.ordinary_recursive_raw_drops,
+        result.live_continuations == state.live_continuations,
+        result.fail_stopped == state.fail_stopped,
+{
+    state
+}
+
+/** A failed cross-anchor CoW allocation is counted once and transitions
+    directly to fail-stop without exposing the raw header to unwinding Drop. */
+pub fn executable_cross_anchor_allocation_fail_stop(
+    state: QuarantineState,
+) -> (result: QuarantineState)
+    requires
+        state.raw_header_quarantined,
+        state.ordinary_recursive_raw_drops == 0,
+        state.allocation_attempts < u64::MAX,
+    ensures
+        result.fail_stopped,
+        result.raw_header_quarantined,
+        result.live_continuations == 0,
+        result.explicit_raw_drops == state.explicit_raw_drops,
+        result.ordinary_recursive_raw_drops == 0,
+        result.remaining_edges == state.remaining_edges,
+        result.remaining_payloads == state.remaining_payloads,
+        result.allocation_attempts == state.allocation_attempts + 1,
+{
+    QuarantineState {
+        fail_stopped: true,
+        live_continuations: 0,
+        allocation_attempts: state.allocation_attempts + 1,
+        ..state
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct ParHandoffState {
+    pub detached_pars: u64,
+    pub queued_par_pda_jobs: u64,
+}
+
+/** Detaching one PathMap-owned Par and publishing its PDA job is one atomic
+    ownership handoff: neither a skipped nor duplicated job refines it. */
+pub fn executable_par_handoff_exactly_once(
+    state: ParHandoffState,
+) -> (result: ParHandoffState)
+    requires
+        state.detached_pars < u64::MAX,
+        state.queued_par_pda_jobs < u64::MAX,
+        state.detached_pars == state.queued_par_pda_jobs,
+    ensures
+        result.detached_pars == state.detached_pars + 1,
+        result.queued_par_pda_jobs == state.queued_par_pda_jobs + 1,
+        result.detached_pars == result.queued_par_pda_jobs,
+{
+    ParHandoffState {
+        detached_pars: state.detached_pars + 1,
+        queued_par_pda_jobs: state.queued_par_pda_jobs + 1,
+    }
+}
+
 pub struct AbstractState {
     pub remaining_edges: int,
     pub remaining_payloads: int,

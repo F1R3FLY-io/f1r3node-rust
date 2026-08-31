@@ -662,6 +662,278 @@ Theorem child_failure_precedes_deferred_act_failure :
   select_failure false true true true true = Some ChildPdaFailure.
 Proof. reflexivity. Qed.
 
+(** Production teardown does not accept an arbitrary callback.  The complete
+    registry names the three payload families owned by this campaign; an
+    integration may specialize their implementations further, but may not
+    introduce a caller-supplied unwinding closure into [Drop]. *)
+Inductive named_teardown_policy : Type :=
+| UnitSetPolicy
+| ParMapPdaPolicy
+| BagMultiplicityPolicy.
+
+Definition registered_teardown_policies : list named_teardown_policy :=
+  [UnitSetPolicy; ParMapPdaPolicy; BagMultiplicityPolicy].
+
+Definition policy_for_payload (value : payload) : named_teardown_policy :=
+  match value with
+  | SetMember _ => UnitSetPolicy
+  | MapPar _ _ => ParMapPdaPolicy
+  | BagMultiplicity _ _ => BagMultiplicityPolicy
+  end.
+
+Inductive teardown_policy_request : Type :=
+| RequestNamedPolicy : named_teardown_policy -> teardown_policy_request
+| RequestCallerClosure : teardown_policy_request.
+
+Definition resolve_teardown_policy
+    (request : teardown_policy_request) : option named_teardown_policy :=
+  match request with
+  | RequestNamedPolicy policy => Some policy
+  | RequestCallerClosure => None
+  end.
+
+Inductive policy_dispatch_outcome : Type :=
+| PolicyReturned : list teardown_event -> policy_dispatch_outcome
+| PolicyUnwound : policy_dispatch_outcome.
+
+Definition dispatch_registered_policy
+    (value : payload) : policy_dispatch_outcome :=
+  PolicyReturned (dispose_payload value).
+
+Theorem named_policy_registry_is_closed_and_complete :
+  NoDup registered_teardown_policies /\
+  length registered_teardown_policies = 3 /\
+  (forall value,
+    In (policy_for_payload value) registered_teardown_policies) /\
+  resolve_teardown_policy RequestCallerClosure = None.
+Proof.
+  repeat split.
+  - repeat constructor; simpl; intuition discriminate.
+  - intros value. destruct value; simpl; auto.
+Qed.
+
+Theorem production_policy_dispatch_never_unwinds : forall value,
+  exists trace,
+    dispatch_registered_policy value = PolicyReturned trace /\
+    trace = dispose_payload value.
+Proof. intro value. exists (dispose_payload value). split; reflexivity. Qed.
+
+(** A raw header remains quarantined until successful reverse pruning has
+    removed every logical edge and payload.  Unexpected panic and cross-anchor
+    allocation failure are fail-stop outcomes: they do not resume execution,
+    publish, leak into a live process, or invoke ordinary recursive PathMap
+    Drop.  The operating system reclaims quarantined storage after termination.
+
+    Allocation failure is deliberately absent from unique-anchor teardown.
+    Cross-anchor teardown may require upstream CoW allocation; failure there is
+    process-terminal rather than an unwind through a nonempty raw header. *)
+Inductive anchor_allocation_class : Type :=
+| UniqueAnchorTeardown
+| CrossAnchorCowTeardown.
+
+Inductive teardown_allocation_outcome : Type :=
+| NoAllocationRequired
+| AllocationSucceeded
+| AllocationFailed.
+
+Inductive teardown_process_outcome : Type :=
+| LiveCompleted
+| ProcessFailStopped.
+
+Record quarantined_teardown_result : Type := QuarantinedTeardownResult {
+  quarantine_process : teardown_process_outcome;
+  quarantine_trace : list teardown_event;
+  quarantine_remaining_edges : nat;
+  quarantine_remaining_payloads : nat;
+  quarantine_retains_raw_header : bool;
+  quarantine_explicit_raw_drops : nat;
+  quarantine_recursive_raw_drops : nat;
+  quarantine_live_continuations : nat;
+  quarantine_allocation_attempts : nat
+}.
+
+Definition payload_count (subject : trie) : nat :=
+  length (reverse_payloads_tree subject).
+
+Definition completed_quarantined_teardown
+    (subject : trie) (allocation_attempts : nat)
+    : quarantined_teardown_result :=
+  QuarantinedTeardownResult LiveCompleted (drain_tree subject)
+    0 0 false 1 0 1 allocation_attempts.
+
+Definition fail_stopped_quarantined_teardown
+    (subject : trie) (allocation_attempts : nat)
+    : quarantined_teardown_result :=
+  QuarantinedTeardownResult ProcessFailStopped []
+    (tree_edges subject) (payload_count subject) true 0 0 0
+    allocation_attempts.
+
+Definition run_quarantined_teardown
+    (class : anchor_allocation_class)
+    (allocation : teardown_allocation_outcome)
+    (unexpected_panic : bool)
+    (subject : trie) : quarantined_teardown_result :=
+  if unexpected_panic then fail_stopped_quarantined_teardown subject 0
+  else
+    match class, allocation with
+    | UniqueAnchorTeardown, NoAllocationRequired =>
+        completed_quarantined_teardown subject 0
+    | CrossAnchorCowTeardown, AllocationSucceeded =>
+        completed_quarantined_teardown subject 1
+    | CrossAnchorCowTeardown, AllocationFailed =>
+        fail_stopped_quarantined_teardown subject 1
+    | _, _ => fail_stopped_quarantined_teardown subject 0
+    end.
+
+Definition explicit_raw_drop_is_empty
+    (result : quarantined_teardown_result) : Prop :=
+  quarantine_explicit_raw_drops result = 1 ->
+    quarantine_remaining_edges result = 0 /\
+    quarantine_remaining_payloads result = 0 /\
+    quarantine_retains_raw_header result = false.
+
+Definition fail_stop_is_terminal
+    (result : quarantined_teardown_result) : Prop :=
+  quarantine_process result = ProcessFailStopped ->
+    quarantine_live_continuations result = 0 /\
+    quarantine_explicit_raw_drops result = 0 /\
+    quarantine_recursive_raw_drops result = 0 /\
+    quarantine_retains_raw_header result = true.
+
+Definition no_live_process_quarantine_leak
+    (result : quarantined_teardown_result) : Prop :=
+  quarantine_process result = LiveCompleted ->
+    quarantine_retains_raw_header result = false.
+
+Theorem every_quarantine_outcome_guards_raw_drop : forall
+    class allocation unexpected_panic subject,
+  explicit_raw_drop_is_empty
+    (run_quarantined_teardown class allocation unexpected_panic subject) /\
+  fail_stop_is_terminal
+    (run_quarantined_teardown class allocation unexpected_panic subject) /\
+  no_live_process_quarantine_leak
+    (run_quarantined_teardown class allocation unexpected_panic subject) /\
+  quarantine_recursive_raw_drops
+    (run_quarantined_teardown class allocation unexpected_panic subject) = 0.
+Proof.
+  intros class allocation unexpected_panic subject.
+  destruct unexpected_panic, class, allocation; simpl;
+    unfold explicit_raw_drop_is_empty, fail_stop_is_terminal,
+      no_live_process_quarantine_leak; simpl; intuition discriminate.
+Qed.
+
+Theorem unexpected_panic_is_fail_stop_without_recursive_drop : forall
+    class allocation subject,
+  quarantine_process
+    (run_quarantined_teardown class allocation true subject) =
+      ProcessFailStopped /\
+  quarantine_live_continuations
+    (run_quarantined_teardown class allocation true subject) = 0 /\
+  quarantine_recursive_raw_drops
+    (run_quarantined_teardown class allocation true subject) = 0 /\
+  quarantine_retains_raw_header
+    (run_quarantined_teardown class allocation true subject) = true.
+Proof. intros. destruct class, allocation; repeat split; reflexivity. Qed.
+
+Theorem successful_quarantine_preserves_exact_par_handoff : forall
+    class allocation subject,
+  quarantine_process
+    (run_quarantined_teardown class allocation false subject) = LiveCompleted ->
+  queued_par_jobs
+    (quarantine_trace
+      (run_quarantined_teardown class allocation false subject)) =
+    flat_map par_job (reverse_payloads_tree subject).
+Proof.
+  intros class allocation subject completed.
+  destruct class, allocation; simpl in completed |- *;
+    try discriminate;
+    exact (proj1 drain_transfers_every_par_to_one_explicit_pda_job subject).
+Qed.
+
+Theorem unique_anchor_teardown_is_allocation_free : forall subject,
+  quarantine_process
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired false subject) = LiveCompleted /\
+  quarantine_allocation_attempts
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired false subject) = 0.
+Proof. intro subject. split; reflexivity. Qed.
+
+Theorem cross_anchor_allocation_failure_is_terminal : forall subject,
+  quarantine_process
+    (run_quarantined_teardown CrossAnchorCowTeardown
+      AllocationFailed false subject) = ProcessFailStopped /\
+  quarantine_allocation_attempts
+    (run_quarantined_teardown CrossAnchorCowTeardown
+      AllocationFailed false subject) = 1 /\
+  quarantine_live_continuations
+    (run_quarantined_teardown CrossAnchorCowTeardown
+      AllocationFailed false subject) = 0 /\
+  quarantine_recursive_raw_drops
+    (run_quarantined_teardown CrossAnchorCowTeardown
+      AllocationFailed false subject) = 0.
+Proof. intro subject. repeat split; reflexivity. Qed.
+
+Inductive quarantine_invariant_id : Type :=
+| ClosedNamedPolicyRegistryInvariant
+| NonUnwindingPolicyDispatchInvariant
+| RawHeaderQuarantineInvariant
+| ExplicitDropAtEmptyInvariant
+| FailStopNoContinuationInvariant
+| FailStopNoRecursiveDropInvariant
+| NoLiveProcessLeakInvariant
+| ParHandoffExactOnceInvariant
+| UniqueAnchorNoAllocationInvariant
+| CrossAnchorAllocationFailStopInvariant.
+
+Definition quarantine_invariant_catalog : list quarantine_invariant_id :=
+  [ClosedNamedPolicyRegistryInvariant;
+   NonUnwindingPolicyDispatchInvariant;
+   RawHeaderQuarantineInvariant;
+   ExplicitDropAtEmptyInvariant;
+   FailStopNoContinuationInvariant;
+   FailStopNoRecursiveDropInvariant;
+   NoLiveProcessLeakInvariant;
+   ParHandoffExactOnceInvariant;
+   UniqueAnchorNoAllocationInvariant;
+   CrossAnchorAllocationFailStopInvariant].
+
+Theorem quarantine_invariant_catalog_is_duplicate_free_and_exact :
+  NoDup quarantine_invariant_catalog /\
+  length quarantine_invariant_catalog = 10.
+Proof. split; [repeat constructor; simpl; intuition discriminate|reflexivity]. Qed.
+
+Theorem quarantine_failure_strengthening_capstone : forall subject,
+  (forall class allocation unexpected_panic,
+    explicit_raw_drop_is_empty
+      (run_quarantined_teardown class allocation unexpected_panic subject) /\
+    fail_stop_is_terminal
+      (run_quarantined_teardown class allocation unexpected_panic subject) /\
+    no_live_process_quarantine_leak
+      (run_quarantined_teardown class allocation unexpected_panic subject) /\
+    quarantine_recursive_raw_drops
+      (run_quarantined_teardown class allocation unexpected_panic subject) = 0) /\
+  queued_par_jobs
+    (quarantine_trace
+      (run_quarantined_teardown UniqueAnchorTeardown
+        NoAllocationRequired false subject)) =
+    flat_map par_job (reverse_payloads_tree subject) /\
+  quarantine_allocation_attempts
+    (run_quarantined_teardown UniqueAnchorTeardown
+      NoAllocationRequired false subject) = 0 /\
+  quarantine_process
+    (run_quarantined_teardown CrossAnchorCowTeardown
+      AllocationFailed false subject) = ProcessFailStopped.
+Proof.
+  intro subject. split.
+  - intros class allocation unexpected_panic.
+    exact (every_quarantine_outcome_guards_raw_drop
+      class allocation unexpected_panic subject).
+  - split.
+    + exact (proj1 drain_transfers_every_par_to_one_explicit_pda_job subject).
+    + split; reflexivity.
+Qed.
+
 Inductive invariant_id : Type :=
 | AnchorArcAuthorityInvariant
 | ReverseTerminalOrderInvariant
