@@ -982,7 +982,7 @@ impl FsProcesses {
                     // occupied (shouldn't happen on a fresh follower),
                     // the pre-existing handle wins.  Any real
                     // divergence surfaces later via WAL mismatch.
-                    let _ = self.handles.insert_at(fd, shadow).await;
+                    let _ = self.handles.insert_at(fd.as_u64(), shadow).await;
                 }
             }
             produce(&previous, ack).await?;
@@ -3438,7 +3438,11 @@ impl FsProcesses {
                     // Ignore the return: on a fresh follower the slot
                     // is empty; on a repeat call the existing handle
                     // wins.  Real divergence surfaces later.
-                    let _ = self.handles.dir_handles.insert_at(fd, shadow).await;
+                    let _ = self
+                        .handles
+                        .dir_handles
+                        .insert_at(fd.as_u64(), shadow)
+                        .await;
                 }
             }
             produce(&previous, ack).await?;

@@ -11,6 +11,38 @@ use shared::rust::BitSet;
 
 use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 
+/// Type-safe wrapper around a raw file descriptor u64 (2026-08-30
+/// review-follow-up).  Introduced after the PB-M-14 canary flake
+/// traced to a signedness bug that swapped `extract_ok_u64` for
+/// `extract_ok_fd` at fd extraction sites: the two helpers have
+/// diverging semantics on negative i64 payloads (fd sites must
+/// bit-preserve, quantity sites must reject-negative), so a call
+/// site picking the wrong helper was one line away from re-opening
+/// the canary flake for exactly those state-hashes whose derived
+/// fd watermark exceeds `i64::MAX`.
+///
+/// Making the fd type distinct from `u64` means a future call site
+/// that hands a fd into a quantity slot (or vice versa) becomes a
+/// type error at the call site, not a runtime WAL divergence.
+///
+/// `#[repr(transparent)]` guarantees ABI compatibility with `u64`
+/// — the pinned test `fd_is_repr_transparent_over_u64` ensures a
+/// refactor removing that attribute breaks CI, so any FFI boundary
+/// that transmutes between `Fd` and `u64` stays sound.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Fd(pub u64);
+
+impl Fd {
+    /// Unwrap into the raw `u64` for handoff to the fd-table layer
+    /// (`FileHandleTable::insert_at` / `with_mut` / `raw_fd` etc.,
+    /// all of which key on `u64`).  The newtype's job is to keep
+    /// call sites from mixing fd with quantity values; once the fd
+    /// reaches the table boundary it becomes just a u64 again.
+    #[inline]
+    pub fn as_u64(self) -> u64 { self.0 }
+}
+
 fn list_par(items: Vec<Par>) -> Par {
     Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
@@ -161,7 +193,14 @@ pub fn extract_ok_u64(previous: &[Par]) -> Option<u64> {
 /// A regression to reject-negative here would re-open the PB-M-14
 /// canary flake (documented at
 /// `extract_ok_fd_matches_observed_failing_fd`).
-pub fn extract_ok_fd(previous: &[Par]) -> Option<u64> {
+///
+/// # Return type
+///
+/// Returns [`Fd`], not raw `u64` — the newtype is a compile-time
+/// guard against a future call site accidentally passing an fd to
+/// a quantity slot (or vice versa).  Call sites unwrap via
+/// [`Fd::as_u64`] at the fd-table boundary.
+pub fn extract_ok_fd(previous: &[Par]) -> Option<Fd> {
     let head = previous.first()?;
     let expr = head.exprs.first()?;
     let list = match expr.expr_instance.as_ref()? {
@@ -178,7 +217,7 @@ pub fn extract_ok_fd(previous: &[Par]) -> Option<u64> {
     // Bit-preserving reinterpret — matches `handlers.rs::fs_write`'s
     // `fd as u64` parse.  See the docstring for the state-hash
     // entropy rationale.
-    Some(n as u64)
+    Some(Fd(n as u64))
 }
 
 /// H-6 fix (2026-08-06): extract the string FSERR code from an
@@ -390,7 +429,7 @@ mod tests {
     #[test]
     fn extract_ok_fd_accepts_negative_i64_as_u64_reinterpret() {
         let neg = i64::MIN;
-        let expected = neg as u64;
+        let expected = Fd(neg as u64);
         let reply = ok_int(neg);
         assert_eq!(
             extract_ok_fd(std::slice::from_ref(&reply)),
@@ -412,11 +451,14 @@ mod tests {
     fn extract_ok_fd_matches_observed_failing_fd() {
         let observed_neg: i64 = -3992895570068897791;
         let expected_u64: u64 = 14453848503640653825;
-        assert_eq!(observed_neg as u64, expected_u64, "i64→u64 bit reinterpret sanity");
+        assert_eq!(
+            observed_neg as u64, expected_u64,
+            "i64→u64 bit reinterpret sanity"
+        );
         let reply = ok_int(observed_neg);
         assert_eq!(
             extract_ok_fd(std::slice::from_ref(&reply)),
-            Some(expected_u64),
+            Some(Fd(expected_u64)),
             "extract_ok_fd must return the exact fd that a mutating fs \
              handler will look up in the fd table.  The 2026-08-29 \
              PB-M-14 canary trace showed this specific pair — fixing \
@@ -443,7 +485,7 @@ mod tests {
             let reply = ok_int(fd as i64);
             assert_eq!(
                 extract_ok_fd(std::slice::from_ref(&reply)),
-                Some(fd),
+                Some(Fd(fd)),
                 "positive fd {fd} must round-trip through extract_ok_fd"
             );
         }
@@ -510,16 +552,49 @@ mod tests {
     /// which helper the call site was migrated to.
     #[test]
     fn extract_ok_fd_and_extract_ok_u64_agree_on_nonneg_values() {
-        for n in [0u64, 1, 100, 1_000_000, (i64::MAX as u64) - 1, i64::MAX as u64] {
+        for n in [
+            0u64,
+            1,
+            100,
+            1_000_000,
+            (i64::MAX as u64) - 1,
+            i64::MAX as u64,
+        ] {
             let reply = ok_int(n as i64);
             let fd = extract_ok_fd(std::slice::from_ref(&reply));
             let u = extract_ok_u64(std::slice::from_ref(&reply));
+            // Unwrap the Fd newtype for the raw-value comparison —
+            // extract_ok_fd returns Option<Fd>, extract_ok_u64
+            // returns Option<u64>, so the parity check goes through
+            // the u64 view.
             assert_eq!(
-                fd, u,
+                fd.map(Fd::as_u64),
+                u,
                 "extract_ok_fd and extract_ok_u64 must agree on \
                  non-negative n={n}; they diverge only on negative i64."
             );
-            assert_eq!(fd, Some(n));
+            assert_eq!(fd, Some(Fd(n)));
         }
+    }
+
+    // --- Fd newtype layout pin ------------------------------------
+
+    /// The Fd newtype MUST carry `#[repr(transparent)]` — any FFI
+    /// or bit-level code that transmutes between `Fd` and `u64`
+    /// relies on identical size/alignment/ABI.  A refactor that
+    /// removes the attribute (or changes Fd to hold a non-u64 field)
+    /// breaks this pin; do not "fix" the pin, restore the attribute.
+    #[test]
+    fn fd_is_repr_transparent_over_u64() {
+        assert_eq!(
+            std::mem::size_of::<Fd>(),
+            std::mem::size_of::<u64>(),
+            "Fd must have identical size to u64 (#[repr(transparent)])"
+        );
+        assert_eq!(
+            std::mem::align_of::<Fd>(),
+            std::mem::align_of::<u64>(),
+            "Fd must have identical alignment to u64 (#[repr(transparent)])"
+        );
     }
 }
