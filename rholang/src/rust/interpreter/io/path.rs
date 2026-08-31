@@ -277,42 +277,145 @@ pub fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
 /// happen once at boot.  `RwLock` gives us contention-free
 /// concurrent reads.
 ///
-/// The map is keyed by the boot-canonicalized root path
-/// (`std::fs::canonicalize`'d).  Handlers look up by the
-/// `canonRoot` string they receive from the Fs.rho bundle,
-/// which is byte-identical to the boot-canonicalized path
-/// (see `format_bundle_for_rholang`).
+/// # Shape A extension (2026-08-31)
+///
+/// Each entry now carries an `on_disk_root` in addition to the
+/// identity pair.  For the historical "logical == on_disk" case
+/// (every registration prior to Shape A) the field is a copy of
+/// the registration key, so `register(canon, id)` continues to
+/// mean "the caller's `canonRoot` string IS the on-disk absolute
+/// path".  Callers can also `register_with_remap(logical,
+/// on_disk, id)` to record a logical→on-disk remap — used under
+/// D3 to give each validator its own subdirectory copy of a
+/// Consensus-cap file while keeping the bundle-baked `canonRoot`
+/// string identical across validators (a requirement for
+/// genesis-block hash consensus).
+///
+/// Handlers should call `resolve(logical)` — returns the
+/// on-disk absolute + identity, or `None` for unregistered
+/// logical roots (fall-through: caller uses the logical path
+/// as the on-disk path, matching pre-Shape-A behavior).  The
+/// legacy `get(root)` method is kept for callers that only need
+/// the identity by-on-disk-path (rare).
+///
+/// The map is keyed by the logical root as the Rholang side
+/// sees it (`canonRoot` from Fs.rho's `bMap` — which under
+/// Shape A becomes bundle-relative in the composed source but
+/// remains identity-registered for legacy callers).
 #[derive(Debug, Clone, Default)]
 pub struct RootIdentityRegistry {
-    inner: std::sync::Arc<
-        std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, (u64, u64)>>,
-    >,
+    inner: std::sync::Arc<std::sync::RwLock<RegistryInner>>,
+}
+
+/// Per-registration record: the on-disk absolute root the
+/// handler should hand to `safe_descend_verified`, plus the
+/// (dev, inode) identity captured at boot for the H-5
+/// rename-and-recreate check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredRoot {
+    pub on_disk_root: std::path::PathBuf,
+    pub identity: (u64, u64),
+}
+
+#[derive(Debug, Default)]
+struct RegistryInner {
+    entries: std::collections::HashMap<std::path::PathBuf, RegisteredRoot>,
 }
 
 impl RootIdentityRegistry {
     pub fn new() -> Self { Self::default() }
 
-    /// Record a root's boot-time identity.  Idempotent — a repeat
-    /// register with the same value is a no-op; a repeat with a
-    /// different value overwrites (last-write-wins, which should
-    /// not happen in practice since boot populates once).
+    /// Legacy registration: the caller's `canonRoot` IS the
+    /// on-disk absolute path (logical == on_disk).  Idempotent
+    /// with respect to the value; a repeat register with a
+    /// different identity overwrites (last-write-wins), which
+    /// should not happen in practice since boot populates once.
     pub fn register(&self, root: std::path::PathBuf, id: (u64, u64)) {
-        let mut guard = self.inner.write().expect("root-identity registry poisoned");
-        guard.insert(root, id);
+        self.register_with_remap(root.clone(), root, id);
     }
 
-    /// Look up a root's expected identity.  Returns `None` for
-    /// unregistered paths — callers pass `None` through to
-    /// `safe_descend_verified`, which then skips the check.
+    /// Shape A registration: the Rholang-side logical root
+    /// (`logical`) may differ from the on-disk absolute root
+    /// (`on_disk`).  Used by per-validator harness setup so
+    /// each validator can hold a distinct on-disk copy of a
+    /// Consensus-cap file while both validators' bundles agree
+    /// on the logical name.  For legacy callers, `logical ==
+    /// on_disk` and this collapses to identity behavior.
+    pub fn register_with_remap(
+        &self,
+        logical: std::path::PathBuf,
+        on_disk: std::path::PathBuf,
+        id: (u64, u64),
+    ) {
+        let mut guard = self
+            .inner
+            .write()
+            .expect("root-identity registry poisoned");
+        guard.entries.insert(
+            logical,
+            RegisteredRoot {
+                on_disk_root: on_disk,
+                identity: id,
+            },
+        );
+    }
+
+    /// Look up a root's expected identity by ON-DISK path.
+    /// Kept for backward compat with pre-Shape-A callers that
+    /// already have the on-disk absolute in hand (e.g., the
+    /// legacy `.get(&root_pb)` pattern in handlers where
+    /// `root_pb` is the Rholang-side `canonRoot`).  Prefer
+    /// `resolve` for new code: it returns the on-disk path AND
+    /// the identity, which is what every handler needs.
+    ///
+    /// Behaviorally identical to pre-Shape-A `get` in the
+    /// logical == on_disk case (every current registration).
     pub fn get(&self, root: &std::path::Path) -> Option<(u64, u64)> {
-        let guard = self.inner.read().expect("root-identity registry poisoned");
-        guard.get(root).copied()
+        let guard = self
+            .inner
+            .read()
+            .expect("root-identity registry poisoned");
+        guard.entries.get(root).map(|r| r.identity)
+    }
+
+    /// Shape A lookup: given a logical root (the string
+    /// Rholang code hands us as `canonRoot`), return the
+    /// on-disk absolute path the handler should syscall
+    /// against + the boot-captured identity.  Returns `None`
+    /// for unregistered logical roots — callers fall through to
+    /// treating the logical path as the on-disk path (the
+    /// pre-Shape-A behavior).
+    pub fn resolve(&self, logical: &std::path::Path) -> Option<RegisteredRoot> {
+        let guard = self
+            .inner
+            .read()
+            .expect("root-identity registry poisoned");
+        guard.entries.get(logical).cloned()
+    }
+
+    /// Convenience wrapper for the handler pattern: returns
+    /// `(on_disk_root, expected_root_id)` such that the handler
+    /// can pass `on_disk_root` to `safe_descend_verified` and
+    /// `expected_root_id` as the identity argument.  Falls
+    /// through to `(logical.to_owned(), None)` for unregistered
+    /// logical roots — matches pre-Shape-A behavior exactly.
+    pub fn resolve_or_identity(
+        &self,
+        logical: &std::path::Path,
+    ) -> (std::path::PathBuf, Option<(u64, u64)>) {
+        match self.resolve(logical) {
+            Some(r) => (r.on_disk_root, Some(r.identity)),
+            None => (logical.to_path_buf(), None),
+        }
     }
 
     /// Count of registered roots.  For diagnostics only.
     pub fn len(&self) -> usize {
-        let guard = self.inner.read().expect("root-identity registry poisoned");
-        guard.len()
+        let guard = self
+            .inner
+            .read()
+            .expect("root-identity registry poisoned");
+        guard.entries.len()
     }
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
@@ -928,5 +1031,81 @@ mod tests {
             "FIPS: reply message must not leak the leaf filename.  \
              Got message: {msg:?}; leaf name: {leaf:?}."
         );
+    }
+
+    /// Shape A (2026-08-31): the legacy `register(canon, id)` API
+    /// records the caller's canon as BOTH the logical and the
+    /// on-disk root, so `resolve(canon)` and `get(canon)` continue
+    /// to return the identity that pre-Shape-A callers saw.
+    /// Handlers that migrate to `resolve_or_identity(canon)` under
+    /// this legacy registration observe `(canon, Some(id))` — the
+    /// on-disk path handed to `safe_descend_verified` is the same
+    /// path the Rholang side passed in, which is the pre-Shape-A
+    /// behavior.  A regression that dropped the on_disk_root =
+    /// canon default in `register` would trip this pin.
+    #[test]
+    fn root_registry_legacy_register_is_identity_remap() {
+        let reg = RootIdentityRegistry::new();
+        let canon = std::path::PathBuf::from("/tmp/legacy/target");
+        reg.register(canon.clone(), (17, 42));
+
+        assert_eq!(reg.get(&canon), Some((17, 42)), "legacy get() unchanged");
+
+        let resolved = reg.resolve(&canon).expect("legacy register also visible via resolve");
+        assert_eq!(resolved.on_disk_root, canon, "logical == on_disk under legacy register");
+        assert_eq!(resolved.identity, (17, 42));
+
+        let (on_disk, id) = reg.resolve_or_identity(&canon);
+        assert_eq!(on_disk, canon);
+        assert_eq!(id, Some((17, 42)));
+    }
+
+    /// Shape A (2026-08-31): `register_with_remap(logical, on_disk,
+    /// id)` records a distinct logical→on-disk mapping.  Handlers
+    /// resolving the logical root receive the on-disk absolute
+    /// (which is what they'll pass to `safe_descend_verified`) +
+    /// the boot identity.  `get(on_disk)` returns None — the
+    /// registry is keyed by LOGICAL root, not on-disk.  A
+    /// regression that keyed by on-disk would break the
+    /// per-validator resolution model (two validators with the
+    /// same logical root but different on-disks would clobber
+    /// each other's entry).
+    #[test]
+    fn root_registry_remap_resolves_logical_to_on_disk() {
+        let reg = RootIdentityRegistry::new();
+        let logical = std::path::PathBuf::from("/@bundle/target");
+        let on_disk = std::path::PathBuf::from("/tmp/validator-A/target");
+        reg.register_with_remap(logical.clone(), on_disk.clone(), (7, 11));
+
+        let resolved = reg.resolve(&logical).expect("remap must be resolvable by logical key");
+        assert_eq!(resolved.on_disk_root, on_disk);
+        assert_eq!(resolved.identity, (7, 11));
+
+        let (r_on_disk, r_id) = reg.resolve_or_identity(&logical);
+        assert_eq!(r_on_disk, on_disk, "handler gets the on-disk path to syscall against");
+        assert_eq!(r_id, Some((7, 11)));
+
+        assert!(
+            reg.get(&on_disk).is_none(),
+            "registry is keyed by LOGICAL root; the on-disk absolute is not itself a key"
+        );
+    }
+
+    /// Shape A (2026-08-31): `resolve_or_identity` on an
+    /// unregistered logical root falls through to the caller's
+    /// original path with `None` identity — matches pre-Shape-A
+    /// behavior exactly (handler-side `get() → None` + pass the
+    /// caller's path to `safe_descend_verified` with `None` id).
+    /// A regression that started synthesizing a made-up identity
+    /// or returning an empty PathBuf would trip this pin.
+    #[test]
+    fn root_registry_resolve_or_identity_falls_through_for_unregistered() {
+        let reg = RootIdentityRegistry::new();
+        let unknown = std::path::PathBuf::from("/some/never-registered/path");
+
+        let (on_disk, id) = reg.resolve_or_identity(&unknown);
+        assert_eq!(on_disk, unknown, "fall-through returns the caller's own path");
+        assert!(id.is_none(), "no identity available for unregistered logical roots");
+        assert!(reg.resolve(&unknown).is_none());
     }
 }

@@ -2063,7 +2063,8 @@ impl FsProcesses {
             (Some(root), Some(rel)) => {
                 let leaf_name = leaf_of(&rel);
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
@@ -2116,7 +2117,8 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
@@ -2232,7 +2234,8 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
@@ -2395,8 +2398,10 @@ impl FsProcesses {
             Some((from_root, from_rel, to_root, to_rel)) => {
                 let from_root_pb = PathBuf::from(from_root);
                 let to_root_pb = PathBuf::from(to_root);
-                let from_expected_id = self.handles.root_registry.get(&from_root_pb);
-                let to_expected_id = self.handles.root_registry.get(&to_root_pb);
+                let (from_root_pb, from_expected_id) =
+                    self.handles.root_registry.resolve_or_identity(&from_root_pb);
+                let (to_root_pb, to_expected_id) =
+                    self.handles.root_registry.resolve_or_identity(&to_root_pb);
                 spawn_blocking(move || -> Par {
                     let from_parent =
                         match safe_descend_verified(&from_root_pb, &from_rel, from_expected_id) {
@@ -2637,7 +2642,8 @@ impl FsProcesses {
         let reply = match parsed {
             Some((root, rel)) => {
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 let lock_registry = self.handles.lock_registry.clone();
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
@@ -2832,7 +2838,8 @@ impl FsProcesses {
         let reply = match parsed.clone() {
             Some((root, rel, recursive)) => {
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 let lock_registry = self.handles.lock_registry.clone();
                 let ack_clone = ack.clone();
                 let wal = self.handles.wal.clone();
@@ -3102,7 +3109,8 @@ impl FsProcesses {
         let reply = match parsed {
             Some((root, rel, bits)) => {
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 let bits = bits as libc::mode_t;
                 spawn_blocking(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
@@ -3237,7 +3245,8 @@ impl FsProcesses {
         let reply = match parsed {
             Some((root, rel, owner_opt, group_opt)) => {
                 let root_pb = PathBuf::from(root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 chown_impl(&root_pb, rel, owner_opt, group_opt, expected_root_id).await
             }
             None => err(
@@ -3284,7 +3293,8 @@ impl FsProcesses {
         let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(&root);
-                let expected_root_id = self.handles.root_registry.get(&root_pb);
+                let (root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&root_pb);
                 spawn_blocking(move || -> Par {
                     match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(_) => {
@@ -3469,7 +3479,8 @@ impl FsProcesses {
             }
         };
         let root_pb = PathBuf::from(&root);
-        let expected_root_id = self.handles.root_registry.get(&root_pb);
+        let (root_pb, expected_root_id) =
+            self.handles.root_registry.resolve_or_identity(&root_pb);
         let rel_for_open = rel.clone();
         // safe_descend + openat + fdopendir in a blocking task —
         // mirrors bulk fs_entries' opening syscall sequence exactly
@@ -4585,9 +4596,9 @@ async fn chown_impl(
     group: Option<String>,
     // H-5 fix (2026-08-06): expected (dev, inode) for the root
     // path — plumbed from the caller via
-    // `self.handles.root_registry.get(&root_pb)`.  `None` skips
-    // identity verification (used by test/fixture paths without
-    // a boot-populated registry).
+    // `self.handles.root_registry.resolve_or_identity(&root_pb)`.
+    // `None` skips identity verification (used by test/fixture
+    // paths without a boot-populated registry).
     expected_root_id: Option<(u64, u64)>,
 ) -> Par {
     use super::nss::{resolve_gid, resolve_uid};
