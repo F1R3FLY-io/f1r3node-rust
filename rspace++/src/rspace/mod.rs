@@ -1,4 +1,5 @@
 pub mod bag;
+pub mod guarded_pathmap;
 pub mod candidate_order;
 #[cfg(test)]
 #[path = "../../tests/data_index/candidate_digest_override.rs"]

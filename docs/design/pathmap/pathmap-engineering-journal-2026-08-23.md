@@ -3441,6 +3441,62 @@ work. Formal proof steps and test-only oracle reparsing are not COMM or storage 
 protobuf/bincode/EPM1 bytes, hashes, COMM order, persistent authority, or the REPL. It therefore
 does not create a consensus-register entry or a wall-clock performance claim.
 
+### J-048 — 2026-08-31: anchor ownership before branch-safe PathMap destruction
+
+**QUESTION.** Can every campaign-owned `PathMap` be destroyed on a fixed native stack while
+preserving copy-on-write sharing, value ownership, topology-only paths, and failure atomicity, or
+does the integration still delegate a branching trie to a recursive upstream destructor?
+
+**HYPOTHESIS.** One logical immutable version should own exactly one raw `PathMap` header behind
+`Arc<AnchorRoot<_>>`. Immutable wrapper cloning should clone only the outer `Arc`; shared semantic
+mutation should create a fully registered fresh anchor through `Arc::make_mut`; and the final outer
+Arc should elect one reverse-postorder teardown pushdown automaton (PDA). At an unvalued immediate
+parent, a temporary zero-sized-policy barrier should constrain `prune_ascend` to one logical byte.
+This would remove snapshot-based `Arc::strong_count` authority and prevent any nonempty unique raw
+map from reaching upstream `Drop`.
+
+**METHOD.** Source inspection of released PathMap 0.2.2 preceded the integration design. Its
+`LineListNode::drop` selects an iterative path only when exactly one child is present; a branching
+node destroys child pointers through ordinary nested `Drop`. Formal verification then preceded
+runtime implementation. Rocq models reverse-terminal traversal, root values, valued and
+topology-only line/dense/comb tries, immediate-parent barriers, payload transfer, partial writers,
+early iterators, detached destructive subtrees, publication, error precedence, and outer-Arc
+authority. The exact catalog contains 18 invariants and 19 causal mutants. Verus checks the
+executable one-edge/root transition and edge/payload conservation without assumptions. TLA+
+explores clone, non-final/final drop, fresh mutation, abort, and old/fresh finalization schedules.
+An isolated Loom refinement independently explores the corresponding Rust ownership schedules.
+
+**OBSERVATIONS.** All 25 printed Rocq declarations are closed under the global context: 17 primary
+capstones, including the exact 18-invariant cardinality proof, and eight mutation capstones,
+including the exact 19-mutant registry proof. Verus reports 6 verified and 0 errors. The TLA+
+control completes with 14 generated / 11 distinct states at depth 5. Snapshot-count,
+per-wrapper-header, manual-family-counter, and unregistered-fresh-anchor controls each fail their
+assigned invariant. Six Loom tests pass under a 1.5 GiB hard resident-memory limit, disabled swap,
+and a one-core quota. The Rust artifact manifest initially failed because it called a Rocq
+`Corollary` a `Theorem`; correcting the declaration-kind marker made the focused gate live rather
+than weakening it.
+
+**COMPLEXITY.** The logical teardown is $`\Theta(e+p)`$ for $`e`$ logical byte edges and $`p`$
+payloads, with $`O(d)`$ zipper-owned heap at maximum depth $`d`$ and $`O(1)`$ native stack. A final
+anchor whose physical subtries remain shared with another copy-on-write version may cause the
+public write zipper to clone nodes while pruning. Its allocation, time, and peak-live-memory slope
+are **NOT MEASURED — the production guard and geometric shared-versus-unique benchmark are the next
+implementation gate**. No throughput or allocation improvement is claimed from the formal result.
+
+**EVIDENCE.** Commit `6177a370c` contains the Rocq, Verus, TLA+, four negative controls, exact
+catalog cardinality gates, and Rust manifest binding. Commit `cc78ccbf8` contains the isolated Loom
+crate and its bounded report-only runner. The formal tools use repository-backed TLC state rather
+than `/tmp`, and generated Rocq and captured Loom outputs are removed after verification.
+
+**ACCOUNTING.** The two commits contain proof, model, test, and runner changes only. They do not
+change canonical bytes, hashes, matching, COMM order, compute charges, storage charges, or durable
+state. Formal transitions and test-only disposal probes are not semantic work.
+
+**BOUNDARY.** Runtime adoption is not complete at this checkpoint. The executable guard must still
+pass physical-PathMap property tests, fixed-small-stack tests, panic/early-exit tests, and
+shared-subtrie allocation measurements before Bag, Par, EPathMap, matcher, or RSpace owners migrate.
+No PathMap source or fork was modified.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -3456,6 +3512,7 @@ still requires measurement.
 | PMU-002 | Performance API; **candidate, ACT-specific measurement pending** | `Bag::compact_bytes` and EPM1 layout currently obtain an owned `ArenaCompactTree` image before a caller can write or hash it. J-026 and J-027 prove the integration-owned destination pattern for chunked hashes and final cold-store values; J-028 proves the generated-protobuf analogue with typed atomic replay, but none can stream ACT construction itself. | Add a checked canonical ACT writer that can preflight encoded length and then stream zipper output to fallible byte, `io::Write`, hash, WAL/page, or chunk sinks without constructing a second complete byte buffer. Exact bytes must equal `ArenaCompactTree::from_zipper(...).get_data()`, and sink failure must never imply successful publication. The API should separate byte production from transaction policy: PathMap reports sink failure, while the integration owns WAL commit, sync, catalog publication, and acknowledgement. | J-026 supplies exact chunked-hash/bincode equivalence and a missing-framing negative control. J-027 adds exact final-envelope equality, reader/importer borrowed ranges, 497 package tests, and a 31-pair seven-cell timing/allocation matrix. J-028 adds typed preflight/replay and failure-atomic sink evidence over direct PathMap-to-protobuf emission. ACT-specific exact-byte differential, checked-length equality, injected sink failure, one-pass/copy counters, geometric shared-prefix workloads, and headless allocation/RSS evidence remain required before calling the upstream API an optimization. | The upstream sink API passes the differential/resource gates and replaces local destination-specific buffering without changing consensus bytes; the integration retains transaction and publication authority. |
 | PMU-003 | Construction API; **candidate, profile before proposing** | Canonical Bag/EPathMap import validates ACT once, then reconstructs a live `PathMap` by replaying endpoints through public insertion and `create_path` APIs. | Consider a fallible `PathMap` constructor or write-zipper graft operation from an already validated canonical ACT plan, preserving prefix compression and value-free endpoints without a `Vec` projection or per-key reparsing. The API must not bypass value decoding/validation owned by the caller. | Compare endpoint replay with plan-to-trie construction over deep lines, wide branches, shared prefixes, value-free endpoints, Set, Map, and Bag; require identical zipper topology, lookups, algebra/lattice behavior, CoW sharing, merkleization, drop safety, and consensus encodings. | Adopt only if measurement shows a material win and upstream supplies topology/CoW equivalence; otherwise retain the simpler public insertion route and mark the request rejected. |
 | PMU-004 | Correctness + performance API; **demonstrated need against PathMap 0.2.2** | `models/src/rust/epathmap_trie_codec.rs` must associate each canonical ACT value body with its logical endpoint occurrence. The current integration cannot derive that association from `ArenaCompactTree::from_zipper` without relying on `T` addresses: the public value mapper receives no logical path or occurrence ordinal and PathMap may invoke it more than once while compressing one leaf. CoW grafting can also expose one stored `T` at several logical endpoints. | Add a fallible canonical ACT emission cursor or callback that visits every logical value endpoint exactly once in canonical producer order and supplies a borrowed logical path, stable occurrence ordinal, or equivalent endpoint token. Its observable result must be independent of allocation address, node sharing, graft history, and mapper re-entry. It must compose with checked preflight and sink streaming, retain value-free endpoints, preserve canonical `ArenaCompactTree::from_zipper` bytes, and use heap-bounded stack-safe traversal. | Required local evidence is an executable shared-versus-independently-allocated graft differential with repeated equal and pointer-identical values; an address-collapse mutant that maps two endpoints to ordinal zero; exact EPM1/ACT byte equality; malformed/sink-failure controls; and geometric time, allocation, RSS, and native-stack measurements. The formal EPM1 V2 authority must prove that ordinals enumerate logical occurrences, not value identities. | A released PathMap API supplies the exactly-once logical-occurrence contract and passes the same EPM1, sharing-topology, failure-atomicity, and resource gates. The integration then deletes its local occurrence-association traversal while retaining its EPM1 schema and transaction policy. |
+| PMU-005 | Stack-safety + ownership API; **demonstrated need against PathMap 0.2.2, local guard in implementation** | Campaign-owned maps require an outer `Arc<AnchorRoot<PathMap<V>>>`, a reverse-prune zipper PDA, temporary immediate-parent barriers, guarded builders/iterators, and closure of every detached subtree before an owned raw map can fall out of scope. | Make destruction of arbitrary branching and non-branching `PathMap` topology iterative in the crate itself. Add branch-safe owned cursor/iterator and destructive subtree APIs whose `Drop`, error, early-exit, replacement, join, meet, subtract, restrict, and graft paths cannot recursively destroy a nonempty unique subtrie. If a public finalization API is used instead of intrinsic `Drop`, it must expose whether a root is uniquely owned without snapshot races and must preserve copy-on-write siblings without cloning a whole shared version merely to discard it. | PathMap 0.2.2 source inspection demonstrates the branching recursive arm. Local Rocq proves 18 invariants and rejects 19 causal mutants; Verus proves edge/payload conservation; TLA+ and Loom cover outer-anchor schedules. Required executable closure is deep line/dense/comb/root/topology-only tests on a 256 KiB stack, exact payload-drop counts, early writer/iterator/subtree exits, cross-anchor sharing tests, and geometric unique-versus-shared allocation/RSS/time ladders. | A released PathMap version passes the same fixed-stack, ownership, topology, failure, and copy-on-write resource gates. The integration can then remove its generic reverse-prune compatibility layer and use upstream owned cursors without allowing raw recursive-drop authority to escape. |
 
 The reachable pgmcp tracking item is `pathmap-upstream-integration-request-register` under
 `rpb3-single-parse-act-traversal-plan`, itself a descendant of epic 4131. New entries must include
