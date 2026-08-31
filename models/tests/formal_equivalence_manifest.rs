@@ -38,6 +38,316 @@ fn read_repository_file(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
 }
 
+#[derive(Clone, Copy)]
+struct Actree03Correspondence {
+    id: &'static str,
+    theorems: &'static [&'static str],
+    production_file: &'static str,
+    production_marker: &'static str,
+    executable_file: &'static str,
+    executable_marker: &'static str,
+    generator: &'static str,
+    oracle: &'static str,
+}
+
+const ACTREE03_GENERATORS: &[&str] = &[
+    "G-ACT03-WRITER",
+    "G-ACT03-MUTATION",
+    "G-ACT03-LINE-CACHE",
+    "G-EPM1-WRITER",
+    "G-ACT03-DEPTH-WIDTH",
+];
+
+const ACTREE03_ORACLES: &[&str] = &[
+    "O-ACT03-LEGACY",
+    "O-ACT03-RECONSTRUCT",
+    "O-ACT03-PATHMAP",
+    "O-ACT03-SOURCE",
+    "O-EPM1-GOLDEN",
+    "O-ROCQ-ACT03",
+];
+
+const ACTREE03_CORRESPONDENCE: &[Actree03Correspondence] = &[
+    Actree03Correspondence {
+        id: "ACT03-CAN-001",
+        theorems: &["validate_accepts_every_canonical_writer_output"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "fn validate_direct_canonical_act",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans",
+        generator: "G-ACT03-WRITER",
+        oracle: "O-ACT03-LEGACY",
+    },
+    Actree03Correspondence {
+        id: "ACT03-FRM-001",
+        theorems: &["semantic_certificate_image_boundaries"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "ACTree03 canonical varint trailer is not zero-filled",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker:
+            "new_and_independent_oracle_agree_for_all_truncations_and_single_bit_mutations",
+        generator: "G-ACT03-MUTATION",
+        oracle: "O-ACT03-LEGACY",
+    },
+    Actree03Correspondence {
+        id: "ACT03-ROOT-001",
+        theorems: &[
+            "semantic_certificate_root_closes_arena",
+            "canonical_semantic_certificate_header_and_root_bounds",
+        ],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "ACTree03 arena contains gaps, overlaps, or unreachable objects",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker:
+            "new_and_independent_oracle_agree_for_all_truncations_and_single_bit_mutations",
+        generator: "G-ACT03-MUTATION",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-DISC-001",
+        theorems: &["canonical_writer_semantic_certificate_discovery_exact"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "records.push(validated_topology_record",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker:
+            "validated_plan_preserves_old_topology_endpoints_rewind_and_fragmented_provenance",
+        generator: "G-ACT03-WRITER",
+        oracle: "O-ACT03-PATHMAP",
+    },
+    Actree03Correspondence {
+        id: "ACT03-ID-001",
+        theorems: &["semantic_certificate_preorder_physical_ids_nodup"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "register_direct_semantic_node(&mut seen",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "assert_forward_preorder_plan_is_exact",
+        generator: "G-ACT03-WRITER",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-ORDER-001",
+        theorems: &["validate_accepts_semantic_certificate"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "ACTree03 child roots are not in producer order",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker:
+            "new_and_independent_oracle_agree_for_all_truncations_and_single_bit_mutations",
+        generator: "G-ACT03-MUTATION",
+        oracle: "O-ACT03-LEGACY",
+    },
+    Actree03Correspondence {
+        id: "ACT03-INDEX-001",
+        theorems: &["reversed_source_nodes_index"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "next_record: usize",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "assert_forward_preorder_plan_is_exact",
+        generator: "G-ACT03-WRITER",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-CHILD-001",
+        theorems: &[
+            "direct_children_encoded_len_source_forest_exact",
+            "direct_children_encoded_len_source_exact",
+        ],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "direct_children_encoded_len = frame",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "unequal_children_wrappers_and_reused_lines_preserve_exact_plan_layout",
+        generator: "G-ACT03-WRITER",
+        oracle: "O-ACT03-PATHMAP",
+    },
+    Actree03Correspondence {
+        id: "ACT03-LINE-001",
+        theorems: &["replay_canonical_line_matches_add_or_reuse"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "struct DirectCanonicalLineReplay",
+        executable_file: "rspace++/src/rspace/pathmap_codec.rs",
+        executable_marker:
+            "forced_line_hash_collision_preserves_range_equality_and_last_writer_semantics",
+        generator: "G-ACT03-LINE-CACHE",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-LINE-002",
+        theorems: &["replay_canonical_line_matches_add_or_reuse"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "ranges_equal",
+        executable_file: "rspace++/src/rspace/pathmap_codec.rs",
+        executable_marker: "equal ranges may reuse the latest physical line",
+        generator: "G-ACT03-LINE-CACHE",
+        oracle: "O-ACT03-RECONSTRUCT",
+    },
+    Actree03Correspondence {
+        id: "ACT03-LINE-003",
+        theorems: &["replay_canonical_line_matches_add_or_reuse"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "ranges_equal",
+        executable_file: "rspace++/src/rspace/pathmap_codec.rs",
+        executable_marker: "unequal second line must replace the first in the hash bucket",
+        generator: "G-ACT03-LINE-CACHE",
+        oracle: "O-ACT03-RECONSTRUCT",
+    },
+    Actree03Correspondence {
+        id: "ACT03-LINE-004",
+        theorems: &["replay_canonical_line_matches_add_or_reuse"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "line reuse differs from the canonical writer",
+        executable_file: "rspace++/src/rspace/pathmap_codec.rs",
+        executable_marker:
+            "forced_line_hash_collision_preserves_range_equality_and_last_writer_semantics",
+        generator: "G-ACT03-LINE-CACHE",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-REPLAY-001",
+        theorems: &[
+            "certified_source_writer_recursive_replay_exact",
+            "semantic_certificate_recursive_replay_exact",
+        ],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "validate_direct_producer_node(",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "unequal_children_wrappers_and_reused_lines_preserve_exact_plan_layout",
+        generator: "G-ACT03-WRITER",
+        oracle: "O-ACT03-LEGACY",
+    },
+    Actree03Correspondence {
+        id: "ACT03-PDA-001",
+        theorems: &[
+            "replay_plan_executes_source_semantics",
+            "semantic_certificate_pda_replay_exact",
+        ],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "struct DirectPlanValidationFrame",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "deeply_nested_value_prefixes_are_stack_safe_on_a_small_native_stack",
+        generator: "G-ACT03-DEPTH-WIDTH",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-FUEL-001",
+        theorems: &["semantic_certificate_pda_replay_exact"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "while let Some(frame) = frames.last_mut()",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "semantic_node_parses, counters.plan_records",
+        generator: "G-ACT03-DEPTH-WIDTH",
+        oracle: "O-ROCQ-ACT03",
+    },
+    Actree03Correspondence {
+        id: "ACT03-EPM1-001",
+        theorems: &["validate_accepts_every_canonical_writer_output"],
+        production_file: "models/src/rust/epathmap_trie_codec.rs",
+        production_marker: "ArenaCompactTree::from_zipper",
+        executable_file: "models/tests/epathmap_epm1_snapshot.rs",
+        executable_marker:
+            "map_snapshot_preserves_values_across_compact_line_branch_and_dense_shapes",
+        generator: "G-EPM1-WRITER",
+        oracle: "O-EPM1-GOLDEN",
+    },
+    Actree03Correspondence {
+        id: "ACT03-ORACLE-001",
+        theorems: &["validate_accepts_semantic_certificate"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "validate_direct_canonical_act",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans",
+        generator: "G-ACT03-MUTATION",
+        oracle: "O-ACT03-RECONSTRUCT",
+    },
+    Actree03Correspondence {
+        id: "ACT03-SOURCE-001",
+        theorems: &["semantic_certificate_image_boundaries"],
+        production_file: "rspace++/src/rspace/pathmap_codec.rs",
+        production_marker: "pub trait IndexedByteSource",
+        executable_file: "rspace++/tests/support/pathmap_codec_validated_plan.rs",
+        executable_marker: "malformed_errors_match_between_contiguous_and_fragmented_sources",
+        generator: "G-ACT03-MUTATION",
+        oracle: "O-ACT03-SOURCE",
+    },
+];
+
+#[test]
+fn every_actree03_proof_obligation_has_a_mechanical_executable_binding() {
+    const EXPECTED_IDS: &[&str] = &[
+        "ACT03-CAN-001",
+        "ACT03-CHILD-001",
+        "ACT03-DISC-001",
+        "ACT03-EPM1-001",
+        "ACT03-FRM-001",
+        "ACT03-FUEL-001",
+        "ACT03-ID-001",
+        "ACT03-INDEX-001",
+        "ACT03-LINE-001",
+        "ACT03-LINE-002",
+        "ACT03-LINE-003",
+        "ACT03-LINE-004",
+        "ACT03-ORACLE-001",
+        "ACT03-ORDER-001",
+        "ACT03-PDA-001",
+        "ACT03-REPLAY-001",
+        "ACT03-ROOT-001",
+        "ACT03-SOURCE-001",
+    ];
+    const PROOF_FILE: &str = "formal/rocq/actree03_completeness/theories/Epm1ActConcreteV5.v";
+
+    let proof = read_repository_file(PROOF_FILE);
+    let generator_ids = ACTREE03_GENERATORS.iter().copied().collect::<BTreeSet<_>>();
+    let oracle_ids = ACTREE03_ORACLES.iter().copied().collect::<BTreeSet<_>>();
+    let mut ids = BTreeSet::new();
+    for binding in ACTREE03_CORRESPONDENCE {
+        assert!(
+            ids.insert(binding.id),
+            "duplicate ACTree03 property {}",
+            binding.id
+        );
+        assert!(
+            generator_ids.contains(binding.generator),
+            "{} has unknown generator",
+            binding.id
+        );
+        assert!(
+            oracle_ids.contains(binding.oracle),
+            "{} has unknown oracle",
+            binding.id
+        );
+        for theorem in binding.theorems {
+            assert!(
+                proof.contains(&format!("Theorem {theorem}"))
+                    || proof.contains(&format!("Corollary {theorem}")),
+                "{} names absent theorem `{theorem}`",
+                binding.id,
+            );
+            assert!(
+                proof.contains(&format!("Print Assumptions {theorem}.")),
+                "{} does not expose `{theorem}` to the kernel-assumption gate",
+                binding.id,
+            );
+        }
+        let production = read_repository_file(binding.production_file);
+        assert!(
+            production.contains(binding.production_marker),
+            "{} names absent production marker `{}`",
+            binding.id,
+            binding.production_marker,
+        );
+        let executable = read_repository_file(binding.executable_file);
+        assert!(
+            executable.contains(binding.executable_marker),
+            "{} names absent executable marker `{}`",
+            binding.id,
+            binding.executable_marker,
+        );
+    }
+    assert_eq!(
+        ids,
+        EXPECTED_IDS.iter().copied().collect(),
+        "the ACTree03 proof-to-executable property inventory changed",
+    );
+}
+
 fn evidence_by_surface() -> BTreeMap<&'static str, &'static EquivalenceEvidence> {
     let mut by_surface = BTreeMap::new();
     for evidence in PDA_EQUIVALENCE_EVIDENCE {
@@ -215,9 +525,15 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
         "formal/rocq/stack_safe_pda/theories/AccountingDemand.v",
         "formal/rocq/stack_safe_pda/theories/ChannelImage.v",
+        "formal/rocq/actree03_completeness/theories/Epm1CursorAuthorityV2.v",
+        "formal/rocq/actree03_completeness/theories/Epm1CursorPositiveV3.v",
+        "formal/rocq/actree03_completeness/theories/Epm1CursorPositiveV4.v",
+        "formal/rocq/actree03_completeness/theories/Epm1CursorPositiveV4Mutants.v",
+        "formal/rocq/actree03_completeness/theories/Epm1ActConcreteV5.v",
+        "formal/rocq/actree03_completeness/theories/Epm1ActConcreteV5Mutants.v",
     ] {
         let source = read_repository_file(relative);
-        for forbidden in ["Admitted.", "admit.", "Axiom "] {
+        for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {
             assert!(
                 !source.contains(forbidden),
                 "{relative} contains an unproved declaration marker `{forbidden}`"

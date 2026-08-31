@@ -12,7 +12,7 @@
 
 **Repository** `f1r3node-rust-mettail`, branch `feature/mettail`
 **Companion repository** `mettail-rust`, branch `feature/rho-native-set-automata` (§5.6)
-**Report date** 2026-07-29, revised through 2026-08-28
+**Report date** 2026-07-29, revised through 2026-08-31
 **Measurement anchor** `f1r3node-rust-mettail@e67a6aaa` · `mettail-rust@b0aa4e09` (original measurement tree `8853f839`)
 **Living closure head** this checkpoint, based on `f1r3node-rust-mettail@3061b2501`
 (certified frame-local ParBag protobuf egress with typed atomic replay following final
@@ -10331,6 +10331,38 @@ a wall-clock, allocator, cache, or whole-RSpace performance verdict. Headless al
 instruction/cache profiles, persistent-arena page selection, formal admission equivalence, and the
 full release workspace remain explicit downstream gates. The legacy parser remains as a test
 oracle/compatibility surface until removal can preserve the independent malformed differential.
+
+#### 5.42.4 Formal positive-completeness closure
+
+The earlier executable matrix established malformed rejection, differential topology, and bounded
+native-stack behavior but did not by itself prove that the direct physical validator accepts every
+canonical PathMap writer image. The tracked Rocq project at
+`formal/rocq/actree03_completeness/` now models the concrete writer/parser format, semantic-node
+discovery, exact child extents, line allocation and reuse including unequal hash collisions and
+A/B/A overwrite, recursive writer replay, and its explicit enter/finish PDA. Its capstone proves
+both semantic-certificate acceptance and acceptance of every ordinary canonical writer output.
+
+All six proof-lineage and mutation-control files compile under a 1.5 GiB hard RSS cap with zero
+swap; every printed capstone is closed under the global context. Production remains fuel-free and
+uses heap frames. The proof's exact two-transition-per-node token schedule is a termination witness,
+not an artificial runtime traversal limit. Rust further replaces reverse-preorder identifier lookup
+with one forward-preorder record per node and fuses finish-order replay into admission; executable
+record-index and writer differentials bind those efficiency refinements.
+
+The focused post-extraction gates pass 10/10 validated-plan tests, 17/17 formal-manifest tests, and
+16/16 EPM1 writer-image tests. The first includes 128 arbitrary writer cases per property run; the
+last retains the depth-4,096 and nested-value small-stack witnesses. These ran under 8 GiB RSS,
+zero swap, and an eight-core quota.
+
+The complete integrated formal harness also passes across Rocq, Verus, Z3, TLC, and mCRL2. Its
+captured-log SHA-256 is
+`9121875b6024f0ca70e0fd47bc847c34ac23ac504d95e94deb41379a44892e8f`; the transient 3.1 MiB log was
+removed after inspection in accordance with the campaign cleanup rule.
+
+The exhaustive formal-to-executable ledger is
+[`epm1-actree03-canonical-validator-invariant-catalog-2026-08-31.md`](../pathmap/epm1-actree03-canonical-validator-invariant-catalog-2026-08-31.md).
+This is stack-safety and correctness evidence, not a new latency, allocation, RSS, or whole-RSpace
+performance measurement. Canonical ACT/EPM1 bytes and runtime semantics are unchanged.
 
 ---
 

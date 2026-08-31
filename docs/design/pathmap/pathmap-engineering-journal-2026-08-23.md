@@ -6,7 +6,7 @@ Campaign: `campaign-root-4131`
 
 Started: 2026-08-23
 
-Last updated: 2026-08-28
+Last updated: 2026-08-31
 
 ## Purpose
 
@@ -3383,6 +3383,63 @@ canonical term bytes, history hashes, roots, or the active compute/storage tarif
 production change hardens only the internal FFI failure boundary and updates its Rust trait call
 sites. It neither activates dormant PathMap persistence nor changes the Rholang, protobuf, bincode,
 network, or REPL interface. No PathMap source or fork was modified.
+
+### J-047 — 2026-08-31: prove canonical ACT writer completeness before closing direct admission
+
+**QUESTION.** Does the optimized single-pass ACTree03 validator accept every byte image produced by
+PathMap's canonical arena writer, including line reuse, hash collisions, wrappers, unequal child
+extents, and value-free topology, or did the physical-parser refactor leave a positive completeness
+gap hidden by malformed-input tests?
+
+**HYPOTHESIS.** A semantic writer certificate can connect the ordinary PathMap writer to the direct
+validator without weakening canonical admission. Production can then refine the proof model by
+storing forward-preorder records and replaying producer decisions as validation frames finish,
+removing the proof model's repeated identifier lookup and separate finish schedule.
+
+**METHOD.** Formal verification preceded new executable properties. The Rocq development models the
+physical writer, exact arena layout, semantic discovery, line-cache allocation/reuse/collision
+state, recursive replay, an explicit enter/finish PDA, header/root/trailer bounds, and final direct
+validation. It proves ordinary-writer completeness after establishing exact semantic-certificate
+replay. Two mutation files retain negative controls. The resulting invariants were then assigned 18
+stable `ACT03-*` identifiers and bound mechanically to production markers, generators, independent
+oracles, and executable tests.
+
+**OBSERVATIONS.** All six tracked Rocq sources compile in dependency order under a 1.5 GiB hard
+resident-memory cap and zero swap. Every printed capstone is closed under the global context, and
+the sources contain no admitted declaration, axiom, or parameter. The formal replay schedule uses
+exactly two proof transitions per semantic node. The Rust validator intentionally uses no fuel:
+finite source offsets, unique physical identities, backward child references, child counts, and
+heap frames provide the termination measure.
+
+**INTERPRETATION.** The proof model's reverse-preorder environment is not the selected runtime data
+structure. Rust's one compact forward-preorder record per semantic node and `next_record` schedule
+are the principled implementation because they avoid linear identifier searches. Likewise, fused
+finish-order replay avoids another input-sized ordering structure. Their obligations are semantic
+differentials, not a demand to make production resemble an inefficient proof representation.
+
+**COMPLEXITY.** Production remains $`\Theta(a+e)`$ in physical ACT bytes plus emitted logical edge
+bytes, with $`O(S+K+D)`$ transient heap for semantic records, the reusable endpoint buffer, and
+explicit depth, and $`O(1)`$ native stack. Test-only exact-record reparsing is an oracle witness and
+is not compiled into production. No `Vec<Par>` projection, sorting pass, semantic hash shadow,
+depth limit, or native-stack workaround is introduced.
+
+**EVIDENCE.** The formal source and mutation controls are tracked under
+`formal/rocq/actree03_completeness/`. The exhaustive property, generator, oracle, negative-control,
+and refinement ledger is
+`docs/design/pathmap/epm1-actree03-canonical-validator-invariant-catalog-2026-08-31.md`.
+The focused validated-plan module passes 10/10, including 128 arbitrary writer cases; the complete
+formal-equivalence manifest passes 17/17; and the focused EPM1 writer-image suite passes 16/16,
+including its depth-4,096 and nested-value small-stack cases. All commands used zero-swap systemd
+scopes with the resource ceilings recorded in the catalog. The complete repository formal harness
+also passes across Rocq, Verus, Z3, TLC, and mCRL2; its captured-log digest is recorded in the
+catalog.
+
+**ACCOUNTING.** The change verifies existing canonical ACT/EPM1 bytes and introduces no new runtime
+work. Formal proof steps and test-only oracle reparsing are not COMM or storage charges.
+
+**BOUNDARY.** This evidence does not change PathMap, EPathMap mode, Bag multiplicity, canonical
+protobuf/bincode/EPM1 bytes, hashes, COMM order, persistent authority, or the REPL. It therefore
+does not create a consensus-register entry or a wall-clock performance claim.
 
 ## Upstream PathMap integration request register
 

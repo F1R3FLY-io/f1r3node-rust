@@ -119,6 +119,19 @@ if [[ "$channel_image_closed_capstones" != "11" ]]; then
 fi
 popd >/dev/null
 
+actree03_rocq_root="$repo_root/formal/rocq/actree03_completeness"
+previous_tlc_rss="$TLC_RSS"
+TLC_RSS=1536M
+pushd "$actree03_rocq_root" >/dev/null
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorAuthorityV2.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV3.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV4.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV4Mutants.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5Mutants.v
+popd >/dev/null
+TLC_RSS="$previous_tlc_rss"
+
 verus_bin="${VERUS:-$(command -v verus || true)}"
 if [[ -z "$verus_bin" || ! -x "$verus_bin" ]]; then
   echo "stack-safe-pda: Verus not found on PATH" >&2

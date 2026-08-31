@@ -1,12 +1,15 @@
+use std::collections::BTreeSet;
 use std::thread;
 
 use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
+use proptest::prelude::*;
 
 use super::{
-    CanonicalCompactTrieCursor, CanonicalCompactTrieIndexedTopologyCursor,
+    AsRefIndexedByteSource, CanonicalCompactTrieCursor, CanonicalCompactTrieIndexedTopologyCursor,
     CanonicalCompactTrieTopologyCursor, CanonicalCompactTrieTopologyEvent, CompactTrie,
-    CompactTrieTopologyEvent, IndexedByteSource,
+    CompactTrieTopologyEvent, IndexedByteSource, direct_semantic_node, new_act_work_counters,
+    validate_direct_canonical_act,
 };
 
 struct FragmentedSource {
@@ -108,6 +111,131 @@ fn planned_endpoints(bytes: &[u8]) -> Vec<(Vec<u8>, Option<u64>)> {
         endpoints.push((endpoint.path.to_vec(), endpoint.value));
     }
     endpoints
+}
+
+/// Mechanical refinement witness for the production optimization that stores
+/// semantic nodes in forward preorder instead of the Rocq model's
+/// reverse-preorder environment plus identifier lookup.
+fn assert_forward_preorder_plan_is_exact(bytes: &[u8]) {
+    let source = AsRefIndexedByteSource::new(bytes);
+    let plan = validate_direct_canonical_act(&source).expect("canonical writer image has a plan");
+    assert!(!plan.records.is_empty(), "a canonical ACT always has a root record");
+
+    let mut physical_ids = BTreeSet::new();
+    let mut remaining_children = Vec::<usize>::new();
+    for (index, record) in plan.records.iter().enumerate() {
+        assert!(
+            physical_ids.insert(record.node_id),
+            "each discovered semantic node has one physical identity",
+        );
+        assert!(record.node_id < bytes.len(), "record identity is a source offset");
+
+        if index == 0 {
+            assert!(record.incoming().is_none(), "the root has no incoming edge");
+        } else {
+            while remaining_children.last() == Some(&0) {
+                remaining_children.pop();
+            }
+            let parent = remaining_children
+                .last_mut()
+                .expect("every non-root preorder record has a pending parent");
+            *parent -= 1;
+            assert!(record.incoming().is_some(), "every non-root has one incoming edge");
+        }
+
+        let mut branch_edges = Vec::new();
+        let mut counters = new_act_work_counters();
+        let semantic =
+            direct_semantic_node(&source, record.node_id, &mut branch_edges, &mut counters)
+                .expect("a validated record reparses as its exact source semantic node");
+        assert_eq!(record.value(), semantic.value);
+        assert_eq!(record.line_suffix(), semantic.line.as_ref().map(|line| line.suffix.clone()),);
+        assert_eq!(record.child_count(), semantic.children.len());
+        remaining_children.push(record.child_count());
+    }
+    while remaining_children.last() == Some(&0) {
+        remaining_children.pop();
+    }
+    assert!(
+        remaining_children.is_empty(),
+        "the implicit child-count schedule consumes every record exactly once",
+    );
+    assert_eq!(physical_ids.len(), plan.records.len());
+}
+
+fn writer_image_from_operations(operations: &[(Vec<u8>, Option<u64>)]) -> Vec<u8> {
+    let mut map = PathMap::new();
+    for (path, value) in operations {
+        match value {
+            Some(value) => {
+                map.set_val_at(path, *value);
+            }
+            None => {
+                map.create_path(path);
+            }
+        }
+    }
+    ArenaCompactTree::from_zipper(map.read_zipper(), |value| *value)
+        .get_data()
+        .to_vec()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+
+    #[test]
+    fn arbitrary_pathmap_writer_images_are_accepted_with_exact_preorder_plans(
+        operations in proptest::collection::vec(
+            (
+                proptest::collection::vec(any::<u8>(), 1..64),
+                prop_oneof![Just(None), any::<u64>().prop_map(Some)],
+            ),
+            0..48,
+        ),
+    ) {
+        let bytes = writer_image_from_operations(&operations);
+        prop_assert!(CompactTrie::parse_canonical(&bytes).is_ok());
+        prop_assert!(CanonicalCompactTrieTopologyCursor::new(bytes.as_slice()).is_ok());
+        prop_assert_eq!(erase_ordinals(&new_topology(&bytes)), old_topology(&bytes));
+        prop_assert_eq!(planned_endpoints(&bytes), oracle_endpoints(&bytes));
+        assert_forward_preorder_plan_is_exact(&bytes);
+    }
+}
+
+#[test]
+fn unequal_children_wrappers_and_reused_lines_preserve_exact_plan_layout() {
+    let repeated = b"/identical/compressed/suffix";
+    let mut first = vec![0x10];
+    first.extend_from_slice(repeated);
+    let mut second = vec![0x20];
+    second.extend_from_slice(repeated);
+    let mut first_child = first.clone();
+    first_child.extend_from_slice(b"/x");
+    let mut second_child = second.clone();
+    second_child.extend_from_slice(b"/a-much-longer-descendant");
+    let mut value_free = vec![0x30];
+    value_free.extend_from_slice(repeated);
+
+    let operations = vec![
+        (first, Some(1)),
+        (first_child, Some(u64::MAX)),
+        (second, Some(2)),
+        (second_child, Some(3)),
+        (value_free, None),
+    ];
+    let bytes = writer_image_from_operations(&operations);
+    assert_eq!(erase_ordinals(&new_topology(&bytes)), old_topology(&bytes));
+    assert_eq!(planned_endpoints(&bytes), oracle_endpoints(&bytes));
+    assert_forward_preorder_plan_is_exact(&bytes);
+
+    let source = FragmentedSource::new(&bytes, 0xd131_0ba6_98df_b5ac);
+    let mut state = CanonicalCompactTrieIndexedTopologyCursor::from_source(source).unwrap();
+    while state.next_event().unwrap().is_some() {}
+    let counters = state.work_counters();
+    assert!(counters.wrapper_node_parses >= 2);
+    assert!(counters.line_equality_bytes >= repeated.len());
+    assert_eq!(counters.semantic_node_parses, counters.plan_records);
+    assert_eq!(counters.node_reparses, 0);
 }
 
 #[test]
