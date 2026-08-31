@@ -185,31 +185,51 @@ fi
 
 # Free MB on the filesystem the soak actually fills. OUTPUT_DIR, the harness
 # session dirs and the runner's _diag all live on the one boot volume, so one
-# probe stands for them all.
+# probe stands for them all. Prints nothing and fails unless the probe yields
+# a plain number: an unparseable df must read as "no sample", never feed
+# arithmetic garbage into the guardian.
 disk_free_mb() {
-	df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 { print int($4) }'
+	local mb
+	mb="$(df -Pm "$OUTPUT_DIR" 2>/dev/null | awk 'NR == 2 { print int($4) }')"
+	[[ "$mb" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "$mb"
 }
 
 # Reclaim space that accumulates across iterations without touching anything
-# an active session owns. Exited rnode containers and their writable layers,
-# dangling images and orphaned networks are per-iteration leftovers (a failed
-# `compose up` leaks all three); the docker build cache is dead weight once
-# the image under test is built and loaded; /tmp compose/genesis files older
-# than an hour belong to no live iteration (an iteration runs ~10 minutes).
-# Never prunes tagged images (the image under test) or running containers.
+# an active session owns. Container removal is scoped to EXITED containers in
+# the soak's own `rnode.` namespace (a failed `compose up` leaks them);
+# dangling images are by definition unreferenced, and the docker build cache
+# is dead weight once the image under test is built and loaded. The network
+# prune and the /tmp sweep are broader by nature, and both lean on two facts:
+# this VM is exclusive to the soak (the RUNNER_LABELS f1r3fly-rust-soak
+# registration below admits no other workload), and a /tmp/test-* file older
+# than 60 minutes is past pytest's own 1200s per-test timeout, so no live
+# iteration can still own it. Never prunes tagged images (the image under
+# test) or running containers.
 reclaim_disk_space() {
 	local before after
-	before="$(disk_free_mb)"
+	before="$(disk_free_mb)" || before=""
 	if command -v docker >/dev/null 2>&1; then
-		docker container prune -f >/dev/null 2>&1 || true
+		docker ps -aq --filter status=exited --filter 'name=rnode.' 2>/dev/null |
+			xargs -r docker rm >/dev/null 2>&1 || true
 		docker network prune -f >/dev/null 2>&1 || true
 		docker image prune -f >/dev/null 2>&1 || true
 		docker builder prune -af >/dev/null 2>&1 || true
 	fi
 	find /tmp -maxdepth 1 -name 'test-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
-	after="$(disk_free_mb)"
+	after="$(disk_free_mb)" || after=""
 	printf 'disk hygiene: %sMB free -> %sMB free\n' "${before:-?}" "${after:-?}"
 }
+
+# The floor is only as good as the probe behind it: an OUTPUT_DIR that df
+# cannot stat would turn every later disk check into a silent no-op and the
+# soak would run believing itself protected. Refuse to start instead;
+# SOAK_DISK_FREE_FLOOR_MB=0 is the explicit opt-out.
+if [ "$DISK_FREE_FLOOR_MB" -gt 0 ] && ! disk_free_mb >/dev/null; then
+	printf 'cannot read free disk space for %s; fix the path or set SOAK_DISK_FREE_FLOOR_MB=0 to run without the disk floor\n' \
+		"$OUTPUT_DIR" >&2
+	exit 2
+fi
 
 printf 'Soak host protection: node RSS ceiling=%sMB; host free floor=%sMB; disk free floor=%sMB (hygiene band +%sMB)\n' \
 	"$RSS_CEILING_MB" "$HOST_FREE_FLOOR_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
@@ -949,6 +969,20 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
 			printf 'free disk %sMB inside hygiene band (floor %sMB + band %sMB); reclaiming\n' \
 				"$DISK_MB" "$DISK_FREE_FLOOR_MB" "$DISK_HYGIENE_BAND_MB"
 			reclaim_disk_space
+			# The guardian may have fired while hygiene ran (a builder prune
+			# can outlast the soft floor's 15s window), and it exits after
+			# firing — space recovered afterwards does not un-fire it or
+			# bring it back. Fail closed here rather than start an iteration
+			# that would run unguarded until its watcher trips on the marker.
+			if [ -s "$HOST_GUARDIAN_BREACH" ]; then
+				EARLY_EXIT_REASON="host_protection_breach"
+				printf 'orchestrator host guardian fired during disk hygiene; ending soak (fail-closed)\n'
+				head -1 "$HOST_GUARDIAN_BREACH" | tee "$OUTPUT_DIR/protection-breach.txt"
+				printf 'host_protection_breach: %s\n' "$(head -1 "$HOST_GUARDIAN_BREACH")" \
+					>"$OUTPUT_DIR/early-exit.txt"
+				FAILURES="$((FAILURES + 1))"
+				break
+			fi
 			DISK_MB="$(disk_free_mb)"
 			if [ -n "$DISK_MB" ] && [ "$DISK_MB" -lt "$DISK_FREE_FLOOR_MB" ]; then
 				EARLY_EXIT_REASON="host_protection_breach"
