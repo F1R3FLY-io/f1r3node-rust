@@ -4091,6 +4091,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathmap-anchor-loom-models"
+version = "0.1.0"
+dependencies = [
+ "loom 0.7.2",
+]
+
+[[package]]
 name = "pathmap-derive"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

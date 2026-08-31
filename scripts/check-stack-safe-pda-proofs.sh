@@ -224,6 +224,7 @@ for pathmap_anchor_mutant in \
     exit 1
   fi
 done
+"$repo_root/scripts/check-pathmap-anchor-loom.sh"
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
 tlc_run "$tla_metadir" RSpaceCanonicalEgress.cfg RSpaceCanonicalEgress.tla -cleanup

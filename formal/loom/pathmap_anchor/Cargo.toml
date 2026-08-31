@@ -1,0 +1,20 @@
+# Isolated Loom refinement of the anchored PathMap ownership protocol.
+#
+# This crate deliberately imports no production crate. Loom substitutes its own
+# Arc and atomics, so it checks the ownership schedules proved abstractly by
+# `formal/tlaplus/stack_safe_pda/PathMapAnchorRootTeardown.tla` without making
+# the production dependency graph compile under `--cfg loom`.
+[package]
+name = "pathmap-anchor-loom-models"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+loom = "=0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(loom)'] }
