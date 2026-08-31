@@ -169,74 +169,96 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct Encodings {
-        #[serde(with = "super::serde_bytes")]
-        bytes: Bytes,
-        #[serde(with = "super::serde_vec_bytes")]
-        bytes_vec: Vec<Bytes>,
-        #[serde(with = "super::serde_hex_bytes")]
-        hex_bytes: Bytes,
-        #[serde(with = "super::serde_hex_vec_u8")]
-        hex_vec: Vec<u8>,
-        #[serde(with = "super::serde_always_equal_bitset")]
-        ignored: Vec<u8>,
-    }
+    struct BytesWrapper(#[serde(with = "super::serde_bytes")] Bytes);
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct MapEncoding {
-        #[serde(with = "super::serde_btreemap_bytes_i64")]
-        bytes_map: BTreeMap<Bytes, i64>,
+    struct VecBytesWrapper(#[serde(with = "super::serde_vec_bytes")] Vec<Bytes>);
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct MapWrapper(#[serde(with = "super::serde_btreemap_bytes_i64")] BTreeMap<Bytes, i64>);
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct HexBytesWrapper(#[serde(with = "super::serde_hex_bytes")] Bytes);
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct HexVecWrapper(#[serde(with = "super::serde_hex_vec_u8")] Vec<u8>);
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct BitsetWrapper(#[serde(with = "super::serde_always_equal_bitset")] Vec<u8>);
+
+    #[test]
+    fn serde_bytes_round_trips_through_bincode() {
+        let original = BytesWrapper(Bytes::from(vec![0u8, 1, 254, 255]));
+        let encoded = bincode::serialize(&original).unwrap();
+        let decoded: BytesWrapper = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, original);
     }
 
     #[test]
-    fn serializes_and_deserializes_byte_encodings() {
-        let value = Encodings {
-            bytes: Bytes::from_static(b"bytes"),
-            bytes_vec: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
-            hex_bytes: Bytes::from_static(&[0xab, 0xcd]),
-            hex_vec: vec![0x12, 0x34],
-            ignored: vec![1, 2, 3],
-        };
-
-        let json = serde_json::to_string(&value).unwrap();
-        assert!(json.contains("\"hex_bytes\":\"abcd\""));
-        assert!(json.contains("\"hex_vec\":\"1234\""));
-
-        let decoded: Encodings = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.bytes, value.bytes);
-        assert_eq!(decoded.bytes_vec, value.bytes_vec);
-        assert_eq!(decoded.hex_bytes, value.hex_bytes);
-        assert_eq!(decoded.hex_vec, value.hex_vec);
-        assert!(decoded.ignored.is_empty());
-
-        let map = MapEncoding {
-            bytes_map: BTreeMap::from([
-                (Bytes::from_static(b"a"), 1),
-                (Bytes::from_static(b"b"), 2),
-            ]),
-        };
-        let encoded_map = bincode::serialize(&map).unwrap();
-        let decoded_map: MapEncoding = bincode::deserialize(&encoded_map).unwrap();
-        assert_eq!(decoded_map, map);
+    fn serde_vec_bytes_round_trips_through_bincode() {
+        let original = VecBytesWrapper(vec![
+            Bytes::from_static(b"first"),
+            Bytes::new(),
+            Bytes::from_static(b"third"),
+        ]);
+        let encoded = bincode::serialize(&original).unwrap();
+        let decoded: VecBytesWrapper = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, original);
     }
 
     #[test]
-    fn rejects_invalid_hex_encodings() {
-        #[derive(Deserialize)]
-        struct HexBytes {
-            #[serde(rename = "value", with = "super::serde_hex_bytes")]
-            _value: Bytes,
-        }
+    fn serde_btreemap_bytes_i64_round_trips_through_bincode() {
+        let mut map = BTreeMap::new();
+        map.insert(Bytes::from_static(b"alpha"), -1i64);
+        map.insert(Bytes::from_static(b"beta"), i64::MAX);
+        map.insert(Bytes::new(), 0);
+        let original = MapWrapper(map);
+        let encoded = bincode::serialize(&original).unwrap();
+        let decoded: MapWrapper = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded, original);
+    }
 
-        #[derive(Deserialize)]
-        struct HexVec {
-            #[serde(rename = "value", with = "super::serde_hex_vec_u8")]
-            _value: Vec<u8>,
-        }
+    #[test]
+    fn serde_hex_bytes_encodes_as_hex_string_and_round_trips() {
+        let original = HexBytesWrapper(Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]));
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, "\"deadbeef\"");
+        let decoded: HexBytesWrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, original);
+    }
 
-        let bytes_result = serde_json::from_str::<HexBytes>(r#"{"value":"invalid"}"#);
-        let vec_result = serde_json::from_str::<HexVec>(r#"{"value":"invalid"}"#);
-        assert!(bytes_result.is_err());
-        assert!(vec_result.is_err());
+    #[test]
+    fn serde_hex_bytes_rejects_invalid_hex() {
+        let result: Result<HexBytesWrapper, _> = serde_json::from_str("\"zzzz\"");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid hex string"), "{err}");
+    }
+
+    #[test]
+    fn serde_hex_vec_u8_encodes_as_hex_string_and_round_trips() {
+        let original = HexVecWrapper(vec![0x00, 0xff, 0x10]);
+        let json = serde_json::to_string(&original).unwrap();
+        assert_eq!(json, "\"00ff10\"");
+        let decoded: HexVecWrapper = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn serde_hex_vec_u8_rejects_invalid_hex() {
+        let result: Result<HexVecWrapper, _> = serde_json::from_str("\"abc\"");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid hex string"), "{err}");
+    }
+
+    #[test]
+    fn serde_always_equal_bitset_erases_content() {
+        let full = BitsetWrapper(vec![1, 2, 3]);
+        let empty = BitsetWrapper(Vec::new());
+        let encoded_full = bincode::serialize(&full).unwrap();
+        let encoded_empty = bincode::serialize(&empty).unwrap();
+        assert_eq!(encoded_full, encoded_empty);
+
+        let decoded: BitsetWrapper = bincode::deserialize(&encoded_full).unwrap();
+        assert!(decoded.0.is_empty());
     }
 }

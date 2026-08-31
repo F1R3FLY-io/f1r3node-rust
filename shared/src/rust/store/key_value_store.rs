@@ -136,143 +136,55 @@ impl From<Box<bincode::ErrorKind>> for KvStoreError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
 
-    #[derive(Clone, Default)]
-    struct Store(Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>);
-
-    impl KeyValueStore for Store {
-        fn as_any(&self) -> &dyn std::any::Any { self }
-
-        fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
-            let values = self.0.lock().unwrap();
-            Ok(keys.iter().map(|key| values.get(key).cloned()).collect())
-        }
-
-        fn put(&self, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
-            self.0.lock().unwrap().extend(pairs);
-            Ok(())
-        }
-
-        fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
-            let mut values = self.0.lock().unwrap();
-            if values.contains_key(&key) {
-                return Ok(false);
+    #[test]
+    fn display_formats_each_variant() {
+        assert_eq!(
+            KvStoreError::KeyNotFound("k1".to_string()).to_string(),
+            "Key not found: k1"
+        );
+        assert_eq!(
+            KvStoreError::IoError("disk gone".to_string()).to_string(),
+            "I/O error: disk gone"
+        );
+        assert_eq!(
+            KvStoreError::SerializationError("bad bytes".to_string()).to_string(),
+            "SerializationError error: bad bytes"
+        );
+        assert_eq!(
+            KvStoreError::InvalidArgument("nope".to_string()).to_string(),
+            "Invalid argument: nope"
+        );
+        assert_eq!(
+            KvStoreError::LockError("poisoned".to_string()).to_string(),
+            "Lock error: poisoned"
+        );
+        assert_eq!(
+            KvStoreError::LastFinalizedBlockUninitialized.to_string(),
+            "DagState does not contain lastFinalizedBlock (bootstrap incomplete)"
+        );
+        assert_eq!(
+            KvStoreError::MissingBlock {
+                hash: prost::bytes::Bytes::from_static(&[0xab, 0xcd]),
+                context: " while merging".to_string(),
             }
-            values.insert(key, value);
-            Ok(true)
-        }
-
-        fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
-            let mut values = self.0.lock().unwrap();
-            Ok(keys
-                .into_iter()
-                .filter(|key| values.remove(key).is_some())
-                .count())
-        }
-
-        fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> {
-            for (key, value) in self.0.lock().unwrap().clone() {
-                f(key, value);
-            }
-            Ok(())
-        }
-
-        fn iterate_while(
-            &self,
-            f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
-        ) -> Result<(), KvStoreError> {
-            for (key, value) in self.0.lock().unwrap().clone() {
-                if !f(key, value)? {
-                    break;
-                }
-            }
-            Ok(())
-        }
-
-        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
-
-        fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
-            Ok(self.0.lock().unwrap().clone())
-        }
-
-        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
-
-        fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(!self.0.lock().unwrap().is_empty()) }
-
-        fn size_bytes(&self) -> usize {
-            self.0
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(key, value)| key.len() + value.len())
-                .sum()
-        }
+            .to_string(),
+            "DAG storage is missing hash abcd while merging"
+        );
     }
 
     #[test]
-    fn default_operations_read_and_write_values() {
-        let store: Box<dyn KeyValueStore> = Box::new(Store::default());
-        store.put_one(vec![1], vec![10]).unwrap();
-        store
-            .put_if_absent(vec![(vec![1], vec![11]), (vec![2], vec![20])])
-            .unwrap();
-
-        assert_eq!(store.get_one(&vec![1]).unwrap(), Some(vec![10]));
-        assert_eq!(store.get_one(&vec![9]).unwrap(), None);
-        assert_eq!(store.contains(&vec![vec![1], vec![9]]).unwrap(), vec![
-            true, false
-        ]);
-        assert_eq!(store.to_map().unwrap().len(), 2);
-        assert!(store.non_empty().unwrap());
-        assert_eq!(store.size_bytes(), 4);
-
-        let clone = store.clone();
-        assert_eq!(clone.delete(vec![vec![1], vec![9]]).unwrap(), 1);
-        assert_eq!(store.get_one(&vec![1]).unwrap(), None);
+    fn bincode_errors_convert_to_serialization_errors() {
+        let bincode_err = bincode::deserialize::<String>(&[0xff]).unwrap_err();
+        let converted: KvStoreError = bincode_err.into();
+        assert!(matches!(converted, KvStoreError::SerializationError(_)));
     }
 
     #[test]
-    fn formats_store_errors() {
-        let errors = [
-            (
-                KvStoreError::KeyNotFound("key".into()),
-                "Key not found: key",
-            ),
-            (KvStoreError::IoError("io".into()), "I/O error: io"),
-            (
-                KvStoreError::SerializationError("data".into()),
-                "SerializationError error: data",
-            ),
-            (
-                KvStoreError::InvalidArgument("value".into()),
-                "Invalid argument: value",
-            ),
-            (KvStoreError::LockError("lock".into()), "Lock error: lock"),
-            (
-                KvStoreError::LastFinalizedBlockUninitialized,
-                "DagState does not contain lastFinalizedBlock (bootstrap incomplete)",
-            ),
-            (
-                KvStoreError::MissingBlock {
-                    hash: vec![0xab].into(),
-                    context: " in test".into(),
-                },
-                "DAG storage is missing hash ab in test",
-            ),
-        ];
-
-        for (error, expected) in errors {
-            assert_eq!(error.to_string(), expected);
-        }
-
-        let serialization_error: KvStoreError =
-            bincode::deserialize::<u64>(&[1]).unwrap_err().into();
-        assert!(matches!(
-            serialization_error,
-            KvStoreError::SerializationError(_)
-        ));
+    fn heed_errors_convert_to_io_errors() {
+        let heed_err = heed::Error::Io(std::io::Error::other("mmap failure"));
+        let converted: KvStoreError = heed_err.into();
+        assert_eq!(converted, KvStoreError::IoError("mmap failure".to_string()));
     }
 }

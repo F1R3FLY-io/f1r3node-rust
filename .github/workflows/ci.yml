@@ -653,10 +653,10 @@ jobs:
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
 
-      - name: Install llvm-cov
+      - name: Install llvm-cov and nextest
         uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov,nextest
 
       - name: Measure coverage
         env:
@@ -667,10 +667,17 @@ jobs:
           ulimit -n 65536
           mkdir -p target/coverage
           cargo llvm-cov clean
-          cargo llvm-cov --release -p ${{ matrix.crate }} --lib --bins --no-report
+          cargo llvm-cov nextest --release -p ${{ matrix.crate }} --no-tests=pass
+          # Src-shipped test scaffolding is compiled for cross-crate test
+          # consumers, so it can never be exercised by its own crate's run;
+          # keep it out of the denominator. Must stay identical to the regex
+          # in scripts/coverage.sh.
+          ignore_regex='(/test_utils/|block-storage/src/rust/test/)'
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
+            --ignore-filename-regex "$ignore_regex" \
             --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
+            --ignore-filename-regex "$ignore_regex" \
             --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
 
       - name: Upload coverage data

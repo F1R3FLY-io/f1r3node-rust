@@ -98,38 +98,55 @@ mod tests {
 
     use super::*;
 
-    fn hash(value: &HashableSet<i32>) -> u64 {
+    fn hash_of(set: &HashableSet<i32>) -> u64 {
         let mut hasher = DefaultHasher::new();
-        value.hash(&mut hasher);
+        set.hash(&mut hasher);
         hasher.finish()
     }
 
     #[test]
-    fn compares_and_hashes_sets_independently_of_insertion_order() {
-        let first: HashableSet<_> = [3, 1, 2].into_iter().collect();
-        let second: HashableSet<_> = [2, 3, 1].into_iter().collect();
-        let shorter: HashableSet<_> = [1, 2].into_iter().collect();
-        let different: HashableSet<_> = [1, 2, 4].into_iter().collect();
-
-        assert_eq!(first, second);
-        assert_eq!(hash(&first), hash(&second));
-        assert!(shorter < first);
-        assert!(first < different);
-        assert_eq!(first.partial_cmp(&second), Some(Ordering::Equal));
+    fn equality_ignores_insertion_order() {
+        let a: HashableSet<i32> = [1, 2, 3].into_iter().collect();
+        let b: HashableSet<i32> = [3, 1, 2].into_iter().collect();
+        let c: HashableSet<i32> = [1, 2, 4].into_iter().collect();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(HashableSet::<i32>::new().0.is_empty());
     }
 
     #[test]
-    fn iterates_owned_and_borrowed_values() {
-        let empty = HashableSet::<i32>::new();
-        assert!(empty.0.is_empty());
+    fn hash_is_order_independent_and_discriminates() {
+        let a: HashableSet<i32> = [10, 20, 30].into_iter().collect();
+        let b: HashableSet<i32> = [30, 20, 10].into_iter().collect();
+        let c: HashableSet<i32> = [10, 20, 31].into_iter().collect();
+        assert_eq!(hash_of(&a), hash_of(&b));
+        assert_ne!(hash_of(&a), hash_of(&c));
+    }
 
-        let values: HashableSet<_> = [1, 2, 3].into_iter().collect();
-        let mut borrowed: Vec<_> = (&values).into_iter().copied().collect();
-        borrowed.sort();
-        assert_eq!(borrowed, vec![1, 2, 3]);
+    #[test]
+    fn ordering_compares_length_first_then_lexicographically() {
+        let small: HashableSet<i32> = [9, 9, 100].into_iter().collect();
+        let large: HashableSet<i32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(small.cmp(&large), Ordering::Less);
+        assert_eq!(large.cmp(&small), Ordering::Greater);
 
-        let mut owned: Vec<_> = values.into_iter().collect();
-        owned.sort();
-        assert_eq!(owned, vec![1, 2, 3]);
+        let a: HashableSet<i32> = [1, 2, 3].into_iter().collect();
+        let b: HashableSet<i32> = [1, 2, 4].into_iter().collect();
+        assert_eq!(a.cmp(&b), Ordering::Less);
+        assert_eq!(a.cmp(&a.clone()), Ordering::Equal);
+        assert_eq!(a.partial_cmp(&b), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn iteration_yields_all_elements() {
+        let set: HashableSet<i32> = [5, 6, 7].into_iter().collect();
+
+        let mut borrowed: Vec<i32> = (&set).into_iter().copied().collect();
+        borrowed.sort_unstable();
+        assert_eq!(borrowed, vec![5, 6, 7]);
+
+        let mut owned: Vec<i32> = set.into_iter().collect();
+        owned.sort_unstable();
+        assert_eq!(owned, vec![5, 6, 7]);
     }
 }

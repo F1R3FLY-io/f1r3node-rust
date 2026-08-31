@@ -31,44 +31,50 @@ pub fn var_bool(name: &str, default: bool) -> bool {
 mod tests {
     use super::*;
 
-    fn name(suffix: &str) -> String {
-        format!("F1R3NODE_SHARED_ENV_TEST_{}_{}", std::process::id(), suffix)
-    }
-
+    // All env-var mutation lives in this single test to avoid races with
+    // parallel test threads.
     #[test]
-    fn parses_values_and_uses_defaults() {
-        let number = name("NUMBER");
-        let missing = name("MISSING");
-        std::env::set_var(&number, "42");
-        std::env::remove_var(&missing);
+    fn env_var_helpers_parse_filter_and_default() {
+        assert_eq!(var_parsed::<i32>("SHARED_ENV_TEST_UNSET"), None);
+        assert_eq!(var_or("SHARED_ENV_TEST_UNSET", 7i32), 7);
+        assert!(var_bool("SHARED_ENV_TEST_UNSET", true));
+        assert!(!var_bool("SHARED_ENV_TEST_UNSET", false));
 
-        assert_eq!(var_parsed::<u32>(&number), Some(42));
-        assert_eq!(var_or(&number, 7), 42);
-        assert_eq!(var_or(&missing, 7), 7);
-        assert_eq!(var_or_filtered(&number, 7, |value| *value > 40), 42);
-        assert_eq!(var_or_filtered(&number, 7, |value| *value < 40), 7);
+        std::env::set_var("SHARED_ENV_TEST_INT", "42");
+        assert_eq!(var_parsed::<i32>("SHARED_ENV_TEST_INT"), Some(42));
+        assert_eq!(var_or("SHARED_ENV_TEST_INT", 7i32), 42);
 
-        std::env::set_var(&number, "invalid");
-        assert_eq!(var_parsed::<u32>(&number), None);
-        std::env::remove_var(number);
-    }
+        std::env::set_var("SHARED_ENV_TEST_BAD", "not-a-number");
+        assert_eq!(var_parsed::<i32>("SHARED_ENV_TEST_BAD"), None);
+        assert_eq!(var_or("SHARED_ENV_TEST_BAD", 7i32), 7);
 
-    #[test]
-    fn parses_boolean_spellings() {
-        let variable = name("BOOL");
-        for value in ["1", "true", "YES", " on "] {
-            std::env::set_var(&variable, value);
-            assert!(var_bool(&variable, false));
+        std::env::set_var("SHARED_ENV_TEST_NEG", "-3");
+        assert_eq!(var_or_filtered("SHARED_ENV_TEST_NEG", 1i64, |v| *v > 0), 1);
+        assert_eq!(var_or_filtered("SHARED_ENV_TEST_INT", 1i64, |v| *v > 0), 42);
+        assert_eq!(
+            var_or_filtered("SHARED_ENV_TEST_UNSET", 1i64, |v| *v > 0),
+            1
+        );
+
+        for truthy in ["1", "true", "YES", " on "] {
+            std::env::set_var("SHARED_ENV_TEST_BOOL", truthy);
+            assert!(var_bool("SHARED_ENV_TEST_BOOL", false), "{truthy:?}");
         }
-        for value in ["0", "false", "NO", " off "] {
-            std::env::set_var(&variable, value);
-            assert!(!var_bool(&variable, true));
+        for falsy in ["0", "false", "No", "OFF"] {
+            std::env::set_var("SHARED_ENV_TEST_BOOL", falsy);
+            assert!(!var_bool("SHARED_ENV_TEST_BOOL", true), "{falsy:?}");
         }
+        std::env::set_var("SHARED_ENV_TEST_BOOL", "maybe");
+        assert!(var_bool("SHARED_ENV_TEST_BOOL", true));
+        assert!(!var_bool("SHARED_ENV_TEST_BOOL", false));
 
-        std::env::set_var(&variable, "invalid");
-        assert!(var_bool(&variable, true));
-        assert!(!var_bool(&variable, false));
-        std::env::remove_var(&variable);
-        assert!(var_bool(&variable, true));
+        for name in [
+            "SHARED_ENV_TEST_INT",
+            "SHARED_ENV_TEST_BAD",
+            "SHARED_ENV_TEST_NEG",
+            "SHARED_ENV_TEST_BOOL",
+        ] {
+            std::env::remove_var(name);
+        }
     }
 }

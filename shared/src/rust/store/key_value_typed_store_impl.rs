@@ -231,182 +231,187 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use heed::EnvOpenOptions;
 
     use super::*;
+    use crate::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 
-    #[derive(Clone, Default)]
-    struct MemoryStore {
-        values: Arc<Mutex<BTreeMap<Vec<u8>, Vec<u8>>>>,
+    fn new_store() -> KeyValueTypedStoreImpl<String, i64> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Box::leak(Box::new(dir)).path();
+        let mut builder = EnvOpenOptions::new();
+        builder.map_size(10 * 1024 * 1024);
+        builder.max_dbs(1);
+        let env = Arc::new(unsafe { builder.open(path).unwrap() });
+        let mut wtxn = env.write_txn().unwrap();
+        let db = env.create_database(&mut wtxn, None).unwrap();
+        wtxn.commit().unwrap();
+        KeyValueTypedStoreImpl::new(Arc::new(LmdbKeyValueStore::new(env, db)))
     }
 
-    impl KeyValueStore for MemoryStore {
-        fn as_any(&self) -> &dyn std::any::Any { self }
-
-        fn get(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<Option<Vec<u8>>>, KvStoreError> {
-            let values = self.values.lock().unwrap();
-            Ok(keys.iter().map(|key| values.get(key).cloned()).collect())
-        }
-
-        fn put(&self, pairs: Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), KvStoreError> {
-            self.values.lock().unwrap().extend(pairs);
-            Ok(())
-        }
-
-        fn put_one_if_absent(&self, key: Vec<u8>, value: Vec<u8>) -> Result<bool, KvStoreError> {
-            let mut values = self.values.lock().unwrap();
-            if values.contains_key(&key) {
-                return Ok(false);
-            }
-            values.insert(key, value);
-            Ok(true)
-        }
-
-        fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
-            let mut values = self.values.lock().unwrap();
-            Ok(keys
-                .into_iter()
-                .filter(|key| values.remove(key).is_some())
-                .count())
-        }
-
-        fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> {
-            for (key, value) in self.values.lock().unwrap().clone() {
-                f(key, value);
-            }
-            Ok(())
-        }
-
-        fn iterate_while(
-            &self,
-            f: &mut dyn FnMut(Vec<u8>, Vec<u8>) -> Result<bool, KvStoreError>,
-        ) -> Result<(), KvStoreError> {
-            for (key, value) in self.values.lock().unwrap().clone() {
-                if !f(key, value)? {
-                    break;
-                }
-            }
-            Ok(())
-        }
-
-        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(self.clone()) }
-
-        fn to_map(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, KvStoreError> {
-            Ok(self.values.lock().unwrap().clone())
-        }
-
-        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
-
-        fn non_empty(&self) -> Result<bool, KvStoreError> {
-            Ok(!self.values.lock().unwrap().is_empty())
-        }
-
-        fn size_bytes(&self) -> usize {
-            self.values
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(key, value)| key.len() + value.len())
-                .sum()
-        }
-    }
-
-    fn typed_store() -> (Arc<MemoryStore>, KeyValueTypedStoreImpl<u32, String>) {
-        let raw = Arc::new(MemoryStore::default());
-        let typed = KeyValueTypedStoreImpl::new(raw.clone());
-        (raw, typed)
-    }
-
-    #[test]
-    fn encodes_and_decodes_values() {
-        let (raw, typed) = typed_store();
-        let encoded_key = typed.encode_key(&7).unwrap();
-        let encoded_value = typed.encode_value(&"seven".to_string()).unwrap();
-
-        assert_eq!(typed.decode_key(&encoded_key).unwrap(), 7);
-        assert_eq!(typed.decode_value(&encoded_value).unwrap(), "seven");
-        assert!(typed.decode_key(&vec![1]).is_err());
-        assert!(typed.decode_value(&vec![1]).is_err());
-        assert!(typed.raw_store().as_any().is::<MemoryStore>());
-        assert!(raw.as_any().is::<MemoryStore>());
-    }
-
-    #[test]
-    fn stores_gets_and_deletes_values() {
-        let (_, typed) = typed_store();
-        assert!(!typed.non_empty().unwrap());
-        assert_eq!(typed.get_one(&1).unwrap(), None);
-        assert_eq!(typed.get_or_else(1, "fallback".into()).unwrap(), "fallback");
-        assert!(!typed.contains_key(1).unwrap());
-
-        typed.put_one(1, "one".into()).unwrap();
-        typed
-            .put(vec![(2, "two".into()), (3, "three".into())])
-            .unwrap();
-
-        assert!(typed.non_empty().unwrap());
-        assert_eq!(typed.get_one(&1).unwrap(), Some("one".into()));
-        assert_eq!(typed.get_unsafe(&2).unwrap(), "two");
-        assert!(matches!(
-            typed.get_unsafe(&9),
-            Err(KvStoreError::KeyNotFound(_))
-        ));
-        assert_eq!(typed.get_batch(&vec![1, 2]).unwrap(), vec!["one", "two"]);
-        assert!(matches!(
-            typed.get_batch(&vec![1, 9]),
-            Err(KvStoreError::KeyNotFound(_))
-        ));
-        assert_eq!(typed.get(&vec![1, 9]).unwrap(), vec![
-            Some("one".into()),
-            None
-        ]);
-        assert_eq!(typed.contains(vec![1, 9]).unwrap(), vec![true, false]);
-        assert_eq!(typed.get_or_else(1, "fallback".into()).unwrap(), "one");
-
-        typed.delete(vec![1, 9]).unwrap();
-        assert_eq!(typed.get_one(&1).unwrap(), None);
-    }
-
-    #[test]
-    fn inserts_only_absent_values() {
-        let (_, typed) = typed_store();
-        assert!(typed.put_one_if_absent(1, "one".into()).unwrap());
-        assert!(!typed.put_one_if_absent(1, "changed".into()).unwrap());
-        typed
-            .put_if_absent(vec![(1, "changed".into()), (2, "two".into())])
-            .unwrap();
-
-        assert_eq!(typed.get_unsafe(&1).unwrap(), "one");
-        assert_eq!(typed.get_unsafe(&2).unwrap(), "two");
-    }
-
-    #[test]
-    fn scans_and_collects_values() {
-        let (_, typed) = typed_store();
-        typed
+    fn seeded_store() -> KeyValueTypedStoreImpl<String, i64> {
+        let store = new_store();
+        store
             .put(vec![
-                (1, "one".into()),
-                (2, "two".into()),
-                (3, "three".into()),
+                ("one".to_string(), 1),
+                ("two".to_string(), 2),
+                ("three".to_string(), 3),
             ])
             .unwrap();
+        store
+    }
 
-        assert!(typed.any_value(|value| Ok(value == "two")).unwrap());
-        assert!(!typed.any_value(|value| Ok(value == "missing")).unwrap());
+    #[test]
+    fn key_and_value_codecs_round_trip() {
+        let store = new_store();
+        let key = "some-key".to_string();
+        let encoded_key = store.encode_key(&key).unwrap();
+        assert_eq!(store.decode_key(&encoded_key).unwrap(), key);
+
+        let encoded_value = store.encode_value(&-42i64).unwrap();
+        assert_eq!(store.decode_value(&encoded_value).unwrap(), -42);
+    }
+
+    #[test]
+    fn decoding_garbage_bytes_is_a_serialization_error() {
+        let store = new_store();
+        let result = store.decode_key(&vec![0xff, 0xff]);
+        assert!(matches!(result, Err(KvStoreError::SerializationError(_))));
+    }
+
+    #[test]
+    fn get_preserves_key_order_and_marks_missing_keys() {
+        let store = seeded_store();
+        let values = store
+            .get(&vec![
+                "two".to_string(),
+                "absent".to_string(),
+                "one".to_string(),
+            ])
+            .unwrap();
+        assert_eq!(values, vec![Some(2), None, Some(1)]);
+    }
+
+    #[test]
+    fn get_one_and_get_or_else_handle_missing_keys() {
+        let store = seeded_store();
+        assert_eq!(store.get_one(&"one".to_string()).unwrap(), Some(1));
+        assert_eq!(store.get_one(&"absent".to_string()).unwrap(), None);
+        assert_eq!(store.get_or_else("two".to_string(), 99).unwrap(), 2);
+        assert_eq!(store.get_or_else("absent".to_string(), 99).unwrap(), 99);
+    }
+
+    #[test]
+    fn get_unsafe_errors_on_missing_key() {
+        let store = seeded_store();
+        assert_eq!(store.get_unsafe(&"three".to_string()).unwrap(), 3);
         assert!(matches!(
-            typed.any_value(|_| Err(KvStoreError::InvalidArgument("stop".into()))),
+            store.get_unsafe(&"absent".to_string()),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn get_batch_requires_every_key_to_exist() {
+        let store = seeded_store();
+        assert_eq!(
+            store
+                .get_batch(&vec!["one".to_string(), "two".to_string()])
+                .unwrap(),
+            vec![1, 2]
+        );
+        assert!(matches!(
+            store.get_batch(&vec!["one".to_string(), "absent".to_string()]),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn put_one_overwrites_and_put_one_if_absent_does_not() {
+        let store = new_store();
+        store.put_one("k".to_string(), 1).unwrap();
+        store.put_one("k".to_string(), 2).unwrap();
+        assert_eq!(store.get_one(&"k".to_string()).unwrap(), Some(2));
+
+        assert!(store.put_one_if_absent("fresh".to_string(), 10).unwrap());
+        assert!(!store.put_one_if_absent("fresh".to_string(), 20).unwrap());
+        assert_eq!(store.get_one(&"fresh".to_string()).unwrap(), Some(10));
+    }
+
+    #[test]
+    fn put_if_absent_only_writes_missing_keys() {
+        let store = seeded_store();
+        store
+            .put_if_absent(vec![("one".to_string(), 100), ("four".to_string(), 4)])
+            .unwrap();
+        assert_eq!(store.get_one(&"one".to_string()).unwrap(), Some(1));
+        assert_eq!(store.get_one(&"four".to_string()).unwrap(), Some(4));
+    }
+
+    #[test]
+    fn contains_and_contains_key_report_membership() {
+        let store = seeded_store();
+        assert_eq!(
+            store
+                .contains(vec!["one".to_string(), "absent".to_string()])
+                .unwrap(),
+            vec![true, false]
+        );
+        assert!(store.contains_key("two".to_string()).unwrap());
+        assert!(!store.contains_key("absent".to_string()).unwrap());
+    }
+
+    #[test]
+    fn delete_removes_only_named_keys() {
+        let store = seeded_store();
+        store
+            .delete(vec!["one".to_string(), "absent".to_string()])
+            .unwrap();
+        assert_eq!(store.get_one(&"one".to_string()).unwrap(), None);
+        assert_eq!(store.get_one(&"two".to_string()).unwrap(), Some(2));
+    }
+
+    #[test]
+    fn collect_projects_and_filters_entries() {
+        let store = seeded_store();
+        let mut doubled_evens: Vec<i64> = store
+            .collect(|(_, value)| {
+                if value % 2 == 0 {
+                    Some(value * 2)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        doubled_evens.sort_unstable();
+        assert_eq!(doubled_evens, vec![4]);
+    }
+
+    #[test]
+    fn to_map_returns_every_typed_entry() {
+        let store = seeded_store();
+        let map = store.to_map().unwrap();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get("three"), Some(&3));
+    }
+
+    #[test]
+    fn any_value_scans_until_a_match() {
+        let store = seeded_store();
+        assert!(store.any_value(|value| Ok(*value == 2)).unwrap());
+        assert!(!store.any_value(|value| Ok(*value > 100)).unwrap());
+        assert!(matches!(
+            store.any_value(|_| Err(KvStoreError::InvalidArgument("boom".to_string()))),
             Err(KvStoreError::InvalidArgument(_))
         ));
+    }
 
-        let mut collected = typed
-            .collect(|(key, value)| (*key % 2 == 1).then(|| (*key, value.clone())))
-            .unwrap();
-        collected.sort();
-        assert_eq!(collected, vec![(1, "one".into()), (3, "three".into())]);
-
-        let values = typed.to_map().unwrap();
-        assert_eq!(values.len(), 3);
-        assert_eq!(values.get(&2), Some(&"two".to_string()));
+    #[test]
+    fn non_empty_and_raw_store_reflect_the_backing_store() {
+        let store = new_store();
+        assert!(!store.non_empty().unwrap());
+        store.put_one("k".to_string(), 1).unwrap();
+        assert!(store.non_empty().unwrap());
+        assert!(store.raw_store().non_empty().unwrap());
     }
 }
