@@ -11,6 +11,15 @@ handoff_status: active
 
 ## Policy
 
+> **Superseded 2026-08-31.** The measurement method changed when this branch
+> merged with `feature/test-coverage`: the gate now runs every in-crate test
+> target with nextest (matching CI), and the denominator excludes src-shipped
+> test scaffolding and node's bootstrap/wiring via the shared ignore regex in
+> `scripts/coverage.sh`. The lib-only baselines below are historical; the
+> official post-merge numbers are the PR #374 CI table (workspace 81.0%,
+> every crate >= 80% except node, which the wiring exclusion addresses).
+> Current status lives in docs/work-logs/task-test-coverage-80pct-2026-08-30.md.
+
 The gate uses line coverage from library and binary unit tests. Integration tests and doctests do not contribute.
 
 Each workspace crate must have at least 80% line coverage. The weighted workspace total must also have at least 80% line coverage.

@@ -171,7 +171,10 @@ fn test_encode_signature_rejects_empty_and_short_input() {
     assert!(empty_err.to_string().contains("must not be empty"));
 
     let short_err = CertificateHelper::encode_signature_rs_to_der(&[0x01; 63]).unwrap_err();
-    assert!(short_err.to_string().contains("at least 64 bytes"));
+    assert!(short_err.to_string().contains("64 bytes"));
+
+    let oversized_err = CertificateHelper::encode_signature_rs_to_der(&[0x01; 128]).unwrap_err();
+    assert!(oversized_err.to_string().contains("64 bytes"));
 }
 
 #[test]

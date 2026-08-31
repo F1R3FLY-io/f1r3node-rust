@@ -71,7 +71,7 @@ cargo test --release        # CI runs this per-crate: cargo test --release -p <c
 just coverage               # requires cargo-llvm-cov and llvm-tools-preview
 ```
 
-The coverage gate uses unit tests only. Each crate and the weighted workspace total must have at least 80% line coverage.
+The coverage gate runs every test target in the crate (nextest, the same runner as CI). The measured denominator excludes src-shipped test scaffolding and node's process bootstrap and wiring; see the regex in `scripts/coverage.sh` for the exact file set. Each crate and the weighted workspace total must have at least 80% line coverage.
 
 If a check is not available, identify the missing check in the pull request description.
 

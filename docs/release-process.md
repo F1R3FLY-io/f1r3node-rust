@@ -622,7 +622,7 @@ flowchart TD
     SI --> TN["Test net<br/>soaking node becomes an Anchor"]
 ```
 
-Pull-request runs add a parallel coverage matrix after lint. The matrix measures library and binary unit tests with cargo-llvm-cov.
+Pull-request runs add a parallel coverage matrix after lint. The matrix measures every in-crate test target with cargo-llvm-cov over nextest, the same runner as the test matrix. The measured denominator excludes src-shipped test scaffolding and node's process bootstrap and wiring (the exact file set is the shared regex in `scripts/coverage.sh` and ci.yml).
 
 The summary job requires 80% line coverage for each crate. The summary job also requires an 80% weighted workspace total.
 

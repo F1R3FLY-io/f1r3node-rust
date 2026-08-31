@@ -56,6 +56,23 @@ uncovered lines. Work proceeds crate by crate, weakest first, with in-file
 - casper DONE: 27 tests, `cargo test --release -p casper` green (351 lib + 932 integration passed, 11 pre-existing ignores). ~600-700 lines newly exercised (~+1.6-1.9pp on 79.4%): block_retriever admit_hash branches + caps/eviction (12 in-file tests), running_spec message fall-throughs + floor cache (9), 17 no-casper BlockAPI error arms + preview_private_names (2), NEW tests/api/block_report_api_test.rs covering block_report_api.rs from 0% (4). Skipped with reasons: initializing/block_processor full graphs, casper_launch wiring, dag_merger/block_creator edges (need merge harnesses — candidate for a dedicated later pass).
 - node DONE and measured: 51.0% -> 65.0% (8443/12990 via scripts/coverage.sh). 63 tests, ~1,030 newly-exercised production lines: web_api_routes 34.8% -> 91.6% (AppState proved stub-constructible; tower-oneshot tests over the real router), shared_handlers -> 97.1% (exhaustive error classification), deploy_grpc_service_v1 0% -> 77.7%, web_api 51.7% -> 84.6% (pure conversion layer), system_deploy_info -> 99.5%. Remaining misses are engine-bound success arms plus the skipped bootstrap/wiring files. One existing test helper made pub(super). Verified green under the CI-equivalent gate: `cargo nextest run -p node --release` = 246 passed, 0 skipped. Caveat: debug-mode `cargo test -p node --lib` shows 3 pre-existing environmental failures in rust::diagnostics::sigar_reporter timing tests on this macOS machine (fail at untouched baseline too; pass in release/nextest, the CI configuration).
 
+## Gate reconciliation (2026-08-31, PR #373 review follow-up)
+
+- Node-vs-gate resolved by extending the denominator exclusion: node's process
+  bootstrap/wiring (main.rs, runtime/, block_processor_instance,
+  proposer_instance) joins the scaffolding regex in scripts/coverage.sh +
+  ci.yml. Rationale: reachable only from a booted node, covered by the
+  system-integration suites; heartbeat_proposer.rs stays measured (logic,
+  unit-tested at 91.8%). Projection from official numbers: node ~80.2%,
+  workspace ~83%.
+- certificate_helper::encode_signature_rs_to_der hardened: accepts exactly
+  64 (r||s) or 65 (r||s||v, eth recovery byte dropped) bytes; arbitrary
+  oversize now rejected instead of silently truncated (review finding on the
+  gate branch's test that pinned 128-byte acceptance).
+- Docs aligned to the merged measurement method (CONTRIBUTING.md,
+  docs/release-process.md); the gate branch's lib-only work log marked
+  superseded with a pointer to the official PR #374 table.
+
 ## CI status note (2026-08-31)
 
 - PR #371 (coverage tooling) MERGED to dev at 05ef40c67, BEFORE commit 72bc91a43. The branch has no open PR, so 72bc91a43 (the new tests) received no CI run; the coverage matrix runs only on pull_request events. A fresh PR feature/test-coverage -> dev is needed once the casper/node/rholang wave lands.

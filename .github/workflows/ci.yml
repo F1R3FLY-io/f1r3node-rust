@@ -672,7 +672,10 @@ jobs:
           # consumers, so it can never be exercised by its own crate's run;
           # keep it out of the denominator. Must stay identical to the regex
           # in scripts/coverage.sh.
-          ignore_regex='(/test_utils/|block-storage/src/rust/test/)'
+          # node's process bootstrap/wiring joins the scaffolding exclusion:
+          # reachable only from a booted node (covered by the integration
+          # suites), never from the crate's own test run.
+          ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/(block_processor_instance|proposer_instance)\.rs)'
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
             --ignore-filename-regex "$ignore_regex" \
             --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json

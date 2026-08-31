@@ -257,9 +257,14 @@ impl CertificateHelper {
             ));
         }
 
-        if signature_rs.len() < 64 {
+        // Exactly r||s (64) or r||s||v (65, Ethereum's recovery byte, which
+        // DER verification drops). Anything else is a non-canonical encoding:
+        // silently truncating it would let distinct byte strings verify as
+        // the same signature.
+        if signature_rs.len() != 64 && signature_rs.len() != 65 {
             return Err(CertificateError::SignatureEncoding(
-                "Signature must be at least 64 bytes (32-byte R + 32-byte S)".to_string(),
+                "Signature must be 64 bytes (32-byte R + 32-byte S) or 65 bytes (R + S + recovery byte)"
+                    .to_string(),
             ));
         }
 
@@ -569,8 +574,9 @@ mod tests {
             signature
         );
 
-        let oversized = vec![1; 128];
-        let encoded = CertificateHelper::encode_signature_rs_to_der(&oversized).unwrap();
+        let eth_with_recovery_byte = vec![1; 65];
+        let encoded =
+            CertificateHelper::encode_signature_rs_to_der(&eth_with_recovery_byte).unwrap();
         assert_eq!(
             CertificateHelper::decode_signature_der_to_rs(&encoded).unwrap(),
             vec![1; 64]
@@ -578,6 +584,8 @@ mod tests {
 
         assert!(CertificateHelper::encode_signature_rs_to_der(&[]).is_err());
         assert!(CertificateHelper::encode_signature_rs_to_der(&[1; 63]).is_err());
+        assert!(CertificateHelper::encode_signature_rs_to_der(&[1; 66]).is_err());
+        assert!(CertificateHelper::encode_signature_rs_to_der(&[1; 128]).is_err());
         assert!(CertificateHelper::decode_signature_der_to_rs(&[]).is_err());
         assert!(CertificateHelper::decode_signature_der_to_rs(&[1; 64]).is_err());
 
