@@ -213,7 +213,11 @@ env:
   # Verified: the three migrated tests green locally at the production FTT;
   # SI CI full green on ce5a825. Re-pin to the merged main SHA once #132
   # lands.
-  SYSTEM_INTEGRATION_REF: ce5a825b2c090c8680ced81327e03f83c9bfa38f
+  # 2026-08-31: ce5a825 -> e4a26eb (system-integration MAIN — the #132 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from ce5a825 (merge-base --is-ancestor), and full node CI green
+  # on the ce5a825 content (this PR's heavy pipeline, all six legs).
+  SYSTEM_INTEGRATION_REF: e4a26eb69fcfc611d56d8473f4de2b09960bc173
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
