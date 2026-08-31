@@ -70,7 +70,7 @@ Estimated overall after shared+crypto+scaffolding exclusion: ~71.8%.
 
 ## Follow-up bugs found (not fixed here)
 
-- `Secp256k1Eth::name()` returns `"secp256k1:eth"` but `SignaturesAlgFactory::apply` and the serde `Deserialize` impl only match `"secp256k1-eth"`; a serialized `Box<dyn SignaturesAlg>` holding `Secp256k1Eth` therefore round-trips to an error. Behavior pinned by crypto tests (`deserialize_accepts_eth_alias`); needs its own issue/fix branch.
+- `Secp256k1Eth::name()` returns `"secp256k1:eth"` but `SignaturesAlgFactory::apply` and the serde `Deserialize` impl only match `"secp256k1-eth"`; a serialized `Box<dyn SignaturesAlg>` holding `Secp256k1Eth` therefore round-trips to an error. Behavior pinned by crypto tests (`deserialize_accepts_eth_alias`). Filed as issue #380.
 
 ## Remaining after phase 1 (largest gaps, for later sessions)
 

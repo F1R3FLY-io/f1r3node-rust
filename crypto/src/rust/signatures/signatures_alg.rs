@@ -168,6 +168,10 @@ mod tests {
 
     #[test]
     fn deserialize_accepts_eth_alias() {
+        // Known-bug pin (issue #380): name() emits "secp256k1:eth" but the
+        // factory and Deserialize only accept "secp256k1-eth", so a boxed
+        // Secp256k1Eth does not survive a serde round-trip. This asserts the
+        // alias that DOES deserialize; update the pin when #380 is fixed.
         let encoded = bincode::serialize("secp256k1-eth").unwrap();
         let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
         assert_eq!(decoded.name(), "secp256k1:eth");
