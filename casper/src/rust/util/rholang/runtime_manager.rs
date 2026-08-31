@@ -66,6 +66,32 @@ struct MergeableKey {
     payload_hash: Vec<u8>,
 }
 
+/// c-2 review-follow-up (2026-08-30): mirror of `rholang::rust::
+/// interpreter::io::path::canonicalize_lexical`'s normalization for
+/// a single already-full path (no `rel` join).  Strips
+/// `Component::CurDir` (`.`) segments so registered
+/// `consensus_static_roots` entries share the same lexical shape as
+/// the leader's WAL entry `canon_path` values (which come from
+/// `canonicalize_lexical(root, rel)`).
+///
+/// Does NOT resolve `..` — same discipline as `canonicalize_lexical`
+/// (rejecting `..` in Rholang-facing paths is `safe_descend`'s job
+/// upstream).  Does NOT follow symlinks — canonicalize's disk-I/O
+/// domain is deliberately excluded so the check stays deterministic
+/// under operator-controlled provisioning without host-state
+/// coupling.
+fn normalize_root_lexical(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut normalized = std::path::PathBuf::new();
+    for component in p.components() {
+        match component {
+            Component::CurDir => {} // skip `.`
+            other => normalized.push(other),
+        }
+    }
+    normalized
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -2172,12 +2198,25 @@ impl RuntimeManager {
     /// `merged.consensus_static_dirs` — mirrors
     /// `register_root_identity`'s registration pattern.
     ///
-    /// Idempotent-by-repeat only in that duplicates are appended
-    /// (the applier's `starts_with` check is set-semantic).
-    /// Practical growth is bounded by the operator's provisioning
-    /// count.
+    /// # Path canonicalization (2026-08-30 review-follow-up)
+    ///
+    /// The applier's `check_path_allowed` uses `Path::starts_with`,
+    /// which is component-based: `/opt/foo/../foo/data/x.bin` does
+    /// NOT start with `/opt/foo/data/`.  WAL entry target paths
+    /// come from `canonicalize_lexical(root, rel)` on the leader
+    /// side, which strips `Component::CurDir` and leaves the join
+    /// component-normalized.  If registered roots weren't
+    /// normalized the same way, an operator config with `.` (or
+    /// symlinks resolved to different lexical forms) would silently
+    /// reject legitimate writes at boot.
+    ///
+    /// This method applies the same `canonicalize_lexical` shape
+    /// (with empty `rel`) so registered roots and WAL entry paths
+    /// share the same lexical normalization contract.  Symlinks are
+    /// deliberately NOT followed — matches the leader's discipline.
     pub async fn register_consensus_static_root(&self, path: std::path::PathBuf) {
-        self.consensus_static_roots.write().await.push(path);
+        let normalized = normalize_root_lexical(&path);
+        self.consensus_static_roots.write().await.push(normalized);
     }
 
     /// c-2 review-follow-up (2026-08-30): read the operator's
@@ -2847,6 +2886,76 @@ mod consensus_static_roots_wiring_tests {
         let roots_b = manager_clone.consensus_static_roots().await;
         assert_eq!(roots_a, roots_b);
         assert_eq!(roots_a, vec![PathBuf::from("/opt/x")]);
+    }
+
+    // ---------------------------------------------------------------
+    // c-2 review-follow-up (2026-08-30): registered roots must be
+    // lexically normalized to match WAL entry canon_path values (which
+    // come from `canonicalize_lexical(root, rel)` on the leader).
+    // A regression that dropped the normalization would silently reject
+    // legit writes at boot for operator configs with `.` segments.
+    // ---------------------------------------------------------------
+
+    /// `Component::CurDir` (`.`) segments are stripped from
+    /// registered roots.  A WAL entry with the same target under
+    /// the un-normalized root would fail `starts_with` because
+    /// `Path::starts_with` is component-based.
+    #[tokio::test]
+    async fn register_strips_cur_dir_components() {
+        let manager = empty_manager().await;
+        manager
+            .register_consensus_static_root(PathBuf::from("/opt/./f1r3fly/./data/x.bin"))
+            .await;
+        let roots = manager.consensus_static_roots().await;
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/opt/f1r3fly/data/x.bin")],
+            "`.` components MUST be stripped so registered roots match \
+             WAL entry paths produced by canonicalize_lexical.  A refactor \
+             that dropped this normalization would silently reject legit \
+             writes on operator configs containing `.` segments."
+        );
+    }
+
+    /// Roots without `.` segments round-trip unchanged.
+    #[tokio::test]
+    async fn register_plain_paths_round_trip_unchanged() {
+        let manager = empty_manager().await;
+        for p in [
+            PathBuf::from("/opt/f1r3fly/data/x.bin"),
+            PathBuf::from("/opt/f1r3fly/data/"),
+            PathBuf::from("/"),
+        ] {
+            manager.register_consensus_static_root(p.clone()).await;
+        }
+        let roots = manager.consensus_static_roots().await;
+        assert_eq!(roots.len(), 3);
+        assert!(roots.contains(&PathBuf::from("/opt/f1r3fly/data/x.bin")));
+        assert!(roots.contains(&PathBuf::from("/opt/f1r3fly/data/")));
+        assert!(roots.contains(&PathBuf::from("/")));
+    }
+
+    /// `..` segments are NOT resolved — matches `canonicalize_lexical`
+    /// discipline (rejecting `..` is `safe_descend`'s job upstream).
+    /// An operator config with `..` segments would produce a
+    /// registered root that WAL entries wouldn't match — that's a
+    /// misconfiguration for the operator to fix, not something
+    /// register_consensus_static_root papers over.
+    #[tokio::test]
+    async fn register_does_not_resolve_parent_dir_segments() {
+        let manager = empty_manager().await;
+        manager
+            .register_consensus_static_root(PathBuf::from("/opt/foo/../foo/data/x.bin"))
+            .await;
+        let roots = manager.consensus_static_roots().await;
+        // `..` passes through unchanged (not `/opt/foo/data/x.bin`).
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/opt/foo/../foo/data/x.bin")],
+            "`..` must pass through unchanged — matches canonicalize_lexical's \
+             discipline.  Resolving `..` would require disk I/O (symlink \
+             traversal semantics) which is deliberately out-of-scope."
+        );
     }
 }
 

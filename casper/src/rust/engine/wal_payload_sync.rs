@@ -2647,4 +2647,138 @@ mod tests {
     // `pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay`.
     // It reuses the PB-M-14 two-validator harness for the cosigned-
     // deploy setup that the ignored skeleton previously waited on.
+
+    // ---------------------------------------------------------------
+    // c-2 review-follow-up (2026-08-30): behavioral tests for
+    // `allowed_roots` plumbed through
+    // `RuntimeManager.consensus_static_roots()`.  The primitive
+    // `apply_wal_slice_after_fetch_rejects_out_of_root_paths` above
+    // pins the applier's `check_path_allowed` behavior when
+    // `allowed_roots` is supplied directly.  These tests drive the
+    // PLUMBING — register roots on the manager, pull them back via
+    // the accessor, hand them to `apply_wal_slice_after_fetch`, and
+    // assert the same rejection surfaces.  A regression that broke
+    // the manager slot or accessor would trip here rather than
+    // silently disabling applier-target-path validation at boot.
+    // ---------------------------------------------------------------
+
+    /// A WAL entry whose target sits outside the plumbed
+    /// `allowed_roots` (from `manager.consensus_static_roots()`)
+    /// must surface as `BootApplyError::ApplierFailed`.  Companion
+    /// to the direct-applier pin above but through the full
+    /// plumbing chain.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plumbed_allowed_roots_reject_out_of_root_wal_entry() {
+        let allowed_dir = tempfile::tempdir().unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside_target = outside_dir.path().join("bad.bin");
+        std::fs::write(&outside_target, vec![0u8; 8]).unwrap();
+
+        // Build the manager and register the ALLOWED root through
+        // the plumbing.  Then pull it back via the accessor — this
+        // is the exact path casper_launch.rs / initializing.rs use.
+        let ctx = empty_option2_ctx().await;
+        ctx.runtime_manager
+            .register_consensus_static_root(allowed_dir.path().to_path_buf())
+            .await;
+        let plumbed_allowed_roots = ctx.runtime_manager.consensus_static_roots().await;
+        assert!(
+            !plumbed_allowed_roots.is_empty(),
+            "plumbing sanity check: registered root must round-trip via the accessor"
+        );
+
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let payload = b"blocked-through-plumbing".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        let wal = vec![write_entry(outside_target.to_str().unwrap(), 0, &payload)];
+        let err = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            plumbed_allowed_roots,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            None,
+            None,
+        )
+        .await
+        .expect_err("plumbed allowed_roots must reject out-of-root path");
+        assert!(
+            matches!(err, BootApplyError::ApplierFailed { .. }),
+            "expected ApplierFailed (from check_path_allowed), got {err:?}"
+        );
+        // Outside file untouched — the applier bailed before
+        // reaching the write path.
+        assert_eq!(std::fs::read(&outside_target).unwrap(), vec![0u8; 8]);
+    }
+
+    /// The registered-root normalization (strip `.` segments) must
+    /// hold end-to-end: register a root with `.` segments, drive a
+    /// WAL entry whose target matches the NORMALIZED root, and
+    /// assert the applier accepts it (bytes actually written).
+    /// A regression that dropped `normalize_root_lexical` would
+    /// silently reject the write despite the operator's config
+    /// pointing at the same file.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn plumbed_allowed_roots_accept_after_lexical_normalization() {
+        let root_dir = tempfile::tempdir().unwrap();
+        let real_target = root_dir.path().join("data.bin");
+        std::fs::write(&real_target, vec![0u8; 16]).unwrap();
+
+        // Build a `.`-laden variant of the root that
+        // normalize_root_lexical will collapse to root_dir.
+        //   /tmp/xxxx/./  →  /tmp/xxxx
+        let mut dotted = root_dir.path().to_path_buf();
+        dotted.push(".");
+        let ctx = empty_option2_ctx().await;
+        ctx.runtime_manager
+            .register_consensus_static_root(dotted)
+            .await;
+        let plumbed_allowed_roots = ctx.runtime_manager.consensus_static_roots().await;
+        assert_eq!(
+            plumbed_allowed_roots,
+            vec![root_dir.path().to_path_buf()],
+            "sanity: normalization must have stripped the `.` component"
+        );
+
+        // WAL entry writes to the file inside the (normalized) root
+        // — `starts_with` succeeds because both are normalized.
+        let driver = Arc::new(WalPayloadSyncDriver::new(Arc::new(
+            WalPayloadRetriever::new(),
+        )));
+        let payload = b"allowed-via-normalization".to_vec();
+        driver
+            .retriever
+            .mark_resolved(hash_of(&payload), payload.clone())
+            .await;
+        let wal = vec![write_entry(real_target.to_str().unwrap(), 0, &payload)];
+        let report = apply_wal_slice_after_fetch(
+            Arc::clone(&driver),
+            wal,
+            |p| p.to_path_buf(),
+            plumbed_allowed_roots,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(10),
+            None,
+            None,
+        )
+        .await
+        .expect(
+            "plumbed allowed_roots must accept in-root paths — a regression to \
+             the unnormalized form would silently reject this",
+        );
+        assert_eq!(report.wal_entries, 1);
+        // Bytes actually landed.
+        let got = std::fs::read(&real_target).unwrap();
+        assert_eq!(
+            &got[..payload.len()],
+            payload.as_slice(),
+            "applier must have written the payload under the normalized root"
+        );
+    }
 }
