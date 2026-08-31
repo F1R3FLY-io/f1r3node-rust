@@ -423,6 +423,13 @@ impl BlockMetadataStore {
 
 #[cfg(test)]
 mod tests {
+    //! Unit tests for `BlockMetadataStore` DAG state maintenance: index and
+    //! relation accessors, height-map exclusion of invalid blocks, finalized
+    //! ancestry marking with LFB advancement, monotone finality-target
+    //! updates, and restart recovery of in-memory state from persisted
+    //! metadata. Every test builds its store over an `InMemoryKeyValueStore`,
+    //! so no filesystem setup or teardown is required.
+
     use models::rust::block_implicits::get_random_block;
     use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
