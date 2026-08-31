@@ -1,12 +1,12 @@
-//! Measurement-only control for the retained candidate-product checkpoint
+//! Measurement-only control for the retained candidate-product continuation
 //! experiment.
 //!
 //! This file is compiled as a child of `rspace::data_index` only when the
-//! `candidate-checkpoint-experiment` feature is selected. The checkpoint arm
-//! calls the production `CandidatePool::positions_matching_query` method. The
-//! legacy arm freezes the removed pair-of-read-zippers continuation so the two
-//! representations can be compared at one source coordinate without exposing
-//! either implementation in an ordinary build.
+//! `candidate-continuation-experiment` feature is selected. The moving-arena
+//! arm calls the production `CandidatePool::positions_matching_query` method.
+//! The legacy arm freezes the removed pair-of-read-zippers continuation so the
+//! two representations can be compared at one source coordinate without
+//! exposing either implementation in an ordinary build.
 
 use std::sync::Arc;
 
@@ -25,14 +25,14 @@ const SHARED_DISCRIMINATOR: u8 = 17;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExperimentArm {
     LegacyClone,
-    CowCheckpoint,
+    MovingArena,
 }
 
 impl ExperimentArm {
     pub const fn label(self) -> &'static str {
         match self {
             Self::LegacyClone => "legacy_clone",
-            Self::CowCheckpoint => "cow_checkpoint",
+            Self::MovingArena => "moving_arena",
         }
     }
 }
@@ -82,7 +82,7 @@ pub struct LegacyCloneMetrics {
 }
 
 impl LegacyCloneMetrics {
-    fn record_clone<const AUDIT: bool>(&mut self, cursor: &CandidateProductCursor<'_>) {
+    fn record_clone<const AUDIT: bool>(&mut self, cursor: &CandidateProductCursor<'_, '_>) {
         if AUDIT {
             let prefix_bytes = cursor.availability.path().len() + cursor.positions.path().len();
             self.zipper_pairs_cloned += 1;
@@ -114,7 +114,7 @@ impl ExperimentOutcome {
             .map(|position| u64::try_from(position).expect("candidate position fits u64"))
             .collect::<Vec<_>>();
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"RSpace/CandidateCheckpointExperiment/results/v1");
+        hasher.update(b"RSpace/CandidateContinuationExperiment/results/v2");
         hasher.update(
             &u64::try_from(positions.len())
                 .expect("result length fits u64")
@@ -138,12 +138,12 @@ impl ExperimentOutcome {
 pub struct ExperimentAudit {
     pub expected: ExperimentOutcome,
     pub legacy: ExperimentOutcome,
-    pub checkpoint: ExperimentOutcome,
+    pub moving_arena: ExperimentOutcome,
     pub legacy_metrics: LegacyCloneMetrics,
     pub logical_structure_bytes: u64,
 }
 
-pub struct CandidateCheckpointExperiment {
+pub struct CandidateContinuationExperiment {
     shape: ExperimentShape,
     query_kind: ExperimentQuery,
     depth: usize,
@@ -153,7 +153,7 @@ pub struct CandidateCheckpointExperiment {
     query: RhoPathQuery,
 }
 
-impl CandidateCheckpointExperiment {
+impl CandidateContinuationExperiment {
     pub fn new(shape: ExperimentShape, query_kind: ExperimentQuery, depth: usize) -> Self {
         assert!(depth >= 2, "the experiment requires at least two structural components");
         let entries = match shape {
@@ -163,8 +163,8 @@ impl CandidateCheckpointExperiment {
                 .collect(),
         };
         let query = query_for(query_kind, depth);
-        let mut availability = PathMap::new();
-        let mut positions = PathMap::new();
+        let mut availability = Bag::new();
+        let mut positions = CandidatePositionMap::new();
         let mut structures = Vec::with_capacity(entries.len());
         let mut available_flags = Vec::with_capacity(entries.len());
         for (index, (parts, available)) in entries.into_iter().enumerate() {
@@ -173,9 +173,9 @@ impl CandidateCheckpointExperiment {
                 .expect("candidate index fits u64")
                 .to_be_bytes();
             let path = RhoPathV1::relative_datum_key(&structure, &identity);
-            positions.insert(&path, CandidatePosition::from_index(index));
+            assert!(!positions.insert(&path, CandidatePosition::from_index(index)));
             if available {
-                availability.insert(&path, Multiplicity::ONE);
+                availability.insert_many(&path, Multiplicity::ONE).unwrap();
             }
             structures.push(structure);
             available_flags.push(available);
@@ -185,10 +185,10 @@ impl CandidateCheckpointExperiment {
             query_kind,
             depth,
             pool: CandidatePool {
-                authority: Bag::from_pathmap(availability),
+                authority: availability,
                 reserved: Bag::new(),
                 ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
-                positions: Arc::new(positions),
+                positions,
                 fresh: None,
                 fresh_available: false,
                 decode: never_decode,
@@ -210,13 +210,13 @@ impl CandidateCheckpointExperiment {
         let positions = match arm {
             ExperimentArm::LegacyClone => {
                 legacy_positions_matching_query::<false>(
-                    self.pool.authority.as_pathmap(),
+                    &self.pool.authority,
                     &self.pool.positions,
                     &self.query,
                 )
                 .0
             }
-            ExperimentArm::CowCheckpoint => self.pool.positions_matching_query(&self.query, false),
+            ExperimentArm::MovingArena => self.pool.positions_matching_query(&self.query, false),
         };
         ExperimentOutcome::from_positions(positions)
     }
@@ -233,14 +233,14 @@ impl CandidateCheckpointExperiment {
                 .collect(),
         );
         let (legacy_positions, legacy_metrics) = legacy_positions_matching_query::<true>(
-            self.pool.authority.as_pathmap(),
+            &self.pool.authority,
             &self.pool.positions,
             &self.query,
         );
         let legacy = ExperimentOutcome::from_positions(legacy_positions);
-        let checkpoint = self.run(ExperimentArm::CowCheckpoint);
+        let moving_arena = self.run(ExperimentArm::MovingArena);
         assert_eq!(legacy, expected, "legacy control diverged from the byte oracle");
-        assert_eq!(checkpoint, expected, "checkpoint treatment diverged from the byte oracle");
+        assert_eq!(moving_arena, expected, "moving-arena treatment diverged from the byte oracle");
         assert_ne!(expected.count(), 0, "the experiment cell needs a positive witness");
 
         if self.shape == ExperimentShape::Compressed && self.query_kind == ExperimentQuery::Wildcard
@@ -261,7 +261,7 @@ impl CandidateCheckpointExperiment {
         ExperimentAudit {
             expected,
             legacy,
-            checkpoint,
+            moving_arena,
             legacy_metrics,
             logical_structure_bytes: self
                 .structures
@@ -272,25 +272,25 @@ impl CandidateCheckpointExperiment {
     }
 }
 
-struct LegacyState<'a> {
-    cursor: CandidateProductCursor<'a>,
+struct LegacyState<'availability, 'positions> {
+    cursor: CandidateProductCursor<'availability, 'positions>,
     atom_index: usize,
     captures: PathMap<Arc<[u8]>>,
 }
 
-fn legacy_visit_sequence_frames<'a, const AUDIT: bool>(
-    cursor: CandidateProductCursor<'a>,
+fn legacy_visit_sequence_frames<'availability, 'positions, const AUDIT: bool>(
+    cursor: CandidateProductCursor<'availability, 'positions>,
     metrics: &mut LegacyCloneMetrics,
-    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+    mut visitor: impl FnMut(CandidateProductCursor<'availability, 'positions>, &[u8]),
 ) {
     legacy_visit_sequence_frames_with_prefix::<AUDIT>(cursor, &[], metrics, &mut visitor);
 }
 
-fn legacy_visit_sequence_frames_with_prefix<'a, const AUDIT: bool>(
-    mut cursor: CandidateProductCursor<'a>,
+fn legacy_visit_sequence_frames_with_prefix<'availability, 'positions, const AUDIT: bool>(
+    mut cursor: CandidateProductCursor<'availability, 'positions>,
     prefix: &[u8],
     metrics: &mut LegacyCloneMetrics,
-    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+    mut visitor: impl FnMut(CandidateProductCursor<'availability, 'positions>, &[u8]),
 ) {
     if !cursor.descend_to_existing(prefix) {
         return;
@@ -339,8 +339,20 @@ fn legacy_visit_sequence_frames_with_prefix<'a, const AUDIT: bool>(
 }
 
 fn legacy_positions_matching_query<const AUDIT: bool>(
-    availability: &PathMap<Multiplicity>,
-    positions: &PathMap<CandidatePosition>,
+    availability: &Bag,
+    positions: &CandidatePositionMap,
+    query: &RhoPathQuery,
+) -> (Vec<usize>, LegacyCloneMetrics) {
+    availability.with_read_cursor(|availability| {
+        positions.with_read_cursor(|positions| {
+            legacy_positions_matching_query_from_cursor::<AUDIT>(availability, positions, query)
+        })
+    })
+}
+
+fn legacy_positions_matching_query_from_cursor<const AUDIT: bool>(
+    availability: BagReadCursor<'_, 'static>,
+    positions: CandidatePositionReadCursor<'_, 'static>,
     query: &RhoPathQuery,
 ) -> (Vec<usize>, LegacyCloneMetrics) {
     let mut metrics = LegacyCloneMetrics::default();
@@ -367,8 +379,8 @@ fn legacy_positions_matching_query<const AUDIT: bool>(
                         });
                     }
                 }
-                CompiledRhoPathQueryAtom::Capture(id) => {
-                    let capture_path = id.path();
+                CompiledRhoPathQueryAtom::Capture { slot } => {
+                    let capture_path = slot.to_be_bytes();
                     if let Some(frame) = state.captures.get(capture_path) {
                         let mut cursor = state.cursor;
                         if cursor.descend_to_existing(frame.as_ref()) {

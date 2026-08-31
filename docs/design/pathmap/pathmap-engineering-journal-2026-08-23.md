@@ -3497,6 +3497,155 @@ pass physical-PathMap property tests, fixed-small-stack tests, panic/early-exit 
 shared-subtrie allocation measurements before Bag, Par, EPathMap, matcher, or RSpace owners migrate.
 No PathMap source or fork was modified.
 
+### J-049 — 2026-08-31: move one paired cursor; retain logical continuations, not subtries
+
+**QUESTION.** After J-010 limited PathMap suffix snapshots to accepted branches, can the
+candidate-product machine remove snapshots altogether without returning to retained zipper clones,
+losing branch captures, or depending on PathMap's optional focus-value graft behavior?
+
+**HYPOTHESIS.** One guarded availability cursor and one guarded position cursor can remain live for
+the complete query. An append-only arena of logical continuation frames can name every suspended
+branch by integer parent links. A lowest-common-ancestor rebase can then move both zippers and the
+capture table between continuations without owning a PathMap subtree. This should preserve exact
+candidate products while making each physical query byte participate in only a constant number of
+cursor moves per explored edge.
+
+**METHOD.** Formal verification preceded the runtime rewrite. Rocq proves 31 invariants for arena
+well-formedness, parent/depth consistency, lowest-common-ancestor rebase, dual-cursor agreement,
+capture undo/redo, transactional failure restoration, scanner restoration, terminal visitation,
+and result equivalence; 24 causal mutants demonstrate non-vacuity. Runtime implementation then
+specialized repeated capture identifiers to dense `u32` slots, moved candidate positions behind a
+stack-safe guarded PathMap root, and replaced owned subtree work states with integer arena nodes.
+
+The paired release experiment retained the frozen zipper-clone control. It crossed two PathMap
+topologies, five query families, five depths, and 30 counterbalanced pairs per cell. Every timed
+observation carried an exact result count and digest. The analyzer used 100,000 pair-preserving
+bootstrap replicates, paired Wilcoxon tests with Benjamini-Hochberg correction, and log-log
+median-time slopes. Report-only Heaptrack separately attributed allocation calls at depth 4,096.
+
+**OBSERVATIONS.** All 3,000 observations and all 50 cells preserve the frozen and independent byte
+oracle result. Every treatment median is faster, and every 99% bootstrap upper bound is below
+parity. Median speedup spans 1.058685–88.084504 times. Treatment time slopes span 0.9198–1.0901;
+the frozen nested-predicate slopes are 1.94 and 2.38 on compressed and dense topology. Heaptrack
+removes 4 allocation calls per exact operation and 21 calls plus 2 temporary allocations per
+repeated-capture operation. Peak heap differs from control by only 8.80 KiB.
+
+**INTERPRETATION.** A retained logical continuation is not a retained trie. PathMap zippers are
+most effective here when used as the moving navigation authority while a compact application-level
+arena records only the semantic choices needed to replay motion. Exact and already-bound capture
+bytes should remain borrowed; only branch frames discovered by scanning should own bytes once.
+Repeated capture lookup is query-local state and should not be modeled as another PathMap.
+
+The result also resolves a subtle API dependency: removing candidate-lane
+`ZipperSubtries::make_map` removes any need to reconstruct the value at an extracted suffix root or
+reason about `graft_root_vals`. PathMap's prefix compression, CoW roots, and zipper navigation remain
+intact; the integration does not flatten a trie, project a `Vec<Par>`, sort elements, or patch the
+upstream crate.
+
+**COMPLEXITY.** For one explored query-product path of byte depth $`d`$, the moving cursors perform
+$`O(d)`$ navigation and the arena retains $`O(f)`$ logical frames for frame count $`f`$. Lowest-
+common-ancestor rebase uses one reusable $`O(f)`$ suffix buffer. Native stack remains $`O(1)`$.
+The measurements support approximately linear time over the registered shapes; they do not claim
+that the authoritative spatial matcher or every possible branching search has constant work.
+
+**EVIDENCE.** Commit `6ef40fc37` contains the admission-free formal proof. The raw matrix,
+machine-readable analysis, derived summary, experimental report, hashes, semantic gates, and
+headless allocation attribution are linked from
+[`../stack-safety/measurements/rspace-candidate-continuation-arena-2026-08-31.md`](../stack-safety/measurements/rspace-candidate-continuation-arena-2026-08-31.md).
+Sixteen focused tests include 128 fixed-seed randomized tries and depth 16,384 exact,
+repeated-capture, and wildcard queries on a 256 KiB native stack.
+
+**DECISION.** Use one guarded paired cursor plus flat logical continuation arena for retained
+candidate products. Forbid candidate-lane subtree snapshots, `make_map`, raw owned temporary
+PathMaps, and retained cursor clones with a source-capability test. Preserve J-010's v1/v2 matrices
+as negative and historical controls rather than rewriting their results.
+
+**ACCOUNTING.** The optimization changes derived in-memory candidate-index work only. It changes no
+PathMap, protobuf, bincode, EPM1, RMP2, persistent, network, signature, COMM, post-state, compute-
+tariff, or storage-tariff bytes. Formal and benchmark transitions are not runtime charges.
+
+**BOUNDARY.** This accepts H-007's candidate-product mechanism and focused resource gates. It does
+not retire CBR-053's independent generated associative-commutative schedule/post-state obligations
+or the campaign's whole-workspace release gate. No new upstream request is recorded: the selected
+design uses released zipper behavior, while PMU-005 already tracks the separate recursive-drop
+ownership limitation addressed by the guarded roots.
+
+### J-050 — 2026-08-31: publish one channel prefix, not one cloned RSpace root
+
+**QUESTION.** Why did the 20,000-bind RSpace gate spend its time before candidate matching, and can
+`set_channel` preserve one global `PathMap<Multiplicity>` authority without reconstructing or
+destroying the accumulated store for each new channel?
+
+**HYPOTHESIS.** A cheap CoW root clone is not a cheap transaction when publication immediately
+drops the previous complete root. Preparing the replacement as a channel-relative `Bag` and
+publishing through one prefix-confined zipper should make channel $`i`$ pay only for its own
+replacement and target-prefix removal, while keeping validation-before-publication and immutable
+clone-family isolation.
+
+**METHOD.** Formal verification preceded the runtime repair. The transaction model separates
+relative preparation from authoritative publication and proves exact target replacement,
+non-target preservation, cursor confinement, preparation-failure noninterference, loaded-marker
+uniqueness and capacity, target-only catalog invalidation, old catalog-snapshot validity, exact
+distinct/cardinality formulas, and successful-result equivalence. Causal mutants exercise global
+replacement, sibling escape, early publication, global cache clearing, duplicate loaded counts,
+and metric drift.
+
+The runtime introduces a guarded write cursor whose root is a borrowed prefix and whose API exposes
+only relative zipper navigation and value mutation. `set_channel` first consumes its iterator into
+a private relative `Bag`; after every fallible validation step succeeds, it removes the old target
+subtrie when loaded, streams relative canonical datum paths into the same guarded root, updates the
+two Bag metrics once, publishes the loaded marker/count when needed, and invalidates only the target
+catalog entry. It never clones the complete store, constructs a `Vec<Par>`, sorts trie entries,
+materializes complete channel keys, detaches a subtree, or modifies PathMap.
+
+**OBSERVATIONS.** Headless AMD uProf attributed 99.90% inclusive CPU time in the predecessor's exact
+20,000-bind gate to `set_channel`, snapshot reconstruction, and guarded-root destruction. The
+geometric causal control scales with exponent 1.99273. Prefix-local publication scales with exponent
+1.00258 from 1,000 through 16,000 channels, with medians 36.076, 73.064, 145.383, 294.479, and
+580.205 ms. Exact distinct cardinality, total cardinality, and loaded-channel count agree in every
+observation.
+
+The successor exact 20,000-bind release gate completes in 7.52 s at 151,408 KiB peak RSS and zero
+swap. `set_channel` and snapshot reconstruction disappear below uProf's displayed 0.13% top-100
+sampling floor. Report-only Heaptrack exposes a separate once-per-root final teardown: PathMap
+line-list split/drop paths still dominate allocation-call count, and guarded `AnchorRoot::drop` is
+0.53% self / 64.99% inclusive sampled CPU time. That result is a new follow-up boundary, not a
+reason to retain the former per-channel teardown.
+
+**INTERPRETATION.** CoW should preserve immutable versions, not serve as a substitute for a
+prefix-local transaction. The application already knows the mutation boundary—the channel prefix—
+so the narrowest correct PathMap capability is a zipper rooted there. Relative staging is also the
+only selected design that makes preparation failure structurally unable to mutate authoritative
+state without allocating a second global trie.
+
+**COMPLEXITY.** Preparing and installing a replacement with $`r`$ relative trie bytes and removing
+an old target subtrie with $`o`$ bytes costs $`O(r+o)`$ plus prefix navigation, independent of
+unrelated resident channels. The predecessor's repeated full-root publication was measured as
+$`\Theta(n^2)`$ for $`n`$ singleton channels. Both paths use $`O(d)`$ zipper-owned heap at trie
+depth $`d`$ and $`O(1)`$ native stack; no traversal limit or stack-growth shim is introduced.
+
+**EVIDENCE.** The raw matrix, protocol, fitted slopes, profile hashes, allocation attribution,
+limitations, and exact-gate resource envelope are retained in
+[`../stack-safety/measurements/rspace-channel-prefix-publication-2026-08-31.md`](../stack-safety/measurements/rspace-channel-prefix-publication-2026-08-31.md).
+The exact 27-invariant / 20-mutant proof-to-property registry, capped Rocq invocation identifiers,
+closed assumption boundary, source hashes, and executable property mapping are retained in
+[`rspace-channel-prefix-replacement-invariant-catalog-2026-08-31.md`](rspace-channel-prefix-replacement-invariant-catalog-2026-08-31.md).
+Focused executable gates cover randomized independent rebuilds, loaded-empty transitions,
+sibling isolation, target-only invalidation, old snapshots, iterator panic before publication,
+clone isolation, unique-root reuse, and a source prohibition on complete-store cloning.
+
+**DECISION.** Prepare channel-relative `Bag` state and publish it through exactly one
+prefix-confined guarded zipper. Keep the frozen whole-store clone only as a benchmark control.
+Track the exposed final guarded-root teardown separately and do not modify or fork PathMap.
+
+**ACCOUNTING.** The treatment changes host implementation work only. It preserves resident data,
+channel identity, multiplicity, candidate order, spatial matching, COMM order, protobuf, bincode,
+EPM1, RMP2, cold-store, post-state, compute-charge, and storage-charge semantics.
+
+**BOUNDARY.** This closes the per-channel whole-root teardown mechanism and its 20,000-bind gate. It
+does not claim that final guarded-root destruction is allocation-optimal, retire CBR-053's wider
+generated replay obligations, or activate the dormant PathMap persistence backend.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
@@ -3529,7 +3678,7 @@ contract rather than merely describing local inconvenience.
 | H-004 | Datum and continuation candidate order is independent of derived RMP bytes and digest collisions in encoded, decoded, play, and replay routes. | Opposing-RMP and forced-hash-collision controls; duplicate-identity refusal; multiplicity preservation; original-address removal; encoded/decoded key identity; play/replay COMM and post-state equivalence. | Both focused end-to-end collision/replay gates passed; release open |
 | H-005 | Lazy nested-Par summarization changes the dynamic deep-unary query route from repeated suffix hashing to one selected-token hash. | Shell-classifier differential; malformed-shell refusal; exact summary-count probe; geometric time/allocation ladder; emitted-token and candidate equivalence. | Open |
 | H-006 | A clone-family-shared `OnceLock<[u8; 32]>` removes repeated resident RMP2 transcript walks with fixed retained space and no material cold regression. | Exact bytes/oracle; one initialization per clone family; mutation/no-op/metadata/concurrency matrix; zero warm endpoint visits; preregistered cold/warm/clone/post-mutation time, allocation, instructions, and headless Heaptrack RSS gates from pgmcp 5983/5984. | Resource and focused semantic hypotheses accepted; COMM/replay/full-release lifecycle gates open |
-| H-007 | Retained `CandidateProductCursor` clones copy depth-growing zipper path/ancestor state and, if that slope is confirmed, a bounded CoW suffix checkpoint removes it without changing candidate or binding semantics. | Clone/allocation anti-vacuity; geometric depth/width resource ladder; old/new candidate and binding differential; focus-endpoint preservation; malformed, COMM, replay/post-state, and small-stack gates from pgmcp 5985 and experiment 5990. | Deterministic-run hybrid passed semantic, focus-root, paired resource, allocation, instruction, and 256 KiB small-stack gates; full release open |
+| H-007 | Retained `CandidateProductCursor` clones and accepted-branch suffix snapshots copy or reconstruct depth-growing trie state; one guarded paired cursor plus a flat logical continuation arena removes that ownership without changing candidate or binding semantics. | Clone/allocation anti-vacuity; geometric depth/width resource ladder; frozen and byte-oracle differential; capture and focus restoration; malformed prefixes; source-capability exclusions; formal rebase proof; headless allocation; small-stack gates from pgmcp 5985 and experiment 5990. | **Accepted by J-049 for the candidate-product mechanism**; all 50 cells win with 99% upper bounds below parity, treatment slopes 0.9198–1.0901, allocation calls fall, and 256 KiB depth-16,384 gates pass; full release and broader CBR-053 lifecycle remain open |
 | H-008 | Semantic projection or a fail-closed `All` fallback restores dynamic AC candidate-query soundness for matcher-ignored `New`, `ReceiveBind`, and `MatchCase` fields. | Per-field counterexamples; oracle-success-implies-query-accept property; ground exact, malformed, candidate/binding, COMM, play/replay, and post-state gates from pgmcp 5982. | Focused semantic gates passed; COMM/replay/release open |
 | H-009 | Group-compressed candidate masks plus retention-pressure scheduling remove the conditional depth×duplicate-width endpoint slope without changing ordered candidate or matcher semantics. | Frozen occurrence control; exact ordered-domain oracle; depth×width/source-orientation matrix; mixed `FreeMap`/remainder differential; randomized expansion modes; 51-sample locked experiment; headless allocation, peak-heap, instruction/cache, and CPU attribution; full release gate. | **Accepted** at `e3f3b4831`, with experiment 312 accepted and the repaired exact 4,502/4,502 release lifecycle gate closed at `8035ba826` |
 | H-010 | Immutable candidate authority plus a separate reservation Bag reduces speculative CoW mutation without a material regression from availability filtering under high reservation pressure. | Frozen decrement/reinsert control; equal exact selections and rollback states; distinct/repeated identities; single/repeated channels; low/high reservation pressure; Criterion confidence decision; allocation and RSS attribution; report-only Heaptrack plus instruction/cache profile; exact release lifecycle. | Open; representation and semantic invariants accepted at `173bf4e07`/`39bc0d999`, performance verdict deliberately not inferred |

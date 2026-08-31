@@ -1,6 +1,6 @@
 //! Paired release experiment for retained candidate-product continuations.
 //!
-//! The treatment invokes the production CoW suffix-checkpoint implementation.
+//! The treatment invokes the production moving-cursor continuation arena.
 //! The control is the feature-gated frozen read-zipper clone implementation in
 //! `tests/data_index`; neither is reconstructed in this benchmark binary.
 
@@ -10,12 +10,12 @@ use std::time::Instant;
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rspace_plus_plus::rspace::data_index::candidate_checkpoint_experiment::{
-    CandidateCheckpointExperiment, ExperimentArm, ExperimentOutcome, ExperimentQuery,
+use rspace_plus_plus::rspace::data_index::candidate_continuation_experiment::{
+    CandidateContinuationExperiment, ExperimentArm, ExperimentOutcome, ExperimentQuery,
     ExperimentShape,
 };
 
-const SCHEMA: &str = "candidate-suffix-checkpoint-v2";
+const SCHEMA: &str = "candidate-continuation-arena-v3";
 const SEED: u64 = 0x4131_5990_2026_0823;
 const DEPTHS: [usize; 5] = [256, 512, 1024, 2048, 4096];
 const SHAPES: [ExperimentShape; 2] = [ExperimentShape::Compressed, ExperimentShape::Dense64];
@@ -43,7 +43,7 @@ struct Observation {
 }
 
 fn main() {
-    if env::var_os("CANDIDATE_CHECKPOINT_PROFILE_ARM").is_some() {
+    if env::var_os("CANDIDATE_CONTINUATION_PROFILE_ARM").is_some() {
         run_profile();
     } else {
         run_matrix();
@@ -59,7 +59,7 @@ fn run_matrix() {
     for shape in SHAPES {
         for query in QUERIES {
             for depth in DEPTHS {
-                let fixture = CandidateCheckpointExperiment::new(shape, query, depth);
+                let fixture = CandidateContinuationExperiment::new(shape, query, depth);
                 let audit = fixture.audit();
                 checks.push(format!(
                     "CHECK\t{SCHEMA}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -85,9 +85,9 @@ fn run_matrix() {
                     let legacy_first = rng.gen::<bool>();
                     let order = if legacy_first { "AB" } else { "BA" };
                     let arms = if legacy_first {
-                        [ExperimentArm::LegacyClone, ExperimentArm::CowCheckpoint]
+                        [ExperimentArm::LegacyClone, ExperimentArm::MovingArena]
                     } else {
-                        [ExperimentArm::CowCheckpoint, ExperimentArm::LegacyClone]
+                        [ExperimentArm::MovingArena, ExperimentArm::LegacyClone]
                     };
                     for arm in arms {
                         let (elapsed_ns, result) = measure(&fixture, arm, batch_iterations);
@@ -153,19 +153,19 @@ fn run_matrix() {
 }
 
 fn run_profile() {
-    let arm = parse_arm(&required("CANDIDATE_CHECKPOINT_PROFILE_ARM"));
-    let shape = parse_shape(&required("CANDIDATE_CHECKPOINT_PROFILE_SHAPE"));
-    let query = parse_query(&required("CANDIDATE_CHECKPOINT_PROFILE_QUERY"));
-    let depth = required("CANDIDATE_CHECKPOINT_PROFILE_DEPTH")
+    let arm = parse_arm(&required("CANDIDATE_CONTINUATION_PROFILE_ARM"));
+    let shape = parse_shape(&required("CANDIDATE_CONTINUATION_PROFILE_SHAPE"));
+    let query = parse_query(&required("CANDIDATE_CONTINUATION_PROFILE_QUERY"));
+    let depth = required("CANDIDATE_CONTINUATION_PROFILE_DEPTH")
         .parse::<usize>()
-        .expect("CANDIDATE_CHECKPOINT_PROFILE_DEPTH must be a positive usize");
-    let iterations = env::var("CANDIDATE_CHECKPOINT_PROFILE_ITERATIONS")
+        .expect("CANDIDATE_CONTINUATION_PROFILE_DEPTH must be a positive usize");
+    let iterations = env::var("CANDIDATE_CONTINUATION_PROFILE_ITERATIONS")
         .unwrap_or_else(|_| "100".to_owned())
         .parse::<usize>()
-        .expect("CANDIDATE_CHECKPOINT_PROFILE_ITERATIONS must be a positive usize");
+        .expect("CANDIDATE_CONTINUATION_PROFILE_ITERATIONS must be a positive usize");
     assert!(iterations > 0);
 
-    let fixture = CandidateCheckpointExperiment::new(shape, query, depth);
+    let fixture = CandidateContinuationExperiment::new(shape, query, depth);
     let audit = fixture.audit();
     let (elapsed_ns, result) = measure(&fixture, arm, iterations);
     assert_eq!(result, audit.expected);
@@ -181,11 +181,15 @@ fn run_profile() {
     );
 }
 
-fn run_pair(fixture: &CandidateCheckpointExperiment, batch_iterations: usize, legacy_first: bool) {
+fn run_pair(
+    fixture: &CandidateContinuationExperiment,
+    batch_iterations: usize,
+    legacy_first: bool,
+) {
     let arms = if legacy_first {
-        [ExperimentArm::LegacyClone, ExperimentArm::CowCheckpoint]
+        [ExperimentArm::LegacyClone, ExperimentArm::MovingArena]
     } else {
-        [ExperimentArm::CowCheckpoint, ExperimentArm::LegacyClone]
+        [ExperimentArm::MovingArena, ExperimentArm::LegacyClone]
     };
     for arm in arms {
         black_box(measure(fixture, arm, batch_iterations));
@@ -194,7 +198,7 @@ fn run_pair(fixture: &CandidateCheckpointExperiment, batch_iterations: usize, le
 
 #[inline(never)]
 fn measure(
-    fixture: &CandidateCheckpointExperiment,
+    fixture: &CandidateContinuationExperiment,
     arm: ExperimentArm,
     batch_iterations: usize,
 ) -> (u128, ExperimentOutcome) {
@@ -229,8 +233,8 @@ fn required(name: &str) -> String {
 fn parse_arm(value: &str) -> ExperimentArm {
     match value {
         "legacy_clone" => ExperimentArm::LegacyClone,
-        "cow_checkpoint" => ExperimentArm::CowCheckpoint,
-        _ => panic!("unknown checkpoint experiment arm {value:?}"),
+        "moving_arena" => ExperimentArm::MovingArena,
+        _ => panic!("unknown candidate-continuation experiment arm {value:?}"),
     }
 }
 

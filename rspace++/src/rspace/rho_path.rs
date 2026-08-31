@@ -70,7 +70,9 @@ pub(crate) enum CompiledRhoPathQueryAtom {
         inner_frame: Vec<u8>,
         stored_frame: Vec<u8>,
     },
-    Capture(RhoPathCaptureId),
+    Capture {
+        slot: u32,
+    },
     Wildcard,
     Match(RhoMatchQuery),
 }
@@ -244,6 +246,7 @@ impl RhoMatchQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RhoPathQuery {
     atoms: Vec<CompiledRhoPathQueryAtom>,
+    capture_slot_count: u32,
     accepts_remainder: bool,
 }
 
@@ -261,6 +264,8 @@ impl RhoPathQuery {
                 capture_counts.insert(path, count.saturating_add(1));
             }
         }
+        let mut capture_slots = PathMap::new();
+        let mut capture_slot_count = 0u32;
         let atoms = atoms
             .into_iter()
             .map(|atom| match atom {
@@ -277,7 +282,18 @@ impl RhoPathQuery {
                 RhoPathQueryAtom::Capture(id)
                     if capture_counts.get(id.path()).copied().unwrap_or(0) > 1 =>
                 {
-                    CompiledRhoPathQueryAtom::Capture(id)
+                    let slot = match capture_slots.get(id.path()).copied() {
+                        Some(slot) => slot,
+                        None => {
+                            let slot = capture_slot_count;
+                            capture_slot_count = capture_slot_count
+                                .checked_add(1)
+                                .expect("unique u32 capture identifiers fit in u32 slots");
+                            capture_slots.insert(id.path(), slot);
+                            slot
+                        }
+                    };
+                    CompiledRhoPathQueryAtom::Capture { slot }
                 }
                 RhoPathQueryAtom::Capture(_) | RhoPathQueryAtom::Wildcard => {
                     CompiledRhoPathQueryAtom::Wildcard
@@ -287,6 +303,7 @@ impl RhoPathQuery {
             .collect();
         Self {
             atoms,
+            capture_slot_count,
             accepts_remainder,
         }
     }
@@ -298,7 +315,7 @@ impl RhoPathQuery {
             return false;
         }
         let mut cursor = 1usize;
-        let mut captures: PathMap<Vec<u8>> = PathMap::new();
+        let mut captures: Vec<Option<Vec<u8>>> = vec![None; self.capture_slot_count as usize];
         for atom in &self.atoms {
             let frame = match take_frame(structure, &mut cursor) {
                 Ok(frame) => frame,
@@ -310,13 +327,13 @@ impl RhoPathQuery {
                         return false;
                     }
                 }
-                CompiledRhoPathQueryAtom::Capture(id) => {
-                    let path = id.path();
-                    match captures.get(path) {
+                CompiledRhoPathQueryAtom::Capture { slot } => {
+                    let slot = *slot as usize;
+                    match captures[slot].as_ref() {
                         Some(previous) if previous.as_slice() != frame => return false,
                         Some(_) => {}
                         None => {
-                            captures.insert(path, frame.to_vec());
+                            captures[slot] = Some(frame.to_vec());
                         }
                     }
                 }
@@ -363,11 +380,15 @@ impl RhoPathQuery {
                         break;
                     }
                 }
-                CompiledRhoPathQueryAtom::Capture(_) | CompiledRhoPathQueryAtom::Wildcard => break,
+                CompiledRhoPathQueryAtom::Capture { .. } | CompiledRhoPathQueryAtom::Wildcard => {
+                    break;
+                }
             }
         }
         prefix
     }
+
+    pub(crate) const fn capture_slot_count(&self) -> u32 { self.capture_slot_count }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

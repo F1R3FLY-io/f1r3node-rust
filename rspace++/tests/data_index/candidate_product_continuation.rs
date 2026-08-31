@@ -1,5 +1,5 @@
-//! Test-only differential and anti-vacuity gates for candidate suffix
-//! checkpoints.
+//! Test-only differential and anti-vacuity gates for candidate continuation
+//! rebasing.
 //!
 //! Kept outside `src/` so the frozen legacy zipper-clone oracle cannot be
 //! mistaken for a production implementation.
@@ -23,7 +23,7 @@ struct LegacyCloneMetrics {
 }
 
 impl LegacyCloneMetrics {
-    fn record_clone(&mut self, cursor: &CandidateProductCursor<'_>) {
+    fn record_clone(&mut self, cursor: &CandidateProductCursor<'_, '_>) {
         let prefix_bytes = cursor.availability.path().len() + cursor.positions.path().len();
         self.zipper_pairs_cloned += 1;
         self.total_prefix_bytes_cloned += prefix_bytes;
@@ -31,25 +31,25 @@ impl LegacyCloneMetrics {
     }
 }
 
-struct LegacyState<'a> {
-    cursor: CandidateProductCursor<'a>,
+struct LegacyState<'availability, 'positions> {
+    cursor: CandidateProductCursor<'availability, 'positions>,
     atom_index: usize,
     captures: PathMap<Arc<[u8]>>,
 }
 
-fn legacy_visit_sequence_frames<'a>(
-    cursor: CandidateProductCursor<'a>,
+fn legacy_visit_sequence_frames<'availability, 'positions>(
+    cursor: CandidateProductCursor<'availability, 'positions>,
     metrics: &mut LegacyCloneMetrics,
-    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+    mut visitor: impl FnMut(CandidateProductCursor<'availability, 'positions>, &[u8]),
 ) {
     legacy_visit_sequence_frames_with_prefix(cursor, &[], metrics, &mut visitor);
 }
 
-fn legacy_visit_sequence_frames_with_prefix<'a>(
-    mut cursor: CandidateProductCursor<'a>,
+fn legacy_visit_sequence_frames_with_prefix<'availability, 'positions>(
+    mut cursor: CandidateProductCursor<'availability, 'positions>,
     prefix: &[u8],
     metrics: &mut LegacyCloneMetrics,
-    mut visitor: impl FnMut(CandidateProductCursor<'a>, &[u8]),
+    mut visitor: impl FnMut(CandidateProductCursor<'availability, 'positions>, &[u8]),
 ) {
     if !cursor.descend_to_existing(prefix) {
         return;
@@ -98,8 +98,20 @@ fn legacy_visit_sequence_frames_with_prefix<'a>(
 }
 
 fn legacy_positions_matching_query(
-    availability: &PathMap<Multiplicity>,
-    positions: &PathMap<CandidatePosition>,
+    availability: &Bag,
+    positions: &CandidatePositionMap,
+    query: &RhoPathQuery,
+) -> (Vec<usize>, LegacyCloneMetrics) {
+    availability.with_read_cursor(|availability| {
+        positions.with_read_cursor(|positions| {
+            legacy_positions_matching_query_from_cursor(availability, positions, query)
+        })
+    })
+}
+
+fn legacy_positions_matching_query_from_cursor(
+    availability: BagReadCursor<'_, 'static>,
+    positions: CandidatePositionReadCursor<'_, 'static>,
     query: &RhoPathQuery,
 ) -> (Vec<usize>, LegacyCloneMetrics) {
     let mut metrics = LegacyCloneMetrics::default();
@@ -126,8 +138,8 @@ fn legacy_positions_matching_query(
                         });
                     }
                 }
-                CompiledRhoPathQueryAtom::Capture(id) => {
-                    let capture_path = id.path();
+                CompiledRhoPathQueryAtom::Capture { slot } => {
+                    let capture_path = slot.to_be_bytes();
                     if let Some(frame) = state.captures.get(capture_path) {
                         let mut cursor = state.cursor;
                         if cursor.descend_to_existing(frame.as_ref()) {
@@ -223,26 +235,26 @@ impl ProductFixture {
     }
 
     fn from_structures(entries: Vec<(Vec<u8>, bool)>) -> Self {
-        let mut availability = PathMap::new();
-        let mut positions = PathMap::new();
+        let mut availability = Bag::new();
+        let mut positions = CandidatePositionMap::new();
         let mut structures = Vec::with_capacity(entries.len());
         let mut available_flags = Vec::with_capacity(entries.len());
         for (index, (structure, available)) in entries.into_iter().enumerate() {
             let identity = u64::try_from(index).unwrap().to_be_bytes();
             let path = RhoPathV1::relative_datum_key(&structure, &identity);
-            positions.insert(&path, CandidatePosition::from_index(index));
+            assert!(!positions.insert(&path, CandidatePosition::from_index(index)));
             if available {
-                availability.insert(&path, Multiplicity::ONE);
+                availability.insert_many(&path, Multiplicity::ONE).unwrap();
             }
             structures.push(structure);
             available_flags.push(available);
         }
         Self {
             pool: CandidatePool {
-                authority: Bag::from_pathmap(availability),
+                authority: availability,
                 reserved: Bag::new(),
                 ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
-                positions: Arc::new(positions),
+                positions,
                 fresh: None,
                 fresh_available: false,
                 decode: never_decode,
@@ -252,10 +264,13 @@ impl ProductFixture {
         }
     }
 
-    fn assert_matches(&self, query: &RhoPathQuery) -> ((usize, usize), LegacyCloneMetrics) {
+    fn assert_matches(
+        &self,
+        query: &RhoPathQuery,
+    ) -> (candidate_product_test_metrics::Metrics, LegacyCloneMetrics) {
         candidate_product_test_metrics::reset();
         let actual = self.pool.positions_matching_query(query, false);
-        let checkpoint_metrics = candidate_product_test_metrics::take();
+        let arena_metrics = candidate_product_test_metrics::take();
         let expected = self
             .structures
             .iter()
@@ -265,20 +280,20 @@ impl ProductFixture {
                 (*available && query.matches_structure(structure)).then_some(position)
             })
             .collect::<Vec<_>>();
-        let (legacy, legacy_metrics) = legacy_positions_matching_query(
-            self.pool.authority.as_pathmap(),
-            &self.pool.positions,
-            query,
-        );
-        assert_eq!(actual, expected, "checkpoint traversal must equal the byte oracle");
-        assert_eq!(actual, legacy, "checkpoint traversal must equal the former cursor PDA");
-        (checkpoint_metrics, legacy_metrics)
+        let (legacy, legacy_metrics) =
+            legacy_positions_matching_query(&self.pool.authority, &self.pool.positions, query);
+        assert_eq!(actual, expected, "arena traversal must equal the byte oracle");
+        assert_eq!(actual, legacy, "arena traversal must equal the former cursor PDA");
+        (arena_metrics, legacy_metrics)
     }
 
-    fn assert_production_matches_byte_oracle(&self, query: &RhoPathQuery) -> (usize, usize) {
+    fn assert_production_matches_byte_oracle(
+        &self,
+        query: &RhoPathQuery,
+    ) -> candidate_product_test_metrics::Metrics {
         candidate_product_test_metrics::reset();
         let actual = self.pool.positions_matching_query(query, false);
-        let checkpoint_metrics = candidate_product_test_metrics::take();
+        let arena_metrics = candidate_product_test_metrics::take();
         let expected = self
             .structures
             .iter()
@@ -288,8 +303,8 @@ impl ProductFixture {
                 (*available && query.matches_structure(structure)).then_some(position)
             })
             .collect::<Vec<_>>();
-        assert_eq!(actual, expected, "checkpoint traversal must equal the byte oracle");
-        checkpoint_metrics
+        assert_eq!(actual, expected, "arena traversal must equal the byte oracle");
+        arena_metrics
     }
 }
 
@@ -351,7 +366,7 @@ fn nested_query_with_suffix(discriminator: i64, suffix: Vec<u8>) -> RhoPathQuery
 }
 
 #[test]
-fn checkpoint_product_matches_the_legacy_pda_and_byte_oracle() {
+fn continuation_arena_matches_the_legacy_pda_and_byte_oracle() {
     let fixture = ProductFixture::from_parts(vec![
         (vec![], true),
         (vec![vec![]], true),
@@ -381,30 +396,31 @@ fn checkpoint_product_matches_the_legacy_pda_and_byte_oracle() {
 }
 
 #[test]
-fn terminal_endpoint_is_scanned_without_a_root_value_losing_checkpoint() {
-    let mut availability = PathMap::new();
-    let mut positions = PathMap::new();
+fn terminal_endpoint_is_scanned_at_the_live_product_cursor() {
+    let mut availability = Bag::new();
+    let mut positions = CandidatePositionMap::new();
     let terminator_endpoint = vec![1, 0, 0];
-    availability.insert(&terminator_endpoint, Multiplicity::ONE);
-    positions.insert(&terminator_endpoint, CandidatePosition::from_index(0));
+    availability
+        .insert_many(&terminator_endpoint, Multiplicity::ONE)
+        .unwrap();
+    assert!(!positions.insert(&terminator_endpoint, CandidatePosition::from_index(0)));
     let pool = CandidatePool {
-        authority: Bag::from_pathmap(availability),
+        authority: availability,
         reserved: Bag::new(),
         ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
-        positions: Arc::new(positions),
+        positions,
         fresh: None,
         fresh_available: false,
         decode: never_decode,
     };
     let query = RhoPathQuery::structural_sequence([], false);
     assert_eq!(pool.positions_matching_query(&query, false), vec![0]);
-    let (legacy, _) =
-        legacy_positions_matching_query(pool.authority.as_pathmap(), &pool.positions, &query);
+    let (legacy, _) = legacy_positions_matching_query(&pool.authority, &pool.positions, &query);
     assert_eq!(legacy, vec![0]);
 }
 
 #[test]
-fn checkpoint_product_handles_compressed_and_dense_focus_shapes() {
+fn continuation_arena_handles_compressed_and_dense_focus_shapes() {
     let mut compressed_left = vec![0xA5; 4096];
     let mut compressed_right = compressed_left.clone();
     compressed_left.push(0x11);
@@ -413,9 +429,10 @@ fn checkpoint_product_handles_compressed_and_dense_focus_shapes() {
         (vec![compressed_left], true),
         (vec![compressed_right], true),
     ]);
-    let (checkpoint_metrics, legacy_metrics) = compressed
+    let (arena_metrics, legacy_metrics) = compressed
         .assert_matches(&RhoPathQuery::structural_sequence([RhoPathQueryAtom::Wildcard], false));
-    assert_eq!(checkpoint_metrics, (2, 2));
+    assert_eq!(arena_metrics.continuations, 2);
+    assert_eq!(arena_metrics.visited_frames, 2);
     assert!(legacy_metrics.maximum_prefix_bytes_cloned >= 8_000);
 
     let dense = ProductFixture::from_parts(
@@ -423,9 +440,10 @@ fn checkpoint_product_handles_compressed_and_dense_focus_shapes() {
             .map(|byte| (vec![vec![byte, byte.wrapping_mul(3)]], byte % 3 != 0))
             .collect(),
     );
-    let (checkpoint_metrics, legacy_metrics) = dense
+    let (arena_metrics, legacy_metrics) = dense
         .assert_matches(&RhoPathQuery::structural_sequence([RhoPathQueryAtom::Wildcard], false));
-    assert_eq!(checkpoint_metrics, (43, 43));
+    assert_eq!(arena_metrics.continuations, 43);
+    assert_eq!(arena_metrics.visited_frames, 43);
     assert_eq!(legacy_metrics.visited_frames, 43);
 }
 
@@ -437,9 +455,9 @@ fn legacy_control_exposes_depth_growing_clone_work() {
         std::iter::repeat_n(RhoPathQueryAtom::Wildcard, 128),
         false,
     );
-    let ((checkpoints, visited_frames), legacy) = fixture.assert_matches(&query);
-    assert_eq!(visited_frames, 128);
-    assert_eq!(checkpoints, 128, "one checkpoint per accepted branch frame");
+    let (arena, legacy) = fixture.assert_matches(&query);
+    assert_eq!(arena.visited_frames, 128);
+    assert_eq!(arena.continuations, 128, "one continuation per accepted branch frame");
     assert_eq!(legacy.visited_frames, 128);
     assert_eq!(legacy.zipper_pairs_cloned, 129);
     assert!(legacy.maximum_prefix_bytes_cloned > 8_000);
@@ -447,7 +465,7 @@ fn legacy_control_exposes_depth_growing_clone_work() {
 }
 
 #[test]
-fn deterministic_runs_create_no_suffix_checkpoints() {
+fn deterministic_runs_borrow_exact_frames_without_scanner_visits() {
     let depth = 128;
     let part = b"same".to_vec();
     let fixture = ProductFixture::from_parts(vec![(vec![part.clone(); depth], true)]);
@@ -455,13 +473,14 @@ fn deterministic_runs_create_no_suffix_checkpoints() {
         std::iter::repeat_n(RhoPathQueryAtom::Exact(part), depth),
         false,
     );
-    let ((checkpoints, visited_frames), legacy) = fixture.assert_matches(&query);
-    assert_eq!((checkpoints, visited_frames), (0, 0));
+    let (arena, legacy) = fixture.assert_matches(&query);
+    assert_eq!(arena.continuations, depth);
+    assert_eq!(arena.visited_frames, 0);
     assert_eq!(legacy.zipper_pairs_cloned, 1);
 }
 
 #[test]
-fn a_repeated_capture_checkpoints_only_its_first_branch() {
+fn a_repeated_capture_owns_only_its_first_scanned_frame() {
     let depth = 128;
     let fixture = ProductFixture::from_parts(vec![(vec![b"same".to_vec(); depth], true)]);
     let capture = RhoPathCaptureId::new(99);
@@ -469,13 +488,14 @@ fn a_repeated_capture_checkpoints_only_its_first_branch() {
         std::iter::repeat_n(RhoPathQueryAtom::Capture(capture), depth),
         false,
     );
-    let ((checkpoints, visited_frames), legacy) = fixture.assert_matches(&query);
-    assert_eq!((checkpoints, visited_frames), (1, 1));
+    let (arena, legacy) = fixture.assert_matches(&query);
+    assert_eq!(arena.continuations, depth);
+    assert_eq!(arena.visited_frames, 1);
     assert_eq!(legacy.zipper_pairs_cloned, 2);
 }
 
 #[test]
-fn rejected_nested_frames_do_not_create_suffix_checkpoints() {
+fn rejected_nested_frames_do_not_create_continuations() {
     let fixture = ProductFixture::from_parts(vec![(vec![nested_value(17)], true)]);
     let query = nested_query_with_suffix(17, vec![RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_END]);
     candidate_product_test_metrics::reset();
@@ -485,51 +505,59 @@ fn rejected_nested_frames_do_not_create_suffix_checkpoints() {
             .positions_matching_query(&query, false)
             .is_empty()
     );
-    let (checkpoints, visited_frames) = candidate_product_test_metrics::take();
-    assert_eq!(checkpoints, 0);
-    assert_eq!(visited_frames, 1, "the rejected frame must have reached its predicate");
+    let metrics = candidate_product_test_metrics::take();
+    assert_eq!(metrics.continuations, 0);
+    assert_eq!(metrics.visited_frames, 1, "the rejected frame must reach its predicate");
 }
 
 #[test]
 fn asymmetric_failed_descent_restores_both_product_zippers() {
-    let mut availability = PathMap::new();
-    let mut positions = PathMap::new();
-    availability.insert([1, 2], Multiplicity::ONE);
-    positions.insert([1, 2, 3], CandidatePosition::from_index(0));
-    let mut cursor = CandidateProductCursor::new(&availability, &positions);
+    let mut availability = Bag::new();
+    let mut positions = CandidatePositionMap::new();
+    availability
+        .insert_many(&[1, 2], Multiplicity::ONE)
+        .unwrap();
+    assert!(!positions.insert(&[1, 2, 3], CandidatePosition::from_index(0)));
+    availability.with_read_cursor(|availability| {
+        positions.with_read_cursor(|positions| {
+            let mut cursor = CandidateProductCursor::new(availability, positions);
 
-    assert!(!cursor.descend_to_existing(&[1, 2, 3]));
-    assert!(cursor.availability.path().is_empty());
-    assert!(cursor.positions.path().is_empty());
-    assert!(cursor.descend_to_existing(&[1, 2]));
-    assert_eq!(cursor.availability.path(), &[1, 2]);
-    assert_eq!(cursor.positions.path(), &[1, 2]);
+            assert!(!cursor.descend_to_existing(&[1, 2, 3]));
+            assert!(cursor.availability.path().is_empty());
+            assert!(cursor.positions.path().is_empty());
+            assert!(cursor.descend_to_existing(&[1, 2]));
+            assert_eq!(cursor.availability.path(), &[1, 2]);
+            assert_eq!(cursor.positions.path(), &[1, 2]);
+        });
+    });
 }
 
 #[test]
-fn checkpoint_preserves_focus_endpoints_and_descendant_values() {
-    let mut availability = PathMap::new();
-    let mut positions = PathMap::new();
-    availability.insert([7], Multiplicity::ONE);
-    availability.insert([7, 9], Multiplicity::new(2).unwrap());
-    positions.insert([7], CandidatePosition::from_index(3));
-    positions.insert([7, 9], CandidatePosition::from_index(5));
-    let mut cursor = CandidateProductCursor::new(&availability, &positions);
-    assert!(cursor.descend_to_existing(&[7]));
+fn moving_cursor_preserves_focus_endpoints_and_descendant_values() {
+    let mut availability = Bag::new();
+    let mut positions = CandidatePositionMap::new();
+    availability.insert_many(&[7], Multiplicity::ONE).unwrap();
+    availability
+        .insert_many(&[7, 9], Multiplicity::new(2).unwrap())
+        .unwrap();
+    assert!(!positions.insert(&[7], CandidatePosition::from_index(3)));
+    assert!(!positions.insert(&[7, 9], CandidatePosition::from_index(5)));
 
-    candidate_product_test_metrics::reset();
-    let checkpoint = cursor
-        .checkpoint()
-        .expect("root-plus-child suffix checkpoint");
-    assert_eq!(candidate_product_test_metrics::root_endpoint_restorations(), 1);
-    let mut restored = checkpoint.cursor();
-    assert_eq!(restored.position(), Some(CandidatePosition::from_index(3)));
-    assert!(restored.descend_to_existing(&[9]));
-    assert_eq!(restored.position(), Some(CandidatePosition::from_index(5)));
+    availability.with_read_cursor(|availability| {
+        positions.with_read_cursor(|positions| {
+            let mut cursor = CandidateProductCursor::new(availability, positions);
+            assert!(cursor.descend_to_existing(&[7]));
+            assert_eq!(cursor.position(), Some(CandidatePosition::from_index(3)));
+            assert!(cursor.descend_to_existing(&[9]));
+            assert_eq!(cursor.position(), Some(CandidatePosition::from_index(5)));
+            cursor.ascend_bytes(1);
+            assert_eq!(cursor.position(), Some(CandidatePosition::from_index(3)));
+        });
+    });
 }
 
 #[test]
-fn canonical_rho_path_branches_never_need_defensive_endpoint_restoration() {
+fn canonical_rho_path_branches_rebase_without_owned_focus_snapshots() {
     let fixture = ProductFixture::from_parts(vec![
         (vec![b"left".to_vec(), b"tail".to_vec()], true),
         (vec![b"right".to_vec(), b"tail".to_vec()], true),
@@ -538,12 +566,153 @@ fn canonical_rho_path_branches_never_need_defensive_endpoint_restoration() {
         [RhoPathQueryAtom::Wildcard, RhoPathQueryAtom::Exact(b"tail".to_vec())],
         false,
     );
-    fixture.assert_matches(&query);
-    assert_eq!(
-        candidate_product_test_metrics::root_endpoint_restorations(),
-        0,
-        "canonical component boundaries must remain on the no-restoration fast path"
+    let (metrics, _) = fixture.assert_matches(&query);
+    assert!(metrics.navigated_bytes > 0);
+}
+
+#[test]
+fn lca_rebase_undoes_capture_edits_before_descending_a_sibling() {
+    let mut availability = Bag::new();
+    let mut positions = CandidatePositionMap::new();
+    for (position, path) in [[1, 10, 11].as_slice(), [1, 20].as_slice()]
+        .into_iter()
+        .enumerate()
+    {
+        availability.insert_many(path, Multiplicity::ONE).unwrap();
+        assert!(!positions.insert(path, CandidatePosition::from_index(position)));
+    }
+    let query = RhoPathQuery::structural_sequence([], false);
+    let mut arena = CandidateContinuationArena::at_structure_root(2);
+    let captured_left = arena.push_owned(0, &[10], Some(0));
+    let left_leaf = arena.push_owned(captured_left, &[11], None);
+    let right_leaf = arena.push_owned(0, &[20], None);
+    let mut capture_slots = [None];
+    let mut suffix = Vec::new();
+
+    candidate_product_test_metrics::reset();
+    availability.with_read_cursor(|availability| {
+        positions.with_read_cursor(|positions| {
+            let mut cursor = CandidateProductCursor::new(availability, positions);
+            assert!(cursor.descend_to_existing(&[1]));
+            let mut current = 0;
+            assert!(rebase_candidate_cursor(
+                &mut cursor,
+                &mut current,
+                left_leaf,
+                &arena,
+                &query,
+                &mut capture_slots,
+                &mut suffix,
+            ));
+            assert_eq!(cursor.availability.path(), &[1, 10, 11]);
+            assert_eq!(cursor.positions.path(), &[1, 10, 11]);
+            assert_eq!(capture_slots, [Some(captured_left)]);
+
+            assert!(rebase_candidate_cursor(
+                &mut cursor,
+                &mut current,
+                right_leaf,
+                &arena,
+                &query,
+                &mut capture_slots,
+                &mut suffix,
+            ));
+            assert_eq!(cursor.availability.path(), &[1, 20]);
+            assert_eq!(cursor.positions.path(), &[1, 20]);
+            assert_eq!(capture_slots, [None]);
+        });
+    });
+    let metrics = candidate_product_test_metrics::take();
+    assert_eq!(metrics.navigated_bytes, 5);
+    assert_eq!(metrics.capture_edits, 2);
+}
+
+#[test]
+fn classified_scanner_prefixes_restore_both_cursors_to_their_base() {
+    let prefixes = [[0, 0].as_slice(), [0, 7].as_slice(), [0, 255, 0, 255].as_slice()];
+    let mut availability = Bag::new();
+    let mut positions = CandidatePositionMap::new();
+    for (position, prefix) in prefixes.into_iter().enumerate() {
+        availability.insert_many(prefix, Multiplicity::ONE).unwrap();
+        assert!(!positions.insert(prefix, CandidatePosition::from_index(position)));
+    }
+    availability.with_read_cursor(|availability| {
+        positions.with_read_cursor(|positions| {
+            let mut cursor = CandidateProductCursor::new(availability, positions);
+            let mut arena = CandidateContinuationArena::at_structure_root(0);
+            let mut scratch = CandidateFrameScanScratch::default();
+            for prefix in prefixes {
+                visit_sequence_frames_with_prefix(
+                    &mut cursor,
+                    0,
+                    &mut arena,
+                    None,
+                    &mut scratch,
+                    prefix,
+                    |_| true,
+                    |_, _| panic!("a pre-classified prefix must not schedule a continuation"),
+                );
+                assert!(cursor.availability.path().is_empty());
+                assert!(cursor.positions.path().is_empty());
+            }
+        });
+    });
+}
+
+#[test]
+fn production_candidate_lane_cannot_regain_owned_subtree_checkpoints() {
+    let source = include_str!("../../src/rspace/data_index.rs");
+    let start = source
+        .find("struct CandidateProductCursor")
+        .expect("candidate product lane starts at its cursor");
+    let end = source[start..]
+        .find("impl<A: Clone + PartialEq>")
+        .map(|offset| start + offset)
+        .expect("candidate product lane ends before CandidatePool equality");
+    let lane = &source[start..end];
+    for forbidden in [
+        "CandidateProductCheckpoint",
+        "guarded_focus_snapshot",
+        "ZipperSubtries",
+        "make_map(",
+        "PathMap<Arc<[u8]>>",
+        "cursor.clone()",
+    ] {
+        assert!(!lane.contains(forbidden), "forbidden candidate-lane capability: {forbidden}");
+    }
+    for required in [
+        "CandidateContinuationArena",
+        "CandidatePositionReadCursor",
+        "rebase_candidate_cursor",
+        "capture_slots: &mut [Option<usize>]",
+    ] {
+        assert!(lane.contains(required), "missing candidate-lane invariant: {required}");
+    }
+}
+
+#[test]
+fn repeated_capture_ids_compile_to_stable_dense_direct_slots() {
+    let left = RhoPathCaptureId::new(u32::MAX);
+    let right = RhoPathCaptureId::new(7);
+    let singleton = RhoPathCaptureId::new(9);
+    let query = RhoPathQuery::structural_sequence(
+        [
+            RhoPathQueryAtom::Capture(left),
+            RhoPathQueryAtom::Capture(right),
+            RhoPathQueryAtom::Capture(left),
+            RhoPathQueryAtom::Capture(singleton),
+            RhoPathQueryAtom::Capture(right),
+        ],
+        false,
     );
+    assert_eq!(query.capture_slot_count(), 2);
+    assert!(matches!(query.atoms(), [
+        CompiledRhoPathQueryAtom::Capture { slot: 0 },
+        CompiledRhoPathQueryAtom::Capture { slot: 1 },
+        CompiledRhoPathQueryAtom::Capture { slot: 0 },
+        CompiledRhoPathQueryAtom::Wildcard,
+        CompiledRhoPathQueryAtom::Capture { slot: 1 },
+    ]));
 }
 
 #[test]
@@ -611,20 +780,26 @@ fn depth_16384_candidate_queries_fit_a_256_kib_stack() {
                 std::iter::repeat_n(RhoPathQueryAtom::Exact(part), DEPTH),
                 false,
             );
-            assert_eq!(fixture.assert_production_matches_byte_oracle(&exact), (0, 0));
+            let exact_metrics = fixture.assert_production_matches_byte_oracle(&exact);
+            assert_eq!(exact_metrics.continuations, DEPTH);
+            assert_eq!(exact_metrics.visited_frames, 0);
 
             let capture = RhoPathCaptureId::new(4131);
             let repeated_capture = RhoPathQuery::structural_sequence(
                 std::iter::repeat_n(RhoPathQueryAtom::Capture(capture), DEPTH),
                 false,
             );
-            assert_eq!(fixture.assert_production_matches_byte_oracle(&repeated_capture), (1, 1));
+            let capture_metrics = fixture.assert_production_matches_byte_oracle(&repeated_capture);
+            assert_eq!(capture_metrics.continuations, DEPTH);
+            assert_eq!(capture_metrics.visited_frames, 1);
 
             let wildcard = RhoPathQuery::structural_sequence(
                 std::iter::repeat_n(RhoPathQueryAtom::Wildcard, DEPTH),
                 false,
             );
-            assert_eq!(fixture.assert_production_matches_byte_oracle(&wildcard), (DEPTH, DEPTH));
+            let wildcard_metrics = fixture.assert_production_matches_byte_oracle(&wildcard);
+            assert_eq!(wildcard_metrics.continuations, DEPTH);
+            assert_eq!(wildcard_metrics.visited_frames, DEPTH);
         })
         .expect("the small-stack candidate-query thread must spawn")
         .join()

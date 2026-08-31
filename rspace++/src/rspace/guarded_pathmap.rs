@@ -6,10 +6,26 @@
 //! topology with a borrowed zipper before the now-empty map is dropped.
 
 use std::marker::PhantomData;
+use std::mem::ManuallyDrop;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use pathmap::PathMap;
-use pathmap::zipper::{Zipper, ZipperMoving, ZipperWriting};
+use pathmap::arena_compact::ArenaCompactTree;
+use pathmap::utils::ByteMask;
+use pathmap::zipper::{
+    ReadZipperIter, ReadZipperUntracked, WriteZipperUntracked, Zipper, ZipperIteration,
+    ZipperMoving, ZipperReadOnlyIteration, ZipperSubtries, ZipperValues, ZipperWriting,
+};
+
+/// Stack-safe disposal policy for values detached from a guarded map.
+///
+/// Production implementations are named, auditable policies.  In particular,
+/// there is no blanket closure implementation: final teardown must not invoke
+/// caller-supplied code that can unwind while a raw trie remains populated.
+pub(crate) trait DisposeValue<V>: Clone + Send + Sync + 'static {
+    fn dispose(&self, value: V);
+}
 
 /// Supplies a temporary value that stops `prune_ascend` at the immediate
 /// parent of the edge being removed.
@@ -18,21 +34,10 @@ use pathmap::zipper::{Zipper, ZipperMoving, ZipperWriting};
 /// are used.  `make_barrier` must return a value whose destruction by
 /// `discard_barrier` is bounded and non-panicking.  A barrier is never passed
 /// to the original-value disposal sink.
-pub trait TeardownBarrier<V> {
+pub(crate) trait TeardownBarrier<V> {
     fn make_barrier() -> V;
 
     fn discard_barrier(barrier: V) { drop(barrier); }
-}
-
-/// Uses `V::default()` as the temporary one-edge pruning barrier.
-///
-/// This is appropriate only when the default value has bounded destruction.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultValueBarrier;
-
-impl<V: Default> TeardownBarrier<V> for DefaultValueBarrier {
-    #[inline]
-    fn make_barrier() -> V { V::default() }
 }
 
 /// A copy-on-write `PathMap` version whose final owner tears it down without
@@ -47,10 +52,10 @@ impl<V: Default> TeardownBarrier<V> for DefaultValueBarrier {
 /// benchmark clone-then-drop workloads for their concrete value/topology mix;
 /// the test observer below keeps prune width and payload counts measurable
 /// without adding counters to production teardown.
-pub struct GuardedPathMap<V, D, B = DefaultValueBarrier>
+pub(crate) struct GuardedPathMap<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     anchor: Arc<AnchorRoot<V, D, B>>,
@@ -59,7 +64,7 @@ where
 struct AnchorRoot<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     // `Option` is the move-out slot used by Drop.  At every other point an
@@ -74,14 +79,13 @@ where
 impl<V, D, B> Clone for AnchorRoot<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     fn clone(&self) -> Self {
-        // Evaluation order is an ownership invariant.  A user-supplied
-        // disposer may have a panicking Clone implementation.  Clone it before
-        // the raw PathMap header so such a panic leaves no temporary nonempty
-        // map to fall through ordinary recursive Drop.
+        // Evaluation order is an ownership invariant.  Clone the policy before
+        // the raw PathMap header so even a defective policy implementation
+        // cannot strand a temporary nonempty map during this step.
         let dispose = self.dispose.clone();
         let map = self.map().clone();
         Self {
@@ -97,7 +101,7 @@ where
 impl<V, D, B> AnchorRoot<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     #[inline]
@@ -118,31 +122,39 @@ where
 impl<V, D, B> Drop for AnchorRoot<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     fn drop(&mut self) {
-        let Some(mut map) = self.map.take() else {
+        let Some(map) = self.map.take() else {
             return;
         };
-        drain_pathmap::<V, B, _>(&mut map, &self.dispose);
-        // The ordinary PathMap destructor now sees no values and no edges.
-        drop(map);
+        // Quarantine the raw header before invoking any teardown policy.  An
+        // unexpected unwind must never recursively drop a still-populated
+        // PathMap while unwinding this destructor.  Production policies are
+        // closed, named, and non-panicking; the boundary below is the
+        // fail-stop backstop proved by PathMapReversePruneTeardown.v.
+        let mut quarantined = ManuallyDrop::new(map);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            drain_pathmap::<V, B, _>(&mut quarantined, &self.dispose);
+            // The ordinary PathMap destructor now sees no values and no
+            // edges.  Keep this inside the boundary so even an impossible
+            // empty-header destructor failure is terminal.
+            unsafe { ManuallyDrop::drop(&mut quarantined) };
+        }));
+        if outcome.is_err() {
+            // Continuing would retain unaudited ownership authority; resuming
+            // unwinding would recursively drop the quarantined raw header.
+            // Abort is therefore the only safe outcome.
+            std::process::abort();
+        }
     }
-}
-
-impl<V, D> GuardedPathMap<V, D, DefaultValueBarrier>
-where
-    V: Clone + Default + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
-{
-    pub fn new(dispose: D) -> Self { Self::new_with_barrier(dispose) }
 }
 
 impl<V, D, B> GuardedPathMap<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     pub fn new_with_barrier(dispose: D) -> Self { Self::from_map(PathMap::new(), dispose) }
@@ -177,27 +189,99 @@ where
     #[inline]
     pub fn get<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { self.map().get_val_at(path) }
 
+    #[cfg(test)]
+    pub(crate) fn anchor_identity(&self) -> usize { Arc::as_ptr(&self.anchor) as usize }
+
+    /// Borrowed iterator whose lifetime is anchored to this guarded version.
+    /// The wrapper intentionally exposes none of PathMap's owned-subtree APIs.
+    pub(crate) fn iter(&self) -> GuardedPathMapIter<'_, V> {
+        GuardedPathMapIter {
+            inner: self.map().read_zipper().into_iter(),
+        }
+    }
+
+    /// Run an operation against a restricted borrowed root cursor.  The
+    /// facade exposes navigation and values, but deliberately implements none
+    /// of PathMap's owned-subtree traits.
+    pub(crate) fn with_read_cursor<R>(
+        &self,
+        operation: impl for<'map> FnOnce(GuardedReadCursor<'map, 'static, V, D, B>) -> R,
+    ) -> R {
+        operation(GuardedReadCursor {
+            inner: self.map().read_zipper(),
+            dispose: &self.anchor.dispose,
+            barrier: PhantomData,
+        })
+    }
+
+    /// Prefix-rooted counterpart to [`Self::with_read_cursor`].
+    pub(crate) fn with_read_cursor_at<'path, R>(
+        &self,
+        path: &'path [u8],
+        operation: impl for<'map> FnOnce(GuardedReadCursor<'map, 'path, V, D, B>) -> R,
+    ) -> R {
+        operation(GuardedReadCursor {
+            inner: self.map().read_zipper_at_borrowed_path(path),
+            dispose: &self.anchor.dispose,
+            barrier: PhantomData,
+        })
+    }
+
+    /// Run a mutation against the sole fresh-header path through a facade that
+    /// has no raw-detachment, graft, or owned-map operations.
+    pub(crate) fn with_write_cursor<R>(
+        &mut self,
+        operation: impl for<'map> FnOnce(GuardedWriteCursor<'map, 'static, V, D, B>) -> R,
+    ) -> R {
+        let anchor = self.fresh_map_mut();
+        let map = anchor
+            .map
+            .as_mut()
+            .expect("a live PathMap anchor always contains its map");
+        operation(GuardedWriteCursor {
+            inner: map.write_zipper(),
+            dispose: &anchor.dispose,
+            barrier: PhantomData,
+        })
+    }
+
+    /// Prefix-rooted counterpart to [`Self::with_write_cursor`].
+    ///
+    /// Paths supplied to the restricted cursor are relative to `path`, and
+    /// the cursor cannot ascend above that immutable root.  This narrows the
+    /// authority of the ordinary root cursor without exposing raw PathMap,
+    /// owned-subtree, graft, or detach operations.
+    pub(crate) fn with_write_cursor_at<'path, R>(
+        &mut self,
+        path: &'path [u8],
+        operation: impl for<'map> FnOnce(GuardedWriteCursor<'map, 'path, V, D, B>) -> R,
+    ) -> R {
+        let anchor = self.fresh_map_mut();
+        let map = anchor
+            .map
+            .as_mut()
+            .expect("a live PathMap anchor always contains its map");
+        operation(GuardedWriteCursor {
+            inner: map.write_zipper_at_path(path),
+            dispose: &anchor.dispose,
+            barrier: PhantomData,
+        })
+    }
+
+    /// Canonical ACTree03 encoding without exposing the source zipper.
+    pub(crate) fn compact_u64_bytes(&self, encode: impl Fn(&V) -> u64) -> Vec<u8> {
+        ArenaCompactTree::from_zipper(self.map().read_zipper(), encode)
+            .get_data()
+            .to_vec()
+    }
+
     /// Sets a value and sends any replaced value through the configured
     /// stack-safe disposal path.  Returns whether a value was replaced.
     pub fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, value: V) -> bool {
         let anchor = self.fresh_map_mut();
         match anchor.map_mut().set_val_at(path, value) {
             Some(replaced) => {
-                (anchor.dispose)(replaced);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Removes a value without allowing PathMap to recursively prune a
-    /// detached branch.  The value is sent through the disposal sink; topology
-    /// is retained for final one-edge teardown.
-    pub fn remove_val_at<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
-        let anchor = self.fresh_map_mut();
-        match anchor.map_mut().remove_val_at(path, false) {
-            Some(removed) => {
-                (anchor.dispose)(removed);
+                anchor.dispose.dispose(replaced);
                 true
             }
             None => false,
@@ -209,12 +293,50 @@ where
     pub fn create_path<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
         self.fresh_map_mut().map_mut().create_path(path)
     }
+
+    /// Remove one value and then remove its newly dangling path one logical
+    /// edge at a time.  Every detached value goes through the disposal policy.
+    pub(crate) fn remove_val_at_and_prune<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
+        let path = path.as_ref();
+        let anchor = self.fresh_map_mut();
+        let removed = anchor.map_mut().remove_val_at(path, false);
+        let Some(removed) = removed else {
+            return false;
+        };
+        anchor.dispose.dispose(removed);
+        prune_dangling_path::<V, B>(anchor.map_mut(), path);
+        true
+    }
+
+    /// Drain every value and edge rooted at `prefix` without detaching a raw
+    /// subtree.  `fold` observes each value immediately before its named
+    /// disposal, allowing metadata to be accumulated during the same walk.
+    /// The remaining prefix path is pruned toward the nearest live value/fork
+    /// in one-edge segments.
+    pub(crate) fn remove_prefix_fold<K, R, F>(
+        &mut self,
+        prefix: K,
+        initial: R,
+        fold: F,
+    ) -> (usize, R)
+    where
+        K: AsRef<[u8]>,
+        F: FnMut(R, &V) -> R,
+    {
+        let prefix = prefix.as_ref();
+        let anchor = self.fresh_map_mut();
+        let map = anchor
+            .map
+            .as_mut()
+            .expect("a live PathMap anchor always contains its map");
+        drain_prefix_fold::<V, B, D, R, F>(map, prefix, &anchor.dispose, initial, fold)
+    }
 }
 
 impl<V, D, B> Clone for GuardedPathMap<V, D, B>
 where
     V: Clone + Send + Sync + Unpin + 'static,
-    D: Fn(V) + Clone + Send + Sync + 'static,
+    D: DisposeValue<V>,
     B: TeardownBarrier<V> + 'static,
 {
     #[inline]
@@ -225,12 +347,172 @@ where
     }
 }
 
+pub(crate) struct GuardedPathMapIter<'a, V>
+where V: Clone + Send + Sync + Unpin + 'static
+{
+    inner: ReadZipperIter<'a, 'static, V>,
+}
+
+/// Restricted borrowed read cursor.  No raw zipper is exposed and this type
+/// does not implement `ZipperSubtries`, so callers cannot manufacture an
+/// unanchored owned PathMap.
+#[derive(Clone)]
+pub(crate) struct GuardedReadCursor<'map, 'path, V, D, B>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    inner: ReadZipperUntracked<'map, 'path, V>,
+    dispose: &'map D,
+    barrier: PhantomData<fn() -> B>,
+}
+
+impl<V, D, B> GuardedReadCursor<'_, '_, V, D, B>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    #[inline]
+    pub(crate) fn path_exists(&self) -> bool { self.inner.path_exists() }
+
+    #[inline]
+    pub(crate) fn path(&self) -> &[u8] { self.inner.path() }
+
+    #[inline]
+    pub(crate) fn val(&self) -> Option<&V> { self.inner.val() }
+
+    #[inline]
+    pub(crate) fn get_val(&self) -> Option<&V> { self.inner.val() }
+
+    #[inline]
+    pub(crate) fn val_count(&self) -> usize { self.inner.val_count() }
+
+    #[inline]
+    pub(crate) fn child_mask(&self) -> ByteMask { self.inner.child_mask() }
+
+    #[inline]
+    pub(crate) fn reset(&mut self) { self.inner.reset(); }
+
+    #[inline]
+    pub(crate) fn descend_to_existing<K: AsRef<[u8]>>(&mut self, path: K) -> usize {
+        self.inner.descend_to_existing(path)
+    }
+
+    #[inline]
+    pub(crate) fn descend_to_byte(&mut self, byte: u8) { self.inner.descend_to_byte(byte); }
+
+    #[inline]
+    pub(crate) fn ascend_byte(&mut self) -> bool { self.inner.ascend_byte() }
+
+    #[inline]
+    pub(crate) fn to_next_val(&mut self) -> bool { self.inner.to_next_val() }
+
+    #[inline]
+    pub(crate) fn to_next_get_val(&mut self) -> Option<&V> { self.inner.to_next_get_val() }
+
+    /// Snapshot the current focus directly into another guarded anchor.  The
+    /// disposer is cloned before PathMap creates the raw subtree, so a
+    /// panicking policy clone cannot strand a temporary raw owner.
+    pub(crate) fn guarded_focus_snapshot(&self) -> GuardedPathMap<V, D, B> {
+        let dispose = self.dispose.clone();
+        let root_value = self.inner.val().cloned();
+        let mut snapshot =
+            GuardedPathMap::from_map(self.inner.make_map().unwrap_or_default(), dispose);
+        if let Some(root_value) = root_value {
+            snapshot.set_val_at([], root_value);
+        }
+        snapshot
+    }
+}
+
+/// Restricted borrowed write cursor used by Bag bulk updates.
+pub(crate) struct GuardedWriteCursor<'map, 'path, V, D, B>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    inner: WriteZipperUntracked<'map, 'path, V>,
+    dispose: &'map D,
+    barrier: PhantomData<fn() -> B>,
+}
+
+impl<V, D, B> GuardedWriteCursor<'_, '_, V, D, B>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    #[inline]
+    pub(crate) fn path(&self) -> &[u8] { self.inner.path() }
+
+    #[inline]
+    pub(crate) fn at_root(&self) -> bool { self.inner.at_root() }
+
+    #[inline]
+    pub(crate) fn is_val(&self) -> bool { self.inner.is_val() }
+
+    #[inline]
+    pub(crate) fn val(&self) -> Option<&V> { self.inner.val() }
+
+    #[inline]
+    pub(crate) fn move_to_path(&mut self, path: &[u8]) { self.inner.move_to_path(path); }
+
+    #[inline]
+    pub(crate) fn set_val(&mut self, value: V) {
+        if let Some(replaced) = self.inner.set_val(value) {
+            self.dispose.dispose(replaced);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn descend_first_byte(&mut self) -> bool { self.inner.descend_first_byte() }
+
+    #[inline]
+    pub(crate) fn descend_until(&mut self) -> bool { self.inner.descend_until() }
+
+    #[inline]
+    pub(crate) fn to_next_sibling_byte(&mut self) -> bool { self.inner.to_next_sibling_byte() }
+
+    #[inline]
+    pub(crate) fn ascend_byte(&mut self) -> bool { self.inner.ascend_byte() }
+
+    /// Remove the focused value and prune only newly dangling logical edges.
+    pub(crate) fn remove_val_and_prune(&mut self) -> bool {
+        let Some(removed) = self.inner.remove_val(false) else {
+            return false;
+        };
+        self.dispose.dispose(removed);
+        while !self.inner.at_root() && !self.inner.is_val() && self.inner.child_count() == 0 {
+            prune_one_edge::<V, B>(&mut self.inner);
+        }
+        true
+    }
+}
+
+impl<'a, V> Iterator for GuardedPathMapIter<'a, V>
+where V: Clone + Send + Sync + Unpin + 'static
+{
+    type Item = (Vec<u8>, &'a V);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next() }
+}
+
 trait DrainObserver {
     #[inline]
     fn removed_value(&mut self) {}
 
     #[inline]
     fn pruned(&mut self, _width: usize) {}
+
+    #[inline]
+    fn installed_barrier(&mut self) {}
+
+    #[inline]
+    fn removed_barrier(&mut self) {}
 }
 
 struct NoopDrainObserver;
@@ -240,21 +522,21 @@ impl DrainObserver for NoopDrainObserver {}
 /// Empties `map` in reverse byte/postorder.  Each `prune_ascend` is bounded by
 /// a real or synthetic value at the immediate parent, so a detached physical
 /// subtrie can never span multiple logical edges.
-fn drain_pathmap<V, B, D>(map: &mut PathMap<V>, dispose: D)
+fn drain_pathmap<V, B, D>(map: &mut PathMap<V>, dispose: &D)
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
-    D: Fn(V),
+    D: DisposeValue<V>,
 {
     let mut observer = NoopDrainObserver;
     drain_pathmap_observed::<V, B, D, _>(map, dispose, &mut observer);
 }
 
-fn drain_pathmap_observed<V, B, D, O>(map: &mut PathMap<V>, dispose: D, observer: &mut O)
+fn drain_pathmap_observed<V, B, D, O>(map: &mut PathMap<V>, dispose: &D, observer: &mut O)
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
-    D: Fn(V),
+    D: DisposeValue<V>,
     O: DrainObserver,
 {
     if map.is_empty() {
@@ -268,7 +550,7 @@ where
 
             if let Some(value) = zipper.remove_val(false) {
                 observer.removed_value();
-                dispose(value);
+                dispose.dispose(value);
             }
 
             if zipper.at_root() {
@@ -286,6 +568,7 @@ where
             if installed_barrier {
                 let replaced = zipper.set_val(B::make_barrier());
                 debug_assert!(replaced.is_none());
+                observer.installed_barrier();
             }
 
             let descended = zipper.descend_to_existing_byte(child_byte);
@@ -299,6 +582,7 @@ where
                     .remove_val(false)
                     .expect("the temporary teardown barrier must remain at its parent");
                 B::discard_barrier(barrier);
+                observer.removed_barrier();
             }
         }
     }
@@ -306,9 +590,102 @@ where
     debug_assert!(map.is_empty());
 }
 
+/// Remove the empty focus at `path` toward the nearest retained value or fork.
+/// A real or synthetic parent value bounds every prune to exactly one byte.
+fn prune_dangling_path<V, B>(map: &mut PathMap<V>, path: &[u8])
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: TeardownBarrier<V>,
+{
+    let mut zipper = map.write_zipper();
+    zipper.descend_to(path);
+    if !zipper.path_exists() || zipper.is_val() || zipper.child_count() != 0 {
+        return;
+    }
+    loop {
+        if zipper.at_root() || zipper.is_val() || zipper.child_count() != 0 {
+            break;
+        }
+        prune_one_edge::<V, B>(&mut zipper);
+    }
+}
+
+/// Drain only the subtree rooted at `prefix`, returning its real value count
+/// and the caller's single-pass metadata fold.
+fn drain_prefix_fold<V, B, D, R, F>(
+    map: &mut PathMap<V>,
+    prefix: &[u8],
+    dispose: &D,
+    mut accumulator: R,
+    mut fold: F,
+) -> (usize, R)
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: TeardownBarrier<V>,
+    D: DisposeValue<V>,
+    F: FnMut(R, &V) -> R,
+{
+    let mut removed = 0;
+    let mut zipper = map.write_zipper();
+    zipper.descend_to(prefix);
+    if !zipper.path_exists() {
+        return (0, accumulator);
+    }
+    let prefix_depth = zipper.path().len();
+    loop {
+        while zipper.descend_last_byte() {}
+        if let Some(value) = zipper.remove_val(false) {
+            removed += 1;
+            accumulator = fold(accumulator, &value);
+            dispose.dispose(value);
+        }
+        if zipper.path().len() == prefix_depth {
+            break;
+        }
+        prune_one_edge::<V, B>(&mut zipper);
+    }
+    while !zipper.at_root() && !zipper.is_val() && zipper.child_count() == 0 {
+        prune_one_edge::<V, B>(&mut zipper);
+    }
+    (removed, accumulator)
+}
+
+/// Prune the empty edge at the current focus and leave the zipper at its
+/// immediate parent.  The temporary barrier prevents PathMap from recursively
+/// pruning beyond that one logical edge.
+fn prune_one_edge<V, B>(zipper: &mut WriteZipperUntracked<'_, '_, V>)
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    B: TeardownBarrier<V>,
+{
+    debug_assert!(!zipper.at_root());
+    debug_assert!(!zipper.is_val());
+    debug_assert_eq!(zipper.child_count(), 0);
+    let child_byte = *zipper
+        .path()
+        .last()
+        .expect("a non-root zipper focus has a final path byte");
+    let ascended = zipper.ascend_byte();
+    debug_assert!(ascended);
+    let installed_barrier = !zipper.is_val();
+    if installed_barrier {
+        let replaced = zipper.set_val(B::make_barrier());
+        debug_assert!(replaced.is_none());
+    }
+    let descended = zipper.descend_to_existing_byte(child_byte);
+    debug_assert!(descended);
+    let width = zipper.prune_ascend();
+    debug_assert_eq!(width, 1, "the parent barrier must limit pruning to one byte");
+    if installed_barrier {
+        let barrier = zipper
+            .remove_val(false)
+            .expect("the temporary teardown barrier must remain at its parent");
+        B::discard_barrier(barrier);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -319,7 +696,18 @@ mod tests {
     use proptest::collection::vec;
     use proptest::prelude::*;
 
-    use super::{DrainObserver, GuardedPathMap, TeardownBarrier, drain_pathmap_observed};
+    use super::{
+        DisposeValue, DrainObserver, GuardedPathMap, TeardownBarrier, drain_pathmap_observed,
+    };
+
+    #[derive(Clone)]
+    struct TestDisposer<F>(F);
+
+    impl<V, F> DisposeValue<V> for TestDisposer<F>
+    where F: Fn(V) + Clone + Send + Sync + 'static
+    {
+        fn dispose(&self, value: V) { (self.0)(value); }
+    }
 
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct DrainStats {
@@ -337,14 +725,15 @@ mod tests {
         }
     }
 
-    fn drain_with_stats<V, B, D>(map: &mut PathMap<V>, dispose: D) -> DrainStats
+    fn drain_with_stats<V, B, F>(map: &mut PathMap<V>, dispose: F) -> DrainStats
     where
         V: Clone + Send + Sync + Unpin + 'static,
         B: TeardownBarrier<V>,
-        D: Fn(V),
+        F: Fn(V) + Clone + Send + Sync + 'static,
     {
         let mut stats = DrainStats::default();
-        drain_pathmap_observed::<V, B, D, _>(map, dispose, &mut stats);
+        let dispose = TestDisposer(dispose);
+        drain_pathmap_observed::<V, B, _, _>(map, &dispose, &mut stats);
         stats
     }
 
@@ -417,15 +806,43 @@ mod tests {
     fn guarded_probe_map(
         tracking: &Arc<ProbeTracking>,
         order: &Arc<Mutex<Vec<usize>>>,
-    ) -> GuardedPathMap<Probe, impl Fn(Probe) + Clone + Send + Sync + 'static, ProbeBarrier> {
+    ) -> GuardedPathMap<
+        Probe,
+        TestDisposer<impl Fn(Probe) + Clone + Send + Sync + 'static>,
+        ProbeBarrier,
+    > {
         let tracking = Arc::clone(tracking);
         let order = Arc::clone(order);
-        GuardedPathMap::new_with_barrier(move |probe: Probe| {
+        GuardedPathMap::new_with_barrier(TestDisposer(move |probe: Probe| {
             assert!(probe.tracking.is_some(), "synthetic barriers never reach the payload sink");
             order.lock().unwrap().push(probe.id);
             drop(probe);
             let _ = &tracking;
-        })
+        }))
+    }
+
+    #[test]
+    fn prefix_rooted_writer_cannot_escape_or_address_a_sibling_as_relative() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        guarded.set_val_at([1, 9], Probe::tracked(1, &tracking));
+        let anchor = guarded.anchor_identity();
+
+        guarded.with_write_cursor_at(&[2, 8], |mut cursor| {
+            assert!(cursor.at_root());
+            cursor.move_to_path(&[3, 7]);
+            assert_eq!(cursor.path(), [3, 7]);
+            cursor.set_val(Probe::tracked(2, &tracking));
+            while cursor.ascend_byte() {}
+            assert!(cursor.at_root());
+            assert!(!cursor.ascend_byte(), "the restricted cursor cannot ascend above its root");
+        });
+
+        assert_eq!(guarded.anchor_identity(), anchor, "a unique anchor mutates in place");
+        assert_eq!(guarded.get([1, 9]).map(|probe| probe.id), Some(1));
+        assert_eq!(guarded.get([2, 8, 3, 7]).map(|probe| probe.id), Some(2));
+        assert!(guarded.get([3, 7]).is_none());
     }
 
     #[test]
@@ -486,9 +903,10 @@ mod tests {
             }
             let disposed = Arc::new(AtomicUsize::new(0));
             let observed = Arc::clone(&disposed);
-            let mut guarded = GuardedPathMap::<(), _, UnitBarrier>::new_with_barrier(move |_| {
-                observed.fetch_add(1, Ordering::Relaxed);
-            });
+            let mut guarded =
+                GuardedPathMap::<(), _, UnitBarrier>::new_with_barrier(TestDisposer(move |_| {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }));
             assert!(guarded.create_path(vec![0xa5; DEPTH]));
             assert!(!guarded.is_empty(), "value-free topology is not an empty PathMap");
             drop(guarded);
@@ -581,6 +999,251 @@ mod tests {
     }
 
     #[test]
+    fn prefix_drain_removes_values_and_value_free_topology_in_one_walk() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        guarded.set_val_at([], Probe::tracked(0, &tracking));
+        guarded.set_val_at([1], Probe::tracked(1, &tracking));
+        guarded.set_val_at([1, 2], Probe::tracked(2, &tracking));
+        guarded.create_path([1, 3, 4]);
+        guarded.set_val_at([2], Probe::tracked(3, &tracking));
+
+        let (removed, mut folded) =
+            guarded.remove_prefix_fold([1], Vec::new(), |mut ids, probe| {
+                ids.push(probe.id);
+                ids
+            });
+        folded.sort_unstable();
+        assert_eq!(removed, 2);
+        assert_eq!(folded, vec![1, 2]);
+        assert!(!guarded.path_exists([1]));
+        assert_eq!(guarded.get([]).map(|probe| probe.id), Some(0));
+        assert_eq!(guarded.get([2]).map(|probe| probe.id), Some(3));
+        assert_eq!(*order.lock().unwrap(), vec![2, 1]);
+
+        drop(guarded);
+        assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
+        assert_eq!(tracking.drops.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn prefix_drain_of_comb_preserves_every_outside_sibling() {
+        small_stack(|| {
+            const DEPTH: usize = 1_024;
+            let tracking = Arc::new(ProbeTracking::default());
+            let order = Arc::new(Mutex::new(Vec::new()));
+            let mut guarded = guarded_probe_map(&tracking, &order);
+            guarded.set_val_at([3], Probe::tracked(10_000, &tracking));
+            guarded.set_val_at([5, 0], Probe::tracked(10_001, &tracking));
+
+            let mut spine = vec![4];
+            for id in 0..DEPTH {
+                let mut tooth = spine.clone();
+                tooth.push(1);
+                guarded.set_val_at(&tooth, Probe::tracked(id, &tracking));
+                spine.push(0);
+            }
+            guarded.set_val_at(&spine, Probe::tracked(DEPTH, &tracking));
+
+            let (removed, cardinality) = guarded.remove_prefix_fold([4], 0usize, |sum, _| sum + 1);
+            assert_eq!(removed, DEPTH + 1);
+            assert_eq!(cardinality, DEPTH + 1);
+            assert!(!guarded.path_exists([4]));
+            assert_eq!(guarded.get([3]).map(|probe| probe.id), Some(10_000));
+            assert_eq!(guarded.get([5, 0]).map(|probe| probe.id), Some(10_001));
+
+            drop(guarded);
+            assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
+            assert_eq!(tracking.drops.load(Ordering::Relaxed), DEPTH + 3);
+        });
+    }
+
+    #[test]
+    fn exact_removal_prunes_only_to_a_real_parent_or_fork() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        guarded.set_val_at([1], Probe::tracked(1, &tracking));
+        guarded.set_val_at([1, 2], Probe::tracked(2, &tracking));
+        guarded.set_val_at([1, 3], Probe::tracked(3, &tracking));
+        guarded.set_val_at([4, 5], Probe::tracked(4, &tracking));
+        guarded.set_val_at([4, 6], Probe::tracked(5, &tracking));
+
+        assert!(guarded.remove_val_at_and_prune([1, 2]));
+        assert_eq!(guarded.get([1]).map(|probe| probe.id), Some(1));
+        assert_eq!(guarded.get([1, 3]).map(|probe| probe.id), Some(3));
+        assert!(!guarded.path_exists([1, 2]));
+
+        assert!(guarded.remove_val_at_and_prune([4, 5]));
+        assert!(guarded.path_exists([4]));
+        assert_eq!(guarded.get([4, 6]).map(|probe| probe.id), Some(5));
+        assert!(!guarded.path_exists([4, 5]));
+        drop(guarded);
+        assert_eq!(tracking.drops.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn shared_anchor_prefix_removal_cows_and_preserves_the_other_image() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut left = guarded_probe_map(&tracking, &order);
+        left.set_val_at([1, 2], Probe::tracked(1, &tracking));
+        left.set_val_at([1, 3], Probe::tracked(2, &tracking));
+        left.set_val_at([2], Probe::tracked(3, &tracking));
+        let right = left.clone();
+
+        let (removed, sum) = left.remove_prefix_fold([1], 0usize, |sum, _| sum + 1);
+        assert_eq!((removed, sum), (2, 2));
+        assert!(!left.path_exists([1]));
+        assert!(left.contains([2]));
+        assert!(right.contains([1, 2]));
+        assert!(right.contains([1, 3]));
+        assert!(right.contains([2]));
+
+        drop(left);
+        assert!(right.contains([1, 2]));
+        drop(right);
+        let instances = 3 + tracking.clones.load(Ordering::Relaxed);
+        assert_eq!(tracking.drops.load(Ordering::Relaxed), instances);
+    }
+
+    #[test]
+    fn dropping_a_borrowed_iterator_early_preserves_anchor_authority() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        guarded.set_val_at([1], Probe::tracked(1, &tracking));
+        guarded.set_val_at([2], Probe::tracked(2, &tracking));
+        {
+            let mut iterator = guarded.iter();
+            assert!(iterator.next().is_some());
+        }
+        assert!(guarded.contains([1]));
+        assert!(guarded.contains([2]));
+        assert!(order.lock().unwrap().is_empty());
+        drop(guarded);
+        assert_eq!(tracking.drops.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn unconstrained_final_alias_race_drains_exactly_once() {
+        const ALIASES: usize = 32;
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut original = guarded_probe_map(&tracking, &order);
+        original.set_val_at([1, 2, 3], Probe::tracked(7, &tracking));
+        let mut aliases = Vec::with_capacity(ALIASES);
+        for _ in 1..ALIASES {
+            aliases.push(original.clone());
+        }
+        aliases.push(original);
+
+        let start = Arc::new(Barrier::new(ALIASES));
+        let threads: Vec<_> = aliases
+            .into_iter()
+            .map(|alias| {
+                let start = Arc::clone(&start);
+                thread::Builder::new()
+                    .stack_size(256 * 1024)
+                    .spawn(move || {
+                        start.wait();
+                        drop(alias);
+                    })
+                    .unwrap()
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(*order.lock().unwrap(), vec![7]);
+        assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
+        assert_eq!(tracking.drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn unexpected_teardown_panic_is_process_fail_stop() {
+        const CHILD: &str = "RSPACE_GUARDED_PATHMAP_ABORT_CHILD";
+
+        #[derive(Clone)]
+        struct PanickingDisposer;
+        impl DisposeValue<Probe> for PanickingDisposer {
+            fn dispose(&self, _value: Probe) {
+                panic!("injected teardown policy failure");
+            }
+        }
+
+        if std::env::var_os(CHILD).is_some() {
+            let worker = thread::Builder::new()
+                .name("guarded-pathmap-abort-child".to_owned())
+                .stack_size(256 * 1024)
+                .spawn(|| {
+                    let mut guarded = GuardedPathMap::<Probe, _, ProbeBarrier>::new_with_barrier(
+                        PanickingDisposer,
+                    );
+                    guarded.set_val_at([0x5a; 4_096], Probe::barrier());
+                    drop(guarded);
+                })
+                .unwrap();
+            worker.join().unwrap();
+            panic!("a panicking teardown policy incorrectly returned to the live process");
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("unexpected_teardown_panic_is_process_fail_stop")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .output()
+            .expect("the isolated teardown-failure child must launch");
+        assert!(
+            !output.status.success(),
+            "unexpected teardown failure must terminate the isolated process"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("injected teardown policy failure"),
+            "the isolated failure must reach the guarded teardown boundary"
+        );
+    }
+
+    #[test]
+    fn barrier_install_prune_remove_order_is_observable_and_exact() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Event {
+            Value,
+            Install,
+            Prune(usize),
+            Remove,
+        }
+
+        struct EventLog(Vec<Event>);
+        impl DrainObserver for EventLog {
+            fn removed_value(&mut self) { self.0.push(Event::Value); }
+
+            fn pruned(&mut self, width: usize) { self.0.push(Event::Prune(width)); }
+
+            fn installed_barrier(&mut self) { self.0.push(Event::Install); }
+
+            fn removed_barrier(&mut self) { self.0.push(Event::Remove); }
+        }
+
+        let mut map = PathMap::new();
+        map.set_val_at([1, 2], Probe::barrier());
+        let dispose = TestDisposer(drop);
+        let mut events = EventLog(Vec::new());
+        drain_pathmap_observed::<Probe, ProbeBarrier, _, _>(&mut map, &dispose, &mut events);
+        assert_eq!(events.0, vec![
+            Event::Value,
+            Event::Install,
+            Event::Prune(1),
+            Event::Remove,
+            Event::Install,
+            Event::Prune(1),
+            Event::Remove,
+        ]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
     fn panicking_disposer_clone_precedes_raw_header_clone() {
         struct PanicOnClone {
             attempts: Arc<AtomicUsize>,
@@ -601,12 +1264,13 @@ mod tests {
                 attempts: Arc::clone(&attempts),
             };
             let disposed_in_sink = Arc::clone(&disposed);
-            let mut left =
-                GuardedPathMap::<Probe, _, ProbeBarrier>::new_with_barrier(move |probe: Probe| {
+            let mut left = GuardedPathMap::<Probe, _, ProbeBarrier>::new_with_barrier(
+                TestDisposer(move |probe: Probe| {
                     let _ = &panic_on_clone;
                     disposed_in_sink.fetch_add(1, Ordering::Relaxed);
                     drop(probe);
-                });
+                }),
+            );
             left.set_val_at([0; 4_096], Probe::tracked(1, &tracking));
             let right = left.clone();
 
@@ -690,13 +1354,15 @@ mod tests {
             }
             expected_values.sort_by(|left, right| right.cmp(left));
 
-            let disposed = RefCell::new(Vec::new());
-            let stats = drain_with_stats::<_, PathPayloadBarrier, _>(&mut map, |payload| {
+            let disposed = Arc::new(Mutex::new(Vec::new()));
+            let observed = Arc::clone(&disposed);
+            let stats = drain_with_stats::<_, PathPayloadBarrier, _>(&mut map, move |payload| {
                 assert!(payload.original, "barriers must bypass the payload sink");
-                disposed.borrow_mut().push(payload.path);
+                observed.lock().unwrap().push(payload.path);
             });
 
-            prop_assert_eq!(disposed.into_inner(), expected_values);
+            let actual_values = disposed.lock().unwrap().clone();
+            prop_assert_eq!(actual_values, expected_values);
             prop_assert_eq!(stats.values, canonical.values().filter(|value| **value).count());
             prop_assert_eq!(stats.edges, edges.len());
             prop_assert!(stats.widest_prune <= 1);
@@ -707,9 +1373,15 @@ mod tests {
     #[test]
     fn implementation_contains_no_snapshot_count_or_owned_raw_escape() {
         let source = include_str!("guarded_pathmap.rs");
+        let bag_source = include_str!("bag.rs");
         assert!(!source.contains(concat!("Arc::strong_", "count")));
         assert!(!source.contains(concat!("into_", "write_zipper")));
         assert!(!source.contains(concat!("OwnedZipper", "Iter")));
         assert!(!source.contains(concat!("pub fn into_", "map")));
+        assert!(!bag_source.contains(concat!("from_", "pathmap")));
+        assert!(!bag_source.contains(concat!("as_", "pathmap")));
+        assert!(!bag_source.contains(concat!("into_", "pathmap")));
+        assert!(!bag_source.contains("use pathmap::PathMap"));
+        assert!(!bag_source.contains("entries: PathMap<"));
     }
 }

@@ -13,9 +13,9 @@ doctest = false
 [features]
 default = []
 # Measurement-only access to the removed zipper-clone control and the exact
-# production suffix-checkpoint path. Ordinary builds compile neither the
+# production moving-cursor continuation arena. Ordinary builds compile neither the
 # facade nor its legacy control.
-candidate-checkpoint-experiment = []
+candidate-continuation-experiment = []
 # Measurement-only comparison between the typed legacy DATA checkpoint route
 # and the production canonical-identity zipper/arena route.
 canonical-egress-experiment = []
@@ -117,9 +117,13 @@ name = "rspace_retained_automaton_build"
 harness = false
 
 [[bench]]
-name = "rspace_candidate_suffix_checkpoint"
+name = "rspace_candidate_continuation"
 harness = false
-required-features = ["candidate-checkpoint-experiment"]
+required-features = ["candidate-continuation-experiment"]
+
+[[bench]]
+name = "rspace_channel_replacement"
+harness = false
 
 [[bench]]
 name = "rspace_canonical_egress"

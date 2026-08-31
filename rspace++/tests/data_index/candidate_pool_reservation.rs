@@ -1,8 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
-use pathmap::PathMap;
-
-use super::{Bag, CandidatePool, CandidatePoolEntry, Datum, Multiplicity};
+use super::{Bag, CandidatePool, CandidatePoolEntry, CandidatePositionMap, Datum, Multiplicity};
 
 fn never_decode(_: &[u8]) -> Datum<()> {
     unreachable!("reservation tests do not decode candidate identities")
@@ -29,7 +27,7 @@ fn pool(entries: &[(&[u8], u64)]) -> CandidatePool<()> {
         authority,
         reserved: Bag::new(),
         ordered: ordered.into(),
-        positions: Arc::new(PathMap::new()),
+        positions: CandidatePositionMap::new(),
         fresh: None,
         fresh_available: false,
         decode: never_decode,

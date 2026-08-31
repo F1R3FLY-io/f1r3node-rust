@@ -6,12 +6,10 @@ use std::sync::{Arc, OnceLock, RwLock};
 
 use pathmap::PathMap;
 use pathmap::utils::{ByteMask, ByteMaskIter};
-use pathmap::zipper::{
-    ReadZipperUntracked, Zipper, ZipperMoving, ZipperReadOnlyValues, ZipperSubtries,
-};
 use serde::Serialize;
 
-use super::bag::{Bag, BagDelta, BagError, Multiplicity};
+use super::bag::{Bag, BagDelta, BagError, BagReadCursor, Multiplicity};
+use super::guarded_pathmap::{DisposeValue, GuardedPathMap, GuardedReadCursor, TeardownBarrier};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::history::cold_store::{PERSISTED_DATA_HEADER_LEN, PersistedDataKind};
 use super::internal::{Datum, DatumAddress};
@@ -213,10 +211,98 @@ impl CandidatePosition {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct CandidatePositionDisposer;
+
+impl DisposeValue<CandidatePosition> for CandidatePositionDisposer {
+    #[inline]
+    fn dispose(&self, _value: CandidatePosition) {}
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CandidatePositionBarrier;
+
+impl TeardownBarrier<CandidatePosition> for CandidatePositionBarrier {
+    #[inline]
+    fn make_barrier() -> CandidatePosition { CandidatePosition(0) }
+}
+
+type CandidatePositionReadCursor<'map, 'path> = GuardedReadCursor<
+    'map,
+    'path,
+    CandidatePosition,
+    CandidatePositionDisposer,
+    CandidatePositionBarrier,
+>;
+
+/// Stack-safely owned, copy-on-write trie from canonical candidate suffixes
+/// to their fixed-width catalog positions.
+///
+/// This facade deliberately exposes only borrowed cursors. Candidate matching
+/// therefore cannot detach an owned subtree while suspending a continuation.
+#[derive(Clone)]
+struct CandidatePositionMap {
+    entries: GuardedPathMap<CandidatePosition, CandidatePositionDisposer, CandidatePositionBarrier>,
+}
+
+impl Default for CandidatePositionMap {
+    fn default() -> Self {
+        Self {
+            entries: GuardedPathMap::new_with_barrier(CandidatePositionDisposer),
+        }
+    }
+}
+
+impl CandidatePositionMap {
+    fn new() -> Self { Self::default() }
+
+    /// Insert a position, returning whether an existing endpoint was replaced.
+    fn insert(&mut self, path: &[u8], position: CandidatePosition) -> bool {
+        self.entries.set_val_at(path, position)
+    }
+
+    fn contains(&self, path: &[u8]) -> bool { self.entries.contains(path) }
+
+    fn with_read_cursor<R>(
+        &self,
+        operation: impl for<'map> FnOnce(CandidatePositionReadCursor<'map, 'static>) -> R,
+    ) -> R {
+        self.entries.with_read_cursor(operation)
+    }
+
+    fn with_read_cursor_at<'path, R>(
+        &self,
+        path: &'path [u8],
+        operation: impl for<'map> FnOnce(CandidatePositionReadCursor<'map, 'path>) -> R,
+    ) -> R {
+        self.entries.with_read_cursor_at(path, operation)
+    }
+}
+
+struct DebugCandidatePositions<'a>(&'a CandidatePositionMap);
+
+impl fmt::Debug for DebugCandidatePositions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_map()
+            .entries(self.0.entries.iter())
+            .finish()
+    }
+}
+
+impl fmt::Debug for CandidatePositionMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("CandidatePositionMap")
+            .field(&DebugCandidatePositions(self))
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct CandidateCatalog<A: Clone> {
     ordered: Arc<[CandidatePoolEntry<A>]>,
-    positions: Arc<PathMap<CandidatePosition>>,
+    positions: CandidatePositionMap,
     active_distinct_len: usize,
     cardinality: u128,
 }
@@ -229,14 +315,14 @@ impl<A: Clone> CandidateCatalog<A> {
             .iter()
             .map(|entry| u128::from(entry.multiplicity.get()))
             .sum();
-        let mut positions = PathMap::new();
+        let mut positions = CandidatePositionMap::new();
         let ordered = entries
             .into_iter()
             .enumerate()
             .map(|(position, entry)| {
-                let previous = positions
+                let replaced = positions
                     .insert(&entry.path[prefix_len..], CandidatePosition::from_index(position));
-                debug_assert!(previous.is_none(), "candidate paths are distinct");
+                debug_assert!(!replaced, "candidate paths are distinct");
                 CandidatePoolEntry {
                     storage_path: Arc::from(entry.path),
                     relative_offset: prefix_len,
@@ -248,7 +334,7 @@ impl<A: Clone> CandidateCatalog<A> {
             .into();
         Self {
             ordered,
-            positions: Arc::new(positions),
+            positions,
             active_distinct_len,
             cardinality,
         }
@@ -303,26 +389,26 @@ pub struct CandidatePool<A: Clone> {
     /// per selected occurrence without copying or rewriting the authority trie.
     reserved: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
-    positions: Arc<PathMap<CandidatePosition>>,
+    positions: CandidatePositionMap,
     fresh: Option<Datum<A>>,
     fresh_available: bool,
     decode: fn(&[u8]) -> Datum<A>,
 }
 
-#[cfg_attr(any(test, feature = "candidate-checkpoint-experiment"), derive(Clone))]
-struct CandidateProductCursor<'a> {
-    availability: ReadZipperUntracked<'a, 'static, Multiplicity>,
-    positions: ReadZipperUntracked<'a, 'static, CandidatePosition>,
+#[cfg_attr(any(test, feature = "candidate-continuation-experiment"), derive(Clone))]
+struct CandidateProductCursor<'availability, 'positions> {
+    availability: BagReadCursor<'availability, 'static>,
+    positions: CandidatePositionReadCursor<'positions, 'static>,
 }
 
-impl<'a> CandidateProductCursor<'a> {
+impl<'availability, 'positions> CandidateProductCursor<'availability, 'positions> {
     fn new(
-        availability: &'a PathMap<Multiplicity>,
-        positions: &'a PathMap<CandidatePosition>,
+        availability: BagReadCursor<'availability, 'static>,
+        positions: CandidatePositionReadCursor<'positions, 'static>,
     ) -> Self {
         Self {
-            availability: availability.read_zipper(),
-            positions: positions.read_zipper(),
+            availability,
+            positions,
         }
     }
 
@@ -366,132 +452,230 @@ impl<'a> CandidateProductCursor<'a> {
         self.availability.get_val()?;
         self.positions.get_val().copied()
     }
+}
 
-    fn checkpoint(&self) -> Option<CandidateProductCheckpoint> {
-        let availability_root = self.availability.get_val().copied();
-        let positions_root = self.positions.get_val().copied();
-        let mut availability = ZipperSubtries::make_map(&self.availability).unwrap_or_default();
-        let mut positions = ZipperSubtries::make_map(&self.positions).unwrap_or_default();
-        if let Some(value) = availability_root {
-            availability.insert([], value);
+/// Where one continuation node obtains the frame appended to its parent.
+/// Exact query bytes and repeated-capture bytes remain borrowed; only a frame
+/// discovered by a wildcard/capture scanner is owned, exactly once.
+enum CandidateFrameSource {
+    Root,
+    ExactAtom(usize),
+    Owned(Box<[u8]>),
+    Captured(usize),
+}
+
+/// Flat, append-only continuation node. Parent and capture links are integer
+/// indices, so neither clone nor drop traverses a recursively owned chain.
+struct CandidateContinuationNode {
+    parent: Option<usize>,
+    frame_depth: u32,
+    byte_depth: usize,
+    source: CandidateFrameSource,
+    capture_slot: Option<u32>,
+}
+
+struct CandidateContinuationArena {
+    nodes: Vec<CandidateContinuationNode>,
+}
+
+impl CandidateContinuationArena {
+    fn at_structure_root(expected_depth: usize) -> Self {
+        let mut nodes = Vec::with_capacity(expected_depth.saturating_add(1));
+        nodes.push(CandidateContinuationNode {
+            parent: None,
+            frame_depth: 0,
+            byte_depth: 1,
+            source: CandidateFrameSource::Root,
+            capture_slot: None,
+        });
+        Self { nodes }
+    }
+
+    fn node(&self, index: usize) -> &CandidateContinuationNode { &self.nodes[index] }
+
+    fn frame<'arena, 'query>(
+        &'arena self,
+        index: usize,
+        query: &'query RhoPathQuery,
+    ) -> &'arena [u8]
+    where
+        'query: 'arena,
+    {
+        match &self.node(index).source {
+            CandidateFrameSource::Root => &[],
+            CandidateFrameSource::ExactAtom(atom_index) => match &query.atoms()[*atom_index] {
+                CompiledRhoPathQueryAtom::Exact { stored_frame, .. } => stored_frame,
+                _ => unreachable!("an exact continuation references an exact query atom"),
+            },
+            CandidateFrameSource::Owned(frame) => frame,
+            CandidateFrameSource::Captured(binding) => match &self.node(*binding).source {
+                CandidateFrameSource::Owned(frame) => frame,
+                _ => unreachable!("a capture slot references its first owned frame"),
+            },
         }
-        if let Some(value) = positions_root {
-            positions.insert([], value);
-        }
-        if availability.is_empty() || positions.is_empty() {
-            return None;
-        }
+    }
+
+    fn push(
+        &mut self,
+        parent: usize,
+        frame_len: usize,
+        source: CandidateFrameSource,
+        capture_slot: Option<u32>,
+    ) -> usize {
+        let parent_node = self.node(parent);
+        let frame_depth = parent_node
+            .frame_depth
+            .checked_add(1)
+            .expect("query frame depth fits in u32");
+        let byte_depth = parent_node
+            .byte_depth
+            .checked_add(frame_len)
+            .expect("candidate path depth fits in usize");
+        let index = self.nodes.len();
+        self.nodes.push(CandidateContinuationNode {
+            parent: Some(parent),
+            frame_depth,
+            byte_depth,
+            source,
+            capture_slot,
+        });
         #[cfg(test)]
-        {
-            candidate_product_test_metrics::record_checkpoint();
-            if availability_root.is_some() || positions_root.is_some() {
-                candidate_product_test_metrics::record_root_endpoint_restoration();
-            }
-        }
-        Some(CandidateProductCheckpoint {
-            availability,
-            positions,
-        })
+        candidate_product_test_metrics::record_continuation();
+        index
+    }
+
+    fn push_exact(&mut self, parent: usize, atom_index: usize, frame_len: usize) -> usize {
+        self.push(parent, frame_len, CandidateFrameSource::ExactAtom(atom_index), None)
+    }
+
+    fn push_owned(&mut self, parent: usize, frame: &[u8], capture_slot: Option<u32>) -> usize {
+        self.push(parent, frame.len(), CandidateFrameSource::Owned(frame.into()), capture_slot)
+    }
+
+    fn push_captured(&mut self, parent: usize, binding: usize) -> usize {
+        let frame_len = match &self.node(binding).source {
+            CandidateFrameSource::Owned(frame) => frame.len(),
+            _ => unreachable!("a capture slot references its first owned frame"),
+        };
+        self.push(parent, frame_len, CandidateFrameSource::Captured(binding), None)
     }
 }
 
-/// A depth-independent candidate-product continuation.
-///
-/// Current RhoPath framing places stored candidate values only after the outer
-/// structure terminator and datum-identity suffix, never at the boundary after
-/// one complete component. Checkpoint extraction nevertheless preserves a
-/// focus value defensively, so correctness does not depend on that framing
-/// invariant, PathMap's optional `graft_root_vals` feature, or a future
-/// encoding continuing to omit endpoints at component boundaries.
-#[derive(Clone)]
-struct CandidateProductCheckpoint {
-    availability: PathMap<Multiplicity>,
-    positions: PathMap<CandidatePosition>,
-}
-
-impl CandidateProductCheckpoint {
-    fn cursor(&self) -> CandidateProductCursor<'_> {
-        CandidateProductCursor::new(&self.availability, &self.positions)
-    }
-}
-
+#[derive(Debug, Clone, Copy)]
 struct CandidateQueryState {
-    checkpoint: CandidateProductCheckpoint,
+    continuation: usize,
     atom_index: usize,
-    captures: PathMap<Arc<[u8]>>,
+}
+
+#[derive(Default)]
+struct CandidateFrameScanScratch {
+    levels: Vec<(ByteMaskIter, StoredSequenceFrameScanner)>,
+    frame: Vec<u8>,
+    product_levels: Vec<ByteMaskIter>,
 }
 
 fn visit_sequence_frames(
-    cursor: CandidateProductCursor<'_>,
-    mut visitor: impl FnMut(CandidateProductCheckpoint, &[u8]),
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    continuation: usize,
+    arena: &mut CandidateContinuationArena,
+    capture_slot: Option<u32>,
+    scratch: &mut CandidateFrameScanScratch,
+    mut visitor: impl FnMut(usize, &[u8]),
 ) {
-    visit_sequence_frames_with_prefix(cursor, &[], |_| true, &mut visitor);
+    visit_sequence_frames_with_prefix(
+        cursor,
+        continuation,
+        arena,
+        capture_slot,
+        scratch,
+        &[],
+        |_| true,
+        &mut visitor,
+    );
 }
 
 fn visit_sequence_frames_with_prefix(
-    mut cursor: CandidateProductCursor<'_>,
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    continuation: usize,
+    arena: &mut CandidateContinuationArena,
+    capture_slot: Option<u32>,
+    scratch: &mut CandidateFrameScanScratch,
     prefix: &[u8],
     mut accepts: impl FnMut(&[u8]) -> bool,
-    mut visitor: impl FnMut(CandidateProductCheckpoint, &[u8]),
+    mut visitor: impl FnMut(usize, &[u8]),
 ) {
     if !cursor.descend_to_existing(prefix) {
         return;
     }
+    scratch.levels.clear();
+    scratch.frame.clear();
+    scratch.frame.extend_from_slice(prefix);
     let mut scanner = StoredSequenceFrameScanner::default();
     for byte in prefix {
         if scanner.feed(*byte) != StoredSequenceFrameStep::NeedMore {
+            cursor.ascend_bytes(prefix.len());
+            scratch.frame.clear();
             return;
         }
     }
-    let mut levels: Vec<(ByteMaskIter, StoredSequenceFrameScanner)> =
-        vec![(cursor.child_mask().iter(), scanner)];
-    let mut frame = prefix.to_vec();
-    let base_len = frame.len();
-    while let Some((children, scanner_base)) = levels.last_mut() {
+    scratch.levels.push((cursor.child_mask().iter(), scanner));
+    let base_len = scratch.frame.len();
+    while let Some((children, scanner_base)) = scratch.levels.last_mut() {
         match children.next() {
             Some(byte) => {
                 let mut scanner = *scanner_base;
                 match scanner.feed(byte) {
                     StoredSequenceFrameStep::NeedMore => {
                         cursor.descend_to_byte(byte);
-                        frame.push(byte);
-                        levels.push((cursor.child_mask().iter(), scanner));
+                        scratch.frame.push(byte);
+                        scratch.levels.push((cursor.child_mask().iter(), scanner));
                     }
                     StoredSequenceFrameStep::Complete => {
                         cursor.descend_to_byte(byte);
-                        frame.push(byte);
+                        scratch.frame.push(byte);
                         #[cfg(test)]
                         candidate_product_test_metrics::record_frame();
-                        if accepts(&frame) {
-                            if let Some(checkpoint) = cursor.checkpoint() {
-                                visitor(checkpoint, &frame);
-                            }
+                        if accepts(&scratch.frame) {
+                            let next = arena.push_owned(continuation, &scratch.frame, capture_slot);
+                            visitor(next, &scratch.frame);
                         }
-                        frame.pop();
+                        scratch.frame.pop();
                         cursor.ascend_byte();
                     }
                     StoredSequenceFrameStep::Invalid => {}
                 }
             }
             None => {
-                levels.pop();
-                if frame.len() > base_len {
-                    frame.pop();
+                scratch.levels.pop();
+                if scratch.frame.len() > base_len {
+                    scratch.frame.pop();
                     cursor.ascend_byte();
                 }
             }
         }
     }
+    cursor.ascend_bytes(prefix.len());
+    scratch.frame.clear();
 }
 
 fn visit_product_values(
-    cursor: &mut CandidateProductCursor<'_>,
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    mut visitor: impl FnMut(CandidatePosition),
+) {
+    let mut levels = Vec::new();
+    visit_product_values_with_scratch(cursor, &mut levels, &mut visitor);
+}
+
+fn visit_product_values_with_scratch(
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    levels: &mut Vec<ByteMaskIter>,
     mut visitor: impl FnMut(CandidatePosition),
 ) {
     if let Some(position) = cursor.position() {
         visitor(position);
     }
-    let mut levels = vec![cursor.child_mask().iter()];
+    levels.clear();
+    levels.push(cursor.child_mask().iter());
     while let Some(children) = levels.last_mut() {
         match children.next() {
             Some(byte) => {
@@ -511,12 +695,107 @@ fn visit_product_values(
     }
 }
 
+fn undo_continuation_node(
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    current: usize,
+    arena: &CandidateContinuationArena,
+    capture_slots: &mut [Option<usize>],
+) -> usize {
+    let node = arena.node(current);
+    let parent = node
+        .parent
+        .expect("the structure-root continuation has no parent");
+    if let Some(slot) = node.capture_slot {
+        let binding = &mut capture_slots[slot as usize];
+        debug_assert_eq!(*binding, Some(current));
+        *binding = None;
+        #[cfg(test)]
+        candidate_product_test_metrics::record_capture_edit();
+    }
+    let bytes = node.byte_depth - arena.node(parent).byte_depth;
+    cursor.ascend_bytes(bytes);
+    #[cfg(test)]
+    candidate_product_test_metrics::record_navigation(bytes);
+    parent
+}
+
+fn redo_continuation_node(
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    target: usize,
+    arena: &CandidateContinuationArena,
+    query: &RhoPathQuery,
+    capture_slots: &mut [Option<usize>],
+) -> bool {
+    let frame = arena.frame(target, query);
+    if !cursor.descend_to_existing(frame) {
+        return false;
+    }
+    #[cfg(test)]
+    candidate_product_test_metrics::record_navigation(frame.len());
+    if let Some(slot) = arena.node(target).capture_slot {
+        let binding = &mut capture_slots[slot as usize];
+        debug_assert!(binding.is_none());
+        *binding = Some(target);
+        #[cfg(test)]
+        candidate_product_test_metrics::record_capture_edit();
+    }
+    true
+}
+
+/// Move the sole live product-cursor pair between two arena continuations by
+/// their integer-index LCA. Source capture edits are undone before target
+/// edits are redone, and no shared prefix bytes are replayed.
+fn rebase_candidate_cursor(
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    current: &mut usize,
+    target: usize,
+    arena: &CandidateContinuationArena,
+    query: &RhoPathQuery,
+    capture_slots: &mut [Option<usize>],
+    target_suffix: &mut Vec<usize>,
+) -> bool {
+    target_suffix.clear();
+    let mut source = *current;
+    let mut destination = target;
+
+    while arena.node(source).frame_depth > arena.node(destination).frame_depth {
+        source = undo_continuation_node(cursor, source, arena, capture_slots);
+    }
+    while arena.node(destination).frame_depth > arena.node(source).frame_depth {
+        target_suffix.push(destination);
+        destination = arena
+            .node(destination)
+            .parent
+            .expect("a continuation above the root has a parent");
+    }
+    while source != destination {
+        source = undo_continuation_node(cursor, source, arena, capture_slots);
+        target_suffix.push(destination);
+        destination = arena
+            .node(destination)
+            .parent
+            .expect("a continuation above the root has a parent");
+    }
+
+    *current = source;
+    for next in target_suffix.iter().rev().copied() {
+        if !redo_continuation_node(cursor, next, arena, query, capture_slots) {
+            return false;
+        }
+        *current = next;
+    }
+    true
+}
+
 fn drive_candidate_query(
-    mut cursor: CandidateProductCursor<'_>,
+    cursor: &mut CandidateProductCursor<'_, '_>,
+    continuation: &mut usize,
     mut atom_index: usize,
-    captures: PathMap<Arc<[u8]>>,
     query: &RhoPathQuery,
     stored_offset: usize,
+    arena: &mut CandidateContinuationArena,
+    capture_slots: &[Option<usize>],
+    scanner_scratch: &mut CandidateFrameScanScratch,
     work: &mut Vec<CandidateQueryState>,
     result: &mut Vec<usize>,
 ) {
@@ -529,48 +808,63 @@ fn drive_candidate_query(
                 if !cursor.descend_to_existing(stored_frame) {
                     return;
                 }
+                *continuation = arena.push_exact(*continuation, atom_index, stored_frame.len());
                 atom_index += 1;
             }
-            CompiledRhoPathQueryAtom::Capture(id) => {
-                let capture_path = id.path();
-                if let Some(frame) = captures.get(capture_path) {
-                    if !cursor.descend_to_existing(frame.as_ref()) {
+            CompiledRhoPathQueryAtom::Capture { slot } => {
+                if let Some(binding) = capture_slots[*slot as usize] {
+                    let frame = arena.frame(binding, query);
+                    if !cursor.descend_to_existing(frame) {
                         return;
                     }
+                    *continuation = arena.push_captured(*continuation, binding);
                     atom_index += 1;
                     continue;
                 }
-                visit_sequence_frames(cursor, |checkpoint, frame| {
-                    let mut captures = captures.clone();
-                    captures.insert(capture_path, Arc::from(frame));
-                    work.push(CandidateQueryState {
-                        checkpoint,
-                        atom_index: atom_index + 1,
-                        captures,
-                    });
-                });
+                visit_sequence_frames(
+                    cursor,
+                    *continuation,
+                    arena,
+                    Some(*slot),
+                    scanner_scratch,
+                    |next, _| {
+                        work.push(CandidateQueryState {
+                            continuation: next,
+                            atom_index: atom_index + 1,
+                        });
+                    },
+                );
                 return;
             }
             CompiledRhoPathQueryAtom::Wildcard => {
-                visit_sequence_frames(cursor, |checkpoint, _| {
-                    work.push(CandidateQueryState {
-                        checkpoint,
-                        atom_index: atom_index + 1,
-                        captures: captures.clone(),
-                    });
-                });
+                visit_sequence_frames(
+                    cursor,
+                    *continuation,
+                    arena,
+                    None,
+                    scanner_scratch,
+                    |next, _| {
+                        work.push(CandidateQueryState {
+                            continuation: next,
+                            atom_index: atom_index + 1,
+                        });
+                    },
+                );
                 return;
             }
             CompiledRhoPathQueryAtom::Match(nested_query) => {
                 visit_sequence_frames_with_prefix(
                     cursor,
+                    *continuation,
+                    arena,
+                    None,
+                    scanner_scratch,
                     nested_query.product_prefix(),
                     |frame| nested_query.matches_product_frame(frame),
-                    |checkpoint, _| {
+                    |next, _| {
                         work.push(CandidateQueryState {
-                            checkpoint,
+                            continuation: next,
                             atom_index: atom_index + 1,
-                            captures: captures.clone(),
                         });
                     },
                 );
@@ -580,17 +874,20 @@ fn drive_candidate_query(
     }
 
     if cursor.descend_to_existing(&[0, 0]) {
-        visit_product_values(&mut cursor, |position| {
-            result.push(position.index() + stored_offset);
-        });
+        visit_product_values_with_scratch(
+            cursor,
+            &mut scanner_scratch.product_levels,
+            |position| {
+                result.push(position.index() + stored_offset);
+            },
+        );
         cursor.ascend_bytes(2);
     }
     if query.accepts_remainder() {
-        visit_sequence_frames(cursor, |checkpoint, _| {
+        visit_sequence_frames(cursor, *continuation, arena, None, scanner_scratch, |next, _| {
             work.push(CandidateQueryState {
-                checkpoint,
+                continuation: next,
                 atom_index,
-                captures: captures.clone(),
             });
         });
     }
@@ -600,32 +897,49 @@ fn drive_candidate_query(
 mod candidate_product_test_metrics {
     use std::cell::Cell;
 
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(super) struct Metrics {
+        pub continuations: usize,
+        pub visited_frames: usize,
+        pub navigated_bytes: usize,
+        pub capture_edits: usize,
+    }
+
     thread_local! {
-        static CHECKPOINTS: Cell<usize> = const { Cell::new(0) };
+        static CONTINUATIONS: Cell<usize> = const { Cell::new(0) };
         static VISITED_FRAMES: Cell<usize> = const { Cell::new(0) };
-        static ROOT_ENDPOINT_RESTORATIONS: Cell<usize> = const { Cell::new(0) };
+        static NAVIGATED_BYTES: Cell<usize> = const { Cell::new(0) };
+        static CAPTURE_EDITS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(super) fn reset() {
-        CHECKPOINTS.set(0);
+        CONTINUATIONS.set(0);
         VISITED_FRAMES.set(0);
-        ROOT_ENDPOINT_RESTORATIONS.set(0);
+        NAVIGATED_BYTES.set(0);
+        CAPTURE_EDITS.set(0);
     }
 
-    pub(super) fn record_checkpoint() { CHECKPOINTS.set(CHECKPOINTS.get() + 1); }
+    pub(super) fn record_continuation() { CONTINUATIONS.set(CONTINUATIONS.get() + 1); }
 
     pub(super) fn record_frame() { VISITED_FRAMES.set(VISITED_FRAMES.get() + 1); }
 
-    pub(super) fn record_root_endpoint_restoration() {
-        ROOT_ENDPOINT_RESTORATIONS.set(ROOT_ENDPOINT_RESTORATIONS.get() + 1);
+    pub(super) fn record_navigation(bytes: usize) {
+        NAVIGATED_BYTES.set(NAVIGATED_BYTES.get() + bytes);
     }
 
-    pub(super) fn root_endpoint_restorations() -> usize { ROOT_ENDPOINT_RESTORATIONS.get() }
+    pub(super) fn record_capture_edit() { CAPTURE_EDITS.set(CAPTURE_EDITS.get() + 1); }
 
-    pub(super) fn take() -> (usize, usize) {
-        let result = (CHECKPOINTS.get(), VISITED_FRAMES.get());
-        CHECKPOINTS.set(0);
+    pub(super) fn take() -> Metrics {
+        let result = Metrics {
+            continuations: CONTINUATIONS.get(),
+            visited_frames: VISITED_FRAMES.get(),
+            navigated_bytes: NAVIGATED_BYTES.get(),
+            capture_edits: CAPTURE_EDITS.get(),
+        };
+        CONTINUATIONS.set(0);
         VISITED_FRAMES.set(0);
+        NAVIGATED_BYTES.set(0);
+        CAPTURE_EDITS.set(0);
         result
     }
 }
@@ -649,7 +963,7 @@ impl<A: Clone> CandidatePool<A> {
             authority,
             reserved: Bag::new(),
             ordered: Arc::clone(&catalog.ordered),
-            positions: Arc::clone(&catalog.positions),
+            positions: catalog.positions.clone(),
             fresh: None,
             fresh_available: false,
             decode: decode_candidate::<A>,
@@ -701,9 +1015,15 @@ impl<A: Clone> CandidatePool<A> {
         }
         let stored_offset = usize::from(self.fresh.is_some());
         let encoded_prefix = RhoPathV1::relative_datum_structure_prefix(prefix);
-        for (_, position) in self.positions.read_zipper_at_borrowed_path(&encoded_prefix) {
-            result.push(position.index() + stored_offset);
-        }
+        self.positions
+            .with_read_cursor_at(&encoded_prefix, |mut cursor| {
+                if let Some(position) = cursor.get_val() {
+                    result.push(position.index() + stored_offset);
+                }
+                while let Some(position) = cursor.to_next_get_val() {
+                    result.push(position.index() + stored_offset);
+                }
+            });
         result.sort_unstable();
         result
     }
@@ -718,32 +1038,52 @@ impl<A: Clone> CandidatePool<A> {
             result.push(0);
         }
         let stored_offset = usize::from(self.fresh.is_some());
-        let mut root = CandidateProductCursor::new(self.authority.as_pathmap(), &self.positions);
-        if !root.descend_to_existing(&[1]) {
-            return result;
-        }
-        let mut work = Vec::new();
-        drive_candidate_query(
-            root,
-            0,
-            PathMap::new(),
-            query,
-            stored_offset,
-            &mut work,
-            &mut result,
-        );
-        while let Some(state) = work.pop() {
-            let cursor = state.checkpoint.cursor();
-            drive_candidate_query(
-                cursor,
-                state.atom_index,
-                state.captures,
-                query,
-                stored_offset,
-                &mut work,
-                &mut result,
-            );
-        }
+        self.authority.with_read_cursor(|availability| {
+            self.positions.with_read_cursor(|positions| {
+                let mut cursor = CandidateProductCursor::new(availability, positions);
+                if !cursor.descend_to_existing(&[1]) {
+                    return;
+                }
+
+                let expected_depth = query.atoms().len();
+                let mut arena = CandidateContinuationArena::at_structure_root(expected_depth);
+                let mut capture_slots = vec![None; query.capture_slot_count() as usize];
+                let mut work = Vec::with_capacity(expected_depth.saturating_add(1));
+                work.push(CandidateQueryState {
+                    continuation: 0,
+                    atom_index: 0,
+                });
+                let mut current = 0usize;
+                let mut target_suffix = Vec::with_capacity(expected_depth);
+                let mut scanner_scratch = CandidateFrameScanScratch::default();
+
+                while let Some(state) = work.pop() {
+                    if !rebase_candidate_cursor(
+                        &mut cursor,
+                        &mut current,
+                        state.continuation,
+                        &arena,
+                        query,
+                        &mut capture_slots,
+                        &mut target_suffix,
+                    ) {
+                        continue;
+                    }
+                    drive_candidate_query(
+                        &mut cursor,
+                        &mut current,
+                        state.atom_index,
+                        query,
+                        stored_offset,
+                        &mut arena,
+                        &capture_slots,
+                        &mut scanner_scratch,
+                        &mut work,
+                        &mut result,
+                    );
+                }
+            });
+        });
         result.sort_unstable();
         result.dedup();
         result
@@ -913,11 +1253,7 @@ impl RSpaceDataIndex {
     pub fn is_empty(&self) -> bool { self.bag.is_empty() }
 
     fn has_values_at_prefix(&self, prefix: &[u8]) -> bool {
-        self.bag
-            .as_pathmap()
-            .read_zipper_at_borrowed_path(prefix)
-            .val_count() !=
-            0
+        self.bag.prefix_value_count(prefix) != 0
     }
 
     pub fn clear_channel<C: RhoPathEncode>(&mut self, channel: &C) -> (usize, u64) {
@@ -929,7 +1265,25 @@ impl RSpaceDataIndex {
         C: RhoPathEncode,
         A: Clone + Serialize + RhoPathEncode,
     {
-        RhoPathV1::datum_key(channel, &datum.a.rho_path_structure(), &encode_datum(datum))
+        let mut path = RhoPathV1::datum_prefix(channel);
+        path.extend_from_slice(&Self::relative_datum_path(datum));
+        path
+    }
+
+    fn relative_datum_path<A>(datum: &Datum<A>) -> Vec<u8>
+    where A: Clone + Serialize + RhoPathEncode {
+        RhoPathV1::relative_datum_key(&datum.a.rho_path_structure(), &encode_datum(datum))
+    }
+
+    fn prepare_channel_replacement<A>(
+        datums: impl IntoIterator<Item = Datum<A>>,
+    ) -> Result<Bag, DataIndexError>
+    where A: Clone + Serialize + RhoPathEncode {
+        let mut prepared = Bag::new();
+        for datum in datums {
+            prepared.insert(&Self::relative_datum_path(&datum))?;
+        }
+        Ok(prepared)
     }
 
     pub fn insert<C, A>(
@@ -1026,15 +1380,13 @@ impl RSpaceDataIndex {
     where
         A: Clone + ColdStoreDecode,
     {
-        let availability = Bag::from_pathmap_with_metrics(
-            self.bag
-                .as_pathmap()
-                .read_zipper_at_borrowed_path(prefix)
-                .make_map()
-                .unwrap_or_default(),
-            catalog.active_distinct_len,
-            catalog.cardinality,
-        );
+        let availability = self.bag.with_read_cursor_at(prefix, |cursor| {
+            Bag::from_guarded_with_metrics(
+                cursor.guarded_focus_snapshot(),
+                catalog.active_distinct_len,
+                catalog.cardinality,
+            )
+        });
         Ok(CandidatePool::from_catalog(availability, catalog))
     }
 
@@ -1244,21 +1596,30 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         C: RhoPathEncode,
         A: Clone + Serialize + RhoPathEncode,
     {
-        let mut replacement = self.clone();
-        replacement.index.clear_channel(&channel);
         let marker = RhoPathV1::datum_prefix(&channel);
-        replacement
+        let was_loaded = self.loaded_channels.contains(&marker);
+        let next_loaded_channel_count = if was_loaded {
+            self.loaded_channel_count
+        } else {
+            self.loaded_channel_count
+                .checked_add(1)
+                .expect("loaded channel count fits usize")
+        };
+        let prepared = RSpaceDataIndex::prepare_channel_replacement(datums)?;
+        let catalogs = self
             .candidate_catalogs
             .get_mut()
-            .expect("candidate catalog write lock")
-            .remove(&marker);
-        if replacement.loaded_channels.insert(&marker, ()).is_none() {
-            replacement.loaded_channel_count += 1;
+            .expect("candidate catalog write lock");
+
+        self.index
+            .bag
+            .replace_prefix_with_relative(&marker, &prepared, was_loaded);
+        if !was_loaded {
+            let previous = self.loaded_channels.insert(&marker, ());
+            debug_assert!(previous.is_none());
+            self.loaded_channel_count = next_loaded_channel_count;
         }
-        for datum in datums {
-            replacement.index.insert(&channel, &datum)?;
-        }
-        *self = replacement;
+        catalogs.remove(&marker);
         Ok(())
     }
 
@@ -1644,24 +2005,69 @@ mod candidate_identity_order_tests {
             Err(DataIndexError::DuplicateDatumIdentity)
         );
     }
+
+    #[test]
+    fn set_channel_reuses_the_unique_authoritative_bag_anchor() {
+        let mut store = RSpaceDataStore::<String, String>::new();
+        let before = store.index.bag.anchor_identity();
+        store
+            .set_channel("one".to_owned(), [Datum {
+                a: Arc::new("payload".to_owned()),
+                persist: false,
+                source: crate::rspace::trace::event::Produce::new(
+                    Blake2b256Hash::new(b"produce"),
+                    Blake2b256Hash::new(b"produce-seq"),
+                    false,
+                ),
+            }])
+            .expect("first channel replacement");
+        store
+            .set_channel("empty".to_owned(), [])
+            .expect("loaded-empty replacement");
+        assert_eq!(
+            store.index.bag.anchor_identity(),
+            before,
+            "set_channel must not manufacture a full-store COW version"
+        );
+    }
+
+    #[test]
+    fn set_channel_source_has_no_whole_store_clone_transaction() {
+        let source = include_str!("data_index.rs");
+        let start = source
+            .find("    pub fn set_channel(")
+            .expect("set_channel source boundary");
+        let tail = &source[start..];
+        let end = tail
+            .find("\n    pub fn insert(")
+            .expect("next data-store method boundary");
+        assert!(
+            !tail[..end].contains("self.clone()"),
+            "set_channel must prepare a channel-local Bag, not clone the whole store"
+        );
+    }
 }
 
 #[cfg(test)]
-#[path = "../../tests/data_index/candidate_product_checkpoint.rs"]
-mod candidate_product_checkpoint_tests;
+#[path = "../../tests/data_index/candidate_product_continuation.rs"]
+mod candidate_product_continuation_tests;
 
 #[cfg(test)]
 #[path = "../../tests/data_index/candidate_pool_reservation.rs"]
 mod candidate_pool_reservation_tests;
 
 #[cfg(test)]
+#[path = "../../tests/data_index/channel_prefix_replacement_properties.rs"]
+mod channel_prefix_replacement_properties;
+
+#[cfg(test)]
 #[path = "../../tests/data_index/digest_collision_replay.rs"]
 mod digest_collision_replay_tests;
 
-#[cfg(feature = "candidate-checkpoint-experiment")]
+#[cfg(feature = "candidate-continuation-experiment")]
 #[doc(hidden)]
-#[path = "../../tests/data_index/candidate_checkpoint_experiment.rs"]
-pub mod candidate_checkpoint_experiment;
+#[path = "../../tests/data_index/candidate_continuation_experiment.rs"]
+pub mod candidate_continuation_experiment;
 
 #[cfg(feature = "canonical-egress-experiment")]
 #[doc(hidden)]

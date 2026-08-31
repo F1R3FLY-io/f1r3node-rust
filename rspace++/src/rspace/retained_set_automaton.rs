@@ -1,9 +1,9 @@
 use std::num::NonZeroU64;
 
 use pathmap::PathMap;
-use pathmap::zipper::{Zipper, ZipperIteration, ZipperMoving, ZipperReadOnlyValues};
+use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyValues};
 
-use super::bag::Bag;
+use super::bag::{Bag, BagReadCursor};
 use super::internal::WaitingContinuation;
 use super::r#match::Match;
 use super::rho_path::{RhoPathQuery, RhoPathV1};
@@ -255,8 +255,27 @@ fn collect_product_prefix_terminals(
         return;
     }
 
+    resting.with_read_cursor(|data| {
+        collect_product_prefix_terminals_with_cursor(
+            segment,
+            terminal_depths,
+            terminals,
+            resting,
+            data,
+            selected,
+        );
+    });
+}
+
+fn collect_product_prefix_terminals_with_cursor(
+    segment: &PathMap<TerminalId>,
+    terminal_depths: &[usize],
+    terminals: &[Terminal],
+    resting: &Bag,
+    mut data: BagReadCursor<'_, 'static>,
+    selected: &mut [bool],
+) {
     let mut transitions = segment.read_zipper();
-    let mut data = resting.as_pathmap().read_zipper();
     mark_without_residual(transitions.get_val().copied(), terminals, selected);
 
     // A single distinct Bag key is the common datum-first case, including

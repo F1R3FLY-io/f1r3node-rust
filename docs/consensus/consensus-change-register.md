@@ -472,7 +472,7 @@ conversions proven equivalent to their recursive counterparts definitely do not 
 while **data-model, wire-format, and deliberate semantic changes** (the EPathMap representation and
 EPM1 being the named exemplar) are what this register exists to carry. Every entry was re-classified
 under that criterion; the 46 that no longer qualified at re-scope—and later classified findings
-through CBR-072—are retired to typed rows in
+through CBR-074—are retired to typed rows in
 [Appendix B.1](#b1-retired-register-entries), and their full bodies remain in git history at the
 pre-refactor revision.
 
@@ -605,7 +605,7 @@ is a *future* fork, not a present one).
 | [CBR-042](#cbr-042) | N | …and on the **bincode** wire too — `U(m)` verbatim and contiguous, then the values (FORM ②), so the reader never decodes a trie key | `3a32cf07` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-043](#cbr-043) | N | …but of **the entries that surface WRITES**. FORM ② keyed lf-blanked values by the *unblanked* entries, putting an entry's `locally_free` on the event hash | `8cf0b770` | ○ | ○ | ● | ○ | ● | ○ | ○ | CORRECTIVE | **W** |
 | [CBR-044](#cbr-044) | N | EPathMap becomes a homogeneous PathMap set/map and both codecs carry one versioned EPM1 trie snapshot; generated protobuf PDAs remove the read ceiling | `26876b65` | ● | ● | ● | ● | ● | ● | ○ | CORRECTIVE | **W** |
-| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`; this checkpoint; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp experiments 224, 225, 226, 229, 233, 248, 5984, 5990 | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
+| [CBR-053](#cbr-053) | N | Retained PathMap indexes and synchronized datum-first/receive-first/inner-AC query products skip candidates that cannot match a compiled counterpart | `a89cbc294`, `f149cef2b`, `ea8c39f92`, `564dac0b4`, `0b601ce67`, `f43858ec2`, `b6b53d1b3`, `e1a587c9f`, `5a56376b4`, `697db373b`, `250e96c80`, `2d91c4394`, `bbe91b90f`, `3a70ddc58`, `ad5d37a59`, `26b72b096`, `0d7a6a3f8`, `1560f4371`, `46aaa6472`, `8e4938ec6`, `cd01ea721`, `21ece399d`, `0f9beb5f0`, `87679597d`, `9a746f2bf`, `514659e2b`, `27557c374`, `ad395c357`, `61accc170`, `92240a452`, `03685f4c7`, `4f022ad9b`, `6ef40fc37`; this checkpoint; benchmarks `7bc5c6994`, `7b3254573`, `48e6f7d3c`; pgmcp work items/experiments 224, 225, 226, 229, 233, 248, 5984, 5985, 5990 | ○ | ○ | ○ | ○ | ○ | ○ | ○ | NEUTRAL | **NM** |
 | [CBR-L07](#cbr-l07) | L | `List.last()` in MeTTaIL's Rholang | `bbceb6d9`, `6e543c01` | · | · | · | · | · | ● | · | PERMISSIVE | **W** |
 | [CBR-L08](#cbr-l08) | L | The kv element-category gate — a Name in a kv slot is refused, not silently dropped | *in flight* | ● | ● | ● | ● | ● | ● | ○ | REGRESSIVE | **W** |
 | [CBR-L10](#cbr-l10) | L | A pathmap's entries come from a projection, not a field | `832d510f` | ○ | ● | ● | ● | ● | ○ | ○ | CORRECTIVE | **W** |
@@ -4221,6 +4221,7 @@ material now lives.
 | `CBR-071` | `173bf4e07`, `39bc0d999`; pgmcp `rspace-multichannel-reservation-replay` | Candidate selection preserves the channel-local `PathMap<Multiplicity>` authority and records speculative nonpersistent demand in a separate multiplicity Bag | `OPTIMIZATION_MEASURED_NEUTRAL` | Four private invariant cases keep authority identical through reserve/release, prove exact repeated multiplicity and identity isolation, restore the complete pool, and observe both phase refusals without panic-expecting tests. The 21 data-index, 17 guarded/multichannel, 3 replay-order, 24 replay/persistence, and 61 library cases pass; the 20,000-bind stack gate, measurement-feature build, production-library strict Clippy, and repository panic-policy gate remain green. The exact release lifecycle passes 4,506/4,506 tests with 53 skipped under the no-swap cap. Persistent and fresh semantics, exact-path atomic commit, canonical order, bindings, COMM, replay, and post-state behavior remain unchanged. H-010 deliberately leaves throughput under high reservation pressure open; this row classifies semantic neutrality, not a speedup. Stack-safety report §5.37. |
 | `CBR-072` | `cd6099f50`, `4127119ea`, `281c1698a`; pgmcp `rspace-atomic-versioned-accepted-match` | A selected rendezvous becomes a revocable authority ticket, and one hot-store transaction validates and publishes its complete accepted state before play or replay emits effects | `BUG_FIX_RULED_NONCONSENSUS` | Opaque group-scoped `Arc` epochs reject same-group mutation, byte-equal replacement, and competing-fire staleness without counters, wraparound, or ABA; unrelated groups preserve validity. The transaction validates continuation identity/metadata, persistent datum witnesses, and one exact normalized Bag delta, then publishes datum, continuation, epoch, and join state under one write lock. An unconsumed arrival is an addition in that same delta. Focused reset, race, history, and one-winner tests pass, as does every `rspace_plus_plus` target. Rocq closes six axiom-free capstones, TLC checks 710,528 distinct states, and mCRL2 proves branching bisimulation plus no partial publication, pre-commit logging, or stale commit. The exact release workspace passes 4,511/4,511 tests with 53 skipped under a 24 GiB, zero-swap cap. A ten-cell frozen-control profile confirms exact post-state equality, one atomic lock/root publication, narrow-cell 99% CI guards below 1.05, and lower wide/repeated/arrival work while retaining adverse persistent/singleton-tail observations and neutral RSS. The repair changes only an invalidated proposal race that could address shifted state; current-state rescan is the pre-existing atomic RSpace contract. No protobuf, bincode, EPM1, channel/datum identity, PathMap algebra, charge, accepted-program, or user-facing Rholang API changes. Stack-safety report §5.38. |
 | `CBR-073` | `30d5e88b3`, `8fd6dde61`, this checkpoint; pgmcp experiment 314 | A feature-gated secondary identity-order PathMap is measured and rejected; production keeps canonical DATA egress unchanged | `NO_PRODUCTION_CHANGE_MEASURED` | All 5,904 repaired observations preserve exact output bytes, digest, and logical cardinality. One-pass zipper egress passes every corrected latency/effect/break-even gate, but the duplicated trie retains 1.672–2.094× the control's live requested bytes and fails the frozen 1.10 ceiling. The experiment therefore activates no index, snapshot, format, authority, ordering, or caller. The production DATA leaf remains CBR-020/J-023's complete-identity arena plus descriptor sort; no value, verdict, protobuf/bincode/EPM1 byte, cold-store leaf, history root, hash, COMM, charge, PathMap operation, RSpace multiplicity, accepted program, or parallel order moves. Stack-safety report §5.40.1 and PathMap journal J-024. |
+| `CBR-074` | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | RSpace channel replacement prepares a relative Bag and publishes through one prefix-confined guarded zipper instead of cloning and final-dropping the complete accumulated store | `OPTIMIZATION_MEASURED_NEUTRAL` | A 27-invariant / 20-mutant Rocq catalog proves prefix confinement, failure atomicity, marker/count, cache locality, exact metrics, and successful-result equivalence before implementation; main/mutant `coqc`, independent `coqchk`, and the exact mechanical proof-to-property registry pass. Randomized frozen-success comparison, encoder/iterator/lock/count failure injection, empty loaded channels, sibling/clone isolation, target-only invalidation, old snapshots, and unique-root reuse pass. The frozen predecessor scales at exponent 1.99273; the treatment scales at 1.00258 through 16,000 channels. The exact 20,000-bind release gate passes in 7.52 s at 151,408 KiB RSS with zero swap, and `set_channel` falls below AMD uProf's displayed 0.13% top-100 floor. No resident datum, multiplicity, loaded status, candidate order, match verdict, binding, protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, accepted program, PathMap algebra, or parallel execution order moves. Stack-safety report §5.59 and PathMap journal J-050. |
 | `CBR-L01` | `3ff1c98b`, `f586e138` | Equal operator precedence becomes representable; Rholang's ladder corrected | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L02` | `0f3d298c` | The substrate lane stops answering "false" for a guard it could not decide | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
 | `CBR-L03` | `69c66cd1` | A residual binder rests the COMM, whatever the formula collapsed to | `BUG_FIX_RULED_NONCONSENSUS` | entry body at the pre-refactor revision (git history) |
@@ -5487,20 +5488,11 @@ query grammar would otherwise exact-encode. Constructor counterexamples and the 
 recursive-oracle-success-implies-query-admission property pass. This may add conservative false
 positives; it cannot remove a candidate on those rows.
 
-The candidate-product traversal itself preserves both synchronized PathMaps. It now consumes
-maximal exact and already-bound-capture runs on one paired cursor and constructs a CoW suffix
-checkpoint only for an accepted branch continuation. The rejected checkpoint-per-atom matrix is
-retained. The selected 3,000-observation paired matrix equals both the frozen prior traversal and
-the byte oracle in every cell; randomized tries, transactional asymmetric-descent restoration,
-allocation/instruction profiles, and depth 16,384 on a 256 KiB native stack also pass. These facts
-establish implementation equivalence for the measured query product, not permission to weaken the
-authoritative spatial verdict.
-
-Suffix construction also preserves an endpoint at the zipper focus before extracting descendants,
-then restores it at the new root. Current RhoPath component boundaries exercise the faster
-no-endpoint arm, but correctness no longer depends on that framing fact or on PathMap's optional
-`graft_root_vals` feature. A root-plus-child control proves both synchronized endpoint values remain
-visible; a separate counter proves canonical branches require zero defensive restorations.
+At the 2026-08-23 coordinate, candidate-product traversal consumed maximal exact and
+already-bound-capture runs on one paired cursor and constructed a CoW suffix checkpoint only for an
+accepted branch continuation. The rejected checkpoint-per-atom matrix and the selected v2 matrix
+remain historical evidence. Suffix construction at that coordinate explicitly restored a value at
+the extracted zipper focus because PathMap without `graft_root_vals` could omit it.
 
 Rocq and Verus close the shared semantic-event, adjacent-coalescing, cardinality, nonadjacent-repeat,
 and opaque-nested-`Par` obligations at the maintained runtime event boundary. They explicitly do
@@ -5508,6 +5500,41 @@ not prove arbitrary protobuf parsing or BLAKE2b collision resistance. At this ch
 full-release workspace and complete generated end-to-end lifecycle remain open. Verdict and
 post-state axes therefore remain `UNVERIFIED`; this continuation reduces the named gap and does not
 prematurely retire CBR-053.
+
+**CBR-053 living continuation (2026-08-31, checkpoint-free candidate continuation arena).** The v3
+successor removes candidate-product subtree snapshots rather than attempting to make their
+construction cheaper. Candidate availability and candidate positions remain synchronized
+prefix-compressed PathMaps behind stack-safe guarded roots. One borrowed paired cursor remains live
+for the whole query; a flat append-only arena stores integer parent links, frame/byte depths,
+borrowed-or-owned frame sources, and optional capture edits. Lowest-common-ancestor rebase ascends
+source-only frames, clears their capture edits, descends the target suffix transactionally, and
+reapplies target edits only after both PathMap descents succeed.
+
+The candidate lane no longer calls `ZipperSubtries::make_map`, snapshots a focus endpoint, creates a
+raw owned `PathMap<Arc<[u8]>>`, or retains a cloned zipper. Consequently, correctness no longer
+depends on `graft_root_vals` behavior. Exact query atoms and already-bound captures borrow their
+bytes; scanned wildcard/capture/match frames own bytes once. Repeated capture identifiers compile to
+dense `u32` slots and use a dense capture table rather than another trie lookup. PathMap itself is
+unchanged.
+
+The frozen traversal, independent byte oracle, 128 fixed-seed randomized tries, malformed-prefix
+restoration cases, asymmetric dual-cursor failures, root/descendant endpoints, and capture
+undo-before-redo all agree. A source-capability gate forbids the removed snapshot APIs from the
+production candidate lane. Exact, repeated-capture, and wildcard queries reach depth 16,384 on a
+256 KiB native stack. Rocq proves 31 continuation invariants and rejects 24 causal mutants without
+admissions at `6ef40fc37`.
+
+The 3,000-observation release matrix spans 50 shape/query/depth cells. Every result digest agrees,
+every treatment median beats the frozen control, and every 99% pair-preserving bootstrap upper
+bound remains below parity; median speedup ranges from 1.058685 to 88.084504 times. Report-only
+Heaptrack removes 4 allocation calls per exact operation and 21 calls plus 2 temporary allocations
+per repeated-capture operation at depth 4,096, with peak heap within 8.80 KiB of control.
+
+No protobuf, bincode, EPM1, RMP2, cold-store, network, signature, event-hash, COMM, or post-state
+format changes. The candidate query remains a derived conservative filter and the authoritative
+spatial matcher still decides acceptance. This is a measured consensus-neutral implementation
+refinement within CBR-053, not a new change record or permission to retire CBR-053's independent
+generated associative-commutative schedule and post-state obligations.
 
 **CBR-053 living continuation (2026-08-26, release identity restoration and census precision).**
 The first exact release-workspace gate after the certified-egress checkpoint found that the
@@ -6119,6 +6146,6 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 ---
 
 *The register's identifiers are stable and never reused. The 2026-08-03 re-scope retired 46 entries
-to B.1; subsequent classified findings through CBR-072 and CBR-L24 bring the living appendix to 73. The re-scope also removed
+to B.1; subsequent classified findings through CBR-074 and CBR-L24 bring the living appendix to 75. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*

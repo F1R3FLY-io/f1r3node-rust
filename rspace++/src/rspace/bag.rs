@@ -2,16 +2,12 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
-use pathmap::PathMap;
-use pathmap::arena_compact::ArenaCompactTree;
-use pathmap::merkleization::MerkleizeResult;
 use pathmap::ring::{AlgebraicResult, COUNTER_IDENT, DistributiveLattice, Lattice, SELF_IDENT};
-use pathmap::zipper::{
-    WriteZipperUntracked, Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValues,
-    ZipperWriting,
-};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::guarded_pathmap::{
+    DisposeValue, GuardedPathMap, GuardedReadCursor, GuardedWriteCursor, TeardownBarrier,
+};
 use super::pathmap_codec::{CanonicalCompactTrieCursor, CompactTrieError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,15 +196,46 @@ impl DistributiveLattice for Multiplicity {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MultiplicityDisposer;
+
+impl DisposeValue<Multiplicity> for MultiplicityDisposer {
+    #[inline]
+    fn dispose(&self, _value: Multiplicity) {}
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MultiplicityBarrier;
+
+impl TeardownBarrier<Multiplicity> for MultiplicityBarrier {
+    #[inline]
+    fn make_barrier() -> Multiplicity { Multiplicity::ONE }
+}
+
+pub(crate) type GuardedMultiplicityMap =
+    GuardedPathMap<Multiplicity, MultiplicityDisposer, MultiplicityBarrier>;
+pub(crate) type BagReadCursor<'map, 'path> =
+    GuardedReadCursor<'map, 'path, Multiplicity, MultiplicityDisposer, MultiplicityBarrier>;
+
+#[derive(Clone)]
 pub struct Bag {
-    entries: PathMap<Multiplicity>,
+    entries: GuardedMultiplicityMap,
     distinct_len: usize,
     /// Exact internal sum used to keep the pointwise Bag lattice closed even
     /// when several valid `u64` endpoint multiplicities sum past `u64::MAX`.
     /// The public cardinality domain remains the `u64` domain of
     /// `Multiplicity` and projects this value conservatively by saturation.
     exact_cardinality: u128,
+}
+
+impl Default for Bag {
+    fn default() -> Self {
+        Self {
+            entries: GuardedPathMap::new_with_barrier(MultiplicityDisposer),
+            distinct_len: 0,
+            exact_cardinality: 0,
+        }
+    }
 }
 
 /// Checked sink for a strictly ascending stream of unique Bag endpoints.
@@ -219,7 +246,8 @@ pub struct Bag {
 /// The zipper's current path is also the previous-key order witness, so no
 /// copied key or entry collection is materialized.
 pub struct SortedUniqueBagWriter<'a> {
-    cursor: WriteZipperUntracked<'a, 'static, Multiplicity>,
+    cursor:
+        GuardedWriteCursor<'a, 'static, Multiplicity, MultiplicityDisposer, MultiplicityBarrier>,
     has_previous: bool,
     distinct_len: usize,
     exact_cardinality: u128,
@@ -257,7 +285,15 @@ impl SortedUniqueBagWriter<'_> {
 }
 
 impl Bag {
-    fn move_to_next_value(cursor: &mut impl ZipperMoving) -> bool {
+    fn move_to_next_value(
+        cursor: &mut GuardedWriteCursor<
+            '_,
+            '_,
+            Multiplicity,
+            MultiplicityDisposer,
+            MultiplicityBarrier,
+        >,
+    ) -> bool {
         loop {
             if cursor.descend_first_byte() {
                 if cursor.is_val() {
@@ -303,17 +339,17 @@ impl Bag {
     pub fn try_from_sorted_unique<E>(
         producer: impl FnOnce(&mut SortedUniqueBagWriter<'_>) -> Result<(), E>,
     ) -> Result<Self, E> {
-        let mut entries = PathMap::new();
-        let (distinct_len, exact_cardinality) = {
+        let mut entries = GuardedPathMap::new_with_barrier(MultiplicityDisposer);
+        let (distinct_len, exact_cardinality) = entries.with_write_cursor(|cursor| {
             let mut writer = SortedUniqueBagWriter {
-                cursor: entries.write_zipper(),
+                cursor,
                 has_previous: false,
                 distinct_len: 0,
                 exact_cardinality: 0,
             };
             producer(&mut writer)?;
-            (writer.distinct_len, writer.exact_cardinality)
-        };
+            Ok((writer.distinct_len, writer.exact_cardinality))
+        })?;
         Ok(Self {
             entries,
             distinct_len,
@@ -321,22 +357,8 @@ impl Bag {
         })
     }
 
-    pub fn from_pathmap(entries: PathMap<Multiplicity>) -> Self {
-        let mut distinct_len = 0usize;
-        let mut cardinality = 0u128;
-        for (_, multiplicity) in entries.iter() {
-            distinct_len += 1;
-            cardinality += u128::from(multiplicity.get());
-        }
-        Self {
-            entries,
-            distinct_len,
-            exact_cardinality: cardinality,
-        }
-    }
-
-    pub(crate) fn from_pathmap_with_metrics(
-        entries: PathMap<Multiplicity>,
+    pub(crate) fn from_guarded_with_metrics(
+        entries: GuardedMultiplicityMap,
         distinct_len: usize,
         cardinality: u128,
     ) -> Self {
@@ -347,9 +369,41 @@ impl Bag {
         }
     }
 
-    pub fn as_pathmap(&self) -> &PathMap<Multiplicity> { &self.entries }
+    pub(crate) fn with_read_cursor<R>(
+        &self,
+        operation: impl for<'map> FnOnce(BagReadCursor<'map, 'static>) -> R,
+    ) -> R {
+        self.entries.with_read_cursor(operation)
+    }
 
-    pub fn into_pathmap(self) -> PathMap<Multiplicity> { self.entries }
+    pub(crate) fn with_read_cursor_at<'path, R>(
+        &self,
+        path: &'path [u8],
+        operation: impl for<'map> FnOnce(BagReadCursor<'map, 'path>) -> R,
+    ) -> R {
+        self.entries.with_read_cursor_at(path, operation)
+    }
+
+    pub(crate) fn prefix_value_count(&self, prefix: &[u8]) -> usize {
+        self.with_read_cursor_at(prefix, |cursor| cursor.val_count())
+    }
+
+    fn prefix_metrics(&self, prefix: &[u8]) -> (usize, u128) {
+        self.with_read_cursor_at(prefix, |mut cursor| {
+            let mut distinct = usize::from(cursor.val().is_some());
+            let mut exact = cursor
+                .val()
+                .map_or(0, |multiplicity| u128::from(multiplicity.get()));
+            while let Some(multiplicity) = cursor.to_next_get_val() {
+                distinct += 1;
+                exact += u128::from(multiplicity.get());
+            }
+            (distinct, exact)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn anchor_identity(&self) -> usize { self.entries.anchor_identity() }
 
     pub const fn distinct_len(&self) -> usize { self.distinct_len }
 
@@ -394,7 +448,7 @@ impl Bag {
                 amount
             }
         };
-        self.entries.insert(path, next);
+        self.entries.set_val_at(path, next);
         self.exact_cardinality += u128::from(amount.get());
         Ok(next)
     }
@@ -408,12 +462,12 @@ impl Bag {
         let removed = current.get().min(amount.get());
         self.exact_cardinality -= u128::from(removed);
         if removed == current.get() {
-            self.entries.remove(path);
+            self.entries.remove_val_at_and_prune(path);
             self.distinct_len -= 1;
             None
         } else {
             let next = Multiplicity(current.get() - removed);
-            self.entries.insert(path, next);
+            self.entries.set_val_at(path, next);
             Some(next)
         }
     }
@@ -437,11 +491,11 @@ impl Bag {
         self.exact_cardinality -= u128::from(amount.get());
         match next {
             Some(next) => {
-                self.entries.insert(path, next);
+                self.entries.set_val_at(path, next);
                 Ok(Some(next))
             }
             None => {
-                self.entries.remove(path);
+                self.entries.remove_val_at_and_prune(path);
                 self.distinct_len -= 1;
                 Ok(None)
             }
@@ -449,19 +503,76 @@ impl Bag {
     }
 
     pub fn remove_prefix(&mut self, prefix: &[u8]) -> (usize, u64) {
-        let mut removed_distinct = 0usize;
-        let mut removed_cardinality = 0u128;
-        self.visit_prefix(prefix, |_path, multiplicity| {
-            removed_distinct += 1;
-            removed_cardinality += u128::from(multiplicity.get());
-        });
+        let (removed_distinct, removed_cardinality) =
+            self.entries
+                .remove_prefix_fold(prefix, 0_u128, |cardinality, multiplicity| {
+                    cardinality + u128::from(multiplicity.get())
+                });
         if removed_distinct != 0 {
-            self.entries.remove_branches_at(prefix, true);
-            self.entries.remove_val_at(prefix, true);
             self.distinct_len -= removed_distinct;
             self.exact_cardinality -= removed_cardinality;
         }
         (removed_distinct, Self::project_cardinality(removed_cardinality))
+    }
+
+    /// Replace one absolute trie prefix from a prepared channel-relative Bag.
+    ///
+    /// Preparation is complete before this method is entered.  Publication
+    /// therefore contains no fallible semantic step: the old channel subtrie
+    /// is drained in place, then one prefix-rooted write zipper consumes the
+    /// prepared Bag's borrowed, canonical suffix order.  Neither complete
+    /// keys nor entries are projected into an intermediate collection.
+    pub(crate) fn replace_prefix_with_relative(
+        &mut self,
+        prefix: &[u8],
+        prepared: &Self,
+        clear_existing: bool,
+    ) {
+        let resident_metrics = self.prefix_metrics(prefix);
+        let (removed_distinct, removed_exact) = if clear_existing {
+            resident_metrics
+        } else {
+            (0, 0)
+        };
+        let next_distinct = self
+            .distinct_len
+            .checked_sub(removed_distinct)
+            .and_then(|retained| retained.checked_add(prepared.distinct_len))
+            .expect("resident distinct endpoints fit usize");
+        let next_exact = self
+            .exact_cardinality
+            .checked_sub(removed_exact)
+            .and_then(|retained| retained.checked_add(prepared.exact_cardinality))
+            .expect("resident endpoint multiplicities fit exact u128 cardinality");
+
+        if clear_existing {
+            self.remove_prefix(prefix);
+        } else {
+            debug_assert_eq!(
+                resident_metrics.0, 0,
+                "an unloaded channel cannot already own resident data"
+            );
+        }
+
+        if prepared.is_empty() {
+            return;
+        }
+
+        prepared.with_read_cursor(|mut source| {
+            self.entries.with_write_cursor_at(prefix, |mut target| {
+                if let Some(multiplicity) = source.val().copied() {
+                    debug_assert!(target.val().is_none());
+                    target.set_val(multiplicity);
+                }
+                while let Some(multiplicity) = source.to_next_get_val().copied() {
+                    target.move_to_path(source.path());
+                    debug_assert!(target.val().is_none());
+                    target.set_val(multiplicity);
+                }
+            });
+        });
+        self.distinct_len = next_distinct;
+        self.exact_cardinality = next_exact;
     }
 
     pub fn set_count(&mut self, path: &[u8], count: Option<Multiplicity>) {
@@ -469,17 +580,17 @@ impl Bag {
         match (previous, count) {
             (None, None) => {}
             (None, Some(next)) => {
-                self.entries.insert(path, next);
+                self.entries.set_val_at(path, next);
                 self.distinct_len += 1;
                 self.exact_cardinality += u128::from(next.get());
             }
             (Some(current), None) => {
-                self.entries.remove(path);
+                self.entries.remove_val_at_and_prune(path);
                 self.distinct_len -= 1;
                 self.exact_cardinality -= u128::from(current.get());
             }
             (Some(current), Some(next)) => {
-                self.entries.insert(path, next);
+                self.entries.set_val_at(path, next);
                 self.exact_cardinality =
                     self.exact_cardinality - u128::from(current.get()) + u128::from(next.get());
             }
@@ -539,17 +650,18 @@ impl Bag {
         prefix: &[u8],
         mut visitor: impl FnMut(&[u8], Multiplicity) -> Result<(), E>,
     ) -> Result<(), E> {
-        let mut cursor = self.entries.read_zipper_at_borrowed_path(prefix);
-        if !cursor.path_exists() {
-            return Ok(());
-        }
-        if let Some(multiplicity) = cursor.val().copied() {
-            visitor(cursor.path(), multiplicity)?;
-        }
-        while let Some(multiplicity) = cursor.to_next_get_val().copied() {
-            visitor(cursor.path(), multiplicity)?;
-        }
-        Ok(())
+        self.entries.with_read_cursor_at(prefix, |mut cursor| {
+            if !cursor.path_exists() {
+                return Ok(());
+            }
+            if let Some(multiplicity) = cursor.val().copied() {
+                visitor(cursor.path(), multiplicity)?;
+            }
+            while let Some(multiplicity) = cursor.to_next_get_val().copied() {
+                visitor(cursor.path(), multiplicity)?;
+            }
+            Ok(())
+        })
     }
 
     pub fn try_visit_prefix<E>(
@@ -586,8 +698,7 @@ impl Bag {
         }
 
         let mut entries = self.entries.clone();
-        {
-            let mut cursor = entries.write_zipper();
+        entries.with_write_cursor(|mut cursor| -> Result<(), BagError> {
             if cursor.is_val() {
                 let current = cursor
                     .val()
@@ -610,12 +721,13 @@ impl Bag {
                         .expect("a positive factor preserves a positive multiplicity"),
                 );
             }
-        }
+            Ok(())
+        })?;
         let exact_cardinality = self
             .exact_cardinality
             .checked_mul(u128::from(factor))
             .expect("scaled resident endpoint multiplicities fit exact u128 cardinality");
-        Ok(Self::from_pathmap_with_metrics(entries, self.distinct_len, exact_cardinality))
+        Ok(Self::from_guarded_with_metrics(entries, self.distinct_len, exact_cardinality))
     }
 
     pub fn join(&self, other: &Self) -> Self {
@@ -673,11 +785,7 @@ impl Bag {
     /// Serialize this Bag as PathMap's raw prefix-compressed `ACTree03` arena.
     /// Multiplicities occupy ACTree's native `u64` value slots; there is no
     /// entry list, shadow index, or second value table.
-    pub fn compact_bytes(&self) -> Vec<u8> {
-        ArenaCompactTree::from_zipper(self.entries.read_zipper(), |value| value.get())
-            .get_data()
-            .to_vec()
-    }
+    pub fn compact_bytes(&self) -> Vec<u8> { self.entries.compact_u64_bytes(|value| value.get()) }
 
     /// Reconstruct a Bag directly from one canonical `ACTree03` byte image.
     /// The reader is iterative and rejects alternate encodings, zero values,
@@ -688,25 +796,29 @@ impl Bag {
             return Ok(Self::new());
         }
 
-        let mut entries = PathMap::new();
-        let mut distinct_len = 0usize;
-        let mut cardinality = 0u128;
-        while let Some(endpoint) = trie.next_endpoint() {
-            let value = endpoint.value.ok_or(BagCodecError::MissingMultiplicity)?;
-            let multiplicity =
-                Multiplicity::new(value).map_err(|_| BagCodecError::ZeroMultiplicity)?;
-            entries.insert(endpoint.path, multiplicity);
-            distinct_len += 1;
-            cardinality += u128::from(value);
-        }
+        let mut entries = GuardedPathMap::new_with_barrier(MultiplicityDisposer);
+        let (distinct_len, cardinality) =
+            entries.with_write_cursor(|mut cursor| -> Result<_, BagCodecError> {
+                let mut distinct_len = 0usize;
+                let mut cardinality = 0u128;
+                while let Some(endpoint) = trie.next_endpoint() {
+                    let value = endpoint.value.ok_or(BagCodecError::MissingMultiplicity)?;
+                    let multiplicity =
+                        Multiplicity::new(value).map_err(|_| BagCodecError::ZeroMultiplicity)?;
+                    cursor.move_to_path(endpoint.path);
+                    debug_assert!(cursor.val().is_none(), "canonical endpoints are unique");
+                    cursor.set_val(multiplicity);
+                    distinct_len += 1;
+                    cardinality += u128::from(value);
+                }
+                Ok((distinct_len, cardinality))
+            })?;
         Ok(Self {
             entries,
             distinct_len,
             exact_cardinality: cardinality,
         })
     }
-
-    pub fn merkleize(&mut self) -> MerkleizeResult { self.entries.merkleize() }
 }
 
 impl Serialize for Bag {
@@ -859,8 +971,7 @@ impl BagDelta {
         let mut entries = target.entries.clone();
         let mut distinct_len = target.distinct_len;
         let mut exact_cardinality = target.exact_cardinality;
-        {
-            let mut cursor = entries.write_zipper();
+        entries.with_write_cursor(|mut cursor| -> Result<(), BagError> {
             for (path, amount) in removals.iter() {
                 cursor.move_to_path(&path);
                 let current = cursor
@@ -875,8 +986,8 @@ impl BagDelta {
                         cursor.set_val(next);
                     }
                     None => {
-                        cursor.remove_val(false);
-                        cursor.prune_ascend();
+                        let removed = cursor.remove_val_and_prune();
+                        debug_assert!(removed);
                         distinct_len -= 1;
                     }
                 }
@@ -894,8 +1005,9 @@ impl BagDelta {
                 cursor.set_val(next);
                 exact_cardinality += u128::from(amount.get());
             }
-        }
-        *target = Bag::from_pathmap_with_metrics(entries, distinct_len, exact_cardinality);
+            Ok(())
+        })?;
+        *target = Bag::from_guarded_with_metrics(entries, distinct_len, exact_cardinality);
         Ok(())
     }
 }
@@ -998,5 +1110,74 @@ impl DistributiveLattice for Bag {
         } else {
             AlgebraicResult::Element(result)
         }
+    }
+}
+
+#[cfg(test)]
+mod prefix_replacement_tests {
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    use super::{Bag, Multiplicity};
+
+    fn add(bag: &mut Bag, path: &[u8], amount: u8) {
+        bag.insert_many(path, Multiplicity::new(u64::from(amount)).unwrap())
+            .unwrap();
+    }
+
+    proptest! {
+        #[test]
+        fn relative_prefix_publication_matches_an_independent_bag_rebuild(
+            outside in vec((any::<u8>(), 1u8..5), 0..32),
+            old_inside in vec((any::<u8>(), 1u8..5), 0..32),
+            prepared_entries in vec((any::<u8>(), 1u8..5), 0..32),
+        ) {
+            let prefix = [0xAA, 0x00];
+            let mut actual = Bag::new();
+            let mut expected = Bag::new();
+            for (key, amount) in outside {
+                add(&mut actual, &[0xBB, key], amount);
+                add(&mut expected, &[0xBB, key], amount);
+            }
+            for (key, amount) in old_inside {
+                add(&mut actual, &[prefix[0], prefix[1], key], amount);
+            }
+            let mut prepared = Bag::new();
+            for (key, amount) in prepared_entries {
+                add(&mut prepared, &[key], amount);
+                add(&mut expected, &[prefix[0], prefix[1], key], amount);
+            }
+
+            actual.replace_prefix_with_relative(&prefix, &prepared, true);
+
+            prop_assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn new_empty_channel_publication_changes_no_resident_endpoint() {
+        let mut actual = Bag::new();
+        actual.insert(b"outside").unwrap();
+        let before = actual.clone();
+        actual.replace_prefix_with_relative(b"new-channel", &Bag::new(), false);
+        assert_eq!(actual, before);
+    }
+
+    #[test]
+    fn prefix_replacement_preflights_exact_metrics_at_u64_boundaries() {
+        let maximum = Multiplicity::new(u64::MAX).unwrap();
+        let mut actual = Bag::new();
+        actual.insert_many(b"outside", maximum).unwrap();
+        actual.insert_many(b"target/old", maximum).unwrap();
+        let mut prepared = Bag::new();
+        prepared.insert_many(b"new", maximum).unwrap();
+
+        actual.replace_prefix_with_relative(b"target/", &prepared, true);
+
+        assert_eq!(actual.distinct_len(), 2);
+        assert_eq!(actual.exact_cardinality(), u128::from(u64::MAX) * 2);
+        assert_eq!(actual.count(b"outside"), u64::MAX);
+        assert_eq!(actual.count(b"target/new"), u64::MAX);
+        assert_eq!(actual.count(b"target/old"), 0);
     }
 }

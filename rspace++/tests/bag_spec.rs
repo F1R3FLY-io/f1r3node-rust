@@ -403,16 +403,12 @@ fn prefix_removal_detaches_only_the_selected_subtrie_and_updates_metadata() {
 }
 
 #[test]
-fn clone_is_copy_on_write_and_merkleization_preserves_semantics() {
+fn clone_is_copy_on_write_and_preserves_canonical_bytes() {
     let original = bag(&[(b"shared/left", 2), (b"shared/right", 3)]);
     let mut fork = original.clone();
     fork.insert(b"shared/new").unwrap();
     assert_eq!(original.count(b"shared/new"), 0);
-    let before = fork.clone();
-    let compact_before = fork.compact_bytes();
-    fork.merkleize();
-    assert_eq!(fork, before);
-    assert_eq!(fork.compact_bytes(), compact_before);
+    assert_eq!(Bag::from_compact_bytes(&fork.compact_bytes()).unwrap(), fork);
 }
 
 #[test]
@@ -427,6 +423,33 @@ fn deep_keys_clone_and_drop_on_a_small_native_stack() {
             drop(value);
             assert_eq!(fork.count(&key), 1);
             drop(fork);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn deep_prefix_removal_is_stack_safe_and_preserves_the_adjacent_branch() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let mut selected = vec![0xAA];
+            selected.extend(std::iter::repeat_n(0x5A, 200_000));
+            let adjacent = vec![0xAB, 0x01];
+            let mut value = Bag::new();
+            value
+                .insert_many(&selected, Multiplicity::new(17).unwrap())
+                .unwrap();
+            value
+                .insert_many(&adjacent, Multiplicity::new(3).unwrap())
+                .unwrap();
+
+            assert_eq!(value.remove_prefix(&[0xAA]), (1, 17));
+            assert_eq!(value.count(&selected), 0);
+            assert_eq!(value.count(&adjacent), 3);
+            assert_eq!(value.distinct_len(), 1);
+            assert_eq!(value.cardinality(), 3);
         })
         .unwrap()
         .join()
@@ -506,6 +529,27 @@ fn compact_reader_rejects_malformed_non_bag_and_noncanonical_images() {
         Bag::from_compact_bytes(dangling_image.get_data()),
         Err(BagCodecError::MissingMultiplicity)
     );
+}
+
+#[test]
+fn semantic_decode_error_drops_a_deep_partial_bag_on_a_small_stack() {
+    let mut source = PathMap::new();
+    let deep_valid = vec![0xFE; 200_000];
+    source.insert(&deep_valid, 7u64);
+    source.insert([0xFF], 0u64);
+    let image = ArenaCompactTree::from_zipper(source.read_zipper(), |value| *value)
+        .get_data()
+        .to_vec();
+    drop(source);
+
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            assert_eq!(Bag::from_compact_bytes(&image), Err(BagCodecError::ZeroMultiplicity));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

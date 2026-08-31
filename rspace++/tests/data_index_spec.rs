@@ -1,3 +1,4 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -372,6 +373,144 @@ fn channel_replacement_is_transactional_and_removes_the_old_subtrie() {
     assert_eq!(values, vec![datum("new", true, 2)]);
     assert_eq!(store.distinct_len(), 1);
     assert_eq!(store.cardinality(), 1);
+}
+
+#[test]
+fn channel_replacement_preserves_other_channels_and_loaded_empty_authority() {
+    let left = "a\0left".to_owned();
+    let right = "a\0right".to_owned();
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(left.clone(), [datum("old-left", false, 1)])
+        .unwrap();
+    store
+        .set_channel(right.clone(), [datum("right", false, 2)])
+        .unwrap();
+
+    store.set_channel(left.clone(), []).unwrap();
+    assert_eq!(store.channel_data(&left).unwrap(), Some(Vec::new()));
+    assert_eq!(store.channel_data(&right).unwrap(), Some(vec![datum("right", false, 2)]));
+    assert_eq!(store.loaded_channel_count(), 2);
+
+    store
+        .set_channel(left.clone(), [datum("new-left", true, 3)])
+        .unwrap();
+    assert_eq!(store.channel_data(&left).unwrap(), Some(vec![datum("new-left", true, 3)]));
+    assert_eq!(store.loaded_channel_count(), 2);
+}
+
+#[test]
+fn channel_replacement_invalidates_only_the_target_catalog_and_keeps_old_pools_valid() {
+    let target = "target".to_owned();
+    let sibling = "sibling".to_owned();
+    let old_target = datum("old-target", false, 1);
+    let sibling_datum = datum("sibling-value", false, 2);
+    let new_target = datum("new-target", true, 3);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(target.clone(), [old_target.clone()])
+        .unwrap();
+    store
+        .set_channel(sibling.clone(), [sibling_datum.clone()])
+        .unwrap();
+    let old_pool = store.channel_pool(&target).unwrap().unwrap();
+    let sibling_pool = store.channel_pool(&sibling).unwrap().unwrap();
+
+    store
+        .set_channel(target.clone(), [new_target.clone()])
+        .unwrap();
+
+    assert_eq!(old_pool.candidate(0).unwrap().0, &old_target);
+    assert_eq!(sibling_pool.candidate(0).unwrap().0, &sibling_datum);
+    assert_eq!(
+        store
+            .channel_pool(&target)
+            .unwrap()
+            .unwrap()
+            .candidate(0)
+            .unwrap()
+            .0,
+        &new_target
+    );
+    assert_eq!(
+        store
+            .channel_pool(&sibling)
+            .unwrap()
+            .unwrap()
+            .candidate(0)
+            .unwrap()
+            .0,
+        &sibling_datum
+    );
+}
+
+#[test]
+fn channel_replacement_iterator_panic_preserves_data_loaded_authority_and_catalogs() {
+    let target = "target".to_owned();
+    let sibling = "sibling".to_owned();
+    let old_target = datum("old-target", false, 1);
+    let sibling_datum = datum("sibling-value", false, 2);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(target.clone(), [old_target.clone()])
+        .unwrap();
+    store
+        .set_channel(sibling.clone(), [sibling_datum.clone()])
+        .unwrap();
+    let old_target_pool = store.channel_pool(&target).unwrap().unwrap();
+    let old_sibling_pool = store.channel_pool(&sibling).unwrap().unwrap();
+    let before = store.clone();
+
+    let replacement = std::iter::once(datum("never-published", true, 3)).chain(std::iter::from_fn(
+        || -> Option<Datum<String>> {
+            panic!("synthetic iterator failure after one prepared datum")
+        },
+    ));
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        let _ = store.set_channel(target.clone(), replacement);
+    }));
+
+    assert!(outcome.is_err());
+    assert_eq!(store, before);
+    assert_eq!(
+        store
+            .channel_pool(&target)
+            .unwrap()
+            .unwrap()
+            .candidate(0)
+            .unwrap()
+            .0,
+        old_target_pool.candidate(0).unwrap().0
+    );
+    assert_eq!(
+        store
+            .channel_pool(&sibling)
+            .unwrap()
+            .unwrap()
+            .candidate(0)
+            .unwrap()
+            .0,
+        old_sibling_pool.candidate(0).unwrap().0
+    );
+}
+
+#[test]
+fn mutating_a_cloned_store_does_not_change_its_sibling_version() {
+    let channel = "channel".to_owned();
+    let old = datum("old", false, 1);
+    let new = datum("new", true, 2);
+    let mut original = RSpaceDataStore::new();
+    original
+        .set_channel(channel.clone(), [old.clone()])
+        .unwrap();
+    let sibling = original.clone();
+
+    original
+        .set_channel(channel.clone(), [new.clone()])
+        .unwrap();
+
+    assert_eq!(original.channel_data(&channel).unwrap(), Some(vec![new]));
+    assert_eq!(sibling.channel_data(&channel).unwrap(), Some(vec![old]));
 }
 
 #[test]
