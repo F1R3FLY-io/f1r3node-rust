@@ -179,7 +179,14 @@ env:
   # full green x3 on the d94fffd content (run 32691266446 attempts 1+2, run
   # 32759382579), and 8b4da0f is d94fffd merged to main with no further
   # changes.
-  SYSTEM_INTEGRATION_REF: 8b4da0f9395fc951b68af1be8ae023fb1aeb9d09
+  # 2026-08-31: 8b4da0f -> ce5a825 (SI PR #132 branch): retires ftt=-1 from
+  # the joiner-boundary/trim_state/synchrony shards (a negative FTT legally
+  # permits divergent floors that the suite's forbidden-log check treats as
+  # fatal — run 33220782199's arm64-docker failure), makes the joiner test
+  # round-driven, and routes hardcoded timeouts through the hierarchy.
+  # Verified: the three migrated tests green locally at the production FTT.
+  # Re-pin to the merged main SHA once #132 lands.
+  SYSTEM_INTEGRATION_REF: ce5a825b2c090c8680ced81327e03f83c9bfa38f
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
