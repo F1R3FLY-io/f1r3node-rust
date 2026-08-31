@@ -636,6 +636,8 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/stack_safe_pda/theories/FreeMapJournal.v",
         "formal/rocq/stack_safe_pda/theories/AccountingDemand.v",
         "formal/rocq/stack_safe_pda/theories/ChannelImage.v",
+        "formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v",
+        "formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardownMutants.v",
         "formal/rocq/actree03_completeness/theories/Epm1CursorAuthorityV2.v",
         "formal/rocq/actree03_completeness/theories/Epm1CursorPositiveV3.v",
         "formal/rocq/actree03_completeness/theories/Epm1CursorPositiveV4.v",
@@ -652,6 +654,131 @@ fn rocq_kernel_contains_no_unproved_declarations() {
                 "{relative} contains an unproved declaration marker `{forbidden}`"
             );
         }
+    }
+}
+
+#[test]
+fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
+    let rocq =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardown.v");
+    for marker in [
+        "Theorem drain_detaches_originals_exactly_once_in_reverse_postorder",
+        "Theorem drain_prunes_every_logical_edge_once",
+        "Corollary topology_adversaries_are_drained_edge_by_edge",
+        "Theorem immutable_wrapper_clone_does_not_clone_raw_header_or_root_value",
+        "Theorem two_wrapper_arc_sequence_elects_exactly_one_final_drop",
+        "Theorem make_mut_creates_one_well_formed_fresh_anchor",
+        "Theorem cross_anchor_teardown_preserves_the_sibling_image",
+        "Theorem every_campaign_owned_exit_drains_before_release",
+        "Theorem invariant_catalog_has_exactly_eighteen_entries",
+        "Theorem campaign_branch_safe_pathmap_teardown_capstone",
+    ] {
+        assert!(
+            rocq.contains(marker),
+            "PathMap teardown Rocq model is missing `{marker}`"
+        );
+    }
+
+    let mutants = read_repository_file(
+        "formal/rocq/stack_safe_pda/theories/PathMapReversePruneTeardownMutants.v",
+    );
+    for marker in [
+        "kill_value_only_walk_on_topology_only_comb",
+        "kill_snapshot_only_strong_count_race",
+        "kill_per_wrapper_raw_header_and_root_value_clone",
+        "kill_manual_family_count_protocol",
+        "kill_unregistered_make_mut_raw_header",
+        "kill_early_pending_writer_or_iterator_drop",
+        "kill_destructive_detached_subtree_raw_drop",
+        "every_teardown_mutant_has_a_causal_counterexample",
+        "teardown_mutant_registry_has_exactly_nineteen_entries",
+    ] {
+        assert!(
+            mutants.contains(marker),
+            "PathMap teardown mutants are missing `{marker}`"
+        );
+    }
+
+    let verus = read_repository_file("formal/verus/pathmap_reverse_prune_teardown.rs");
+    for marker in [
+        "pub fn executable_one_logical_edge_step(",
+        "pub fn executable_root_payload_step(",
+        "proof fn reverse_terminal_drive_conserves_edges_and_payloads(",
+    ] {
+        assert!(
+            verus.contains(marker),
+            "PathMap teardown Verus proof is missing `{marker}`"
+        );
+    }
+    for forbidden in ["assume(", "admit(", "external_body"] {
+        assert!(
+            !verus.contains(forbidden),
+            "PathMap teardown Verus proof contains `{forbidden}`"
+        );
+    }
+
+    let tla = read_repository_file("formal/tlaplus/stack_safe_pda/PathMapAnchorRootTeardown.tla");
+    for marker in [
+        "OneRawHeaderPerActiveAnchor ==",
+        "HeaderAndRootRegistrationAgree ==",
+        "DeadAnchorRequiresExactlyOnePda ==",
+        "NonlastDropTouchesNoRawHeader ==",
+        "SnapshotMutantSpec ==",
+        "PerWrapperHeaderMutantSpec ==",
+        "ManualFamilyMutantSpec ==",
+        "UnregisteredMakeMutSpec ==",
+    ] {
+        assert!(
+            tla.contains(marker),
+            "PathMap anchor TLA+ model is missing `{marker}`"
+        );
+    }
+
+    let expected_mutants = [
+        (
+            "formal/tlaplus/stack_safe_pda/PathMapAnchorRootSnapshotMutant.cfg",
+            "DeadAnchorRequiresExactlyOnePda",
+        ),
+        (
+            "formal/tlaplus/stack_safe_pda/PathMapAnchorRootPerWrapperHeaderMutant.cfg",
+            "OneRawHeaderPerActiveAnchor",
+        ),
+        (
+            "formal/tlaplus/stack_safe_pda/PathMapAnchorRootManualFamilyMutant.cfg",
+            "OneRawHeaderPerActiveAnchor",
+        ),
+        (
+            "formal/tlaplus/stack_safe_pda/PathMapAnchorRootUnregisteredMakeMutMutant.cfg",
+            "HeaderAndRootRegistrationAgree",
+        ),
+    ];
+    for (config, invariant) in expected_mutants {
+        assert!(
+            read_repository_file(config).contains(invariant),
+            "PathMap anchor mutant config `{config}` is missing `{invariant}`",
+        );
+    }
+
+    let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
+    assert!(coq_project.contains("theories/PathMapReversePruneTeardown.v"));
+    assert!(coq_project.contains("theories/PathMapReversePruneTeardownMutants.v"));
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "theories/PathMapReversePruneTeardown.v",
+        "theories/PathMapReversePruneTeardownMutants.v",
+        "formal/verus/pathmap_reverse_prune_teardown.rs",
+        "PathMapAnchorRootTeardown.cfg",
+        "DeadAnchorRequiresExactlyOnePda",
+        "OneRawHeaderPerActiveAnchor",
+        "HeaderAndRootRegistrationAgree",
+        "exact eighteen-invariant catalog proof",
+        "exact nineteen-mutant registry proof",
+    ] {
+        assert!(
+            runner.contains(marker),
+            "PathMap teardown formal runner is missing `{marker}`"
+        );
     }
 }
 

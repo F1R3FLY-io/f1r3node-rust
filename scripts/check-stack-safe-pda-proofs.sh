@@ -21,6 +21,32 @@ pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
+pathmap_teardown_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/PathMapReversePruneTeardown.v 2>&1
+)"
+printf '%s\n' "$pathmap_teardown_rocq_output"
+pathmap_teardown_closed_capstones="$({
+  printf '%s\n' "$pathmap_teardown_rocq_output" | \
+    grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$pathmap_teardown_closed_capstones" != "17" ]]; then
+  echo "stack-safe-pda: expected all seventeen PathMap teardown Rocq capstones, including the exact eighteen-invariant catalog proof, to be closed; got $pathmap_teardown_closed_capstones" >&2
+  exit 1
+fi
+pathmap_teardown_mutants_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+    theories/PathMapReversePruneTeardownMutants.v 2>&1
+)"
+printf '%s\n' "$pathmap_teardown_mutants_rocq_output"
+pathmap_teardown_mutants_closed_capstones="$({
+  printf '%s\n' "$pathmap_teardown_mutants_rocq_output" | \
+    grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$pathmap_teardown_mutants_closed_capstones" != "8" ]]; then
+  echo "stack-safe-pda: expected all eight PathMap teardown-mutant Rocq capstones, including the exact nineteen-mutant registry proof, to be closed; got $pathmap_teardown_mutants_closed_capstones" >&2
+  exit 1
+fi
 rspace_commit_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RSpaceCommit.v 2>&1
 )"
@@ -142,6 +168,8 @@ fi
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/epathmap_canonical_worklist.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/pathmap_reverse_prune_teardown.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/epm1_positional_association.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
@@ -170,6 +198,32 @@ tla_root="$repo_root/formal/tlaplus/stack_safe_pda"
 tla_metadir="$(tlc_metadir stack-safe-pda-equivalence)"
 pushd "$tla_root" >/dev/null
 tlc_run "$tla_metadir" PDAEquivalence.cfg PDAEquivalence.tla -cleanup
+tlc_run "$tla_metadir" \
+  PathMapAnchorRootTeardown.cfg PathMapAnchorRootTeardown.tla -cleanup
+for pathmap_anchor_mutant in \
+  StrongCountSnapshot:PathMapAnchorRootSnapshotMutant.cfg:DeadAnchorRequiresExactlyOnePda \
+  PerWrapperRawHeader:PathMapAnchorRootPerWrapperHeaderMutant.cfg:OneRawHeaderPerActiveAnchor \
+  ManualFamilyCounter:PathMapAnchorRootManualFamilyMutant.cfg:OneRawHeaderPerActiveAnchor \
+  UnregisteredMakeMut:PathMapAnchorRootUnregisteredMakeMutMutant.cfg:HeaderAndRootRegistrationAgree; do
+  pathmap_anchor_label="${pathmap_anchor_mutant%%:*}"
+  pathmap_anchor_tail="${pathmap_anchor_mutant#*:}"
+  pathmap_anchor_cfg="${pathmap_anchor_tail%%:*}"
+  pathmap_anchor_invariant="${pathmap_anchor_tail#*:}"
+  if pathmap_anchor_output="$({
+    tlc_run "$tla_metadir" "$pathmap_anchor_cfg" \
+      PathMapAnchorRootTeardown.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$pathmap_anchor_output"
+    echo "stack-safe-pda: ${pathmap_anchor_label} PathMap-anchor mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$pathmap_anchor_output"
+  if ! grep -q "Invariant ${pathmap_anchor_invariant} is violated" \
+      <<<"$pathmap_anchor_output"; then
+    echo "stack-safe-pda: ${pathmap_anchor_label} mutant failed without ${pathmap_anchor_invariant}" >&2
+    exit 1
+  fi
+done
 tlc_run "$tla_metadir" SpatialMatcherEquivalence.cfg SpatialMatcherEquivalence.tla -cleanup
 tlc_run "$tla_metadir" RSpaceBagCommit.cfg RSpaceBagCommit.tla -cleanup
 tlc_run "$tla_metadir" RSpaceCanonicalEgress.cfg RSpaceCanonicalEgress.tla -cleanup

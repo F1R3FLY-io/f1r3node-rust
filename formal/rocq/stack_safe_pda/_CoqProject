@@ -10,3 +10,5 @@ theories/SpatialMatcher.v
 theories/FreeMapJournal.v
 theories/AccountingDemand.v
 theories/ChannelImage.v
+theories/PathMapReversePruneTeardown.v
+theories/PathMapReversePruneTeardownMutants.v
