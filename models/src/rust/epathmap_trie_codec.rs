@@ -2,17 +2,18 @@
 //!
 //! `EPM1` keeps the PathMap trie intact across every serialization boundary:
 //! the key topology is PathMap's compact `ACTree03` arena and map values are a
-//! separate ordinal table encoded by the generated stack-safe protobuf PDA.
+//! separate positional body table encoded by the generated stack-safe protobuf PDA.
 //! No `Vec<Par>` entry projection participates in either direction.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::ops::Range;
 
 use pathmap::arena_compact::ArenaCompactTree;
-use pathmap::zipper::ZipperReadOnlyIteration;
 #[cfg(test)]
-use pathmap::zipper::{ZipperIteration, ZipperMoving};
+use pathmap::zipper::ZipperIteration;
+use pathmap::zipper::{
+    WriteZipperOwned, ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting,
+};
 use pathmap::PathMap;
 use prost::bytes::Bytes;
 #[cfg(test)]
@@ -29,9 +30,8 @@ use crate::rust::rholang::indexed_protobuf::{
     IndexedByteReadError, IndexedByteReadErrorKind, IndexedByteReadOperation, IndexedByteReader,
     IndexedByteRegion,
 };
-use crate::rust::rholang::protobuf_cursor::CanonicalByteRange;
-#[cfg(test)]
-use crate::rust::rholang::protobuf_cursor::ProtobufRegion;
+use crate::rust::rholang::protobuf_admission::validate_canonical_par_protobuf_indexed;
+use crate::rust::rholang::protobuf_cursor::{CanonicalByteRange, ProtobufRegion};
 use crate::rust::rholang::{protobuf_decoder, protobuf_encoder};
 
 const EPM_MAGIC: &[u8; 4] = b"EPM1";
@@ -571,28 +571,26 @@ fn validate_indexed_canonical_act_summary(
     let summary = trie.value_summary();
     match mode {
         EPathMapMode::Set => {
-            if let Some((source_offset, _ordinal)) = summary.first_nonzero() {
+            if let Some((source_offset, _marker)) = summary.first_nonzero() {
                 let provenance = arena
                     .position_at(source_offset.min(arena.len()))
                     .expect("a validated ACT value offset belongs to its indexed arena")
                     .physical;
                 return Err(TrieCodecError::located(
-                    "set ACTree value ordinal is not zero",
+                    "set ACTree value marker is not zero",
                     provenance,
                     provenance,
                 ));
             }
         }
         EPathMapMode::Map => {
-            if let Some((source_offset, ordinal, expected)) = summary.first_nonsequential() {
+            if let Some((source_offset, marker)) = summary.first_nonzero() {
                 let provenance = arena
                     .position_at(source_offset.min(arena.len()))
                     .expect("a validated ACT value offset belongs to its indexed arena")
                     .physical;
                 return Err(TrieCodecError::located(
-                    format!(
-                        "map ACTree value ordinal {ordinal} is not canonical ordinal {expected}"
-                    ),
+                    format!("map ACTree value marker {marker} is not zero"),
                     provenance,
                     provenance,
                 ));
@@ -976,13 +974,10 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                 let provenance = event_provenance(source_offset);
                 let (_value_body_range, value_body) =
                     if self.mode == EPathMapMode::Map && value.is_some() {
-                        let ordinal = value.expect("the map value branch checked presence");
-                        if ordinal != self.length as u64 {
+                        let marker = value.expect("the map value branch checked presence");
+                        if marker != 0 {
                             return self.latch_error(TrieCodecError::located(
-                                format!(
-                                "map ACTree value ordinal {ordinal} is not canonical ordinal {}",
-                                self.length
-                            ),
+                                format!("map ACTree value marker {marker} is not zero"),
                                 provenance,
                                 provenance,
                             ));
@@ -1035,10 +1030,10 @@ impl<'a> IndexedCanonicalEpm1TopologyCursor<'a> {
                         (Some(start..end), Some(body))
                     } else {
                         if self.mode == EPathMapMode::Set {
-                            if let Some(ordinal) = value {
-                                if ordinal != 0 {
+                            if let Some(marker) = value {
+                                if marker != 0 {
                                     return self.latch_error(TrieCodecError::located(
-                                        "set ACTree value ordinal is not zero",
+                                        "set ACTree value marker is not zero",
                                         provenance,
                                         provenance,
                                     ));
@@ -1176,11 +1171,25 @@ impl EpmLayout {
     pub(crate) fn value_count(&self) -> usize { self.value_count }
 }
 
-/// Build the final-byte topology directly from PathMap. No `Par` projection or
-/// encoded-value table is retained: the only temporary index maps the stable
-/// addresses supplied by PathMap to ACTree03 value ordinals.
+/// Build the final-byte topology directly from PathMap. No `Par` projection,
+/// encoded-value table, pointer identity, or occurrence index is retained.
+/// Every ACT value endpoint carries the zero presence marker; map bodies are
+/// associated positionally in the same zipper order.
 pub(crate) fn layout<T>(repr: &EPathMapRepr<T>) -> EpmLayout
 where T: Clone + Send + Sync + Unpin + 'static {
+    layout_with_certified_value_count(repr, None)
+}
+
+/// Build an EPM1 topology with an optional maintained value count.  Callers
+/// such as `EntryTrie` may supply their certified cardinality; generic callers
+/// pay exactly one value-zipper counting pass and never build an address map.
+pub(crate) fn layout_with_certified_value_count<T>(
+    repr: &EPathMapRepr<T>,
+    certified_value_count: Option<usize>,
+) -> EpmLayout
+where
+    T: Clone + Send + Sync + Unpin + 'static,
+{
     let mut prefix = Vec::new();
     prefix.extend_from_slice(EPM_MAGIC);
     prefix.push(EPM_VERSION);
@@ -1201,16 +1210,17 @@ where T: Clone + Send + Sync + Unpin + 'static {
             0
         }
         EPathMapRepr::Map(map) => {
-            let mut ordinal_by_address = HashMap::new();
-            let mut zipper = map.read_zipper();
-            let mut value_count = 0usize;
-            while let Some(value) = zipper.to_next_get_val() {
-                ordinal_by_address.insert(value as *const T as usize, value_count as u64);
-                value_count += 1;
-            }
-            let arena = ArenaCompactTree::from_zipper(map.read_zipper(), |value| {
-                ordinal_by_address[&(value as *const T as usize)]
+            let value_count = certified_value_count.unwrap_or_else(|| {
+                let mut zipper = map.read_zipper();
+                let mut count = usize::from(zipper.val().is_some());
+                while zipper.to_next_get_val().is_some() {
+                    count = count
+                        .checked_add(1)
+                        .expect("EPathMap value count cannot exceed usize");
+                }
+                count
             });
+            let arena = ArenaCompactTree::from_zipper(map.read_zipper(), |_| 0);
             let bytes = arena.get_data();
             push_varint(&mut prefix, bytes.len() as u64);
             prefix.extend_from_slice(bytes);
@@ -1238,6 +1248,10 @@ pub(crate) fn encode_with_layout(repr: &EPathMapRepr<Par>, layout: &EpmLayout) -
     if let EPathMapRepr::Map(map) = repr {
         let mut zipper = map.read_zipper();
         let mut emitted = 0usize;
+        if let Some(value) = zipper.val() {
+            protobuf_encoder::encode_length_delimited_body_into(value, &mut out);
+            emitted += 1;
+        }
         while let Some(value) = zipper.to_next_get_val() {
             protobuf_encoder::encode_length_delimited_body_into(value, &mut out);
             emitted += 1;
@@ -1247,81 +1261,336 @@ pub(crate) fn encode_with_layout(repr: &EPathMapRepr<Par>, layout: &EpmLayout) -
     out
 }
 
-/// Pausable EPM1 reader used by the generated protobuf decoder. The snapshot
-/// bytes remain shared, and every map value is handed to the same explicit PDA
-/// as an independent protobuf body.
-pub(crate) struct PendingEpmDecode<S: AsRef<[u8]>> {
-    snapshot: S,
-    mode: EPathMapMode,
-    /// ACTree03's byte range inside `snapshot`. Keeping an index rather than a
-    /// copied `Vec<u8>` makes the pausable protobuf decoder zero-copy for the
-    /// compact trie arena while remaining valid for every owned snapshot type.
+enum PendingTopology<'a> {
+    Borrowed(CanonicalCompactTrieTopologyCursor<&'a [u8]>),
+    Owned(CanonicalCompactTrieTopologyCursor<ProtobufRegion>),
+}
+
+impl PendingTopology<'_> {
+    fn next_event(&mut self) -> Option<CanonicalCompactTrieTopologyEvent> {
+        match self {
+            Self::Borrowed(cursor) => cursor.next_event(),
+            Self::Owned(cursor) => cursor.next_event(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Borrowed(cursor) => cursor.is_empty(),
+            Self::Owned(cursor) => cursor.is_empty(),
+        }
+    }
+
+    fn value_summary(&self) -> CanonicalCompactTrieValueSummary {
+        match self {
+            Self::Borrowed(cursor) => cursor.value_summary(),
+            Self::Owned(cursor) => cursor.value_summary(),
+        }
+    }
+}
+
+enum PendingWriter {
+    Empty,
+    Set(WriteZipperOwned<()>),
+    Map(WriteZipperOwned<Par>),
+    Discard,
+}
+
+impl PendingWriter {
+    fn install_scaffold_value(&mut self) {
+        match self {
+            Self::Set(zipper) => {
+                zipper.set_val(());
+            }
+            Self::Map(zipper) => {
+                zipper.set_val(Par::default());
+            }
+            Self::Empty | Self::Discard => {}
+        }
+    }
+
+    fn descend_to_byte(&mut self, byte: u8) {
+        match self {
+            Self::Set(zipper) => zipper.descend_to_byte(byte),
+            Self::Map(zipper) => zipper.descend_to_byte(byte),
+            Self::Empty | Self::Discard => {}
+        }
+    }
+
+    /// Seed the first dangling edge through `PathMap::create_path`.  An owned
+    /// zipper over a pristine map still references PathMap's immutable empty
+    /// sentinel, while the map-level constructor is the public API that
+    /// replaces that sentinel without installing a transient value.
+    fn descend_first_byte(&mut self, byte: u8) {
+        match std::mem::replace(self, Self::Discard) {
+            Self::Set(zipper) => {
+                let mut map = zipper.into_map();
+                map.create_path([byte]);
+                let mut zipper = map.into_write_zipper([]);
+                zipper.descend_to_byte(byte);
+                *self = Self::Set(zipper);
+            }
+            Self::Map(zipper) => {
+                let mut map = zipper.into_map();
+                map.create_path([byte]);
+                let mut zipper = map.into_write_zipper([]);
+                zipper.descend_to_byte(byte);
+                *self = Self::Map(zipper);
+            }
+            Self::Empty => *self = Self::Empty,
+            Self::Discard => *self = Self::Discard,
+        }
+    }
+
+    fn ascend_byte(&mut self) {
+        match self {
+            Self::Set(zipper) => {
+                zipper.ascend_byte();
+            }
+            Self::Map(zipper) => {
+                zipper.ascend_byte();
+            }
+            Self::Empty | Self::Discard => {}
+        }
+    }
+
+    fn remove_scaffold_value(&mut self) {
+        match self {
+            Self::Set(zipper) => {
+                zipper.remove_val(false);
+            }
+            Self::Map(zipper) => {
+                zipper.remove_val(false);
+            }
+            Self::Empty | Self::Discard => {}
+        }
+    }
+}
+
+struct PendingFraming {
+    raw_mode: u8,
     arena: Range<usize>,
+    value_table_start: usize,
+    value_count: usize,
+}
+
+fn parse_pending_framing(bytes: &[u8]) -> Result<PendingFraming, TrieCodecError> {
+    let mut cursor = 0usize;
+    if take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")? != EPM_MAGIC {
+        return Err(TrieCodecError::new("invalid EPM1 magic"));
+    }
+    let version = take(bytes, &mut cursor, 1, "EPM1 version")?[0];
+    if version != EPM_VERSION {
+        return Err(TrieCodecError::new(format!(
+            "unsupported EPM1 version {version}"
+        )));
+    }
+    let raw_mode = take(bytes, &mut cursor, 1, "EPM1 mode")?[0];
+    let arena_len = read_len(bytes, &mut cursor, "ACTree03 length")?;
+    let arena_start = cursor;
+    take(bytes, &mut cursor, arena_len, "ACTree03 payload")?;
+    let arena = arena_start..cursor;
+    let value_count = read_len(bytes, &mut cursor, "map value count")?;
+    let remaining = bytes.len() - cursor;
+    if value_count > remaining {
+        return Err(TrieCodecError::new(format!(
+            "map value count {value_count} exceeds the {remaining}-byte payload lower bound"
+        )));
+    }
+
+    let value_table_start = cursor;
+    for _ in 0..value_count {
+        let len = read_len(bytes, &mut cursor, "map value length")?;
+        take(bytes, &mut cursor, len, "map value payload")?;
+    }
+    if cursor != bytes.len() {
+        return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+    }
+    Ok(PendingFraming {
+        raw_mode,
+        arena,
+        value_table_start,
+        value_count,
+    })
+}
+
+/// Pausable EPM1 reader used by both the generated protobuf decoder and the
+/// synchronous entry point. ACT topology is replayed directly into one owned
+/// write zipper; only the current child body and traversal depth survive a PDA
+/// suspension.
+pub(crate) struct PendingEpmDecode<'a, S: AsRef<[u8]>> {
+    snapshot: S,
+    mode: Option<EPathMapMode>,
+    topology: Option<PendingTopology<'a>>,
+    writer: PendingWriter,
+    depth: usize,
+    scaffold_frames: Vec<bool>,
+    descended_once: bool,
     next_value_at: usize,
     remaining_values: usize,
     expected_values: usize,
+    decoded_values: usize,
     current_value_range: Option<Range<usize>>,
+    current_topology_value: bool,
     validate_canonical: bool,
+    first_semantic_error: Option<TrieCodecError>,
     first_noncanonical_value: Option<usize>,
-    values: Vec<Option<Par>>,
 }
 
-pub(crate) type OwnedPendingEpmDecode = PendingEpmDecode<Bytes>;
+pub(crate) type OwnedPendingEpmDecode = PendingEpmDecode<'static, Bytes>;
 
-impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
-    pub(crate) fn new(snapshot: S, validate_canonical: bool) -> Result<Self, TrieCodecError> {
-        let bytes = snapshot.as_ref();
-        let mut cursor = 0usize;
-        let magic = take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")?;
-        if magic != EPM_MAGIC {
-            return Err(TrieCodecError::new("invalid EPM1 magic"));
-        }
-        let version = *take(bytes, &mut cursor, 1, "EPM1 version")?
-            .first()
-            .expect("a one-byte slice has a first byte");
-        if version != EPM_VERSION {
-            return Err(TrieCodecError::new(format!(
-                "unsupported EPM1 version {version}"
-            )));
-        }
-        let mode = EPathMapMode::try_from(
-            *take(bytes, &mut cursor, 1, "EPM1 mode")?
-                .first()
-                .expect("a one-byte slice has a first byte"),
-        )?;
-        let arena_len = read_len(bytes, &mut cursor, "ACTree03 length")?;
-        let arena_start = cursor;
-        take(bytes, &mut cursor, arena_len, "ACTree03 payload")?;
-        let arena = arena_start..cursor;
-        let value_count = read_len(bytes, &mut cursor, "map value count")?;
-        let remaining = bytes.len() - cursor;
-        if value_count > remaining {
-            return Err(TrieCodecError::new(format!(
-                "map value count {value_count} exceeds the {remaining}-byte payload lower bound"
-            )));
+impl<'a, S: AsRef<[u8]>> PendingEpmDecode<'a, S> {
+    fn from_parts(
+        snapshot: S,
+        framing: PendingFraming,
+        topology: Result<Option<PendingTopology<'a>>, TrieCodecError>,
+        validate_canonical: bool,
+    ) -> Self {
+        let mode = EPathMapMode::try_from(framing.raw_mode);
+        let mut first_semantic_error = mode.as_ref().err().cloned();
+        let mode = mode.ok();
+        let mut topology = match topology {
+            Ok(topology) => topology,
+            Err(error) => {
+                if first_semantic_error.is_none() {
+                    first_semantic_error = Some(error);
+                }
+                None
+            }
+        };
+
+        let mut writer = match mode {
+            Some(EPathMapMode::Empty) => PendingWriter::Empty,
+            Some(EPathMapMode::Set) => PendingWriter::Set(WriteZipperOwned::new()),
+            Some(EPathMapMode::Map) => PendingWriter::Map(WriteZipperOwned::new()),
+            None => PendingWriter::Discard,
+        };
+
+        match mode {
+            Some(EPathMapMode::Empty) => {
+                if !framing.arena.is_empty() || framing.value_count != 0 {
+                    first_semantic_error.get_or_insert_with(|| {
+                        TrieCodecError::new("neutral empty EPathMap carries trie or values")
+                    });
+                    writer = PendingWriter::Discard;
+                }
+                topology = None;
+            }
+            Some(EPathMapMode::Set | EPathMapMode::Map) => {
+                if let Some(cursor) = topology.as_ref() {
+                    if let Err(error) = validate_canonical_act_summary(
+                        mode.expect("typed mode is present"),
+                        framing.value_count,
+                        cursor.is_empty(),
+                        cursor.value_summary(),
+                    ) {
+                        first_semantic_error.get_or_insert(error);
+                    }
+                }
+                if topology.is_none() {
+                    writer = PendingWriter::Discard;
+                }
+            }
+            None => {
+                topology = None;
+            }
         }
 
-        let next_value_at = cursor;
-        for _ in 0..value_count {
-            let len = read_len(bytes, &mut cursor, "map value length")?;
-            take(bytes, &mut cursor, len, "map value payload")?;
-        }
-        if cursor != bytes.len() {
-            return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
+        if first_semantic_error.is_some() {
+            // A rejected tree is never published. We keep a valid cursor, when
+            // available, only to consume its event language and preserve body
+            // error precedence; rejected values are not installed.
+            writer = PendingWriter::Discard;
         }
 
-        Ok(Self {
+        Self {
             snapshot,
             mode,
-            arena,
-            next_value_at,
-            remaining_values: value_count,
-            expected_values: value_count,
+            topology,
+            writer,
+            depth: 0,
+            scaffold_frames: vec![false],
+            descended_once: false,
+            next_value_at: framing.value_table_start,
+            remaining_values: framing.value_count,
+            expected_values: framing.value_count,
+            decoded_values: 0,
             current_value_range: None,
+            current_topology_value: false,
             validate_canonical,
+            first_semantic_error,
             first_noncanonical_value: None,
-            values: Vec::with_capacity(value_count),
-        })
+        }
+    }
+
+    fn latch_semantic(&mut self, error: TrieCodecError) {
+        if self.first_semantic_error.is_none() {
+            self.first_semantic_error = Some(error);
+            self.writer = PendingWriter::Discard;
+        }
+    }
+
+    /// Consume ACT events through the next positional map endpoint. `true`
+    /// means a value body must be attached at the current zipper focus.
+    fn advance_to_map_value(&mut self) -> bool {
+        loop {
+            let Some(event) = self.topology.as_mut().and_then(PendingTopology::next_event) else {
+                return false;
+            };
+            match event {
+                CanonicalCompactTrieTopologyEvent::Value { value, .. } => {
+                    if let Some(marker) = value {
+                        if marker != 0 {
+                            self.latch_semantic(TrieCodecError::new(format!(
+                                "map ACTree value marker {marker} is not zero"
+                            )));
+                        }
+                        if self.mode == Some(EPathMapMode::Set) {
+                            if let PendingWriter::Set(zipper) = &mut self.writer {
+                                zipper.set_val(());
+                            }
+                        } else if self.mode == Some(EPathMapMode::Map) {
+                            return true;
+                        }
+                    } else if self.depth != 0 {
+                        // `create_path` intentionally leaves PathMap's empty
+                        // sentinel at a dangling endpoint.  The public owned
+                        // zipper cannot descend through that sentinel, so a
+                        // value-free node with children needs a temporary
+                        // value until its postorder Leave.  This is removed
+                        // without pruning and is never externally observable.
+                        self.writer.install_scaffold_value();
+                        *self
+                            .scaffold_frames
+                            .last_mut()
+                            .expect("every descended ACT node owns a depth frame") = true;
+                    }
+                }
+                CanonicalCompactTrieTopologyEvent::Edge { byte, .. } => {
+                    if self.descended_once {
+                        self.writer.descend_to_byte(byte);
+                    } else {
+                        self.writer.descend_first_byte(byte);
+                        self.descended_once = true;
+                    }
+                    self.depth = self
+                        .depth
+                        .checked_add(1)
+                        .expect("validated ACT depth cannot exceed usize");
+                    self.scaffold_frames.push(false);
+                }
+                CanonicalCompactTrieTopologyEvent::Leave { .. } => {
+                    if self.scaffold_frames.last().copied().unwrap_or(false) {
+                        self.writer.remove_scaffold_value();
+                    }
+                    if self.depth != 0 {
+                        self.writer.ascend_byte();
+                        self.depth -= 1;
+                        self.scaffold_frames.pop();
+                    }
+                }
+            }
+        }
     }
 
     fn next_value_range(&mut self) -> Result<Option<Range<usize>>, TrieCodecError> {
@@ -1333,6 +1602,20 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
         if self.remaining_values == 0 {
             return Ok(None);
         }
+
+        self.current_topology_value = if self.mode == Some(EPathMapMode::Map) {
+            let found = self.advance_to_map_value();
+            if !found {
+                self.latch_semantic(TrieCodecError::new(format!(
+                    "map ACTree references fewer values than EPM1 declares {}",
+                    self.expected_values
+                )));
+            }
+            found
+        } else {
+            false
+        };
+
         let bytes = self.snapshot.as_ref();
         let len = read_len(bytes, &mut self.next_value_at, "map value length")?;
         let start = self.next_value_at;
@@ -1344,7 +1627,7 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
     }
 
     pub(crate) fn push_value(&mut self, value: Par) -> Result<(), TrieCodecError> {
-        if self.values.len() == self.expected_values {
+        if self.decoded_values == self.expected_values {
             return Err(TrieCodecError::new(
                 "more map values were decoded than the EPM1 value count",
             ));
@@ -1352,46 +1635,98 @@ impl<S: AsRef<[u8]>> PendingEpmDecode<S> {
         let range = self.current_value_range.take().ok_or_else(|| {
             TrieCodecError::new("map value supplied without a corresponding EPM1 value body")
         })?;
-        if self.validate_canonical
-            && self.first_noncanonical_value.is_none()
-            && protobuf_encoder::encode_to_vec(&value) != self.snapshot.as_ref()[range]
-        {
-            self.first_noncanonical_value = Some(self.values.len());
+
+        if self.validate_canonical && self.first_noncanonical_value.is_none() {
+            let region = IndexedByteRegion::from_borrowed(
+                &self.snapshot.as_ref()[range.clone()],
+                0,
+                range.start,
+            );
+            if validate_canonical_par_protobuf_indexed(region).is_err() {
+                self.first_noncanonical_value = Some(self.decoded_values);
+            }
         }
-        self.values.push(Some(value));
+
+        if self.current_topology_value {
+            if let PendingWriter::Map(zipper) = &mut self.writer {
+                zipper.set_val(value);
+            }
+        }
+        self.current_topology_value = false;
+        self.decoded_values += 1;
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> Result<EPathMapRepr<Par>, TrieCodecError> {
-        let Self {
-            snapshot,
-            mode,
-            arena,
-            next_value_at: _,
-            remaining_values,
-            expected_values,
-            current_value_range,
-            validate_canonical: _,
-            first_noncanonical_value,
-            values,
-        } = self;
-        if remaining_values != 0 || current_value_range.is_some() || values.len() != expected_values
+    pub(crate) fn finish(mut self) -> Result<EPathMapRepr<Par>, TrieCodecError> {
+        if self.remaining_values != 0
+            || self.current_value_range.is_some()
+            || self.decoded_values != self.expected_values
         {
-            return Err(TrieCodecError::new(
+            self.latch_semantic(TrieCodecError::new(
                 "fewer map values were decoded than the EPM1 value count",
             ));
         }
-        let repr = build_repr(mode, &snapshot.as_ref()[arena], values)?;
-        if let Some(ordinal) = first_noncanonical_value {
-            return Err(TrieCodecError::new(format!(
-                "map value {ordinal} protobuf body is not canonical"
+
+        while self.advance_to_map_value() {
+            self.latch_semantic(TrieCodecError::new(format!(
+                "map ACTree references more values than EPM1 declares {}",
+                self.expected_values
             )));
         }
-        Ok(repr)
+        if self.depth != 0 {
+            self.latch_semantic(TrieCodecError::new(
+                "map ACTree topology ended above its root",
+            ));
+        }
+
+        if let Some(error) = self.first_semantic_error {
+            return Err(error);
+        }
+        if let Some(position) = self.first_noncanonical_value {
+            return Err(TrieCodecError::new(format!(
+                "map value {position} protobuf body is not canonical"
+            )));
+        }
+
+        Ok(match self.writer {
+            PendingWriter::Empty => EPathMapRepr::Empty,
+            PendingWriter::Set(zipper) => EPathMapRepr::Set(zipper.into_map()),
+            PendingWriter::Map(zipper) => EPathMapRepr::Map(zipper.into_map()),
+            PendingWriter::Discard => {
+                return Err(TrieCodecError::new(
+                    "EPM1 rejected without a retained semantic error",
+                ));
+            }
+        })
     }
 }
 
-impl PendingEpmDecode<Bytes> {
+impl PendingEpmDecode<'static, Bytes> {
+    pub(crate) fn new(snapshot: Bytes, validate_canonical: bool) -> Result<Self, TrieCodecError> {
+        let framing = parse_pending_framing(snapshot.as_ref())?;
+        let topology = match EPathMapMode::try_from(framing.raw_mode) {
+            Ok(EPathMapMode::Set | EPathMapMode::Map) => {
+                let region = ProtobufRegion::from(snapshot.clone())
+                    .subregion(CanonicalByteRange {
+                        start: framing.arena.start,
+                        end: framing.arena.end,
+                    })
+                    .expect("framing proved the ACT region belongs to the snapshot");
+                CanonicalCompactTrieTopologyCursor::from_backing(region)
+                    .map(PendingTopology::Owned)
+                    .map(Some)
+                    .map_err(TrieCodecError::from)
+            }
+            Ok(EPathMapMode::Empty) | Err(_) => Ok(None),
+        };
+        Ok(Self::from_parts(
+            snapshot,
+            framing,
+            topology,
+            validate_canonical,
+        ))
+    }
+
     pub(crate) fn next_value_bytes(&mut self) -> Result<Option<Bytes>, TrieCodecError> {
         let Some(range) = self.next_value_range()? else {
             return Ok(None);
@@ -1400,157 +1735,43 @@ impl PendingEpmDecode<Bytes> {
     }
 }
 
-fn build_repr(
-    mode: EPathMapMode,
-    arena: &[u8],
-    mut values: Vec<Option<Par>>,
-) -> Result<EPathMapRepr<Par>, TrieCodecError> {
-    match mode {
-        EPathMapMode::Empty => {
-            if !arena.is_empty() || !values.is_empty() {
-                return Err(TrieCodecError::new(
-                    "neutral empty EPathMap carries trie or values",
-                ));
+impl<'a> PendingEpmDecode<'a, &'a [u8]> {
+    fn new_borrowed(bytes: &'a [u8], validate_canonical: bool) -> Result<Self, TrieCodecError> {
+        let framing = parse_pending_framing(bytes)?;
+        let topology = match EPathMapMode::try_from(framing.raw_mode) {
+            Ok(EPathMapMode::Set | EPathMapMode::Map) => {
+                CanonicalCompactTrieTopologyCursor::new(&bytes[framing.arena.clone()])
+                    .map(PendingTopology::Borrowed)
+                    .map(Some)
+                    .map_err(TrieCodecError::from)
             }
-            Ok(EPathMapRepr::Empty)
-        }
-        EPathMapMode::Set => {
-            if !values.is_empty() {
-                return Err(TrieCodecError::new("set EPathMap carries map values"));
-            }
-            let mut trie = CanonicalCompactTrieCursor::new(arena)?;
-            validate_canonical_act_summary(
-                mode,
-                values.len(),
-                trie.is_empty(),
-                trie.value_summary(),
-            )?;
-            let mut map = PathMap::<()>::new();
-            while let Some(endpoint) = trie.next_endpoint() {
-                if !endpoint.path.is_empty() {
-                    map.create_path(endpoint.path);
-                }
-                if endpoint.value.is_some() {
-                    map.insert(endpoint.path, ());
-                }
-            }
-            if map.is_empty() {
-                return Err(TrieCodecError::new(
-                    "typed set mode is empty; use neutral empty mode",
-                ));
-            }
-            Ok(EPathMapRepr::Set(map))
-        }
-        EPathMapMode::Map => {
-            let mut trie = CanonicalCompactTrieCursor::new(arena)?;
-            validate_canonical_act_summary(
-                mode,
-                values.len(),
-                trie.is_empty(),
-                trie.value_summary(),
-            )?;
-            let mut map = PathMap::<Par>::new();
-            while let Some(endpoint) = trie.next_endpoint() {
-                if !endpoint.path.is_empty() {
-                    map.create_path(endpoint.path);
-                }
-                let Some(ordinal) = endpoint.value else {
-                    continue;
-                };
-                let index = usize::try_from(ordinal)
-                    .map_err(|_| TrieCodecError::new("map value ordinal overflows usize"))?;
-                let slot = values.get_mut(index).ok_or_else(|| {
-                    TrieCodecError::new(format!("map value ordinal {index} is out of range"))
-                })?;
-                let value = slot.take().ok_or_else(|| {
-                    TrieCodecError::new(format!("map value ordinal {index} is reused"))
-                })?;
-                map.insert(endpoint.path, value);
-            }
-            if map.is_empty() {
-                return Err(TrieCodecError::new(
-                    "typed map mode is empty; use neutral empty mode",
-                ));
-            }
-            if let Some(missing) = values.iter().position(Option::is_some) {
-                return Err(TrieCodecError::new(format!(
-                    "map value ordinal {missing} is unreferenced"
-                )));
-            }
-            Ok(EPathMapRepr::Map(map))
-        }
+            Ok(EPathMapMode::Empty) | Err(_) => Ok(None),
+        };
+        Ok(Self::from_parts(
+            bytes,
+            framing,
+            topology,
+            validate_canonical,
+        ))
     }
 }
 
-/// Decode and validate `EPM1`, then reconstruct PathMap directly through its
-/// insertion API. A canonicality fence rejects alternate encodings of the same
-/// trie, malformed ACT offsets, duplicate/missing value ordinals, and trailing
-/// bytes.
+/// Decode through the same pausable positional writer used by generated
+/// protobuf. This keeps synchronous and generated admission byte-for-byte and
+/// error-for-error aligned without an entry vector or a second reconstruction.
 fn decode_with(
     bytes: &[u8],
     decode_value: fn(&[u8]) -> Result<Par, prost::DecodeError>,
 ) -> Result<EPathMapRepr<Par>, TrieCodecError> {
-    let mut cursor = 0usize;
-    let magic = take(bytes, &mut cursor, EPM_MAGIC.len(), "EPM1 magic")?;
-    if magic != EPM_MAGIC {
-        return Err(TrieCodecError::new("invalid EPM1 magic"));
-    }
-    let version = *take(bytes, &mut cursor, 1, "EPM1 version")?
-        .first()
-        .expect("a one-byte slice has a first byte");
-    if version != EPM_VERSION {
-        return Err(TrieCodecError::new(format!(
-            "unsupported EPM1 version {version}"
-        )));
-    }
-    let mode = EPathMapMode::try_from(
-        *take(bytes, &mut cursor, 1, "EPM1 mode")?
-            .first()
-            .expect("a one-byte slice has a first byte"),
-    )?;
-    let arena_len = read_len(bytes, &mut cursor, "ACTree03 length")?;
-    let arena = take(bytes, &mut cursor, arena_len, "ACTree03 payload")?;
-    let value_count = read_len(bytes, &mut cursor, "map value count")?;
-
-    // Every value, including an empty protobuf `Par`, needs at least one byte
-    // for its length varint. Prove that lower bound against the actual input
-    // before reserving `Option<Par>` slots. This is not an artificial traversal
-    // ceiling: it is the information-theoretic bound `value_count <= remaining
-    // bytes`, and therefore accepts every physically representable EPM1 value
-    // table. Without it, one mutated count varint can ask the allocator for
-    // exabytes before the first missing length prefix is observed.
-    let remaining = bytes.len() - cursor;
-    if value_count > remaining {
-        return Err(TrieCodecError::new(format!(
-            "map value count {value_count} exceeds the {remaining}-byte payload lower bound"
-        )));
-    }
-
-    let mut first_noncanonical_value = None;
-    let mut values = Vec::with_capacity(value_count);
-    for ordinal in 0..value_count {
-        let len = read_len(bytes, &mut cursor, "map value length")?;
-        let payload = take(bytes, &mut cursor, len, "map value payload")?;
-        let value = decode_value(payload).map_err(|error| {
-            TrieCodecError::new(format!("map value {ordinal} is not a Par: {error}"))
+    let mut pending = PendingEpmDecode::new_borrowed(bytes, true)?;
+    while let Some(range) = pending.next_value_range()? {
+        let position = pending.decoded_values;
+        let value = decode_value(&bytes[range]).map_err(|error| {
+            TrieCodecError::new(format!("map value {position} is not a Par: {error}"))
         })?;
-        if first_noncanonical_value.is_none() && protobuf_encoder::encode_to_vec(&value) != payload
-        {
-            first_noncanonical_value = Some(ordinal);
-        }
-        values.push(Some(value));
+        pending.push_value(value)?;
     }
-    if cursor != bytes.len() {
-        return Err(TrieCodecError::new("trailing bytes after EPM1 payload"));
-    }
-
-    let repr = build_repr(mode, arena, values)?;
-    if let Some(ordinal) = first_noncanonical_value {
-        return Err(TrieCodecError::new(format!(
-            "map value {ordinal} protobuf body is not canonical"
-        )));
-    }
-    Ok(repr)
+    pending.finish()
 }
 
 pub fn decode(bytes: &[u8]) -> Result<EPathMapRepr<Par>, TrieCodecError> {
@@ -1593,16 +1814,16 @@ fn validate_canonical_act_summary(
     match mode {
         EPathMapMode::Set => {
             if summary.first_nonzero().is_some() {
-                return Err(TrieCodecError::new("set ACTree value ordinal is not zero"));
+                return Err(TrieCodecError::new("set ACTree value marker is not zero"));
             }
             if value_count != 0 {
                 return Err(TrieCodecError::new("set EPathMap carries map values"));
             }
         }
         EPathMapMode::Map => {
-            if let Some((_source_offset, ordinal, expected)) = summary.first_nonsequential() {
+            if let Some((_source_offset, marker)) = summary.first_nonzero() {
                 return Err(TrieCodecError::new(format!(
-                    "map ACTree value ordinal {ordinal} is not canonical ordinal {expected}"
+                    "map ACTree value marker {marker} is not zero"
                 )));
             }
             if summary.value_count() != value_count {
@@ -1781,7 +2002,7 @@ pub(crate) fn inspect_canonical_snapshot(
 /// Inspect canonical EPM1 topology and value bodies without materializing its
 /// keys. This is the region-cursor counterpart of `inspect_canonical_snapshot`:
 /// callers preserve the original compact arena and need only the ordered map
-/// value bodies supplied by its canonical ordinals.
+/// value bodies supplied in its canonical positional traversal order.
 pub(crate) fn inspect_canonical_snapshot_value_regions(
     bytes: &[u8],
 ) -> Result<CanonicalSnapshotValueRegions, TrieCodecError> {
@@ -1796,7 +2017,7 @@ pub(crate) fn inspect_canonical_snapshot_value_regions(
 
 /// Validate one EPM1 image and stream its exact logical PathMap topology.
 ///
-/// Canonical value-ordinal validation runs to completion before the first
+/// Canonical positional value-marker validation runs to completion before the first
 /// event becomes observable. The validated topology cursor then expands ACT
 /// line compression directly into the same DFS event language as a live
 /// `PathMap` zipper. No PathMap, key collection, or map value is constructed.
@@ -1938,11 +2159,15 @@ fn take<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
     use pathmap::arena_compact::COMPACT_TREE_MAGIC;
 
     use super::*;
     use crate::rhoapi::expr::ExprInstance;
-    use crate::rhoapi::{Expr, Par};
+    use crate::rhoapi::{EList, Expr, Par};
+    use crate::rust::canonical_path::encode_trie_path;
     use crate::rust::rholang::canonical_bytes_arena::{CanonicalBytesArena, CanonicalLocatedByte};
 
     const ACT_VALUE_FLAG: u8 = 0x40;
@@ -1974,6 +2199,88 @@ mod tests {
         }])
     }
 
+    /// Valid-input measurement control for comparing construction strategies.
+    /// It consumes values positionally and inserts them immediately at the
+    /// reusable endpoint cursor's current path: there is no `Vec<Par>` or
+    /// retained key projection. Production keeps the formally verified event
+    /// replay until this control has both semantic and performance authority.
+    fn decode_endpoint_insertion_control(
+        bytes: &[u8],
+    ) -> Result<EPathMapRepr<Par>, TrieCodecError> {
+        let framing = parse_pending_framing(bytes)?;
+        let mode = EPathMapMode::try_from(framing.raw_mode)?;
+        if mode == EPathMapMode::Empty {
+            if !framing.arena.is_empty() || framing.value_count != 0 {
+                return Err(TrieCodecError::new(
+                    "neutral empty EPathMap carries trie or values",
+                ));
+            }
+            return Ok(EPathMapRepr::Empty);
+        }
+
+        let mut trie = CanonicalCompactTrieCursor::new(&bytes[framing.arena.clone()])?;
+        validate_canonical_act_summary(
+            mode,
+            framing.value_count,
+            trie.is_empty(),
+            trie.value_summary(),
+        )?;
+        let mut value_cursor = framing.value_table_start;
+        let mut decoded_values = 0usize;
+
+        match mode {
+            EPathMapMode::Set => {
+                let mut map = PathMap::new();
+                while let Some(endpoint) = trie.next_endpoint() {
+                    if endpoint.value.is_some() {
+                        map.insert(endpoint.path, ());
+                    } else if !endpoint.path.is_empty() {
+                        map.create_path(endpoint.path);
+                    }
+                }
+                Ok(EPathMapRepr::Set(map))
+            }
+            EPathMapMode::Map => {
+                let mut map = PathMap::new();
+                while let Some(endpoint) = trie.next_endpoint() {
+                    if endpoint.value.is_some() {
+                        let len = read_len(bytes, &mut value_cursor, "map value length")?;
+                        let start = value_cursor;
+                        let body = take(bytes, &mut value_cursor, len, "map value payload")?;
+                        let value = protobuf_decoder::decode_par(body).map_err(|error| {
+                            TrieCodecError::new(format!(
+                                "map value {decoded_values} is not a Par: {error}"
+                            ))
+                        })?;
+                        let region = IndexedByteRegion::from_borrowed(body, 0, start);
+                        validate_canonical_par_protobuf_indexed(region).map_err(|_| {
+                            TrieCodecError::new(format!(
+                                "map value {decoded_values} protobuf body is not canonical"
+                            ))
+                        })?;
+                        map.insert(endpoint.path, value);
+                        decoded_values += 1;
+                    } else if !endpoint.path.is_empty() {
+                        map.create_path(endpoint.path);
+                    }
+                }
+                if decoded_values != framing.value_count {
+                    return Err(TrieCodecError::new(format!(
+                        "map ACTree references {decoded_values} values but EPM1 declares {}",
+                        framing.value_count
+                    )));
+                }
+                Ok(EPathMapRepr::Map(map))
+            }
+            EPathMapMode::Empty => unreachable!("empty mode returned before ACT construction"),
+        }
+    }
+
+    fn median_duration(mut samples: Vec<Duration>) -> Duration {
+        samples.sort_unstable();
+        samples[samples.len() / 2]
+    }
+
     fn paths<V: Clone + Send + Sync + Unpin + 'static>(map: &PathMap<V>) -> Vec<Vec<u8>> {
         let mut zipper = map.read_zipper();
         let mut paths = Vec::new();
@@ -1995,6 +2302,39 @@ mod tests {
             protobuf_encoder::encode_length_delimited_body_into(value, &mut snapshot);
         }
         snapshot
+    }
+
+    fn map_snapshot_from_raw_bodies(
+        arena: &[u8],
+        declared_count: usize,
+        bodies: &[&[u8]],
+    ) -> Vec<u8> {
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(EPM_MAGIC);
+        snapshot.push(EPM_VERSION);
+        snapshot.push(EPathMapMode::Map as u8);
+        push_varint(&mut snapshot, arena.len() as u64);
+        snapshot.extend_from_slice(arena);
+        push_varint(&mut snapshot, declared_count as u64);
+        for body in bodies {
+            push_varint(&mut snapshot, body.len() as u64);
+            snapshot.extend_from_slice(body);
+        }
+        snapshot
+    }
+
+    fn decode_through_owned_pending(bytes: Vec<u8>) -> Result<EPathMapRepr<Par>, TrieCodecError> {
+        let mut pending = PendingEpmDecode::new(Bytes::from(bytes), true)?;
+        while let Some(payload) = pending.next_value_bytes()? {
+            let value = protobuf_decoder::decode_par(payload.as_ref()).map_err(|error| {
+                TrieCodecError::new(format!(
+                    "map value {} is not a Par: {error}",
+                    pending.decoded_values
+                ))
+            })?;
+            pending.push_value(value)?;
+        }
+        pending.finish()
     }
 
     fn arena(root: usize, body: &[u8]) -> Vec<u8> {
@@ -2118,22 +2458,23 @@ mod tests {
     }
 
     #[test]
-    fn pending_decoder_borrows_act_region_from_owned_snapshot() {
+    fn pending_decoder_lends_value_body_from_owned_snapshot() {
         let mut map = PathMap::new();
         map.insert(b"shared/prefix/a", int(1));
         map.insert(b"shared/prefix/b", int(2));
         let snapshot = Bytes::from(encode(&EPathMapRepr::Map(map)));
-        let storage_start = snapshot.as_ptr();
+        let storage_start = snapshot.as_ptr() as usize;
+        let storage_end = storage_start + snapshot.len();
 
-        let pending = PendingEpmDecode::new(snapshot, true).expect("EPM1 header is valid");
-        let arena = &pending.snapshot.as_ref()[pending.arena.clone()];
+        let mut pending = PendingEpmDecode::new(snapshot, true).expect("EPM1 header is valid");
+        let body = pending
+            .next_value_bytes()
+            .expect("canonical value framing")
+            .expect("first map value body");
+        let body_start = body.as_ptr() as usize;
 
-        assert_eq!(
-            arena.as_ptr(),
-            storage_start.wrapping_add(pending.arena.start),
-            "the pausable decoder must index the owned snapshot, not copy the ACT arena"
-        );
-        assert!(arena.starts_with(&COMPACT_TREE_MAGIC));
+        assert!(body_start >= storage_start);
+        assert!(body_start + body.len() <= storage_end);
     }
 
     #[test]
@@ -2198,6 +2539,352 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_insertion_control_is_equivalent_and_measurable() {
+        let entries = std::env::var("EPM1_ENDPOINT_CONTROL_ENTRIES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(256usize);
+        let reps = std::env::var("EPM1_ENDPOINT_CONTROL_REPS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(3usize)
+            .max(1);
+        let value_bytes = 64usize;
+        let mut map = PathMap::new();
+        for index in 0..entries {
+            let key = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps: vec![int(7), int(11), int(13), int(index as i64)],
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            }]);
+            let value = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString(format!(
+                    "{index:08}-{}",
+                    "v".repeat(value_bytes)
+                ))),
+            }]);
+            map.insert(encode_trie_path(&key), value);
+        }
+        let snapshot = encode(&EPathMapRepr::Map(map));
+
+        let current = decode(&snapshot).expect("production positional replay");
+        let endpoint =
+            decode_endpoint_insertion_control(&snapshot).expect("endpoint insertion control");
+        assert_eq!(encode(&current), snapshot);
+        assert_eq!(encode(&endpoint), snapshot);
+
+        let mut current_samples = Vec::with_capacity(reps);
+        let mut endpoint_samples = Vec::with_capacity(reps);
+        for _ in 0..reps {
+            let started = Instant::now();
+            black_box(decode(black_box(&snapshot)).expect("production positional replay"));
+            current_samples.push(started.elapsed());
+
+            let started = Instant::now();
+            black_box(
+                decode_endpoint_insertion_control(black_box(&snapshot))
+                    .expect("endpoint insertion control"),
+            );
+            endpoint_samples.push(started.elapsed());
+        }
+        let current = median_duration(current_samples);
+        let endpoint = median_duration(endpoint_samples);
+        if std::env::var_os("EPM1_ENDPOINT_CONTROL_REPS").is_some() {
+            println!(
+                "epm1 endpoint construction control: entries={entries}, current={} ns, endpoint={} ns, current/endpoint={:.3}",
+                current.as_nanos(),
+                endpoint.as_nanos(),
+                current.as_nanos() as f64 / endpoint.as_nanos() as f64
+            );
+        }
+    }
+
+    #[test]
+    fn pathmap_anamorphism_prunes_topology_only_leaves() {
+        let map = PathMap::<()>::new_from_ana(0u8, |state, _value, children, _path| {
+            if state == 0 {
+                children.push(b"topology-only", 1);
+            }
+        });
+        assert!(
+            !map.path_exists_at(b"topology-only"),
+            "PathMap 0.2.2 prunes value-free anamorphic leaves; EPM1 cannot use a bare Map skeleton"
+        );
+        assert!(!map.contains(b"topology-only"));
+    }
+
+    #[test]
+    fn epm1_map_layout_writes_zero_marker_for_every_value_occurrence() {
+        let mut map = PathMap::new();
+        map.write_zipper().set_val(int(0));
+        map.insert(b"prefix", int(1));
+        map.insert(b"prefix/child", int(2));
+        map.insert(b"other", int(3));
+        map.create_path(b"topology/only");
+
+        let snapshot = encode(&EPathMapRepr::Map(map));
+        let prefix = parse_canonical_snapshot_prefix(&snapshot).expect("canonical EPM1 prefix");
+        let mut occurrences = 0usize;
+        visit_act(prefix.arena, |_path, marker| {
+            if let Some(marker) = marker {
+                assert_eq!(marker, 0, "EPM1 map markers are presence-only");
+                occurrences += 1;
+            }
+            Ok(())
+        })
+        .expect("canonical ACT image");
+        assert_eq!(occurrences, prefix.value_count);
+        assert_eq!(occurrences, 4);
+    }
+
+    #[test]
+    fn positional_replay_preserves_root_prefix_dense_and_topology_only_nodes() {
+        let mut map = PathMap::new();
+        map.write_zipper().set_val(int(-1));
+        map.insert(b"a", int(1));
+        map.insert(b"a/proper-prefix", int(2));
+        for byte in 0u8..=u8::MAX {
+            map.insert([b'd', byte], int(i64::from(byte) + 10));
+        }
+        map.create_path(b"topology/only");
+
+        let snapshot = encode(&EPathMapRepr::Map(map));
+        let decoded = decode(&snapshot).expect("positional EPM1 replay");
+        let EPathMapRepr::Map(decoded) = decoded else {
+            panic!("map mode changed during positional replay");
+        };
+
+        assert_eq!(decoded.get([]), Some(&int(-1)));
+        assert_eq!(decoded.get(b"a"), Some(&int(1)));
+        assert_eq!(decoded.get(b"a/proper-prefix"), Some(&int(2)));
+        for byte in 0u8..=u8::MAX {
+            assert_eq!(decoded.get([b'd', byte]), Some(&int(i64::from(byte) + 10)));
+        }
+        assert!(decoded.path_exists_at(b"topology/only"));
+        assert!(!decoded.contains(b"topology/only"));
+        assert_eq!(encode(&EPathMapRepr::Map(decoded)), snapshot);
+    }
+
+    #[test]
+    fn positional_occurrences_ignore_shared_cow_par_addresses() {
+        let mut shared = PathMap::new();
+        shared.insert(b"leaf", int(7));
+
+        let mut map = PathMap::new();
+        map.write_zipper_at_path(b"left/").graft_map(shared.clone());
+        map.insert(b"middle", int(9));
+        map.write_zipper_at_path(b"right/").graft_map(shared);
+
+        let left = map.get(b"left/leaf").expect("left shared leaf");
+        let right = map.get(b"right/leaf").expect("right shared leaf");
+        assert!(
+            std::ptr::eq(left, right),
+            "fixture must expose one CoW value address at two trie occurrences"
+        );
+
+        let snapshot = encode(&EPathMapRepr::Map(map));
+        let mut independently_allocated = PathMap::new();
+        independently_allocated.insert(b"left/leaf", int(7));
+        independently_allocated.insert(b"middle", int(9));
+        independently_allocated.insert(b"right/leaf", int(7));
+        assert_eq!(
+            snapshot,
+            encode(&EPathMapRepr::Map(independently_allocated)),
+            "CoW sharing and independently allocated equal values must have one EPM1 image"
+        );
+        let hint = snapshot_route_hint(&snapshot).expect("canonical positional prefix");
+        assert_eq!(hint.map_value_count(), 3);
+        let EPathMapRepr::Map(decoded) = decode(&snapshot).expect("shared occurrence replay")
+        else {
+            panic!("shared map changed mode");
+        };
+        assert_eq!(decoded.get(b"left/leaf"), Some(&int(7)));
+        assert_eq!(decoded.get(b"middle"), Some(&int(9)));
+        assert_eq!(decoded.get(b"right/leaf"), Some(&int(7)));
+    }
+
+    #[test]
+    fn certified_and_traversed_layout_counts_are_identical_for_every_mode() {
+        fn assert_layout<T>(repr: &EPathMapRepr<T>, certified: usize)
+        where T: Clone + Send + Sync + Unpin + 'static {
+            let traversed = layout(repr);
+            let maintained = layout_with_certified_value_count(repr, Some(certified));
+            assert_eq!(maintained.prefix(), traversed.prefix());
+            assert_eq!(maintained.value_count(), traversed.value_count());
+        }
+
+        assert_layout(&EPathMapRepr::<Par>::Empty, 0);
+
+        let mut set = PathMap::new();
+        set.insert(b"set/a", ());
+        set.insert(b"set/b", ());
+        set.create_path(b"set/topology-only");
+        assert_layout(&EPathMapRepr::<Par>::Set(set), 0);
+
+        let mut map = PathMap::new();
+        map.write_zipper().set_val(int(0));
+        map.insert(b"map/a", int(1));
+        map.insert(b"map/b", int(2));
+        map.create_path(b"map/topology-only");
+        assert_layout(&EPathMapRepr::Map(map), 3);
+    }
+
+    #[test]
+    fn missing_and_extra_framed_map_bodies_are_rejected_immediately() {
+        let one_value_arena = arena(16, &[ACT_VALUE_FLAG, 0]);
+
+        let missing = map_snapshot_from_raw_bodies(&one_value_arena, 1, &[]);
+        let missing_error = PendingEpmDecode::new(Bytes::from(missing), true)
+            .err()
+            .expect("missing framed body must fail construction");
+        assert_eq!(
+            missing_error.to_string(),
+            "map value count 1 exceeds the 0-byte payload lower bound"
+        );
+
+        let extra = map_snapshot_from_raw_bodies(&one_value_arena, 0, &[&[]]);
+        let extra_error = PendingEpmDecode::new(Bytes::from(extra), true)
+            .err()
+            .expect("extra framed body must fail construction");
+        assert_eq!(extra_error.to_string(), "trailing bytes after EPM1 payload");
+    }
+
+    #[test]
+    fn pending_decoder_publishes_only_from_successful_finish_without_partial_result() {
+        let one_value_arena = arena(16, &[ACT_VALUE_FLAG, 0]);
+        let snapshot = map_snapshot_from_raw_bodies(&one_value_arena, 1, &[&[]]);
+
+        let incomplete =
+            PendingEpmDecode::new(Bytes::from(snapshot.clone()), true).expect("canonical framing");
+        assert_eq!(
+            incomplete
+                .finish()
+                .err()
+                .expect("an undecoded body cannot publish a partial map")
+                .to_string(),
+            "fewer map values were decoded than the EPM1 value count"
+        );
+
+        let result = decode_through_owned_pending(snapshot).expect("complete pending replay");
+        let EPathMapRepr::Map(map) = result else {
+            panic!("successful finish changed map mode");
+        };
+        assert_eq!(map.get([]), Some(&Par::default()));
+    }
+
+    #[test]
+    fn child_errors_precede_deferred_act_and_noncanonical_body_errors() {
+        let nonzero_marker_arena = arena(16, &[ACT_VALUE_FLAG, 1]);
+        let malformed = map_snapshot_from_raw_bodies(&nonzero_marker_arena, 1, &[&[0x0f]]);
+        let child_error = decode_through_owned_pending(malformed)
+            .err()
+            .expect("malformed child must stop the generated pending path");
+        assert!(
+            child_error
+                .to_string()
+                .starts_with("map value 0 is not a Par:"),
+            "child error lost precedence: {child_error}"
+        );
+
+        // Prost and the generated child PDA accept explicit false, but the
+        // byte-native admission pass rejects it as a noncanonical default.
+        let explicit_false = [0x50, 0x00];
+        assert_eq!(
+            protobuf_decoder::decode_par(explicit_false.as_slice())
+                .expect("permissive child decode"),
+            Par::default()
+        );
+        let deferred = map_snapshot_from_raw_bodies(&nonzero_marker_arena, 1, &[&explicit_false]);
+        assert_eq!(
+            decode_through_owned_pending(deferred)
+                .err()
+                .expect("invalid ACT must reject after the child succeeds")
+                .to_string(),
+            "map ACTree value marker 1 is not zero"
+        );
+    }
+
+    #[test]
+    fn strict_indexed_raw_par_admission_rejects_alias_without_reencoding() {
+        let canonical_marker_arena = arena(16, &[ACT_VALUE_FLAG, 0]);
+        let explicit_false = [0x50, 0x00];
+        let snapshot = map_snapshot_from_raw_bodies(&canonical_marker_arena, 1, &[&explicit_false]);
+        assert_eq!(
+            decode_through_owned_pending(snapshot)
+                .err()
+                .expect("explicit default must fail strict byte-native admission")
+                .to_string(),
+            "map value 0 protobuf body is not canonical"
+        );
+    }
+
+    #[test]
+    fn synchronous_decode_and_generated_pending_core_are_byte_identical() {
+        let mut map = PathMap::new();
+        map.write_zipper().set_val(int(0));
+        map.insert(b"shared/a", int(1));
+        map.insert(b"shared/b", int(2));
+        map.create_path(b"topology/only");
+        let snapshot = encode(&EPathMapRepr::Map(map));
+
+        let synchronous = decode(&snapshot).expect("synchronous positional decode");
+        let generated_core = decode_through_owned_pending(snapshot.clone())
+            .expect("owned pending positional decode");
+        assert_eq!(encode(&synchronous), snapshot);
+        assert_eq!(encode(&generated_core), snapshot);
+    }
+
+    #[test]
+    fn positional_decoder_is_stack_safe_on_a_small_stack_at_depth_4096() {
+        const DEPTH: usize = 4_096;
+        const STACK: usize = 256 * 1024;
+
+        let key = vec![0xa5; DEPTH];
+        let mut map = PathMap::new();
+        map.insert(&key, int(1));
+        let snapshot = encode(&EPathMapRepr::Map(map));
+
+        std::thread::Builder::new()
+            .name("positional-epm1-decode-depth".to_owned())
+            .stack_size(STACK)
+            .spawn(move || {
+                let EPathMapRepr::Map(decoded) =
+                    decode(&snapshot).expect("deep positional EPM1 decode")
+                else {
+                    panic!("deep map changed mode");
+                };
+                assert_eq!(decoded.get(&key), Some(&int(1)));
+            })
+            .expect("spawn fixed small-stack positional decode probe")
+            .join()
+            .expect("positional decode and linear PathMap drop remain stack-safe");
+    }
+
+    #[test]
+    fn map_count_crossing_u32_boundary_is_rejected_without_allocation() {
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(EPM_MAGIC);
+        snapshot.push(EPM_VERSION);
+        snapshot.push(EPathMapMode::Map as u8);
+        push_varint(&mut snapshot, 0);
+        push_varint(&mut snapshot, u64::from(u32::MAX) + 1);
+
+        let error = PendingEpmDecode::new(Bytes::from(snapshot), true)
+            .err()
+            .expect("impossible boundary count must be rejected");
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(error.to_string(), "map value count overflows usize");
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            error.to_string(),
+            "map value count 4294967296 exceeds the 0-byte payload lower bound"
+        );
+    }
+
+    #[test]
     fn encoded_view_lookup_borrows_the_first_requested_act_value() {
         let mut map = PathMap::new();
         map.insert(b"same/prefix/a", int(1));
@@ -2228,7 +2915,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_epm1_cursor_lends_keys_and_value_regions_in_ordinal_order() {
+    fn canonical_epm1_cursor_lends_keys_and_value_regions_in_positional_order() {
         let mut map = PathMap::new();
         map.insert(b"same/prefix/a", int(1));
         map.insert(b"same/prefix/b", int(2));
@@ -2568,7 +3255,7 @@ mod tests {
             (invalid_magic, false),
             (trailing, false),
             (set_with_value, false),
-            // The validated ACT plan proves ordinal count before exposing the
+            // The validated ACT plan proves positional value count before exposing the
             // first indexed topology event; this must fail at admission.
             (map_count_mismatch, false),
         ] {
@@ -2844,15 +3531,16 @@ mod tests {
     }
 
     #[test]
-    fn direct_act_replay_rejects_uncompressed_unary_nodes_and_ordinal_permutations() {
+    fn direct_act_replay_rejects_uncompressed_unary_nodes_and_nonzero_map_markers() {
         // Alternate encoding of path "a": a value-free unary branch over a
         // value leaf. PathMap's jumping writer emits one line node instead.
         let unary = arena(18, &[ACT_VALUE_FLAG, 0, 1, 2, b'a']);
         assert!(decode(&map_snapshot_from_arena(&unary, &[int(1)])).is_err());
 
-        // Structurally valid two-leaf branch, but its value ordinals run 1,0
-        // instead of PathMap zipper order 0,1.
-        let permuted = arena(20, &[
+        // Structurally valid two-leaf branch, but its first value marker is
+        // nonzero. EPM1 association is positional, so all stored markers are
+        // the zero presence sentinel.
+        let nonzero = arena(20, &[
             ACT_VALUE_FLAG,
             1,
             ACT_VALUE_FLAG,
@@ -2863,8 +3551,8 @@ mod tests {
             b'b',
         ]);
         assert!(
-            decode(&map_snapshot_from_arena(&permuted, &[int(1), int(2)])).is_err(),
-            "a noncanonical ACT ordinal permutation was accepted"
+            decode(&map_snapshot_from_arena(&nonzero, &[int(1), int(2)])).is_err(),
+            "a nonzero positional ACT marker was accepted"
         );
     }
 
@@ -2879,7 +3567,7 @@ mod tests {
             0,
             2,
             ACT_LINE_FLAG | ACT_VALUE_FLAG,
-            1,
+            0,
             5,
             2,
             6,
@@ -2904,7 +3592,7 @@ mod tests {
             0,
             4,
             ACT_LINE_FLAG | ACT_VALUE_FLAG,
-            1,
+            0,
             5,
             2,
             6,

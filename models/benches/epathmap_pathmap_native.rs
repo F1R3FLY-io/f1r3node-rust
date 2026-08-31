@@ -6,6 +6,7 @@
 //! EPM1 encoding, indexed lookup, algebra, merkleization, and serialized size.
 //! No projection is retained by production code.
 
+use std::collections::HashMap;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -14,7 +15,10 @@ use models::rhoapi::{EList, EPathMap, Expr, Par};
 use models::rust::canonical_path::encode_trie_path;
 use models::rust::epathmap_trie_codec::{self, EPathMapRepr};
 use models::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
+use pathmap::arena_compact::ArenaCompactTree;
+use pathmap::zipper::ZipperReadOnlyIteration;
 use prost::bytes::Bytes;
+use prost::encoding::encode_varint;
 
 fn gint(value: i64) -> Par {
     Par::default().with_exprs(vec![Expr {
@@ -76,6 +80,36 @@ fn ns_per(duration: Duration, operations: usize) -> f64 {
     duration.as_nanos() as f64 / operations.max(1) as f64
 }
 
+fn legacy_address_ordinal_map_snapshot(repr: &EPathMapRepr<Par>) -> Vec<u8> {
+    let EPathMapRepr::Map(map) = repr else {
+        panic!("legacy ordinal control requires map mode")
+    };
+    let mut ordinal_by_address = HashMap::new();
+    let mut zipper = map.read_zipper();
+    let mut value_count = 0usize;
+    while let Some(value) = zipper.to_next_get_val() {
+        ordinal_by_address.insert(value as *const Par as usize, value_count as u64);
+        value_count += 1;
+    }
+    let arena = ArenaCompactTree::from_zipper(map.read_zipper(), |value| {
+        ordinal_by_address[&(value as *const Par as usize)]
+    });
+
+    let mut snapshot = Vec::new();
+    snapshot.extend_from_slice(b"EPM1");
+    snapshot.extend_from_slice(&[1, 2]);
+    encode_varint(arena.get_data().len() as u64, &mut snapshot);
+    snapshot.extend_from_slice(arena.get_data());
+    encode_varint(value_count as u64, &mut snapshot);
+    let mut zipper = map.read_zipper();
+    while let Some(value) = zipper.to_next_get_val() {
+        let body = protobuf_encoder::encode_to_vec(value);
+        encode_varint(body.len() as u64, &mut snapshot);
+        snapshot.extend_from_slice(&body);
+    }
+    snapshot
+}
+
 fn main() {
     let entries = std::env::var("EPATHMAP_BENCH_ENTRIES")
         .ok()
@@ -90,6 +124,7 @@ fn main() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(64usize);
+    let focus = std::env::var("EPATHMAP_BENCH_FOCUS").ok();
 
     let (set, map, encoded_keys) = fixtures(entries, value_bytes);
     let set_projection = set.entry_trie().entries_owned();
@@ -100,12 +135,34 @@ fn main() {
 
     let set_epm1 = epathmap_trie_codec::encode(set.representation());
     let map_epm1 = epathmap_trie_codec::encode(map.representation());
+    let legacy_map_epm1 = legacy_address_ordinal_map_snapshot(map.representation());
     let set_protobuf = Bytes::from(protobuf_encoder::encode_to_vec(&set));
     let map_protobuf = Bytes::from(protobuf_encoder::encode_to_vec(&map));
     let set_bincode = bincode_encoder::encode(&set);
     let map_bincode = bincode_encoder::encode(&map);
     let set_projection_bytes = bincode::serialize(&set_projection).unwrap();
     let map_projection_bytes = bincode::serialize(&map_projection).unwrap();
+
+    // A profiling-only route keeps sampling tools on one production operation
+    // instead of diluting their call graph across this benchmark's full matrix.
+    // It deliberately calls the public decoder and does not introduce a
+    // benchmark-only implementation of EPM1 admission.
+    if focus.as_deref() == Some("map_epm1_decode") {
+        let iterations = std::env::var("EPATHMAP_BENCH_FOCUS_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10_000usize);
+        let started = Instant::now();
+        for _ in 0..iterations {
+            black_box(epathmap_trie_codec::decode(black_box(&map_epm1)).unwrap());
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "map,focused_epm1_decode_ns_per_iteration,{:.2},iterations={iterations}",
+            ns_per(elapsed, iterations)
+        );
+        return;
+    }
 
     let set_native_lookup = measure(reps, || {
         let EPathMapRepr::Set(trie) = set.representation() else {
@@ -144,6 +201,9 @@ fn main() {
     });
     let map_cold_encode = measure(reps, || {
         black_box(epathmap_trie_codec::encode(map.representation()));
+    });
+    let legacy_map_cold_encode = measure(reps, || {
+        black_box(legacy_address_ordinal_map_snapshot(map.representation()));
     });
     black_box(set.trie_snapshot());
     black_box(map.trie_snapshot());
@@ -230,6 +290,12 @@ fn main() {
         map_projection_bytes.len() as f64 / map_epm1.len() as f64
     );
     println!(
+        "map,positional_vs_legacy_serialized_bytes,{},{},{:.3}",
+        map_epm1.len(),
+        legacy_map_epm1.len(),
+        legacy_map_epm1.len() as f64 / map_epm1.len() as f64
+    );
+    println!(
         "set,lookup_ns_per_key,{:.2},{:.2},{:.3}",
         ns_per(set_native_lookup, entries),
         ns_per(set_projection_lookup, entries),
@@ -243,6 +309,12 @@ fn main() {
     );
     println!("set,cold_epm1_ns,{},{},-", set_cold_encode.as_nanos(), 0);
     println!("map,cold_epm1_ns,{},{},-", map_cold_encode.as_nanos(), 0);
+    println!(
+        "map,positional_vs_legacy_cold_epm1_ns,{},{},{:.3}",
+        map_cold_encode.as_nanos(),
+        legacy_map_cold_encode.as_nanos(),
+        legacy_map_cold_encode.as_nanos() as f64 / map_cold_encode.as_nanos() as f64
+    );
     println!(
         "set,warm_snapshot_accessor_ns,{},{},-",
         set_warm_snapshot.as_nanos(),

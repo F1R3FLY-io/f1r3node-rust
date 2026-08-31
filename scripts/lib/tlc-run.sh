@@ -110,21 +110,39 @@ tlc_metadir() {
 # `tlc_run ... >log 2>&1`.
 tlc_run() {
   local metadir="$1" config="$2" module="$3"
+  local invocation_metadir tlc_status
   shift 3
   mkdir -p "$metadir"
+  # TLC names its own child directory with one-second timestamp precision.
+  # Fast, consecutive mutant checks can therefore collide even though the
+  # preceding process has exited. Give every invocation a private parent so
+  # TLC's timestamp is never shared by two runs.
+  invocation_metadir="$(mktemp -d "$metadir/tlc-run.XXXXXX")"
   if [[ -f "$TLC_JAR" ]]; then
     # Preferred: java with an explicit -Xmx (no env-var gymnastics).
-    tlc_bounded java "-Xmx$TLC_HEAP" -XX:+UseParallelGC -cp "$TLC_JAR" tlc2.TLC \
-      -workers "$TLC_WORKERS" -metadir "$metadir" -config "$config" "$@" "$module"
+    if tlc_bounded java "-Xmx$TLC_HEAP" -XX:+UseParallelGC -cp "$TLC_JAR" tlc2.TLC \
+      -workers "$TLC_WORKERS" -metadir "$invocation_metadir" -config "$config" "$@" "$module"; then
+      tlc_status=0
+    else
+      tlc_status=$?
+    fi
   elif command -v tlc >/dev/null 2>&1; then
     # Fallback: the `tlc` wrapper honours TLC_JAVA_OPTS for the JVM heap.
     # Export inside a subshell so the assignment reaches the wrapped java.
-    (
+    if (
       export TLC_JAVA_OPTS="-Xmx$TLC_HEAP ${TLC_JAVA_OPTS:-}"
-      tlc_bounded tlc -workers "$TLC_WORKERS" -metadir "$metadir" -config "$config" "$@" "$module"
-    )
+      tlc_bounded tlc -workers "$TLC_WORKERS" -metadir "$invocation_metadir" -config "$config" "$@" "$module"
+    ); then
+      tlc_status=0
+    else
+      tlc_status=$?
+    fi
   else
     echo "tlc-run: no TLC jar at $TLC_JAR and no 'tlc' on PATH" >&2
-    return 3
+    tlc_status=3
   fi
+  # `-cleanup` normally leaves the private parent empty. Preserve it when TLC
+  # retained diagnostics, but do not accumulate empty per-run directories.
+  rmdir "$invocation_metadir" 2>/dev/null || true
+  return "$tlc_status"
 }

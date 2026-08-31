@@ -1,6 +1,7 @@
 # ACTree03 canonical writer and validator completeness
 
-Status: kernel-checked formal authority; executable correspondence refinement in progress
+Status: kernel-checked ACTree03 and positional EPM1 formal authority;
+executable correspondence refinement in progress
 
 This Rocq project proves that the stack-safe ACTree03 validator accepts every
 canonical byte image emitted by the modeled PathMap writer. It closes the
@@ -18,13 +19,24 @@ assumptions:
 - equivalence between recursive semantic replay and the explicit enter/finish
   pushdown automaton; and
 - acceptance of every canonical ordinary-writer output by the direct
-  validator.
+  validator;
+- one zero ACT sentinel per structural value occurrence, with no sequential
+  ordinal or allocation-address semantics;
+- lexicographic lockstep between independently traversed source bodies and
+  ACT value endpoints, including a root value;
+- exact maintained/fallback endpoint-count agreement; and
+- positional child-PDA suspension, owned-focus installation, error precedence,
+  failure nonpublication, and exactly-once successful publication.
 
-The numbered filenames preserve the audited proof lineage. The final authority
-is `Epm1ActConcreteV5.v`; earlier files provide definitions and lemmas imported
-by that capstone rather than competing production specifications. The two
-`Mutants.v` files are negative controls and must continue to compile their
-counterexamples against deliberately altered decisions.
+The numbered filenames preserve the audited proof lineage. The concrete
+ACTree03 writer/parser authority is `Epm1ActConcreteV5.v` and the joined
+physical/positional authority is `Epm1PositionalAssociationV6.v`; earlier files
+provide definitions and lemmas imported by those capstones rather than
+competing production specifications. The three `Mutants.v` files are negative
+controls and must continue to compile their counterexamples against
+deliberately altered decisions. V6 specifically kills pointer/address collapse,
+sequential ordinals, nonzero sentinels, skipped/duplicated/wrong/root endpoints,
+early/double publication, precedence inversion, and missing/extra bodies.
 
 Run the project under a hard memory ceiling:
 
@@ -32,7 +44,8 @@ Run the project under a hard memory ceiling:
 systemd-run --user --scope \
   -p MemoryMax=1536M -p MemorySwapMax=0 \
   coqc -Q theories '' theories/Epm1CursorAuthorityV2.v
-# Continue in _CoqProject order through Epm1ActConcreteV5Mutants.v.
+# Continue in _CoqProject order through
+# Epm1PositionalAssociationV6Mutants.v.
 ```
 
 The repository gate `scripts/check-stack-safe-pda-proofs.sh` performs that

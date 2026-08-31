@@ -1,10 +1,15 @@
+use std::collections::HashMap;
+
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, EPathMap, ESet, Expr, Par};
 use models::rust::canonical_path::{decode_trie_path, encode_trie_path};
-use models::rust::epathmap_trie_codec::EPathMapMode;
+use models::rust::epathmap_trie_codec::{EPathMapMode, EPathMapRepr};
 use models::rust::rholang::{bincode_encoder, protobuf_decoder, protobuf_encoder};
+use pathmap::arena_compact::ArenaCompactTree;
+use pathmap::zipper::ZipperReadOnlyIteration;
 use prost::encoding::{encode_key, encode_varint, WireType};
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 
 fn gint(value: i64) -> Par {
@@ -95,6 +100,38 @@ fn legacy_set_field(entry: &Par) -> Vec<u8> {
     bytes
 }
 
+fn legacy_address_ordinal_map_snapshot(map: &EPathMap) -> Vec<u8> {
+    let EPathMapRepr::Map(trie) = map.representation() else {
+        panic!("legacy ordinal fixture requires map mode")
+    };
+    let mut ordinal_by_address = HashMap::new();
+    let mut zipper = trie.read_zipper();
+    let mut value_count = 0usize;
+    while let Some(value) = zipper.to_next_get_val() {
+        ordinal_by_address.insert(value as *const Par as usize, value_count as u64);
+        value_count += 1;
+    }
+    let arena = ArenaCompactTree::from_zipper(trie.read_zipper(), |value| {
+        ordinal_by_address[&(value as *const Par as usize)]
+    });
+
+    let mut snapshot = Vec::new();
+    snapshot.extend_from_slice(b"EPM1");
+    snapshot.extend_from_slice(&[1, EPathMapMode::Map as u8]);
+    encode_varint(arena.get_data().len() as u64, &mut snapshot);
+    snapshot.extend_from_slice(arena.get_data());
+    encode_varint(value_count as u64, &mut snapshot);
+    let mut zipper = trie.read_zipper();
+    while let Some(value) = zipper.to_next_get_val() {
+        let body = protobuf_encoder::encode_to_vec(value);
+        encode_varint(body.len() as u64, &mut snapshot);
+        snapshot.extend_from_slice(&body);
+    }
+    snapshot
+}
+
+fn blake2b256_hex(bytes: &[u8]) -> String { hex::encode(Blake2b256Hash::new(bytes).bytes()) }
+
 #[test]
 fn protobuf_field_9_is_the_canonical_epm1_snapshot() {
     let map = EPathMap::new(vec![gint(1), gint(2), gint(3)], Vec::new(), false, None);
@@ -114,6 +151,40 @@ fn protobuf_field_9_is_the_canonical_epm1_snapshot() {
     let message = EPathMap::decode(bytes.as_slice()).unwrap();
     assert_eq!(generated, map);
     assert_eq!(message, map);
+}
+
+#[test]
+fn positional_map_golden_records_legacy_wire_movement_beyond_single_byte_markers() {
+    let map = EPathMap::new_map(
+        (0..300).map(|index| {
+            (
+                gstring(&format!("key-{index:03}")),
+                gint(i64::try_from(index).expect("the 300-entry fixture fits i64")),
+            )
+        }),
+        Vec::new(),
+        false,
+        None,
+    );
+    let legacy = legacy_address_ordinal_map_snapshot(&map);
+    let positional = map.trie_snapshot();
+
+    assert_ne!(legacy, positional);
+    assert!(models::rust::epathmap_trie_codec::decode(&legacy).is_err());
+    assert_eq!(
+        (
+            legacy.len(),
+            blake2b256_hex(&legacy),
+            positional.len(),
+            blake2b256_hex(positional),
+        ),
+        (
+            2_893,
+            "8e993d430f4d2ce952e2b7e23d1eb3f349b9f47882d4b7f20a01b263db63a799".to_owned(),
+            2_785,
+            "156026678dc02f4beb826bd9e3b40494e804f67240f4ebb68472d0e7ebb06a50".to_owned(),
+        ),
+    );
 }
 
 #[test]

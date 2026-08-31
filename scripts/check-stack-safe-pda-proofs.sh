@@ -129,6 +129,8 @@ tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV4.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV4Mutants.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5Mutants.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1PositionalAssociationV6.v
+tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1PositionalAssociationV6Mutants.v
 popd >/dev/null
 TLC_RSS="$previous_tlc_rss"
 
@@ -139,6 +141,8 @@ if [[ -z "$verus_bin" || ! -x "$verus_bin" ]]; then
 fi
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/epathmap_canonical_worklist.rs"
+tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+  "$repo_root/formal/verus/epm1_positional_association.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/bag_checked_delta.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
@@ -821,6 +825,40 @@ for transcript_mutant in \
   if ! grep -q "Invariant ${transcript_invariant} is violated" \
       <<<"$transcript_output"; then
     echo "stack-safe-pda: ${transcript_label} mutant failed without ${transcript_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  Epm1PositionalAssociation.cfg Epm1PositionalAssociation.tla -cleanup
+for epm1_positional_mutant in \
+  SequentialMarker:Epm1PositionalSequentialMarkerMutant.cfg:MarkersAreZero \
+  NonzeroMarker:Epm1PositionalNonzeroMarkerMutant.cfg:MarkersAreZero \
+  RootOmission:Epm1PositionalRootOmissionMutant.cfg:AssignmentPrefixIsExact \
+  AddressCollapse:Epm1PositionalAddressCollapseMutant.cfg:AssignmentPrefixIsExact \
+  SkipEndpoint:Epm1PositionalSkipEndpointMutant.cfg:AssignmentPrefixIsExact \
+  WrongEndpoint:Epm1PositionalWrongEndpointMutant.cfg:AssignmentPrefixIsExact \
+  DuplicateEndpoint:Epm1PositionalDuplicateEndpointMutant.cfg:AssignmentPrefixIsExact \
+  MissingBody:Epm1PositionalMissingBodyMutant.cfg:AssignmentPrefixIsExact \
+  ExtraBody:Epm1PositionalExtraBodyMutant.cfg:AssignmentPrefixIsExact \
+  EarlyPublish:Epm1PositionalEarlyPublishMutant.cfg:PublicationRequiresCompleteLockstep \
+  DoublePublish:Epm1PositionalDoublePublishMutant.cfg:PublicationIsExactlyOnce \
+  ErrorPrecedence:Epm1PositionalPrecedenceMutant.cfg:ChildErrorPrecedesDeferredAct; do
+  epm1_positional_label="${epm1_positional_mutant%%:*}"
+  epm1_positional_tail="${epm1_positional_mutant#*:}"
+  epm1_positional_cfg="${epm1_positional_tail%%:*}"
+  epm1_positional_invariant="${epm1_positional_tail#*:}"
+  if epm1_positional_output="$({
+    tlc_run "$tla_metadir" "$epm1_positional_cfg" \
+      Epm1PositionalAssociation.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$epm1_positional_output"
+    echo "stack-safe-pda: ${epm1_positional_label} EPM1 positional mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$epm1_positional_output"
+  if ! grep -q "Invariant ${epm1_positional_invariant} is violated" \
+      <<<"$epm1_positional_output"; then
+    echo "stack-safe-pda: ${epm1_positional_label} mutant failed without ${epm1_positional_invariant}" >&2
     exit 1
   fi
 done

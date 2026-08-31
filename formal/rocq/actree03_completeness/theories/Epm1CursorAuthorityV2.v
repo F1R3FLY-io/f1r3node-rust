@@ -3280,18 +3280,24 @@ Inductive deployment_evidence : Type :=
 | NoPersistedOrDeployedEpm1Found
 | PersistedOrDeployedEpm1Found.
 
+Inductive compatibility_policy : Type :=
+| PreserveUnknownLegacyImages
+| BreakingUnknownLegacyImagesAuthorized.
+
 Record format_history_manifest : Type := {
   epm1_absent_from_dev : bool;
   epm1_absent_from_origin_dev : bool;
   introducing_commit_has_release_tag : bool;
-  observed_deployment_evidence : deployment_evidence
+  observed_deployment_evidence : deployment_evidence;
+  campaign_compatibility_policy : compatibility_policy
 }.
 
 Definition observed_campaign_history : format_history_manifest :=
   {| epm1_absent_from_dev := true;
      epm1_absent_from_origin_dev := true;
      introducing_commit_has_release_tag := false;
-     observed_deployment_evidence := DeploymentUnknown |}.
+     observed_deployment_evidence := DeploymentUnknown;
+     campaign_compatibility_policy := BreakingUnknownLegacyImagesAuthorized |}.
 
 Inductive release_encoding_strategy : Type :=
 | AmendUnreleasedEpm1
@@ -3299,11 +3305,19 @@ Inductive release_encoding_strategy : Type :=
 
 Definition release_strategy_recommendation
     (manifest : format_history_manifest) : option release_encoding_strategy :=
-  match observed_deployment_evidence manifest with
-  | DeploymentUnknown => None
-  | NoPersistedOrDeployedEpm1Found => Some AmendUnreleasedEpm1
-  | PersistedOrDeployedEpm1Found => Some AddDualVersionEpm2
+  match observed_deployment_evidence manifest,
+        campaign_compatibility_policy manifest with
+  | PersistedOrDeployedEpm1Found, _ => Some AddDualVersionEpm2
+  | NoPersistedOrDeployedEpm1Found, _ => Some AmendUnreleasedEpm1
+  | DeploymentUnknown, PreserveUnknownLegacyImages => None
+  | DeploymentUnknown, BreakingUnknownLegacyImagesAuthorized =>
+      Some AmendUnreleasedEpm1
   end.
+
+Theorem campaign_policy_authorizes_amending_unreleased_epm1 :
+  release_strategy_recommendation observed_campaign_history =
+    Some AmendUnreleasedEpm1.
+Proof. reflexivity. Qed.
 
 (** ** Streaming ordered lookup and byte-native body admission
 

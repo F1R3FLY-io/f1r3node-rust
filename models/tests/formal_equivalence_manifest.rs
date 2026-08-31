@@ -269,6 +269,60 @@ const ACTREE03_CORRESPONDENCE: &[Actree03Correspondence] = &[
     },
 ];
 
+#[derive(Clone, Copy)]
+struct Epm1PositionalCorrespondence {
+    id: &'static str,
+    theorem: &'static str,
+    production_marker: &'static str,
+    executable_marker: &'static str,
+}
+
+const EPM1_POSITIONAL_CORRESPONDENCE: &[Epm1PositionalCorrespondence] = &[
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-001",
+        theorem: "canonical_zero_writer_has_one_zero_sentinel_per_logical_endpoint",
+        production_marker: "ArenaCompactTree::from_zipper(map.read_zipper(), |_| 0)",
+        executable_marker: "epm1_map_layout_writes_zero_marker_for_every_value_occurrence",
+    },
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-002",
+        theorem: "canonical_writer_and_image_are_address_independent",
+        production_marker: "ArenaCompactTree::from_zipper(map.read_zipper(), |_| 0)",
+        executable_marker: "positional_occurrences_ignore_shared_cow_par_addresses",
+    },
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-003",
+        theorem: "canonical_zero_writer_is_accepted_by_concrete_act_parser",
+        production_marker: "CanonicalCompactTrieTopologyCursor::new(&bytes[framing.arena.clone()])",
+        executable_marker: "positional_replay_preserves_root_prefix_dense_and_topology_only_nodes",
+    },
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-004",
+        theorem: "admitted_positional_run_publishes_exactly_once",
+        production_marker: "pub(crate) fn finish(mut self)",
+        executable_marker:
+            "pending_decoder_publishes_only_from_successful_finish_without_partial_result",
+    },
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-005",
+        theorem: "positional_entry_count_and_count_free_machine_agree",
+        production_marker: "layout_with_certified_value_count",
+        executable_marker: "certified_and_traversed_layout_counts_are_identical_for_every_mode",
+    },
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-006",
+        theorem: "positional_error_precedence_is_total",
+        production_marker: "first_semantic_error",
+        executable_marker: "child_errors_precede_deferred_act_and_noncanonical_body_errors",
+    },
+    Epm1PositionalCorrespondence {
+        id: "EPM1-POS-007",
+        theorem: "epm1_positional_act_body_association_capstone",
+        production_marker: "fn advance_to_map_value(&mut self)",
+        executable_marker: "synchronous_decode_and_generated_pending_core_are_byte_identical",
+    },
+];
+
 #[test]
 fn every_actree03_proof_obligation_has_a_mechanical_executable_binding() {
     const EXPECTED_IDS: &[&str] = &[
@@ -345,6 +399,63 @@ fn every_actree03_proof_obligation_has_a_mechanical_executable_binding() {
         ids,
         EXPECTED_IDS.iter().copied().collect(),
         "the ACTree03 proof-to-executable property inventory changed",
+    );
+}
+
+#[test]
+fn every_epm1_positional_obligation_has_a_mechanical_executable_binding() {
+    const EXPECTED_IDS: &[&str] = &[
+        "EPM1-POS-001",
+        "EPM1-POS-002",
+        "EPM1-POS-003",
+        "EPM1-POS-004",
+        "EPM1-POS-005",
+        "EPM1-POS-006",
+        "EPM1-POS-007",
+    ];
+    const PROOF_FILE: &str =
+        "formal/rocq/actree03_completeness/theories/Epm1PositionalAssociationV6.v";
+    const PRODUCTION_FILE: &str = "models/src/rust/epathmap_trie_codec.rs";
+
+    let proof = read_repository_file(PROOF_FILE);
+    let production = read_repository_file(PRODUCTION_FILE);
+    let mut ids = BTreeSet::new();
+    for binding in EPM1_POSITIONAL_CORRESPONDENCE {
+        assert!(
+            ids.insert(binding.id),
+            "duplicate EPM1 positional property {}",
+            binding.id
+        );
+        assert!(
+            proof.contains(&format!("Theorem {}", binding.theorem))
+                || proof.contains(&format!("Corollary {}", binding.theorem)),
+            "{} names absent theorem `{}`",
+            binding.id,
+            binding.theorem,
+        );
+        assert!(
+            proof.contains(&format!("Print Assumptions {}.", binding.theorem)),
+            "{} does not expose `{}` to the kernel-assumption gate",
+            binding.id,
+            binding.theorem,
+        );
+        assert!(
+            production.contains(binding.production_marker),
+            "{} names absent production marker `{}`",
+            binding.id,
+            binding.production_marker,
+        );
+        assert!(
+            production.contains(binding.executable_marker),
+            "{} names absent executable marker `{}`",
+            binding.id,
+            binding.executable_marker,
+        );
+    }
+    assert_eq!(
+        ids,
+        EXPECTED_IDS.iter().copied().collect(),
+        "the EPM1 positional proof-to-executable inventory changed",
     );
 }
 
@@ -531,6 +642,8 @@ fn rocq_kernel_contains_no_unproved_declarations() {
         "formal/rocq/actree03_completeness/theories/Epm1CursorPositiveV4Mutants.v",
         "formal/rocq/actree03_completeness/theories/Epm1ActConcreteV5.v",
         "formal/rocq/actree03_completeness/theories/Epm1ActConcreteV5Mutants.v",
+        "formal/rocq/actree03_completeness/theories/Epm1PositionalAssociationV6.v",
+        "formal/rocq/actree03_completeness/theories/Epm1PositionalAssociationV6Mutants.v",
     ] {
         let source = read_repository_file(relative);
         for forbidden in ["Admitted.", "admit.", "Axiom ", "Parameter "] {

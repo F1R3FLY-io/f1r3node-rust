@@ -3221,6 +3221,19 @@ pub(crate) fn validate_canonical_component_protobuf_indexed<'src>(
         })
 }
 
+/// Prove that one raw `Par` body is an exact image of the generated canonical
+/// protobuf encoder without constructing or re-encoding a rhoapi value.
+///
+/// EPM1 uses this narrow entry point after its generated child PDA has
+/// successfully decoded the body.  Keeping admission byte-native avoids the
+/// former encode-to-`Vec<u8>` comparison while preserving child-error-first
+/// precedence.
+pub(crate) fn validate_canonical_par_protobuf_indexed(
+    input: IndexedByteRegion<'_>,
+) -> Result<(), CanonicalProtobufAdmissionError> {
+    validate_canonical_protobuf_inner(input, &PAR_PROTOBUF_REGION_PROGRAM, None).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

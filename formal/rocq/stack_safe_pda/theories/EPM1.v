@@ -408,89 +408,108 @@ Theorem epm1_rejects_invalid_mode :
   forall payload, decode_epm1 (epm_magic ++ [epm_version; 3] ++ payload) = None.
 Proof. reflexivity. Qed.
 
-Definition canonical_ordinals (values : list bytes) : list nat :=
+Definition canonical_body_positions (values : list bytes) : list nat :=
   seq 0 (length values).
 
-Theorem canonical_value_ordinals_are_bijective :
+(** ACTree03 map values are occurrence markers, not indexes into the protobuf
+    body stream.  Every physical marker is zero.  Association is positional:
+    the [n]th valued endpoint in canonical unsigned-byte lexicographic order
+    receives the [n]th framed body. *)
+Definition positional_value_sentinels (values : list bytes) : list nat :=
+  repeat 0 (length values).
+
+Theorem canonical_body_positions_are_bijective :
   forall values,
-    NoDup (canonical_ordinals values) /\
-    forall ordinal,
-      In ordinal (canonical_ordinals values) <-> ordinal < length values.
+    NoDup (canonical_body_positions values) /\
+    forall position,
+      In position (canonical_body_positions values) <-> position < length values.
 Proof.
   intro values. split.
   - apply seq_NoDup.
-  - intro ordinal. unfold canonical_ordinals. rewrite in_seq. lia.
+  - intro position. unfold canonical_body_positions. rewrite in_seq. lia.
 Qed.
 
-Theorem canonical_ordinal_indexes_its_value :
-  forall values ordinal,
-    ordinal < length values ->
-    nth_error (canonical_ordinals values) ordinal = Some ordinal /\
-    exists value, nth_error values ordinal = Some value.
+Theorem canonical_body_position_indexes_its_value :
+  forall values position,
+    position < length values ->
+    nth_error (canonical_body_positions values) position = Some position /\
+    exists value, nth_error values position = Some value.
 Proof.
-  intros values ordinal bounded. split.
-  - unfold canonical_ordinals. rewrite nth_error_seq.
-    assert (in_range : (ordinal <? length values) = true).
+  intros values position bounded. split.
+  - unfold canonical_body_positions. rewrite nth_error_seq.
+    assert (in_range : (position <? length values) = true).
     { apply Nat.ltb_lt. exact bounded. }
     rewrite in_range. reflexivity.
   - apply nth_error_Some in bounded.
-    destruct (nth_error values ordinal) eqn:found; [eauto|congruence].
+    destruct (nth_error values position) eqn:found; [eauto|congruence].
 Qed.
 
-Theorem epm1_round_trip_preserves_ordinal_value_association :
-  forall snapshot decoded ordinal value,
+Theorem positional_value_sentinels_are_zero_and_count_exact :
+  forall values,
+    Forall (fun marker => marker = 0) (positional_value_sentinels values) /\
+    length (positional_value_sentinels values) = length values.
+Proof.
+  intro values. unfold positional_value_sentinels. split.
+  - rewrite Forall_forall. intros marker member.
+    apply repeat_spec in member. exact member.
+  - apply repeat_length.
+Qed.
+
+Theorem epm1_round_trip_preserves_positional_value_association :
+  forall snapshot decoded position value,
     mode_well_formedb snapshot = true ->
     decode_epm1 (encode_epm1 snapshot) = Some decoded ->
-    nth_error (value_bodies snapshot) ordinal = Some value ->
-    nth_error (value_bodies decoded) ordinal = Some value.
+    nth_error (value_bodies snapshot) position = Some value ->
+    nth_error (value_bodies decoded) position = Some value.
 Proof.
-  intros snapshot decoded ordinal value valid decoded_equal association.
+  intros snapshot decoded position value valid decoded_equal association.
   rewrite (epm1_framed_decode_encode_identity snapshot valid) in decoded_equal.
   injection decoded_equal as same. subst decoded. exact association.
 Qed.
 
-Section TopologyOrdinalAssociation.
+Section TopologyPositionalAssociation.
 
-Variable extract_value_ordinals : bytes -> option (list nat).
+Variable extract_value_markers : bytes -> option (list nat).
 
-Definition topology_value_association (snapshot : epm1_snapshot) : Prop :=
+Definition topology_positional_value_association (snapshot : epm1_snapshot) : Prop :=
   match snapshot_mode snapshot with
   | MapMode =>
-      extract_value_ordinals (topology_arena snapshot) =
-        Some (canonical_ordinals (value_bodies snapshot))
+      extract_value_markers (topology_arena snapshot) =
+        Some (positional_value_sentinels (value_bodies snapshot))
   | Neutral | SetMode =>
-      extract_value_ordinals (topology_arena snapshot) = Some []
+      extract_value_markers (topology_arena snapshot) = Some []
   end.
 
-Theorem epm1_round_trip_preserves_topology_value_association :
+Theorem epm1_round_trip_preserves_topology_positional_value_association :
   forall snapshot decoded,
     mode_well_formedb snapshot = true ->
-    topology_value_association snapshot ->
+    topology_positional_value_association snapshot ->
     decode_epm1 (encode_epm1 snapshot) = Some decoded ->
-    topology_value_association decoded.
+    topology_positional_value_association decoded.
 Proof.
   intros snapshot decoded valid association decoded_equal.
   rewrite (epm1_framed_decode_encode_identity snapshot valid) in decoded_equal.
   injection decoded_equal as same. now subst decoded.
 Qed.
 
-Theorem associated_map_ordinals_are_in_range_and_unique :
+Theorem associated_map_markers_are_zero_and_count_exact :
   forall snapshot,
     snapshot_mode snapshot = MapMode ->
-    topology_value_association snapshot ->
-    exists ordinals,
-      extract_value_ordinals (topology_arena snapshot) = Some ordinals /\
-      NoDup ordinals /\
-      forall ordinal, In ordinal ordinals <-> ordinal < length (value_bodies snapshot).
+    topology_positional_value_association snapshot ->
+    exists markers,
+      extract_value_markers (topology_arena snapshot) = Some markers /\
+      Forall (fun marker => marker = 0) markers /\
+      length markers = length (value_bodies snapshot).
 Proof.
-  intros snapshot map_mode association. unfold topology_value_association in association.
+  intros snapshot map_mode association.
+  unfold topology_positional_value_association in association.
   rewrite map_mode in association.
-  exists (canonical_ordinals (value_bodies snapshot)).
+  exists (positional_value_sentinels (value_bodies snapshot)).
   split; [exact association|].
-  apply canonical_value_ordinals_are_bijective.
+  apply positional_value_sentinels_are_zero_and_count_exact.
 Qed.
 
-End TopologyOrdinalAssociation.
+End TopologyPositionalAssociation.
 
 Definition validation_algebra (local_valid : bool) (children : list bool) : bool :=
   local_valid && forallb (fun valid => valid) children.

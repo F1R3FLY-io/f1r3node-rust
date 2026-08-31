@@ -444,17 +444,17 @@ pub static EPATHMAP_FORMAL_EVIDENCE: &[EquivalenceEvidence] = &[
         executable_marker: "value_bearing_map_is_a_lossless_nested_canonical_path_segment",
     },
     EquivalenceEvidence {
-        surface: "EPathMap::EPM1 topology/value ordinal association",
+        surface: "EPathMap::EPM1 topology/value positional association",
         proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
-        theorem: "epm1_round_trip_preserves_topology_value_association",
+        theorem: "epm1_round_trip_preserves_topology_positional_value_association",
         executable_file: "models/tests/epathmap_epm1_snapshot.rs",
         executable_marker:
             "live_store_preserves_map_mode_and_key_value_associations_on_both_surfaces",
     },
     EquivalenceEvidence {
-        surface: "EPathMap::EPM1 ordinal uniqueness and range",
+        surface: "EPathMap::EPM1 zero markers and exact positional count",
         proof_file: "formal/rocq/stack_safe_pda/theories/EPM1.v",
-        theorem: "associated_map_ordinals_are_in_range_and_unique",
+        theorem: "associated_map_markers_are_zero_and_count_exact",
         executable_file: "models/tests/epathmap_epm1_snapshot.rs",
         executable_marker:
             "map_snapshot_preserves_values_across_compact_line_branch_and_dense_shapes",

@@ -779,8 +779,16 @@ impl EntryTrie {
 
     #[inline]
     pub(crate) fn epm_layout(&self) -> &epathmap_trie_codec::EpmLayout {
-        self.epm_layout
-            .get_or_init(|| epathmap_trie_codec::layout(&self.repr))
+        self.epm_layout.get_or_init(|| {
+            let certified_value_count = match self.repr {
+                EPathMapRepr::Map(_) => self.len,
+                EPathMapRepr::Empty | EPathMapRepr::Set(_) => 0,
+            };
+            epathmap_trie_codec::layout_with_certified_value_count(
+                &self.repr,
+                Some(certified_value_count),
+            )
+        })
     }
 
     #[cfg(test)]
