@@ -462,12 +462,10 @@ pub struct CasperShardConf {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
-    /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
-    /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
-    /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
-    /// operators can size the cache for their validator set without
-    /// recompiling. Distinct from the `runtime_manager`'s own 256-entry
-    /// validator-key cache.
+    /// Maximum entries in `compute_snapshot`'s `active_validators_cache`.
+    /// Always `ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT` in production —
+    /// no conf key feeds it. Distinct from the `runtime_manager`'s own
+    /// 256-entry validator-key cache.
     pub active_validators_cache_max_entries: usize,
 }
 

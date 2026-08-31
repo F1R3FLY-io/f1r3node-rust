@@ -196,10 +196,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
-            // Phase 13: default matches the previous hardcoded constant
-            // (`MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES = 4096`). When CasperConf
-            // gains a corresponding field, plumb it through here.
-            active_validators_cache_max_entries: 4096,
+            active_validators_cache_max_entries:
+                crate::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
         };
 
         Self {

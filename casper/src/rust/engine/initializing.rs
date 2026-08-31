@@ -380,7 +380,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     retry_count = retry_count,
                     "Retrying approved block request after NoApprovedBlockAvailable"
                 );
-                sleep(Duration::from_secs(10)).await;
+                const APPROVED_BLOCK_RETRY_DELAY: Duration = Duration::from_secs(10);
+                sleep(APPROVED_BLOCK_RETRY_DELAY).await;
                 self.transport_layer
                     .request_approved_block(&self.rp_conf_ask, Some(self.trim_state))
                     .await
@@ -824,10 +825,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let tuple_space_requester =
             TupleSpaceRequester::new(&self.transport_layer, &self.rp_conf_ask);
 
-        // Keep LFS retry cadence configurable instead of hard-coding a long startup delay.
-        // Falls back to 5s when env var is absent or invalid.
-        let lfs_request_timeout = Duration::from_secs(5);
+        const LFS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
         const LFS_SYNC_DEADLINE: Duration = Duration::from_secs(600);
+        let lfs_request_timeout = LFS_REQUEST_TIMEOUT;
 
         // **Scala equivalent**: Create both streams (blockRequestStream and tupleSpaceStream)
         let (block_request_stream_result, tuple_space_stream_result) = tokio::join!(
@@ -939,7 +939,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     *sender_slot = Some(horizon_tx);
                 }
 
-                let request_timeout = Duration::from_secs(30);
+                const HORIZON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+                let request_timeout = HORIZON_REQUEST_TIMEOUT;
                 tracing::info!(
                     "LFS forward-horizon: requesting {} ancestor rspace roots below LFB",
                     horizon_roots.len()

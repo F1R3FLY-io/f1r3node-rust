@@ -1157,6 +1157,9 @@ async fn wait_for_first_connection(
     }
 }
 
+/// Pause after a failed loop iteration to avoid tight error loops.
+const LOOP_ERROR_RETRY_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(5);
+
 /// Run the Casper loop indefinitely
 ///
 /// Periodically fetches dependencies and maintains requested blocks.
@@ -1169,8 +1172,7 @@ async fn run_casper_loop(casper_loop: CasperLoop) -> eyre::Result<()> {
             }
             Err(e) => {
                 tracing::error!(error = %e, "casper loop iteration failed");
-                // Sleep a bit before retrying to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
             }
         }
     }
@@ -1188,8 +1190,7 @@ async fn run_update_fork_choice_loop(update_fork_choice_loop: CasperLoop) -> eyr
             }
             Err(e) => {
                 tracing::error!(error = %e, "fork choice update loop iteration failed");
-                // Sleep a bit before retrying to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
             }
         }
     }
@@ -1209,8 +1210,7 @@ async fn run_mergeable_channels_gc_loop(gc_loop: CasperLoop) -> eyre::Result<()>
             }
             Err(e) => {
                 tracing::error!(error = %e, "mergeable channels GC loop iteration failed");
-                // Sleep a bit before retrying to avoid tight error loops
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(LOOP_ERROR_RETRY_DELAY).await;
             }
         }
     }

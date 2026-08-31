@@ -45,6 +45,8 @@ use crate::rust::errors::CasperError;
 
 /// Per-chunk page size for state-item requests. Matches the value used
 /// by `lfs_tuple_space_requester` for LFB-state subtree pagination.
+/// Per-request chunk size, carried in the request (the responder pages by
+/// it); independent of `lfs_tuple_space_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 1024;
 
 /// Per-chunk request status. Mirrors `lfs_tuple_space_requester::ReqStatus`.
@@ -555,7 +557,7 @@ pub async fn stream<T: HorizonRequesterOps>(
         })?;
     }
 
-    let max_request_timeout = Duration::from_secs(128);
+    let max_request_timeout = crate::rust::engine::lfs_block_requester::LFS_MAX_REQUEST_TIMEOUT;
 
     let stream = async_stream::stream! {
         if nothing_to_do {

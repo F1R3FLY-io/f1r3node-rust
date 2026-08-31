@@ -110,6 +110,7 @@ pub struct TransportLayerService {
 }
 
 /// Default capacity for the recent hash filter
+const GRPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const RECENT_HASH_FILTER_CAPACITY: usize = 8192;
 /// Inbound per-peer queue sizing tuned for catch-up bursts.
 /// Small values cause drops that can amplify missing-dependency churn.
@@ -623,11 +624,10 @@ impl GrpcTransportReceiver {
         let f1r3fly_server = F1r3flyServer::builder(network_id.clone(), &cert_pem, &key_pem, addr)
             .map_err(|e| CommError::ConfigError(format!("F1r3fly server creation failed: {}", e)))?
             .handshake_timeout(handshake_timeout)
-            // Configure TCP settings to match the previous tonic configuration
-            .tcp_keepalive(Some(std::time::Duration::from_secs(600))) // 10 minutes
+            .tcp_keepalive(Some(super::f1r3fly_server::TCP_KEEPALIVE))
             .tcp_nodelay(true)
-            .http2_keepalive_interval(Some(std::time::Duration::from_secs(30)))
-            .http2_keepalive_timeout(Some(std::time::Duration::from_secs(5)));
+            .http2_keepalive_interval(Some(super::f1r3fly_server::HTTP2_KEEPALIVE_INTERVAL))
+            .http2_keepalive_timeout(Some(super::f1r3fly_server::HTTP2_KEEPALIVE_TIMEOUT));
 
         // Create incoming connection stream with F1r3fly TLS
         let incoming = f1r3fly_server.incoming().await.map_err(|e| {
@@ -642,11 +642,9 @@ impl GrpcTransportReceiver {
             );
 
             let server_result = Server::builder()
-                // Request timeout (30s): Maximum time for a single gRPC request to complete.
-                // Prevents hanging requests from consuming resources indefinitely.
-                // Essential for blockchain P2P networks where nodes can be slow or unresponsive.
-                // 30 seconds allows time for large block transfers but prevents infinite waits.
-                .timeout(std::time::Duration::from_secs(30))
+                // Long enough for large block transfers, bounded so a slow
+                // peer cannot hold a request open indefinitely.
+                .timeout(GRPC_REQUEST_TIMEOUT)
                 // TCP keepalive - handled by F1r3flyServer configuration above
                 // TCP nodelay - handled by F1r3flyServer configuration above
                 // HTTP/2 keepalive interval - handled by F1r3flyServer configuration above

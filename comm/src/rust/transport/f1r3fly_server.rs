@@ -34,6 +34,11 @@ use crate::rust::transport::f1r3fly_tls_transport::{
 /// it is still waiting.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Inter-node keepalive settings, shared with `grpc_transport_receiver`.
+pub const TCP_KEEPALIVE: Duration = Duration::from_secs(600);
+pub const HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+pub const HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Timeout for handing a completed handshake off to the connection channel.
 /// The channel is bounded (`mpsc::channel(10)`); if the receiver (tonic's
 /// accept loop) falls behind draining it, `send().await` blocks forever,
@@ -101,10 +106,10 @@ impl F1r3flyServer {
         Ok(Self {
             acceptor,
             bind_addr,
-            tcp_keepalive: Some(Duration::from_secs(600)), // Default 10 minutes
+            tcp_keepalive: Some(TCP_KEEPALIVE),
             tcp_nodelay: true,
-            http2_keepalive_interval: Some(Duration::from_secs(30)),
-            http2_keepalive_timeout: Some(Duration::from_secs(5)),
+            http2_keepalive_interval: Some(HTTP2_KEEPALIVE_INTERVAL),
+            http2_keepalive_timeout: Some(HTTP2_KEEPALIVE_TIMEOUT),
             // Falls back to the constant below; callers with an `RPConf` should
             // pass `rp_config.default_timeout` so a stalled handshake does not
             // outlive the timeout the peer that opened it is actually using.

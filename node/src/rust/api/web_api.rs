@@ -357,7 +357,7 @@ impl WebApiImpl {
 #[async_trait::async_trait]
 impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<ApiStatus> {
-        const STATUS_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+        use crate::rust::web::shared_handlers::STATUS_SLOW_THRESHOLD;
         let total_start = Instant::now();
 
         let rp_conf_start = Instant::now();

@@ -298,13 +298,14 @@ impl HeartbeatProposer {
                             }
 
                             consecutive_failures = consecutive_failures.saturating_add(1);
-                            // Exponential backoff capped at 60s to avoid invalid-propose churn.
-                            let shift = consecutive_failures.min(4);
+                            // Exponential backoff to avoid invalid-propose churn.
+                            const BACKOFF_SHIFT_CAP: u32 = 4;
+                            const BACKOFF_MAX_DELAY: Duration = Duration::from_secs(60);
+                            let shift = consecutive_failures.min(BACKOFF_SHIFT_CAP);
                             let scale = 1u32 << shift;
                             let mut delay = config.check_interval.saturating_mul(scale);
-                            let max_delay = Duration::from_secs(60);
-                            if delay > max_delay {
-                                delay = max_delay;
+                            if delay > BACKOFF_MAX_DELAY {
+                                delay = BACKOFF_MAX_DELAY;
                             }
                             backoff_until = Some(std::time::Instant::now() + delay);
                             tracing::warn!(
