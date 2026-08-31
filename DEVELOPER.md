@@ -173,6 +173,8 @@ cargo test -p rholang
 ./scripts/run_rust_tests.sh
 
 # Line coverage (requires cargo-llvm-cov and the llvm-tools-preview component)
+# Src-shipped test scaffolding (test_utils dirs, block-storage/src/rust/test)
+# is excluded from the measured denominator; see scripts/coverage.sh.
 just coverage            # every crate
 just coverage casper     # one crate
 ```

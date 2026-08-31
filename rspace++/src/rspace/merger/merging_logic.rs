@@ -2286,3 +2286,336 @@ mod merge_algebra_gap3_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod conflict_reason_and_event_indexed_tests {
+    use super::*;
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    fn mk_produce(id: u8, persistent: bool) -> Produce {
+        Produce::new(mk_hash(id), mk_hash(id), persistent)
+    }
+
+    fn mk_consume(id: u8, persistent: bool) -> Consume {
+        Consume {
+            channel_hashes: vec![mk_hash(id)],
+            hash: mk_hash(100 + id),
+            persistent,
+        }
+    }
+
+    #[test]
+    fn conflict_reason_is_none_when_no_conflict() {
+        let a = EventLogIndex::empty();
+        let b = EventLogIndex::empty();
+        assert_eq!(conflict_reason(&a, &b), None);
+        assert!(!are_conflicting(&a, &b));
+    }
+
+    #[test]
+    fn conflict_reason_names_produce_race() {
+        let p = mk_produce(1, false);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.produces_consumed.0.insert(p.clone());
+        b.produces_consumed.0.insert(p);
+
+        let reason = conflict_reason(&a, &b).expect("shared consumed produce must be a conflict");
+        assert!(reason.contains("racesForSameIOEvent"), "{reason}");
+        assert!(reason.contains("produceRaces=1"), "{reason}");
+        assert!(!reason.contains("consumeRaces"), "{reason}");
+        assert!(are_conflicting(&a, &b));
+    }
+
+    #[test]
+    fn conflict_reason_names_consume_race() {
+        let c = mk_consume(2, false);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.consumes_produced.0.insert(c.clone());
+        b.consumes_produced.0.insert(c);
+
+        let reason = conflict_reason(&a, &b).expect("shared produced consume must be a conflict");
+        assert!(reason.contains("consumeRaces=1"), "{reason}");
+        assert!(!reason.contains("produceRaces"), "{reason}");
+    }
+
+    #[test]
+    fn conflict_reason_names_both_race_kinds() {
+        let p = mk_produce(1, false);
+        let c = mk_consume(2, false);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.produces_consumed.0.insert(p.clone());
+        b.produces_consumed.0.insert(p);
+        a.consumes_produced.0.insert(c.clone());
+        b.consumes_produced.0.insert(c);
+
+        let reason = conflict_reason(&a, &b).unwrap();
+        assert!(reason.contains("consumeRaces=1"), "{reason}");
+        assert!(reason.contains("produceRaces=1"), "{reason}");
+    }
+
+    #[test]
+    fn conflict_reason_names_potential_comm() {
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.produces_linear.0.insert(mk_produce(3, false));
+        b.consumes_linear_and_peeks.0.insert(mk_consume(3, false));
+
+        let reason = conflict_reason(&a, &b).expect("cross-branch produce/consume match");
+        assert!(reason.contains("potentialCOMMs"), "{reason}");
+        assert!(reason.contains("a->b=1"), "{reason}");
+    }
+
+    #[test]
+    fn conflict_reason_names_produce_touching_base_join() {
+        let mut a = EventLogIndex::empty();
+        let b = EventLogIndex::empty();
+        a.produces_touching_base_joins
+            .0
+            .insert(mk_produce(4, false));
+
+        let reason = conflict_reason(&a, &b).unwrap();
+        assert!(reason.contains("produceTouchBaseJoin: count=1"), "{reason}");
+    }
+
+    #[test]
+    fn conflict_reason_skips_mergeable_and_persistent_races() {
+        let p = mk_produce(1, false);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.produces_consumed.0.insert(p.clone());
+        b.produces_consumed.0.insert(p.clone());
+        a.produces_mergeable.0.insert(p.clone());
+        b.produces_mergeable.0.insert(p);
+        assert_eq!(conflict_reason(&a, &b), None);
+
+        let persistent = mk_produce(2, true);
+        let mut x = EventLogIndex::empty();
+        let mut y = EventLogIndex::empty();
+        x.produces_consumed.0.insert(persistent.clone());
+        y.produces_consumed.0.insert(persistent);
+        assert_eq!(conflict_reason(&x, &y), None);
+    }
+
+    #[test]
+    fn depends_map_with_fewer_than_two_branches_is_empty() {
+        let e = EventLogIndex::empty();
+        let map = compute_depends_map_event_indexed(&[0], &[&e]);
+        assert_eq!(map.len(), 1);
+        assert!(map.get(&0).unwrap().0.is_empty());
+
+        let empty: HashMap<i32, HashableSet<i32>> = compute_depends_map_event_indexed(&[], &[]);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn depends_map_links_produce_source_to_consuming_target() {
+        let p = mk_produce(1, false);
+        let mut source = EventLogIndex::empty();
+        let mut target = EventLogIndex::empty();
+        source.produces_linear.0.insert(p.clone());
+        target.produces_consumed.0.insert(p);
+
+        assert!(depends(&target, &source));
+
+        let map = compute_depends_map_event_indexed(&[0, 1], &[&source, &target]);
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn depends_map_links_persistent_produce_source() {
+        let p = mk_produce(1, true);
+        let mut source = EventLogIndex::empty();
+        let mut target = EventLogIndex::empty();
+        source.produces_persistent.0.insert(p.clone());
+        target.produces_consumed.0.insert(p);
+
+        let map = compute_depends_map_event_indexed(&[0, 1], &[&source, &target]);
+        assert!(map.get(&0).unwrap().0.contains(&1));
+    }
+
+    #[test]
+    fn depends_map_excludes_mergeable_produces() {
+        let p = mk_produce(1, false);
+        let mut source = EventLogIndex::empty();
+        let mut target = EventLogIndex::empty();
+        source.produces_linear.0.insert(p.clone());
+        source.produces_mergeable.0.insert(p.clone());
+        target.produces_consumed.0.insert(p);
+
+        assert!(!depends(&target, &source));
+
+        let map = compute_depends_map_event_indexed(&[0, 1], &[&source, &target]);
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn depends_map_links_consume_source_to_producing_target() {
+        let c = mk_consume(5, false);
+        let mut source = EventLogIndex::empty();
+        let mut target = EventLogIndex::empty();
+        source.consumes_linear_and_peeks.0.insert(c.clone());
+        target.consumes_produced.0.insert(c);
+
+        assert!(depends(&target, &source));
+
+        let map = compute_depends_map_event_indexed(&[0, 1], &[&source, &target]);
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn depends_map_ignores_internally_destroyed_events() {
+        let p = mk_produce(1, false);
+        let mut both = EventLogIndex::empty();
+        both.produces_linear.0.insert(p.clone());
+        both.produces_consumed.0.insert(p);
+        let other = EventLogIndex::empty();
+
+        let map = compute_depends_map_event_indexed(&[0, 1], &[&both, &other]);
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn depends_map_agrees_with_relation_map_over_depends() {
+        let p = mk_produce(1, false);
+        let c = mk_consume(2, false);
+
+        let mut e0 = EventLogIndex::empty();
+        e0.produces_linear.0.insert(p.clone());
+        let mut e1 = EventLogIndex::empty();
+        e1.produces_consumed.0.insert(p);
+        e1.consumes_linear_and_peeks.0.insert(c.clone());
+        let mut e2 = EventLogIndex::empty();
+        e2.consumes_produced.0.insert(c);
+
+        let logs = [&e0, &e1, &e2];
+        let branches = [0usize, 1, 2];
+        let indexed = compute_depends_map_event_indexed(&branches, &logs);
+
+        let items: HashableSet<usize> = HashableSet(branches.iter().copied().collect());
+        let pairwise =
+            compute_relation_map(&items, |x: &usize, y: &usize| depends(logs[*x], logs[*y]));
+
+        assert_eq!(indexed, pairwise);
+    }
+
+    #[test]
+    fn conflict_map_with_fewer_than_two_branches_is_empty() {
+        let e = EventLogIndex::empty();
+        let map = compute_conflict_map_event_indexed(&[7], &[&e]);
+        assert_eq!(map.len(), 1);
+        assert!(map.get(&7).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn conflict_map_skips_persistent_produce_races() {
+        let p = mk_produce(1, true);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.produces_consumed.0.insert(p.clone());
+        b.produces_consumed.0.insert(p);
+
+        let map = compute_conflict_map_event_indexed(&[0, 1], &[&a, &b]);
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn conflict_map_detects_consume_race() {
+        let c = mk_consume(2, false);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.consumes_produced.0.insert(c.clone());
+        b.consumes_produced.0.insert(c);
+
+        let map = compute_conflict_map_event_indexed(&[0, 1], &[&a, &b]);
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn conflict_map_exempts_consume_race_when_both_mergeable() {
+        let c = mk_consume(2, false);
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.consumes_produced.0.insert(c.clone());
+        b.consumes_produced.0.insert(c.clone());
+        a.consumes_mergeable.0.insert(c.clone());
+        b.consumes_mergeable.0.insert(c);
+
+        let map = compute_conflict_map_event_indexed(&[0, 1], &[&a, &b]);
+        assert!(map.get(&0).unwrap().0.is_empty());
+        assert!(map.get(&1).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn conflict_map_detects_potential_comm_from_persistent_events() {
+        let mut a = EventLogIndex::empty();
+        let mut b = EventLogIndex::empty();
+        a.produces_persistent.0.insert(mk_produce(3, true));
+        b.consumes_persistent.0.insert(mk_consume(3, true));
+
+        let map = compute_conflict_map_event_indexed(&[0, 1], &[&a, &b]);
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+    }
+
+    #[test]
+    fn conflict_map_base_join_branch_conflicts_with_every_other_branch() {
+        let mut joiner = EventLogIndex::empty();
+        joiner
+            .produces_touching_base_joins
+            .0
+            .insert(mk_produce(4, false));
+        let plain_a = EventLogIndex::empty();
+        let plain_b = EventLogIndex::empty();
+
+        let map = compute_conflict_map_event_indexed(&[0, 1, 2], &[&joiner, &plain_a, &plain_b]);
+        assert!(map.get(&0).unwrap().0.contains(&1));
+        assert!(map.get(&0).unwrap().0.contains(&2));
+        assert!(map.get(&1).unwrap().0.contains(&0));
+        assert!(map.get(&2).unwrap().0.contains(&0));
+        assert!(!map.get(&1).unwrap().0.contains(&2));
+        assert!(!map.get(&2).unwrap().0.contains(&1));
+    }
+
+    #[test]
+    fn conflict_map_agrees_with_pairwise_are_conflicting() {
+        let p = mk_produce(1, false);
+        let mut e0 = EventLogIndex::empty();
+        e0.produces_consumed.0.insert(p.clone());
+        let mut e1 = EventLogIndex::empty();
+        e1.produces_consumed.0.insert(p);
+        let mut e2 = EventLogIndex::empty();
+        e2.produces_linear.0.insert(mk_produce(9, false));
+
+        let logs = [&e0, &e1, &e2];
+        let branches = [0usize, 1, 2];
+        let indexed = compute_conflict_map_event_indexed(&branches, &logs);
+
+        let items: HashableSet<usize> = HashableSet(branches.iter().copied().collect());
+        let pairwise = compute_relation_map(&items, |x: &usize, y: &usize| {
+            are_conflicting(logs[*x], logs[*y])
+        });
+
+        assert_eq!(indexed, pairwise);
+    }
+
+    #[test]
+    fn gather_related_sets_returns_singletons_when_no_relations() {
+        let mut relation_map: HashMap<i32, HashableSet<i32>> = HashMap::new();
+        relation_map.insert(1, HashableSet(HashSet::new()));
+        relation_map.insert(2, HashableSet(HashSet::new()));
+
+        let groups = gather_related_sets(&relation_map);
+        assert_eq!(groups.0.len(), 2);
+        assert!(groups.0.iter().all(|g| g.0.len() == 1));
+    }
+}

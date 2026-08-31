@@ -478,3 +478,233 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nil_round_trip_and_negative() {
+        assert!(RhoNil::unapply(&RhoNil::create_par()));
+        assert!(!RhoNil::unapply(&RhoNumber::create_par(1)));
+        assert_eq!(
+            <RhoNil as Extractor>::unapply(&RhoNil::create_par()),
+            Some(())
+        );
+        assert_eq!(
+            <RhoNil as Extractor>::unapply(&RhoNumber::create_par(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn byte_array_round_trip_and_negative() {
+        let par = RhoByteArray::create_par(vec![1, 2, 3]);
+        assert_eq!(RhoByteArray::unapply(&par), Some(vec![1, 2, 3]));
+        assert_eq!(RhoByteArray::unapply(&RhoNumber::create_par(1)), None);
+        assert_eq!(
+            <RhoByteArray as Extractor>::unapply(&par),
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn string_round_trip_and_negative() {
+        let par = RhoString::create_par("hi".to_string());
+        assert_eq!(RhoString::unapply(&par), Some("hi".to_string()));
+        assert_eq!(RhoString::unapply(&RhoNumber::create_par(1)), None);
+        assert_eq!(
+            <RhoString as Extractor>::unapply(&par),
+            Some("hi".to_string())
+        );
+    }
+
+    #[test]
+    fn boolean_round_trip_and_negative() {
+        let par = RhoBoolean::create_par(true);
+        assert_eq!(RhoBoolean::unapply(&par), Some(true));
+        assert_eq!(RhoBoolean::unapply(&RhoNumber::create_par(1)), None);
+        assert_eq!(
+            RhoBoolean::create_expr(false).expr_instance,
+            Some(ExprInstance::GBool(false))
+        );
+        assert_eq!(<RhoBoolean as Extractor>::unapply(&par), Some(true));
+    }
+
+    #[test]
+    fn number_round_trip_and_negative() {
+        let par = RhoNumber::create_par(42);
+        assert_eq!(RhoNumber::unapply(&par), Some(42));
+        assert_eq!(RhoNumber::unapply(&RhoBoolean::create_par(true)), None);
+        assert_eq!(<RhoNumber as Extractor>::unapply(&par), Some(42));
+    }
+
+    #[test]
+    fn tuple2_round_trip_and_negatives() {
+        let par = RhoTuple2::create_par((
+            RhoNumber::create_par(1),
+            RhoString::create_par("a".to_string()),
+        ));
+        assert_eq!(
+            RhoTuple2::unapply(&par),
+            Some((
+                RhoNumber::create_par(1),
+                RhoString::create_par("a".to_string())
+            ))
+        );
+        assert_eq!(RhoTuple2::unapply(&RhoNumber::create_par(1)), None);
+
+        let triple = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![Par::default(), Par::default(), Par::default()],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+        assert_eq!(RhoTuple2::unapply(&triple), None);
+
+        assert_eq!(
+            <(RhoNumber, RhoString) as Extractor>::unapply(&par),
+            Some((1, "a".to_string()))
+        );
+        assert_eq!(<(RhoNumber, RhoNumber) as Extractor>::unapply(&par), None);
+    }
+
+    #[test]
+    fn list_round_trip_and_extractor() {
+        let par = RhoList::create_par(vec![RhoNumber::create_par(1), RhoNumber::create_par(2)]);
+        assert_eq!(
+            RhoList::unapply(&par),
+            Some(vec![RhoNumber::create_par(1), RhoNumber::create_par(2)])
+        );
+        assert_eq!(RhoList::unapply(&RhoNumber::create_par(1)), None);
+        assert_eq!(
+            <Vec<RhoNumber> as Extractor>::unapply(&par),
+            Some(vec![1, 2])
+        );
+
+        let mixed =
+            RhoList::create_par(vec![RhoNumber::create_par(1), RhoBoolean::create_par(true)]);
+        assert_eq!(<Vec<RhoNumber> as Extractor>::unapply(&mixed), None);
+    }
+
+    #[test]
+    fn map_round_trip_and_extractor() {
+        let mut source = HashMap::new();
+        source.insert(
+            RhoString::create_par("k".to_string()),
+            RhoNumber::create_par(7),
+        );
+        let par = RhoMap::create_par(source.clone());
+        assert_eq!(RhoMap::unapply(&par), Some(source));
+        assert_eq!(RhoMap::unapply(&RhoNumber::create_par(1)), None);
+
+        let mut expected = HashMap::new();
+        expected.insert("k".to_string(), 7i64);
+        assert_eq!(
+            <HashMap<RhoString, RhoNumber> as Extractor>::unapply(&par),
+            Some(expected)
+        );
+        assert_eq!(
+            <HashMap<RhoString, RhoString> as Extractor>::unapply(&par),
+            None
+        );
+    }
+
+    #[test]
+    fn uri_round_trip_and_negative() {
+        let par = RhoUri::create_par("rho:io:stdout".to_string());
+        assert_eq!(RhoUri::unapply(&par), Some("rho:io:stdout".to_string()));
+        assert_eq!(RhoUri::unapply(&RhoNumber::create_par(1)), None);
+        assert_eq!(
+            <RhoUri as Extractor>::unapply(&par),
+            Some("rho:io:stdout".to_string())
+        );
+    }
+
+    #[test]
+    fn deployer_id_and_deploy_id_round_trips() {
+        let deployer = RhoDeployerId::create_par(vec![1, 2]);
+        assert_eq!(RhoDeployerId::unapply(&deployer), Some(vec![1, 2]));
+        assert_eq!(
+            RhoDeployerId::unapply(&RhoDeployId::create_par(vec![1])),
+            None
+        );
+        assert_eq!(
+            <RhoDeployerId as Extractor>::unapply(&deployer),
+            Some(vec![1, 2])
+        );
+
+        let deploy = RhoDeployId::create_par(vec![3, 4]);
+        assert_eq!(RhoDeployId::unapply(&deploy), Some(vec![3, 4]));
+        assert_eq!(RhoDeployId::unapply(&deployer), None);
+        assert_eq!(
+            <RhoDeployId as Extractor>::unapply(&deploy),
+            Some(vec![3, 4])
+        );
+    }
+
+    #[test]
+    fn name_round_trip_and_negative() {
+        let gprivate = GPrivate { id: vec![9, 9] };
+        let par = RhoName::create_par(gprivate.clone());
+        assert_eq!(RhoName::unapply(&par), Some(gprivate.clone()));
+        assert_eq!(RhoName::unapply(&RhoDeployId::create_par(vec![1])), None);
+        assert_eq!(<RhoName as Extractor>::unapply(&par), Some(gprivate));
+    }
+
+    #[test]
+    fn expression_and_unforgeable_round_trips() {
+        let expr = RhoNumber::create_expr(5);
+        let par = RhoExpression::create_par(expr.clone());
+        assert_eq!(RhoExpression::unapply(&par), Some(expr.clone()));
+        assert_eq!(<RhoExpression as Extractor>::unapply(&par), Some(expr));
+
+        let unforgeable = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1] })),
+        };
+        let unf_par = RhoUnforgeable::create_par(unforgeable.clone());
+        assert_eq!(RhoUnforgeable::unapply(&unf_par), Some(unforgeable.clone()));
+        assert_eq!(RhoUnforgeable::unapply(&Par::default()), None);
+        assert_eq!(
+            <RhoUnforgeable as Extractor>::unapply(&unf_par),
+            Some(unforgeable)
+        );
+    }
+
+    #[test]
+    fn sys_auth_token_round_trip_and_negative() {
+        let par = RhoSysAuthToken::create_par(GSysAuthToken::default());
+        assert_eq!(
+            RhoSysAuthToken::unapply(&par),
+            Some(GSysAuthToken::default())
+        );
+        assert_eq!(
+            RhoSysAuthToken::unapply(&RhoDeployId::create_par(vec![1])),
+            None
+        );
+        assert_eq!(
+            <RhoSysAuthToken as Extractor>::unapply(&par),
+            Some(GSysAuthToken::default())
+        );
+    }
+
+    #[test]
+    fn either_extractor_prefers_the_right_side() {
+        let number = RhoNumber::create_par(3);
+        let text = RhoString::create_par("t".to_string());
+
+        assert_eq!(
+            <Either<RhoString, RhoNumber> as Extractor>::unapply(&number),
+            Some(Either::Right(3))
+        );
+        assert_eq!(
+            <Either<RhoString, RhoNumber> as Extractor>::unapply(&text),
+            Some(Either::Left("t".to_string()))
+        );
+        assert_eq!(
+            <Either<RhoString, RhoNumber> as Extractor>::unapply(&RhoBoolean::create_par(true)),
+            None
+        );
+    }
+}

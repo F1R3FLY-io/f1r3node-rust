@@ -25,6 +25,12 @@ fi
 
 # `target/llvm-cov` is llvm-cov's own report dir, which `clean` removes, so
 # outputs live in target/coverage instead.
+# Src-shipped test scaffolding (rholang's interpreter/test_utils, block-storage's
+# test-internals helpers) is compiled for cross-crate test consumers, so it can
+# never be exercised by its own crate's run; keep it out of the denominator.
+# Must stay identical to the regex in ci.yml's "Measure coverage" step.
+ignore_regex='(/test_utils/|block-storage/src/rust/test/)'
+
 out="target/coverage"
 mkdir -p "$out"
 ulimit -n 65536 2>/dev/null || true
@@ -36,8 +42,10 @@ for crate in "${crates[@]}"; do
 	cargo llvm-cov clean
 	cargo llvm-cov nextest --release -p "$crate" --no-tests=pass
 	cargo llvm-cov report --release -p "$crate" \
+		--ignore-filename-regex "$ignore_regex" \
 		--json --summary-only --output-path "$out/coverage-$crate.json"
 	cargo llvm-cov report --release -p "$crate" \
+		--ignore-filename-regex "$ignore_regex" \
 		--lcov --output-path "$out/coverage-$crate.lcov"
 done
 

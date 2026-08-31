@@ -103,3 +103,73 @@ impl SignaturesAlgFactory {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn factory_returns_known_algorithms() {
+        let alg = SignaturesAlgFactory::apply("secp256k1").unwrap();
+        assert_eq!(alg.name(), "secp256k1");
+
+        let eth = SignaturesAlgFactory::apply("secp256k1-eth").unwrap();
+        assert_eq!(eth.name(), "secp256k1:eth");
+    }
+
+    #[test]
+    fn factory_returns_none_for_unknown_or_disabled_algorithms() {
+        assert!(SignaturesAlgFactory::apply("ed25519").is_none());
+        assert!(SignaturesAlgFactory::apply("").is_none());
+        assert!(SignaturesAlgFactory::apply("rsa").is_none());
+    }
+
+    #[test]
+    fn boxed_alg_clone_and_eq_use_name() {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
+        let cloned = alg.clone();
+        let eth: Box<dyn SignaturesAlg> = Box::new(Secp256k1Eth);
+
+        assert!(<Box<dyn SignaturesAlg> as PartialEq>::eq(&alg, &cloned));
+        assert!(!<Box<dyn SignaturesAlg> as PartialEq>::eq(&alg, &eth));
+        assert!(alg.as_ref().eq(cloned.as_ref()));
+        assert!(!alg.as_ref().eq(eth.as_ref()));
+    }
+
+    #[test]
+    fn default_trait_methods_delegate_to_raw_byte_versions() {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
+        let (sk, pk) = alg.new_key_pair();
+        let data = crate::rust::hash::blake2b256::Blake2b256::hash(b"payload".to_vec());
+
+        let sig = alg.sign_with_private_key(&data, &sk);
+        assert_eq!(sig, alg.sign(&data, &sk.bytes));
+        assert!(alg.verify_with_public_key(&data, &sig, &pk));
+        assert!(alg.verify(&data, &sig, &pk.bytes));
+
+        let other_data = crate::rust::hash::blake2b256::Blake2b256::hash(b"other".to_vec());
+        assert!(!alg.verify_with_public_key(&other_data, &sig, &pk));
+    }
+
+    #[test]
+    fn serde_roundtrip_preserves_algorithm() {
+        let alg: Box<dyn SignaturesAlg> = Box::new(Secp256k1);
+        let encoded = bincode::serialize(&alg).unwrap();
+        let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded.name(), "secp256k1");
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_algorithm_name() {
+        let encoded = bincode::serialize("no-such-alg").unwrap();
+        let result: Result<Box<dyn SignaturesAlg>, _> = bincode::deserialize(&encoded);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deserialize_accepts_eth_alias() {
+        let encoded = bincode::serialize("secp256k1-eth").unwrap();
+        let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded.name(), "secp256k1:eth");
+    }
+}
