@@ -551,9 +551,22 @@ impl CliqueOracle {
             // at one height and every join derivation refuses forever (the
             // ucc 00e6a2e3 consensus halt). Matches the Scala reference
             // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
-            latest_messages
-                .get(validator)
-                .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
+            //
+            // An unheld hash in the walk resolves to false DETERMINISTICALLY,
+            // not node-locally: any unheld hash reachable from held
+            // references sits below the restore horizon (above-horizon
+            // dependencies are fetched before admission; the LFS restore
+            // inserts the anchor and above), hence below every held
+            // candidate — a fully-held node's walk returns false at the
+            // same point by height comparison alone. The verdict is
+            // bit-identical with or without the block.
+            let Some(hash) = latest_messages.get(validator) else {
+                return Ok(false);
+            };
+            match dag.is_in_main_chain(message, hash) {
+                Err(KvStoreError::MissingBlock { .. }) => Ok(false),
+                other => other,
+            }
         }
 
         let mut agreeing_map = HashMap::new();
