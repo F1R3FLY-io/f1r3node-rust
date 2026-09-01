@@ -611,6 +611,82 @@ impl FsProcesses {
         }
     }
 
+    /// Phase 2 (Consensus re-execute + verify, 2026-09-01):
+    /// sibling helper to `journal_read` for the divergence path.
+    /// `journal_read` hardcodes `WalOutcome::Success` (reads are
+    /// only journaled AFTER a successful syscall on the leader
+    /// path); a Consensus follower that detects fs_read /
+    /// fs_read_at re-execute divergence needs to journal a Failure
+    /// entry with `FSERR_CODE_CONSENSUS_DIVERGENCE`.
+    ///
+    /// Field shape mirrors `journal_read`'s WalEntry with two
+    /// deltas: `payload_ref: None` and `length: None` because the
+    /// divergence-err reply carries no bytes to hash.  Follower's
+    /// divergent WAL entry inherently doesn't match the leader's
+    /// (leader never emits a CONSENSUS_DIVERGENCE outcome); block
+    /// validation catches the divergence via RSpace rig's produce
+    /// comparator on the ack channel.
+    ///
+    /// Returns `true` if the entry was appended (fd was a
+    /// Consensus-cap shadow); `false` otherwise (unregistered fd
+    /// or Oracular shadow — the latter never enters this path in
+    /// normal flow since the handler's dispatch routes Oracular to
+    /// the tautological branch above).
+    ///
+    /// # Coverage note (2026-09-01)
+    ///
+    /// The `_ => false` branch is defense-in-depth: fs_read /
+    /// fs_read_at dispatch upstream on `jmode != Consensus`, so
+    /// this helper is only reached with a Consensus shadow in
+    /// well-formed execution.  Direct testing of the fallthrough
+    /// would require exposing this method `pub(crate)` and
+    /// constructing a full `FsProcesses` in a unit test —
+    /// disproportionate scaffolding for a branch that mirrors
+    /// `journal_read`'s identically-shaped Consensus guard (which
+    /// IS exercised via the Oracular is_replay tautological path).
+    /// A future caller that hits this branch through a NEW
+    /// dispatch site would need its own coverage pin.
+    async fn journal_read_divergence(
+        &self,
+        fd: u64,
+        offset: Option<u64>,
+        ack: &Par,
+    ) -> bool {
+        let wal_meta = self
+            .handles
+            .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+            .await;
+        match wal_meta {
+            Some((ConsensusMode::Consensus, canon_path)) => {
+                let op = match offset {
+                    Some(_) => WalOp::ReadAt,
+                    None => WalOp::Read,
+                };
+                self.handles
+                    .wal
+                    .append_with_ack(
+                        WalEntry {
+                            op,
+                            path: canon_path,
+                            extra_path: None,
+                            offset,
+                            length: None,
+                            payload_ref: None,
+                            mode_bits: None,
+                            owner: None,
+                            group: None,
+                            outcome: WalOutcome::Failure {
+                                code: FSERR_CODE_CONSENSUS_DIVERGENCE,
+                            },
+                        },
+                        ack_channel_hash(ack),
+                    )
+                    .is_ok()
+            }
+            _ => false,
+        }
+    }
+
     /// Redesign helper: journal a Truncate to the WAL from data
     /// fully derivable from args (fd + n).  Called from `fs_truncate`
     /// BEFORE the `is_replay` short-circuit (C-29-F1 review fix).
@@ -1318,18 +1394,26 @@ impl FsProcesses {
         // base to 0.
         self.metering
             .reserve_incremental_primitive(costs::fs_read_cost(requested_bytes))?;
-        if is_replay {
-            // Follower: hash the leader's cached bytes and append a
-            // matching WAL entry.  Fd is derivable from the arg;
-            // journal_read is a no-op on non-Consensus caps and on
-            // reply shapes without a bytes payload (error replies).
+        // Phase 2 (Consensus re-execute + verify, 2026-09-01):
+        // dispatch is_replay on the fd's cmode.  Oracular / no-
+        // shadow → unchanged Phase-0 tautological path (cached
+        // reply, journal + advance shadow position by cached
+        // bytes' length).  Consensus follower → re-execute
+        // libc::read via the shadow's real fd (installed by
+        // fs_open's Phase-2 real-open), verify vs cached, journal
+        // fresh + advance shadow on match, emit divergence-err +
+        // Failure WAL on mismatch.  Same shape as fs_read_at with
+        // the addition that fs_read (sequential) advances the
+        // shadow position; fs_read_at (positional) doesn't.
+        let jmode: Option<ConsensusMode> = match RhoNumber::unapply(fd_par) {
+            Some(fd) => self.handles.with_mut(fd as u64, |h| h.cmode).await,
+            None => None,
+        };
+        if is_replay && jmode != Some(ConsensusMode::Consensus) {
+            // Oracular / no-shadow follower — unchanged Phase-0 path.
             if let (Some(fd), Some(bytes)) =
                 (RhoNumber::unapply(fd_par), extract_ok_bytes(&previous))
             {
-                // fd is a u64 bit-pattern via GInt; reinterpret
-                // unsigned.  n is a legitimate length so no
-                // sign-guard removal there.
-                //
                 // Order matters: journal_read reads the PRE-read
                 // shadow position from FileHandle; then the
                 // subsequent with_mut advances position by
@@ -1347,16 +1431,87 @@ impl FsProcesses {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
-            (Some(fd), Some(n)) if n >= 0 => {
-                let r = self.read_impl(fd as u64, n as u64, None).await;
-                // Journal on success.  extract_ok_bytes returns None
-                // for error replies, so this is a clean guard.
-                if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&r)) {
+        // Fresh syscall — leader (always) or Consensus follower.
+        // read_impl calls libc::read (offset = None) against the
+        // shadow's real raw_fd.  The follower's own libc::read
+        // advances the OS-level fd position by the returned byte
+        // count; the shadow position advance below keeps our
+        // in-process shadow in sync with the OS position, matching
+        // what the leader's play run did on its own OS fd.
+        let fresh_reply = match (RhoNumber::unapply(fd_par), RhoNumber::unapply(n_par)) {
+            (Some(fd), Some(n)) if n >= 0 => self.read_impl(fd as u64, n as u64, None).await,
+            _ => err(FSERR_BAD_ARG, "expected (fd:GInt, n:GInt>=0)"),
+        };
+        if is_replay {
+            // Consensus follower — Phase 2 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    // Match — journal fresh bytes + advance shadow.
+                    // Bytes hash to the same Blake2b256 as leader's
+                    // WAL entry (verify succeeded → Pars are byte-
+                    // identical), so WAL byte-identity is preserved.
+                    if let (Some(fd), Some(bytes)) = (
+                        RhoNumber::unapply(fd_par),
+                        extract_ok_bytes(std::slice::from_ref(&fresh_reply)),
+                    ) {
+                        let fd_u = fd as u64;
+                        let _ = self.journal_read(fd_u, &bytes, None, ack).await;
+                        let n = bytes.len() as u64;
+                        let _ = self
+                            .handles
+                            .with_mut(fd_u, |h| {
+                                h.position = h.position.saturating_add(n)
+                            })
+                            .await;
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    // Divergence — emit divergence-err + Failure WAL
+                    // via the shared journal_read_divergence helper
+                    // (offset=None → WalOp::Read).  Shadow position:
+                    // advance by the FRESH read's byte count (the
+                    // follower's OS-level libc::read already
+                    // advanced the OS position by that count, so
+                    // this keeps shadow-vs-OS position in sync on
+                    // the follower).  Subsequent ops in the failing
+                    // deploy don't affect correctness — the deploy
+                    // will be rejected at check_replay_data — but
+                    // matching OS position is cleaner than skipping
+                    // the advance.
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_read follower re-execute diverges from leader: {reason}",
+                        ),
+                    );
+                    if let Some(fd) = RhoNumber::unapply(fd_par) {
+                        let fd_u = fd as u64;
+                        let _ = self.journal_read_divergence(fd_u, None, ack).await;
+                        if let Some(bytes) =
+                            extract_ok_bytes(std::slice::from_ref(&fresh_reply))
+                        {
+                            let n = bytes.len() as u64;
+                            let _ = self
+                                .handles
+                                .with_mut(fd_u, |h| {
+                                    h.position = h.position.saturating_add(n)
+                                })
+                                .await;
+                        }
+                    }
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — journal fresh bytes + advance shadow.
+            if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&fresh_reply)) {
+                if let Some(fd) = RhoNumber::unapply(fd_par) {
                     let fd_u = fd as u64;
-                    // Same order as the is_replay branch: journal
-                    // reads the pre-read position, THEN we advance
-                    // by actual bytes returned.
                     let _ = self.journal_read(fd_u, &bytes, None, ack).await;
                     let n = bytes.len() as u64;
                     let _ = self
@@ -1364,13 +1519,11 @@ impl FsProcesses {
                         .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
                         .await;
                 }
-                r
             }
-            _ => err(FSERR_BAD_ARG, "expected (fd:GInt, n:GInt>=0)"),
-        };
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
+        }
     }
 
     // -------------------------------------------------------------------
@@ -1467,18 +1620,11 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    // Divergence — build a Failure WAL entry manually.
-                    // journal_read hardcodes WalOutcome::Success (reads
-                    // are only journaled AFTER a successful syscall on
-                    // the leader path), so we can't reuse it here.  A
-                    // divergence-err reply has no bytes to hash, so
-                    // payload_ref: None + length: None is the honest
-                    // shape.  Follower's WAL entry doesn't need to
-                    // match the leader's (leader never emits a
-                    // CONSENSUS_DIVERGENCE outcome — only followers
-                    // can detect it).  Block validation rejects via
-                    // the RSpace rig comparator catching the
-                    // divergent produce on the ack channel.
+                    // Divergence — journal a Failure WAL entry via
+                    // the shared helper.  See journal_read_divergence
+                    // for the field-shape rationale (payload_ref +
+                    // length are None because the divergence-err
+                    // reply carries no bytes).
                     let divergence_reply = err(
                         FSERR_CONSENSUS_DIVERGENCE,
                         format!(
@@ -1489,31 +1635,9 @@ impl FsProcesses {
                         (RhoNumber::unapply(fd_par), RhoNumber::unapply(off_par))
                     {
                         if off >= 0 {
-                            let wal_meta = self
-                                .handles
-                                .with_mut(fd as u64, |h| {
-                                    (h.cmode, h.canon_path.clone())
-                                })
+                            let _ = self
+                                .journal_read_divergence(fd as u64, Some(off as u64), ack)
                                 .await;
-                            if let Some((ConsensusMode::Consensus, canon_path)) = wal_meta {
-                                let _ = self.handles.wal.append_with_ack(
-                                    WalEntry {
-                                        op: WalOp::ReadAt,
-                                        path: canon_path,
-                                        extra_path: None,
-                                        offset: Some(off as u64),
-                                        length: None,
-                                        payload_ref: None,
-                                        mode_bits: None,
-                                        owner: None,
-                                        group: None,
-                                        outcome: WalOutcome::Failure {
-                                            code: FSERR_CODE_CONSENSUS_DIVERGENCE,
-                                        },
-                                    },
-                                    ack_channel_hash(ack),
-                                );
-                            }
                         }
                     }
                     let out = vec![divergence_reply];

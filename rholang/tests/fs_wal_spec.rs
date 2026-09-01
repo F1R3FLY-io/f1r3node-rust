@@ -2133,6 +2133,428 @@ mod tests {
         );
     }
 
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_read positive path** (sequential read).  Unlike
+    /// fs_read_at (positional), sequential fs_read advances both
+    /// the OS-level fd position (kernel-side, via libc::read) AND
+    /// the FileHandle's shadow position (in-process, via the
+    /// with_mut increment after journal_read).  Under Phase 2, the
+    /// follower's re-executed libc::read must advance both in
+    /// lockstep with the leader's play run, so downstream reads
+    /// (on the same fd, in a subsequent deploy or same deploy)
+    /// consume from the same file offset.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"phase-2-fs-read-positive-pin").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Open + sequential read n=10 + close.  Consensus cap.
+        // Sequential read consumes bytes 0..10 from position 0
+        // (fresh fd starts at position 0).
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsRead(`rho:io:fs:native:1.0.0/read`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, rdCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsRead!(fd, 10, *rdCh) |
+                for (@_ <- rdCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[51; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read positive path");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_read_entries: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
+        assert_eq!(
+            leader_read_entries.len(),
+            1,
+            "expected exactly one Read WAL entry from the leader; got {}",
+            leader_read_entries.len()
+        );
+        assert_eq!(leader_read_entries[0].outcome, WalOutcome::Success);
+        // Sequential Read journals with offset = pre-read shadow
+        // position.  Fresh open → position 0 → the single Read
+        // entry has offset = Some(0).  A regression that stopped
+        // capturing shadow position (or captured it post-read)
+        // would break this pin.
+        assert_eq!(
+            leader_read_entries[0].offset,
+            Some(0),
+            "sequential Read WAL entry must record pre-read shadow \
+             position (0 for a fresh fd)"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_read positive path");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "Phase 2: leader/follower WAL lengths diverge for fs_read positive \
+             path: leader={} follower={}",
+            leader_wal.len(),
+            follower_wal.len()
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2: WAL entry {i} differs between leader and follower on \
+                 fs_read positive path: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs state");
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_read shadow-position parity** across leader + follower.
+    /// Two sequential reads on the same fd — first n=5, then n=8.
+    /// Second read must consume bytes 5..13, meaning shadow
+    /// position advanced by exactly 5 after the first read.  If the
+    /// follower's Phase-2 re-execute failed to advance the shadow
+    /// position in lockstep (e.g., dropped the with_mut increment
+    /// on the Consensus branch), the second read's WAL entry's
+    /// offset field would diverge from the leader's → leader/follower
+    /// WAL byte-identity breaks → test fails at the assert_eq!
+    /// loop below.  This is the sequential-read equivalent of the
+    /// fs_size fd-plumbing engagement proof.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_shadow_position_parity_across_multi_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("data.bin"),
+            b"phase-2-shadow-position-parity-pin-content",
+        )
+        .unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Open + read(5) + read(8) + close.  First read consumes
+        // bytes 0..5 ("phase"), advances shadow to 5; second read
+        // consumes bytes 5..13 ("-2-shado"), advances shadow to 13.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsRead(`rho:io:fs:native:1.0.0/read`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, r1, r2, cl
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsRead!(fd, 5, *r1) |
+                for (@_ <- r1) {{
+                  fsRead!(fd, 8, *r2) |
+                  for (@_ <- r2) {{
+                    fsClose!(fd, *cl) |
+                    for (@_ <- cl) {{ Nil }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[52; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate multi-read");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_reads: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
+        assert_eq!(
+            leader_reads.len(),
+            2,
+            "expected exactly two Read WAL entries from the leader"
+        );
+        assert_eq!(
+            leader_reads[0].offset,
+            Some(0),
+            "first sequential Read must record offset = 0"
+        );
+        assert_eq!(
+            leader_reads[1].offset,
+            Some(5),
+            "second sequential Read must record offset = 5 (after first read \
+             advanced shadow by 5)"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate multi-read");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2 shadow-position parity: WAL entry {i} differs \
+                 between leader and follower — the follower's Phase-2 \
+                 re-execute failed to advance the shadow position in lockstep \
+                 with the leader.  A regression that dropped the with_mut \
+                 shadow-position increment from the Consensus branch of \
+                 fs_read would fail this assertion at the second Read \
+                 entry (offset mismatch: leader=5, follower=0).  \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on multi-read shadow-position parity");
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_read edge case — n=0 empty read**.  Both leader and
+    /// follower call `libc::read(fd, ..., 0)` which returns 0
+    /// bytes; fresh reply is `ok_bytes([])`; cached reply matches;
+    /// verify OK; journal_read appends with `payload_ref:
+    /// Hash([])` + `length: 0`.  Confirms the Phase-2 mechanism
+    /// handles the empty-read edge naturally without a special
+    /// case, and that shadow-position advance by 0 is a no-op
+    /// (the second Read entry's offset in this test would still
+    /// be 0 after an n=0 first read).  Addresses coverage gap 3
+    /// from the 2026-09-01 fs_read slice review.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_n_zero_preserves_wal_byte_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"some-non-empty-content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsRead(`rho:io:fs:native:1.0.0/read`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, rdCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsRead!(fd, 0, *rdCh) |
+                for (@_ <- rdCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[54; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read n=0");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_reads: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
+        assert_eq!(
+            leader_reads.len(),
+            1,
+            "expected exactly one Read WAL entry from the n=0 leader call"
+        );
+        assert_eq!(leader_reads[0].outcome, WalOutcome::Success);
+        assert_eq!(
+            leader_reads[0].length,
+            Some(0),
+            "n=0 fs_read must journal length=0"
+        );
+        assert_eq!(
+            leader_reads[0].offset,
+            Some(0),
+            "n=0 fs_read shadow-position advance is a no-op; offset stays 0"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_read n=0");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2 n=0 edge: WAL entry {i} differs between leader and \
+                 follower — an empty-read mishandling would show here as \
+                 payload_ref divergence: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on n=0 read");
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_read divergence-detection path**.  Overwrite the file
+    /// at the same length between leader + follower evaluate;
+    /// follower's fs_read re-execute returns DIFFERENT bytes at
+    /// offset 0 → verify hash-mismatch → Failure WAL entry with
+    /// CONSENSUS_DIVERGENCE + check_replay_data Err.  Uses the
+    /// shared `journal_read_divergence` helper introduced this
+    /// slice (op=WalOp::Read because offset=None).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"leader-sees-these-bytes-here").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsRead(`rho:io:fs:native:1.0.0/read`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, rdCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsRead!(fd, 12, *rdCh) |
+                for (@_ <- rdCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[53; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::Read && e.outcome == WalOutcome::Success),
+            "leader must have journaled a successful Read entry"
+        );
+
+        // Overwrite same length so statCheck agrees (same size)
+        // — divergence surfaces only at the Read op level.
+        std::fs::write(&target, b"FOLLOWER-SEES-DIFFERENT-CONTENT").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let follower_read = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Read)
+            .expect(
+                "Phase 2 divergence path must still journal a Read entry \
+                 (Failure outcome, not a journaling skip)",
+            );
+        match follower_read.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code,
+                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 2: Read divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 2 REGRESSION: follower's re-executed fs_read produced \
+                 a Success outcome despite the on-disk divergence.  Read \
+                 entry: {follower_read:?}"
+            ),
+        }
+        // journal_read_divergence writes payload_ref: None + length: None.
+        assert_eq!(follower_read.payload_ref, None);
+        assert_eq!(follower_read.length, None);
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 2 D1 enforcement: divergent fs_read reply Par should trip \
+             RSpace rig verification"
+        );
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): consensus-mode
     /// `entriesStreamNext` on a Consensus-cap dir stream journals one
     /// `WalOp::EntriesStreamNext` entry per call.  Oracular caps do
