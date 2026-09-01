@@ -2693,7 +2693,14 @@ impl FsProcesses {
                 }
                 _ => None,
             };
-        if is_replay {
+        // Phase 2 (Consensus re-execute + verify, 2026-09-01):
+        // Oracular follower is unchanged (Phase-0 tautological path
+        // — consumes cached reply, charges per-entry supplement
+        // from cached).  Consensus follower re-executes the whole
+        // readdir + sort + cap pipeline and verifies the fresh
+        // reply's stable_hash matches the leader's.  See
+        // fileio_wal_replay_verification_gap.md for the design.
+        if is_replay && mode != ConsensusMode::Consensus {
             // Slice 9b-iv follow-up: per-entry supplement charge on
             // the replay branch.  `n` comes from the leader's cached
             // `[true, [row1, ..., rowN]]` reply via
@@ -2720,7 +2727,13 @@ impl FsProcesses {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+        // Fresh syscall — leader (always) or Consensus follower
+        // (Phase 2 re-execute).  Under Shape A, the follower's
+        // re-execute reads the follower's own subdir (via
+        // resolve_or_identity + safe_descend_verified).  Sort +
+        // cap make the reply deterministic given identical dir
+        // state, so verify hashing works uniformly.
+        let fresh_reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
@@ -2791,22 +2804,63 @@ impl FsProcesses {
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
-        // Slice 9b-iv follow-up: per-entry supplement charge on the
-        // leader branch.  Extracts n from the fresh `reply` via the
-        // same helper the replay branch uses on `previous`, so both
-        // branches derive n from the identical Par shape.  Error
-        // replies and shape mismatches yield n = 0, charging only
-        // the setup portion — matches the follower's behavior on the
-        // same shape.
-        let n_entries = extract_ok_list_len(std::slice::from_ref(&reply)).unwrap_or(0);
-        // Cost-helper audit fix (2026-08-26): mirror the replay-branch
-        // switch to `reserve_incremental_primitive` so the leader
-        // doesn't poison EvaluateResult.errors on empty-dir input
-        // and skip the WAL journal below.  Same-shape reasoning as
-        // the replay branch; see the comment there for details.
+        // Slice 9b-iv follow-up: per-entry supplement charge from
+        // the fresh reply.  Applies to leader (always) and
+        // Consensus follower (Phase 2 re-execute).  On successful
+        // Phase-2 verify, fresh reply has the same list length as
+        // cached (the reply Par is bytewise identical when the hash
+        // matches), so the charge matches the leader's — canonical
+        // event log stays byte-identical.  On divergence, the
+        // deploy is rejected via RSpace rig anyway, so any cost
+        // divergence is a symptom of the underlying state
+        // divergence rather than an independent consensus concern.
+        let n_entries = extract_ok_list_len(std::slice::from_ref(&fresh_reply)).unwrap_or(0);
         self.metering.reserve_incremental_primitive(
             costs::fs_entries_per_entry_supplement_cost(n_entries),
         )?;
+        if is_replay {
+            // Consensus follower — Phase 2 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let Some(p) = journal_path {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Entries,
+                            p,
+                            &fresh_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    return Ok(out);
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_entries follower re-execute diverges from leader: {reason}",
+                        ),
+                    );
+                    if let Some(p) = journal_path {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Entries,
+                            p,
+                            &divergence_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    return Ok(out);
+                }
+            }
+        }
+        // Leader path (is_replay = false).
+        let reply = fresh_reply;
         // M-5: leader journals from fresh reply.
         if let Some(p) = journal_path {
             self.journal_state_read(mode, WalOp::Entries, p, &reply, ack, None);

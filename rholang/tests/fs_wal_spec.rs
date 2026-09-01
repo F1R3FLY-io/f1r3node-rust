@@ -2555,6 +2555,294 @@ mod tests {
         );
     }
 
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_entries positive path**.  Path-based readdir with sort +
+    /// cap.  Sort makes the reply deterministic given identical dir
+    /// state — the row order is bytewise stable across leader and
+    /// follower.  Follower re-executes readdir + sort + entry_stat_row
+    /// against its own subdir; hashes match → WAL byte-identity
+    /// preserved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_entries_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a subdir with three files at known names so the
+        // sorted readdir is deterministic.
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/alpha"), b"a-content").unwrap();
+        std::fs::write(dir.path().join("sub/beta"), b"b-content-longer").unwrap();
+        std::fs::write(dir.path().join("sub/gamma"), b"c").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // fs_entries(root, "sub", "consensus", ack) — returns a sorted
+        // list of stat_records for [alpha, beta, gamma].
+        let term = format!(
+            r#"
+            new fsEntries(`rho:io:fs:native:1.0.0/entries`), ackCh in {{
+              fsEntries!("{root}", "sub", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[61; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_entries positive path");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_entries_entries: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Entries).collect();
+        assert_eq!(
+            leader_entries_entries.len(),
+            1,
+            "expected exactly one Entries WAL entry from the leader"
+        );
+        assert_eq!(leader_entries_entries[0].outcome, WalOutcome::Success);
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_entries positive path");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "Phase 2: leader/follower WAL lengths diverge for fs_entries \
+             positive path: leader={} follower={}",
+            leader_wal.len(),
+            follower_wal.len()
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2: WAL entry {i} differs between leader and follower on \
+                 fs_entries positive path: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical dir state");
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_entries divergence-detection path**.  Add a new file to
+    /// the directory between leader + follower `evaluate` calls.
+    /// The follower's re-executed readdir sees the extra entry →
+    /// row list has different length → verify hash-mismatch → Entries
+    /// WAL entry carries `Failure { FSERR_CODE_CONSENSUS_DIVERGENCE }`
+    /// AND `check_replay_data` returns Err.
+    ///
+    /// Also demonstrates that the sort makes readdir-order agnostic:
+    /// the ADDED file could land in any position on the follower's
+    /// readdir but the sort places it deterministically — the
+    /// divergence is about the CONTENT (a new row exists), not
+    /// about ordering flakiness.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_entries_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/alpha"), b"a").unwrap();
+        std::fs::write(dir.path().join("sub/beta"), b"b").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsEntries(`rho:io:fs:native:1.0.0/entries`), ackCh in {{
+              fsEntries!("{root}", "sub", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[62; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_entries divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_entries = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Entries && e.outcome == WalOutcome::Success)
+            .expect("leader must have journaled a successful Entries entry");
+
+        // Force divergence by adding a new file to the subdir.
+        // Follower's readdir sees [alpha, beta, gamma_new] whereas
+        // leader's cached reply is [alpha, beta] → row-count
+        // differs, hash mismatch.
+        std::fs::write(dir.path().join("sub/gamma_new"), b"added-post-leader").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let follower_entries = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Entries)
+            .expect(
+                "Phase 2 divergence path must still journal an Entries entry \
+                 (Failure outcome, not a journaling skip)",
+            );
+        match follower_entries.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code,
+                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 2: Entries divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 2 REGRESSION: follower's re-executed fs_entries produced \
+                 a Success outcome despite the on-disk divergence.  Either the \
+                 fresh-syscall path is not engaged (Phase-0 tautological cached-\
+                 reply consumption came back) or verify_reply_hash_matches_cached \
+                 is broken.  Entries entry: {follower_entries:?}"
+            ),
+        }
+        // WAL-layer divergence witness (2026-09-01 gap-3 fix):
+        // journal_state_read on Entries op hashes the reply Par as
+        // payload_ref.  Leader's Success entry carries
+        // Hash(ok_list([alpha, beta])); follower's Failure entry
+        // carries Hash([false, "FSERR_CONSENSUS_DIVERGENCE", msg]).
+        // Distinct Pars → distinct hashes.  This assertion proves
+        // the divergence is visible at the WAL layer, not just at
+        // the RSpace-rig layer (check_replay_data below).
+        assert_ne!(
+            follower_entries.payload_ref, leader_entries.payload_ref,
+            "Phase 2: follower's Entries divergence WAL entry payload_ref \
+             must differ from leader's — leader hashed the ok_list reply, \
+             follower hashed the divergence-err reply.  A regression that \
+             either reused leader's cached hash or emitted a payload_ref: \
+             None (mixing journal_state_read + journal_read_divergence \
+             conventions) would fail this pin."
+        );
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 2 D1 enforcement: divergent fs_entries reply Par should trip \
+             RSpace rig verification"
+        );
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_entries empty-directory edge case**.  Under Phase-0, an
+    /// empty-dir fs_entries surfaced a `BugFoundError` when the
+    /// per-entry supplement charge fired at n_entries=0 via
+    /// `reserve_primitive` (see the 2026-08-26 metering audit fix
+    /// that switched both branches to `reserve_incremental_primitive`
+    /// with its zero-cost early-return).  Under Phase 2, the same
+    /// switch is preserved on the Consensus follower's re-execute
+    /// path.  This pin exercises the empty-dir shape end-to-end
+    /// (WAL byte-identity + Success outcome + verify OK on n=0)
+    /// so a regression that reverted either branch to
+    /// `reserve_primitive` — or that broke the ok_list([]) →
+    /// n_entries=0 extraction chain — would surface here as an
+    /// evaluate error or WAL divergence.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_entries_reexecute_handles_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create the sub directory with NO entries.  fs_entries on
+        // "empty_sub" must return ok_list([]) (n_entries = 0).
+        std::fs::create_dir(dir.path().join("empty_sub")).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsEntries(`rho:io:fs:native:1.0.0/entries`), ackCh in {{
+              fsEntries!("{root}", "empty_sub", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[63; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_entries empty-dir");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_entries: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Entries).collect();
+        assert_eq!(
+            leader_entries.len(),
+            1,
+            "empty-dir fs_entries must journal exactly one Entries entry \
+             (regression against the 2026-08-26 metering audit fix that \
+             prevented BugFoundError on n=0 from suppressing the journal)"
+        );
+        assert_eq!(leader_entries[0].outcome, WalOutcome::Success);
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_entries empty-dir");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2 empty-dir edge: WAL entry {i} differs between leader \
+                 and follower — a regression against reserve_incremental_primitive \
+                 in the Consensus branch would show here as follower's Entries \
+                 entry missing or diverging: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on empty-dir readdir");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): consensus-mode
     /// `entriesStreamNext` on a Consensus-cap dir stream journals one
     /// `WalOp::EntriesStreamNext` entry per call.  Oracular caps do
