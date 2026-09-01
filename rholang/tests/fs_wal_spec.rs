@@ -1598,6 +1598,323 @@ mod tests {
         );
     }
 
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_size positive path**.  Mirrors the Phase-1 fs_stat
+    /// pattern but on a fd-based observation op: leader opens a
+    /// Consensus cap, calls fs_size, and journals a `WalOp::Size`
+    /// entry with `Success` outcome.  Follower rig+replay
+    /// re-executes fstat via its own shadow fd; the file's on-disk
+    /// bytes agree with the leader's, so the u64 size matches →
+    /// verify OK → follower's WAL entry is byte-identical to the
+    /// leader's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_size_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"phase-2-fs-size-positive-pin").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Open the file on a Consensus cap + fs_size on its fd, then
+        // close.  Two WAL entries expected on the leader: the
+        // openFile's statCheck Stat + the fs_size Size.  Both should
+        // reproduce byte-identically on the follower under Phase 2.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsSize(`rho:io:fs:native:1.0.0/size`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, szCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsSize!(fd, *szCh) |
+                for (@_ <- szCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[31; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Phase-2 fs_size positive path");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_size_entries: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Size).collect();
+        assert_eq!(
+            leader_size_entries.len(),
+            1,
+            "expected exactly one Size WAL entry from the leader; got {} out of \
+             {} total WAL entries",
+            leader_size_entries.len(),
+            leader_wal.len()
+        );
+        assert_eq!(leader_size_entries[0].outcome, WalOutcome::Success);
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate Phase-2 fs_size positive path");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "Phase 2: leader/follower WAL lengths diverge for fs_size positive \
+             path: leader={} follower={}",
+            leader_wal.len(),
+            follower_wal.len()
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2: WAL entry {i} differs between leader and follower on \
+                 fs_size positive path: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs state");
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_size divergence-detection path**.  Grow the file between
+    /// leader + follower `evaluate` calls; follower's fs_size
+    /// re-execute sees a different `st_size` → verify hash-mismatch →
+    /// follower's WAL Size entry carries `Failure { FSERR_CODE_
+    /// CONSENSUS_DIVERGENCE }` AND `check_replay_data` returns Err.
+    ///
+    /// Doubles as the fresh-syscall-engagement proof for fs_size:
+    /// a regression to Phase-0 tautological cached-reply consumption
+    /// would silently accept the size mismatch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_size_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"leader-sees").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsSize(`rho:io:fs:native:1.0.0/size`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, szCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsSize!(fd, *szCh) |
+                for (@_ <- szCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[32; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Phase-2 fs_size divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_size_entries: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::Size).collect();
+        assert_eq!(leader_size_entries.len(), 1);
+        assert_eq!(leader_size_entries[0].outcome, WalOutcome::Success);
+
+        // Grow the file — follower's fs_size re-execute must see a
+        // larger u64 than the leader recorded.  Note we also mutate
+        // the file's bytes indirectly (the append changes the
+        // hashed-content of the Stat record from openFile's
+        // statCheck too), so the follower's WAL will show BOTH the
+        // Stat divergence AND the Size divergence.  This test's
+        // assertion filters on op = Size specifically.
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .expect("open target for append");
+            f.write_all(b"-follower-sees-more-bytes").expect("append to target");
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        // Look up the Size entry specifically — the fs_stat divergence
+        // from openFile's statCheck also fires and may be earlier in
+        // the log, but this test's contract is fs_size specifically.
+        let follower_size = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Size)
+            .expect(
+                "Phase 2 divergence path must still journal a Size entry \
+                 (Failure outcome, not a journaling skip)",
+            );
+        match follower_size.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code,
+                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 2: Size divergence WAL entry must carry CONSENSUS_DIVERGENCE \
+                 code, not an unrelated FSERR — got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 2 REGRESSION: follower's re-executed fs_size produced a \
+                 Success outcome despite the on-disk divergence — the fresh-syscall \
+                 path is not engaged or verify_reply_hash_matches_cached is broken. \
+                 Size entry: {follower_size:?}"
+            ),
+        }
+
+        // Same enforcement channel as fs_stat: divergent reply Par
+        // trips RSpace rig verification, which is what block
+        // validation rejects on at the Casper layer.
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 2 D1 enforcement: divergent fs_size reply Par should trip \
+             RSpace rig verification — got Ok, which would silently accept a \
+             leader lie."
+        );
+    }
+
+    /// Phase 2 regression pin (fd-release fix, 2026-09-01):
+    /// **follower's Consensus fs_close is_replay branch MUST release
+    /// the shadow's real OS fd** — pre-fix, the branch produced the
+    /// cached reply without calling `handles.remove(fd)`, so the
+    /// shadow's `File` wrapper (installed by fs_open's Phase-2
+    /// real-open) stayed alive until runtime drop.  A validator
+    /// processing many blocks with Consensus fs traffic would
+    /// accumulate OS fds up to `MAX_OPEN_FDS = 1024` and then hit
+    /// `FSERR_QUOTA_EXCEEDED` on the next fs_open replay.
+    ///
+    /// Direct probe: snapshot the leader's next_fd watermark before
+    /// and after the deploy to bound the allocated-fd range, then
+    /// scan the follower's fd table via `raw_fd` for each fd in
+    /// that range and assert `None`.  A regression that removed the
+    /// `handles.remove` call from fs_close's is_replay branch would
+    /// leave the follower's shadow alive at the allocated fd →
+    /// `raw_fd` returns `Some` → assertion fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_close_replay_releases_follower_shadow_fd() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"phase-2-close-release-pin").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Term: open + close on a Consensus cap.  Under Phase 2, the
+        // follower's fs_open replay installs a real File-backed
+        // shadow; the fs_close replay must remove it.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsClose!(fd, *closeCh) |
+                for (@_ <- closeCh) {{ Nil }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[33; 32]);
+
+        // Snapshot the leader's next_fd watermark to bound the range
+        // the deploy will allocate into.  fs_open advances the
+        // atomic each time it inserts; the delta before → after is
+        // the count of fds Rholang allocated in this run.
+        let leader_fd_lo = leader.fs_handles.snapshot_next_fd();
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fd-release setup");
+        let leader_fd_hi = leader.fs_handles.snapshot_next_fd();
+        assert!(
+            leader_fd_hi > leader_fd_lo,
+            "leader must have allocated at least one fd during open+close"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fd-release check");
+
+        // Direct assertion: every fd the leader allocated must have
+        // been released on the follower's side too.  A regression
+        // that dropped the `handles.remove` call from fs_close's
+        // is_replay branch would leave the shadow alive → raw_fd
+        // returns Some → the assertion below fires with the
+        // specific leaked fd.
+        for fd in leader_fd_lo..leader_fd_hi {
+            assert!(
+                follower.fs_handles.raw_fd(fd).await.is_none(),
+                "Phase 2 fd-release regression: follower's shadow at fd {fd} \
+                 was NOT released post-close.  fs_close's is_replay branch \
+                 stopped calling handles.remove(fd) — the shadow's real OS \
+                 fd (installed by fs_open's Phase-2 real-open under Consensus) \
+                 stays alive across runtime lifetime, accumulating to \
+                 MAX_OPEN_FDS on production validators."
+            );
+        }
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): consensus-mode
     /// `entriesStreamNext` on a Consensus-cap dir stream journals one
     /// `WalOp::EntriesStreamNext` entry per call.  Oracular caps do

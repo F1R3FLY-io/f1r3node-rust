@@ -968,6 +968,20 @@ impl FsProcesses {
             // state-hash entropy commonly exceed i64::MAX and
             // Rholang's GInt wraps to negative — see the docstring
             // on `extract_ok_fd` for the PB-M-14 canary rationale.
+            //
+            // Phase 2 prerequisite (Consensus re-execute + verify,
+            // 2026-09-01): under Consensus cmode, the shadow's `file`
+            // slot now backs a REAL `libc::open` against the
+            // follower's own subdir file (via the Shape A resolver).
+            // This is load-bearing for downstream fd-based Consensus
+            // re-execute ops (fs_size / fs_read / fs_read_at /
+            // fs_write / fs_write_at / fs_truncate) — they call
+            // `libc::fstat` / `read` / `write` / `ftruncate` on the
+            // shadow's `file`, so a `file: None` shadow would surface
+            // as `FSERR_CLOSED` on the fresh syscall and trip spurious
+            // `FSERR_CONSENSUS_DIVERGENCE`.  Oracular caps keep the
+            // pre-Phase-2 metadata-only shadow because Oracle-mode fs
+            // state isn't reproducible on the follower.
             if let Some(fd) = extract_ok_fd(&previous) {
                 // Only Consensus caps need shadow handles for
                 // journaling — Oracular writes don't append to the
@@ -988,11 +1002,60 @@ impl FsProcesses {
                     // via WAL comparison rather than silently masking.
                     let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
                     let intent = parse_open_mode(&mode_str);
+                    // Phase 2: under Consensus, attempt the real
+                    // open against the follower's own subdir file.
+                    // Uses the SAME code path as the leader's
+                    // open_impl (resolve_or_identity +
+                    // safe_open_verified) so the follower's shadow's
+                    // File wraps a real OS fd pointing at
+                    // <follower_subdir>/<rel>.  On failure (fs drift,
+                    // permission mismatch, missing follower-side
+                    // file), fall back to `file: None` — the
+                    // divergence will surface on the FIRST downstream
+                    // Consensus fd op as `FSERR_CONSENSUS_DIVERGENCE`
+                    // (fresh FSERR_CLOSED vs cached `[true, ...]`
+                    // reply → hash mismatch).  Consensus + O_APPEND
+                    // is rejected leader-side (see open_impl below);
+                    // leader never returns [true, fd] on that
+                    // combination so `extract_ok_fd` wouldn't have
+                    // succeeded here.  Guard defensively regardless.
+                    let file: Option<std::fs::File> =
+                        if cmode == ConsensusMode::Consensus {
+                            match intent {
+                                Some(intent) if !intent.append => {
+                                    let root_pb = PathBuf::from(&root);
+                                    let (root_pb, expected_root_id) = self
+                                        .handles
+                                        .root_registry
+                                        .resolve_or_identity(&root_pb);
+                                    let rel_for_open = rel.clone();
+                                    let intent_copy = intent;
+                                    let opened = spawn_blocking(move || {
+                                        let (flags, mode_bits) = fopen_flags(intent_copy);
+                                        super::path::safe_open_verified(
+                                            &root_pb,
+                                            &rel_for_open,
+                                            flags,
+                                            mode_bits,
+                                            expected_root_id,
+                                        )
+                                    })
+                                    .await;
+                                    match opened {
+                                        Ok(Ok(f)) => Some(f),
+                                        _ => None,
+                                    }
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
                     // Same canon_path derivation as `open_impl`
                     // (C-29-1 fix) — must be byte-identical so WAL
                     // paths match across leader/follower.
                     let shadow = FileHandle {
-                        file: None,
+                        file,
                         // M-R2: same lexical normalization as the leader's
                         // open_impl so follower's WAL entries match.
                         canon_path: canonicalize_lexical(&root, &rel),
@@ -1169,6 +1232,26 @@ impl FsProcesses {
             return Err(illegal_argument_error("fs_close"));
         };
         if is_replay {
+            // Phase 2 fd-release (Consensus re-execute + verify,
+            // 2026-09-01): the follower's fs_open replay branch now
+            // installs a shadow whose `file` slot backs a REAL OS
+            // fd under Consensus (needed for downstream fd-based
+            // re-execute — fs_size / fs_read / fs_write / etc.).
+            // Pre-Phase-2 the shadow was metadata-only (`file:
+            // None`) so this branch could produce cached reply
+            // without touching the fd table; now it MUST release
+            // the shadow at close time, or the follower would
+            // accumulate OS fds up to MAX_OPEN_FDS across the
+            // runtime's lifetime — a validator processing many
+            // blocks with Consensus fs traffic would eventually
+            // hit FSERR_QUOTA_EXCEEDED on fs_open replay.  The
+            // remove is a pure side-effect: it doesn't touch the
+            // reply Par (still the cached leader reply) nor the
+            // WAL (fs_close doesn't journal).  Symmetric with the
+            // leader path below.
+            if let Some(fd) = RhoNumber::unapply(fd_par) {
+                self.handles.remove(fd as u64).await;
+            }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
@@ -1855,7 +1938,18 @@ impl FsProcesses {
                 }
                 None => (None, None),
             };
-        if is_replay {
+        // Phase 2 (Consensus re-execute + verify, 2026-09-01):
+        // Oracular follower unchanged from M-5's Phase-0 behavior —
+        // consumes the leader's cached reply, since Oracle-mode state
+        // isn't reproducible on the follower's own fs.  Consensus
+        // follower now re-executes fstat against its own shadow fd
+        // and verifies the fresh reply's stable_hash matches the
+        // leader's cached reply hash extracted from `previous`.  See
+        // auto-memory `fileio_wal_replay_verification_gap.md` and
+        // fs_stat's Phase-1 refactor above for the design pattern.
+        if is_replay && jmode != Some(ConsensusMode::Consensus) {
+            // Oracular follower (or unresolved cmode — the fd shadow
+            // wasn't installed, matches pre-Phase-2 tautological path).
             if let (Some(mode), Some(p)) = (jmode, jpath.clone()) {
                 if let Some(reply_par) = previous.first() {
                     self.journal_state_read(mode, WalOp::Size, p, reply_par, ack, None);
@@ -1864,40 +1958,84 @@ impl FsProcesses {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match RhoNumber::unapply(fd_par) {
-            Some(fd) => {
-                let raw_fd = match self.handles.raw_fd(fd as u64).await {
-                    Some(r) => r,
-                    None => {
-                        let out = vec![err(FSERR_CLOSED, format!("unknown fd {fd}"))];
-                        produce(&out, ack).await?;
-                        return Ok(out);
+        // Fresh syscall reply — leader (always) and Consensus follower.
+        // Pre-Phase-2 the leader path used an early-return on
+        // raw_fd = None (before journal); folded into the fresh-
+        // reply match arm below.  The pre-Phase-2 non-journal
+        // behavior is preserved by the (jmode, jpath) guard on
+        // `journal_state_read` — a missing shadow-fd yields
+        // jmode = None so the journal call is a no-op regardless.
+        let fresh_reply = match RhoNumber::unapply(fd_par) {
+            Some(fd) => match self.handles.raw_fd(fd as u64).await {
+                Some(raw_fd) => {
+                    let r = spawn_blocking(move || unsafe {
+                        let mut sb: libc::stat = std::mem::zeroed();
+                        if libc::fstat(raw_fd, &mut sb) < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(sb.st_size as u64)
+                        }
+                    })
+                    .await;
+                    match r {
+                        Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
+                        Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
+                        Ok(Ok(n)) => ok_u64(n),
                     }
-                };
-                let r = spawn_blocking(move || unsafe {
-                    let mut sb: libc::stat = std::mem::zeroed();
-                    if libc::fstat(raw_fd, &mut sb) < 0 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(sb.st_size as u64)
-                    }
-                })
-                .await;
-                match r {
-                    Err(_je) => err(FSERR_IO, "spawn_blocking task failed"),
-                    Ok(Err(e)) => err(io_err_code(&e), io_msg_scrub(&e)),
-                    Ok(Ok(n)) => ok_u64(n),
                 }
-            }
+                None => err(FSERR_CLOSED, format!("unknown fd {fd}")),
+            },
             _ => err(FSERR_BAD_ARG, "expected u64"),
         };
-        // M-5: leader journals from fresh reply.
-        if let (Some(mode), Some(p)) = (jmode, jpath) {
-            self.journal_state_read(mode, WalOp::Size, p, &reply, ack, None);
+        if is_replay {
+            // Consensus follower — Phase 2 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let (Some(mode), Some(p)) = (jmode, jpath) {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Size,
+                            p,
+                            &fresh_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_size follower re-execute diverges from leader: {reason}",
+                        ),
+                    );
+                    if let (Some(mode), Some(p)) = (jmode, jpath) {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Size,
+                            p,
+                            &divergence_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — journal fresh reply, produce it.
+            if let (Some(mode), Some(p)) = (jmode, jpath) {
+                self.journal_state_read(mode, WalOp::Size, p, &fresh_reply, ack, None);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
