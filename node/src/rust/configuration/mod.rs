@@ -215,6 +215,32 @@ pub mod builder {
             }
         }
 
+        // A dropped delivery freezes the receiver's view until the retriever's
+        // anchor fires; the citability window must leave recovery a wide margin.
+        let recovery_anchor = std::time::Duration::from_millis(
+            casper::rust::engine::block_retriever::UNRESOLVED_REREQUEST_ANCHOR_MS,
+        );
+        if max_parent_depth != i32::MAX && max_parent_depth > 0 {
+            let citability_window = node_conf
+                .casper
+                .heartbeat_conf
+                .check_interval
+                .saturating_mul(max_parent_depth as u32);
+            if citability_window < recovery_anchor.saturating_mul(10) {
+                warnings.push(format!(
+                    "the citability window (max-parent-depth {} x heartbeat.check-interval \
+                    {:?} = {:?}) is under 10x the dependency-recovery re-request anchor \
+                    ({:?}): one lost block delivery can outlive the window before recovery \
+                    retries, converting a dropped packet into a finality stall. Raise \
+                    max-parent-depth or slow the cadence.",
+                    max_parent_depth,
+                    node_conf.casper.heartbeat_conf.check_interval,
+                    citability_window,
+                    recovery_anchor,
+                ));
+            }
+        }
+
         Ok(warnings)
     }
 
@@ -517,6 +543,41 @@ mod embedded_defaults_tests {
         assert!(
             !warnings.iter().any(|w| w.contains("deploy-play-budget")),
             "a disabled parent-depth check must not warn on any budget, got {warnings:?}"
+        );
+    }
+
+    /// A citability window near the recovery anchor warns; shipped geometry
+    /// and a disabled depth check stay silent.
+    #[test]
+    fn a_citability_window_near_the_recovery_anchor_warns_at_startup() {
+        let mut cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("re-request anchor")),
+            "shipped geometry must not warn, got {warnings:?}"
+        );
+
+        // 4 x 1s = 4s window against a 500ms anchor: under the 10x margin.
+        cfg.casper.max_parent_depth = 4;
+        cfg.casper.heartbeat_conf.check_interval = Duration::from_secs(1);
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("re-request anchor") && w.contains("max-parent-depth")),
+            "a citability window under 10x the anchor must warn, got {warnings:?}"
+        );
+
+        cfg.casper.max_parent_depth = i32::MAX;
+        let warnings = builder::validate_config(&cfg).expect("validate");
+        assert!(
+            !warnings.iter().any(|w| w.contains("re-request anchor")),
+            "a disabled parent-depth check must not warn, got {warnings:?}"
         );
     }
 

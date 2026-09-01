@@ -10,7 +10,7 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -79,7 +79,14 @@ enum AckReceiveResult {
  * Scala: BlockRetriever.of[F[_]: Monad: RequestedBlocks: ...]
  * In Scala, RequestedBlocks is passed as an implicit parameter (type class constraint).
  * In Rust, we explicitly pass it as a constructor parameter.
- */
+ * */
+/// Re-request clock for UNRESOLVED entries; `requested-blocks-timeout` only
+/// evicts received ones. A view frozen on one missing block must recover
+/// well inside the citability window (max-parent-depth heights of cadence)
+/// or a lost delivery becomes a finality stall — startup validation asserts
+/// that relation.
+pub const UNRESOLVED_REREQUEST_ANCHOR_MS: u64 = 500;
+
 #[derive(Debug, Clone)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
@@ -99,7 +106,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     const MAX_WAITING_LIST_PER_HASH: usize = 64;
     const PEER_REQUERY_COOLDOWN_MS: u64 = 500;
     const BROADCAST_ONLY_COOLDOWN_MS: u64 = 500;
-    const MIN_REREQUEST_INTERVAL_MS: u64 = 500;
+    const MIN_REREQUEST_INTERVAL_MS: u64 = UNRESOLVED_REREQUEST_ANCHOR_MS;
     const MAX_RETRIES_PER_HASH: u32 = 32;
     const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
     const STALE_REQUEST_LIFETIME_MULTIPLIER: u64 = 6;
@@ -848,27 +855,48 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             }
         }
 
-        // Handle broadcasting and requesting
+        // Handle broadcasting and requesting. A failed ask is gossip lost,
+        // not an error: the entry is tracked, so the re-request clock owns
+        // the retry — propagating would abort the caller's block validation.
         if result.broadcast_request {
-            self.transport
+            if let Err(err) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
-            debug!(
-                "Broadcasted HasBlockRequest for {}",
-                PrettyPrinter::build_string_bytes(&hash)
-            );
+                .await
+            {
+                warn!(
+                    "HasBlockRequest broadcast failed for {}: {}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    err
+                );
+            } else {
+                debug!(
+                    "Broadcasted HasBlockRequest for {}",
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+            }
         }
 
         if result.request_block {
             if let Some(peer_node) = request_from_peer {
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &peer_node, hash.clone())
-                    .await?;
-                debug!(
-                    "Requested block {} from {}",
-                    PrettyPrinter::build_string_bytes(&hash),
-                    peer_node.endpoint.host
-                );
+                    .await
+                {
+                    warn!(
+                        "Block request to {} failed for {}: {}",
+                        peer_node.endpoint.host,
+                        PrettyPrinter::build_string_bytes(&hash),
+                        err
+                    );
+                } else {
+                    debug!(
+                        "Requested block {} from {}",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        peer_node.endpoint.host
+                    );
+                }
             }
         }
 
@@ -914,10 +942,14 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 })?;
 
                 if let Some(requested) = state.get(&hash) {
-                    let rerequest_interval_ms =
+                    let age_ms = current_time.saturating_sub(requested.timestamp);
+                    // Unresolved entries re-request on the anchor; received
+                    // entries only age toward eviction on the conf threshold.
+                    let rerequest_interval_ms = self
+                        .rerequest_interval_ms_for_hash(&hash, Self::MIN_REREQUEST_INTERVAL_MS)?;
+                    let eviction_interval_ms =
                         self.rerequest_interval_ms_for_hash(&hash, effective_age_threshold_ms)?;
-                    let expired =
-                        current_time.saturating_sub(requested.timestamp) > rerequest_interval_ms;
+                    let expired = age_ms > eviction_interval_ms;
                     let received = requested.received;
                     let sent_to_casper = requested.in_casper_buffer;
                     let stale_lifetime = current_time.saturating_sub(requested.initial_timestamp);
@@ -939,7 +971,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         expired,
                         received,
                         sent_to_casper,
-                        !received && expired,
+                        !received && age_ms > rerequest_interval_ms,
                         should_evict_stale,
                         rerequest_interval_ms,
                     )
@@ -1093,9 +1125,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             )
             .await?;
         if matches!(admit_result.status, AdmitHashStatus::Ignore) {
-            self.transport
+            if let Err(err) = self
+                .transport
                 .broadcast_has_block_request(&self.connections_cell, &self.conf, &hash)
-                .await?;
+                .await
+            {
+                warn!(
+                    "Recovery HasBlockRequest broadcast failed for {}: {}",
+                    PrettyPrinter::build_string_bytes(&hash),
+                    err
+                );
+            }
         }
 
         self.register_retry_attempt(&hash)?;
@@ -1178,10 +1218,21 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         .join(", ")
                 );
 
-                // Request block from the peer
-                self.transport
+                // Request block from the peer; a failed send must not abort
+                // the sweep, and still counts as an attempt (cooldowns and
+                // cursors advance) — the entry's clock owns the retry.
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &next_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "Block re-request to {} failed for {}: {}",
+                        next_peer.endpoint.host,
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
 
                 // If this was the last peer in the waiting list, also broadcast HasBlockRequest.
                 if remaining_waiting.is_empty() {
@@ -1190,9 +1241,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(hash)
                     );
 
-                    self.transport
+                    if let Err(err) = self
+                        .transport
                         .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                        .await?;
+                        .await
+                    {
+                        warn!(
+                            "HasBlockRequest broadcast failed for {}: {}",
+                            PrettyPrinter::build_string_bytes(hash),
+                            err
+                        );
+                    }
                 }
                 Ok(true)
             }
@@ -1233,9 +1292,17 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     "No peers in waiting list for block {}. Broadcasting HasBlockRequest.",
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .broadcast_has_block_request(&self.connections_cell, &self.conf, hash)
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "HasBlockRequest broadcast failed for {}: {}",
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
                 Ok(true)
             }
             RerequestAction::RequestKnownPeer(known_peer, now) => {
@@ -1276,9 +1343,18 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     known_peer.endpoint.host,
                     PrettyPrinter::build_string_bytes(hash)
                 );
-                self.transport
+                if let Err(err) = self
+                    .transport
                     .request_for_block(&self.conf, &known_peer, hash.clone())
-                    .await?;
+                    .await
+                {
+                    warn!(
+                        "Peer requery to {} failed for {}: {}",
+                        known_peer.endpoint.host,
+                        PrettyPrinter::build_string_bytes(hash),
+                        err
+                    );
+                }
                 self.register_peer_requery_attempt(hash)?;
                 Ok(true)
             }
@@ -1540,6 +1616,57 @@ mod tests {
             transport.request_count(),
             1,
             "recover_dependency should issue a direct request when a connected peer exists"
+        );
+    }
+
+    /// A lost first request leaves an unresolved entry whose known holder is
+    /// never re-asked; maintenance must retry within seconds, not the
+    /// eviction lifetime.
+    #[tokio::test]
+    async fn an_unresolved_dependency_is_rerequested_within_seconds() {
+        let local = peer_node("local", 40400);
+        let remote = peer_node("remote", 40401);
+        let rp_conf = create_rp_conf_ask(local, None, None);
+        let connections = Connections::from_vec(vec![remote.clone()]);
+        let connections_cell = ConnectionsCell {
+            peers: Arc::new(Mutex::new(connections)),
+        };
+        let requested_blocks: RequestedBlocks = Arc::new(Mutex::new(HashMap::new()));
+        let transport = Arc::new(TransportLayerStub::new());
+        let block_retriever = BlockRetriever::new(
+            requested_blocks.clone(),
+            transport.clone(),
+            connections_cell,
+            rp_conf,
+        );
+
+        let hash: BlockHash = Bytes::from_static(b"lost-first-request-hash");
+        let now = BlockRetriever::<TransportLayerStub>::current_millis();
+        let aged = now.saturating_sub(10_000);
+        block_retriever
+            .set_request_state_for_test(hash.clone(), RequestState {
+                timestamp: aged,
+                initial_timestamp: aged,
+                peers: HashSet::new(),
+                received: false,
+                in_casper_buffer: false,
+                waiting_list: vec![remote],
+                peer_requery_cursor: 0,
+                requested_as_dependency: true,
+            })
+            .await
+            .expect("should seed request state");
+
+        block_retriever
+            .request_all(Duration::from_secs(240))
+            .await
+            .expect("maintenance should complete");
+
+        assert!(
+            transport.request_count() >= 1,
+            "a 10s-old unresolved dependency must be re-requested by maintenance; \
+             pacing retries on the eviction lifetime leaves the view frozen past \
+             every consensus deadline"
         );
     }
 

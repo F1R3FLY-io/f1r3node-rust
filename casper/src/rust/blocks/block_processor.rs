@@ -312,7 +312,7 @@ fn missing_dependency_quarantine_ms() -> u64 {
     })
 }
 
-impl<T: TransportLayer + Send + Sync> BlockProcessor<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn new(dependencies: BlockProcessorDependencies<T>) -> Self { Self { dependencies } }
 
     /// The height this node was started from. Zero means genesis — a complete
@@ -727,7 +727,7 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
 }
 
-impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
+impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
         casper_buffer: CasperBufferKeyValueStorage,
@@ -1541,22 +1541,7 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let dag = casper.handle_invalid_block(block, invalid_block, &snapshot.dag)?;
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during invalid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.spawn_block_hash_announce(block);
 
         Ok(dag)
     }
@@ -1570,30 +1555,37 @@ impl<T: TransportLayer + Send + Sync> BlockProcessorDependencies<T> {
         let dag = { casper.handle_valid_block(block).await? };
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
-        if let Err(err) = self
-            .transport
-            .send_block_hash(
-                &self.connections_cell,
-                &self.conf,
-                &block.block_hash,
-                &block.sender,
-            )
-            .await
-        {
-            tracing::warn!(
-                "Failed to send block hash {} to sender during valid-block effects: {}",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                err
-            );
-        }
+        self.spawn_block_hash_announce(block);
 
         Ok(dag)
+    }
+
+    /// The announce is one-way gossip, so it runs detached: awaited inline,
+    /// one unreachable peer's send timeout taxes every processed block.
+    fn spawn_block_hash_announce(&self, block: &BlockMessage) {
+        let transport = self.transport.clone();
+        let connections_cell = self.connections_cell.clone();
+        let conf = self.conf.clone();
+        let block_hash = block.block_hash.clone();
+        let sender = block.sender.clone();
+        tokio::spawn(async move {
+            if let Err(err) = transport
+                .send_block_hash(&connections_cell, &conf, &block_hash, &sender)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to send block hash {} to peers during block effects: {}",
+                    PrettyPrinter::build_string_bytes(&block_hash),
+                    err
+                );
+            }
+        });
     }
 }
 
 /// Constructor function equivalent to Scala's companion object apply method
 /// Creates unified dependencies and BlockProcessor
-pub fn new_block_processor<T: TransportLayer + Send + Sync>(
+pub fn new_block_processor<T: TransportLayer + Send + Sync + 'static>(
     block_store: KeyValueBlockStore,
     casper_buffer: CasperBufferKeyValueStorage,
     block_dag_storage: BlockDagKeyValueStorage,

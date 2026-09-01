@@ -293,14 +293,29 @@ impl TestNode {
         // Create and add block
         let block = self.add_block_from_deploys(deploy_datums).await?;
 
-        // Trigger handleReceive on all other nodes (excluding self)
+        // Trigger handleReceive on all other nodes (excluding self); the hash
+        // announce is spawned by the creator, so pump until it has landed.
         for node in nodes.iter_mut() {
             if node.local != self.local {
-                node.handle_receive().await?;
+                node.pump_until_knows(&block.block_hash).await?;
             }
         }
 
         Ok(block)
+    }
+
+    /// Pumps handle_receive until this node knows the block or a bounded
+    /// deadline passes — the announce arrives from a detached task, so a
+    /// single pump can run before it is enqueued.
+    pub async fn pump_until_knows(&mut self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            self.handle_receive().await?;
+            if self.knows_about(block_hash) || std::time::Instant::now() >= deadline {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     /// Helper method to propagate a block from a node at a specific index in a nodes array.
@@ -512,8 +527,22 @@ impl TestNode {
             .map(|(idx, node)| (node.local.clone(), idx))
             .collect();
 
-        // Initial handleReceive
-        self.handle_receive().await?;
+        // Initial handleReceive; a detached announce may still be in flight,
+        // so give it a bounded window before reading empty request state as
+        // already-synced.
+        let mut settle_rounds = 0;
+        loop {
+            self.handle_receive().await?;
+            let has_pending = {
+                let requested = self.requested_blocks.lock().unwrap();
+                requested.values().any(|req| !req.received)
+            };
+            if has_pending || settle_rounds >= 5 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            settle_rounds += 1;
+        }
 
         // Check if all synced
         let mut done = {
