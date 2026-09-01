@@ -43,8 +43,6 @@ use tokio::sync::mpsc;
 use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
 use crate::rust::errors::CasperError;
 
-/// Per-chunk page size for state-item requests. Matches the value used
-/// by `lfs_tuple_space_requester` for LFB-state subtree pagination.
 /// Per-request chunk size, carried in the request (the responder pages by
 /// it); independent of `lfs_tuple_space_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 1024;

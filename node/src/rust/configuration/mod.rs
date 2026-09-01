@@ -714,9 +714,10 @@ mod embedded_defaults_tests {
 
         let mut cfg = base.clone();
         cfg.casper.max_parent_depth = 0;
+        let err = builder::validate_config(&cfg).expect_err("max-parent-depth 0 must fail startup");
         assert!(
-            builder::validate_config(&cfg).is_err(),
-            "max-parent-depth 0 must fail startup"
+            err.to_string().contains("parent-spread"),
+            "the mpd check itself must fire (not a later geometry check), got: {err}"
         );
 
         let mut cfg = base.clone();
@@ -804,6 +805,26 @@ mod embedded_defaults_tests {
         assert!(
             builder::validate_config(&cfg).is_err(),
             "a width cap above max-parent-depth must fail startup"
+        );
+
+        // The boundary itself: cap == mpd is the largest legal cap.
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = cfg.casper.max_parent_depth as i64;
+        assert!(
+            builder::validate_config(&cfg).is_ok(),
+            "a width cap equal to max-parent-depth must pass"
+        );
+        let mut cfg = base.clone();
+        cfg.casper
+            .heartbeat_conf
+            .advanced
+            .empty_frontier_max_unfinalized_blocks = cfg.casper.max_parent_depth as i64 + 1;
+        assert!(
+            builder::validate_config(&cfg).is_err(),
+            "a width cap one above max-parent-depth must fail startup"
         );
 
         let mut cfg = base.clone();

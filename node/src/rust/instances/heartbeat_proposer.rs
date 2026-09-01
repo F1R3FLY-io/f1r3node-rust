@@ -541,6 +541,24 @@ async fn check_lfb_and_propose(
         self_latest_block_timestamp_ms.is_some_and(|timestamp_ms| {
             now.saturating_sub(timestamp_ms) < stale_recovery_min_interval_ms
         });
+    // Startup validated the cap against the LOCAL max-parent-depth; the
+    // snapshot carries the chain-ADOPTED one — re-judge I3 here, once.
+    {
+        static ADOPTED_GEOMETRY_CHECK: std::sync::Once = std::sync::Once::new();
+        let adopted_mpd = snapshot.on_chain_state.shard_conf.max_parent_depth;
+        let cap = config.advanced.empty_frontier_max_unfinalized_blocks;
+        if adopted_mpd != i32::MAX && cap > adopted_mpd as i64 {
+            ADOPTED_GEOMETRY_CHECK.call_once(|| {
+                tracing::warn!(
+                    empty_frontier_max_unfinalized_blocks = cap,
+                    adopted_max_parent_depth = adopted_mpd,
+                    "the empty-frontier width cap exceeds the chain-adopted \
+                     max-parent-depth: the cap cannot stop validity-window \
+                     burn during a stall"
+                );
+            });
+        }
+    }
     let empty_frontier_pressure = empty_frontier_pressure(
         &snapshot,
         config.advanced.empty_frontier_max_unfinalized_blocks,

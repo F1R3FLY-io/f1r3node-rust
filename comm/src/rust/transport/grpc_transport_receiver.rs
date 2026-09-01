@@ -109,8 +109,8 @@ pub struct TransportLayerService {
     recent_hash_filter: RecentHashFilter,
 }
 
-/// Default capacity for the recent hash filter
 const GRPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Default capacity for the recent hash filter
 const RECENT_HASH_FILTER_CAPACITY: usize = 8192;
 /// Inbound per-peer queue sizing tuned for catch-up bursts.
 /// Small values cause drops that can amplify missing-dependency churn.

@@ -301,6 +301,19 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     casper_shard_conf.deploy_lifespan = onchain_lifespan;
     casper_shard_conf.min_phlo_price = onchain_min_phlo;
 
+    // Startup validation ran on the LOCAL values; re-judge the inequalities
+    // the adopted values actually run under.
+    if casper_shard_conf.max_parent_depth != i32::MAX
+        && casper_shard_conf.deploy_lifespan <= casper_shard_conf.max_parent_depth as i64
+    {
+        tracing::warn!(
+            deploy_lifespan = casper_shard_conf.deploy_lifespan,
+            max_parent_depth = casper_shard_conf.max_parent_depth,
+            "adopted deploy-lifespan is at or below the adopted max-parent-depth: \
+             deploys can expire inside the citability window"
+        );
+    }
+
     Ok(MultiParentCasperImpl {
         divergence_monitor: std::sync::Arc::new(
             crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),

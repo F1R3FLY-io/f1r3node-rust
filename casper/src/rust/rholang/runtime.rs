@@ -1438,9 +1438,11 @@ impl RuntimeOps {
                         "maxParentDepth out of range [1, i32::MAX]: {mpd}"
                     )));
                 }
-                if lifespan < 1 {
+                // Capped at i32::MAX because the narrowest consumer (the
+                // expiry rule's expiration_threshold) is i32.
+                if !(1..=i32::MAX as i64).contains(&lifespan) {
                     return Err(bad(&format!(
-                        "deployLifespan out of range [1, i64::MAX]: {lifespan}"
+                        "deployLifespan out of range [1, i32::MAX]: {lifespan}"
                     )));
                 }
                 if min_phlo < 0 {

@@ -3598,6 +3598,43 @@ async fn consensus_parameters_round_trip_through_genesis() {
     );
 }
 
+/// The read choke point's range gates: a chain carrying values the validity
+/// rules are undefined under must fail the read (and with it, startup) —
+/// never be adopted, never fall back to local configuration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consensus_parameters_read_rejects_out_of_range_values() {
+    use crate::util::genesis_builder::GenesisBuilder;
+    use crate::util::rholang::resources::{
+        mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
+    };
+
+    // Casper tests bypass node-side startup validation, so genesis can bake
+    // a zero parent depth — exactly the hostile-chain shape the gate guards.
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
+    parameters.2.proof_of_stake.max_parent_depth = 0;
+
+    let genesis_context = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("genesis with out-of-range parameters");
+    let post_state = genesis_context
+        .genesis_block
+        .body
+        .state
+        .post_state_hash
+        .clone();
+
+    let mut kvm = mk_test_rnode_store_manager_from_genesis(&genesis_context);
+    let (runtime_manager, _history) = mk_runtime_manager_with_history_at(&mut *kvm).await;
+
+    let read = runtime_manager.get_consensus_parameters(&post_state).await;
+    let err = read.expect_err("a zero maxParentDepth must fail the strict read");
+    assert!(
+        err.to_string().contains("maxParentDepth out of range"),
+        "the error must name the offending parameter, got: {err}"
+    );
+}
+
 /// The adoption gap this pins: a node whose LOCAL configuration diverges from
 /// the chain must still RUN the on-chain consensus parameters — local config
 /// is not a fork input. `hash_set_casper` is the single adoption point (the
