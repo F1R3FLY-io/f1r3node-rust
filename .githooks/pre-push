@@ -24,6 +24,18 @@
 
 set -euo pipefail
 
+# Prepend the rustup shim directory to PATH so `cargo`/`rustc`
+# invocations below resolve to the rustup shim rather than any
+# system-package-manager-installed rustc (e.g. MacPorts, Homebrew,
+# apt).  The shim consults this workspace's `rust-toolchain.toml`
+# and switches to the pinned toolchain (currently
+# nightly-2026-02-09), whereas a standalone system rustc ignores
+# the toolchain file and tries to compile the workspace on
+# whatever version it happens to be — which fails on smallvec's
+# `#![feature(...)]` gate under stable (E0554).  Same rationale
+# as the pre-commit hook.
+export PATH="$HOME/.cargo/bin:$PATH"
+
 # Diagnostic: trace hook exit to stderr
 _hook_t0=$(date +%s)
 trap 'rc=$?; echo "[pre-push hook: exit $rc after $(($(date +%s) - _hook_t0))s]" >&2' EXIT

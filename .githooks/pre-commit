@@ -19,6 +19,24 @@
 
 set -euo pipefail
 
+# Prepend the rustup shim directory to PATH so `cargo`/`rustc`
+# invocations below resolve to the rustup shim rather than any
+# system-package-manager-installed rustc (e.g. MacPorts, Homebrew,
+# apt).  The shim consults this workspace's `rust-toolchain.toml`
+# and switches to the pinned toolchain (currently
+# nightly-2026-02-09), whereas a standalone system rustc ignores
+# the toolchain file and tries to compile the workspace on
+# whatever version it happens to be — which fails on smallvec's
+# `#![feature(...)]` gate under stable (E0554).
+#
+# Safe when `$HOME/.cargo/bin` doesn't exist: prepending a missing
+# directory to PATH is a no-op.  Safe when only rustup is
+# installed: the shim was already going to win.  Only changes
+# behavior when both a rustup shim and a system rustc are present
+# and the system rustc happens to come first — which is the
+# common macOS-with-MacPorts case that motivated this fix.
+export PATH="$HOME/.cargo/bin:$PATH"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
