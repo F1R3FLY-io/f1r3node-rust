@@ -16,3 +16,17 @@
 [[profile.default.overrides]]
 filter = 'test(/genesis::contracts::pos_spec::pos_spec/)'
 threads-required = "num-cpus"
+
+# `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` is a
+# timing-invariant regression guard (issue-43: O(store-size) HotStore
+# snapshots) that compares microsecond-scale cost at two store sizes. Its 8x
+# bound holds comfortably in isolation (steady-state ratio is low
+# single-digit; the guarded regression measures ~100x) but co-tenant tests in
+# a fully parallel run skew the two measurement windows unevenly — the
+# issue-283 flake class. A 2026-08-31 pre-push run measured 15.7x under full
+# suite load; the same build passed twice in isolation moments later. Same
+# remedy as pos_spec above: schedule it with the machine to itself. It runs
+# in well under a second, so the island costs the run nothing.
+[[profile.default.overrides]]
+filter = 'test(/soft_checkpoint_cost_does_not_scale_with_accumulated_store_size/)'
+threads-required = "num-cpus"
