@@ -3954,6 +3954,16 @@ impl FsProcesses {
             // 2026-08-30 review-follow-up: use `extract_ok_fd` (bit-
             // preserving reinterpret) for the same rationale as
             // fs_open — see `extract_ok_fd`'s docstring.
+            //
+            // Under the Phase 2 ban (2026-09-01), Consensus-mode
+            // opens are rejected leader-side (see below), so
+            // `extract_ok_fd` on a Consensus-cap open returns None
+            // (cached reply is `[false, FSERR_UNSUPPORTED, ...]`)
+            // and no shadow gets inserted.  Only Oracular streams
+            // reach this shadow-install path.  Kept as metadata-only
+            // shadow (matches the pre-Phase-2 Phase-0 shape) — no
+            // real-open needed since Oracular streams don't
+            // re-execute on the follower.
             if let Some(fd) = extract_ok_fd(&previous) {
                 if let (Some(root), Some(rel)) =
                     (RhoString::unapply(root_par), RhoString::unapply(rel_par))
@@ -3995,6 +4005,35 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
+        // Phase 2 ban (Consensus re-execute + verify, 2026-09-01):
+        // Consensus + entriesStream* is UNSUPPORTED.  Reason:
+        // `readdir` iteration order is fs-dependent and not
+        // guaranteed to be stable across per-validator subdirs (D3);
+        // two validators with independently-created copies of the
+        // same logical directory could yield entries in different
+        // orders, tripping spurious CONSENSUS_DIVERGENCE.  Bulk
+        // `fs_entries` avoids this because it sorts.  Under Phase-0
+        // this hazard was invisible (follower consumed cached reply);
+        // Phase 2's re-execute exposes it.  Rather than ship a
+        // Consensus-cap primitive with a non-obvious readdir-order
+        // correctness constraint operators must satisfy externally,
+        // reject at open time and direct users to `fs_entries`.
+        //
+        // Lifting the ban requires either DirIter-level canonical
+        // ordering (buffer + sort, but that breaks the streaming
+        // semantic + per-Next journaling) or a spec change making
+        // operator responsibility for readdir-order stability
+        // explicit.  Slotted for Phase 4/5.
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "entriesStream* is not supported on Consensus caps — readdir order \
+                 is fs-dependent and not stable across per-validator subdirs.  Use \
+                 `fs_entries` (sorted, deterministic across validators) instead.",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
+        }
         let (root, rel) = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(r), Some(l)) => (r, l),
             _ => {
@@ -4108,6 +4147,14 @@ impl FsProcesses {
         let [fd_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("fs_entries_stream_next"));
         };
+        // Note (2026-09-01 Phase 2 ban): Consensus + entriesStream*
+        // is rejected at entriesStreamOpen, so under normal flow no
+        // Consensus stream fd ever reaches this handler.  Oracular
+        // caps use the Phase-0 tautological replay path (follower
+        // consumes cached reply); the leader path below runs the
+        // real `readdir` on the DIR*.  If a future change lifts the
+        // ban, this handler needs Phase-2 re-execute + verify
+        // treatment (see git history for the pre-ban shape).
         if is_replay {
             // Per-entry supplement charge on the replay branch: n = 1
             // when the cached reply is `[true, entryRecord]`, else n = 0
@@ -4118,15 +4165,15 @@ impl FsProcesses {
             self.metering.reserve_incremental_primitive(
                 costs::fs_entries_stream_per_entry_supplement_cost(n),
             )?;
-            // Step 3 (D3 WAL wiring): symmetric journal on the
-            // follower's replay branch.  The shadow handle inserted
-            // by `entriesStreamOpen`'s replay branch (Step 2) carries
-            // `(cmode, canon_path)` — look them up and journal the
-            // cached `previous` reply so leader + follower append
-            // byte-identical WAL entries on the same call site.
-            // Missing shadow handle → skip: the leader also skips
-            // when the fd table returns None (FSERR_CLOSED path),
-            // so both sides converge on "no entry appended".
+            // Journal the cached reply if the fd's shadow reports a
+            // Consensus cmode.  Under the Phase 2 ban this branch is
+            // unreachable in normal flow (no Consensus stream fds
+            // exist).  `journal_state_read` self-guards on Consensus
+            // → this call is a WAL no-op for Oracular; kept for
+            // structural parity with the leader path's journal call
+            // and as a load-bearing defense-in-depth site if a future
+            // change lifts the ban without re-adding Phase-2 wiring
+            // here.
             if let Some(fd) = RhoNumber::unapply(fd_par) {
                 if let Some(handle) = self.handles.dir_handles.get(fd as u64).await {
                     if let Some(reply_par) = previous.first() {
@@ -4198,11 +4245,12 @@ impl FsProcesses {
         };
         self.metering
             .reserve_incremental_primitive(costs::fs_entries_stream_per_entry_supplement_cost(n))?;
-        // Step 3 (D3 WAL wiring): journal the leader's reply if the
-        // handle is a Consensus cap.  `journal_state_read` skips
-        // Oracular caps internally, so the check inside is enough.
-        // Missing handle (FSERR_CLOSED) → skip: no path or cmode to
-        // journal against.
+        // Journal the leader's reply if the handle is a Consensus cap.
+        // `journal_state_read` skips Oracular caps internally.  Under
+        // the Phase 2 ban this WAL-append is unreachable in normal
+        // flow, since Consensus stream opens are rejected at
+        // entriesStreamOpen — but kept as a load-bearing site for the
+        // future case if the ban is lifted with re-execute wiring.
         if let Some(handle) = handle_opt.as_ref() {
             self.journal_state_read(
                 handle.cmode,
