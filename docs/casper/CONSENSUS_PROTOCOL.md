@@ -223,6 +223,9 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ### Step 8: Deploy & State Validation
 - Deploys are within scope, not duplicated
+  - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window, without a validity qualifier: a signature carried only by an invalid ancestor is still a repeat
+  - A rejected-in-scope signature is exempt when its retry gate is open (see the glossary); a closed gate returns `PrematureDeployRetry`
+  - The repeat-deploy signature index (see the glossary) may skip the scan for a signature with no in-window carrier; an index hit or read failure falls back to scope-verified scanning, so index-served and scan-served verdicts are equal
 - Phlogiston price meets minimum
 - Invalid block tracking applied
 

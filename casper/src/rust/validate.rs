@@ -689,6 +689,55 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
+        // Repeat-deploy signature index fast path (CONSENSUS_PHILOSOPHY
+        // §4.4). Behind the completeness gate, an index absence proves the
+        // sig has no carrier anywhere in the DAG, so it cannot be a repeat
+        // and skips the scan. An index hit is NOT a verdict — the sig stays
+        // in the exact scan, which is the window and parent-scope
+        // verification (a fork-only carrier must not poison this block).
+        // Any read failure keeps the sig in the scan: unreadable index
+        // state is no information, never an absence proof.
+        let deploy_key_set: HashSet<Vec<u8>> = match s.dag.carrier_index_complete() {
+            Ok(true) => {
+                let mut probe_failed = false;
+                let scan_set: HashSet<Vec<u8>> = deploy_key_set
+                    .into_iter()
+                    .filter(|sig| {
+                        if probe_failed {
+                            return true;
+                        }
+                        match s.dag.carrier_index_proves_absence(sig) {
+                            Ok(absent) => !absent,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "repeat-deploy carrier-index probe failed for block {}; \
+                                     falling back to the ancestor scan: {}",
+                                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                                    e,
+                                );
+                                probe_failed = true;
+                                true
+                            }
+                        }
+                    })
+                    .collect();
+                scan_set
+            }
+            Ok(false) => deploy_key_set,
+            Err(e) => {
+                tracing::warn!(
+                    "repeat-deploy carrier-index completeness read failed for block {}; \
+                     falling back to the ancestor scan: {}",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    e,
+                );
+                deploy_key_set
+            }
+        };
+        if deploy_key_set.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
+
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         // A failed expansion is not an empty one: swallowing it ends the scan
         // early, and "found no duplicate" is then a statement about what could

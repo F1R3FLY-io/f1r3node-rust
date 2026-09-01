@@ -141,6 +141,15 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
+    // One-time repeat-deploy carrier-index backfill (same pattern as the
+    // LFB migration above): certifies the completeness invariant that the
+    // repeat-deploy fast path's absence proofs rely on.
+    let carrier_index_certified = block_dag_storage.ensure_carrier_index_complete(&block_store)?;
+    info!(
+        carrier_index_certified,
+        "repeat-deploy carrier index checked"
+    );
+
     // Casper requesting blocks cache
     let casper_buffer_storage = {
         use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;

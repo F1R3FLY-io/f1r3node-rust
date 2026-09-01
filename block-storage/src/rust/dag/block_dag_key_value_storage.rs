@@ -63,6 +63,7 @@ use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
 use super::equivocation_tracker_store::EquivocationTrackerStore;
+use crate::rust::key_value_block_store::KeyValueBlockStore;
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -229,6 +230,21 @@ impl KeyValueDagRepresentation {
     /// Lifecycle: every open sig — the register's schedule rebuild input.
     pub fn open_lifecycle_sigs(&self) -> Result<Vec<DeployId>, KvStoreError> {
         self.lifecycle.read().open_sigs()
+    }
+
+    /// Repeat-deploy signature index: true when the startup backfill has
+    /// certified the carrier-index completeness invariant for this
+    /// database. Absence proofs are sound only behind this gate.
+    pub fn carrier_index_complete(&self) -> Result<bool, KvStoreError> {
+        self.lifecycle.read().carrier_index_complete()
+    }
+
+    /// Repeat-deploy signature index: true when the index PROVES the sig
+    /// has no carrier anywhere in the DAG (no terminal record, no event
+    /// row). A `false` is not a verdict — it routes the sig to the exact
+    /// ancestor scan.
+    pub fn carrier_index_proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
+        self.lifecycle.read().proves_absence(sig)
     }
 
     /// The sig's most recent canonical appearance — the latest lifecycle
@@ -815,6 +831,98 @@ impl BlockDagKeyValueStorage {
             .map(BlockHash::from))
     }
 
+    /// One-time carrier-index backfill (startup, next to the LFB-migration
+    /// precedent): restores lifecycle events for every DAG-visible block so
+    /// the completeness invariant holds for databases written before the
+    /// invariant existed — valid blocks from before the lifecycle tables,
+    /// and invalid blocks from before `CarriedInvalid`. Idempotent via
+    /// `append_event_once`, no-op behind terminal records (pruned rows must
+    /// not reopen), and short-circuited by the marker on later starts.
+    ///
+    /// The marker is written ONLY when every DAG-visible block's body was
+    /// readable. A missing body leaves the marker unwritten and the fast
+    /// path off: an absence proof over an unreadable body would claim more
+    /// than this node can see.
+    pub fn ensure_carrier_index_complete(
+        &self,
+        block_store: &KeyValueBlockStore,
+    ) -> Result<bool, KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        {
+            let lifecycle_guard = self.lifecycle.read();
+            if lifecycle_guard.carrier_index_complete()? {
+                return Ok(true);
+            }
+        }
+        let hashes = {
+            let metadata_guard = self.block_metadata_index.read();
+            metadata_guard.dag_set()
+        };
+        let mut all_bodies_readable = true;
+        let mut restored: u64 = 0;
+        let lifecycle_guard = self.lifecycle.write();
+        for hash in hashes.iter() {
+            let invalid = {
+                let metadata_guard = self.block_metadata_index.read();
+                match metadata_guard.get(hash)? {
+                    Some(meta) => meta.invalid,
+                    None => continue,
+                }
+            };
+            let Some(block) = block_store.get(hash)? else {
+                tracing::warn!(
+                    "carrier-index backfill: no body for DAG-visible block {}; \
+                     the completeness marker stays unwritten",
+                    PrettyPrinter::build_string_bytes(hash),
+                );
+                all_bodies_readable = false;
+                continue;
+            };
+            let block_number = block.body.state.block_number;
+            for pd in &block.body.deploys {
+                let (kind, valid_after) = if invalid {
+                    (LifecycleEventKind::CarriedInvalid, None)
+                } else {
+                    (
+                        LifecycleEventKind::Included {
+                            is_failed: pd.is_failed,
+                        },
+                        Some(pd.deploy.data.valid_after_block_number),
+                    )
+                };
+                lifecycle_guard.append_event_once(&pd.deploy.sig, valid_after, LifecycleEvent {
+                    height: block_number,
+                    block_hash: block.block_hash.to_vec(),
+                    kind,
+                })?;
+                restored += 1;
+            }
+            if !invalid {
+                for rd in &block.body.rejected_deploys {
+                    lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                        height: block_number,
+                        block_hash: block.block_hash.to_vec(),
+                        kind: LifecycleEventKind::Rejected {
+                            duplicate: rd.duplicate,
+                            carrier: rd.carrier.to_vec(),
+                        },
+                    })?;
+                    restored += 1;
+                }
+            }
+        }
+        if all_bodies_readable {
+            lifecycle_guard.mark_carrier_index_complete()?;
+        }
+        tracing::info!(
+            blocks = hashes.len(),
+            events_examined = restored,
+            marker_written = all_bodies_readable,
+            "carrier-index backfill completed"
+        );
+        Ok(all_bodies_readable)
+    }
+
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
@@ -1238,46 +1346,67 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
+            // Lifecycle event ingest: one body pass projects inclusion and
+            // rejection events into the per-sig lifecycle rows. An invalid
+            // block's body is not canonical history, but the repeat-deploy
+            // ancestor scan still reads it, so its sigs are recorded as
+            // `CarriedInvalid` — carrier-index testimony, never a lifecycle
+            // outcome. Ingest runs BEFORE the metadata-index add so the
+            // carrier-index completeness invariant holds at every crash
+            // point: a crash here leaves orphan row events (harmless — a
+            // row hit just routes to the exact scan), never a DAG-visible
+            // block with unindexed sigs. Every insert path (validated,
+            // proposed, genesis, LFS, fixtures) flows through here, so
+            // ingest coverage is total by construction.
+            {
+                let block_number = block.body.state.block_number;
+                let lifecycle_guard = self.lifecycle.write();
+                if !invalid {
+                    for pd in &block.body.deploys {
+                        lifecycle_guard.append_events(
+                            &pd.deploy.sig,
+                            Some(pd.deploy.data.valid_after_block_number),
+                            vec![LifecycleEvent {
+                                height: block_number,
+                                block_hash: block.block_hash.to_vec(),
+                                kind: LifecycleEventKind::Included {
+                                    is_failed: pd.is_failed,
+                                },
+                            }],
+                        )?;
+                    }
+                    for rd in &block.body.rejected_deploys {
+                        lifecycle_guard.append_events(&rd.sig, None, vec![LifecycleEvent {
+                            height: block_number,
+                            block_hash: block.block_hash.to_vec(),
+                            kind: LifecycleEventKind::Rejected {
+                                duplicate: rd.duplicate,
+                                carrier: rd.carrier.to_vec(),
+                            },
+                        }])?;
+                    }
+                } else {
+                    // `valid_after` stays unset: `CarriedInvalid` is
+                    // carrier-index testimony, not an inclusion, so the row
+                    // remains record-only until a valid inclusion arrives.
+                    for pd in &block.body.deploys {
+                        lifecycle_guard.append_events(&pd.deploy.sig, None, vec![
+                            LifecycleEvent {
+                                height: block_number,
+                                block_hash: block.block_hash.to_vec(),
+                                kind: LifecycleEventKind::CarriedInvalid,
+                            },
+                        ])?;
+                    }
+                }
+                drop(lifecycle_guard);
+            }
+
             let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
             self.dag_generation.fetch_add(1, Ordering::Relaxed);
-
-            // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. Invalid
-            // blocks contribute nothing — their bodies are not canonical
-            // history. Every insert path
-            // (validated, proposed, genesis, LFS, fixtures) flows through
-            // here, so ingest coverage is total by construction.
-            if !invalid {
-                let block_number = block.body.state.block_number;
-                let lifecycle_guard = self.lifecycle.write();
-                for pd in &block.body.deploys {
-                    lifecycle_guard.append_events(
-                        &pd.deploy.sig,
-                        Some(pd.deploy.data.valid_after_block_number),
-                        vec![LifecycleEvent {
-                            height: block_number,
-                            block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Included {
-                                is_failed: pd.is_failed,
-                            },
-                        }],
-                    )?;
-                }
-                for rd in &block.body.rejected_deploys {
-                    lifecycle_guard.append_events(&rd.sig, None, vec![LifecycleEvent {
-                        height: block_number,
-                        block_hash: block.block_hash.to_vec(),
-                        kind: LifecycleEventKind::Rejected {
-                            duplicate: rd.duplicate,
-                            carrier: rd.carrier.to_vec(),
-                        },
-                    }])?;
-                }
-                drop(lifecycle_guard);
-            }
 
             if invalid {
                 self.invalid_blocks_index
