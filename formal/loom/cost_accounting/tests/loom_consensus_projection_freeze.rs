@@ -163,6 +163,18 @@ fn capture_certified_snapshot(
     })
 }
 
+fn capture_certified_snapshot_retry(
+    head: &Arc<Mutex<DurableHead>>,
+    dag: &Arc<Mutex<DagProjection>>,
+) -> CertifiedSnapshot {
+    loop {
+        if let Some(snapshot) = capture_certified_snapshot(head, dag) {
+            return snapshot;
+        }
+        thread::yield_now();
+    }
+}
+
 fn assert_coherent_certified_snapshot(snapshot: CertifiedSnapshot) {
     assert!(
         snapshot
@@ -215,9 +227,10 @@ fn proposer_capture_is_coherent_during_parallel_finalization() {
         let proposer_head = Arc::clone(&head);
         let proposer_dag = Arc::clone(&dag);
         let proposer = thread::spawn(move || {
-            if let Some(snapshot) = capture_certified_snapshot(&proposer_head, &proposer_dag) {
-                assert_coherent_certified_snapshot(snapshot);
-            }
+            assert_coherent_certified_snapshot(capture_certified_snapshot_retry(
+                &proposer_head,
+                &proposer_dag,
+            ));
         });
 
         writer.join().unwrap();
@@ -668,6 +681,93 @@ fn every_terminal_status_at_the_deadline_times_out() {
             assert!(wait.outcome == TargetWaitOutcome::TimedOut);
             assert_eq!(wait.completed_at, Some(3));
         }
+    });
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClosureCapture {
+    Complete([usize; 2]),
+    Missing(usize),
+}
+
+fn capture_available_projection(
+    exact_latest: [usize; 2],
+    first_held: &AtomicBool,
+    second_held: &AtomicBool,
+) -> ClosureCapture {
+    for dependency in exact_latest {
+        let held = match dependency {
+            1 => first_held.load(Ordering::Acquire),
+            2 => second_held.load(Ordering::Acquire),
+            _ => false,
+        };
+        if !held {
+            return ClosureCapture::Missing(dependency);
+        }
+    }
+    ClosureCapture::Complete(exact_latest)
+}
+
+#[test]
+fn concurrent_dependency_restoration_never_certifies_a_partial_projection() {
+    loom::model(|| {
+        let first_held = Arc::new(AtomicBool::new(true));
+        let second_held = Arc::new(AtomicBool::new(false));
+
+        let writer_second = Arc::clone(&second_held);
+        let writer = thread::spawn(move || writer_second.store(true, Ordering::Release));
+
+        let reader_first = Arc::clone(&first_held);
+        let reader_second = Arc::clone(&second_held);
+        let reader = thread::spawn(move || {
+            capture_available_projection([1, 2], &reader_first, &reader_second)
+        });
+
+        writer.join().unwrap();
+        let capture = reader.join().unwrap();
+        assert!(matches!(
+            capture,
+            ClosureCapture::Missing(2) | ClosureCapture::Complete([1, 2])
+        ));
+    });
+}
+
+#[test]
+fn dependency_arrival_and_parking_have_no_lost_wakeup() {
+    loom::model(|| {
+        let held = Arc::new(AtomicBool::new(false));
+        let parked = Arc::new(Mutex::new(false));
+        let requested = Arc::new(AtomicBool::new(false));
+
+        let finalizer_held = Arc::clone(&held);
+        let finalizer_parked = Arc::clone(&parked);
+        let finalizer_requested = Arc::clone(&requested);
+        let finalizer = thread::spawn(move || {
+            let mut parked = finalizer_parked.lock().unwrap();
+            if finalizer_held.load(Ordering::Acquire) {
+                finalizer_requested.store(true, Ordering::Release);
+            } else {
+                *parked = true;
+            }
+        });
+
+        let arrival_held = Arc::clone(&held);
+        let arrival_parked = Arc::clone(&parked);
+        let arrival_requested = Arc::clone(&requested);
+        let arrival = thread::spawn(move || {
+            arrival_held.store(true, Ordering::Release);
+            let mut parked = arrival_parked.lock().unwrap();
+            if *parked {
+                *parked = false;
+                arrival_requested.store(true, Ordering::Release);
+            }
+        });
+
+        finalizer.join().unwrap();
+        arrival.join().unwrap();
+        assert!(held.load(Ordering::Acquire));
+        assert!(requested.load(Ordering::Acquire));
+        assert!(!*parked.lock().unwrap());
     });
 }
 

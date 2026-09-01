@@ -40,37 +40,42 @@ Four facts about the implementation shape every remedy. Function names are the s
 3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the state of the main parent does not hold the settled content of the floor, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the recorded justifications of the block.
 4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. The mechanism runs only on the proposer side. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
 
+Protocol 6 adds one candidate-specific boundary to fact 1.
+A declared parent must carry the block's signed finalized floor.
+The receiver still does not require equality with its local preferred frontier.
+Frozen justifications remain independent vote and authority inputs.
+
 ### 4.1 Adversarial surface of the phase-1 mechanism
 
 Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the history that produces those losses. Principle P4 is unchanged because fork choice does not read the count. The count reaches only the three merge adjudication sites.
 
 **Cost of a manufactured loss.** A rejection record needs a conflicting winner on the same key. The rejected deploy does not pay execution cost. An attacker can also acquire rejection history against honest hot-key traffic. PR #216 does not yet define a price for this strategy.
 
-**Delay evidence.** The test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` shows that a fixed lead is consumed one round at a time. The test does not bound continued lead farming or all valid schedules.
+**Delay evidence.** The test `three_validator_neutral_base_applies_prior_loss_priority` shows that one recorded loss wins a later equal conflict. The test does not bound continued lead farming or all valid schedules.
 
 **Window bound.** A merge counts only kept records from the scope and base-lineage window. Records older than `deploy_lifespan` do not count.
 
 **Conflict scope.** Each deploy signature owns its prior-rejection count. A dependency chain uses the maximum count among its members. This rule prevents chain length from multiplying priority.
 
-**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. A missing required block returns `BlockNotHeld` instead of an empty history. The test `scope_counts_fail_on_missing_visible_block` provides refusal evidence.
+**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. The production scan returns `BlockNotHeld` when required DAG metadata or a block body is absent.
 
 **Ratified ordering.** Prior-rejection count strictly outranks cost. Cost and the deterministic content order decide equal-count cases. A fixed cap is not part of phase 1 because saturation can restore deterministic starvation.
 
 **Residual exposure and escalation.** Continued loss farming remains a known risk. Phase 1 does not guarantee termination for all valid schedules. Soak evidence controls later escalation.
 
-### 4.2 User Contract Concurrency waiver
+### 4.2 User Contract Concurrency gate
 
-PR #299 waives User Contract Concurrency as a merge gate. The job is disabled, and the suite does not fail on starvation. The neutral-base integration test supplies the phase-1 system evidence.
+User Contract Concurrency runs in dedicated amd64 jobs for the Docker and subprocess providers. The integration aggregators require both jobs.
 
-A follow-up change must enable the job and fail when contention expires a valid deploy. The acceptance gate must pass three consecutive runs.
+The suite checks strict finalization and node agreement for concurrent contracts. A missing terminal result or inconsistent finalized state fails the job.
 
 ### 4.3 Rejection-history scan budget
 
 The scan must stay `O(B + R)`. `B` is the unique block count, and `R` is the rejection-record count. The implementation must load each unique block body no more than once.
 
-The benchmark uses a floor distance of 256 blocks and a visible scope of 512 blocks. The p95 latency and peak memory must stay within 10 percent of `dev`.
+A future benchmark must use a 256-block floor distance and a 512-block visible scope. Its p95 latency and peak memory must stay within 10 percent of `dev`.
 
-The benchmark is a release gate. Node-local timing must never control block validity or consensus admission.
+No executable benchmark currently enforces this budget. Treat it as an open release criterion. Node-local timing must never control block validity or consensus admission.
 
 ## 5. The remedy ladder for base-bias starvation
 
@@ -84,12 +89,12 @@ The fork-choice tie-break is the stake score, then the ascending block hash. The
 - **Cons:** Liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets two or three attempts inside its 50-block window. The observed failure had exactly two rejections. An even chance per attempt leaves an expiry probability that is too high for a liveness claim.
 - **Verdict:** This option is necessary as the test-evidence component. It is not sufficient alone.
 
-### Option B1 — merged-frontier retry packaging (recommended next step)
+### Option B1 — merged-frontier retry packaging (implemented)
 
-The owner packages a gated retry only when its own tip already merges every same-key contender that the owner can see. The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
+The carrier owner packages a floor-authorized retry when the complete selected parent set covers every valid latest message. Each latest message can have a different covering parent. The candidate therefore uses the existing multi-parent merge without waiting for a serial coalescing block. An unseen contender can still race with the candidate. Loss-aware adjudication handles the adjudicable subset in that case.
 
-- **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
-- **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
+- **Pros:** The policy is proposer-local. It needs no validation change, wire change, global lock, or validator serialization. Collective coverage preserves multi-parent concurrency. Parent order and latest-message order do not change the decision.
+- **Cons:** An incomplete selected frontier defers retry before the bounded lease expires. The lease bypasses only frontier readiness. It does not bypass floor authorization, owner custody, lifespan checks, or replay validation.
 
 ### Option B2 — per-key contender serialization
 
@@ -133,7 +138,7 @@ This option biases fork-choice scoring by starved-retry priority.
 
 ```mermaid
 flowchart TD
-    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - proposed:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
+    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\ncollective B1 parent coverage\n+ bounded retry lease]
     B1 -->|soak or SI evidence\nshows residual expiries| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
     C1 -->|still insufficient| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
     C2 -.-> C3[C3 fork-choice weights:\nrejected - griefing vector]

@@ -2,7 +2,7 @@
 // fresh execution in a later block, gated on its rejection being settled in
 // the block's frozen floor closure, with custody scoped to the owner.
 //
-// Ungated re-proposal regenerated same-sig sibling copies faster than merges
+// Ungated re-proposal regenerated same-occurrence sibling copies faster than merges
 // could adjudicate them, pinning recovery below the first carrier and
 // livelocking the shard under sustained contention. The gate
 // (`FloorContext::retry_gate_open`) is a pure function of the block, so the
@@ -26,6 +26,7 @@ use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, F1r3flyState, Header, Justification,
 };
+use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
@@ -34,16 +35,26 @@ use serial_test::serial;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
+fn rejected_ids(block: &BlockMessage) -> Vec<DeployLookupId> {
     block
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
+        .map(|rejected| rejected.typed_deploy_id().clone())
         .collect()
 }
 
-fn short(sig: &Bytes) -> String { hex::encode(&sig[..8.min(sig.len())]) }
+fn only_deploy_id(block: &BlockMessage) -> DeployLookupId {
+    assert_eq!(block.body.deploys.len(), 1, "expected one deploy carrier");
+    block.body.deploys[0]
+        .deploy_id_for_protocol(block.header.version)
+        .expect("carrier deploy identity")
+}
+
+fn short(deploy_id: &DeployLookupId) -> String {
+    let bytes = deploy_id.as_bytes();
+    hex::encode(&bytes[..8.min(bytes.len())])
+}
 
 async fn three_node_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
@@ -65,9 +76,15 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
 
 /// Contest two deploys on a seeded single-value cell; the adjudicating
 /// merge M (nodes[1]) rejects exactly one with a record. Returns
-/// (nodes, shard_id, loser_sig, loser_owner_index, [carrier A, carrier B,
+/// (nodes, shard_id, loser_id, loser_owner_index, [carrier A, carrier B,
 /// M] in causal order for delivery).
-async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<BlockMessage>) {
+async fn stage_live_rejection() -> (
+    Vec<TestNode>,
+    String,
+    DeployLookupId,
+    usize,
+    Vec<BlockMessage>,
+) {
     let (mut nodes, shard_id) = three_node_network().await;
 
     let seed = construct_deploy::source_deploy_now_full(
@@ -120,8 +137,6 @@ async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<Blo
         )
         .expect("build contender b")
     };
-    let a_sig: Bytes = contender_a.sig.clone();
-    let b_sig: Bytes = contender_b.sig.clone();
     let a_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_a))
         .await
@@ -130,6 +145,8 @@ async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<Blo
         .add_block_from_deploys(std::slice::from_ref(&contender_b))
         .await
         .expect("carrier B on nodes[1]");
+    let a_id = only_deploy_id(&a_block);
+    let b_id = only_deploy_id(&b_block);
     nodes[1]
         .process_block(a_block.clone())
         .await
@@ -145,21 +162,21 @@ async fn stage_live_rejection() -> (Vec<TestNode>, String, Bytes, usize, Vec<Blo
         ))
         .await
         .expect("adjudicating merge M");
-    let m_rejected = rejected_sigs(&m_block);
-    let a_lost = m_rejected.contains(&a_sig);
-    let b_lost = m_rejected.contains(&b_sig);
+    let m_rejected = rejected_ids(&m_block);
+    let a_lost = m_rejected.contains(&a_id);
+    let b_lost = m_rejected.contains(&b_id);
     assert!(
         a_lost ^ b_lost,
         "exactly one contender rejected at M (rejected: {:?})",
         m_rejected.iter().map(short).collect::<Vec<_>>(),
     );
-    let (loser_sig, loser_owner) = if a_lost {
-        (a_sig, 0usize)
+    let (loser_id, loser_owner) = if a_lost {
+        (a_id, 0usize)
     } else {
-        (b_sig, 1usize)
+        (b_id, 1usize)
     };
 
-    (nodes, shard_id, loser_sig, loser_owner, vec![
+    (nodes, shard_id, loser_id, loser_owner, vec![
         a_block, b_block, m_block,
     ])
 }
@@ -179,14 +196,14 @@ async fn deliver_everywhere(nodes: &mut [TestNode], blocks: &[BlockMessage]) {
     }
 }
 
-/// THE GATE, validity side: re-including a rejected sig while its kept
+/// THE GATE, validity side: re-including a rejected occurrence while its kept
 /// rejection is still live (above every floor) is `PrematureDeployRetry` on
 /// every validator — and the proposer never mints such a block, so the
 /// invalid shape is staged through the production checkpoint directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn premature_retry_is_rejected_by_every_validator() {
-    let (mut nodes, shard_id, loser_sig, loser_owner, staged_blocks) = stage_live_rejection().await;
+    let (mut nodes, shard_id, loser_id, loser_owner, staged_blocks) = stage_live_rejection().await;
 
     // Everyone validates the contest and M (populate arms the owner's
     // buffer), then the owner attempts the retry IMMEDIATELY — the
@@ -204,14 +221,14 @@ async fn premature_retry_is_rejected_by_every_validator() {
     ) = &owner_attempt
     {
         assert!(
-            !block
-                .body
-                .deploys
-                .iter()
-                .any(|pd| pd.deploy.sig == loser_sig),
+            !block.body.deploys.iter().any(|deploy| {
+                deploy
+                    .deploy_id_for_protocol(block.header.version)
+                    .is_ok_and(|candidate| candidate == loser_id)
+            }),
             "the proposer must defer a retry whose rejection is not settled \
              in its floor (gate closed); it minted the loser {} instead",
-            short(&loser_sig),
+            short(&loser_id),
         );
     }
 
@@ -228,7 +245,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         .expect("buffer read");
     let retry_deploy = retry_holder
         .into_iter()
-        .find(|d| d.deploy_id() == &loser_sig)
+        .find(|deploy| deploy.typed_deploy_id() == &loser_id)
         .expect("owner's buffer must hold the loser (owner-scoped populate)");
     let snapshot = nodes[loser_owner]
         .casper
@@ -259,17 +276,15 @@ async fn premature_retry_is_rejected_by_every_validator() {
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_with_effects(
         &mut nodes[loser_owner].block_store,
         snapshot.parents.clone(),
-        vec![retry_deploy.as_legacy_signed_ref()],
+        vec![retry_deploy.envelope().clone()],
         Vec::new(),
         &snapshot,
         &runtime_manager,
         block_data,
         HashMap::new(),
-        None,
-        None,
         None,
     )
     .await
@@ -356,7 +371,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
-    let (mut nodes, shard_id, loser_sig, loser_owner, staged_blocks) = stage_live_rejection().await;
+    let (mut nodes, shard_id, loser_id, loser_owner, staged_blocks) = stage_live_rejection().await;
     let m_block = staged_blocks.last().expect("staged M").clone();
     let m_height = m_block.body.state.block_number;
 
@@ -369,7 +384,7 @@ async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::legacy_deploy_id(&loser_sig))
+            .contains_id(&loser_id)
             .expect("contains_sig"),
         "the owner (sender of the rejected copy's carrier) buffers the retry",
     );
@@ -378,7 +393,7 @@ async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::legacy_deploy_id(&loser_sig))
+            .contains_id(&loser_id)
             .expect("contains_sig"),
         "a non-owner validator must not buffer a foreign deploy's retry",
     );
@@ -437,18 +452,23 @@ async fn settled_rejection_opens_the_gate_and_the_owner_retries() {
         .await
         .expect("owner retries through its own create");
     assert!(
-        retried
-            .body
-            .deploys
-            .iter()
-            .any(|pd| pd.deploy.sig == loser_sig),
+        retried.body.deploys.iter().any(|deploy| {
+            deploy
+                .deploy_id_for_protocol(retried.header.version)
+                .is_ok_and(|candidate| candidate == loser_id)
+        }),
         "with the rejection settled in the floor, the owner's create must \
-         re-propose the loser (body sigs: {:?})",
+         re-propose the loser (body ids: {:?})",
         retried
             .body
             .deploys
             .iter()
-            .map(|pd| short(&pd.deploy.sig))
+            .map(|deploy| {
+                deploy
+                    .deploy_id_for_protocol(retried.header.version)
+                    .map(|deploy_id| short(&deploy_id))
+                    .unwrap_or_else(|error| format!("invalid:{error}"))
+            })
             .collect::<Vec<_>>(),
     );
     for (i, node) in nodes.iter_mut().enumerate() {

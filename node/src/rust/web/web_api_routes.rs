@@ -98,8 +98,9 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     path = "/api/prepare-deploy",
     request_body = PrepareRequest,
     responses(
-        (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
+        (status = 200, description = "Next deploy sequence number. Legacy protocols can also return pre-generated unforgeable names", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 409, description = "The active protocol does not support key-and-timestamp private-name preview (`private_name_preview_unavailable`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"

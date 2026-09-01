@@ -223,39 +223,30 @@ decides what to do. The relevant branches:
 
 ```
 match verdict:
-    Valid                          → DAG.insert(b, invalid = false)
-    AdmissibleEquivocation         → tracker.insert_equivocation_record(v, s-1, ∅)
-                                   → DAG.insert(b, invalid = true)
-    IgnorableEquivocation          → log("did not add block")  (pre-fix)
-                                   → tracker.insert_equivocation_record(...)  (post-fix #1)
-    NeglectedEquivocation          → tracker.insert_equivocation_record(B, seqN_B-1, ∅)
-                                   → DAG.insert(b_B, invalid = true)
-    ib if is_slashable(ib)         → DAG.insert(b, invalid = true) (pre-fix)
-                                   → tracker.insert+update_record (post-fix #3)
-    other (non-slashable)          → DAG.insert(b, invalid = true)
+    Accepted                       → DAG.insert(b, invalid = false)
+    Rejected(reason)               → DAG.insert(b, invalid = true, reason)
+    Rejected(reason) if reason is AdmissibleEquivocation
+                                  or IgnorableEquivocation
+                                   → tracker.insert+update_record(v, s-1, evidence)
+    Rejected(other)                → no tracker update
 ```
 
 [![Diagram 05 — Generic invalid-block dispatch (post-fix #3)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)
 
-The post-fix dispatcher (after bug #3) routes every
-`is_slashable() = ⊤` variant through the same record-creation path,
-guaranteeing that *every* slashable invalid block enters the
-slashing pipeline. Pre-fix, only `AdmissibleEquivocation` and
-`IgnorableEquivocation` (when handled) reached the tracker; the
-other 15 slashable variants were merely flagged invalid in the DAG
-and would only get slashed if a future proposer happened to surface
-the offender's invalid latest message.
+The dispatcher persists all 29 certified rejection reasons. It creates
+economic evidence only for the two objective-equivocation reasons. This split
+prevents local validation context from creating consensus-visible penalties.
 
-## 4.6 Two-level detection: the neglected-equivocation path
+## 4.6 Neglect detection and the counterfactual closure
 
 Once `(A, baseSeq) ∈ E` (the tracker has a record for A), any
 *future* block `b_B` whose latest-message view makes A's equivocation
-detectable while A remains bonded is itself slashable unless the block
+detectable while A remains bonded is invalid unless the block
 acknowledges/slashes A. A direct citation to A's invalid block is a
 common test witness, but production Rust also accepts nested
-latest-message evidence and previously detected hashes. This is the
-**two-level** closure: B's neglect of A is itself a form of collusion,
-and is itself slashed.
+latest-message evidence and previously detected hashes. The current protocol
+persists B's `NeglectedEquivocation` rejection without an evidence record.
+Section 08 analyzes the counterfactual policy that also slashes B.
 
 The data flow that powers neglect detection:
 

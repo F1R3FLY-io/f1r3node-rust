@@ -3,7 +3,7 @@
 // `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
-// UC-04 — Two-level neglect closure.
+// UC-04 — Neglect classification without economic evidence recursion.
 //
 // Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-04.
 // Theorem: T-11 (`level_2_termination`,
@@ -12,10 +12,9 @@
 //
 // Scenario: validator A equivocates. Validator B then publishes a
 // block whose justifications cite A's invalid block but does NOT
-// include a SlashDeploy targeting A. Per the two-level closure rule,
-// B is itself slashable for "neglecting to slash" (NeglectedEquivocation
-// classification). Validator C, by contrast, includes the slash
-// deploy and stays valid.
+// include a SlashDeploy targeting A. B receives the
+// NeglectedEquivocation rejection. This rejection cannot create new
+// economic evidence. Validator C includes the slash deploy and stays valid.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
@@ -43,11 +42,9 @@ fn uc_04_neglecter_classified_as_neglected_equivocation() {
         "T-11: B is classified NeglectedEquivocation for failing to slash A"
     );
 
-    // Bug #3 catch-all: a record is minted for B too — the post-fix
-    // dispatcher mints for every slashable status.
     assert!(
-        harness.has_record("v1", 5),
-        "post-fix #3: dispatcher mints record for NeglectedEquivocation"
+        !harness.has_record("v1", 5),
+        "NeglectedEquivocation must not create recursive economic evidence"
     );
 }
 

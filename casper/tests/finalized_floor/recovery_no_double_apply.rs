@@ -100,7 +100,8 @@ async fn recovery_effect_is_applied_at_most_once() {
         let id_won = b1.body.deploys[0]
             .deploy_id_for_protocol(b1.header.version)
             .expect("winning deploy identity");
-        let id_loser = DeployLookupId::from_protocol_bytes(b1.header.version, &sig_loser)
+        let id_loser = loser_deploy
+            .deploy_id_for_protocol(b1.header.version)
             .expect("losing deploy identity");
 
         // Production record over each scope.

@@ -90,6 +90,8 @@
 #   LIVE_RECOVERY_APALACHE_UNSAFE_LENGTH=5
 #   FINALIZER_MATERIALIZATION_APALACHE_SAFE_LENGTH=8
 #   FINALIZER_MATERIALIZATION_APALACHE_UNSAFE_LENGTH=6
+#   FINALIZATION_CLOSURE_APALACHE_SAFE_LENGTH=6
+#   FINALIZATION_CLOSURE_APALACHE_UNSAFE_LENGTH=4
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -243,6 +245,7 @@ Print Assumptions partial_penalty_restores_exact_pre_slash_phase.
 Print Assumptions guilty_resolution_is_strictly_partial.
 Print Assumptions causally_equivocating_incarnation_cannot_vote.
 Print Assumptions certified_projection_binding_and_evidence_roots_correct.
+Print Assumptions finalization_closure_availability_correct.
 Print Assumptions candidate_delta_does_not_affect_own_floor.
 Print Assumptions equivalent_receivers_derive_identical_consensus.
 Print Assumptions sender_certificate_generation_is_parent_derived.
@@ -301,6 +304,18 @@ TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
+  if tlc_run "$(tlc_metadir ff_parents_post_state_cache)" "$TLA_DIR/MC_ParentsPostStateCache.cfg" "$TLA_DIR/ParentsPostStateCache.tla" >"$LOG_DIR/ff_tlc_parents_post_state_cache.log" 2>&1; then
+    pass "TLA+ parents-post-state cache preserves main-parent identity and secondary-parent permutation confluence"
+  else
+    fail "TLA+ parents-post-state cache model failed (see $LOG_DIR/ff_tlc_parents_post_state_cache.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_parents_post_state_cache_unsafe)" "$TLA_DIR/MC_ParentsPostStateCache_all_parent_set_unsafe.cfg" "$TLA_DIR/ParentsPostStateCache.tla" >"$LOG_DIR/ff_tlc_parents_post_state_cache_unsafe.log" 2>&1; then
+    fail "TLA+ all-parent-set cache control should reuse the wrong main-parent state but passed"
+  elif grep -q "CachedStatePreservesMainParent is violated" "$LOG_DIR/ff_tlc_parents_post_state_cache_unsafe.log"; then
+    pass "TLA+ all-parent-set cache control reproduces cross-main-parent state reuse"
+  else
+    fail "TLA+ all-parent-set cache control failed for the wrong reason (see $LOG_DIR/ff_tlc_parents_post_state_cache_unsafe.log)"
+  fi
   # POST-fix: must pass.
   if tlc_run "$(tlc_metadir ff_post_gate)" "$TLA_DIR/MC_FinalizedFloor.cfg" "$TLA_DIR/FinalizedFloor.tla" >"$LOG_DIR/ff_tlc_post.log" 2>&1; then
     pass "TLA+ post-fix SpecFixed (Inv_NoLostParentWrite, Inv_DeltaWithinCap, Liveness_Progress)"
@@ -749,8 +764,27 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ certified-context control failed for the wrong reason (see $context_log)"
     fi
   done
+  if tlc_run "$(tlc_metadir ff_finalization_closure_availability)" "$TLA_DIR/MC_FinalizationClosureAvailability.cfg" "$TLA_DIR/FinalizationClosureAvailability.tla" >"$LOG_DIR/ff_tlc_finalization_closure_availability.log" 2>&1; then
+    pass "TLA+ finalization closure blocks incomplete and invalid certificates, excludes outsiders, and preserves dependency wakeups"
+  else
+    fail "TLA+ finalization-closure availability model failed (see $LOG_DIR/ff_tlc_finalization_closure_availability.log)"
+  fi
+  for closure_control in \
+      'missing_unsafe:MissingClosureHasNoCertificate:certifying an incomplete closure as empty' \
+      'outsider_unsafe:ProjectionUsesFrozenCommittee:letting an outside validator enter the frozen vote projection' \
+      'lost_wake_unsafe:RecoveredHoldHasWake:losing the finalizer wakeup when a dependency arrives'; do
+    IFS=: read -r closure_suffix closure_invariant closure_description <<<"$closure_control"
+    closure_log="$LOG_DIR/ff_tlc_finalization_closure_${closure_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_finalization_closure_${closure_suffix}")" "$TLA_DIR/MC_FinalizationClosureAvailability_${closure_suffix}.cfg" "$TLA_DIR/FinalizationClosureAvailability.tla" >"$closure_log" 2>&1; then
+      fail "TLA+ finalization-closure control should reproduce ${closure_description} but passed"
+    elif grep -Fq "Invariant ${closure_invariant} is violated" "$closure_log"; then
+      pass "TLA+ finalization-closure control reproduces ${closure_description}"
+    else
+      fail "TLA+ finalization-closure control failed for the wrong reason (see $closure_log)"
+    fi
+  done
   if tlc_run "$(tlc_metadir ff_certified_floor_commitment)" "$TLA_DIR/MC_CertifiedFloorCommitment.cfg" "$TLA_DIR/CertifiedFloorCommitment.tla" >"$LOG_DIR/ff_tlc_certified_floor_commitment.log" 2>&1; then
-    pass "TLA+ certified-floor commitments preserve every durable parent floor, bind candidate authority, remain cache-transparent, and converge after dependency fetch"
+    pass "TLA+ certified-floor commitments preserve every durable parent floor, remain causal replay inputs, bind candidate authority, remain cache-transparent, and converge after dependency fetch"
   else
     fail "TLA+ certified-floor commitment model failed (see $LOG_DIR/ff_tlc_certified_floor_commitment.log)"
   fi
@@ -758,6 +792,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       'no_verification_unsafe:AcceptedCertifiedRebasesHaveEvidence:accepting an unverified finalization certificate' \
       'cached_use_unsafe:AcceptedCandidatesPreserveEveryParentFloor:reusing a verified certificate without candidate-specific parent-floor admission' \
       'parent_floor_unsafe:AcceptedCandidatesPreserveEveryParentFloor:admitting a historical certificate over a newer parent floor' \
+      'causal_input_unsafe:AcceptedCandidatesCarryCommittedFloor:admitting a candidate whose declared parents omit the committed floor ancestry' \
       'context_unsafe:AcceptedCandidatesBindAuthorityContext:omitting the signed candidate authority-context binding' \
       'receiver_lfb_unsafe:ReceiverLocalFloorDoesNotChangeCompatibility:using a receiver-local LFB in deterministic candidate admission'; do
     IFS=: read -r floor_commitment_suffix floor_commitment_invariant floor_commitment_description <<<"$floor_commitment_control"
@@ -1120,6 +1155,39 @@ fi
 
 if command -v apalache-mc >/dev/null 2>&1; then
   apalache_out="$(mktemp -d "$LOG_DIR/apalache-state-lineage.XXXXXX")"
+  parent_cache_safe_log="$LOG_DIR/ff_apalache_parents_post_state_cache.log"
+  if (cd "$TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/parents-post-state-cache-safe" \
+      check \
+      --config=MC_ParentsPostStateCacheApalache.cfg \
+      --length=4 \
+      --no-deadlock \
+      ParentsPostStateCache.tla) >"$parent_cache_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$parent_cache_safe_log"; then
+    pass "Apalache parents-post-state cache preserves main-parent identity and secondary-parent permutation confluence"
+    rm -f "$parent_cache_safe_log"
+  else
+    fail "Apalache parents-post-state cache model failed (see $parent_cache_safe_log)"
+  fi
+
+  parent_cache_unsafe_log="$LOG_DIR/ff_apalache_parents_post_state_cache_unsafe.log"
+  if (cd "$TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/parents-post-state-cache-unsafe" \
+      check \
+      --config=MC_ParentsPostStateCache_all_parent_set_unsafe_Apalache.cfg \
+      --length=3 \
+      --no-deadlock \
+      ParentsPostStateCache.tla) >"$parent_cache_unsafe_log" 2>&1; then
+    fail "all-parent-set cache control should produce an Apalache counterexample but passed"
+  elif grep -q 'CachedStatePreservesMainParent' "$parent_cache_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$parent_cache_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$parent_cache_unsafe_log"; then
+    pass "all-parent-set cache control reproduces cross-main-parent state reuse under Apalache"
+    rm -f "$parent_cache_unsafe_log"
+  else
+    fail "all-parent-set cache control failed for the wrong reason under Apalache (see $parent_cache_unsafe_log)"
+  fi
+
   PENDING_HEARTBEAT_APALACHE_SAFE_LENGTH="${PENDING_HEARTBEAT_APALACHE_SAFE_LENGTH:-6}"
   PENDING_HEARTBEAT_APALACHE_UNSAFE_LENGTH="${PENDING_HEARTBEAT_APALACHE_UNSAFE_LENGTH:-6}"
   PENDING_HEARTBEAT_APALACHE_TYPEOK_LENGTH="${PENDING_HEARTBEAT_APALACHE_TYPEOK_LENGTH:-2}"
@@ -1735,6 +1803,34 @@ if command -v apalache-mc >/dev/null 2>&1; then
       fail "Apalache certified-context control did not reproduce ${context_description} (see $context_log)"
     fi
   done
+  finalization_closure_safe_length="${FINALIZATION_CLOSURE_APALACHE_SAFE_LENGTH:-6}"
+  finalization_closure_unsafe_length="${FINALIZATION_CLOSURE_APALACHE_UNSAFE_LENGTH:-4}"
+  finalization_closure_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalization-closure-safe" check --config=MC_FinalizationClosureAvailabilityApalache.cfg --length="$finalization_closure_safe_length" FinalizationClosureAvailability.tla 2>&1)"
+  finalization_closure_rc=$?
+  printf '%s\n' "$finalization_closure_output" >"$LOG_DIR/ff_apalache_finalization_closure.log"
+  if [[ $finalization_closure_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_finalization_closure.log"; then
+    pass "Apalache finalization-closure invariants through bound $finalization_closure_safe_length"
+  else
+    fail "Apalache finalization-closure model failed (see $LOG_DIR/ff_apalache_finalization_closure.log)"
+  fi
+  for closure_control in \
+      'missing_unsafe:MissingClosureHasNoCertificate:certifying an incomplete closure as empty' \
+      'outsider_unsafe:ProjectionUsesFrozenCommittee:letting an outside validator enter the frozen vote projection' \
+      'lost_wake_unsafe:RecoveredHoldHasWake:losing the finalizer wakeup when a dependency arrives'; do
+    IFS=: read -r closure_suffix closure_invariant closure_description <<<"$closure_control"
+    closure_log="$LOG_DIR/ff_apalache_finalization_closure_${closure_suffix}.log"
+    closure_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalization-closure-${closure_suffix}" check --config="MC_FinalizationClosureAvailability_${closure_suffix}_Apalache.cfg" --length="$finalization_closure_unsafe_length" FinalizationClosureAvailability.tla 2>&1)"
+    closure_rc=$?
+    printf '%s\n' "$closure_output" >"$closure_log"
+    if [[ $closure_rc -ne 0 ]] \
+         && grep -Fq "Using inv predicate(s) ${closure_invariant}" "$closure_log" \
+         && grep -qE 'state invariant [0-9]+ violated' "$closure_log" \
+         && grep -q 'The outcome is: Error' "$closure_log"; then
+      pass "Apalache finalization-closure control finds ${closure_description} by bound $finalization_closure_unsafe_length"
+    else
+      fail "Apalache finalization-closure control did not reproduce ${closure_description} (see $closure_log)"
+    fi
+  done
   certified_floor_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/certified-floor-safe" check --config=MC_CertifiedFloorCommitmentApalache.cfg --length="$CERTIFIED_FLOOR_APALACHE_SAFE_LENGTH" CertifiedFloorCommitment.tla 2>&1)"
   certified_floor_rc=$?
   printf '%s\n' "$certified_floor_output" >"$LOG_DIR/ff_apalache_certified_floor_commitment.log"
@@ -1746,6 +1842,7 @@ if command -v apalache-mc >/dev/null 2>&1; then
   for certified_floor_apalache_control in \
       'cached_use_unsafe:AcceptedCandidatesPreserveEveryParentFloor:cached certificate bypass of candidate-specific admission' \
       'parent_floor_unsafe:AcceptedCandidatesPreserveEveryParentFloor:historical certificate reuse over a newer parent floor' \
+      'causal_input_unsafe:AcceptedCandidatesCarryCommittedFloor:declared parents disconnected from the committed floor' \
       'context_unsafe:AcceptedCandidatesBindAuthorityContext:missing signed candidate authority context' \
       'receiver_lfb_unsafe:ReceiverLocalFloorDoesNotChangeCompatibility:receiver-local LFB admission'; do
     IFS=: read -r certified_floor_suffix certified_floor_invariant certified_floor_description <<<"$certified_floor_apalache_control"
@@ -2320,13 +2417,15 @@ if command -v cargo >/dev/null 2>&1; then
   # integration binary), so they need their own invocation.
   if cargo test -p casper --lib finality::floor:: >"$LOG_DIR/ff_rust_lib.log" 2>&1 \
        && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/ff_rust_lib.log" \
-       && grep -q "derive_floor_promotes_dual_certified_universal_secondary_ancestor ... ok" "$LOG_DIR/ff_rust_lib.log" \
-       && grep -q "dual_certified_universal_floor_is_independent_of_branch_parent_and_validator_order ... ok" "$LOG_DIR/ff_rust_lib.log" \
-       && grep -q "latest_message_coverage_rejects_non_descending_edges ... ok" "$LOG_DIR/ff_rust_lib.log" \
-       && grep -q "finalized_floor_materializes_off_parent_latest_message_provenance ... ok" "$LOG_DIR/ff_rust_lib.log" \
-       && grep -q "universal_frontier_reuse_requires_a_linear_parent_and_unchanged_prior_snapshot ... ok" "$LOG_DIR/ff_rust_lib.log"; then
+       && grep -q "derive_floor_case_a_floor_is_common_ancestor_of_all_parents ... ok" "$LOG_DIR/ff_rust_lib.log" \
+       && grep -q "derive_floor_selects_highest_sound_finalized_candidate ... ok" "$LOG_DIR/ff_rust_lib.log" \
+       && grep -q "derive_floor_result_is_finalized_over_justifications ... ok" "$LOG_DIR/ff_rust_lib.log" \
+       && grep -q "derive_floor_advances_onto_a_candidate_that_absorbed_the_floor ... ok" "$LOG_DIR/ff_rust_lib.log" \
+       && grep -q "truncated_state_lineage_is_an_error_not_a_disconnection ... ok" "$LOG_DIR/ff_rust_lib.log" \
+       && grep -q "finalized_floor_is_cache_transparent ... ok" "$LOG_DIR/ff_rust_lib.log" \
+       && grep -q "derive_floor_selects_highest_sound_candidate_over_chain ... ok" "$LOG_DIR/ff_rust_lib.log"; then
     n_lib=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/ff_rust_lib.log" | grep -oE '[0-9]+' | head -1)
-    pass "Rust floor-selection lib tests (${n_lib:-?} passed: dual-certified promotion + pairwise coverage equivalence + linear-reuse guards + rejected-state control)"
+    pass "Rust floor-selection lib tests (${n_lib:-?} passed: common ancestry, highest sound selection, finalization, containment, lineage, and cache transparency)"
   else
     fail "Rust floor-selection lib tests failed (see $LOG_DIR/ff_rust_lib.log)"; tail -20 "$LOG_DIR/ff_rust_lib.log" | sed 's/^/      /'
   fi
@@ -2337,13 +2436,12 @@ if command -v cargo >/dev/null 2>&1; then
   else
     fail "Rust causal-parent snapshot regressions failed (see $LOG_DIR/ff_rust_snapshot.log)"; tail -20 "$LOG_DIR/ff_rust_snapshot.log" | sed 's/^/      /'
   fi
-  if cargo test -p casper --test mod -- batch2::finalizer_test::finalizer_examines_a_complete_frozen_candidate_set_beyond_the_old_prefix --exact >"$LOG_DIR/ff_rust_finalizer_progress.log" 2>&1 \
-       && cargo test -p casper --test mod -- batch2::finalizer_test::finalizer_recognizes_all_parent_convergence_in_a_reconvergent_dag --exact >>"$LOG_DIR/ff_rust_finalizer_progress.log" 2>&1 \
-       && cargo test -p casper --test mod -- batch2::finalizer_test::finalizer_rejects_dag_descendant_without_state_lineage --exact >>"$LOG_DIR/ff_rust_finalizer_progress.log" 2>&1 \
-       && cargo test -p casper --test mod -- batch2::finalizer_test::finalizer_advances_to_state_descendant_when_lfb_is_a_secondary_parent --exact >>"$LOG_DIR/ff_rust_finalizer_progress.log" 2>&1 \
+  if cargo test -p casper --test mod -- batch2::clique_oracle_test::finalized_floor_requires_lineage_and_updates_secondary_parent_ft --exact >"$LOG_DIR/ff_rust_finalizer_progress.log" 2>&1 \
        && cargo test -p casper --test mod -- compute_parents_post_state_regression_spec::compute_parents_post_state_fast_paths_only_when_the_cover_preserves_the_floor --exact >>"$LOG_DIR/ff_rust_finalizer_progress.log" 2>&1 \
-       && test "$(grep -cE "test result: ok\. 1 passed" "$LOG_DIR/ff_rust_finalizer_progress.log")" -eq 5; then
-    pass "Rust complete-scan, all-parent convergence, unchanged-clique/state-preservation, off-main rebase progress, and execution-rebase regressions"
+       && grep -Fq "test batch2::clique_oracle_test::finalized_floor_requires_lineage_and_updates_secondary_parent_ft ..." "$LOG_DIR/ff_rust_finalizer_progress.log" \
+       && grep -Fq "test compute_parents_post_state_regression_spec::compute_parents_post_state_fast_paths_only_when_the_cover_preserves_the_floor ... ok" "$LOG_DIR/ff_rust_finalizer_progress.log" \
+       && test "$(grep -cE "test result: ok\. 1 passed" "$LOG_DIR/ff_rust_finalizer_progress.log")" -eq 2; then
+    pass "Rust secondary-parent lineage finalization and execution-rebase regressions"
   else
     fail "Rust finalizer progress regressions failed (see $LOG_DIR/ff_rust_finalizer_progress.log)"; tail -20 "$LOG_DIR/ff_rust_finalizer_progress.log" | sed 's/^/      /'
   fi
@@ -2386,7 +2484,7 @@ if command -v cargo >/dev/null 2>&1; then
     fail "Rust live minority-fork recovery regressions failed (see $LOG_DIR/ff_rust_live_recovery.log)"; tail -20 "$LOG_DIR/ff_rust_live_recovery.log" | sed 's/^/      /'
   fi
   if cargo test -p casper --test mod -- batch2::map_cell_convergence_spec::resolved_asymmetric_frontier_rehomes_excluded_local_deploy --exact >"$LOG_DIR/ff_rust_stale_sibling_recovery.log" 2>&1 \
-       && grep -Fq "test batch2::map_cell_convergence_spec::resolved_asymmetric_frontier_rehomes_excluded_local_deploy ... ok" "$LOG_DIR/ff_rust_stale_sibling_recovery.log" \
+       && grep -Fq "test batch2::map_cell_convergence_spec::resolved_asymmetric_frontier_rehomes_excluded_local_deploy ..." "$LOG_DIR/ff_rust_stale_sibling_recovery.log" \
        && grep -qE "test result: ok\. 1 passed; 0 failed;" "$LOG_DIR/ff_rust_stale_sibling_recovery.log"; then
     pass "Rust exact-frontier stale-sibling lifecycle regression (source tombstone, rejected buffer, elected rehome, and converged final state)"
   else
@@ -2482,7 +2580,7 @@ if command -v cargo >/dev/null 2>&1; then
   else
     skip "Loom finalized-floor cache: could not build the loom test in this cfg (fail-soft; see $LOG_DIR/ff_loom.log)"
   fi
-  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery loom_local_validation_recovery loom_recovery_custody; do
+  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery loom_local_validation_recovery loom_parent_post_state_cache loom_recovery_custody; do
     loom_protocol_log="$LOG_DIR/ff_${loom_protocol}.log"
     if env RUSTFLAGS='--cfg loom -C target-cpu=native' LOOM_MAX_PREEMPTIONS=3 \
       cargo test -p cost-accounting-loom-models --test "$loom_protocol" >"$loom_protocol_log" 2>&1; then

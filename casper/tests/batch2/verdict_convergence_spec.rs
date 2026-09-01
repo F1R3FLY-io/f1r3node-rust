@@ -75,7 +75,7 @@ fn verdict(node: &TestNode, sig: &Bytes) -> String {
     let status = deploy_finalization_status::resolve(
         &dag,
         &node.block_store,
-        &crate::legacy_deploy_id(sig),
+        &crate::current_deploy_id(sig),
         None,
     )
     .expect("resolve");
@@ -140,8 +140,18 @@ async fn stage_contest() -> (Vec<TestNode>, String, Bytes, usize, &'static str) 
         )
         .expect("build contender f")
     };
-    let d_sig: Bytes = contender_d.sig.clone();
-    let f_sig: Bytes = contender_f.sig.clone();
+    let d_sig = Bytes::copy_from_slice(
+        nodes[0]
+            .canonical_deploy_id(&contender_d)
+            .expect("contender d identity")
+            .as_bytes(),
+    );
+    let f_sig = Bytes::copy_from_slice(
+        nodes[1]
+            .canonical_deploy_id(&contender_f)
+            .expect("contender f identity")
+            .as_bytes(),
+    );
 
     let c_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_d))
@@ -348,7 +358,12 @@ async fn a_deploy_finalizes_from_a_carrier_the_spine_never_holds() {
         )
         .expect("build off-spine deploy")
     };
-    let sig: Bytes = deploy.sig.clone();
+    let sig = Bytes::copy_from_slice(
+        nodes[0]
+            .canonical_deploy_id(&deploy)
+            .expect("off-spine deploy identity")
+            .as_bytes(),
+    );
     let b_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
@@ -500,7 +515,12 @@ async fn private_carrier_must_not_strand_the_verdict_pending_forever() {
         Some(shard_id.clone()),
     )
     .expect("build private deploy");
-    let private_sig: Bytes = private_deploy.sig.clone();
+    let private_sig = Bytes::copy_from_slice(
+        nodes[0]
+            .canonical_deploy_id(&private_deploy)
+            .expect("private deploy identity")
+            .as_bytes(),
+    );
     nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&private_deploy))
         .await
@@ -658,8 +678,18 @@ async fn verdict_must_not_freeze_during_reinstatement_transient() {
         )
         .expect("build contender f")
     };
-    let d_sig: Bytes = contender_d.sig.clone();
-    let f_sig: Bytes = contender_f.sig.clone();
+    let d_sig = Bytes::copy_from_slice(
+        nodes[0]
+            .canonical_deploy_id(&contender_d)
+            .expect("contender d identity")
+            .as_bytes(),
+    );
+    let f_sig = Bytes::copy_from_slice(
+        nodes[1]
+            .canonical_deploy_id(&contender_f)
+            .expect("contender f identity")
+            .as_bytes(),
+    );
     let c_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_d))
         .await
@@ -932,7 +962,12 @@ async fn deep_uncontested_win_must_finalize_never_expire() {
         Some(shard_id.clone()),
     )
     .expect("build lone deploy");
-    let lone_sig: Bytes = lone.sig.clone();
+    let lone_sig = Bytes::copy_from_slice(
+        nodes[0]
+            .canonical_deploy_id(&lone)
+            .expect("lone deploy identity")
+            .as_bytes(),
+    );
     let w_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&lone))
         .await

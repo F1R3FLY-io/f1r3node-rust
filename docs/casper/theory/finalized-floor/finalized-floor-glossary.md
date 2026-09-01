@@ -18,6 +18,9 @@ make them correct.
 |---|---|
 | **block `B`** | An immutable, hash-addressed, validator-signed DAG vertex that batches one consensus transition. Its header carries parent hashes, timestamp, and protocol version; the signed envelope carries sender, sequence, shard, signature, and the frozen justifications; its body carries processed user/system deploys and the RChain state record, including pre/post-state roots and bonds. Current metadata additionally persists state-effect provenance. It is called a block because it packages and commits a bounded unit of ordered execution and consensus evidence, even though blocks form a DAG rather than only a chain. |
 | **parents `P₁…Pₖ`** | The blocks `B` merges. `parents[0]` is the **main parent** (the spine predecessor). |
+| **declared parent frontier** | The signed parent list that selects replay inputs. A receiver validates this list without recomputing proposer fork choice. |
+| **effective parent floor** | A parent's approved-genesis identity or signed protocol-6 finalized-floor commitment. Receiver admission compares these floors before replay. |
+| **receiver parent admission** | The candidate-specific check that parent floors form one state-preserving chain and at least one parent descends from the signed floor. |
 | **main-parent spine** | The chain `B → main_parent(B) → … → genesis` obtained by following `parents[0]` repeatedly. |
 | **`num(B)`** | Block number (height) — `num(genesis) = 0`, `num(child) = num(main_parent)+1`. |
 | **`anc_of d a b`** | `a` is a (general) DAG-ancestor of `b`: reachable by walking *all* parents of `b` down. `is_dag_ancestor(a,b)` in Rust; `anc_of` in Rocq. |

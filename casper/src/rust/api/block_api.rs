@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::dag::block_dag_key_value_storage::{DeployId, KeyValueDagRepresentation};
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use futures::future;
@@ -32,7 +32,7 @@ use crate::rust::blocks::proposer::propose_result::{
     CheckProposeConstraintsFailure, ProposeFailure, ProposeResult, ProposeStatus,
 };
 use crate::rust::blocks::proposer::proposer::ProposerResult;
-use crate::rust::casper::MultiParentCasper;
+use crate::rust::casper::{DeployError, MultiParentCasper};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
@@ -51,6 +51,14 @@ pub type ApiErr<T> = eyre::Result<T>;
 #[error("Couldn't find block containing deploy with id: {deploy_id}")]
 pub struct DeployNotFoundError {
     pub deploy_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Private-name preview is unavailable for protocol {protocol_version} because names are bound to the authenticated deploy envelope."
+)]
+pub struct PrivateNamePreviewUnavailable {
+    pub protocol_version: i64,
 }
 
 // Look at shared/src/main/scala/coop/rchain/shared/Base16.scala
@@ -189,6 +197,85 @@ fn trigger_deploy_propose(trigger: &Option<Arc<ProposeFunction>>) {
             deploy_propose_max_attempts(),
             deploy_propose_retry_delay(),
         ));
+    }
+}
+
+fn validate_deploy_submission<'a>(
+    data: &DeployData,
+    signer_public_keys: impl IntoIterator<Item = (Option<usize>, &'a PublicKey)>,
+    is_node_read_only: bool,
+    shard_id: &str,
+) -> Result<(), DeployValidationError> {
+    if is_node_read_only {
+        return Err(DeployValidationError {
+            message: "Deploy was rejected because node is running in read-only mode.".to_string(),
+        });
+    }
+
+    if data.shard_id != shard_id {
+        return Err(DeployValidationError {
+            message: format!(
+                "Deploy shardId '{}' is not as expected network shard '{}'.",
+                data.shard_id, shard_id
+            ),
+        });
+    }
+
+    for (index, public_key) in signer_public_keys {
+        if standard_deploys::system_public_keys()
+            .iter()
+            .any(|system_key| **system_key == *public_key)
+        {
+            let message = match index {
+                Some(index) => format!(
+                    "Deploy refused because cosigner at index {} is signed with a forbidden system private key.",
+                    index
+                ),
+                None => "Deploy refused because it's signed with forbidden private key.".to_string(),
+            };
+            return Err(DeployValidationError { message });
+        }
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    if data.is_expired_at(now) {
+        return Err(DeployValidationError {
+            message: format!(
+                "Deploy has expired: expirationTimestamp={:?} is in the past.",
+                data.expiration_timestamp
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+async fn submit_deploy_with_engine(
+    engine_cell: &EngineCell,
+    trigger_propose: &Option<Arc<ProposeFunction>>,
+    submit: impl FnOnce(
+        Arc<dyn MultiParentCasper + Send + Sync>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError>,
+) -> ApiErr<String> {
+    let engine = engine_cell.get().await;
+    let casper = engine.with_casper().ok_or_else(|| {
+        let message = "Error: Could not deploy, casper instance was not available yet.";
+        tracing::warn!("{}", message);
+        eyre::eyre!(message)
+    })?;
+
+    match submit(casper)? {
+        Either::Left(error) => Err(error.into()),
+        Either::Right(deploy_id) => {
+            trigger_deploy_propose(trigger_propose);
+            Ok(format!(
+                "Success!\nDeployId is: {}",
+                PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
+            ))
+        }
     }
 }
 
@@ -607,101 +694,16 @@ impl BlockAPI {
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
-        async fn casper_deploy(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            deploy_data: Signed<DeployData>,
-            trigger_propose: &Option<Arc<ProposeFunction>>,
-        ) -> ApiErr<String> {
-            let deploy_result = casper.deploy(deploy_data)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
-            };
+        validate_deploy_submission(
+            &d.data,
+            std::iter::once((None, &d.pk)),
+            is_node_read_only,
+            shard_id,
+        )
+        .map_err(eyre::Report::new)?;
 
-            trigger_deploy_propose(trigger_propose);
-
-            // yield r
-            r
-        }
-
-        // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
-            .and_then(|_| {
-                if is_node_read_only {
-                    Err(DeployValidationError {
-                        message: "Deploy was rejected because node is running in read-only mode."
-                            .to_string(),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                if d.data.shard_id != shard_id {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy shardId '{}' is not as expected network shard '{}'.",
-                            d.data.shard_id, shard_id
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                let is_forbidden_key = standard_deploys::system_public_keys()
-                    .iter()
-                    .any(|pk| **pk == d.pk);
-                if is_forbidden_key {
-                    Err(DeployValidationError {
-                        message: "Deploy refused because it's signed with forbidden private key."
-                            .to_string(),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            // Deploys have no phlo price or limit; this endpoint does not apply a
-            // price admission check.
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            });
-
-        // Return early if validation fails
-        validation_result.map_err(|e| eyre::Report::new(e))?;
-
-        let log_error_message =
-            "Error: Could not deploy, casper instance was not available yet.".to_string();
-
-        let eng = engine_cell.get().await;
-
-        // Helper function for logging - mimic Scala logWarn
-        let log_warn = |msg: &str| -> ApiErr<String> {
-            tracing::warn!("{}", msg);
-            Err(eyre::eyre!("{}", msg))
-        };
-
-        if let Some(casper) = eng.with_casper() {
-            casper_deploy(casper, d, trigger_propose).await
-        } else {
-            log_warn(&log_error_message)
-        }
+        submit_deploy_with_engine(engine_cell, trigger_propose, move |casper| casper.deploy(d))
+            .await
     }
 
     /// Multi-signature-aware deploy submission.
@@ -723,93 +725,22 @@ impl BlockAPI {
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
-        async fn casper_deploy_cosigned(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-            trigger_propose: &Option<Arc<ProposeFunction>>,
-        ) -> ApiErr<String> {
-            let deploy_result = casper.deploy_cosigned(cosigned)?;
-            let r: ApiErr<String> = match deploy_result {
-                Either::Left(err) => Err(err.into()),
-                Either::Right(deploy_id) => Ok(format!(
-                    "Success!\nDeployId is: {}",
-                    PrettyPrinter::build_string_no_limit(deploy_id.as_ref())
-                )),
-            };
-            trigger_deploy_propose(trigger_propose);
-            r
-        }
+        validate_deploy_submission(
+            &cosigned.data,
+            cosigned
+                .signers()
+                .iter()
+                .enumerate()
+                .map(|(index, signer)| (Some(index), &signer.pk)),
+            is_node_read_only,
+            shard_id,
+        )
+        .map_err(eyre::Report::new)?;
 
-        let validation_result: Result<(), String> = Ok(())
-            .and_then(|_| {
-                if is_node_read_only {
-                    Err(
-                        "Deploy was rejected because node is running in read-only mode."
-                            .to_string(),
-                    )
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                if cosigned.data.shard_id != shard_id {
-                    Err(format!(
-                        "Deploy shardId '{}' is not as expected network shard '{}'.",
-                        cosigned.data.shard_id, shard_id
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                // Any cosigner using a forbidden system key is rejected.
-                for (i, signer) in cosigned.signers().iter().enumerate() {
-                    let is_forbidden = standard_deploys::system_public_keys()
-                        .iter()
-                        .any(|pk| **pk == signer.pk);
-                    if is_forbidden {
-                        return Err(format!(
-                            "Deploy refused because cosigner at index {} is \
-                             signed with a forbidden system private key.",
-                            i
-                        ));
-                    }
-                }
-                Ok(())
-            })
-            // D3 (DR-9, D.5): the per-deploy `validate_phlo` submission check is
-            // REMOVED (no phlo price/limit on a deploy).
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if cosigned.data.is_expired_at(now) {
-                    Err(DeployExpiredError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            cosigned.data.expiration_timestamp
-                        ),
-                    }
-                    .to_string())
-                } else {
-                    Ok(())
-                }
-            });
-        validation_result.map_err(|e| eyre::eyre!(e))?;
-
-        let log_error_message =
-            "Error: Could not deploy, casper instance was not available yet.".to_string();
-        let eng = engine_cell.get().await;
-        let log_warn = |msg: &str| -> ApiErr<String> {
-            tracing::warn!("{}", msg);
-            Err(eyre::eyre!("{}", msg))
-        };
-        if let Some(casper) = eng.with_casper() {
-            casper_deploy_cosigned(casper, cosigned, trigger_propose).await
-        } else {
-            log_warn(&log_error_message)
-        }
+        submit_deploy_with_engine(engine_cell, trigger_propose, move |casper| {
+            casper.deploy_cosigned(cosigned)
+        })
+        .await
     }
 
     #[tracing::instrument(level = "info", skip(engine_cell, trigger_propose_f))]
@@ -1846,7 +1777,13 @@ impl BlockAPI {
         deployer: &ByteString,
         timestamp: i64,
         name_qty: i32,
+        protocol_version: i64,
     ) -> ApiErr<Vec<ByteString>> {
+        if protocol_version >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
+            return Err(eyre::Report::new(PrivateNamePreviewUnavailable {
+                protocol_version,
+            }));
+        }
         let mut rand = Tools::unforgeable_name_rng(&PublicKey::from_bytes(deployer), timestamp);
         let safe_qty = name_qty.clamp(0, 1024) as usize;
         let ids: Vec<BlockHash> = (0..safe_qty)
@@ -2137,6 +2074,8 @@ impl BlockAPI {
 
                 match target_block {
                     Some(b) => {
+                        let protocol_version = b.header.version;
+                        let shard_id = b.shard_id.clone();
                         let outcome =
                             Arc::new(AtomicU8::new(ExploratoryDeployOutcome::Failed as u8));
                         let task_outcome = outcome.clone();
@@ -2145,7 +2084,13 @@ impl BlockAPI {
                             let _permit = permit;
                             let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
                             let result = task_runtime_manager
-                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .play_exploratory_deploy_at_protocol(
+                                    term,
+                                    &state_hash,
+                                    deployer,
+                                    protocol_version,
+                                    shard_id,
+                                )
                                 .await;
                             if result.is_ok() {
                                 task_outcome.store(
@@ -2338,6 +2283,85 @@ mod tests {
             )
         );
         assert!(!should_retry_deploy_propose(&status));
+    }
+
+    #[test]
+    fn single_and_cosigned_submissions_share_common_validation() {
+        let mut data = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 0,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+
+        validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            false,
+            "root",
+        )
+        .expect("valid deploy metadata");
+
+        let read_only = validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            true,
+            "root",
+        )
+        .expect_err("read-only nodes must reject deploys");
+        assert_eq!(
+            read_only.message,
+            "Deploy was rejected because node is running in read-only mode."
+        );
+
+        let shard_mismatch = validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            false,
+            "other",
+        )
+        .expect_err("shard mismatch must reject deploys");
+        assert_eq!(
+            shard_mismatch.message,
+            "Deploy shardId 'root' is not as expected network shard 'other'."
+        );
+
+        let system_key = standard_deploys::system_public_keys()[0];
+        let single_forbidden =
+            validate_deploy_submission(&data, std::iter::once((None, system_key)), false, "root")
+                .expect_err("single system signer must be forbidden");
+        assert_eq!(
+            single_forbidden.message,
+            "Deploy refused because it's signed with forbidden private key."
+        );
+
+        let cosigned_forbidden = validate_deploy_submission(
+            &data,
+            std::iter::once((Some(3), system_key)),
+            false,
+            "root",
+        )
+        .expect_err("system cosigner must be forbidden");
+        assert_eq!(
+            cosigned_forbidden.message,
+            "Deploy refused because cosigner at index 3 is signed with a forbidden system private key."
+        );
+
+        data.expiration_timestamp = Some(0);
+        let expired = validate_deploy_submission(
+            &data,
+            std::iter::empty::<(Option<usize>, &PublicKey)>(),
+            false,
+            "root",
+        )
+        .expect_err("expired deploy must be rejected");
+        assert_eq!(
+            expired.message,
+            "Deploy has expired: expirationTimestamp=Some(0) is in the past."
+        );
     }
 
     #[tokio::test]

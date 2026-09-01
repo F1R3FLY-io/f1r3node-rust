@@ -681,7 +681,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
     status: &InvalidBlock,
-    dag: &KeyValueDagRepresentation,
+    _dag: &KeyValueDagRepresentation,
     certificate: &CertifiedSenderAuthority,
     outcome: &CertifiedAdmissionOutcome,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
@@ -761,30 +761,25 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         Ok(())
     };
 
-    match status {
-        status if status.is_slashable() => {
-            // Every slashable status mints an EquivocationRecord. See
-            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
-            record_evidence(&this.block_dag_storage, block, certificate.generation())?;
-            handle_invalid_block_effect(
-                &this.block_dag_storage,
-                &this.casper_buffer_storage,
-                status,
-                block,
-                certificate,
-                outcome,
-            )
-        }
-
-        _ => {
-            let block_hash_serde = BlockHashSerde(block.block_hash.clone());
-            this.casper_buffer_storage.remove(block_hash_serde)?;
-            tracing::warn!(
-                "Recording invalid block {} for {:?}.",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                status
-            );
-            Ok(dag.clone())
-        }
+    let evidence_eligible = outcome.is_slash_evidence_eligible();
+    if evidence_eligible != status.is_slashable() {
+        return Err(CasperError::RuntimeError(format!(
+            "certified rejection reason {:?} disagrees with invalid status {:?}",
+            outcome.rejection_reason(),
+            status
+        )));
     }
+
+    if evidence_eligible {
+        record_evidence(&this.block_dag_storage, block, certificate.generation())?;
+    }
+
+    handle_invalid_block_effect(
+        &this.block_dag_storage,
+        &this.casper_buffer_storage,
+        status,
+        block,
+        certificate,
+        outcome,
+    )
 }

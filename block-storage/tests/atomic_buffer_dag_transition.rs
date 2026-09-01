@@ -44,7 +44,7 @@ fn make_block() -> BlockMessage {
         None,
         Some(vec![]),
         None,
-        None,
+        Some(vec![]),
         None,
         Some(vec![]),
         None,
@@ -83,12 +83,14 @@ fn accepted_outcome(block: &BlockMessage) -> CertifiedAdmissionOutcome {
 }
 
 fn rejected_outcome(block: &BlockMessage) -> CertifiedAdmissionOutcome {
-    CertifiedAdmissionOutcome::rejected(
-        block,
-        &certificate(block),
-        AdmissionRejectionReason::InvalidTransaction,
-    )
-    .unwrap()
+    rejected_outcome_for(block, AdmissionRejectionReason::InvalidTransaction)
+}
+
+fn rejected_outcome_for(
+    block: &BlockMessage,
+    reason: AdmissionRejectionReason,
+) -> CertifiedAdmissionOutcome {
+    CertifiedAdmissionOutcome::rejected(block, &certificate(block), reason).unwrap()
 }
 
 async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage) {
@@ -104,7 +106,7 @@ async fn setup_stores() -> (BlockDagKeyValueStorage, CasperBufferKeyValueStorage
         None,
         Some(vec![]),
         None,
-        None,
+        Some(vec![]),
         None,
         Some(vec![]),
         None,
@@ -152,6 +154,48 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
     // Post-state: block in DAG (steady state (a) from §9.20).
     assert!(updated_dag.contains(&block.block_hash));
     assert!(!buffer.is_pendant(&hash_serde));
+    let metadata = updated_dag
+        .lookup(&block.block_hash)
+        .unwrap()
+        .expect("certified rejection metadata");
+    assert_eq!(
+        metadata.rejection_reason(),
+        Some(AdmissionRejectionReason::InvalidTransaction)
+    );
+    assert!(!metadata.is_slash_evidence_eligible());
+}
+
+#[tokio::test]
+async fn atomic_transition_preserves_every_certified_rejection_reason() {
+    for code in 1..=29 {
+        let (dag, buffer) = setup_stores().await;
+        let block = make_block();
+        let hash = BlockHashSerde(block.block_hash.clone());
+        let reason = AdmissionRejectionReason::try_from(code).unwrap();
+        buffer.put_pendant(hash.clone()).unwrap();
+
+        let updated_dag = atomic_insert_then_buffer(
+            &dag,
+            &block,
+            InsertMode::Invalid,
+            &certificate(&block),
+            &rejected_outcome_for(&block, reason),
+            &buffer,
+            BufferTransition::RemoveFromBuffer(hash.clone()),
+        )
+        .unwrap();
+
+        let metadata = updated_dag
+            .lookup(&block.block_hash)
+            .unwrap()
+            .expect("certified rejection metadata");
+        assert_eq!(metadata.rejection_reason(), Some(reason));
+        assert_eq!(
+            metadata.is_slash_evidence_eligible(),
+            reason.is_slash_evidence_eligible()
+        );
+        assert!(!buffer.is_pendant(&hash));
+    }
 }
 
 #[tokio::test]

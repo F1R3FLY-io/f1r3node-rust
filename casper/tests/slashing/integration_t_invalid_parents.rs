@@ -3,24 +3,16 @@
 // `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
-// Integration test — Tier 1 production-path verification of the
-// `InvalidParents` arm of the dispatcher's `is_slashable()`
-// catch-all (Bug #3 fix).
+// Integration test — Tier 1 production-path verification of
+// `InvalidParents` rejection persistence without economic evidence.
 //
 // UC-28 from docs/casper/theory/slashing/slashing-specification.md §12.
-// Theorem citation: T-9.3 (catch-all dispatcher), Rocq
-// formal/rocq/slashing/theories/BugFixDispatcher.v.
+// Theorem citation: T-9.3
+// (`certified_non_slashable_rejection_preserves_evidence`).
 //
-// Validation order: block_summary's `justifications_well_formed`
-// (validate.rs:820) runs after `block_number` and returns
-// `InvalidParents` from line 833 when `parent_hashes.first() ==
-// None`. To keep `block_number` happy on the empty-parents path
-// the mutator ALSO zeroes `body.state.block_number` (since the
-// validator's `max_block_number = -1` fold gives expected = 0
-// when the parents list is empty). Result: block_number passes,
-// parent validation returns InvalidParents.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+// The validator first creates a normal block. Its next block repeats the same
+// parent frontier without a deploy, slash, or heartbeat close. Parent progress
+// validation then returns InvalidParents after certified-floor validation.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
@@ -42,45 +34,39 @@ async fn integration_t_invalid_parents() {
         .expect("Failed to build genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
         .await
         .expect("Failed to create network");
 
     let validators = canonical_validator_order(&genesis);
 
-    // Use a deploy with valid_after_block_number = -1 so the future_
-    // transaction validator (line 497: `valid_after >= block_number`)
-    // does NOT fire when we mutate body.state.block_number to 0 below.
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    let d1 = construct_deploy::source_deploy(
-        "@0!(0)".to_string(),
-        timestamp,
-        Some(90_000),
-        Some(1),
-        None,
-        Some(-1),
-        Some(shard_id.clone()),
-    )
-    .expect("d1");
-    let mutated = propose_with_block_mutation(&mut nodes[0], vec![d1], |b| {
-        // Empty parents list AND zero block_number: block_number
-        // validator computes expected = -1 + 1 = 0 with empty
-        // parents; setting body.state.block_number = 0 makes that
-        // check pass. parent validation then trips on
-        // parent_hashes.first() == None → InvalidParents.
-        b.header.parents_hash_list = vec![];
-        b.body.state.block_number = 0;
+    let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id)).expect("d1");
+    let first = nodes[0]
+        .create_block_unsafe(&[d1])
+        .await
+        .expect("producer must create the first block");
+    assert!(matches!(
+        nodes[0]
+            .process_block(first.clone())
+            .await
+            .expect("producer processes first block"),
+        Either::Right(_)
+    ));
+    assert!(matches!(
+        nodes[1]
+            .process_block(first.clone())
+            .await
+            .expect("receiver processes first block"),
+        Either::Right(_)
+    ));
+
+    let block = propose_with_block_mutation(&mut nodes[0], Vec::new(), |block| {
+        block.body.system_deploys.clear();
     })
     .await
-    .expect("propose_with_block_mutation");
+    .expect("build a certified block without progress work");
 
-    let status = nodes[1]
-        .process_block(mutated.clone())
-        .await
-        .expect("process_block");
+    let status = nodes[1].process_block(block).await.expect("process_block");
     assert!(
         matches!(
             status,
@@ -90,14 +76,9 @@ async fn integration_t_invalid_parents() {
         status
     );
 
-    let snapshot = production_snapshot_at(
-        &nodes[1],
-        &genesis.genesis_block,
-        &genesis.genesis_block,
-        validators,
-    )
-    .await
-    .expect("snapshot");
+    let snapshot = production_snapshot_at(&nodes[1], &first, &genesis.genesis_block, validators)
+        .await
+        .expect("snapshot");
 
     let has_v0 = (0..=10).any(|b| <_ as SlashingObserver>::has_record(&snapshot, "v0", b));
     assert!(

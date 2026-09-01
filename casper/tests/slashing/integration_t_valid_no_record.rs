@@ -13,7 +13,6 @@
 // regression where the dispatcher mints unconditionally.
 
 use casper::rust::block_status::ValidBlock;
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -40,10 +39,12 @@ async fn integration_t_valid_no_record() {
     // Round 1: v0 produces a well-formed block.
     let deploy_data =
         construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("deploy_data");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("deploy should succeed");
+    assert!(matches!(
+        nodes[0]
+            .submit_deploy(deploy_data)
+            .expect("deploy should succeed"),
+        Either::Right(_)
+    ));
     let signed_block = nodes[0]
         .create_block_unsafe(&[])
         .await

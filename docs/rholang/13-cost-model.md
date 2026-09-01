@@ -17,10 +17,10 @@ and one replay-validity decision. There is no client-selected
 switch.
 
 The design refines the five gated communication rules and join-cost schema in
-[*Cost-Accounted Rho Calculus*](../../../publications/cost-accounting/cost-accounted-rho.tex)
+[*Cost-Accounted Rho Calculus*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex)
 and the cost endofunctor over continued interactive generalized structured
 labelled transition systems (GSLTs) in
-[*Continued Interactive GSLTs and the Cost Endofunctor*](../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
+[*Continued Interactive GSLTs and the Cost Endofunctor*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
 The byte tariff is a native safety refinement: the papers require finite,
 authority-backed work but deliberately do not prescribe a protobuf byte
 schedule.

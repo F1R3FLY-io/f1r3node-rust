@@ -31,11 +31,15 @@ use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
 use casper::rust::slashing_authorization::{
     authorized_slash_candidates, checked_base_seq, checked_next_seq, epoch_for_block_number,
-    has_slash_evidence, validate_received_slash_deploys, CanonicalSlashAuthority, SlashAuthError,
+    has_slash_evidence, received_slash_deploy_authorized, slash_target_key_collides,
+    validate_received_slash_deploys, CanonicalSlashAuthority, SlashAuthError,
 };
 use casper::rust::validate::Validate;
 use crypto::rust::public_key::PublicKey;
 use dashmap::DashSet;
+use models::rust::block_metadata::{
+    AdmissionRejectionReason, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{ProcessedSystemDeploy, SystemDeployData};
 use proptest::prelude::*;
@@ -43,24 +47,75 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::detector_totality_helpers::{block, justification, DetectorFixture};
 
+fn set_sender_generation(
+    block: &mut models::rust::casper::protocol::casper_message::BlockMessage,
+    generation: BondGeneration,
+) {
+    block.header.sender_bond_generation = Some(generation);
+    let sender = block.sender.clone();
+    block
+        .body
+        .state
+        .bond_generations
+        .iter_mut()
+        .filter(|entry| entry.validator == sender)
+        .for_each(|entry| entry.generation = generation);
+}
+
 fn put_block(
     fixture: &DetectorFixture,
     block: &models::rust::casper::protocol::casper_message::BlockMessage,
     invalid: bool,
 ) {
+    put_block_with_reason(
+        fixture,
+        block,
+        invalid.then_some(AdmissionRejectionReason::AdmissibleEquivocation),
+    );
+}
+
+fn put_block_with_reason(
+    fixture: &DetectorFixture,
+    block: &models::rust::casper::protocol::casper_message::BlockMessage,
+    rejection_reason: Option<AdmissionRejectionReason>,
+) {
     fixture
         .block_store
         .put_block_message(block)
         .expect("store block");
+    let commitment = block
+        .header
+        .finalized_floor
+        .as_ref()
+        .expect("finalized-floor commitment");
+    let certificate = CertifiedSenderAuthority::new(
+        block,
+        commitment.floor_hash.clone(),
+        commitment.floor_post_state_hash.clone(),
+        commitment.authority_context_digest.clone(),
+        block
+            .header
+            .sender_bond_generation
+            .expect("sender bond generation"),
+        100,
+    )
+    .expect("sender authority");
+    let outcome = match rejection_reason {
+        Some(reason) => CertifiedAdmissionOutcome::rejected(block, &certificate, reason)
+            .expect("rejected outcome"),
+        None => CertifiedAdmissionOutcome::accepted(block, &certificate).expect("accepted outcome"),
+    };
     fixture
         .dag_storage
-        .insert(
+        .insert_certified(
             block,
-            if invalid {
+            if rejection_reason.is_some() {
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
             } else {
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
             },
+            &certificate,
+            &outcome,
         )
         .expect("insert block");
 }
@@ -151,6 +206,20 @@ fn slash_deploy(
     issuer: prost::bytes::Bytes,
     target_activation_epoch: i64,
 ) -> ProcessedSystemDeploy {
+    slash_deploy_for_generation(
+        invalid_block_hash,
+        issuer,
+        target_activation_epoch,
+        BondGeneration::GENESIS,
+    )
+}
+
+fn slash_deploy_for_generation(
+    invalid_block_hash: prost::bytes::Bytes,
+    issuer: prost::bytes::Bytes,
+    target_activation_epoch: i64,
+    target_bond_generation: BondGeneration,
+) -> ProcessedSystemDeploy {
     ProcessedSystemDeploy::Succeeded {
         event_list: vec![],
         system_deploy: SystemDeployData::Slash {
@@ -158,7 +227,7 @@ fn slash_deploy(
             equivocation_block_hash: None,
             issuer_public_key: PublicKey::from_bytes(&issuer),
             target_activation_epoch,
-            target_bond_generation: BondGeneration::GENESIS,
+            target_bond_generation,
         },
         pre_state_hash: Vec::<u8>::new().into(),
         post_state_hash: Vec::<u8>::new().into(),
@@ -222,7 +291,7 @@ async fn stale_invalid_evidence_is_not_an_authorized_slash_candidate() {
 
     assert!(
         candidates.is_empty(),
-        "epoch-scoped authorization must not propose slash deploys from stale evidence"
+        "generation-scoped authorization must not propose slash deploys from stale evidence"
     );
 }
 
@@ -816,6 +885,243 @@ async fn canonical_pre_state_generation_overrides_stale_snapshot_generation() {
 }
 
 #[tokio::test]
+async fn stale_generation_evidence_is_rejected_after_same_epoch_rebond() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let invalid = block(79, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    let generation_one = BondGeneration::GENESIS.next().expect("generation one");
+    let mut snapshot =
+        snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone(), proposer.clone()]);
+    snapshot
+        .on_chain_state
+        .bond_generations
+        .insert(offender.clone(), generation_one);
+    let canonical = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"same-epoch-rebond"),
+        snapshot.on_chain_state.bonds_map.clone(),
+        snapshot.on_chain_state.bond_generations.clone(),
+    )
+    .expect("canonical authority");
+    let slash = slash_block(
+        80,
+        proposer.clone(),
+        11,
+        invalid.block_hash,
+        proposer,
+        1,
+        fixture.validators.clone(),
+    );
+
+    let error = validate_received_slash_deploys(&slash, &snapshot, &canonical)
+        .expect_err("stale generation evidence");
+    assert!(matches!(
+        error,
+        CasperError::SlashAuth(SlashAuthError::BondGenerationMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn generation_zero_carrier_never_crosses_withdrawn_or_rebonded_roots() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let invalid = block(85, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block(&fixture, &invalid, true);
+
+    let snapshot =
+        snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone(), proposer.clone()]);
+    let slash = slash_block(
+        86,
+        proposer.clone(),
+        11,
+        invalid.block_hash,
+        proposer.clone(),
+        1,
+        fixture.validators.clone(),
+    );
+    let withdrawn_root = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"withdrawn-root"),
+        HashMap::from([(proposer.clone(), 100)]),
+        HashMap::from([
+            (offender.clone(), BondGeneration::GENESIS),
+            (proposer.clone(), BondGeneration::GENESIS),
+        ]),
+    )
+    .expect("withdrawn root");
+    let generation_one = BondGeneration::GENESIS.next().expect("generation one");
+    let rebonded_root = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"rebonded-root"),
+        HashMap::from([(offender.clone(), 100), (proposer.clone(), 100)]),
+        HashMap::from([
+            (offender.clone(), generation_one),
+            (proposer, BondGeneration::GENESIS),
+        ]),
+    )
+    .expect("rebonded root");
+
+    let withdrawn_error = validate_received_slash_deploys(&slash, &snapshot, &withdrawn_root)
+        .expect_err("withdrawn generation-zero target");
+    assert!(matches!(
+        withdrawn_error,
+        CasperError::SlashAuth(SlashAuthError::TargetNotBonded { .. })
+    ));
+    let rebonded_error = validate_received_slash_deploys(&slash, &snapshot, &rebonded_root)
+        .expect_err("rebonded generation-one target");
+    assert!(matches!(
+        rebonded_error,
+        CasperError::SlashAuth(SlashAuthError::BondGenerationMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn current_generation_evidence_is_authorized_after_same_epoch_rebond() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let generation_one = BondGeneration::GENESIS.next().expect("generation one");
+    let mut invalid = block(81, offender.clone(), 11, vec![], fixture.validators.clone());
+    set_sender_generation(&mut invalid, generation_one);
+    put_block(&fixture, &invalid, true);
+
+    let mut snapshot =
+        snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone(), proposer.clone()]);
+    snapshot
+        .on_chain_state
+        .bond_generations
+        .insert(offender.clone(), generation_one);
+    let canonical = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"same-epoch-current"),
+        snapshot.on_chain_state.bonds_map.clone(),
+        snapshot.on_chain_state.bond_generations.clone(),
+    )
+    .expect("canonical authority");
+    let mut slash = block(82, proposer.clone(), 11, vec![], fixture.validators.clone());
+    slash.body.state.block_number = 11;
+    slash.body.system_deploys = vec![slash_deploy_for_generation(
+        invalid.block_hash,
+        proposer,
+        1,
+        generation_one,
+    )];
+
+    validate_received_slash_deploys(&slash, &snapshot, &canonical)
+        .expect("current generation evidence");
+}
+
+#[tokio::test]
+async fn candidate_selection_is_generation_scoped_for_each_arrival_order() {
+    for reverse in [false, true] {
+        let fixture = DetectorFixture::new().await;
+        let offender = fixture.validators[0].clone();
+        let generation_one = BondGeneration::GENESIS.next().expect("generation one");
+        let stale = block(83, offender.clone(), 10, vec![], fixture.validators.clone());
+        let mut current = block(84, offender.clone(), 11, vec![], fixture.validators.clone());
+        set_sender_generation(&mut current, generation_one);
+        let evidence = if reverse {
+            [&current, &stale]
+        } else {
+            [&stale, &current]
+        };
+        for block in evidence {
+            put_block(&fixture, block, true);
+        }
+
+        let mut snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender.clone()]);
+        snapshot
+            .on_chain_state
+            .bond_generations
+            .insert(offender.clone(), generation_one);
+        let selected = candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+            .expect("generation-scoped candidate");
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].invalid_block_hash, current.block_hash);
+        assert_eq!(selected[0].target_bond_generation, generation_one);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_authority_roots_never_mix_bond_generations() {
+    let validator = prost::bytes::Bytes::from(vec![7; 65]);
+    let generation_one = BondGeneration::GENESIS.next().expect("generation one");
+    let root_zero = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"authority-root-zero"),
+        HashMap::from([(validator.clone(), 100)]),
+        HashMap::from([(validator.clone(), BondGeneration::GENESIS)]),
+    )
+    .expect("root-zero authority");
+    let root_one = CanonicalSlashAuthority::from_parts(
+        prost::bytes::Bytes::from_static(b"authority-root-one"),
+        HashMap::from([(validator.clone(), 100)]),
+        HashMap::from([(validator.clone(), generation_one)]),
+    )
+    .expect("root-one authority");
+
+    for reverse_completion in [false, true] {
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let root_zero_task = {
+            let barrier = Arc::clone(&barrier);
+            let authority = root_zero.clone();
+            let validator = validator.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                if reverse_completion {
+                    tokio::task::yield_now().await;
+                }
+                received_slash_deploy_authorized(
+                    1,
+                    1,
+                    casper::rust::epoch::Epoch::new(0),
+                    10,
+                    Some(BondGeneration::GENESIS),
+                    BondGeneration::GENESIS,
+                    authority.generation(&validator),
+                    authority.bond(&validator),
+                    true,
+                )
+                .expect("root-zero authorization")
+            })
+        };
+        let root_one_task = {
+            let barrier = Arc::clone(&barrier);
+            let authority = root_one.clone();
+            let validator = validator.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                if !reverse_completion {
+                    tokio::task::yield_now().await;
+                }
+                received_slash_deploy_authorized(
+                    1,
+                    1,
+                    casper::rust::epoch::Epoch::new(0),
+                    10,
+                    Some(BondGeneration::GENESIS),
+                    BondGeneration::GENESIS,
+                    authority.generation(&validator),
+                    authority.bond(&validator),
+                    true,
+                )
+                .expect("root-one authorization")
+            })
+        };
+        barrier.wait().await;
+        let (root_zero_result, root_one_result) = tokio::join!(root_zero_task, root_one_task);
+        assert!(root_zero_result.expect("root-zero task"));
+        assert!(!root_one_result.expect("root-one task"));
+    }
+
+    assert_ne!(root_zero.state_hash(), root_one.state_hash());
+    assert_eq!(
+        root_zero.generation(&validator),
+        Some(BondGeneration::GENESIS)
+    );
+    assert_eq!(root_one.generation(&validator), Some(generation_one));
+}
+
+#[tokio::test]
 async fn received_slash_deploy_rejects_issuer_mismatch() {
     let fixture = DetectorFixture::new().await;
     let offender = fixture.validators[0].clone();
@@ -904,6 +1210,41 @@ async fn received_slash_deploy_rejects_valid_block_reference() {
         "expected SlashAuthError::ReferencesValidBlock, got {err:?}"
     );
     assert!(err.to_string().contains("valid block"));
+}
+
+#[tokio::test]
+async fn received_slash_deploy_rejects_non_evidence_rejection() {
+    let fixture = DetectorFixture::new().await;
+    let offender = fixture.validators[0].clone();
+    let proposer = fixture.validators[1].clone();
+    let rejected = block(80, offender.clone(), 11, vec![], fixture.validators.clone());
+    put_block_with_reason(
+        &fixture,
+        &rejected,
+        Some(AdmissionRejectionReason::InvalidSequenceNumber),
+    );
+
+    let snapshot = snapshot_from_fixture(&fixture, 11, 10, vec![offender, proposer.clone()]);
+    assert!(!has_slash_evidence(&snapshot));
+    assert!(candidates(&snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect("candidate scan")
+        .is_empty());
+
+    let slash_block = slash_block(
+        81,
+        proposer.clone(),
+        12,
+        rejected.block_hash,
+        proposer,
+        1,
+        fixture.validators.clone(),
+    );
+    let error = validate_slashes(&slash_block, &snapshot, &snapshot.on_chain_state.bonds_map)
+        .expect_err("non-evidence rejection must not authorize a slash");
+    assert!(matches!(
+        error,
+        CasperError::SlashAuth(SlashAuthError::ReferencesIneligibleRejection { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1089,6 +1430,105 @@ proptest! {
         prop_assert_eq!(
             epoch_for_block_number(0, -1),
             Err(casper::rust::slashing_authorization::DomainError::InvalidEpochLength(-1))
+        );
+    }
+
+    #[test]
+    fn unary_authorization_matches_the_full_generation_scoped_conjunction(
+        reference_block_number in 0_i64..1_000_000_i64,
+        evidence_block_number in 0_i64..1_000_000_i64,
+        target_activation_epoch in 0_i64..100_000_i64,
+        epoch_length in 1_i32..10_000_i32,
+        evidence_generation in prop::option::of(0_i64..10_000_i64),
+        target_generation in 0_i64..10_000_i64,
+        canonical_generation in prop::option::of(0_i64..10_000_i64),
+        bond in any::<i64>(),
+        invalid in any::<bool>(),
+    ) {
+        let evidence_generation = evidence_generation
+            .map(|generation| BondGeneration::new(generation).expect("nonnegative generation"));
+        let target_generation =
+            BondGeneration::new(target_generation).expect("nonnegative generation");
+        let canonical_generation = canonical_generation
+            .map(|generation| BondGeneration::new(generation).expect("nonnegative generation"));
+        let target_epoch = casper::rust::epoch::Epoch::new(target_activation_epoch);
+        let expected = target_activation_epoch
+            == reference_block_number / i64::from(epoch_length)
+            && target_activation_epoch == evidence_block_number / i64::from(epoch_length)
+            && evidence_generation == Some(target_generation)
+            && canonical_generation == Some(target_generation)
+            && bond > 0
+            && invalid;
+
+        prop_assert_eq!(
+            received_slash_deploy_authorized(
+                reference_block_number,
+                evidence_block_number,
+                target_epoch,
+                epoch_length,
+                evidence_generation,
+                target_generation,
+                canonical_generation,
+                bond,
+                invalid,
+            ),
+            Ok(expected)
+        );
+    }
+
+    #[test]
+    fn slash_target_collision_is_scoped_to_validator_generation(
+        left_validator in any::<u16>(),
+        right_validator in any::<u16>(),
+        left_generation in 0_i64..10_000_i64,
+        right_generation in 0_i64..10_000_i64,
+    ) {
+        let left_generation =
+            BondGeneration::new(left_generation).expect("nonnegative generation");
+        let right_generation =
+            BondGeneration::new(right_generation).expect("nonnegative generation");
+        prop_assert_eq!(
+            slash_target_key_collides(
+                &left_validator,
+                left_generation,
+                &right_validator,
+                right_generation,
+            ),
+            left_validator == right_validator && left_generation == right_generation
+        );
+    }
+
+    #[test]
+    fn future_generation_evidence_never_authorizes_against_an_older_root(
+        block_number in 0_i64..1_000_000_i64,
+        epoch_length in 1_i32..10_000_i32,
+        canonical_generation in 0_i64..10_000_i64,
+        future_delta in 1_i64..10_000_i64,
+        bond in 1_i64..=i64::MAX,
+    ) {
+        let evidence_generation = BondGeneration::new(
+            canonical_generation + future_delta,
+        )
+        .expect("bounded future generation");
+        let canonical_generation = BondGeneration::new(canonical_generation)
+            .expect("nonnegative canonical generation");
+        let target_epoch = casper::rust::epoch::Epoch::new(
+            block_number / i64::from(epoch_length),
+        );
+
+        prop_assert_eq!(
+            received_slash_deploy_authorized(
+                block_number,
+                block_number,
+                target_epoch,
+                epoch_length,
+                Some(evidence_generation),
+                evidence_generation,
+                Some(canonical_generation),
+                bond,
+                true,
+            ),
+            Ok(false)
         );
     }
 }

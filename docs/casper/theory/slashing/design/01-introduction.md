@@ -29,11 +29,11 @@ withhold messages, or replay old messages. We assume:
 | Capability of the attacker                                        | Modeled?                                                   | Section  |
 |-------------------------------------------------------------------|------------------------------------------------------------|----------|
 | Sign two distinct blocks at the same sequence number              | ✓ (equivocation)                                           | §04, §11 |
-| Cite an invalid block as a justification *without* slashing it    | ✓ (Level-2 / neglect)                                      | §08      |
+| Cite a rejected block as a justification without valid evidence  | ✓ (terminal rejection without recursive slash evidence)    | §08      |
 | Race two slashing inserts on different threads                    | ✓ (lock-free regression, bug #2)                           | §05, §09 |
 | Send a malformed `SlashDeploy` claiming to be the system          | ✓ (auth-token guard, T-AuthCheck)                          | §06      |
 | Replay an old `SlashDeploy` to slash twice                        | ✓ (slash idempotence, T-Idem)                              | §06, §11 |
-| Stuff blocks with future / expired / repeat / fee-evading deploys | ✓ (15 non-equivocation slashable variants, §10.3 / bug #3) | §04, §09 |
+| Submit future, expired, repeated, or underfunded deploys          | ✓ (durable rejection without economic evidence)             | §04, §09 |
 | Skip sequence numbers under partition recovery                    | ✓ (off-by-one density, bug #7)                             | §09      |
 | Self-equivocate without two distinct hashes (LMD inconsistency)   | ✓ (self-regression, bug #6)                                | §09      |
 
@@ -112,15 +112,14 @@ sequence is recommended for full understanding.
 |-----------------------------|-------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------|
 | Ethereum 2.0 (Beacon Chain) | FFG slashing conditions: surround votes, double votes; `slash_validator` zeros effective balance and applies a correlation penalty. | [BG19], [ETH-SPEC]                  |
 | Cosmos SDK / Tendermint     | Evidence module: light-client attacks (lunatic, equivocation, amnesia); per-validator slashing percentage.                          | [BKM18], [BBKMW20], [COSMOS-ADR009] |
-| F1R3FLY (this work)         | CBC-Casper-style; equivocation + neglected-equivocation + 15 non-equivocation slashable variants; one-strike (100% bond seizure).   | This document                       |
+| F1R3FLY (this work)         | CBC-Casper-style direct-equivocation evidence with terminal contextual rejections and full-bond direct slashing.                    | This document                       |
 
 The F1R3FLY model is closest to Ethereum FFG in spirit (slash whole
 bond; remove from active set) but differs in granularity: F1R3FLY
-slashes for *every* `is_slashable() = ⊤` invalid-block variant
-once bug fix #3 is in place, whereas FFG slashes only for the two
-double-voting and surround-vote conditions. The F1R3FLY model also
-formalizes a **two-level closure** (neglecting an equivocator is
-itself slashable) which Ethereum FFG does not have.
+creates economic evidence only for the two objective-equivocation
+reasons. Contextual rejection reasons cannot create economic evidence.
+The verification corpus also contains a counterfactual neglect-closure model.
+The current protocol disables that economic policy.
 
 ## 1.6 What this document is *not*
 

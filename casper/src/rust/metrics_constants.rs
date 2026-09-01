@@ -37,6 +37,8 @@ pub const FINALIZATION_CERTIFICATE_REQUESTS_CAPACITY_DEFERRED_METRIC: &str =
     "finalization.certificate.requests.capacity-deferred";
 pub const FINALIZATION_CERTIFICATE_RETRIEVER_TRACKED_METRIC: &str =
     "finalization.certificate.retriever.tracked";
+pub const SNAPSHOT_FINALIZATION_CAPTURE_RETRIES_METRIC: &str =
+    "finalization.snapshot.capture.retries";
 pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
     "block.retriever.dep-recovery-tracking.size";
 pub const BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC: &str =

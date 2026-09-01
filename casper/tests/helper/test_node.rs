@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
@@ -14,7 +14,7 @@ use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDepend
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
-use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
+use casper::rust::casper::{Casper, CasperShardConf, DeployError, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -38,13 +38,14 @@ use comm::rust::transport::communication_response::CommunicationResponse;
 use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
@@ -61,6 +62,7 @@ pub struct TestNode {
     pub tle: Arc<TransportLayerTestImpl>,
     pub tls: TransportLayerServerTestImpl,
     pub genesis: BlockMessage,
+    deploy_signing_keys: HashMap<prost::bytes::Bytes, PrivateKey>,
     pub validator_id_opt: Option<ValidatorIdentity>,
     // Note: blockProcessingPipe implemented as method process_block_through_pipe
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
@@ -107,9 +109,70 @@ impl TestNode {
     ) -> Result<BlockCreatorResult, CasperError> {
         // Deploy all datums
         for deploy_datum in deploy_datums {
-            self.casper.deploy(deploy_datum.clone())?;
+            self.submit_deploy(deploy_datum.clone())?;
         }
 
+        self.create_block_from_pending_pool().await
+    }
+
+    pub fn envelope_for_deploy(
+        &self,
+        deploy: &Signed<DeployData>,
+    ) -> Result<Cosigned<DeployData>, CasperError> {
+        let private_key = self
+            .deploy_signing_keys
+            .get(&deploy.pk.bytes)
+            .cloned()
+            .ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "test deploy signer {} has no registered private key",
+                    hex::encode(&deploy.pk.bytes)
+                ))
+            })?;
+        Cosigned::create_single_envelope(
+            deploy.data.clone(),
+            deploy.sig_algorithm.clone(),
+            private_key,
+        )
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))
+    }
+
+    pub fn canonical_deploy_id(
+        &self,
+        deploy: &Signed<DeployData>,
+    ) -> Result<DeployLookupId, CasperError> {
+        if self.genesis.header.version
+            >= casper::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+        {
+            let commitment = self
+                .envelope_for_deploy(deploy)?
+                .envelope_commitment()
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            let deploy_id = DeployIdV6::try_from(commitment.as_ref())
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            Ok(DeployLookupId::V6(deploy_id))
+        } else {
+            Ok(DeployLookupId::Legacy(LegacyDeploySignature::new(
+                deploy.sig.to_vec(),
+            )))
+        }
+    }
+
+    pub fn submit_deploy(
+        &self,
+        deploy: Signed<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        if self.genesis.header.version
+            >= casper::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+        {
+            self.casper
+                .deploy_cosigned(self.envelope_for_deploy(&deploy)?)
+        } else {
+            self.casper.deploy(deploy)
+        }
+    }
+
+    async fn create_block_from_pending_pool(&mut self) -> Result<BlockCreatorResult, CasperError> {
         // Get snapshot
         let snapshot = self.casper.get_snapshot().await?;
 
@@ -199,6 +262,15 @@ impl TestNode {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    pub async fn settle_finalization(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(), CasperError> {
+        self.casper.request_finalization()?;
+        self.wait_for_finalizer_quiescence(tokio::time::Instant::now() + timeout)
+            .await
     }
 
     /// Processes a block through the validation pipeline (equivalent to Scala processBlock, line 257-260).
@@ -1152,7 +1224,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan,
-            casper_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            casper_version: genesis.header.version,
             config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
@@ -1206,6 +1278,12 @@ impl TestNode {
         };
 
         let casper = Arc::new(casper_impl);
+        let deploy_signing_keys = genesis_context
+            .validator_key_pairs
+            .iter()
+            .chain(genesis_context.genesis_vaults.iter())
+            .map(|(private_key, public_key)| (public_key.bytes.clone(), private_key.clone()))
+            .collect();
 
         // Create Running engine
 
@@ -1245,6 +1323,7 @@ impl TestNode {
             tle,
             tls,
             genesis,
+            deploy_signing_keys,
             validator_id_opt,
             block_processor,
             block_processing_queue_rx: Arc::new(tokio::sync::Mutex::new(block_processor_queue_rx)),

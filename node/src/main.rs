@@ -194,21 +194,20 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
 
                 Ok(())
             }
-            OptionsSubCommand::Deploy {
-                valid_after_block,
-                private_key,
-                private_key_path,
-                location,
-                shard_id,
-            } => {
-                let private_key =
-                    get_private_key(private_key, private_key_path, &mut console_io()?)?;
+            OptionsSubCommand::Deploy(deploy) => {
+                let valid_after_block = i64::try_from(deploy.valid_after_block_number)
+                    .map_err(|_| eyre::eyre!("valid-after block number exceeds i64::MAX"))?;
+                let private_key = get_private_key(
+                    deploy.private_key,
+                    deploy.private_key_path,
+                    &mut console_io()?,
+                )?;
                 rt.block_on(DeployRuntime::deploy_file_program(
                     &mut deploy_client,
                     valid_after_block,
                     &private_key,
-                    &location,
-                    &shard_id,
+                    &deploy.location,
+                    &deploy.shard_id,
                 ));
                 Ok(())
             }

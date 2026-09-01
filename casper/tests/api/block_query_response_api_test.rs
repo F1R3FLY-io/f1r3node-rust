@@ -480,10 +480,11 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
     )
     .await;
 
-    let deploy_id = random_deploys[0].deploy.sig.to_vec();
+    let deploy_id = random_deploys[0]
+        .deploy_id_for_protocol(CURRENT_CASPER_PROTOCOL_VERSION)
+        .expect("protocol-v6 deploy id");
 
-    let block_query_response =
-        BlockAPI::find_deploy(&engine_cell, &crate::legacy_deploy_id(&deploy_id)).await;
+    let block_query_response = BlockAPI::find_deploy(&engine_cell, &deploy_id).await;
 
     assert!(
         block_query_response.is_ok(),
@@ -644,10 +645,14 @@ async fn find_deploy_should_return_error_when_no_block_contains_deploy_with_give
     )
     .await;
 
-    let deploy_id = b"asdfQwertyUiopxyzcbv".to_vec();
+    let deploy_id = vec![0xA5; models::rust::deploy_id::DeployIdV6::LENGTH];
+    let lookup_id = models::rust::deploy_id::DeployLookupId::from_protocol_bytes(
+        CURRENT_CASPER_PROTOCOL_VERSION,
+        &deploy_id,
+    )
+    .expect("protocol-v6 deploy id");
 
-    let block_query_response =
-        BlockAPI::find_deploy(&engine_cell, &crate::legacy_deploy_id(&deploy_id)).await;
+    let block_query_response = BlockAPI::find_deploy(&engine_cell, &lookup_id).await;
 
     assert!(
         block_query_response.is_err(),

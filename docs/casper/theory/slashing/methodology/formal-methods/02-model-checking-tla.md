@@ -198,7 +198,9 @@ Read aloud:
 ### 4.3 The TLC run
 
 ```bash
-tlc -workers 12 MC_EquivocationDetector.tla
+systemd-run --user --scope \
+  -p MemoryMax=8G -p MemorySwapMax=0 \
+  tlc -workers 4 MC_EquivocationDetector.tla
 ```
 
 TLC enumerates breadth-first from `Init`. At every reachable state, it

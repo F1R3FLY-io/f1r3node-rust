@@ -8,7 +8,7 @@
 //   outcome of `validate_received_slash_deploys` into two arms:
 //     * `CasperError::SlashAuth(_)` — authorization-predicate failure;
 //        block author is Byzantine → InvalidBlock::UnauthorizedSlashDeploy
-//        (slashable, per the T-9.3 catch-all dispatcher).
+//        (a terminal rejection without new economic evidence).
 //     * any other CasperError variant — local-infrastructure failure
 //        (KvStoreError, BlockStoreError, HistoryError, RuntimeError)
 //        → BlockError::BlockException, propagated WITHOUT slashing the
@@ -16,10 +16,9 @@
 //
 // Pre-fix behavior (before commit landing this test): the
 // `slash_deploy_authorization` match arm was `Err(_) => Invalid(...)`,
-// collapsing every CasperError variant into a slashable verdict. A
-// transient storage I/O hiccup during slash validation would wrongly
-// slash the otherwise-honest block sender — a security-adjacent
-// false-positive slashing path.
+// collapsing every CasperError variant into an objective rejection. A
+// transient storage I/O failure during slash validation would wrongly
+// invalidate the otherwise-honest block sender's block.
 //
 // We test the routing helper directly with synthesized CasperError
 // values, because the storage-fault path is not naturally reachable
@@ -91,7 +90,7 @@ fn slash_auth_error_routes_to_unauthorized_slash_deploy() {
             outcome,
             Either::Left(BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy))
         ),
-        "SlashAuth error must produce slashable UnauthorizedSlashDeploy verdict; got {:?}",
+        "SlashAuth error must produce UnauthorizedSlashDeploy rejection; got {:?}",
         outcome
     );
 }

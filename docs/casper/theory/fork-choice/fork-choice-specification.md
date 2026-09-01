@@ -240,6 +240,37 @@ the same policy-preferred parent that the local proposer would choose. This pres
 Casper's accepted language while making the proposal-to-receiver depth-bound bridge
 explicit and deterministic.
 
+Let $`J`$ be the frozen justification set. Let $`P`$ be the declared parent set.
+Let $`F`$ be the signed finalized-floor commitment.
+
+The proposer derives its preferred frontier from $`J`$ and one frozen DAG view.
+The receiver does not repeat that policy choice. The receiver evaluates these independent inputs:
+
+- $`P`$ selects the replay state.
+- $`J`$ selects votes, evidence, and authority.
+- $`F`$ sets the durable state floor.
+
+For each parent $`p`$, let $`\phi(p)`$ be its effective committed floor.
+Let $`\preceq_D`$ mean DAG ancestry. Let $`\sqsubseteq_S`$ mean state containment.
+The receiver-side floor check is:
+
+```math
+\begin{aligned}
+\mathsf{Admit}(F,P) \equiv{}& P \ne \varnothing \\
+&\land \exists p \in P.\; F \preceq_D p \\
+&\land \forall p \in P.\; \phi(p) \preceq_D F
+                         \land \phi(p) \sqsubseteq_S F \\
+&\land \forall p,q \in P.\;
+  \phi(p) \preceq_D \phi(q) \lor \phi(q) \preceq_D \phi(p).
+\end{aligned}
+```
+
+An honest preferred frontier implies $`\mathsf{Admit}(F,P)`$.
+The converse does not hold. A declared subset can omit a justified sibling and remain valid.
+The subset remains valid only when a declared parent carries $`F`$.
+
+This boundary preserves asynchronous Casper behavior. Exact receiver-side frontier equality would reject replay-safe blocks and reduce liveness.
+
 ## 8. Safety invariants
 
 | ID | Forbidden state |
@@ -253,8 +284,9 @@ explicit and deterministic.
 | S7 | An honest proposal's secondary parents fail the buffered receive-side depth predicate. |
 | S8 | A globally largest terminal leaf replaces the greedy heaviest-subtree head. |
 | S9 | Frontier expansion order, a multi-parent diamond, or a malformed non-advancing edge changes or prevents the ranked result. |
-| S10 | Deploy or recovery policy replaces the GHOST main parent without proving floor ancestry and complete causal-tip coverage. |
-| S11 | Evidence closure omits the captured finalized floor or an exact latest message because proposal-parent compaction or expiry removed it. |
+| S10 | A receiver accepts a parent frontier without committed-floor ancestry, or requires equality with its local preferred frontier. |
+| S11 | Deploy or recovery policy replaces the GHOST main parent without proving floor ancestry and complete causal-tip coverage. |
+| S12 | Evidence closure omits the captured finalized floor or an exact latest message because proposal-parent compaction or expiry removed it. |
 
 ## 9. Conformance
 

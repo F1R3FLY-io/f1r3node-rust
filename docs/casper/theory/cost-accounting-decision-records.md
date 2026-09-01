@@ -486,14 +486,18 @@ source (verified file:line + spec-line evidence) shows the removals they name **
    (`dag_merger::merge` calls `resolve_conflicts`/`compute_merged_state` directly); its only consumers were
    two tests, re-pointed to those same two primitives (identical coverage; no test disabled). It was generic
    plumbing, not an RtC artifact.
-4. **Determinism pin added.** `compute_parents_post_state_regression_spec.rs` now asserts the disjoint
-   sibling-parent merge is byte-identical under reversed input order — the §2.3 order-determinism guarantee.
+4. **Determinism and cache-identity pins added.** `compute_parents_post_state_regression_spec.rs` now asserts that
+   disjoint sibling composition is byte-identical under permutations of secondary parents while retaining the selected
+   GHOST main parent at index zero. Changing index zero is a different Casper transition because it changes the merge
+   base. The parents-post-state cache binds that main-parent identity and sorts only secondary parents, preventing two
+   distinct transitions from aliasing while preserving §2.3 order-determinism within the secondary set.
 
 **Outcome — wholly (not partially) satisfied.** D4.2/D4.3's spec intent (§2.3: "merge reduces to the
 shared-data-channel residual, deterministically ordered") is fully realized and now regression-pinned; the
 only code residue (a dead wrapper) is removed; the fork-risk literal mechanism is correctly declined with
 proof. Workstream D's removal obligations (D4.1 precharge/refund + D4.2/D4.3 merge/RtC) are completely
-discharged. **No consensus-state change** — the wrapper was dead; the dispatcher and merge are untouched.
+discharged. The dispatcher and merge semantics are unchanged; the cache repair prevents reuse across distinct
+main-parent transitions.
 
 **Cross-refs.** DR-5 (precharge/refund removal), DR-9 (token-per-COMM cost), DR-11 (acceptance gate),
 DR-13 (Σ⟦s⟧ supply). KEEP-LIST: `MergeableChannelAccounting.v`/`.tla` (the merge path's formal anchor).
@@ -1517,9 +1521,10 @@ root/envelope substitution, exact block-context binding, retained-play/replay
 witness equality, and the absence of a second unconstrained execution.
 Property tests cover the exact cost-plus-fee boundary.
 Registry, vault, bridge, replay, slashing, merge, and full Casper integration
-tests exercise the concrete path. The CI gate also runs workspace tests,
-all-target Clippy with warnings denied, formatting, TLA+ safe and negative
-controls, Rocq assumption checks, Sage enumeration, and the pgmcp bug gate.
+tests exercise the concrete path. Repository CI runs workspace tests,
+all-target Clippy with warnings denied, formatting, and configured TLA+ and
+Rocq checks. Sage enumeration and `pgmcp bug-gate` are separate local
+verification steps.
 
 **Cross-refs.** Cost-Accounted Rho §§8.6–8.9; Continued Interactive GSLTs and
 the Cost Monad §Data-dependent interaction; DR-5, DR-9, DR-11, DR-13, DR-28,
@@ -3178,8 +3183,9 @@ forbids parallel owner recovery and must fail, preventing a vacuous concurrency
 claim. The missing-custody control violates
 `Inv_RetryHasCarrierOwnerCustody`.
 
-`StaleSiblingRecovery.tla` exhausts 1,508 generated and 451 distinct safe
-states to depth 20. Its non-owner control violates
+`StaleSiblingRecovery.tla` checks canonical rejection observation and owner-only
+buffer custody. Its missing-buffer control violates
+`Inv_ObservedRejectionIsBuffered`. Its non-owner control violates
 `Inv_OnlyCarrierOwnerRetries`.
 
 Rocq proves unique authorization for one carrier and independent authorization
@@ -3192,4 +3198,82 @@ eviction tests preserve an above-floor carrier and remove a floor-terminal
 deploy.
 
 **Cross-refs.** DR-33, TM-CA-171, O10 through O14, and
+`formal/tlaplus/deploy_recovery/README.md`.
+
+---
+
+## DR-56 — Retry readiness uses collective parent coverage
+
+**Status:** accepted and implemented. Focused formal and integration gates pass.
+Aggregate and canonical multi-node gates remain release evidence.
+
+**Context.** The retry packaging gate inverted two quantifiers. It required one
+selected parent to cover every valid latest message. Multi-parent Casper only
+requires the complete selected parent set to cover those messages collectively.
+The stricter predicate deferred an authorized retry on a split frontier. The
+same candidate could still package fresh work, which caused bounded retry
+starvation.
+
+**Decision.** Let $`V`$ contain the valid latest messages. Let $`P`$ contain the
+selected parents. The relation $`v\preceq_{DAG}p`$ means that $`v`$ is $`p`$
+or an ancestor of $`p`$. The frontier is ready exactly when:
+
+```math
+\forall v\in V.\;\exists p\in P.\;v\preceq_{DAG}p.
+```
+
+The proposer evaluates the relation with this fail-closed algorithm:
+
+```text
+function frontier_ready(parents, latest_messages, invalid_blocks):
+    for each message in latest_messages:
+        if invalid_blocks contains message:
+            continue
+        if no parent in parents descends from message:
+            return false
+    return true
+```
+
+The owner can package a retry after the shared floor gate opens. The owner also
+must hold carrier custody. Collective coverage or lease expiry then satisfies
+frontier readiness. Lease expiry cannot bypass the floor gate, carrier custody,
+deploy lifespan, replay, or validation.
+
+**Consensus boundary.** This decision changes proposer packaging only. It does
+not change block validity, fork choice, committee weight, finality, wire bytes,
+or replay. Validators continue to process independent parent branches in
+parallel. The decision does not add a global retry lock or a recovery leader.
+
+**Why the earlier verification missed it.** Earlier recovery models abstracted
+frontier readiness as an input. They did not refine readiness to the concrete
+parent and latest-message quantifiers. Serial fixtures also supplied one parent
+that covered every latest message. Those fixtures could not expose the inverted
+quantifiers.
+
+**Rejected alternatives.** A serial coalescing block would reduce concurrency.
+A global leader would break carrier ownership. Lease-only admission would hide
+the incorrect readiness predicate. One-parent coverage remains sufficient, but
+it is not necessary.
+
+**Formal verification.** `RecoveryFrontierCoverage.tla` models selected parent
+sets, valid latest messages, floor authorization, owner custody, lease expiry,
+and independent ordinary work. The safe configuration requires collective
+coverage. The one-parent control must violate
+`CollectiveCoverageReadiesRetry`. `RecoveryFrontierCoverage.v` proves that
+one-parent coverage implies collective coverage. It also proves that the
+converse is false for a split frontier. The Rocq model keeps ordinary leadership
+independent from retry authorization.
+
+`StaleSiblingRecovery.tla` separately models canonical rejection observation on
+all validators. Only the carrier owner receives retry custody. Its safe model
+requires owner custody and forbids non-owner buffer entries.
+
+**Implementation verification.** Rust examples cover split-frontier admission,
+parent permutation, latest-message permutation, incomplete-frontier deferral,
+owner custody retention, complete-frontier admission, reflexive coverage, and
+lease expiry. The map-cell integration workload checks recovery across rotating
+validators and a finalized settlement floor.
+
+**Cross-refs.** CA-P-202, TM-CA-192, UC-CA-183, DR-55, option B1 in
+`docs/casper/CONSENSUS_PHILOSOPHY.md`, and
 `formal/tlaplus/deploy_recovery/README.md`.

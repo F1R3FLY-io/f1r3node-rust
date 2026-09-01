@@ -66,9 +66,9 @@ authority:
 - A funding-slot address is derived from the Keccak-256 hash of the canonical
   protobuf encoding of a consensus-generated `GPrivate` name. Publishing the
   address permits deposits; spending requires the name as a first-class
-  Rholang capability. The name's bytes are not a confidentiality secret, and
-  the private-name preview API can predict them; source code has no
-  bytes-to-`GPrivate` constructor.
+  Rholang capability. The name's bytes are not a confidentiality secret. Source
+  code has no bytes-to-`GPrivate` constructor. Protocol 6 derives the name
+  stream from the authenticated deploy envelope and rejects legacy preview.
 - Cost reservation identifiers, certificate identifiers, byte-schedule
   digests, and event identities use distinct Blake2b-256 domains. A validator
   recomputes them during replay rather than trusting peer-supplied evidence.

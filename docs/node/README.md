@@ -207,9 +207,8 @@ Current epoch rewards from the PoS contract. Readonly only.
 
 ### `POST /api/estimate-cost`
 
-Estimate committed-COMM plus canonical RSpace byte cost without settling a
-user purse. Takes `{"term": "..."}`, returns `{"cost": 39, ...}`. Readonly
-only.
+Estimate committed-COMM plus canonical RSpace byte cost without REV settlement.
+The estimate uses the target block protocol. This endpoint is read-only.
 
 ### `GET /api/validator/{pubkey}`
 

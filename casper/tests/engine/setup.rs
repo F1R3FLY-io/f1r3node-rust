@@ -1,15 +1,12 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/Setup.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
-use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::deploy::pending_deploy::PendingDeploy;
@@ -36,17 +33,14 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::{Cosigned, Signed};
 use dashmap::DashSet;
 use models::routing::Protocol;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
-use models::rust::block_metadata::BlockMetadata;
-use models::rust::bond_generation::BondGeneration;
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, CasperMessage, DeployData, HasBlock,
 };
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
-use models::rust::equivocation_record::SequenceNumber;
-use models::rust::validator::ValidatorSerde;
 use prost::bytes::Bytes;
 use prost::Message;
+use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -200,11 +194,6 @@ impl TestFixture {
         let kvm_blockstorage = Arc::new(Mutex::new(HashMap::new()));
         let kvm_approved_block = Arc::new(Mutex::new(HashMap::new()));
         let kvm_finalization_certificates = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_metadata = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_deploy_index = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_latest_messages = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_invalid_blocks = Arc::new(Mutex::new(HashMap::new()));
-        let kvm_dagstorage_equivocation_tracker = Arc::new(Mutex::new(HashMap::new()));
         let kvm_deploystorage = Arc::new(Mutex::new(HashMap::new()));
 
         // Scala: implicit val blockStore = KeyValueBlockStore[Task](kvm).unsafeRunSync(...)
@@ -231,60 +220,10 @@ impl TestFixture {
         // - KeyValueDagRepresentation is just an in-memory snapshot
         // - GenesisValidator and Initializing need insert() to record blocks in DAG
         // - This matches Scala Setup.scala which creates BlockDagKeyValueStorage.create(kvm)
-        let metadata_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_metadata.clone(),
-        ));
-        let metadata_typed_store =
-            KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(metadata_store);
-        let block_metadata_store = BlockMetadataStore::new(metadata_typed_store).unwrap();
-
-        let deploy_index_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_deploy_index.clone(),
-        ));
-        let deploy_index_typed_store =
-            KeyValueTypedStoreImpl::<DeployId, BlockHashSerde>::new(deploy_index_store);
-
-        let latest_messages_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_latest_messages.clone(),
-        ));
-        let latest_messages_typed_store =
-            KeyValueTypedStoreImpl::<ValidatorSerde, BlockHashSerde>::new(latest_messages_store);
-
-        let invalid_blocks_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_invalid_blocks.clone(),
-        ));
-        let invalid_blocks_typed_store =
-            KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(invalid_blocks_store);
-
-        let equivocation_tracker_store = Arc::new(MockKeyValueStore::with_shared_data(
-            kvm_dagstorage_equivocation_tracker.clone(),
-        ));
-        let equivocation_tracker_typed_store = KeyValueTypedStoreImpl::<
-            (ValidatorSerde, BondGeneration, SequenceNumber),
-            BTreeSet<BlockHashSerde>,
-        >::new(equivocation_tracker_store);
-        let equivocation_tracker = EquivocationTrackerStore::new(equivocation_tracker_typed_store);
-
-        let block_dag_storage_unwrapped = BlockDagKeyValueStorage::from_parts(
-            Arc::new(parking_lot::RwLock::new(())),
-            latest_messages_typed_store,
-            Arc::new(parking_lot::RwLock::new(block_metadata_store)),
-            Arc::new(parking_lot::RwLock::new(deploy_index_typed_store)),
-            Arc::new(parking_lot::RwLock::new(KeyValueTypedStoreImpl::new(
-                Arc::new(
-                    rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-                ),
-            ))),
-            invalid_blocks_typed_store,
-            KeyValueTypedStoreImpl::new(Arc::new(
-                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-            )),
-            KeyValueTypedStoreImpl::new(Arc::new(
-                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
-            )),
-            equivocation_tracker,
-            Arc::new(AtomicU64::new(0)),
-        );
+        let mut dag_kvm = InMemoryStoreManager::new();
+        let block_dag_storage_unwrapped = BlockDagKeyValueStorage::new(&mut dag_kvm)
+            .await
+            .expect("Failed to create BlockDagStorage");
 
         // Insert genesis block into DAG storage (approved = true, invalid = false)
         block_dag_storage_unwrapped

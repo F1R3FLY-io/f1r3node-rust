@@ -81,6 +81,7 @@ From FinalizedFloor Require Import FinalizerFloorMaterialization.
 From FinalizedFloor Require Import DivergentFinalizationHistories.
 From FinalizedFloor Require Import MinorityForkRecovery.
 From FinalizedFloor Require Import CandidateScopeDeployRehome.
+From FinalizedFloor Require Import RecoveryFrontierCoverage.
 From FinalizedFloor Require Import StaleSiblingRecovery.
 From FinalizedFloor Require Import CertifiedFloorCommitment.
 From FinalizedFloor Require Import FinalizationCertificateRetrieval.
@@ -863,6 +864,25 @@ Theorem finalized_floor_atomic_commit_correct :
 Proof. exact finalization_atomicity_contract. Qed.
 
 Print Assumptions finalized_floor_atomic_commit_correct.
+
+Theorem finalized_floor_snapshot_capture_retry_correct :
+  (retry_snapshot_capture [SnapshotCaptureStale] = None)
+  /\
+  (forall stale_count revision,
+    retry_snapshot_capture
+      (repeat SnapshotCaptureStale stale_count ++
+       [SnapshotCaptureCoherent revision]) = Some revision)
+  /\
+  (forall observations revision,
+    retry_snapshot_capture observations = Some revision ->
+    In (SnapshotCaptureCoherent revision) observations).
+Proof.
+  exact (conj stale_snapshot_capture_publishes_no_result
+    (conj finite_stale_snapshot_prefix_reaches_coherent_capture
+      snapshot_retry_returns_only_an_observed_coherent_revision)).
+Qed.
+
+Print Assumptions finalized_floor_snapshot_capture_retry_correct.
 
 Theorem finalized_floor_worker_retry_correct :
   (forall completed coverage,
@@ -1853,6 +1873,62 @@ Qed.
 
 Print Assumptions certified_projection_binding_and_evidence_roots_correct.
 
+Theorem finalization_closure_availability_correct :
+  (forall authority latest incoming exact validator hash,
+    lookup_parent_authority validator authority = None ->
+    ~ In (validator, hash)
+      (derive_finality_vote_projection authority latest incoming exact))
+  /\
+  (forall held dependencies closure_invalid authority latest incoming exact missing,
+    capture_finality_projection
+      held dependencies closure_invalid authority latest incoming exact =
+      MissingFinalityDependency missing ->
+    In missing dependencies /\ held missing = false)
+  /\
+  (forall held dependencies closure_invalid authority latest incoming exact missing,
+    capture_finality_projection
+      held dependencies closure_invalid authority latest incoming exact =
+      MissingFinalityDependency missing ->
+    projection_from_capture
+      (capture_finality_projection
+        held dependencies closure_invalid authority latest incoming exact) = None)
+  /\
+  (forall base promoted exact max_sequences incoming delta capture missing,
+    capture = MissingFinalityDependency missing ->
+    certificate_from_projection_capture
+      base promoted exact max_sequences incoming delta capture = None)
+  /\
+  (forall base promoted exact max_sequences incoming delta capture,
+    capture = InvalidFinalityClosure ->
+    certificate_from_projection_capture
+      base promoted exact max_sequences incoming delta capture = None)
+  /\
+  (forall held dependencies authority latest incoming exact,
+    Forall (fun dependency => held dependency = true) dependencies ->
+    capture_finality_projection
+      held dependencies false authority latest incoming exact =
+      CompleteFinalityProjection
+        (derive_finality_vote_projection authority latest incoming exact))
+  /\
+  (forall base promoted exact max_sequences incoming delta capture projection,
+    capture = CompleteFinalityProjection projection ->
+    exists certificate,
+      certificate_from_projection_capture
+        base promoted exact max_sequences incoming delta capture = Some certificate /\
+      consensus_finality_projection certificate = projection).
+Proof.
+  exact
+    (conj absent_authority_cannot_vote
+      (conj missing_capture_names_exact_unheld_dependency
+        (conj incomplete_closure_has_no_projection
+          (conj incomplete_closure_has_no_certificate
+            (conj invalid_closure_has_no_certificate
+              (conj full_restoration_reproduces_complete_projection
+                    complete_capture_certifies_the_same_projection)))))).
+Qed.
+
+Print Assumptions finalization_closure_availability_correct.
+
 Theorem finalized_floor_certified_causal_admission_correct :
   (forall left right incarnation,
     context_join left right incarnation = context_join right left incarnation)
@@ -2096,3 +2172,28 @@ Definition finalized_floor_witness_equivalent_carrier_correct :=
   @witness_equivalent_carrier_contract.
 
 Print Assumptions finalized_floor_witness_equivalent_carrier_correct.
+
+Definition finalized_floor_collective_recovery_coverage_correct :=
+  @one_parent_coverage_implies_collective_coverage.
+
+Print Assumptions finalized_floor_collective_recovery_coverage_correct.
+
+Definition finalized_floor_split_recovery_frontier_correct :=
+  collective_coverage_does_not_require_one_covering_parent.
+
+Print Assumptions finalized_floor_split_recovery_frontier_correct.
+
+Definition finalized_floor_recovery_leadership_separation_correct :=
+  @retry_readiness_is_independent_of_ordinary_leadership.
+
+Print Assumptions finalized_floor_recovery_leadership_separation_correct.
+
+Definition finalized_floor_recovery_parent_order_independent :=
+  @collective_coverage_parent_permutation.
+
+Print Assumptions finalized_floor_recovery_parent_order_independent.
+
+Definition finalized_floor_recovery_latest_order_independent :=
+  @collective_coverage_latest_message_permutation.
+
+Print Assumptions finalized_floor_recovery_latest_order_independent.

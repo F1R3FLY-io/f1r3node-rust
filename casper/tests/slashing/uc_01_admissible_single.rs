@@ -5,9 +5,8 @@
 // This is the canonical happy-path scenario that exercises the
 // entire pipeline: detection → record-mint → slash. Pre-fix this
 // already worked for AdmissibleEquivocation (the variant the original
-// dispatcher handled); the post-fix preserves it while extending the
-// same treatment to Ignorable, NeglectedEquivocation, and the 14
-// other slashable variants (bug fixes #1 + #3).
+// dispatcher handled). The post-fix preserves it and adds the other
+// direct-equivocation reason without enabling contextual evidence.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;

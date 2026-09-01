@@ -1,41 +1,79 @@
-//! Shared DAG-geometry staging for the batch2 specs: helpers that force
-//! block shapes fork choice would never mint on its own (explicit parent
-//! ordering, sibling races, withheld deliveries).
+//! Shared DAG-geometry staging for protocol-valid batch2 scenarios.
+
+use std::collections::HashSet;
 
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::Casper;
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 
-/// Mint a block on `node` from explicitly ORDERED parents (parents[0] is
-/// the main parent — the spine the frontier walk follows), process it on
-/// the same node, and return it. The snapshot's numbering is re-anchored to
-/// the overridden parent set (`create` numbers from `max_block_num`, not
-/// the parent list).
-pub async fn mint_on_parents(
+#[derive(Clone, Debug)]
+pub enum ExpectedParents {
+    ExactOrder(Vec<BlockHash>),
+    ExactMembers(Vec<BlockHash>),
+}
+
+impl ExpectedParents {
+    pub fn ordered(parents: &[&BlockMessage]) -> Self {
+        Self::ExactOrder(
+            parents
+                .iter()
+                .map(|parent| parent.block_hash.clone())
+                .collect(),
+        )
+    }
+
+    pub fn members(parents: &[&BlockMessage]) -> Self {
+        Self::ExactMembers(
+            parents
+                .iter()
+                .map(|parent| parent.block_hash.clone())
+                .collect(),
+        )
+    }
+}
+
+pub async fn mint_on_expected_snapshot(
     node: &mut TestNode,
-    parents: Vec<BlockMessage>,
+    expected: ExpectedParents,
     label: &str,
 ) -> BlockMessage {
-    for p in &parents {
-        assert!(
-            node.casper.dag_contains(&p.block_hash),
-            "staging[{label}]: parent {} must be IN THE DAG of the minting \
-             node (buffered: {})",
-            hex::encode(&p.block_hash[..6]),
-            node.casper.buffer_contains(&p.block_hash),
-        );
-    }
-    let mut snapshot = node.casper.get_snapshot().await.expect("snapshot");
-    snapshot.max_block_num = parents
+    let snapshot = node.casper.get_snapshot().await.expect("snapshot");
+    let actual = snapshot
+        .parents
         .iter()
-        .map(|p| p.body.state.block_number)
-        .max()
-        .expect("non-empty parent set");
-    snapshot.parents = parents;
+        .map(|parent| parent.block_hash.clone())
+        .collect::<Vec<_>>();
+    match expected {
+        ExpectedParents::ExactOrder(expected) => {
+            assert_eq!(
+                actual, expected,
+                "staging[{label}]: unexpected parent order"
+            );
+        }
+        ExpectedParents::ExactMembers(expected) => {
+            let actual_set = actual.iter().cloned().collect::<HashSet<_>>();
+            let expected_set = expected.iter().cloned().collect::<HashSet<_>>();
+            assert_eq!(
+                actual_set.len(),
+                actual.len(),
+                "staging[{label}]: snapshot parents contain duplicates"
+            );
+            assert_eq!(
+                expected_set.len(),
+                expected.len(),
+                "staging[{label}]: expected parents contain duplicates"
+            );
+            assert_eq!(
+                actual_set, expected_set,
+                "staging[{label}]: unexpected parent members"
+            );
+        }
+    }
     let validator_identity = node.validator_id_opt.clone().expect("validator identity");
     let deploy_storage = node.deploy_storage.clone();
     let rejected_buffer = node.rejected_deploy_buffer.clone();
@@ -48,13 +86,17 @@ pub async fn mint_on_parents(
         rejected_buffer,
         &runtime_manager,
         &mut node.block_store,
-        true,
+        node.allow_empty_blocks,
     )
     .await
     .unwrap_or_else(|e| panic!("create[{label}] must succeed: {:?}", e));
     let BlockCreatorResult::Created(block, _pre, _post) = created else {
-        panic!("create[{label}] must mint on the ordered parent set");
+        panic!("create[{label}] must mint on the frozen snapshot");
     };
+    assert_eq!(
+        block.header.parents_hash_list, actual,
+        "staging[{label}]: block changed the frozen snapshot parent order"
+    );
     let result = node
         .process_block(block.clone())
         .await
@@ -64,4 +106,18 @@ pub async fn mint_on_parents(
         "staging[{label}]: minted block must validate, got {result:?}"
     );
     block
+}
+
+pub async fn mint_on_parents(
+    node: &mut TestNode,
+    parents: Vec<BlockMessage>,
+    label: &str,
+) -> BlockMessage {
+    let expected = ExpectedParents::ExactOrder(
+        parents
+            .into_iter()
+            .map(|parent| parent.block_hash)
+            .collect(),
+    );
+    mint_on_expected_snapshot(node, expected, label).await
 }

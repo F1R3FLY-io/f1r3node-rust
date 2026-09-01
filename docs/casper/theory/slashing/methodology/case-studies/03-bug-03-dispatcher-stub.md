@@ -49,27 +49,22 @@ action             = Keep pre_fix_bug_3.rs + post-fix anchors
 
 | Layer             | Artifact                                                                                                                                                                                                                                                                                                                                                                                                             |
 |-------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Rocq theorem      | `t_9_3_dispatch_complete` (`BugFixDispatcher.v:46`)                                                                                                                                                                                                                                                                                                                                                                  |
+| Rocq theorem      | Universal terminal persistence and exact evidence eligibility in `BugFixDispatcher.v`                                                                                                                                                                                                                                                                                                                               |
 | Rust regression   | `pre_fix_bug_3.rs`, `prop_t_9_3_catchall_records.rs`                                                                                                                                                                                                                                                                                                                                                                 |
 | Integration tests | `integration_t_invalid_block_hash_records.rs`, `integration_t_invalid_block_number.rs`, `integration_t_invalid_bonds_cache.rs`, `integration_t_invalid_follows.rs`, `integration_t_invalid_parents.rs`, `integration_t_invalid_repeat_deploy.rs`, `integration_t_invalid_sequence_number.rs`, `integration_t_invalid_shard_id.rs`, `integration_t_invalid_transaction.rs`, `integration_t_contains_future_deploy.rs` |
 | Bug-fix manifest  | [`../../design/09-bug-fixes-and-rationale.md §9.4`](../../design/09-bug-fixes-and-rationale.md)                                                                                                                                                                                                                                                                                                                      |
-| Diagram           | [Diagram 05 — Generic invalid-block dispatch (post-fix)](../../diagrams/05-seq-invalid-block-dispatch-fixed.svg)                                                                                                                                                                                                                                                                                                     |
+| TLA+ model        | `CertifiedRejectionDependency.tla` safe model and five required unsafe controls                                                                                                                                                                                                                                                                                                                                      |
 
 **Stack depth: 4** (Rocq + Rust regression + integration anchors +
 design).
 
 ## 6 · Lessons for the methodology
 
-1. **A catch-all that does nothing is a *latent* bug**. The pre-fix
-   dispatcher matched every slashable variant but only acted on two
-   of them. The methodology requires every `match` arm to either
-   have an explicit action or an explicit "no action with
-   rationale" comment.
-2. **Every variant in a taxonomy needs an integration test**. The
-   slashing test suite has one `integration_t_invalid_*.rs` file per
-   slashable variant; this is the methodology's *uniform-coverage*
-   pattern that prevents the next dispatcher stub from going
-   unnoticed.
+1. **Separate terminal state from economic evidence.** Every certified
+   rejection needs a durable terminal record. Only objective equivocation can
+   change the economic evidence store.
+2. **Test every taxonomy member.** The slashing suite verifies persistence and
+   evidence eligibility for all 29 rejection reasons.
 3. **Cross-fix interactions matter**. Bug #3 interacts with Bug #1
    (both touch the dispatcher) and with Bug #2 (the dispatcher
    inserts into the tracker that Bug #2 races). The bug-fix manifest

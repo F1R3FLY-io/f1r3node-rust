@@ -9,14 +9,6 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
-    let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
-    hex::encode(unforgeable_id_u8)
-}
-
 #[tokio::test]
 async fn our_build_system_should_allow_import_of_rholang_sources_into_scala_code() {
     let genesis = GenesisBuilder::new()
@@ -61,9 +53,22 @@ in {
         expected_timestamp
     );
 
+    assert_eq!(signed_block.body.deploys.len(), 1);
+    let processed = &signed_block.body.deploys[0];
+    assert!(!processed.is_admission_rejected());
+    assert!(!processed.is_failed);
+    let envelope = processed.to_cosigned().expect("protocol-v6 envelope");
+    let unforgeable_id = Tools::user_deploy_rng(&envelope).next();
+    let private_name = hex::encode(
+        unforgeable_id
+            .iter()
+            .map(|&byte| byte as u8)
+            .collect::<Vec<_>>(),
+    );
+
     let data = rspace_util::get_data_at_private_channel(
         &signed_block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
+        &private_name,
         &node.runtime_manager,
     )
     .await;

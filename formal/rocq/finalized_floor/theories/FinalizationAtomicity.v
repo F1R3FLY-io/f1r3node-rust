@@ -789,6 +789,47 @@ Qed.
 
 End BoundFinalizationHead.
 
+Inductive snapshot_capture_observation :=
+| SnapshotCaptureStale
+| SnapshotCaptureCoherent (revision : nat).
+
+Fixpoint retry_snapshot_capture
+  (observations : list snapshot_capture_observation) : option nat :=
+  match observations with
+  | [] => None
+  | SnapshotCaptureStale :: remaining => retry_snapshot_capture remaining
+  | SnapshotCaptureCoherent revision :: _ => Some revision
+  end.
+
+Theorem stale_snapshot_capture_publishes_no_result :
+  retry_snapshot_capture [SnapshotCaptureStale] = None.
+Proof.
+  reflexivity.
+Qed.
+
+Theorem finite_stale_snapshot_prefix_reaches_coherent_capture :
+  forall stale_count revision,
+    retry_snapshot_capture
+      (repeat SnapshotCaptureStale stale_count ++
+       [SnapshotCaptureCoherent revision]) = Some revision.
+Proof.
+  induction stale_count as [|stale_count IH]; intros revision.
+  - reflexivity.
+  - simpl. apply IH.
+Qed.
+
+Theorem snapshot_retry_returns_only_an_observed_coherent_revision :
+  forall observations revision,
+    retry_snapshot_capture observations = Some revision ->
+    In (SnapshotCaptureCoherent revision) observations.
+Proof.
+  induction observations as [|observation remaining IH]; intros revision Hresult.
+  - discriminate.
+  - destruct observation as [|observed].
+    + right. apply IH. exact Hresult.
+    + simpl in Hresult. inversion Hresult. left. reflexivity.
+Qed.
+
 Print Assumptions successful_compare_append_is_linearization_point.
 Print Assumptions committed_head_has_its_round_record.
 Print Assumptions stale_append_is_observationally_inert.
@@ -825,3 +866,6 @@ Print Assumptions changed_bound_base_requires_fresh_evaluation.
 Print Assumptions compare_append_closes_validation_commit_race.
 Print Assumptions dag_ancestry_is_insufficient_for_late_bound_commit.
 Print Assumptions bound_finalization_head_contract.
+Print Assumptions stale_snapshot_capture_publishes_no_result.
+Print Assumptions finite_stale_snapshot_prefix_reaches_coherent_capture.
+Print Assumptions snapshot_retry_returns_only_an_observed_coherent_revision.

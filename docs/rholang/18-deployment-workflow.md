@@ -51,11 +51,14 @@ cargo run -p node -- \
   --grpc-host localhost \
   --grpc-port 40401 \
   deploy \
-  10 \
-  "$PRIVATE_KEY" \
-  contract.rho \
-  root
+  --valid-after-block-number 10 \
+  --private-key "$PRIVATE_KEY" \
+  --shard-id root \
+  contract.rho
 ```
+
+Use `--private-key-path rnode.key` instead of `--private-key` for an encrypted
+key file. The command requires exactly one key source.
 
 The deploy subcommand deliberately has no `--phlo-limit` or `--phlo-price`
 flags. Use the wallet and process-purse funding workflow to change available
@@ -90,6 +93,7 @@ The request shape is:
 {
   "data": {
     "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
+    "language": "rholang",
     "timestamp": 1700000000000,
     "validAfterBlockNumber": 10,
     "shardId": "root",
@@ -141,7 +145,8 @@ scalar projection. See [Cost-accounted Rholang](13-cost-model.md).
 
 ## Querying resulting state
 
-An exploratory deploy reads state without creating a block:
+An exploratory deploy reads state without creating a block. Send this request
+to a read-only node. A validator without dev mode returns `readonly_node_required`.
 
 ```bash
 curl -X POST http://localhost:40403/api/explore-deploy \

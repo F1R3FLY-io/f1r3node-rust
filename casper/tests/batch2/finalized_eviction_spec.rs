@@ -36,13 +36,11 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// nodes used.
 fn test_ftt() -> FtThreshold { FtThreshold::from_f32_lossy(0.0) }
 
-fn pool_holds(node: &TestNode, sig: &Bytes) -> bool {
+fn pool_holds(node: &TestNode, deploy_id: &Bytes) -> bool {
     node.deploy_storage
         .lock()
-        .read_all()
+        .contains_envelope(deploy_id)
         .expect("read deploy pool")
-        .iter()
-        .any(|d| d.sig == *sig)
 }
 
 /// Drive one round of empty proposals by every validator, delivering each to
@@ -96,12 +94,11 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
         Some(shard_id.clone()),
     )
     .expect("build carrier deploy");
-    let sig: Bytes = deploy.sig.clone();
-
     let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("validator 1 proposes the carrier");
+    let deploy_id = Bytes::copy_from_slice(carrier.body.deploys[0].deploy_id());
     let carrier_hash = carrier.block_hash.clone();
     for (i, node) in nodes.iter_mut().enumerate() {
         if i != 0 {
@@ -112,7 +109,7 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
     }
 
     assert!(
-        pool_holds(&nodes[0], &sig),
+        pool_holds(&nodes[0], &deploy_id),
         "fixture precondition: inclusion alone must not evict the pool copy — \
          the owner keeps it until the work is irreversibly settled",
     );
@@ -166,7 +163,7 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
     );
 
     assert!(
-        pool_holds(&nodes[0], &sig),
+        pool_holds(&nodes[0], &deploy_id),
         "the carrier is finalized but the floor has NOT reached it, so its \
          contents are not yet in every future merge base and its branch can \
          still be abandoned. Evicting the pool copy here destroys the deploy \
@@ -207,12 +204,11 @@ async fn a_deploy_is_evicted_once_the_floor_covers_its_carrier() {
         Some(shard_id.clone()),
     )
     .expect("build carrier deploy");
-    let sig: Bytes = deploy.sig.clone();
-
     let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("validator 1 proposes the carrier");
+    let deploy_id = Bytes::copy_from_slice(carrier.body.deploys[0].deploy_id());
     for (i, node) in nodes.iter_mut().enumerate() {
         if i != 0 {
             node.process_block(carrier.clone())
@@ -224,7 +220,7 @@ async fn a_deploy_is_evicted_once_the_floor_covers_its_carrier() {
     let mut evicted = false;
     for _ in 0..16 {
         drive_round(&mut nodes).await;
-        if !pool_holds(&nodes[0], &sig) {
+        if !pool_holds(&nodes[0], &deploy_id) {
             evicted = true;
             break;
         }

@@ -223,6 +223,83 @@ pub fn normalizer_env_from_cosigned_deploy(deploy: &Cosigned<DeployData>) -> Has
     env
 }
 
+pub fn normalizer_env_from_v61_single_signer(
+    deploy_id: &[u8],
+    public_key: &PublicKey,
+) -> HashMap<String, Par> {
+    let mut env = HashMap::new();
+    let deploy_id_par = Par::default().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId {
+            sig: deploy_id.to_vec(),
+        })),
+    }]);
+    env.insert(SYSTEM_DEPLOY_ID_URI.to_string(), deploy_id_par.clone());
+    insert_legacy_alias(
+        &mut env,
+        LEGACY_DEPLOY_ID_URI,
+        SYSTEM_DEPLOY_ID_URI,
+        deploy_id_par,
+    );
+
+    env.insert(
+        SYSTEM_AUTHORITY_ID_URI.to_string(),
+        Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GAuthorityIdBody(GAuthorityId {
+                id: authority_id_v61_from_public_keys(&[public_key]),
+            })),
+        }]),
+    );
+
+    let principal = principal_descriptor(1, &public_key.bytes);
+    let principals = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![principal],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        })),
+    }]);
+    env.insert(SYSTEM_SIGNERS_URI.to_string(), principals.clone());
+    env.insert(SYSTEM_POLICY_MEMBERS_URI.to_string(), principals);
+    env.insert(
+        SYSTEM_AUTHORITY_THRESHOLD_URI.to_string(),
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(1)),
+        }]),
+    );
+
+    let deployer_id_par = Par::default().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GPrincipalIdBody(GPrincipalId {
+            key_family: 1,
+            public_key: public_key.bytes.to_vec(),
+        })),
+    }]);
+    env.insert(SYSTEM_DEPLOYER_ID_URI.to_string(), deployer_id_par.clone());
+    insert_legacy_alias(
+        &mut env,
+        LEGACY_DEPLOYER_ID_URI,
+        SYSTEM_DEPLOYER_ID_URI,
+        deployer_id_par,
+    );
+    env
+}
+
+fn principal_descriptor(scheme: u16, public_key: &[u8]) -> Par {
+    let scheme = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GInt(i64::from(scheme))),
+    }]);
+    let key = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::GByteArray(public_key.to_vec())),
+    }]);
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+            ps: vec![scheme, key],
+            locally_free: Vec::new(),
+            connective_used: false,
+        })),
+    }])
+}
+
 fn principal_descriptors(signers: &[&crypto::rust::signatures::signed::Cosigner]) -> Par {
     let ps = signers
         .iter()
@@ -230,19 +307,7 @@ fn principal_descriptors(signers: &[&crypto::rust::signatures::signed::Cosigner]
             let scheme = signer
                 .scheme_id_v61()
                 .expect("validated protocol-v6 signer scheme");
-            let scheme = Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::GInt(i64::from(scheme))),
-            }]);
-            let key = Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::GByteArray(signer.pk.bytes.to_vec())),
-            }]);
-            Par::default().with_exprs(vec![Expr {
-                expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                    ps: vec![scheme, key],
-                    locally_free: Vec::new(),
-                    connective_used: false,
-                })),
-            }])
+            principal_descriptor(scheme, &signer.pk.bytes)
         })
         .collect();
     Par::default().with_exprs(vec![Expr {
@@ -256,14 +321,19 @@ fn principal_descriptors(signers: &[&crypto::rust::signatures::signed::Cosigner]
 }
 
 pub fn authority_id_v61(signers: &[&crypto::rust::signatures::signed::Cosigner]) -> Vec<u8> {
+    let public_keys = signers.iter().map(|signer| &signer.pk).collect::<Vec<_>>();
+    authority_id_v61_from_public_keys(&public_keys)
+}
+
+fn authority_id_v61_from_public_keys(signers: &[&PublicKey]) -> Vec<u8> {
     let mut preimage = Vec::new();
     append_lp64(&mut preimage, b"f1r3fly:rholang:compound-authority:v6.1");
     preimage.extend_from_slice(&(signers.len() as u32).to_be_bytes());
     for signer in signers {
         let mut ground = Vec::new();
         ground.extend_from_slice(&1u16.to_be_bytes());
-        ground.extend_from_slice(&(signer.pk.bytes.len() as u32).to_be_bytes());
-        ground.extend_from_slice(&signer.pk.bytes);
+        ground.extend_from_slice(&(signer.bytes.len() as u32).to_be_bytes());
+        ground.extend_from_slice(&signer.bytes);
         append_lp64(&mut preimage, &ground);
     }
     crypto::rust::hash::blake2b256::Blake2b256::hash(preimage)
@@ -571,6 +641,13 @@ mod tests {
             Some(UnfInstance::GDeployIdBody(GDeployId {
                 sig: envelope.envelope_commitment().unwrap().to_vec(),
             }))
+        );
+        assert_eq!(
+            env,
+            normalizer_env_from_v61_single_signer(
+                &envelope.envelope_commitment().unwrap(),
+                &envelope.primary().pk,
+            )
         );
     }
 }

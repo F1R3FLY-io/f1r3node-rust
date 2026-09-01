@@ -18,6 +18,7 @@ use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
@@ -72,11 +73,18 @@ async fn compute_cost_accounted_checkpoint(
     )
     .await?
     .state;
+    let protocol_version = snapshot.on_chain_state.shard_conf.casper_version;
     let cosigned = deploys
         .into_iter()
-        .map(Cosigned::from_single_signer)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        .map(|deploy| {
+            if protocol_version >= CERTIFIED_ADMISSION_PROTOCOL_VERSION {
+                producing_node.envelope_for_deploy(&deploy)
+            } else {
+                Cosigned::from_single_signer(deploy)
+                    .map_err(|error| CasperError::RuntimeError(error.to_string()))
+            }
+        })
+        .collect::<Result<Vec<_>, CasperError>>()?;
     let admission = producing_node
         .runtime_manager
         .certify_state_bound_admission(&pre_state, cosigned, &block_data, &invalid_blocks)
@@ -320,6 +328,20 @@ pub async fn equivocate_block(
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     // Inline the equivalent of `block_creator::package_block` —
     // that function is private to block_creator.rs (`fn`, not
@@ -350,23 +372,18 @@ pub async fn equivocate_block(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
-        finalized_floor: None,
+        finalized_floor,
     };
-    let unsigned = proto_util::unsigned_block_proto(
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     // Sign with v0's identity — this is the Byzantine signing step.
     let signed = validator_identity.sign_block(&unsigned);
@@ -467,6 +484,20 @@ pub async fn propose_with_explicit_justifications(
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -493,23 +524,18 @@ pub async fn propose_with_explicit_justifications(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
-        finalized_floor: None,
+        finalized_floor,
     };
-    let unsigned = proto_util::unsigned_block_proto(
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     let signed = validator_identity.sign_block(&unsigned);
     Ok(signed)
@@ -522,11 +548,10 @@ pub async fn propose_with_explicit_justifications(
 /// the block as `NotOfInterest` BEFORE reaching the
 /// `Validate::shard_identifier` validator inside `block_summary`.
 ///
-/// The deeper-layer `InvalidShardId` is defence-in-depth — the same
+/// The deeper-layer `InvalidShardId` is defense-in-depth — the same
 /// check at a different layer of the pipeline. The dispatcher's
-/// catch-all routes it through `is_slashable()` (block_status.rs:181)
-/// so we still want to verify the catch-all minted a record when
-/// it fires; we just have to bypass the upstream early-rejection.
+/// certified-rejection path persists it without economic evidence. The
+/// helper bypasses only the upstream early rejection.
 ///
 /// Reference: `casper/tests/helper/test_node.rs::process_block_through_pipe`
 /// for the full pipeline.
@@ -647,6 +672,20 @@ pub async fn propose_with_block_mutation(
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -673,15 +712,9 @@ pub async fn propose_with_block_mutation(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
-        finalized_floor: None,
+        finalized_floor,
     };
     let mut unsigned = proto_util::unsigned_block_proto(
         body,
@@ -690,6 +723,7 @@ pub async fn propose_with_block_mutation(
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     // Apply the caller's mutation BEFORE signing. The signing step
     // recomputes the block_hash, so the mutated block is correctly
@@ -802,6 +836,20 @@ pub async fn propose_neglecting_block(
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
         validator_caches_at(producing_node, &post_state_hash).await?;
+    let sender_bond_generation = snapshot
+        .consensus_context
+        .authority_generations()
+        .get(&validator_identity.public_key.bytes)
+        .copied()
+        .ok_or_else(|| {
+            CasperError::RuntimeError(
+                "test proposer is absent from the certified authority generation map".to_string(),
+            )
+        })?;
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
 
@@ -828,23 +876,18 @@ pub async fn propose_neglecting_block(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
-        sender_bond_generation: snapshot
-            .on_chain_state
-            .bond_generations
-            .get(&Bytes::copy_from_slice(
-                &validator_identity.public_key.bytes,
-            ))
-            .copied(),
+        sender_bond_generation: Some(sender_bond_generation),
         objective_equivocation_evidence_delta: Vec::new(),
-        finalized_floor: None,
+        finalized_floor,
     };
-    let unsigned = proto_util::unsigned_block_proto(
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id,
         Some(block_data.seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
 
     let signed = validator_identity.sign_block(&unsigned);
     Ok(signed)

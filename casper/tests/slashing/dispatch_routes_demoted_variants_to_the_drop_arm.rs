@@ -27,6 +27,11 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// forces a deliberate classification there first; extending this list is
 /// the one-line follow-up.
 const DEMOTED_VARIANTS: &[InvalidBlock] = &[
+    InvalidBlock::InvalidFormat,
+    InvalidBlock::InvalidSignature,
+    InvalidBlock::InvalidSender,
+    InvalidBlock::InvalidVersion,
+    InvalidBlock::InvalidTimestamp,
     InvalidBlock::DeployNotSigned,
     InvalidBlock::InvalidBlockNumber,
     InvalidBlock::InvalidRepeatDeploy,
@@ -39,15 +44,20 @@ const DEMOTED_VARIANTS: &[InvalidBlock] = &[
     InvalidBlock::NeglectedEquivocation,
     InvalidBlock::InvalidTransaction,
     InvalidBlock::InvalidBondsCache,
+    InvalidBlock::InvalidEquivocationEvidence,
     InvalidBlock::InvalidBlockHash,
     InvalidBlock::UnauthorizedSlashDeploy,
+    InvalidBlock::InvalidRejectedDeploy,
     InvalidBlock::ContainsExpiredDeploy,
     InvalidBlock::ContainsTimeExpiredDeploy,
     InvalidBlock::ContainsFutureDeploy,
+    InvalidBlock::NotOfInterest,
+    InvalidBlock::LowDeployCost,
+    InvalidBlock::PrematureDeployRetry,
 ];
 
 #[tokio::test]
-async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
+async fn dispatch_persists_every_certified_rejection_without_false_slash_evidence() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -77,11 +87,16 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
             .expect("pre-populate buffer pendant");
 
         let dag_repr = node.casper.block_dag().await.expect("dag representation");
+        let commitment = synth
+            .header
+            .finalized_floor
+            .as_ref()
+            .expect("finalized-floor commitment");
         let certificate = CertifiedSenderAuthority::new(
             &synth,
-            genesis.genesis_block.block_hash.clone(),
-            genesis.genesis_block.body.state.post_state_hash.clone(),
-            synth.block_hash.clone(),
+            commitment.floor_hash.clone(),
+            commitment.floor_post_state_hash.clone(),
+            commitment.authority_context_digest.clone(),
             BondGeneration::GENESIS,
             100,
         )
@@ -90,7 +105,7 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
             .expect("certified rejection");
         node.casper
             .handle_invalid_block(&synth, variant, &dag_repr, &certificate, &outcome)
-            .expect("dispatcher drop arm must succeed for demoted variant");
+            .expect("dispatcher must persist the certified rejection");
 
         let dag_after = node
             .casper
@@ -98,10 +113,16 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
             .await
             .expect("post-dispatch dag representation");
         assert!(
-            !dag_after.contains(&synth.block_hash),
-            "[{:?}] a demoted verdict's block must not enter the DAG",
+            dag_after.contains(&synth.block_hash),
+            "[{:?}] certified rejection metadata must enter the DAG",
             variant
         );
+        let metadata = dag_after
+            .lookup(&synth.block_hash)
+            .expect("metadata lookup")
+            .expect("certified rejection metadata");
+        assert_eq!(metadata.rejection_reason(), Some(variant.into()));
+        assert!(!metadata.is_slash_evidence_eligible());
 
         assert!(
             !node
@@ -109,7 +130,7 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
                 .casper_buffer_storage
                 .get_pendants()
                 .contains(&hash_serde),
-            "[{:?}] buffer must be purged by the drop arm",
+            "[{:?}] buffer must be purged after durable metadata insertion",
             variant
         );
 

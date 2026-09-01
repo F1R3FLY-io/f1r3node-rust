@@ -27,9 +27,9 @@ single-slot witness, and TLA+ records it as
 
 ## 6.2 `prepare_slashing_deploys` — the entry point
 
-The Rust source is at
-`casper/src/rust/blocks/proposer/block_creator.rs:287-332`. The
-algorithm in literate pseudocode:
+The entry point is at
+`casper/src/rust/blocks/proposer/block_creator.rs:1824-1910`.
+Candidate authorization is at `casper/src/rust/slashing_authorization.rs:441-633`.
 
 We start from the durable objective sibling index and authorized invalid-block
 evidence index in the `CasperSnapshot`. The old implementation used
@@ -41,86 +41,88 @@ received second.
 ```
 function prepare_slashing_deploys(snapshot: CasperSnapshot,
                                   proposer: Validator,
+                                  proposedBlockNum: BlockNum,
                                   seqNum: SeqNum,
-                                  seed_fn: Validator → SeqNum → Evidence → Seed)
+                                  authority: CanonicalSlashAuthority)
                                 → Vec<SlashDeploy>:
 
-    if snapshot.on_chain_state.bonds_map[proposer] ≤ 0:
-        return Vec::new()        -- Bug #8 / T-9.8
+    if authority.bond(proposer) ≤ 0:
+        return Vec::new()
 
-    let currentEpoch ← epoch(snapshot.max_block_num + 1)
-    let pairs        ← snapshot.dag.objective_equivocations()
-    let invalid      ← snapshot.dag.invalid_blocks()
+    let currentEpoch ← epoch(proposedBlockNum)
+    let structuralKeys ← snapshot.dag.structural_equivocation_keys()
+    let candidates ← ordered map by offender
 ```
 
-We first record every `(offender, sequence)` having a structural sibling pair. An eligible
-pair must be canonically ordered, identify one sender and sequence, fall wholly
-inside the current epoch, and name a positively bonded offender. Structural
-pair membership suppresses unary fallback before epoch and bond filtering.
-This keeps cross-epoch or otherwise ineligible objective evidence from falling
-back to the locally second sibling.
+Each observation key is `(offender, bond_generation, sequence)`.
+The hash set is already ordered.
+The algorithm filters hashes to the proposed block's epoch before it selects a pair.
+The canonical authority supplies both the generation and the positive bond.
+Structural pair membership suppresses unary fallback before epoch eligibility.
 
 ```
-    let candidates ← {}
-    let objectiveKeys ← {}
-    for ((v, n), (h1, h2)) ∈ pairs:
-        if h1 < h2 ∧ sender(h1) = sender(h2) = v
-           ∧ sequence(h1) = sequence(h2) = n ∧ n ≥ 0:
-            objectiveKeys ← objectiveKeys ∪ {(v, n)}
-            if epoch(h1) = epoch(h2) = currentEpoch
-               ∧ snapshot.on_chain_state.bonds_map[v] > 0:
-                candidates[v] ← minPair(candidates[v], (h1, h2))
-    for m ∈ invalid:
-        if (m.sender, m.sequence) ∈ objectiveKeys
-           ∨ candidates contains m.sender:
+    let objectiveOffenders ← {}
+    for ((v, g, n), hashes) ∈ snapshot.dag.equivocation_observations():
+        if |hashes| < 2 ∨ n < 0:
             continue
-        e ← epoch(m.blockNumber)
-        if e = currentEpoch ∧ snapshot.on_chain_state.bonds_map[m.sender] > 0:
-            candidates[m.sender] ← minHash(candidates[m.sender], m.blockHash)
+        if authority.generation(v) ≠ g ∨ authority.bond(v) ≤ 0:
+            continue
+        let eligible ← hashes filtered by matching metadata and currentEpoch
+        if |eligible| ≥ 2:
+            candidates[v] ← minCandidate(candidates[v], firstTwo(eligible), g)
+            objectiveOffenders ← objectiveOffenders ∪ {v}
+
+    for m ∈ snapshot.dag.invalid_blocks():
+        let g ← m.sender_bond_generation
+        if not m.is_slash_evidence_eligible:
+            continue
+        if (m.sender, g, m.sequence) ∈ structuralKeys
+           ∨ m.sender ∈ objectiveOffenders:
+            continue
+        if epoch(m.blockNumber) = currentEpoch
+           ∧ authority.generation(m.sender) = g
+           ∧ authority.bond(m.sender) > 0:
+            candidates[m.sender] ← minCandidate(candidates[m.sender], m.blockHash, g)
 ```
 
-For each remaining offender, we construct one `SlashDeploy` carrying the
-authorized target epoch and return the list in deterministic key order.
-If one offender has multiple current-epoch candidates, `minPair` or `minHash`
-selects the canonical minimum byte string so set iteration order cannot affect
-block construction.
+The ordered map emits at most one candidate for each offender.
+Each candidate carries the authorized epoch and bond generation.
+Lexicographic tie-breaking makes block construction deterministic.
 
 ```
     return [
-        SlashDeploy(evidence, proposer, currentEpoch,
-                    seed_fn(proposer, seqNum, evidence))
-        for (v, evidence) ∈ candidates
+        SlashDeploy(evidence, proposer, currentEpoch, generation,
+                    seed(proposer, seqNum, evidence))
+        for (v, evidence, generation) ∈ candidates
     ]
 ```
 
 > **Why filter by parent-state bond?** A validator can be bonded with
 > stake 100, equivocate, get slashed in block N (bond → 0), and be
-> seen again with a still-flagged invalid latest message in block
-> N+1. Without the bond > 0 filter, the proposer would emit *another*
-> `SlashDeploy` for an already-zero bond. The PoS contract handles
-> this correctly via T-Idem (the slash is a no-op when bond = 0),
-> but the redundant deploy wastes CPU and gossip bandwidth.
+> remain in durable evidence after block N. Without the positive-bond filter,
+> the proposer could emit another deploy for the same validator.
+> Canonical authorization prevents that redundant work.
 
 ## 6.3 The `SlashDeploy` Rholang body
 
 A `SlashDeploy` is a *system deploy*: it is not user-authenticated
 and carries no fee. The Rust/protobuf payload is
 `SlashDeploy { invalid_block_hash, equivocation_block_hash?, pk,
-target_activation_epoch, initial_rand }`.
+target_activation_epoch, target_bond_generation, initial_rand }`.
 The target activation epoch is checked during block validation before the
 deploy is replayed; the Rholang body below receives only the authorized
 system bindings needed to invoke PoS.
 
-The body is faithful to
-`coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala:40-51`, with
-`sys:casper:*` unforgeable bindings elided for readability:
+The body is at `casper/src/rust/util/rholang/costacc/slash_deploy.rs:36-50`.
+This version elides the `sys:casper:*` bindings for readability:
 
 ```
-new rl, poSCh, deployerId, invalidBlockHash, sysAuthToken, return in {
+new rl, poSCh, deployerId, invalidBlockHash, targetBondGeneration,
+    sysAuthToken, return in {
   rl!(`rho:system:pos`, *poSCh) |
   for(@(_, PoS) <- poSCh) {
     @PoS!("slash", *deployerId, *invalidBlockHash.hexToBytes(),
-                   *sysAuthToken, *return)
+                   *targetBondGeneration, *sysAuthToken, *return)
   }
 }
 ```
@@ -132,9 +134,8 @@ Key points:
 - The `poSCh` (PoS channel) receives the contract's identifier via
   the registry and then pattern-matches the unforgeable binding
   `@(_, PoS)`.
-- The `@PoS!("slash", …)` send invokes the on-chain `slash` method
-  with four arguments: `deployerId`, `invalidBlockHash.hexToBytes()`,
-  `sysAuthToken`, and `return`.
+- The `@PoS!("slash", …)` send invokes the on-chain method with five arguments.
+- `targetBondGeneration` binds the effect to one validator lifetime.
 - Note the `.hexToBytes()` conversion — the deploy carries the
   block hash as a hex string but the contract expects raw bytes.
 
@@ -170,43 +171,21 @@ The contract lives in `casper/src/main/resources/PoS.rhox`
 
 The activity flow:
 
-1. **Receive** `(deployerId, blockHash, sysAuthToken, returnCh)`.
-2. **Auth-token check** — `sysAuthTokenOps!("check", sysAuthToken,
-   *isValidTokenCh)` (the first guard in the `slash` method). If the token is invalid,
-   `returnCh!((false, "Invalid system auth token"))` and stop.
-3. **Parallel reads (fork-join):**
-   - `getInvalidBlocks` → `invalidBlocks` map.
-   - `getUser(deployerId)` → `userPk`.
-4. **Atomic state-update wrapper** — `runMVar(stateCh, …)`.
-5. **Identify the offender:**
-   - If `blockHash ∈ invalidBlocks`, then `validator ← invalidBlocks[blockHash]`.
-   - Else: the contract returns `(false, "invalid slash evidence")`
-     and no state mutation occurs (the invalid-evidence branch). There is **no**
-     fallback to "slash whoever submitted the deploy" — that would
-     over-broaden the threat surface (a malicious sender could slash
-     an honest deployer by submitting a bogus `blockHash`). The
-     stricter rejection is intentional and is the only safe choice
-     under Bug #12 / T-9.13.
-6. **Read the offender's bond:** `valBond ← state.allBonds[validator]`.
-7. **Zero-bond branch:** if `valBond ≤ 0`, return `(true, Nil)` with no
-   state mutation. This remains a contract-level idempotence safeguard;
-   canonical proposer selection and received-block authorization do not
-   admit a new slash deploy for a non-positive target bond.
-8. **Transfer** positive `valBond` to the Coop vault via
-   `@posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
-   *transferDoneCh)`.
-9. **Handle transfer result** on `transferDoneCh`:
-   - On **success**: atomically construct the new state in one
-     `stateUpdateCh!` write in the `slash` method:
-     ```
-     atomic stateUpdate(state', (true, Nil)) where
-       state'.allBonds          := state.allBonds[validator := 0]
-       state'.activeValidators  := state.activeValidators \ {validator}
-       state'.committedRewards  := state.committedRewards \ {validator}
-     ```
-     Then `returnCh!((true, Nil))`.
-   - On **failure**: return `(false, "transfer failed: ...")`
-     deterministically and leave PoS state unchanged.
+1. **Receive** the deployer, evidence hash, generation, token, and return channel.
+2. **Verify** the system auth token.
+3. **Resolve** the evidence hash through `invalidBlocks`.
+4. **Verify** the target bond generation.
+5. **Return** success for an existing quarantine in the same generation.
+6. **Locate** positive locked stake in the bonded or withdrawal lifecycle state.
+7. **Quarantine** the validator's stake through `protocolQuarantineAll`.
+8. **Remove** the validator from bond, withdrawal, active, and reward maps.
+9. **Store** the stake, reward, generation, origin, deadline, and prior activity state.
+10. **Add** the validator to `mintingHalted`.
+11. **Apply** all PoS changes through one `stateUpdateCh!` write.
+
+Each failed guard returns an error without a PoS state change.
+The slash transition does not transfer stake to the Coop vault.
+`redeemSlashed` later resolves the quarantined custody.
 
 > **Auth-token observation (T-AuthCheck).** A spoofed deploy with
 > the wrong system auth token is rejected at the very first guard
@@ -217,46 +196,36 @@ The activity flow:
 
 ## 6.5 The slash transition — formal semantics
 
-In the Rocq abstraction, the core `slash` transition is factored from the
-auth-token guard. The wrapper `execute_authenticated_slash_deploy` proves
-that invalid auth is a no-op and valid auth is equivalent to the core slash
-deploy semantics:
+The current Rocq abstraction uses `PoSStateC` and `slashC`.
+The legacy `PoSState` and `slash` remain only for historical comparison.
 
 ```
-slash(ps, v) =
-  | ps.allBonds[v] = 0   ⟹  (ps, true)              -- idempotent
+slashC(psc, v) =
+  | psc.allBonds[v] = 0   ⟹  (psc, true)
   | otherwise:
-      let b = ps.allBonds[v]
-      transfer(coopVault, b)
-      ps' = { allBonds[v] := 0;
-              activeValidators \\ {v};
-              coopVaultBalance += b }
-      return (ps', true)
+      let b = psc.allBonds[v]
+      psc' = { allBonds[v] := 0;
+               activeValidators \\ {v};
+               quarantinedStake[v] := b;
+               mintingHalted ∪ {v};
+               coopVaultBalance unchanged }
+      return (psc', true)
 ```
 
 Theorems:
 
-- **T-7 (Slash zeros bond).** *(`slash_zeros_bond`,
-  `PoSContract.v:75`.)* For every `ps` and `v`,
-  `(slash(ps, v)).fst.allBonds[v] = 0`. Proven by direct unfolding;
-  TLC verifies the corresponding `Inv_BondsZeroAfterSlash` in
-  `MC_SlashFlow.tla`.
-
-- **T-8 (Slash transfers stake).** *(`slash_transfers_stake`,
-  `PoSContract.v:95`.)* If the transfer succeeds, then
-  `ps'.coopVaultBalance = ps.coopVaultBalance + ps.allBonds[v]`.
-
-- **T-Idem (Slash idempotence; alias T-9).** *(`slash_idempotent`,
-  `PoSContract.v:117`.)* For every `ps` and `v`, a second slash on
-  the same validator is a no-op:
+- **T-7C (Slash zeros bond).** `slashC_zeros_bond` proves bond zeroing.
+- **T-8C (Slash quarantines stake).** `slash_quarantines_stake` proves quarantine.
+  The same theorem proves that the Coop vault stays unchanged.
+- **Mint halt.** `slashC_halts` proves that a positive-bond slash stops minting.
+- **T-IdemC (Slash idempotence).** `slashC_idempotent` proves stable repeated execution:
 
   ```
-  let (ps₁, _) = slash(ps, v) in
-  let (ps₂, _) = slash(ps₁, v) in  ps₂ = ps₁
+  let (psc₁, _) = slashC(psc, v) in
+  let (psc₂, _) = slashC(psc₁, v) in  psc₂ = psc₁
   ```
 
-  Proven via the `bm_slash_idempotent_lookup` foundation lemma
-  (`Validator.v:160`).
+  The second transition preserves bonds, membership, quarantine, halt state, and the Coop vault.
 
 - **T-AuthCheck (System auth-token guard).** Deploys with
   `sysAuthToken ≠ system_auth_token` are rejected before any state mutation.
@@ -284,13 +253,13 @@ Theorems:
                 ┌────────────▼────────────┐
                 │   PoS Rholang (slash)   │
                 │   • auth-token check    │
+                │   • custody quarantine  │
                 │   • atomic state update │
-                │   • coop-vault transfer │
                 └────────────┬────────────┘
                              │ allBonds[v] := 0
                 ┌────────────▼────────────┐
                 │ on-chain state mutated  │
-                │ (bonds, active, vault)  │
+                │ (bond, active, halt, Q) │
                 └─────────────────────────┘
 ```
 
@@ -345,8 +314,8 @@ all non-deterministic inputs are persisted elsewhere.
 **Theorem citations.**
 * T-4 (record monotonicity, `EquivocationRecord.v::record_monotone`):
   `EquivocationRecord` set never shrinks under dispatch.
-* T-9.3 (catch-all dispatcher, `BugFixDispatcher.v::t_9_3_catchall_mints_record`):
-  every slashable block produces a record.
+* T-9.3 (`BugFixDispatcher.v::t_9_3_dispatch_complete`): each
+  objective-equivocation rejection produces a record.
 
 Together they establish that the set of bonded-invalid-latest-message
 tuples on restart equals the set at the last persisted snapshot — so
@@ -367,20 +336,15 @@ the normal scan reconstructs one candidate for that active
 If the effect survived, the zero bond excludes the target. Canonicalization
 within generation and epoch prevents duplicate system deploys for one target.
 
-## 6.9 Why a separate Coop vault contract?
+## 6.9 Quarantine and the Coop vault
 
-The forfeited stake must go *somewhere* — leaving it in `allBonds`
-under the offender's key would be morally wrong (the offender
-should not retain ownership), and burning it would deprive the
-ecosystem of resources. The Coop vault is a community-controlled
-multi-sig contract that accumulates forfeited stake for re-issuance
-to honest validators or protocol development.
+The initial slash keeps stake in protocol quarantine.
+The Coop vault does not change before adjudication.
 
-The slash contract uses `@posVault!("transfer", …)` to move the
-stake; the vault has its own access-control rules (multi-sig
-threshold) for outflows. The vault is intentionally a *separate*
-contract so the slash contract does not need to know about
-multi-sig logic.
+`redeemSlashed` requires the system token and a verified multisignature quorum.
+A `Vindicated` outcome restores the quarantined stake.
+A partial `Guilty` outcome transfers only the penalty to the Coop vault.
+A `Burned` outcome destroys the quarantined stake and keeps minting halted.
 
 ---
 

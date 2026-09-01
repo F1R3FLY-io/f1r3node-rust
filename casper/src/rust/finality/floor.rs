@@ -382,30 +382,41 @@ pub async fn floor_of_view(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
-    // A latest-message slot whose held target the validator never signed
-    // is a seed — the newly-bonded genesis placeholder — not testimony,
-    // and it must not drag a height-0 tip into this derivation. A slot
-    // whose target has no local metadata stays in: if a walk needs the
-    // block, the absence hold below covers it. Node-local filtering is
-    // sound here because this is the finalizer's own LFB clock, not a
-    // consensus-visible derivation.
-    let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
-    for (validator, hash) in dag.latest_message_hashes() {
-        if let Some(metadata) = dag.lookup(&hash).map_err(CasperError::from)? {
-            if metadata.sender != validator {
-                continue;
+    let context =
+        match crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+            dag,
+            current.hash.clone(),
+        ) {
+            Ok(context) => context,
+            Err(CasperError::BlockNotHeld(missing)) => {
+                return Ok(FloorOfView::AbsenceHold { missing });
             }
-        }
-        testimony.push((validator, hash));
-    }
-    let mut tips: Vec<BlockHash> = testimony.iter().map(|(_, hash)| hash.clone()).collect();
+            Err(error) => return Err(error),
+        };
+    floor_of_frozen_vote_projection(
+        dag,
+        block_store,
+        current,
+        context.vote_projection().eligible_latest_messages(),
+        ftt,
+    )
+    .await
+}
+
+pub async fn floor_of_frozen_vote_projection(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    current: &Floor,
+    vote_projection: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<FloorOfView, CasperError> {
+    let mut tips: Vec<BlockHash> = vote_projection.values().cloned().collect();
     tips.sort();
     tips.dedup();
     if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
-    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
-    let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
+    let derived = match finalized_floor(dag, block_store, &tips, vote_projection, ftt).await {
         Ok(derived) => derived,
         Err(CasperError::BlockNotHeld(missing)) => return Ok(FloorOfView::AbsenceHold { missing }),
         // Under a negative threshold, incompatible majority-agreement
@@ -1384,21 +1395,35 @@ mod frontier_determinism_tests {
     /// tip into the derivation. With the seed excluded, the real tip's
     /// seeded-anchor caches derive cleanly.
     #[tokio::test]
-    async fn a_seeded_latest_message_is_not_a_floor_tip() {
+    async fn an_outside_seeded_latest_message_cannot_change_an_absence_hold() {
         let thr = FtThreshold::from_f32_lossy(0.1);
-        let (dag, _absent, held, _genesis) = mk_truncated_dag_with_seeded_tip();
+        let (with_seed, absent, held, genesis) = mk_truncated_dag_with_seeded_tip();
         let current = Floor {
             hash: held[0].clone(),
-            block_number: seed_number(&dag, &held[0]),
+            block_number: seed_number(&with_seed, &held[0]),
         };
 
-        let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
+        let seeded_outcome = floor_of_view(&with_seed, &mk_store(), &current, thr)
             .await
-            .expect("a seeded slot must not fail the finalizer's local read");
-        assert!(
-            matches!(outcome, FloorOfView::Advance(_)),
-            "with the seed excluded the real tip derives cleanly; got {outcome:?}"
-        );
+            .expect("an incomplete closure must return a typed hold");
+        let mut without_seed = with_seed.clone();
+        let seeded_validator = without_seed
+            .latest_messages_map
+            .iter()
+            .find_map(|(validator, latest)| {
+                (latest == &genesis && validator != &val()).then_some(validator.clone())
+            })
+            .expect("fixture contains an outside seeded latest message");
+        without_seed.latest_messages_map.remove(&seeded_validator);
+        let unseeded_outcome = floor_of_view(&without_seed, &mk_store(), &current, thr)
+            .await
+            .expect("an incomplete closure must return a typed hold");
+
+        assert_eq!(seeded_outcome, unseeded_outcome);
+        assert!(matches!(
+            seeded_outcome,
+            FloorOfView::AbsenceHold { missing } if missing == absent
+        ));
     }
 
     #[tokio::test]
@@ -2143,35 +2168,26 @@ mod frontier_determinism_tests {
         }
     }
 
-    /// Two disconnected roots, each certified by its own single-validator
-    /// committee, with both tips on the live frontier — the live derivation's
-    /// candidate set holds incompatible finalized candidates.
-    fn mk_agreement_flip_dag() -> (KeyValueDagRepresentation, Bytes, Bytes) {
+    fn mk_common_committee_sibling_dag() -> (KeyValueDagRepresentation, Bytes) {
         let v = validator(50);
         let w = validator(51);
-        let (g_a, a1, g_b, b1) = (h(0), h(1), h(5), h(6));
+        let (g, a1, b1) = (h(0), h(1), h(2));
+        let committee = vec![(v.clone(), 1), (w.clone(), 1)];
         let mut dag = build_dag(vec![
-            md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
-            md_wm(a1.clone(), vec![g_a.clone()], 1, &v, vec![(v.clone(), 1)]),
-            md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
-            md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
+            md_wm(g.clone(), vec![], 0, &v, committee.clone()),
+            md_wm(a1.clone(), vec![g.clone()], 1, &v, committee.clone()),
+            md_wm(b1.clone(), vec![g.clone()], 1, &w, committee),
         ]);
         dag.latest_messages_map.insert(v, a1);
         dag.latest_messages_map.insert(w, b1);
-        (dag, g_a, g_b)
+        (dag, g)
     }
 
-    /// Under a NEGATIVE fault-tolerance threshold, "finalized" is bare
-    /// majority agreement per snapshot, so incompatible same-height
-    /// certificates are an expected transient (CI run 32775081650: three
-    /// concurrent siblings at #7 under ftt=-1, one cycle refused, healed by
-    /// the next merge). The live clock must HOLD the cycle quietly, never
-    /// surface a safety violation the regime cannot promise.
     #[tokio::test]
-    async fn an_agreement_flip_under_negative_ftt_holds_the_cycle() {
-        let (dag, g_a, _g_b) = mk_agreement_flip_dag();
+    async fn concurrent_siblings_under_one_committee_do_not_create_a_negative_ftt_floor() {
+        let (dag, g) = mk_common_committee_sibling_dag();
         let current = Floor {
-            hash: g_a,
+            hash: g,
             block_number: 0,
         };
         let out = floor_of_view(
@@ -2181,20 +2197,15 @@ mod frontier_determinism_tests {
             FtThreshold::from_f32_lossy(-1.0),
         )
         .await
-        .expect("negative-ftt agreement flip must hold the cycle, not error");
-        assert!(
-            matches!(out, FloorOfView::IncompatibilityHold { .. }),
-            "expected IncompatibilityHold, got {out:?}"
-        );
+        .expect("one frozen committee must derive one compatible floor");
+        assert_eq!(out, FloorOfView::NoAdvance);
     }
 
-    /// Under a BFT threshold the same shape is impossible without a protocol
-    /// breach: the live clock keeps surfacing the loud typed error.
     #[tokio::test]
-    async fn an_incompatible_fork_under_bft_ftt_stays_loud() {
-        let (dag, g_a, _g_b) = mk_agreement_flip_dag();
+    async fn concurrent_siblings_under_one_committee_do_not_create_a_bft_floor() {
+        let (dag, g) = mk_common_committee_sibling_dag();
         let current = Floor {
-            hash: g_a,
+            hash: g,
             block_number: 0,
         };
         let out = floor_of_view(
@@ -2203,11 +2214,9 @@ mod frontier_determinism_tests {
             &current,
             FtThreshold::from_f32_lossy(0.1),
         )
-        .await;
-        assert!(
-            matches!(out, Err(CasperError::IncompatibleFinalizedFork(_))),
-            "expected the loud typed error under BFT ftt, got {out:?}"
-        );
+        .await
+        .expect("one frozen committee must derive one compatible floor");
+        assert_eq!(out, FloorOfView::NoAdvance);
     }
 
     /// A shared Case-A DAG: `g <- t <- c`, with BOTH parents `p1` (v) and `p2` (w)

@@ -1,20 +1,18 @@
 use casper::rust::block_status::{BlockError, InvalidBlock};
+use casper::rust::casper::MultiParentCasper;
 use casper::rust::util::construct_deploy;
-use models::rust::casper::protocol::casper_message::{
-    Bond, Justification, ProcessedSystemDeploy, SystemDeployData,
-};
+use models::rust::block_metadata::AdmissionRejectionReason;
+use models::rust::casper::protocol::casper_message::Bond;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
-use super::integration_helpers::{
-    propose_with_block_mutation, propose_with_explicit_justifications,
-};
+use super::integration_helpers::propose_with_block_mutation;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[serial_test::serial]
 #[tokio::test]
-async fn integration_t_neglected_invalid_block() {
+async fn integration_t_demoted_invalid_block_cannot_seed_a_neglect_cascade() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -44,56 +42,45 @@ async fn integration_t_neglected_invalid_block() {
         invalid_status,
         Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
     ));
-    assert!(nodes[1]
+    assert!(nodes[1].contains(&intrinsically_invalid.block_hash));
+    let dag = nodes[1]
+        .casper
+        .block_dag()
+        .await
+        .expect("DAG representation");
+    let metadata = dag
+        .lookup(&intrinsically_invalid.block_hash)
+        .expect("metadata lookup")
+        .expect("certified rejection metadata");
+    assert_eq!(
+        metadata.rejection_reason(),
+        Some(AdmissionRejectionReason::InvalidBondsCache)
+    );
+    assert!(!metadata.is_slash_evidence_eligible());
+    let records_before = nodes[1]
         .casper
         .block_dag_storage
-        .get_representation()
-        .expect("DAG")
-        .lookup_unsafe(&intrinsically_invalid.block_hash)
-        .expect("intrinsic-invalid metadata")
-        .is_rejected());
+        .access_equivocations_tracker(|tracker| tracker.data())
+        .expect("equivocation records before valid successor");
+    assert!(records_before.is_empty());
 
     let neglecting_deploy =
         construct_deploy::basic_deploy_data(1, None, Some(shard_id)).expect("deploy");
-    let neglecting =
-        propose_with_explicit_justifications(&mut nodes[2], vec![neglecting_deploy], vec![
-            Justification {
-                validator: intrinsically_invalid.sender.clone(),
-                latest_block_hash: intrinsically_invalid.block_hash.clone(),
-            },
-        ])
+    let valid_successor = nodes[2]
+        .create_block_unsafe(&[neglecting_deploy])
         .await
-        .expect("neglecting block");
+        .expect("valid successor");
 
-    assert!(!neglecting.body.system_deploys.iter().any(|deploy| {
-        matches!(deploy, ProcessedSystemDeploy::Succeeded {
-            system_deploy: SystemDeployData::Slash { .. },
-            ..
-        })
-    }));
-
-    let neglect_status = nodes[1]
-        .process_block(neglecting.clone())
+    let successor_status = nodes[1]
+        .process_block(valid_successor)
         .await
-        .expect("process neglecting block");
-    assert!(matches!(
-        neglect_status,
-        Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
-    ));
+        .expect("process valid successor");
+    assert!(matches!(successor_status, Either::Right(_)));
 
-    let generation = neglecting
-        .header
-        .sender_bond_generation
-        .expect("neglecter generation");
-    let expected_base_sequence = neglecting.seq_num - 1;
     let records = nodes[1]
         .casper
         .block_dag_storage
         .access_equivocations_tracker(|tracker| tracker.data())
         .expect("equivocation records");
-    assert!(records.iter().any(|record| {
-        record.equivocator == neglecting.sender
-            && record.equivocator_bond_generation == generation
-            && record.equivocation_base_block_seq_num == expected_base_sequence
-    }));
+    assert!(records.is_empty());
 }

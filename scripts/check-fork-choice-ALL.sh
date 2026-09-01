@@ -110,6 +110,12 @@ Print Assumptions fork_choice_bridge_correct.
 Print Assumptions validation_implies_wf_dag.
 Print Assumptions validation_implies_single_root.
 Print Assumptions honest_forkchoice_parents_validate.
+Print Assumptions honest_proposer_frontier_refines_receiver_admission.
+Print Assumptions receiver_admission_justification_noninterference.
+Print Assumptions candidate_semantics_replay_projection.
+Print Assumptions candidate_semantics_authority_projection.
+Print Assumptions replay_safe_parent_subset_witness.
+Print Assumptions disconnected_parent_frontier_rejected.
 Print Assumptions sort_total_order.
 Print Assumptions reduce_converges.
 Print Assumptions lca_is_lowest.
@@ -133,10 +139,10 @@ EOF
     out=$(coqc -Q "$ROCQ_DIR/theories" ForkChoice "$chk" 2>&1)
     rm -rf "$tmpd"
     n_closed=$(grep -c "Closed under the global context" <<<"$out")
-    if [[ "$n_closed" == "29" ]]; then
-      pass "all 29 headline results axiom-free (7 capstones + certified-context, terminal-frontier, LCA, validation, antichain, and parent-bound seams)"
+    if [[ "$n_closed" == "35" ]]; then
+      pass "all 35 headline results axiom-free (7 capstones + certified-context, terminal-frontier, LCA, validation, antichain, parent-bound, and receiver-admission seams)"
     else
-      fail "headline results NOT all axiom-free ($n_closed/29 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
+      fail "headline results NOT all axiom-free ($n_closed/35 Closed):"; printf '      %s\n' "${out//$'\n'/$'\n      '}"
     fi
     # Independent kernel re-check (coqchk) — the TRUSTED kernel re-verifies every
     # capstone + dependency `.vo`, not just the elaborator's Print Assumptions.
@@ -235,6 +241,23 @@ elif [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "TLA+ static configured-maximum control failed for the wrong reason (see $LOG_DIR/fc_tlc_parent_frontier_static_unsafe.log)"
   fi
+  if tlc_run "$(tlc_metadir fc_protected_parent_frontier)" "$TLA_DIR/MC_ProtectedParentFrontier.cfg" "$TLA_DIR/ProtectedParentFrontier.tla" >"$LOG_DIR/fc_tlc_protected_parent_frontier.log" 2>&1; then
+    pass "TLA+ protected parent frontier preserves the exact GHOST head and every causal tip"
+  else
+    fail "TLA+ MC_ProtectedParentFrontier.cfg did NOT pass (see $LOG_DIR/fc_tlc_protected_parent_frontier.log)"
+  fi
+  if tlc_run "$(tlc_metadir fc_protected_parent_frontier_no_votes)" "$TLA_DIR/MC_ProtectedParentFrontier_no_votes.cfg" "$TLA_DIR/ProtectedParentFrontier.tla" >"$LOG_DIR/fc_tlc_protected_parent_frontier_no_votes.log" 2>&1; then
+    pass "TLA+ no-vote parent frontier preserves the exact finalized-floor anchor"
+  else
+    fail "TLA+ MC_ProtectedParentFrontier_no_votes.cfg did NOT pass (see $LOG_DIR/fc_tlc_protected_parent_frontier_no_votes.log)"
+  fi
+  if tlc_run "$(tlc_metadir fc_protected_parent_frontier_generic_unsafe)" "$TLA_DIR/MC_ProtectedParentFrontier_generic_unsafe.cfg" "$TLA_DIR/ProtectedParentFrontier.tla" >"$LOG_DIR/fc_tlc_protected_parent_frontier_generic_unsafe.log" 2>&1; then
+    fail "TLA+ generic parent compaction should erase the protected GHOST head but passed"
+  elif grep -Eq "The invariant of Inv_ProtectedAnchorIsMain is equal to FALSE|Invariant Inv_ProtectedAnchorIsMain is violated" "$LOG_DIR/fc_tlc_protected_parent_frontier_generic_unsafe.log"; then
+    pass "TLA+ generic compaction reproduces protected GHOST-head erasure"
+  else
+    fail "TLA+ generic parent-compaction control failed for the wrong reason (see $LOG_DIR/fc_tlc_protected_parent_frontier_generic_unsafe.log)"
+  fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
@@ -296,6 +319,27 @@ if command -v apalache-mc >/dev/null 2>&1; then
     pass "Apalache independently reproduces false deferral from the static configured-maximum gate"
   else
     fail "Apalache static configured-maximum control failed for the wrong reason (see $LOG_DIR/fc_apalache_parent_frontier_static_unsafe.log)"
+  fi
+fi
+
+PROTECTED_FRONTIER_APALACHE_OUT="$REPO_ROOT/target/apalache-protected-parent-frontier"
+if command -v apalache-mc >/dev/null 2>&1; then
+  rm -rf "$PROTECTED_FRONTIER_APALACHE_OUT" 2>/dev/null || true
+  mkdir -p "$PROTECTED_FRONTIER_APALACHE_OUT"
+  if capped apalache-mc check --config="$TLA_DIR/MC_ProtectedParentFrontierApalache.cfg" --length=4 \
+       --out-dir="$PROTECTED_FRONTIER_APALACHE_OUT/safe" "$TLA_DIR/ProtectedParentFrontier.tla" >"$LOG_DIR/fc_apalache_protected_parent_frontier.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found|EXITCODE: OK" "$LOG_DIR/fc_apalache_protected_parent_frontier.log"; then
+    pass "Apalache protected-frontier safety and parallel validator agreement"
+  else
+    fail "Apalache protected parent frontier did NOT report NoError (see $LOG_DIR/fc_apalache_protected_parent_frontier.log)"
+  fi
+  if capped apalache-mc check --config="$TLA_DIR/MC_ProtectedParentFrontierGenericUnsafeApalache.cfg" --length=1 \
+       --out-dir="$PROTECTED_FRONTIER_APALACHE_OUT/generic-unsafe" "$TLA_DIR/ProtectedParentFrontier.tla" >"$LOG_DIR/fc_apalache_protected_parent_frontier_generic_unsafe.log" 2>&1; then
+    fail "Apalache generic parent compaction should violate Inv_ProtectedAnchorIsMain but passed"
+  elif grep -qE "state invariant [0-9]+ violated|Invariant Inv_ProtectedAnchorIsMain is violated" "$LOG_DIR/fc_apalache_protected_parent_frontier_generic_unsafe.log"; then
+    pass "Apalache independently reproduces protected GHOST-head erasure"
+  else
+    fail "Apalache generic parent-compaction control failed for the wrong reason (see $LOG_DIR/fc_apalache_protected_parent_frontier_generic_unsafe.log)"
   fi
 fi
 

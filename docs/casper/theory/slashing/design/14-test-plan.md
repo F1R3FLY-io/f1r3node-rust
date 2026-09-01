@@ -14,11 +14,11 @@ the test specifications below are normative for maintaining them.
 | Goal                                                           | Mechanism                                                                                                         |
 |----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
 | **Soundness.** No honest validator slashed.                    | Property-based test of T-1 (`detection_sound`).                                                                   |
-| **Completeness.** Every Byzantine action eventually slashed.   | Property-based test of T-2 + T-3.                                                                                 |
+| **Completeness.** Every objective equivocation produces eligible evidence. | Property-based test of T-2 + T-3.                                                                    |
 | **Atomicity.** Concurrent detections preserve evidence.        | Property-based test of T-9.2 over n-thread schedules.                                                             |
 | **Determinism.** Replay produces identical post-states.        | Property-based test of replay determinism (post-state equality across replay; `replay_determinism.rs`).           |
 | **Liveness.** Slash transition reaches finite-time conclusion. | Property-based test of T-9.4 (transfer-failure error path).                                                       |
-| **Mutual destruction.** Neglecters slashed.                    | Example-based + property-based test of T-11 + T-12.                                                               |
+| **Counterfactual closure.** Neglect evidence can propagate under the optional policy. | Example-based + property-based test of T-11 + T-12.                                              |
 | **BFT-quorum preservation.** Under `|closure| ≤ F`.            | Property-based test of T-12 with bounded `|closure|` generator; counter-example test (UC-26) for `|closure| > F`. |
 | **Bug-fix correctness.** Each T-9.M proven property holds.     | Property-based test per T-9.M, plus example-based pre-fix counter-example traces (UC-41/42/43).                   |
 | **Three-tier execution agreement.** Harness, oracle, and production agree on every observable under arbitrary event sequences. | Triple-bisimilarity property tests over `SlashingObserver` (§14.2.4). |
@@ -198,9 +198,9 @@ canonical Rust test module so the convention split is transparent
 to any reader scanning by UC number.
 
 The Tier B mapping (UC-28..UC-36) is presented as a prose list at
-§14.3.3 rather than a tabulated row-per-UC because each Tier-B test
-exercises exactly one slashable `InvalidBlock` variant under
-post-fix #3 and the assertion is uniform across all nine.
+§14.3.3 rather than a tabulated row-per-UC. Each test exercises one
+certified rejection reason. Each test requires durable rejection metadata and
+no economic evidence for a contextual verdict.
 
 ### 14.3.1 Core scenarios (UC-01 through UC-25)
 
@@ -209,13 +209,13 @@ post-fix #3 and the assertion is uniform across all nine.
 | UC-01 | `casper/tests/slashing/uc_01_admissible_single.rs`        | A slashed; bond zero; vault += 100; A excluded from fork-choice (T-1, T-2, T-7, T-10).                                   |
 | UC-02 | `casper/tests/slashing/uc_02_concurrent_admissible.rs`         | f validators equivocate; all slashed; quorum preserved if `|closure| ≤ F` (T-1, T-12).                                   |
 | UC-03 | `casper/tests/slashing/uc_03_ignorable_unrequested.rs`          | Unsolicited equivocation now slashed under post-fix #1 (T-9.1).                                                          |
-| UC-04 | `casper/tests/slashing/uc_04_neglect_two_level.rs`                | A equivocates → A slashed; B neglects → B slashed in same block (T-11, T-12).                                            |
-| UC-05 | `casper/tests/slashing/uc_05_justification_regression.rs` | JustificationRegression triggers EquivocationRecord under post-fix #3 (T-9.3).                                           |
-| UC-06 | `casper/tests/slashing/uc_06_self_regression.rs`          | Self-regression detected (Boolean predicate; T-9.6).                                                                     |
-| UC-07 | `casper/tests/slashing/integration_t_invalid_bonds_cache.rs`      | InvalidBondsCache slashed under post-fix #3 (T-9.3).                                                                     |
-| UC-08 | `casper/tests/slashing/uc_08_contains_expired_deploy.rs`           | ContainsExpiredDeploy slashed (T-9.3).                                                                                   |
-| UC-09 | `casper/tests/slashing/uc_09_contains_time_expired_deploy.rs`      | ContainsTimeExpiredDeploy slashed (T-9.3).                                                                               |
-| UC-10 | `casper/tests/slashing/integration_t_invalid_block_number.rs`     | InvalidBlockNumber slashed (T-9.3).                                                                                      |
+| UC-04 | `casper/tests/slashing/uc_04_neglect_two_level.rs`                | A creates direct evidence. B receives a neglect rejection without new evidence.                                          |
+| UC-05 | `casper/tests/slashing/uc_05_justification_regression.rs` | JustificationRegression persists without an `EquivocationRecord` (T-9.3).                                                 |
+| UC-06 | `casper/tests/slashing/uc_06_self_regression.rs`          | Self-regression persists without economic evidence (T-9.6).                                                              |
+| UC-07 | `casper/tests/slashing/integration_t_invalid_bonds_cache.rs`      | InvalidBondsCache persists without economic evidence (T-9.3).                                                            |
+| UC-08 | `casper/tests/slashing/uc_08_contains_expired_deploy.rs`           | ContainsExpiredDeploy persists without economic evidence (T-9.3).                                                        |
+| UC-09 | `casper/tests/slashing/uc_09_contains_time_expired_deploy.rs`      | ContainsTimeExpiredDeploy persists without economic evidence (T-9.3).                                                    |
+| UC-10 | `casper/tests/slashing/integration_t_invalid_block_number.rs`     | InvalidBlockNumber persists without economic evidence (T-9.3).                                                           |
 | UC-11 | `casper/tests/slashing/uc_11_stake_zero_protocol_unreachable.rs`               | Stake-0 bonded validator: invariant unreachable post-fix #5; pre-fix counter-example fails detection (T-9.5).            |
 | UC-12 | `casper/tests/slashing/uc_12_tracker_race.rs`             | Concurrent insert: post-fix preserves both witnesses; pre-fix loses one (T-9.2).                                         |
 | UC-13 | `casper/tests/slashing/uc_13_transfer_failure.rs`         | Transfer-failure deterministic return; post-fix #4 returns `(false, "transfer failed")` (T-9.4).                         |
@@ -224,7 +224,7 @@ post-fix #3 and the assertion is uniform across all nine.
 | UC-16 | `casper/tests/slashing/uc_16_slashed_parent_fork_choice.rs`           | Multi-parent block with slashed parent: parent counted once in DAG, excluded from fork-choice (T-10).                    |
 | UC-17 | `casper/tests/slashing/uc_17_forkchoice_mixed.rs`         | Mixed slashed/active: only active votes counted in GHOST (T-10).                                                         |
 | UC-18 | `casper/tests/slashing/uc_18_bonded_proposer_slash_deploy.rs`       | Bonded-proposer slash-deploy emission targets each outstanding offender (T-9.8 positive companion).                                    |
-| UC-19 | `casper/tests/slashing/uc_19_two_level_bond_zero.rs`      | Two-level where neglecter is bond-zero: only equivocator slashed (T-11, T-9.5).                                          |
+| UC-19 | `casper/tests/slashing/uc_19_two_level_bond_zero.rs`      | Bond-zero signer receives a neglect rejection without a second debit (T-11, T-9.5).                                     |
 | UC-20 | `casper/tests/slashing/uc_20_seq_gap_equivocation.rs`, `casper/src/rust/equivocation_detector.rs` unit tests | Skipped seq number across equivocation: canonical child detection succeeds post-fix #7 (T-9.7). |
 | UC-21 | `casper/tests/slashing/uc_21_auth_token_check.rs`         | Spoofed auth token rejected at first PoS guard (T-AuthCheck).                                                            |
 | UC-22 | `casper/tests/slashing/uc_22_unbonded_proposer.rs`        | Unbonded proposer post-fix #8: no slash deploys emitted (T-9.8); pre-fix Rust: block rejected at proposer-bond layer.    |
@@ -237,19 +237,18 @@ post-fix #3 and the assertion is uniform across all nine.
 | #     | Current Rust test module                                            | Asserts                                                                                                                                   |
 |-------|------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
 | UC-26 | `casper/tests/slashing/uc_26_quorum_drop.rs`  | `|closure| > F` ⟹ active set drops below quorum (counter-example to T-12 outside its precondition; T-11 closure-termination still holds). |
-| UC-27 | `casper/tests/slashing/uc_27_neglected_invalid_block.rs`   | `NeglectedInvalidBlock` dispatch under post-fix #3 (T-3, T-6, T-9.3).                                                                     |
+| UC-27 | `casper/tests/slashing/uc_27_neglected_invalid_block.rs`   | `NeglectedInvalidBlock` persists without recursive economic evidence.                                                                     |
 | UC-37 | `casper/tests/slashing/uc_37_self_regression_dag_level.rs` | DAG-level self-regression (T-9.6 DAG-level).                                                                                              |
 | UC-38 | `casper/tests/slashing/uc_38_neglected_detection.rs`       | `detect_neglected` soundness + completeness (T-6).                                                                                        |
 | UC-39 | `casper/tests/slashing/uc_39_cross_impl_bisim.rs`               | Harness ↔ oracle agree on detect / dispatch / slash post-states across the pipeline step (cross-implementation consistency).              |
 | UC-41 | `casper/tests/slashing/uc_41_ignorable_pre_fix_alias.rs`     | Pre-fix #1: ignorable equivocation silently dropped (regression test).                                                                    |
-| UC-42 | `casper/tests/slashing/uc_42_dispatcher_pre_fix_alias.rs`   | Pre-fix #3: non-equivocation slashable variants not recorded (regression).                                                                |
+| UC-42 | `casper/tests/slashing/uc_42_dispatcher_pre_fix_alias.rs`   | A certified non-equivocation rejection persists without economic evidence.                                                               |
 | UC-43 | `casper/tests/slashing/uc_43_seqnum_pre_fix_alias.rs`, `casper/tests/slashing/prop_t_9_7_seqnum_density.rs` | Pre-fix #7: exact `baseSeqNum + 1` lookup misses gap; post-fix canonical search detects and same-branch latest messages do not overcount. |
 
-### 14.3.3 Tier B — Slashable-variant catalog completion (9 tests)
+### 14.3.3 Tier B — Rejection-reason catalog completion (9 tests)
 
-UC-28 through UC-36 — one test per remaining slashable
-`InvalidBlock` variant, each asserting that post-fix #3 routes the
-verdict through the standard slash pipeline. Current Rust test modules at:
+UC-28 through UC-36 cover remaining `InvalidBlock` reasons. Each test verifies
+durable rejection and the exact economic-evidence decision.
 
   `casper/tests/slashing/integration_t_invalid_parents.rs`
   `casper/tests/slashing/integration_t_invalid_follows.rs`
@@ -263,6 +262,10 @@ verdict through the standard slash pipeline. Current Rust test modules at:
 
 ### 14.3.4 Tier C — Operational, adversarial, and frontier fixtures
 
+Closure fixtures in this tier use an explicit counterfactual operation. They
+analyze the optional economic-neglect policy. They do not change the current
+direct-equivocation evidence rule.
+
 | #     | Current Rust test module                                                | Asserts                                                                                      |
 |-------|----------------------------------------------------------|----------------------------------------------------------------------------------------------|
 | UC-40 | `casper/tests/slashing/uc_40_vault_accounting_failure.rs`      | Vault transfer fail → coop balance unchanged; A returns to EquivocatorRecorded (T-8, T-9.4). |
@@ -271,8 +274,8 @@ verdict through the standard slash pipeline. Current Rust test modules at:
 | UC-46 | `casper/tests/slashing/uc_46_partition_merge_equivocations.rs`            | Partition + merge: post-merge equivocation detected once (T-1, T-9.2).                       |
 | UC-47 | `casper/tests/slashing/uc_47_48_validator_set_changes.rs`   | Validator joins during pending slash: still slashed; new joiner unaffected (T-Idem, T-10).   |
 | UC-48 | `casper/tests/slashing/uc_47_48_validator_set_changes.rs`  | Validator leaves during pending slash: re-joins as Unbonded; record persists (T-Idem, T-10). |
-| UC-49 | `casper/tests/slashing/uc_49_genesis_edge_cases.rs`                 | Genesis-time invalid sender: slash routed correctly (T-9.3).                                 |
-| UC-50 | `casper/tests/slashing/uc_50_multi_slash_in_one_block.rs`      | k slash deploys in same block: all atomically applied; replay deterministic (T-Idem, T-11).  |
+| UC-49 | `casper/tests/slashing/uc_49_genesis_edge_cases.rs`                 | Sequence-zero evidence persists without an invalid predecessor key (T-9.3).                  |
+| UC-50 | `casper/tests/slashing/uc_50_multi_slash_in_one_block.rs`      | Multiple direct slashes apply with deterministic bond and vault effects (T-7, T-8, T-Idem). |
 | UC-51 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`           | Deep DAG (>100 blocks): detection scales linearly (T-1).                                     |
 | UC-52 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`           | Wide DAG (high parent-fanout): detection unaffected by parent count (T-1).                   |
 | UC-53 | `casper/tests/slashing/uc_51_53_dag_topologies.rs`               | Single-chain (no forks) equivocation: still detected (T-1, T-9.6).                           |
@@ -701,7 +704,7 @@ properties in §14.4.2 above. The core bug-fix property set covers
 #[test]
 fn prop_t91_ignorable_safety(...) { ... }
 
-/// T-9.3 — Dispatcher routes every is_slashable variant.
+/// T-9.3 — Dispatcher persists every rejection and records only objective equivocation.
 #[test]
 fn prop_t93_dispatch_complete(...) { ... }
 
@@ -788,16 +791,11 @@ The verification doc §10 enumerates the named TLA+ invariants used
 to model-check the slashing subsystem; §14 references **40+** of
 them, including the Sage-promoted two-level invariants, the
 rewrite-introduced `Inv_RecordHasWitness`, and the authorized
-slash-flow invariants. Each bounded post-fix configuration is
-re-checked via `tlc` as part of CI. The exhaustive-tier
-configurations are opt-in:
+slash-flow invariants. The local slashing gate checks its registered bounded
+configurations and negative controls:
 
 ```bash
-# CI script lives on `analysis/slashing` (`scripts/ci/check-tla-invariants.sh`)
-# alongside the TLA+ sources themselves.
-tlc -workers auto -config MC_AuthorizedSlashFlow.cfg MC_AuthorizedSlashFlow.tla
-tlc -workers auto -config MC_JustificationProjection.cfg MC_JustificationProjection.tla
-RUN_EXHAUSTIVE_TLA=1 bash scripts/ci/check-tla-invariants.sh
+scripts/check-slashing-ALL.sh
 ```
 
 Specifically:
@@ -832,36 +830,25 @@ Specifically:
   `Inv_ProposerFairnessForBoundedLiveness`,
   `Inv_UnsignedArithmeticBoundary`, and
   `Inv_SignedArithmeticBoundary`.
-- `MC_AuthorizedSlashFlow.cfg` — `Inv_OnlyAuthorizedSlashCanBePending`,
-  `Inv_StaleEvidenceCannotSlashRebondedKey`,
-  `Inv_NoInvalidLatestLivenessGap`,
+- `MC_AuthorizedSlashFlow.cfg` — `Inv_OnlyCurrentEpochCurrentGenerationSlashCanBePending`,
+  `Inv_StaleGenerationCannotSlashRebondedKey`,
+  `Inv_SlashedGenerationNeverExceedsCurrent`,
+  `Inv_PendingSlashCompleteForCurrentPreState`,
   `Inv_RejectedSlashWithoutEvidenceNoPending`,
   `Inv_InvalidAuthSlashNoPending`, and
-  `Inv_BondsZeroAfterSlash`.
+  `Inv_SlashedIdentityIsGenerationScoped`.
 - `MC_JustificationProjection.cfg` —
   `Inv_DuplicateJustificationsRejected`,
   `Inv_AcceptedImpliesUniqueJustifications`, and
   `Inv_AcceptedProjectionCardinality`.
 
-A TLC violation immediately fails CI.
-The exhaustive tier — enabled by `RUN_EXHAUSTIVE_TLA=1` and
-intentionally excluded from the default gate — holds three
-configurations: `MC_EquivocationDetector_safety.cfg` (the exhaustive
-detector safety run), `MC_EquivocationDetector.cfg` (whose interleaved
-liveness passes exceed the 45-minute per-config CI cap), and
-`MC_EquivocationDetectorEager_3v.cfg` (safety-only — the Eager rewrite
-checks liveness as the `Inv_LivenessAsSafety` invariant — but its
-3v×3s×2b state space alone exceeds the cap). None of the three
-completed in any nightly run between the schedule's start on
-2026-07-25 and their move to this tier. Three-validator detector
-coverage returned to the nightly tier on 2026-08-05 via
-`MC_EquivocationDetectorEager_3v2s.cfg` (3 validators × 2 seqnums ×
-2 blocks; ~5.7M distinct states, completing in about two minutes).
-The same day, `MC_EquivocationDetector_liveness_2v.cfg` (2 validators
-× 1 seqnum × 2 blocks; ~54K distinct states, seconds) stepped the
-non-eager liveness check up from one validator to two in the nightly
-tier. The unbounded combined `MC_EquivocationDetector.cfg` remains
-the exhaustive tier's liveness reference.
+A TLC violation immediately fails the local gate.
+
+The exhaustive tier is separate from the default local and scheduled gates.
+It includes the larger detector configurations and `MC_SlashFlow`.
+`scripts/ci/check-tla-invariants.sh` registers this tier behind
+`RUN_EXHAUSTIVE_TLA=1`. Workflow dispatch exposes the same control through
+`run_exhaustive`. These configurations can exceed the per-configuration time limit.
 
 ### 14.6.1 Trace replay against the Rust harness
 
@@ -872,7 +859,7 @@ via the trace-replay infrastructure at:
   TLA+ Action symbol (e.g. `SignHonest`, `SignEquivocating`,
   `ExecuteSlash`, `WithdrawSucceeds`) to the corresponding harness
   operation.
-- `casper/tests/slashing/tla_trace_replay.rs` — five `#[test]`s,
+- `casper/tests/slashing/tla_trace_replay.rs` — seven `#[test]`s,
   one per spec, each loading a JSON trace from
   `casper/tests/slashing/tla_traces/*.json` and asserting the
   harness's projected final state matches the TLA+ model's
@@ -880,12 +867,14 @@ via the trace-replay infrastructure at:
 - The sanity-check + workflow doc for regenerating traces from TLC
   counter-examples is `scripts/ci/dump-tla-traces.sh`.
 
-Five spec-trace pairs are checked in:
+Seven spec-trace pairs are checked in:
 - `MC_EquivocationDetector` ↔ `mc_equivocation_detector.json`
 - `MC_ConcurrentTracker`    ↔ `mc_concurrent_tracker.json`
 - `MC_SlashFlow`            ↔ `mc_slash_flow.json`
 - `MC_TwoLevelSlashing`     ↔ `mc_two_level_slashing.json`
 - `MC_WithdrawFlow`         ↔ `mc_withdraw_flow.json`
+- `CertifiedRejectionDependency` ↔ `mc_certified_rejection_dependency.json`
+- `AuthorizedSlashFlow` ↔ `mc_authorized_slash_generation_lifecycle.json`
 
 Run via `cargo test -p casper --test mod -- slashing::tla_trace_replay`.
 
@@ -960,7 +949,7 @@ The test suite is considered **exhaustive** when:
    integration test (112 tests).
 2. **Theorem coverage:** Every theorem in spec/verification has at
    least one property-based test that fails on a property violation.
-   §14.4 covers **43 distinct theorem labels**: T-1, T-2, T-3, T-4,
+   §14.4 covers **45 distinct theorem labels**: T-1, T-2, T-3, T-4,
    T-5, T-6, T-7, T-8, T-Idem, T-11, T-12,
    T-AuthCheck, T-9.1, T-9.2, T-9.3, T-9.4,
    T-9.5, T-9.6, T-9.7, T-9.8, T-9.9, T-9.10, T-9.11, T-12R, T-12W, T-12F, T-12G,
@@ -969,10 +958,9 @@ The test suite is considered **exhaustive** when:
    T-IdemMany, T-IdemFail, T-15D.
    T-10 (`fork_choice_exclusion`) is exercised by example test UC-01
    rather than a dedicated property test.
-3. **InvalidBlock variant coverage:** All 17 pre-fix slashable +
-   2 post-fix slashable (`IgnorableEquivocation`,
-   `UnauthorizedSlashDeploy`) = 19 slashable variants (of 27 total) are
-   exercised (Tier B + Core + Tier A tests).
+3. **InvalidBlock variant coverage:** All 29 rejection reasons are exercised.
+   Tests verify durable persistence for all reasons and economic evidence for
+   exactly the two objective-equivocation reasons.
 4. **TLA+ invariant coverage:** All cited invariants have a
    passing model-check run.
 5. **Pre-fix counter-example coverage:** Every documented bug
@@ -988,11 +976,12 @@ The test suite is considered **exhaustive** when:
 8. **Mutation coverage:** Run `cargo mutants` against the slashing
    modules; surviving mutants indicate test-suite weakness.
 
-## 14.9 Manual Runbook
+## 14.9 Workflow jobs and local commands
 
-The slashing test jobs are documented as manual commands, not active GitHub
-workflow jobs. On an Ubuntu runner or developer machine, use this common
-setup before running the Rust-backed jobs:
+`.github/workflows/slashing-tests.yml` is active for pull requests and pushes.
+The example, property, pre-fix, Loom, Rocq, and smoke jobs run on those events.
+TLA+, mutation, and extended property jobs run on schedules or workflow dispatch.
+On an Ubuntu runner or developer machine, use this setup for Rust-backed jobs:
 
 ```sh
 rustup toolchain install nightly-2026-02-09
@@ -1001,7 +990,7 @@ sudo apt-get update
 sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
 ```
 
-Manual equivalent of the former **example-based** job:
+Local equivalent of the active **example-based** job:
 
 ```sh
 cargo test -p casper -- uc_
@@ -1017,13 +1006,13 @@ for i in $(seq 1 112); do
 done
 ```
 
-Manual equivalent of the former **property-based** job:
+Local equivalent of the active **property-based** job:
 
 ```sh
 PROPTEST_CASES=10000 cargo test --release -p casper -- slashing::prop_t_
 ```
 
-Manual equivalent of the former **pre-fix-regressions** matrix job:
+Local equivalent of the active **pre-fix-regressions** matrix job:
 
 ```sh
 for bug in 1 2 3 4 5 6 7 8 9 10 11; do
@@ -1031,14 +1020,13 @@ for bug in 1 2 3 4 5 6 7 8 9 10 11; do
 done
 ```
 
-Manual equivalent of the former **loom-interleavings** job:
+Local equivalent of the active **loom-interleavings** job:
 
 ```sh
 LOOM_MAX_PREEMPTIONS=3 LOOM_LOG=off cargo test --release -p casper -- slashing::loom_t_9_2
 ```
 
-Manual equivalent of the former **tla-model-check** job (TLA+ sources +
-`scripts/ci/check-tla-invariants.sh` are in this repository):
+Local equivalent of the scheduled or dispatched **tla-model-check** job:
 
 ```sh
 sudo apt-get update
@@ -1047,7 +1035,7 @@ mkdir -p ~/.tla
 wget -qO ~/.tla/tla2tools.jar \
   https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
-bash scripts/ci/check-tla-invariants.sh
+bash scripts/ci/check-formal-invariants.sh --tla
 ```
 
 The exhaustive tier (the detector safety run, the cap-busting
@@ -1056,11 +1044,11 @@ three-validator run `MC_EquivocationDetectorEager_3v`) is
 intentionally opt-in because it can run for many hours:
 
 ```sh
-RUN_EXHAUSTIVE_TLA=1 TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
-  bash scripts/ci/check-tla-invariants.sh
+TLA_TOOLS_JAR="$HOME/.tla/tla2tools.jar" \
+  bash scripts/ci/check-formal-invariants.sh --tla --exhaustive
 ```
 
-Manual equivalent of the former **rocq-build** job:
+Local equivalent of the active **rocq-build** job:
 
 ```sh
 sudo apt-get update
@@ -1073,15 +1061,14 @@ make -C formal/rocq/slashing -j1
   formal/rocq/slashing/theories/
 ```
 
-Manual equivalent of the former **mutation-coverage** scheduled/manual job:
+Local equivalent of the scheduled or dispatched **mutation-coverage** job:
 
 ```sh
 cargo install --locked cargo-mutants
 cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 ```
 
-Manual equivalent of the former **nightly-extended-proptest**
-scheduled/manual job:
+Local equivalent of the scheduled or dispatched **nightly-extended-proptest** job:
 
 ```sh
 PROPTEST_CASES=100000 cargo test --release -p casper -- slashing::prop_t_
@@ -1109,9 +1096,9 @@ When implementing the suite, the recommended order is:
 2. **Phase B (week 2):** Implement Core scenarios UC-02 through
    UC-25 (24 tests). These cover the headline pipeline.
 
-3. **Phase C (week 3):** Implement Tier B slashable-variant
-   completion UC-28 through UC-36 (9 tests). These exercise the
-   dispatcher under post-fix #3.
+3. **Phase C (week 3):** Implement Tier B rejection-reason
+   completion UC-28 through UC-36 (9 tests). These exercise durable
+   rejection without contextual economic evidence.
 
 4. **Phase D (week 4):** Implement Tier A audit-blocker tests
    UC-26, UC-27, UC-37–UC-43 (8 tests). These close the §10.8
@@ -1147,7 +1134,10 @@ proceed in parallel after Phase A.
 | Cross-implementation agreement test count | 1 (parameterized; UC-39)                         |
 | TLA+ invariant model-check coverage       | 40+ (all enumerated in §14.6 plus authorization flow) |
 | Mutation-test surviving-mutants threshold | < 5 % of mutants survive                         |
-| Property-test cases per property          | 10,000 (CI run)                                  |
+| Pull-request bulk property cases          | 2,000 per property                               |
+| Pull-request triple-bisimilarity cases    | 25 per property                                  |
+| Scheduled bulk property cases             | 10,000 per property                              |
+| Scheduled triple-bisimilarity cases       | 100 per property                                 |
 | End-to-end CI runtime                     | < 30 minutes                                     |
 
 ## 14.12 Authorization Regression Tests
@@ -1177,6 +1167,11 @@ checked by `JustificationProjection.tla`.
 | `checked_base_seq_matches_positive_i32_predecessor` | T-9.14 `seq − 1` agrees with mathematical predecessor when representable. |
 | `epoch_for_block_number_matches_floor_division` | T-9.12/T-9.13 epoch projection for valid block-number domains. |
 | `epoch_for_block_number_rejects_invalid_domains` | T-9.12/T-9.13 rejection of negative block numbers and non-positive epoch lengths. |
+| `future_generation_evidence_never_authorizes_against_an_older_root` | Future slash history cannot become valid after a later rebond. |
+
+The objective-equivocation Loom model covers two additional concurrent properties.
+Authority changes recompute the complete canonical pair.
+Slash, withdrawal, and rebond interleavings cannot create future-generation slash history.
 
 ## 14.13 What this test plan does *not* cover
 

@@ -4,6 +4,7 @@ use casper::rust::util::construct_deploy;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
+use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
 use crate::slashing::integration_helpers::equivocate_block;
@@ -60,10 +61,12 @@ async fn signed_equivocation(
     let first_deploy =
         construct_deploy::basic_deploy_data(first_nonce, None, Some(shard_id.to_string()))
             .expect("build first equivocation deploy");
-    nodes[0]
-        .casper
-        .deploy(first_deploy)
-        .expect("validator 0 deploy");
+    assert!(matches!(
+        nodes[0]
+            .submit_deploy(first_deploy)
+            .expect("validator 0 deploy"),
+        Either::Right(_)
+    ));
     let first = nodes[0]
         .create_block_unsafe(&[])
         .await
@@ -143,10 +146,12 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     // auto-emitted SlashDeploy via prepare_slashing_deploys.
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
-    nodes[1]
-        .casper
-        .deploy(deploy_data_a)
-        .expect("validator 1 deploy");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(deploy_data_a)
+            .expect("validator 1 deploy"),
+        Either::Right(_)
+    ));
     let block_1 = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -158,10 +163,12 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
 
     let deploy_data_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
-    nodes[2]
-        .casper
-        .deploy(deploy_data_b)
-        .expect("validator 2 deploy");
+    assert!(matches!(
+        nodes[2]
+            .submit_deploy(deploy_data_b)
+            .expect("validator 2 deploy"),
+        Either::Right(_)
+    ));
     let block_2 = nodes[2]
         .create_block_unsafe(&[])
         .await
@@ -195,10 +202,12 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     // already covered by the merged parent state.
     let marker_deploy = construct_deploy::basic_deploy_data(3, None, Some(ctx.shard_id.clone()))
         .expect("build marker deploy");
-    nodes[1]
-        .casper
-        .deploy(marker_deploy)
-        .expect("validator 1 deploys marker");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(marker_deploy)
+            .expect("validator 1 deploys marker"),
+        Either::Right(_)
+    ));
     let merge_block = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -308,10 +317,12 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     // Node 1 proposes a POST-slash block (auto-emitted SlashDeploy for V0).
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
-    nodes[1]
-        .casper
-        .deploy(deploy_data_a)
-        .expect("validator 1 deploy");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(deploy_data_a)
+            .expect("validator 1 deploy"),
+        Either::Right(_)
+    ));
     let slash_block = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -325,10 +336,12 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     // block: a normal user block with the equivocator still bonded, no slash.
     let deploy_data_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
-    nodes[2]
-        .casper
-        .deploy(deploy_data_b)
-        .expect("validator 2 deploy");
+    assert!(matches!(
+        nodes[2]
+            .submit_deploy(deploy_data_b)
+            .expect("validator 2 deploy"),
+        Either::Right(_)
+    ));
     let pre_slash_block = nodes[2]
         .create_block_unsafe(&[])
         .await
@@ -350,10 +363,12 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
         .expect("node 1 processes pre_slash_block");
     let marker_deploy = construct_deploy::basic_deploy_data(3, None, Some(ctx.shard_id.clone()))
         .expect("build marker deploy");
-    nodes[1]
-        .casper
-        .deploy(marker_deploy)
-        .expect("validator 1 deploys marker");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(marker_deploy)
+            .expect("validator 1 deploys marker"),
+        Either::Right(_)
+    ));
     let merge_block = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -426,10 +441,12 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
     // either the single-parent path or the descendant-fast-path.
     let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
-    nodes[1]
-        .casper
-        .deploy(deploy_a)
-        .expect("validator 1 deploy a");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(deploy_a)
+            .expect("validator 1 deploy a"),
+        Either::Right(_)
+    ));
     let block_a = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -441,10 +458,12 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
 
     let deploy_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
-    nodes[2]
-        .casper
-        .deploy(deploy_b)
-        .expect("validator 2 deploy b");
+    assert!(matches!(
+        nodes[2]
+            .submit_deploy(deploy_b)
+            .expect("validator 2 deploy b"),
+        Either::Right(_)
+    ));
     let block_b = nodes[2]
         .create_block_unsafe(&[])
         .await
@@ -495,10 +514,12 @@ async fn canonical_prestate_zero_bond_excludes_duplicate_slash() {
 
     let user_deploy = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build user deploy");
-    nodes[1]
-        .casper
-        .deploy(user_deploy)
-        .expect("validator 1 deploys");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(user_deploy)
+            .expect("validator 1 deploys"),
+        Either::Right(_)
+    ));
     let block = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -537,10 +558,12 @@ async fn canonical_prestate_zero_bond_is_not_proposal_work() {
 
     let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
-    nodes[1]
-        .casper
-        .deploy(deploy_a)
-        .expect("validator 1 deploy a");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(deploy_a)
+            .expect("validator 1 deploy a"),
+        Either::Right(_)
+    ));
     let block_a = nodes[1]
         .create_block_unsafe(&[])
         .await
@@ -552,10 +575,12 @@ async fn canonical_prestate_zero_bond_is_not_proposal_work() {
 
     let deploy_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
-    nodes[2]
-        .casper
-        .deploy(deploy_b)
-        .expect("validator 2 deploy b");
+    assert!(matches!(
+        nodes[2]
+            .submit_deploy(deploy_b)
+            .expect("validator 2 deploy b"),
+        Either::Right(_)
+    ));
     let block_b = nodes[2]
         .create_block_unsafe(&[])
         .await

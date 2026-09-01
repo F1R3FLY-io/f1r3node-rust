@@ -46,6 +46,16 @@ fn only_deploy_id(block: &BlockMessage) -> DeployLookupId {
         .expect("block deploy identity")
 }
 
+fn envelope_id(node: &TestNode, deploy: &Signed<DeployData>) -> DeployLookupId {
+    let commitment = node
+        .envelope_for_deploy(deploy)
+        .expect("build protocol-v6 envelope")
+        .envelope_commitment()
+        .expect("protocol-v6 deploy identity");
+    DeployLookupId::from_protocol_bytes(node.genesis.header.version, &commitment)
+        .expect("typed protocol-v6 deploy identity")
+}
+
 struct TestContext {
     genesis: GenesisContext,
 }
@@ -134,12 +144,16 @@ async fn agreed_finalized_height(nodes: &[TestNode]) -> i64 {
     first.body.state.block_number
 }
 
-fn assert_deploy_executed(block: &BlockMessage, signature: &prost::bytes::Bytes, label: &str) {
+fn assert_deploy_executed(block: &BlockMessage, deploy_id: &DeployLookupId, label: &str) {
     let processed = block
         .body
         .deploys
         .iter()
-        .find(|processed| processed.deploy.sig == signature)
+        .find(|processed| {
+            processed
+                .deploy_id_for_protocol(block.header.version)
+                .is_ok_and(|candidate| &candidate == deploy_id)
+        })
         .unwrap_or_else(|| panic!("{label} was not included in the proposed block"));
     assert_eq!(
         processed.admission_status,
@@ -353,10 +367,10 @@ async fn run_convergence(
         Some(shard_id.clone()),
     )
     .expect("build init");
-    let init_signature = init.sig.clone();
-    nodes[0].casper.deploy(init).expect("init deploy");
+    let init_id = envelope_id(&nodes[0], &init);
+    nodes[0].submit_deploy(init).expect("init deploy");
     let init_block = nodes[0].create_block_unsafe(&[]).await.expect("init block");
-    assert_deploy_executed(&init_block, &init_signature, "map initialization");
+    assert_deploy_executed(&init_block, &init_id, "map initialization");
     for node in nodes.iter_mut().take(n_validators) {
         node.process_block(init_block.clone())
             .await
@@ -392,20 +406,20 @@ async fn run_convergence(
             let val = (key_round * n_validators + v + 1) as i64;
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
             let d = map_set_deploy(&key, val, &secs[v], valid_after_block_number, &shard_id);
-            let signature = d.sig.clone();
+            let deploy_id = envelope_id(&nodes[v], &d);
             println!(
                 "WRITE-SIG key={} sig={}",
                 key,
                 hex::encode(&d.sig[..8.min(d.sig.len())])
             );
-            nodes[v].casper.deploy(d).expect("deploy write");
+            nodes[v].submit_deploy(d).expect("deploy write");
             let previous = writes.insert(key.clone(), val);
             assert!(previous.is_none_or(|expected| expected == val));
             let blk = nodes[v]
                 .create_block_unsafe(&[])
                 .await
                 .expect("propose sibling");
-            assert_deploy_executed(&blk, &signature, &format!("write {key}"));
+            assert_deploy_executed(&blk, &deploy_id, &format!("write {key}"));
             let own = present_keys(&nodes[v], &blk.body.state.post_state_hash, &writes).await;
             assert!(
                 own.contains(&key),
@@ -428,13 +442,13 @@ async fn run_convergence(
         }
         let marker_valid_after = agreed_finalized_height(&nodes).await;
         let marker = marker_deploy(round as i32, marker_valid_after, &shard_id);
-        let marker_signature = marker.sig.clone();
-        nodes[0].casper.deploy(marker).expect("marker deploy");
+        let marker_id = envelope_id(&nodes[0], &marker);
+        nodes[0].submit_deploy(marker).expect("marker deploy");
         let merge = nodes[0]
             .create_block_unsafe(&[])
             .await
             .expect("merge block");
-        assert_deploy_executed(&merge, &marker_signature, &format!("merge marker {round}"));
+        assert_deploy_executed(&merge, &marker_id, &format!("merge marker {round}"));
         for node in nodes.iter_mut().take(n_validators) {
             node.process_block(merge.clone())
                 .await
@@ -459,13 +473,13 @@ async fn run_convergence(
         let proposer = extra % n_validators;
         let valid_after_block_number = agreed_finalized_height(&nodes).await;
         let marker = marker_deploy((1000 + extra) as i32, valid_after_block_number, &shard_id);
-        let marker_signature = marker.sig.clone();
-        nodes[proposer].casper.deploy(marker).expect("drain deploy");
+        let marker_id = envelope_id(&nodes[proposer], &marker);
+        nodes[proposer].submit_deploy(marker).expect("drain deploy");
         let blk = nodes[proposer]
             .create_block_unsafe(&[])
             .await
             .expect("drain block");
-        assert_deploy_executed(&blk, &marker_signature, &format!("drain marker {extra}"));
+        assert_deploy_executed(&blk, &marker_id, &format!("drain marker {extra}"));
         for node in nodes.iter_mut().take(n_validators) {
             node.process_block(blk.clone())
                 .await
@@ -493,13 +507,13 @@ async fn run_convergence(
     // Settle: node 0 proposes a final block; read the cell at its post-state.
     let final_valid_after = agreed_finalized_height(&nodes).await;
     let final_marker = marker_deploy(9999, final_valid_after, &shard_id);
-    let final_marker_signature = final_marker.sig.clone();
-    nodes[0].casper.deploy(final_marker).expect("final deploy");
+    let final_marker_id = envelope_id(&nodes[0], &final_marker);
+    nodes[0].submit_deploy(final_marker).expect("final deploy");
     let final_block = nodes[0]
         .create_block_unsafe(&[])
         .await
         .expect("final block");
-    assert_deploy_executed(&final_block, &final_marker_signature, "final marker");
+    assert_deploy_executed(&final_block, &final_marker_id, "final marker");
     let final_keys =
         present_keys(&nodes[0], &final_block.body.state.post_state_hash, &writes).await;
     let missing: Vec<(&String, &i64)> = writes
@@ -580,7 +594,6 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
         .expect("network");
     let first = map_set_deploy("leader-a", 1, &signer_key(0), 0, &shard);
     let second = map_set_deploy("leader-b", 2, &signer_key(1), 0, &shard);
-    let frontier_sigs = [first.sig.clone(), second.sig.clone()];
     let block_a = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&first))
         .await
@@ -591,6 +604,7 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
         .expect("second sibling");
     let first_id = only_deploy_id(&block_a);
     let second_id = only_deploy_id(&block_b);
+    let frontier_ids = [first_id.clone(), second_id.clone()];
     let status_b_on_a = nodes[0]
         .process_block(block_b.clone())
         .await
@@ -633,37 +647,42 @@ async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
     }
     let fresh_a = map_set_deploy("fresh-a", 3, &signer_key(0), 0, &shard);
     let fresh_b = map_set_deploy("fresh-b", 4, &signer_key(1), 0, &shard);
-    nodes[0].casper.deploy(fresh_a.clone()).expect("fresh a");
-    nodes[1].casper.deploy(fresh_b.clone()).expect("fresh b");
+    let fresh_a_id = envelope_id(&nodes[0], &fresh_a);
+    let fresh_b_id = envelope_id(&nodes[1], &fresh_b);
+    nodes[0].submit_deploy(fresh_a.clone()).expect("fresh a");
+    nodes[1].submit_deploy(fresh_b.clone()).expect("fresh b");
     let proposal_a = create_allow_empty(&mut nodes[0]).await;
     let proposal_b = create_allow_empty(&mut nodes[1]).await;
 
-    let packaged_sigs = |result: &BlockCreatorResult| -> Vec<prost::bytes::Bytes> {
+    let packaged_ids = |result: &BlockCreatorResult| -> Vec<DeployLookupId> {
         match result {
             BlockCreatorResult::Created(block, ..) => block
                 .body
                 .deploys
                 .iter()
-                .map(|pd| pd.deploy.sig.clone())
+                .map(|pd| {
+                    pd.deploy_id_for_protocol(block.header.version)
+                        .expect("packaged deploy identity")
+                })
                 .collect(),
             _ => Vec::new(),
         }
     };
-    let sigs_a = packaged_sigs(&proposal_a);
-    let sigs_b = packaged_sigs(&proposal_b);
+    let ids_a = packaged_ids(&proposal_a);
+    let ids_b = packaged_ids(&proposal_b);
 
     assert!(
-        sigs_a.iter().all(|sig| sig == &fresh_a.sig),
-        "validator 0 packaged deploys it did not receive: {sigs_a:?}"
+        ids_a.iter().all(|deploy_id| deploy_id == &fresh_a_id),
+        "validator 0 packaged deploys it did not receive: {ids_a:?}"
     );
     assert!(
-        sigs_b.iter().all(|sig| sig == &fresh_b.sig),
-        "validator 1 packaged deploys it did not receive: {sigs_b:?}"
+        ids_b.iter().all(|deploy_id| deploy_id == &fresh_b_id),
+        "validator 1 packaged deploys it did not receive: {ids_b:?}"
     );
     // Frontier work already included in blocks A/B is never re-packaged.
-    for sig in frontier_sigs.iter() {
+    for deploy_id in frontier_ids.iter() {
         assert!(
-            !sigs_a.contains(sig) && !sigs_b.contains(sig),
+            !ids_a.contains(deploy_id) && !ids_b.contains(deploy_id),
             "already-included frontier deploy was re-packaged"
         );
     }
@@ -786,46 +805,52 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .expect("process exact sibling settlement");
     assert!(matches!(settlement_status, Either::Right(_)));
 
-    for (index, node) in nodes.iter().enumerate() {
+    let settlement_support = nodes[1]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("support exact sibling settlement");
+    let settlement_support_status = nodes[0]
+        .process_block(settlement_support)
+        .await
+        .expect("process settlement support");
+    assert!(matches!(settlement_support_status, Either::Right(_)));
+    let settlement_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for node in &nodes {
+        node.wait_for_finalizer_quiescence(settlement_deadline)
+            .await
+            .expect("settlement finalizer quiescence");
+        let snapshot = node.casper.get_snapshot().await.expect("settled snapshot");
         assert!(
-            node.rejected_deploy_buffer
-                .lock()
-                .expect("rejected deploy buffer")
-                .contains_id(&first_id)
-                .expect("buffer lookup"),
-            "validator {index} did not retain the exact rejected occurrence"
+            snapshot.last_finalized_block == settlement.block_hash
+                || snapshot
+                    .dag
+                    .is_dag_ancestor(&settlement.block_hash, &snapshot.last_finalized_block)
+                    .expect("settlement ancestry"),
+            "retry gate requires the rejection record in the finalized floor closure"
+        );
+    }
+
+    let carrier_owner = 0usize;
+    for (index, node) in nodes.iter().enumerate() {
+        let has_retry_custody = node
+            .rejected_deploy_buffer
+            .lock()
+            .expect("rejected deploy buffer")
+            .contains_id(&first_id)
+            .expect("buffer lookup");
+        assert_eq!(
+            has_retry_custody,
+            index == carrier_owner,
+            "retry custody must remain with the rejected source carrier owner"
         );
         let recovery_snapshot = node.casper.get_snapshot().await.expect("recovery snapshot");
         assert!(recovery_snapshot.rejected_in_scope.contains(&first_id));
         assert!(!recovery_snapshot.rejected_in_scope.contains(&second_id));
     }
 
-    let recovery_snapshot = nodes[0]
-        .casper
-        .get_snapshot()
-        .await
-        .expect("committed recovery view");
-    let finalized_height = recovery_snapshot
-        .dag
-        .lookup_unsafe(&recovery_snapshot.last_finalized_block)
-        .expect("finalized metadata")
-        .block_number
-        .max(0) as usize;
-    let finalized_validators = recovery_snapshot.finalized_floor_validators();
-    let recovery_key = finalized_validators
-        .get(finalized_height % finalized_validators.len())
-        .expect("finalized-view recovery leader");
-    let recovery_leader = nodes
-        .iter()
-        .position(|node| {
-            node.validator_id_opt
-                .as_ref()
-                .is_some_and(|identity| identity.public_key.bytes == recovery_key)
-        })
-        .expect("recovery leader is local");
-
     let fresh = map_set_deploy("fresh", 3, &signer_key(0), 0, &shard);
-    let recovery_block = nodes[recovery_leader]
+    let fresh_id = envelope_id(&nodes[carrier_owner], &fresh);
+    let recovery_block = nodes[carrier_owner]
         .add_block_from_deploys(std::slice::from_ref(&fresh))
         .await
         .expect("rehome and fresh block");
@@ -833,17 +858,21 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         .body
         .deploys
         .iter()
-        .map(|deploy| deploy.deploy.sig.clone())
+        .map(|deploy| {
+            deploy
+                .deploy_id_for_protocol(recovery_block.header.version)
+                .expect("selected deploy identity")
+        })
         .collect::<HashSet<_>>();
     assert_eq!(
         selected,
-        HashSet::from([first.sig.clone(), fresh.sig.clone()])
+        HashSet::from([first_id.clone(), fresh_id.clone()])
     );
     assert!(recovery_block.body.rejected_deploys.iter().all(|rejected| {
-        rejected.deploy_id() != first.sig.as_ref() && rejected.deploy_id() != fresh.sig.as_ref()
+        rejected.typed_deploy_id() != &first_id && rejected.typed_deploy_id() != &fresh_id
     }));
     for (index, node) in nodes.iter_mut().enumerate() {
-        if index != recovery_leader {
+        if index != carrier_owner {
             let status = node
                 .process_block(recovery_block.clone())
                 .await
@@ -852,7 +881,7 @@ async fn resolved_asymmetric_frontier_rehomes_excluded_local_deploy() {
         }
     }
 
-    let support_proposer = (recovery_leader + 1) % nodes.len();
+    let support_proposer = (carrier_owner + 1) % nodes.len();
     let support = nodes[support_proposer]
         .add_block_from_deploys(&[])
         .await

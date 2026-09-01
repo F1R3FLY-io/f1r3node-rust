@@ -452,6 +452,16 @@ Pre-v6 reservations, fee identities, and private-name seeds retain their exact
 historical byte encodings. Protocol selection is structural and validated at
 ingress; byte length never chooses a compatibility branch.
 
+Protocol 6 derives each private-name stream from `DeployIdV6`. A legacy
+key-and-timestamp preview cannot predict this stream and must fail closed.
+The source term is part of `DeployIdV6`, so a name-dependent term creates a
+circular identity. Applications can publish the capability in one deploy and
+use dependent data in a later deploy.
+
+A future one-deploy preview design needs an authenticated seed or reserved
+identity. That design must prove uniqueness, replay agreement, and collision
+rejection before activation.
+
 Replay evidence becomes visible only after the complete result is validated
 and durably inserted. The insertion is compare-and-swap:
 
@@ -542,6 +552,10 @@ The safe replay-publication TLC instance explores 130,321 distinct states at
 depth 37. The threshold-authority instance explores 512 distinct states at
 depth 10. Apalache independently checks both safe models and all twenty-one
 required unsafe controls.
+
+The `preview_private_names_should_fail_closed_for_protocol_v6` Rust test traces
+to the `RawRngIdentity` unsafe control. The control demonstrates why protocol 6
+cannot use a legacy preview identity.
 
 ## References
 

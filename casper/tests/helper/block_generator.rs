@@ -33,6 +33,18 @@ fn generated_genesis_certificate(
     genesis: &BlockMessage,
     dag: &KeyValueDagRepresentation,
 ) -> FinalizationCertificate {
+    if dag.get_cached_floor(&genesis.block_hash).unwrap().is_none() {
+        dag.put_cached_floor(genesis.block_hash.clone(), genesis.block_hash.clone())
+            .unwrap();
+    }
+    if dag
+        .get_cached_frontier(&genesis.block_hash)
+        .unwrap()
+        .is_none()
+    {
+        dag.put_cached_frontier(genesis.block_hash.clone(), genesis.block_hash.clone())
+            .unwrap();
+    }
     casper::rust::finality::certificate::genesis_finalization_certificate(
         dag,
         genesis,
@@ -369,7 +381,12 @@ pub fn create_genesis_block(
     seq_num: Option<i32>,
 ) -> BlockMessage {
     let creator = creator.unwrap_or_else(default_validator);
-    let bonds = bonds.unwrap_or_default();
+    let bonds = bonds.filter(|bonds| !bonds.is_empty()).unwrap_or_else(|| {
+        vec![Bond {
+            validator: creator.clone(),
+            stake: 1,
+        }]
+    });
     let justifications = justifications.unwrap_or_default();
     let deploys = deploys.unwrap_or_default();
     let ts_hash = ts_hash.unwrap_or_else(default_state_hash);
@@ -586,7 +603,9 @@ fn create_block_with_merge_facts_and_system_deploys_at(
     time_stamp: i64,
 ) -> BlockMessage {
     let creator = creator.unwrap_or_else(default_validator);
-    let bonds = bonds.unwrap_or_default();
+    let bonds = bonds
+        .filter(|bonds| !bonds.is_empty())
+        .unwrap_or_else(|| genesis.body.state.bonds.clone());
     let justifications = justifications
         .unwrap_or_default()
         .into_iter()

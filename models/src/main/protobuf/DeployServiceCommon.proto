@@ -71,9 +71,9 @@ message MachineVerifyQuery {
 }
 
 message PrivateNamePreviewQuery {
-  bytes  user      = 1; // public key a la DeployData
-  int64  timestamp = 2; // millisecond timestamp
-  int32  nameQty   = 3; // how many names to preview? (max: 1024)
+  bytes  user      = 1; // legacy deploy public key
+  int64  timestamp = 2; // legacy deploy millisecond timestamp
+  int32  nameQty   = 3; // legacy names to preview (max: 1024)
 }
 
 message LastFinalizedBlockQuery {

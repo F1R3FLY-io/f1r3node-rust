@@ -180,6 +180,7 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-ANTICHAIN** | proposal parents are the complete reachability-maximal antichain and cover every live causal tip | Rocq `ParentAntichain` and `fork_choice_parent_antichain_correct`; TLA+ `Inv_ParentsFormReachabilityAntichain`; Rust example and 256-case reachability property tests |
 | **T-EVIDENCE-ROOTS** | exact latest messages and the selected floor remain evidence roots independently of proposal-parent expiry | Rocq `certified_evidence_closure_preserves_*`; TLA+ floor/latest evidence-root invariants and omit-floor control; Loom atomic floor/latest capture and stale-latest floor-root tests |
 | **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`, derived against the real predicate — `parents` (`validate.rs:924-960`), which bound-checks count/depth/progress and never recomputes the estimator (§6) |
+| **T-ADMIT** | honest preferred frontiers satisfy receiver admission; admission permits replay-safe strict subsets but rejects every frontier disconnected from its committed floor | Rocq `GuardBridge.{honest_proposer_frontier_refines_receiver_admission,replay_safe_parent_subset_witness,disconnected_parent_frontier_rejected}`; TLA⁺/Apalache `CertifiedFloorCommitment.AcceptedCandidatesCarryCommittedFloor` and its unsafe control; Rust unit and multi-validator tests in `certificate.rs` and `protocol_v6_snapshot_replay_spec.rs` |
 | **T-WF (bridge)** | block validation ⟹ acyclic, height-monotone DAG (the premise the proofs derive) | Rocq `GuardBridge.validation_implies_wf_dag` |
 | **T-ROOT (bridge)** | block validation ⟹ single-rooted DAG (exactly one parentless block = the approved genesis); `single_root` DERIVED, not assumed | Rocq `GuardBridge.validation_implies_single_root`; Rust validation bindings are listed below. |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.fork_choice_{determinism,certified_context,parent_antichain,ghost,terminal_frontier,bound,bridge}_correct` and finalized-floor `certified_projection_binding_and_evidence_roots_correct` |
@@ -212,7 +213,7 @@ each round (no effect-application/idempotence concern).
 | `TerminalFrontier.v` | Foundation, Rank, TieBreak | `terminal_frontier_exact`, `terminal_frontier_nodup`, `ghost_head_in_terminal_frontier`, `terminal_frontier_confluent`, `ranked_ghost_frontier_correct` |
 | `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err`, worst-case frontier-capacity sufficiency and undersized witness, exact runtime fit/no-truncation equivalence, and the underprovisioned-but-live-fit witness |
 | `ParentAntichain.v` | Foundation | executable reachability-maximal compaction, pairwise maximality, and causal-tip coverage preservation |
-| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: `validation_implies_wf_dag`, `validation_implies_single_root`, `weight_block_structural`, `honest_forkchoice_parents_validate`, deterministic canonical parent order, and `consensus_parent_pipeline_preserves_ghost_head`; the old deploy promotion remains only as an unsafe executable witness |
+| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: validation, single-root derivation, frozen weight, honest parent bounds, proposer-to-receiver admission refinement, replay/authority input separation, canonical parent order, and protected GHOST-head preservation |
 | `MainTheorem.v` | all | seven capstones covering determinism, certified context, causal-parent antichain, greedy GHOST, exact terminal-frontier composition, parent bounds, and the Rust validation bridge |
 
 Build (memory-capped, 32 GB envelope):
@@ -355,6 +356,24 @@ not assume a premise it doesn't) is therefore:
 
 Consensus safety of parents is anchored by the finalized-floor committee/bonds
 validation, not by re-running the estimator.
+
+The refined boundary separates proposal policy from receiver validity.
+Declared parents select replay inputs. Frozen justifications select votes, evidence, and authority.
+
+`GuardBridge.honest_proposer_frontier_refines_receiver_admission` proves the forward refinement.
+`replay_safe_parent_subset_witness` proves that the converse is false.
+`disconnected_parent_frontier_rejected` proves the required failure boundary.
+
+The protocol-6 TLA⁺ model adds one disconnected candidate.
+TLC checks 31,738 reachable states in the safe configuration.
+The unsafe configuration disables only the causal-input gate.
+TLC then violates `AcceptedCandidatesCarryCommittedFloor` through the disconnected candidate.
+Apalache passes the safe model through length 8 and finds the unsafe trace at length 6.
+
+Rust binds both sides to production behavior.
+One multi-validator test accepts a strict declared-parent subset with a retained non-parent justification.
+Another test rejects a parent frontier that carries no ancestry of its signed floor.
+The direct unit test checks the exact certificate error before dispatcher classification.
 
 ### 6.1 The LCA is modeled from the fold — RESOLVED
 

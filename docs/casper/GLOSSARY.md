@@ -407,9 +407,10 @@ settlement, not on wall-clock time.
 
 ### Retry frontier lease
 
-The retry frontier lease bounds proposer deferral when no selected parent
-covers all valid latest messages. The lease starts at the latest kept rejection
-height and permits normal packaging after three blocks.
+The retry frontier lease bounds proposer deferral when the selected parent set
+does not collectively cover all valid latest messages. The lease starts at the
+latest kept rejection height. It permits normal packaging after three blocks.
+The lease does not bypass the retry gate or carrier custody.
 
 **Preferred usage.** Use for the phase-2 proposer selection bound.
 *Distinguish from* the [retry gate](#retry-gate), which controls block validity.
@@ -445,9 +446,10 @@ stays pending.
 ### Merged-frontier retry packaging
 
 Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1.
-The owner first packages a gated retry only when one selected parent covers
-all valid latest messages. The [retry frontier lease](#retry-frontier-lease)
-permits normal packaging after three blocks. **Status: implemented.**
+The carrier owner packages a gated retry when the complete selected parent set
+covers all valid latest messages. Each latest message can use a different
+covering parent. The [retry frontier lease](#retry-frontier-lease) permits
+normal packaging after three blocks. **Status: implemented.**
 
 **Preferred usage.** Use for the ratified phase-2 packaging policy.
 *Distinguish from* the [retry gate](#retry-gate): the gate is a consensus

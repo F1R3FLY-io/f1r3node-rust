@@ -142,6 +142,7 @@ impl Drop for FinalizationDispatcherGuard {
 #[derive(Clone, Copy)]
 enum FinalizationWorkerOutcome {
     Succeeded,
+    Deferred,
     Failed,
 }
 
@@ -153,6 +154,10 @@ fn settle_finalization_worker(
     match outcome {
         FinalizationWorkerOutcome::Succeeded => {
             schedule.mark_succeeded(covered_through);
+            None
+        }
+        FinalizationWorkerOutcome::Deferred => {
+            schedule.mark_deferred();
             None
         }
         FinalizationWorkerOutcome::Failed => schedule.mark_failed(covered_through),
@@ -252,6 +257,14 @@ async fn run_finalization_dispatcher(
         tokio::spawn(async move {
             let outcome = match handle.await {
                 Ok(Ok(_)) => FinalizationWorkerOutcome::Succeeded,
+                Ok(Err(CasperError::BlockNotHeld(missing))) => {
+                    tracing::debug!(
+                        covered_through,
+                        missing = %PrettyPrinter::build_string_bytes(&missing),
+                        "finalizer worker deferred until the missing dependency is held"
+                    );
+                    FinalizationWorkerOutcome::Deferred
+                }
                 Ok(Err(error)) => {
                     tracing::warn!(covered_through, "finalizer worker failed: {:?}", error);
                     FinalizationWorkerOutcome::Failed
@@ -481,10 +494,33 @@ async fn compute_last_finalized_block_once(
     let last_finalized_block_height = evaluation_base.head.block_number;
     let evaluation_head = evaluation_base.head;
     let certificate_context =
-        crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+        match crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
             &dag,
             last_finalized_block_hash.clone(),
-        )?;
+        ) {
+            Ok(context) => {
+                finalization_schedule.clear_missing_dependencies_through(evaluation_generation);
+                context
+            }
+            Err(CasperError::BlockNotHeld(missing)) => {
+                let parked = finalization_schedule.park_missing_dependency_if_current(
+                    evaluation_generation,
+                    missing.clone(),
+                    || {
+                        Ok::<_, CasperError>(
+                            effect_ctx.block_dag_storage.current_generation()
+                                == evaluation_generation
+                                && dag.lookup(&missing)?.is_none(),
+                        )
+                    },
+                )?;
+                if !parked {
+                    publish_finalization_request(effect_ctx, finalization_schedule.clone())?;
+                }
+                return Err(CasperError::BlockNotHeld(missing));
+            }
+            Err(error) => return Err(error),
+        };
     let predecessor_post_state = dag
         .lookup_unsafe(&evaluation_head.block_hash.0)?
         .post_state_hash;
@@ -604,31 +640,39 @@ async fn compute_last_finalized_block_once(
         hash: last_finalized_block_hash.clone(),
         block_number: last_finalized_block_height,
     };
-    let candidate =
-        match crate::rust::finality::floor::floor_of_view(&dag, &block_store, &current, ftt).await?
-        {
-            crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
-            crate::rust::finality::floor::FloorOfView::NoAdvance => None,
-            crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
-                divergence_monitor
-                    .on_containment_hold(&last_finalized_block_hash, derived.block_number);
-                None
-            }
-            crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
-                tracing::debug!(
-                    missing = %PrettyPrinter::build_string_bytes(&missing),
-                    "finalization deferred until the missing floor dependency is held"
-                );
-                None
-            }
-            crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
-                tracing::debug!(
-                    detail,
-                    "finalization deferred for incompatible floor candidates"
-                );
-                None
-            }
-        };
+    let candidate = match crate::rust::finality::floor::floor_of_frozen_vote_projection(
+        &dag,
+        &block_store,
+        &current,
+        certificate_context
+            .vote_projection()
+            .eligible_latest_messages(),
+        ftt,
+    )
+    .await?
+    {
+        crate::rust::finality::floor::FloorOfView::Advance(floor) => Some(floor),
+        crate::rust::finality::floor::FloorOfView::NoAdvance => None,
+        crate::rust::finality::floor::FloorOfView::ContainmentHold { derived } => {
+            divergence_monitor
+                .on_containment_hold(&last_finalized_block_hash, derived.block_number);
+            None
+        }
+        crate::rust::finality::floor::FloorOfView::AbsenceHold { missing } => {
+            tracing::debug!(
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "finalization deferred until the missing floor dependency is held"
+            );
+            None
+        }
+        crate::rust::finality::floor::FloorOfView::IncompatibilityHold { detail } => {
+            tracing::debug!(
+                detail,
+                "finalization deferred for incompatible floor candidates"
+            );
+            None
+        }
+    };
     let mut new_finalized_hash_opt = None;
     if let Some(candidate) = candidate {
         let ft_value =
@@ -700,6 +744,10 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
     this: &MultiParentCasperImpl<T>,
     new_block: &BlockMessage,
 ) -> Result<(), CasperError> {
+    let dependency_ready = this.finalization_schedule.take_ready_missing_dependencies(
+        this.block_dag_storage.current_generation(),
+        &new_block.block_hash,
+    );
     let parked_revision = if let (Some(head), Some(commitment)) = (
         this.block_dag_storage.finalization_head()?,
         new_block.header.finalized_floor.as_ref(),
@@ -725,7 +773,7 @@ pub(crate) async fn update_last_finalized_block<T: TransportLayer + Send + Sync>
         this.recovery_sync_active
             .load(std::sync::atomic::Ordering::Acquire),
     );
-    if due || parked_revision.is_some() {
+    if due || parked_revision.is_some() || dependency_ready {
         if let Err(error) = request_finalization(this) {
             if let Some(revision) = parked_revision {
                 this.finalization_schedule
@@ -796,6 +844,20 @@ mod tests {
             None
         );
         assert!(schedule.is_quiescent());
+    }
+
+    #[test]
+    fn dependency_deferred_worker_neither_completes_nor_polls() {
+        let schedule = FinalizationSchedule::new(2);
+        assert_eq!(schedule.request(), Some(1));
+        assert_eq!(schedule.next_coverage(), Some(1));
+        schedule.mark_launched(1);
+        assert_eq!(
+            settle_finalization_worker(&schedule, 1, FinalizationWorkerOutcome::Deferred),
+            None
+        );
+        assert!(!schedule.is_quiescent());
+        assert_eq!(schedule.next_coverage(), None);
     }
 
     #[test]

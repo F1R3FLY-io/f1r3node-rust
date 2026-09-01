@@ -21,7 +21,7 @@ and the proof and execution evidence is cataloged in
 | `StaleSiblingRecovery.tla` | asynchronous accepted-sibling delivery, exact-frontier settlement, source-bound tombstone propagation, rejected-occurrence buffering, unique recovery ownership, and converged rehome finalization |
 | `ParallelValidatorConsensus.tla` | split node-local receive, capture, replay, validation, support, crash/restart, and atomic promotion transitions |
 | `CertifiedFloorPromotion.tla` | complete causal discovery of dual-certified off-main floors |
-| `CertifiedFloorCommitment.tla` | signed target-bound causal/state certificates committed by protocol-6 block headers |
+| `CertifiedFloorCommitment.tla` | signed target-bound certificates, candidate-specific parent-floor admission, and causal-input enforcement for protocol-6 block headers |
 | `FinalizationCertificateRetrieval.tla` | typed bounded sidecar retrieval, response validation, crash reconstruction, and one-time wakeup |
 | `DependencyMaintenanceRound.tla` | frozen mixed block/certificate maintenance snapshots, all-obligation dispatch, and deferred first-error return |
 | `LatestMessageCoverage.tla` | exact worklist refinement of pairwise supporter reachability |
@@ -38,6 +38,7 @@ and the proof and execution evidence is cataloged in
 | `CertifiedCausalAdmission.tla` | opposite-order causal closure, rejected-wrapper traversal, accepted-only evidence propagation, proof-leaf isolation, per-incarnation normalization, complete dependency readiness, and ruleset-bound outcomes |
 | `ProtocolV5EndToEnd.tla` | bounded three-replica refinement from parallel proposal and durable admission through finality, validator-incarnation custody, and deterministic cost settlement |
 | `FinalizationAtomicity.tla` | parallel immutable evaluation, one-winner compare-and-append publication, stale-worker effect exclusion, and request/release wake ownership |
+| `FinalizationSnapshotRetry.tla` | concurrent durable-head advance, delayed projection, stale reader retry, and coherent snapshot publication |
 | `FinalizationWorkerRetry.tla` | failed-worker non-completion, bounded retry readiness, newer-success subsumption, and eventual request coverage with parallel workers |
 | `ProposalFloorReadiness.tla` | typed proposal readiness across independent nodes, materialization-only finalizer scheduling, authority-defect isolation, and post-materialization progress |
 | `FinalizationBoundHead.tla` | exact predecessor binding across parallel certificate evaluation, state-lineage revalidation, and compare-and-append; includes the DAG-descending but state-regressive late-binding counterexample |
@@ -142,6 +143,22 @@ an effect before commit, stale overwrite, regressive publication, and a lost
 request/release wake. A stale or duplicate append rebinds to the fresh durable
 head and reevaluates; it does not falsely complete the request that exposed the
 new head. TLC exhausts 173,196 generated / 37,093 distinct states to depth 27.
+
+`FinalizationSnapshotRetry.tla` covers a reader that overlaps finalization.
+The reader captures the durable revision before it reads projected state.
+The reader then validates the durable revision again.
+A changed revision makes the observation stale and publishes no result.
+The reader yields and repeats only the coherent capture operation.
+The reader does not repeat replay, validation, or any state mutation.
+The safe model checks coherent result identity and recorded revision membership.
+Its control publishes a stale observation and violates result coherence.
+
+Rust implements this boundary in `snapshot::retry_stale_finalization_capture`.
+The retry accepts only `KvStoreError::StaleFinalization` as transient.
+All other errors leave the capture boundary immediately.
+The metric `finalization.snapshot.capture.retries` exposes sustained contention.
+This design keeps finalizer workers and validators parallel.
+It does not weaken the strict compare-and-append rule for writers.
 
 `FinalizationWorkerRetry.tla` refines the scheduler's worker-exit boundary. A
 request is complete only after a successful evaluation covers its ticket. An
@@ -496,6 +513,11 @@ responses, and wakes each detached block at most once.
 `DependencyMaintenanceRound.tla` closes the production caller boundary by
 requiring one maintenance invocation to attempt its entire frozen mixture of
 ordinary block and certificate work before returning the first dispatch error.
+
+Candidate admission does not recompute fork choice.
+Declared parents select replay inputs, while frozen justifications select authority.
+At least one declared parent must descend from the signed floor.
+The model accepts a strict replay-safe subset and rejects a floor-disconnected candidate.
 
 This is a deliberate compositional proof rather than a renamed or duplicated
 version-5 model. TLC exhausts the finite retrieval transition graph and each

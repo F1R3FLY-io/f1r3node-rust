@@ -432,6 +432,23 @@ mod embedded_defaults_tests {
             cfg.api_server.exploratory_deploy_execution_timeout,
             Duration::from_secs(15)
         );
+        assert_eq!(
+            cfg.casper.genesis_block_data.max_cosigners_per_deploy,
+            casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY
+        );
+        assert_eq!(
+            cfg.casper.genesis_block_data.initial_phlogiston,
+            casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON
+        );
+        assert_eq!(
+            cfg.casper.genesis_block_data.epoch_phlogiston,
+            casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
+        );
+        assert!(cfg
+            .casper
+            .genesis_block_data
+            .client_fuel_allocations
+            .is_empty());
     }
 
     /// A negative fault-tolerance threshold weakens "finalized" from a BFT

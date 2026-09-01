@@ -1,0 +1,45 @@
+{
+  "spec": "AuthorizedSlashFlow",
+  "epoch_length": 10,
+  "reference_block_number": 3,
+  "initial_bond": 100,
+  "schedule": [
+    {
+      "action": "RecordSlashableInvalid",
+      "generation": 0,
+      "evidence_block_number": 1
+    },
+    { "action": "RequestWithdraw" },
+    { "action": "BeginWithdraw" },
+    { "action": "CompleteWithdrawal" },
+    {
+      "action": "AssertSlashDisabled",
+      "generation": 0,
+      "evidence_block_number": 1
+    },
+    { "action": "FreshBond" },
+    {
+      "action": "AssertSlashDisabled",
+      "generation": 0,
+      "evidence_block_number": 1
+    },
+    {
+      "action": "RecordSlashableInvalid",
+      "generation": 1,
+      "evidence_block_number": 2
+    },
+    {
+      "action": "AssertSlashEnabled",
+      "generation": 1,
+      "evidence_block_number": 2
+    }
+  ],
+  "expected_final": {
+    "phase": "Bonded",
+    "generation": 1,
+    "bond": 100,
+    "pending_generation": 1,
+    "stale_rejections": 2,
+    "current_authorizations": 1
+  }
+}

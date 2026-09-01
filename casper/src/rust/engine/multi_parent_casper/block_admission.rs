@@ -66,6 +66,11 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
+    if this.casper_shard_conf.casper_version >= 6 {
+        return Ok(Either::Left(DeployError::parsing_error(
+            "protocol-v6 admission requires authenticated v6.1 authorization".to_string(),
+        )));
+    }
     // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
     if deploy_is_known(
         this,
@@ -152,14 +157,14 @@ pub(crate) fn admit_deploy_cosigned<T: TransportLayer + Send + Sync>(
             }
             let parse_elapsed_ms = parse_started_at.elapsed().as_millis();
             let add_started_at = std::time::Instant::now();
-            let deploy_id = add_deploy_cosigned(this, cosigned)?;
+            let deploy_result = add_deploy_cosigned(this, cosigned)?;
             tracing::debug!(
                 target: "f1r3fly.deploy.latency",
                 parse_ms = parse_elapsed_ms,
                 add_deploy_ms = add_started_at.elapsed().as_millis(),
                 "Deploy parse/add completed (multi-sig path)"
             );
-            Ok(Either::Right(deploy_id))
+            Ok(deploy_result)
         }
     }
 }
@@ -350,16 +355,15 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
 pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
-) -> Result<DeployId, CasperError> {
+) -> Result<Either<DeployError, DeployId>, CasperError> {
     let is_compound = cosigned.is_compound();
     let deploy_id = cosigned
         .envelope_commitment()
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
     let legacy_signed = cosigned.as_legacy_signed_ref();
     if !reserve_deploy_envelope(this, cosigned)? {
-        return Err(CasperError::RuntimeError(format!(
-            "Deploy already known: {}",
-            hex::encode(&deploy_id)
+        return Ok(Either::Left(DeployError::duplicate_deploy(
+            deploy_id.to_vec(),
         )));
     }
 
@@ -374,7 +378,7 @@ pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
             signal.trigger_wake();
         }
     }
-    Ok(deploy_id.to_vec())
+    Ok(Either::Right(deploy_id.to_vec()))
 }
 
 pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(

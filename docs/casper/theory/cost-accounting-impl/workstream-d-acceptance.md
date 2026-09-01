@@ -146,8 +146,10 @@ delete).
   **fork-risk misread** (0/1-parent cases have no shared-channel pair; an empty return for disjoint 2+ parents emits a
   wrong post-state — the merged state is the deterministic number-channel fold, never empty). Disjointness is already an
   empty-conflict number-channel fold. Reducer (`reduce.rs`) unchanged. Added a **determinism regression pin** to the
-  existing `compute_parents_post_state_regression_spec.rs` (the disjoint sibling-parent merge is byte-identical under
-  reversed parent order — spec §2.3 order-determinism).
+  existing `compute_parents_post_state_regression_spec.rs`. The selected GHOST main parent remains first because it
+  names the merge base; disjoint sibling composition is byte-identical under permutations of the remaining secondary
+  parents. The parents-post-state cache therefore binds the main parent position and canonicalizes only the secondary
+  set.
 
 ### D5 — funding proof (Rocq) + TLA+
 - `LinearLogicResources.v`: define **pure** `delta_s` (LLUnit→0, LLAtom→1, LLTensor→sum, else 0 — NOT the ILLE

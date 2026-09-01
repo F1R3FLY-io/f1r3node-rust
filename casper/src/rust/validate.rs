@@ -20,8 +20,9 @@
 //!    `post_state_hash`.
 //! 4. `bonds_cache` — verify the block's bonds map matches the bonds
 //!    computed from the block's replayed post-state hash.
-//! 5. `neglected_invalid_block` — reject the block if it has invalid
-//!    justifications whose bonded sender is *still* bonded (T-9.7).
+//! 5. `neglected_invalid_block` — reject a block that cites a rejected
+//!    justification. Only eligible equivocation evidence can require a
+//!    matching slash deploy.
 //! 6. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
 //! 7. `check_equivocations` — direct equivocation check against the
 //!    sender's prior latest message.
@@ -32,11 +33,9 @@
 //!
 //! ## Slashing-protocol position
 //!
-//! Steps 4, 5, 7 each surface `InvalidBlock::*Equivocation` /
-//! `NeglectedInvalidBlock` to the dispatcher, which then mints
-//! `EquivocationRecord` evidence and routes the block to the
-//! `engine::multi_parent_casper::validation_dispatcher::dispatch_handle_invalid_block`
-//! path.
+//! Every certified rejection gets durable metadata. Only
+//! `AdmissibleEquivocation` and `IgnorableEquivocation` create economic
+//! evidence.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1287,9 +1286,9 @@ impl Validate {
     ///
     /// * `CasperError::SlashAuth(_)` — the receive-side authorization
     ///   predicate (4-conjunct check) rejected the slash deploy. The block
-    ///   author is Byzantine; collapse to
-    ///   `InvalidBlock::UnauthorizedSlashDeploy`, which is itself slashable
-    ///   per `block_status::is_slashable` and the T-9.3 catch-all dispatcher.
+    ///   author supplied an invalid slash request. Collapse the result to
+    ///   `InvalidBlock::UnauthorizedSlashDeploy`. This rejection cannot create
+    ///   economic evidence.
     /// * any other `CasperError` (storage I/O, runtime, history) — the local
     ///   node experienced an infrastructure failure unrelated to the block
     ///   author's behavior. Propagate as `BlockError::BlockException(e)`;
@@ -1499,6 +1498,9 @@ impl Validate {
             if !metadata.is_rejected() {
                 continue;
             }
+            if !metadata.is_slash_evidence_eligible() {
+                return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
+            }
 
             let bond = authority.bond(&metadata.sender);
             let evidence_epoch = match epoch_for_block_number(metadata.block_number, epoch_length) {
@@ -1517,8 +1519,7 @@ impl Validate {
                     metadata.sequence_number,
                 ))
             });
-            let slash_required = metadata.is_rejected()
-                && evidence_epoch == current_epoch
+            let slash_required = evidence_epoch == current_epoch
                 && bond > 0
                 && evidence_generation.is_some_and(|generation| {
                     authority.generation(&metadata.sender) == Some(generation)
@@ -1805,6 +1806,24 @@ mod merge_recovery_validation_tests {
         block_number: i64,
         invalid: bool,
     ) {
+        add_metadata_with_reason(
+            snapshot,
+            block_hash,
+            sender,
+            block_number,
+            invalid.then_some(
+                models::rust::block_metadata::AdmissionRejectionReason::AdmissibleEquivocation,
+            ),
+        );
+    }
+
+    fn add_metadata_with_reason(
+        snapshot: &mut CasperSnapshot,
+        block_hash: BlockHash,
+        sender: Validator,
+        block_number: i64,
+        rejection_reason: Option<models::rust::block_metadata::AdmissionRejectionReason>,
+    ) {
         snapshot.on_chain_state.bond_generations.insert(
             sender.clone(),
             models::rust::bond_generation::BondGeneration::GENESIS,
@@ -1841,11 +1860,11 @@ mod merge_recovery_validation_tests {
             approved_genesis: false,
             merge_base: Bytes::new(),
         };
-        let metadata = if invalid {
+        let metadata = if let Some(reason) = rejection_reason {
             crate::rust::test_metadata::certify_rejected(
                 metadata,
                 models::rust::bond_generation::BondGeneration::GENESIS,
-                models::rust::block_metadata::AdmissionRejectionReason::InvalidTransaction,
+                reason,
             )
         } else {
             crate::rust::test_metadata::certify(
@@ -1982,6 +2001,30 @@ mod merge_recovery_validation_tests {
         assert!(matches!(
             Validate::neglected_invalid_block(&block, &snapshot, &authority),
             Either::Right(ValidBlock::Valid)
+        ));
+    }
+
+    #[test]
+    fn current_non_evidence_rejection_rejects_the_child_without_slash_evidence() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.epoch_length = 10;
+        let offender = validator(2);
+        let proposer = validator(3);
+        let rejected = hash(18);
+        add_metadata_with_reason(
+            &mut snapshot,
+            rejected.clone(),
+            offender.clone(),
+            94,
+            Some(models::rust::block_metadata::AdmissionRejectionReason::InvalidSequenceNumber),
+        );
+        let block = candidate(95, proposer, offender.clone(), rejected, Vec::new());
+        let authority = slash_authority(&snapshot, HashMap::from([(offender, 1000)]));
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &snapshot, &authority),
+            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
         ));
     }
 

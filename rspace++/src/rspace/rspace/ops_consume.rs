@@ -40,7 +40,6 @@ where
 
         let t0 = Instant::now();
         self.observe_consume(consume_ref, channels, patterns, continuation, persist, peeks)?;
-        self.log_consume(consume_ref);
         metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
@@ -95,6 +94,7 @@ where
                     produce_counters_closure,
                 );
                 self.observe_comm(&comm, continuation, persist, &data_candidates)?;
+                self.log_consume(consume_ref);
                 self.log_comm(comm, CONSUME_COMM_LABEL);
                 self.store_persistent_data(&data_candidates);
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
@@ -104,6 +104,7 @@ where
             }
             _ => {
                 let t3 = Instant::now();
+                self.log_consume(consume_ref);
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);

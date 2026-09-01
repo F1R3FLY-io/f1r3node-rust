@@ -2,7 +2,7 @@
 #
 # Establishes correctness of the Rust slashing logic in this repository:
 # detection soundness/completeness, the slash effect (bond zeroing, stake
-# transfer, fork-choice exclusion), two-level closure, and the documented
+# transfer, fork-choice exclusion), counterfactual two-level closure, and the documented
 # bug-fix deltas, composed in main_slashing_algorithm_correct.
 #
 # Source: f1r3node-rust/casper/src/rust/{equivocation_detector,validate,
@@ -13,12 +13,13 @@
 #   docs/casper/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/casper/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 29 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# 30 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
 #   Validator              (standalone)
 #   ValidatorLifetime      → Validator
+#   BondGenerationLifecycle → ValidatorLifetime
 #   Block                  → Validator
 #   InvalidBlock           → Block
 #   EquivocationRecord     → Validator, Block
@@ -64,6 +65,7 @@
 
 theories/Validator.v
 theories/ValidatorLifetime.v
+theories/BondGenerationLifecycle.v
 theories/Block.v
 theories/InvalidBlock.v
 theories/EquivocationRecord.v

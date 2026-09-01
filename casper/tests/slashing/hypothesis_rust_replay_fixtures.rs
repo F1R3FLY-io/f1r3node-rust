@@ -374,7 +374,7 @@ fn sage_dag_report_fixture_replays_report_suppression() {
     let mut harness = SlashingTestHarness::new(2, 100);
     let _ = harness.sign_block("v0", 5);
     let bad = harness.sign_block_distinct("v0", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
 
     let reported = harness.sign_block_citing_with_slash("v1", 6, bad, "v0");
     assert_eq!(harness.dispatch(reported), Status::Valid);
@@ -396,10 +396,16 @@ fn sage_objective_weighted_fixture_replays_quorum_loss_boundary() {
     let _ = harness.dispatch(bad);
 
     let v1_neglect = harness.sign_block_citing("v1", 6, bad);
-    assert_eq!(harness.dispatch(v1_neglect), Status::NeglectedEquivocation);
+    assert_eq!(
+        harness.dispatch_counterfactual_neglect_evidence(v1_neglect),
+        Status::NeglectedEquivocation
+    );
 
     let v0_neglect = harness.sign_block_citing("v0", 7, v1_neglect);
-    assert_eq!(harness.dispatch(v0_neglect), Status::NeglectedEquivocation);
+    assert_eq!(
+        harness.dispatch_counterfactual_neglect_evidence(v0_neglect),
+        Status::NeglectedEquivocation
+    );
 
     let _ = harness.execute_slash("v0");
     let _ = harness.execute_slash("v1");

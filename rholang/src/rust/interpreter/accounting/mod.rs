@@ -2037,6 +2037,14 @@ where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::
 /// this reflects to the SAME channel as the genesis seed's `Sig::Ground(pk)`.
 pub fn funding_sig_single(pubkey: &[u8]) -> Sig { Sig::Ground(pubkey.to_vec()) }
 
+pub fn principal_ground_v61(public_key: &[u8]) -> Vec<u8> {
+    let mut ground = Vec::with_capacity(6 + public_key.len());
+    ground.extend_from_slice(&1u16.to_be_bytes());
+    ground.extend_from_slice(&(public_key.len() as u32).to_be_bytes());
+    ground.extend_from_slice(public_key);
+    ground
+}
+
 /// The FUNDING signature of a multi-signer deploy: the left-associated
 /// `Sig::And` fold of each cosigner's ground identity atom `Sig::Ground(pkᵢ)`
 /// (the compound `g₁∘g₂`). Fuel is drawn balanced across the cosigners' wallets
@@ -2080,13 +2088,7 @@ where A: std::fmt::Debug + serde::Serialize + crypto::rust::signatures::signed::
             .selected_signers_v61()
             .expect("validated protocol-v6 selected signers")
             .into_iter()
-            .map(|signer| {
-                let mut ground = Vec::with_capacity(6 + signer.pk.bytes.len());
-                ground.extend_from_slice(&1u16.to_be_bytes());
-                ground.extend_from_slice(&(signer.pk.bytes.len() as u32).to_be_bytes());
-                ground.extend_from_slice(&signer.pk.bytes);
-                ground
-            })
+            .map(|signer| principal_ground_v61(&signer.pk.bytes))
             .collect::<Vec<_>>();
         let funder_refs = funders.iter().map(Vec::as_slice).collect::<Vec<_>>();
         return match funder_refs.as_slice() {

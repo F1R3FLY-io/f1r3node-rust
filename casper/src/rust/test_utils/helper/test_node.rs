@@ -1176,7 +1176,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: 50,
-            casper_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            casper_version: genesis.header.version,
             config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,

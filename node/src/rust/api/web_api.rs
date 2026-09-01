@@ -460,15 +460,7 @@ impl WebApi for WebApiImpl {
             .map(|message| message.sequence_number)
             .unwrap_or(-1);
 
-        let names = if let Some(req) = request {
-            let deployer_bytes = hex::decode(&req.deployer)
-                .map_err(|e| eyre!("Deployer is not valid hex format: {}", e))?;
-            let name_bytes =
-                BlockAPI::preview_private_names(&deployer_bytes, req.timestamp, req.name_qty)?;
-            name_bytes.into_iter().map(hex::encode).collect()
-        } else {
-            vec![]
-        };
+        let names = prepare_deploy_names(request.as_ref())?;
 
         Ok(PrepareResponse { names, seq_number })
     }
@@ -1392,6 +1384,23 @@ pub struct PrepareResponse {
     pub seq_number: i32,
 }
 
+fn prepare_deploy_names(request: Option<&PrepareRequest>) -> Result<Vec<String>> {
+    match request {
+        Some(request) => {
+            let deployer = hex::decode(&request.deployer)
+                .map_err(|error| eyre!("Deployer is not valid hex format: {}", error))?;
+            BlockAPI::preview_private_names(
+                &deployer,
+                request.timestamp,
+                request.name_qty,
+                casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            )
+            .map(|names| names.into_iter().map(hex::encode).collect())
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PeerInfoData {
     pub address: String,
@@ -2122,6 +2131,23 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn prepare_deploy_get_keeps_the_empty_name_list() {
+        assert!(prepare_deploy_names(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepare_deploy_post_fails_closed_for_protocol_v6() {
+        let request = PrepareRequest {
+            deployer: hex::encode([2; 33]),
+            timestamp: 1,
+            name_qty: 1,
+        };
+        let error = prepare_deploy_names(Some(&request)).expect_err("preview must fail closed");
+
+        assert!(error.to_string().contains("authenticated deploy envelope"));
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {

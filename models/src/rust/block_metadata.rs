@@ -312,6 +312,41 @@ pub enum AdmissionRejectionReason {
     IgnorableEquivocation = 29,
 }
 
+impl AdmissionRejectionReason {
+    pub const fn is_slash_evidence_eligible(self) -> bool {
+        match self {
+            Self::AdmissibleEquivocation | Self::IgnorableEquivocation => true,
+            Self::InvalidFormat
+            | Self::InvalidSignature
+            | Self::InvalidSender
+            | Self::InvalidVersion
+            | Self::InvalidTimestamp
+            | Self::DeployNotSigned
+            | Self::InvalidBlockNumber
+            | Self::InvalidRepeatDeploy
+            | Self::InvalidParents
+            | Self::InvalidFollows
+            | Self::InvalidSequenceNumber
+            | Self::InvalidShardId
+            | Self::JustificationRegression
+            | Self::NeglectedInvalidBlock
+            | Self::NeglectedEquivocation
+            | Self::InvalidTransaction
+            | Self::InvalidBondsCache
+            | Self::InvalidEquivocationEvidence
+            | Self::InvalidBlockHash
+            | Self::UnauthorizedSlashDeploy
+            | Self::InvalidRejectedDeploy
+            | Self::ContainsExpiredDeploy
+            | Self::ContainsTimeExpiredDeploy
+            | Self::ContainsFutureDeploy
+            | Self::NotOfInterest
+            | Self::LowDeployCost
+            | Self::PrematureDeployRetry => false,
+        }
+    }
+}
+
 impl TryFrom<u32> for AdmissionRejectionReason {
     type Error = CertifiedAdmissionOutcomeError;
 
@@ -487,6 +522,20 @@ impl CertifiedAdmissionOutcome {
 
     pub const fn is_rejected(&self) -> bool {
         matches!(self.decision, CertifiedAdmissionDecision::Rejected(_))
+    }
+
+    pub const fn rejection_reason(&self) -> Option<AdmissionRejectionReason> {
+        match self.decision {
+            CertifiedAdmissionDecision::Accepted => None,
+            CertifiedAdmissionDecision::Rejected(reason) => Some(reason),
+        }
+    }
+
+    pub const fn is_slash_evidence_eligible(&self) -> bool {
+        match self.rejection_reason() {
+            Some(reason) => reason.is_slash_evidence_eligible(),
+            None => false,
+        }
     }
 
     pub fn validate_for(
@@ -1115,6 +1164,18 @@ impl BlockMetadata {
             .is_some_and(CertifiedAdmissionOutcome::is_rejected)
     }
 
+    pub fn rejection_reason(&self) -> Option<AdmissionRejectionReason> {
+        self.admission_outcome
+            .as_ref()
+            .and_then(CertifiedAdmissionOutcome::rejection_reason)
+    }
+
+    pub fn is_slash_evidence_eligible(&self) -> bool {
+        self.admission_outcome
+            .as_ref()
+            .is_some_and(CertifiedAdmissionOutcome::is_slash_evidence_eligible)
+    }
+
     pub fn validate(&self) -> Result<(), BlockMetadataError> {
         if self.post_state_hash.len() != block_hash::LENGTH {
             return Err(BlockMetadataError::InvalidPostStateHash {
@@ -1585,6 +1646,14 @@ mod tests {
         for code in 1..=29 {
             let reason = AdmissionRejectionReason::try_from(code).unwrap();
             assert_eq!(reason as u32, code);
+            assert_eq!(
+                reason.is_slash_evidence_eligible(),
+                matches!(
+                    reason,
+                    AdmissionRejectionReason::AdmissibleEquivocation
+                        | AdmissionRejectionReason::IgnorableEquivocation
+                )
+            );
         }
         assert_eq!(
             AdmissionRejectionReason::try_from(0),
@@ -1594,6 +1663,36 @@ mod tests {
             AdmissionRejectionReason::try_from(30),
             Err(CertifiedAdmissionOutcomeError::UnknownRejectionReason(30))
         );
+    }
+
+    #[test]
+    fn certified_outcome_and_metadata_expose_the_same_evidence_classification() {
+        let block = authority_block();
+        let certificate = authority_certificate(&block, 10).unwrap();
+        let accepted = CertifiedAdmissionOutcome::accepted(&block, &certificate).unwrap();
+        assert_eq!(accepted.rejection_reason(), None);
+        assert!(!accepted.is_slash_evidence_eligible());
+
+        for code in 1..=29 {
+            let reason = AdmissionRejectionReason::try_from(code).unwrap();
+            let outcome =
+                CertifiedAdmissionOutcome::rejected(&block, &certificate, reason).unwrap();
+            let metadata = BlockMetadata::from_certified_block(
+                &block,
+                Some(false),
+                Some(false),
+                &certificate,
+                &outcome,
+            )
+            .unwrap();
+
+            assert_eq!(outcome.rejection_reason(), Some(reason));
+            assert_eq!(metadata.rejection_reason(), Some(reason));
+            assert_eq!(
+                metadata.is_slash_evidence_eligible(),
+                reason.is_slash_evidence_eligible()
+            );
+        }
     }
 
     #[test]

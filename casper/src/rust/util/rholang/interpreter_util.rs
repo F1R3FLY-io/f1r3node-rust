@@ -1322,6 +1322,34 @@ pub async fn compute_deploys_checkpoint_cosigned_admitted_with_effects(
     .await
 }
 
+pub async fn compute_deploys_checkpoint_cosigned_with_effects(
+    block_store: &mut KeyValueBlockStore,
+    parents: Vec<BlockMessage>,
+    deploys: Vec<crypto::rust::signatures::signed::Cosigned<DeployData>>,
+    system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+    s: &CasperSnapshot,
+    runtime_manager: &RuntimeManager,
+    block_data: BlockData,
+    invalid_blocks: HashMap<BlockHash, Validator>,
+    rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
+) -> Result<DeploysCheckpoint, CasperError> {
+    compute_deploys_checkpoint_cosigned_internal(
+        block_store,
+        parents,
+        deploys,
+        system_deploys,
+        s,
+        runtime_manager,
+        block_data,
+        invalid_blocks,
+        rejected_deploy_buffer,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
 async fn compute_deploys_checkpoint_cosigned_internal(
     block_store: &mut KeyValueBlockStore,
     parents: Vec<BlockMessage>,
@@ -1951,22 +1979,25 @@ pub async fn compute_parents_post_state(
                 }
             }
 
-            let mut parent_hashes_for_key: Vec<BlockHash> =
-                parents.iter().map(|p| p.block_hash.clone()).collect();
-            parent_hashes_for_key.sort();
+            let main_parent_hash = parents[0].block_hash.clone();
+            let secondary_parent_hashes_for_key: Vec<BlockHash> = parents
+                .iter()
+                .skip(1)
+                .map(|parent| parent.block_hash.clone())
+                .collect();
             let disable_late_block_filtering = disable_late_block_filtering_override
                 .unwrap_or(s.on_chain_state.shard_conf.disable_late_block_filtering);
-            let cache_key = super::runtime_manager::ParentsPostStateCacheKey {
-                sorted_parent_hashes: parent_hashes_for_key,
-                snapshot_lfb_hash: s.last_finalized_block.clone(),
-                // BTreeMap iteration is key-ordered, so this is deterministic.
-                sorted_latest_messages: latest_messages
+            let cache_key = super::runtime_manager::ParentsPostStateCacheKey::new(
+                main_parent_hash,
+                secondary_parent_hashes_for_key,
+                s.last_finalized_block.clone(),
+                latest_messages
                     .iter()
                     .map(|(v, h)| (v.clone(), h.clone()))
                     .collect(),
                 disable_late_block_filtering,
-                buffer_populated: rejected_deploy_buffer.is_some() && local_validator.is_some(),
-            };
+                rejected_deploy_buffer.is_some() && local_validator.is_some(),
+            );
             if let Some(cached) = runtime_manager.get_cached_parents_post_state(&cache_key) {
                 let cache_lookup_elapsed = cache_lookup_started.elapsed();
                 metrics::histogram!(PARENTS_POST_STATE_CACHE_LOOKUP_TIME_METRIC, "source" => CASPER_METRICS_SOURCE, "result" => "hit")
@@ -1974,14 +2005,14 @@ pub async fn compute_parents_post_state(
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.cache",
                     "compute_parents_post_state cache hit: parents={}, rejected_deploys={}, rejected_slashes={}",
-                    cache_key.sorted_parent_hashes.len(),
+                    cache_key.sorted_secondary_parent_hashes.len() + 1,
                     cached.rejected_user.len(),
                     cached.rejected_slashes.len()
                 );
                 tracing::debug!(
                     target: "f1r3fly.casper.compute_parents_post_state.timing",
                     "compute_parents_post_state timing: path=cache_hit, parents={}, cache_lookup_ms={}, total_ms={}",
-                    cache_key.sorted_parent_hashes.len(),
+                    cache_key.sorted_secondary_parent_hashes.len() + 1,
                     cache_lookup_elapsed.as_millis(),
                     total_started.elapsed().as_millis()
                 );

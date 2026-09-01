@@ -89,6 +89,7 @@ theories/FinalizerFloorMaterialization.v
 theories/DivergentFinalizationHistories.v
 theories/MinorityForkRecovery.v
 theories/CandidateScopeDeployRehome.v
+theories/RecoveryFrontierCoverage.v
 theories/StaleSiblingRecovery.v
 theories/CertifiedFloorCommitment.v
 theories/FinalizationCertificateRetrieval.v

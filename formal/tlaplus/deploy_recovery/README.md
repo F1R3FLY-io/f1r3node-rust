@@ -21,6 +21,23 @@ therefore enables the same owner on each replica and no other validator.
 Distinct carrier owners can recover distinct work in parallel. The model does
 not use a global retry lock.
 
+`RecoveryFrontierCoverage.tla` refines retry readiness to the selected parent
+frontier. Every valid latest message must be an ancestor of at least one
+selected parent. Different messages can use different parents. This relation
+preserves multi-parent concurrency and does not require a serial coalescing
+block.
+
+The shared floor gate and carrier ownership remain mandatory. A bounded lease
+can bypass only incomplete frontier coverage. Ordinary work keeps its separate
+leader and can progress while the owner waits or publishes a retry.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_RecoveryFrontierCoverage.cfg` | pass | collective parent coverage, owner retry, bounded lease, and independent ordinary progress |
+| `MC_RecoveryFrontierCoverage_single_parent_unsafe.cfg` | violate `CollectiveCoverageReadiesRetry` | one selected parent must cover all valid latest messages, which rejects a valid split frontier |
+| `MC_RecoveryFrontierCoverageApalache.cfg` | pass | bounded symbolic check of the collective readiness relation |
+| `MC_RecoveryFrontierCoverage_single_parent_unsafe_Apalache.cfg` | violate `CollectiveCoverageReadiesRetry` | symbolic split-frontier counterexample to the inverted quantifiers |
+
 Once a retry becomes active, a validator cannot prepare another retry until
 all visible exact sources have tombstones.
 
@@ -60,6 +77,17 @@ erasure in one transition.
 | --- | --- | --- |
 | `MC_DeployIdentitySeparation.cfg` | pass | protocol-tagged identities isolate equal byte payloads under either rejection order |
 | `MC_DeployIdentitySeparation_raw_key_unsafe.cfg` | violate `Inv_CrossDomainRejectionIsolation` | an untagged byte key lets a legacy rejection erase v6 state, or the reverse |
+
+`ProtocolDeployIngress.tla` closes the pending-pool boundary. Protocol v6
+admits only authenticated envelope identities; pre-v6 protocols admit only
+legacy payload signatures. Rejected cross-version submissions leave both pool
+domains unchanged, so a legacy row cannot poison a v6 proposal scan and an
+envelope row cannot poison a historical proposal scan.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_ProtocolDeployIngress.cfg` | pass | protocol-specific ingress preserves disjoint pending-pool domains |
+| `MC_ProtocolDeployIngress_permissive_unsafe.cfg` | violate `V6HasNoLegacyPool` | permissive legacy ingress inserts a row that makes protocol-v6 pool reads fail closed |
 
 `MergeRecoveryCoherence.tla` closes the refinement boundary between occurrence
 records and the state rooted at the finalized merge floor. Base-committed

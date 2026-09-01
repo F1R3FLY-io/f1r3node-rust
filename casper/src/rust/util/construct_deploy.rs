@@ -13,8 +13,9 @@ use crypto::rust::signatures::signed::Cosigned;
 use crypto::rust::signatures::signed::Signed;
 #[cfg(any(test, feature = "test-utils"))]
 use lazy_static::lazy_static;
-use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::{DeployData, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::DeployData;
+#[cfg(any(test, feature = "test-utils"))]
+use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 
 use crate::rust::errors::CasperError;
 
@@ -134,23 +135,16 @@ pub fn envelope_from_deploy_data(
     .map_err(|error| CasperError::SigningError(error.to_string()))
 }
 
+#[cfg(any(test, feature = "test-utils"))]
 pub fn basic_processed_deploy(
     id: i32,
     shard_id: Option<String>,
 ) -> Result<ProcessedDeploy, CasperError> {
-    basic_deploy_data(id, None, shard_id).map(|deploy| ProcessedDeploy {
-        deploy,
-        envelope_commitment: prost::bytes::Bytes::new(),
-        cost: PCost { cost: 0 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-        cosigners: Vec::new(),
-        cosigner_threshold: 0,
-        pre_state_hash: prost::bytes::Bytes::new(),
-        post_state_hash: prost::bytes::Bytes::new(),
-        authority_funding_certificate: None,
-        authority_cost_witness: None,
-        admission_status: Default::default(),
-    })
+    let deploy = basic_deploy_data(
+        id,
+        None,
+        Some(shard_id.unwrap_or_else(|| "root".to_string())),
+    )?;
+    let envelope = envelope_from_deploy_data(deploy.data, None)?;
+    Ok(ProcessedDeploy::empty_from_cosigned(&envelope))
 }

@@ -53,7 +53,7 @@ findings.
    | 01 | [Slashing subsystem topology](./diagrams/01-component-overview.svg)                                    | spec §3                          | **Exhaustive** — 11 components + 2 data artifacts (Bond map, Coop vault) |
    | 02 | [Admissible equivocation slash flow](./diagrams/02-seq-admissible-equivocation.svg)                    | spec §7                          | Sequence                                |
    | 03 | [Ignorable equivocation slash flow (post-fix)](./diagrams/03-seq-ignorable-equivocation-fixed.svg)     | spec §10.1                       | Sequence                                |
-   | 04 | [Two-level slashing](./diagrams/04-seq-two-level-slashing.svg)                                         | spec §8                          | Sequence                                |
+   | 04 | [Counterfactual two-level slashing](./diagrams/04-seq-two-level-slashing.svg)                          | spec §8                          | Sequence                                |
    | 05 | [Generic invalid-block dispatch (post-fix)](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)        | spec §7.2, §10.3                 | Sequence                                |
    | 06 | [Validator lifecycle](./diagrams/06-state-validator-lifecycle.svg)                                     | spec §6                          | Statechart (6 observable + 1 doc state) |
    | 07 | [PoS.slash() Rholang activity flow](./diagrams/07-activity-pos-slash-contract.svg)                     | spec §5, §10.4                   | Activity                                |
@@ -73,7 +73,7 @@ findings.
 | Equivocation detection (admissible, ignorable, neglected)     | Cordial Miners / RGB PSSM / Casanova consensus paths (Casper CBC only) |
 | `EquivocationRecord` persistence and monotonicity             | Replay protocol details                                                |
 | `SlashDeploy` system deploy and `@PoS!("slash", …)` Rholang   | Unconfirmed Rust implementation changes from model-only findings               |
-| Two-level slashing (Level 1 + Level 2)                        | Rewriting `test_slash.py` (see `system-integration#51`)                |
+| Neglect rejection and counterfactual closure analysis        | Rewriting `test_slash.py` (see `system-integration#51`)                |
 | Fork-choice exclusion of slashed validators                   | Replacing PoS multi-sig keys (operations concern)                      |
 | Classified Rust–Scala differential traces from the completed port | Graduated/proportional slashing penalties (future protocol design)     |
 | Sixteen identified bug fixes with proofs of correctness       | End-to-end shard reproduction                                          |
@@ -89,17 +89,17 @@ findings.
 | Equivocation tracker store | `slashing-specification.md` §3.5  | `block-storage/src/rust/dag/equivocation_tracker_store.rs`  | `coop/rchain/blockstorage/dag/EquivocationTrackerStore.scala` |
 | Block proposer             | `slashing-specification.md` §3.6  | `casper/src/rust/blocks/proposer/block_creator.rs`          | `coop/rchain/casper/blocks/proposer/BlockCreator.scala`       |
 | Slash deploy (system)      | `slashing-specification.md` §3.7  | `casper/src/rust/util/rholang/costacc/slash_deploy.rs`      | `coop/rchain/casper/util/rholang/costacc/SlashDeploy.scala`   |
-| PoS Rholang contract       | `slashing-specification.md` §5    | `casper/src/main/resources/PoS.rhox:432-495` (shared)       | same                                                          |
+| PoS Rholang contract       | `slashing-specification.md` §5    | `casper/src/main/resources/PoS.rhox:507-814` (shared)       | same                                                          |
 | Fork-choice estimator      | `slashing-specification.md` §3.5.1 | `casper/src/rust/estimator.rs`                             | `coop/rchain/casper/Estimator.scala`                          |
 
 ## Headline claims (proved)
 
 - **T-1 / T-2.** Equivocation detection is sound and complete with respect to the
   intended semantics.
-- **T-7.** A successful `SlashDeploy` zeros the offender's bond and reward,
-  removes them from the active validator set, and transfers the forfeited stake
-  to the Coop vault.
-- **T-11 / T-12.** Two-level slashing terminates, has exact
+- **T-7C / T-8C.** A successful `SlashDeploy` removes the offender's locked stake
+  from active lifecycle state. It quarantines the stake and halts minting.
+  The Coop vault stays unchanged before adjudication.
+- **T-11 / T-12.** The counterfactual two-level policy terminates, has exact
   reverse-reachability closure semantics, and preserves count-weighted and
   stake-weighted quorum under the stated closure bounds.
 - **T-12C / T-12I / T-12F / T-12G / T-12A / T-12V.** Fixed-point
@@ -158,23 +158,19 @@ See `slashing-specification.md` §10 for the full bug-fix manifest and
 
 ## Building and verifying
 
-The mechanized Rocq proofs, TLA+ model-checking instances, and Sage models
-live in `formal/{rocq,tlaplus,sage}/slashing/`. Build with:
+The mechanized Rocq proofs, TLA+ models, and Sage models live under
+`formal/{rocq,tlaplus,sage}/slashing/`.
+Run the local aggregate gate from the repository root.
 
 ```sh
-# Rocq proofs (use systemd-run resource limits per CLAUDE.md)
-systemd-run --user --scope -p MemoryMax=96G -p CPUQuota=1800% \
-            -p IOWeight=30 -p TasksMax=200 \
-            make -C formal/rocq/slashing -j1
-
-# TLA+ model checking
-cd formal/tlaplus/slashing
-tlc -workers 12 MC_EquivocationDetector.tla
-tlc -workers 12 MC_ConcurrentTracker.tla
-tlc -workers 12 MC_SlashFlow.tla
-tlc -workers 12 MC_TwoLevelSlashing.tla
-tlc -workers 12 MC_AuthorizedSlashFlow.tla
+ROCQ_MEMMAX=8G TLC_RSS=8G TLC_WORKERS=4 \
+  bash scripts/check-slashing-ALL.sh
 ```
+
+The gate disables swap for heavy processes.
+The gate writes evidence under `target/verification/slashing/`.
+It checks the deep-tier executable but does not run the deep campaign.
+Run `scripts/ci/slashing-search-horizon.sh` separately for that campaign.
 
 On `feature/slashing` (this branch), only the diagram-rendering and
 cross-link check are runnable:

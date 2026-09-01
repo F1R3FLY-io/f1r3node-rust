@@ -306,8 +306,18 @@ async fn stage_floor_covered_reinstatement() -> (
         )
         .expect("build contender f")
     };
-    let d_sig: Bytes = contender_d.sig.clone();
-    let f_sig: Bytes = contender_f.sig.clone();
+    let d_sig = Bytes::copy_from_slice(
+        nodes[0]
+            .canonical_deploy_id(&contender_d)
+            .expect("contender d identity")
+            .as_bytes(),
+    );
+    let f_sig = Bytes::copy_from_slice(
+        nodes[1]
+            .canonical_deploy_id(&contender_f)
+            .expect("contender f identity")
+            .as_bytes(),
+    );
     let c_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_d))
         .await
@@ -467,6 +477,9 @@ async fn stage_floor_covered_reinstatement() -> (
 async fn reinstated_effect_must_not_be_executed_again() {
     let (mut nodes, _shard_id, loser_sig, loser_cell, loser_deploy, m_block) =
         stage_floor_covered_reinstatement().await;
+    let loser_envelope = nodes[2]
+        .envelope_for_deploy(&loser_deploy)
+        .expect("protocol-v6 loser envelope");
 
     // The recovery plane returns the loser to nodes[2]'s stores (the
     // verified return routes are several — validate-side populate, owner
@@ -474,13 +487,13 @@ async fn reinstated_effect_must_not_be_executed_again() {
     nodes[2]
         .deploy_storage
         .lock()
-        .add(vec![loser_deploy.clone()])
+        .add_envelope_if_absent(loser_envelope.clone())
         .expect("inject loser into deploy storage");
     nodes[2]
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![crate::pending_legacy(loser_deploy)])
+        .add(vec![crate::pending_envelope(loser_envelope)])
         .expect("inject loser into rejected buffer");
 
     // Drive the proposal through `create` on the FULL frontier: nodes[2]'s
@@ -541,7 +554,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::legacy_deploy_id(&loser_sig))
+            .contains_id(&crate::current_deploy_id(&loser_sig))
             .expect("buffer.contains_sig"),
         "a buffer entry whose effect is settled in the floor state must be \
          purged by the proposer's prepare"
@@ -565,7 +578,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == loser_sig),
+            .any(|pd| pd.deploy_id() == loser_sig.as_ref()),
         rejected_sigs(&b_block)
             .iter()
             .map(short)

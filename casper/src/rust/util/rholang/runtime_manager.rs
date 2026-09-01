@@ -297,9 +297,10 @@ impl StateBoundAdmission {
     }
 }
 
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ParentsPostStateCacheKey {
-    pub sorted_parent_hashes: Vec<BlockHash>,
+    pub main_parent_hash: BlockHash,
+    pub sorted_secondary_parent_hashes: Vec<BlockHash>,
     // Snapshot LFB participates in visible-ancestor filtering, so cache key must include it.
     pub snapshot_lfb_hash: BlockHash,
     // The finalized-floor merge base is derived from the block's frozen
@@ -315,6 +316,28 @@ pub struct ParentsPostStateCacheKey {
     // never satisfy a lookup from the create/validate path, or that
     // path's buffer populate is silently skipped.
     pub buffer_populated: bool,
+}
+
+impl ParentsPostStateCacheKey {
+    pub fn new(
+        main_parent_hash: BlockHash,
+        mut secondary_parent_hashes: Vec<BlockHash>,
+        snapshot_lfb_hash: BlockHash,
+        mut latest_messages: Vec<(Validator, BlockHash)>,
+        disable_late_block_filtering: bool,
+        buffer_populated: bool,
+    ) -> Self {
+        secondary_parent_hashes.sort();
+        latest_messages.sort();
+        Self {
+            main_parent_hash,
+            sorted_secondary_parent_hashes: secondary_parent_hashes,
+            snapshot_lfb_hash,
+            sorted_latest_messages: latest_messages,
+            disable_late_block_filtering,
+            buffer_populated,
+        }
+    }
 }
 
 /// The merged pre-state a block builds on, with every fact the merge
@@ -1372,6 +1395,38 @@ impl RuntimeManager {
             .await
     }
 
+    pub async fn play_exploratory_deploy_at_protocol(
+        &self,
+        term: String,
+        hash: &StateHash,
+        deployer: Option<PublicKey>,
+        protocol_version: i64,
+        shard_id: String,
+    ) -> Result<(Vec<Par>, u64), CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        if protocol_version >= crate::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION {
+            runtime_ops
+                .play_exploratory_deploy_v61_with_phlo_limit(
+                    term,
+                    hash,
+                    deployer,
+                    shard_id,
+                    self.exploratory_deploy_phlo_limit,
+                )
+                .await
+        } else {
+            runtime_ops
+                .play_exploratory_deploy_with_phlo_limit(
+                    term,
+                    hash,
+                    deployer,
+                    self.exploratory_deploy_phlo_limit,
+                )
+                .await
+        }
+    }
+
     pub async fn play_query_par_at_state_strict(
         &self,
         par: Par,
@@ -2030,9 +2085,60 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use proptest::prelude::*;
+    use prost::bytes::Bytes;
     use tokio::sync::Semaphore;
 
-    use super::{ExploratoryDeployConfig, ReplayLock, RuntimeManager};
+    use super::{ExploratoryDeployConfig, ParentsPostStateCacheKey, ReplayLock, RuntimeManager};
+
+    proptest! {
+        #[test]
+        fn parent_cache_key_canonicalizes_only_secondary_parents(
+            main in any::<[u8; 32]>(),
+            mut secondary in proptest::collection::vec(any::<[u8; 32]>(), 1..8),
+        ) {
+            let main = Bytes::copy_from_slice(&main);
+            let secondary = secondary
+                .drain(..)
+                .map(|hash| Bytes::copy_from_slice(&hash))
+                .collect::<Vec<_>>();
+            let mut permuted = secondary.clone();
+            permuted.reverse();
+            let lfb = Bytes::from_static(&[9; 32]);
+
+            let original = ParentsPostStateCacheKey::new(
+                main.clone(),
+                secondary.clone(),
+                lfb.clone(),
+                Vec::new(),
+                false,
+                false,
+            );
+            let reordered = ParentsPostStateCacheKey::new(
+                main.clone(),
+                permuted,
+                lfb.clone(),
+                Vec::new(),
+                false,
+                false,
+            );
+            prop_assert_eq!(&original, &reordered);
+
+            if secondary[0] != main {
+                let mut swapped_secondary = secondary[1..].to_vec();
+                swapped_secondary.push(main);
+                let swapped = ParentsPostStateCacheKey::new(
+                    secondary[0].clone(),
+                    swapped_secondary,
+                    lfb,
+                    Vec::new(),
+                    false,
+                    false,
+                );
+                prop_assert_ne!(original, swapped);
+            }
+        }
+    }
 
     #[test]
     fn exploratory_deploy_config_rejects_non_positive_values() {

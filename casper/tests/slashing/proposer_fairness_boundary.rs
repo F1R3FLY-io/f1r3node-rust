@@ -40,7 +40,7 @@ fn uc_74_withheld_visible_evidence_is_detectable_neglect() {
 
     let withheld = harness.sign_block_citing("v1", 6, bad);
     assert_eq!(harness.dispatch(withheld), Status::NeglectedEquivocation);
-    assert!(harness.has_record("v1", 5));
+    assert!(!harness.has_record("v1", 5));
 
     let class = classify(DivergenceReason::ProposerFairnessBoundary);
     assert_eq!(class, DivergenceClass::CandidateBoundaryDivergence);

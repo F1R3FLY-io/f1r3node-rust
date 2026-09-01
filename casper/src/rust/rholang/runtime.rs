@@ -10,7 +10,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Cosigner, Signed};
 use models::casper::{
     CostAuthorityByteEventProto, CostAuthorityEventProto, CostAuthorityResourceProto,
     CostAuthorityWitnessProto,
@@ -19,7 +19,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
+    BindPattern, GPrincipalId, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
@@ -54,7 +54,7 @@ use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
-    BlockData, DeployData as SystemProcessDeployData,
+    BlockData, DeployAuthority, DeployData as SystemProcessDeployData,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
@@ -1972,6 +1972,90 @@ impl RuntimeOps {
                 Cost::create(phlo_limit.max(0), "exploratory deploy limit"),
             )
             .await?;
+        if !eval_res.errors.is_empty() {
+            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
+        }
+        let cost = eval_res.cost.value.max(0) as u64;
+        Ok((self.get_data_par(&return_name).await, cost))
+    }
+
+    pub async fn play_exploratory_deploy_v61_with_phlo_limit(
+        &mut self,
+        term: String,
+        hash: &StateHash,
+        deployer: Option<PublicKey>,
+        shard_id: String,
+        phlo_limit: i64,
+    ) -> Result<(Vec<Par>, u64), CasperError> {
+        let data = DeployData {
+            term,
+            language: "rholang".to_string(),
+            time_stamp: 0,
+            valid_after_block_number: 0,
+            shard_id,
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let (_, ephemeral_pk) = exploratory_key_pair().clone();
+        let public_key = deployer.unwrap_or(ephemeral_pk);
+        let signer = Cosigner {
+            pk: public_key.clone(),
+            sig: Bytes::new(),
+            sig_algorithm: Box::new(Secp256k1),
+        };
+        let commitment =
+            Cosigned::<DeployData>::envelope_commitment_for_presence(&data, &[signer], 1, &[1])
+                .map_err(|error| {
+                    CasperError::RuntimeError(format!(
+                        "protocol-v6 exploratory identity construction failed: {error}"
+                    ))
+                })?;
+        let deploy_id: [u8; 32] = commitment
+            .as_ref()
+            .try_into()
+            .expect("protocol-v6 deploy identity width");
+        let mut seed = b"f1r3node:user-deploy-unforgeable:v6".to_vec();
+        seed.extend_from_slice(&deploy_id);
+        let mut return_rand = Tools::rng(&seed);
+        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: return_rand.next().into_iter().map(|b| b as u8).collect(),
+            })),
+        }]);
+
+        self.runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(hash))
+            .await?;
+        self.runtime
+            .set_deploy_data(SystemProcessDeployData {
+                timestamp: data.time_stamp,
+                authority: DeployAuthority::Principal(GPrincipalId {
+                    key_family: 1,
+                    public_key: public_key.bytes.to_vec(),
+                }),
+                deploy_id: deploy_id.to_vec(),
+            })
+            .await;
+        self.runtime.cost.set_unmetered(false);
+        self.runtime.cost.set_deploy_id_funded(
+            deploy_id,
+            accounting::funding_sig_single(&accounting::principal_ground_v61(&public_key.bytes)),
+        );
+        let normalizer_env = models::rust::normalizer_env::normalizer_env_from_v61_single_signer(
+            &deploy_id,
+            &public_key,
+        );
+        let eval_res = self
+            .runtime
+            .evaluate_with_authority(
+                &data.term,
+                Cost::create(phlo_limit.max(0), "exploratory deploy limit"),
+                normalizer_env,
+                Tools::rng(&seed),
+                None,
+            )
+            .await
+            .map_err(CasperError::InterpreterError)?;
         if !eval_res.errors.is_empty() {
             return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
         }

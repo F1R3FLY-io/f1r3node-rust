@@ -215,6 +215,13 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         .add_block_from_deploys(std::slice::from_ref(&contender_a))
         .await
         .expect("contender-a carrier");
+    let contender_a_id = Bytes::copy_from_slice(c_a.body.deploys[0].deploy_id());
+    let contender_b_id = Bytes::copy_from_slice(
+        nodes[2]
+            .canonical_deploy_id(&contender_b)
+            .expect("contender b identity")
+            .as_bytes(),
+    );
     // Sibling branch on the same parent S. Contender a leaves v2's pool
     // first — deploys are retained until terminal, and c_a is outside the
     // sibling's scope, so selection would otherwise double-include it.
@@ -222,16 +229,17 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         nodes[2]
             .deploy_storage
             .lock()
-            .remove_by_sig(&contender_a.sig)
+            .remove_envelope_by_id(&contender_a_id)
             .expect("purge contender a from the pool");
         let mut snapshot = nodes[2].casper.get_snapshot().await.expect("snapshot");
         snapshot.max_block_num = s_block.body.state.block_number;
         snapshot.parents = vec![s_block.clone()];
-        nodes[2]
-            .deploy_storage
-            .lock()
-            .add(vec![contender_b.clone()])
-            .expect("stage contender b");
+        assert!(matches!(
+            nodes[2]
+                .submit_deploy(contender_b.clone())
+                .expect("stage contender b"),
+            rspace_plus_plus::rspace::history::Either::Right(_)
+        ));
         let validator_identity = nodes[2]
             .validator_id_opt
             .clone()
@@ -275,8 +283,8 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
     // adjudicating the contest against the pre-settlement base.
     let r_block = mint_on_parents(&mut nodes[2], vec![v2_tip.clone(), c_a.clone()], "R").await;
     let r_rejected = rejected_sigs(&r_block);
-    let a_lost = r_rejected.contains(&contender_a.sig);
-    let b_lost = r_rejected.contains(&contender_b.sig);
+    let a_lost = r_rejected.contains(&contender_a_id);
+    let b_lost = r_rejected.contains(&contender_b_id);
     assert!(
         a_lost ^ b_lost,
         "R must reject exactly one contender (rejected: {})",

@@ -413,12 +413,12 @@ curl http://localhost:40403/api/prepare-deploy
 
 #### `POST /api/prepare-deploy`
 
-Same as GET, but additionally pre-generates unforgeable private-name identities
-for a given deployer and timestamp. Equivalent to gRPC
-`previewPrivateNames`. These serialized identities are deterministic and are
-not confidentiality secrets. The returned bytes do not grant the corresponding
-first-class Rholang capability: source code has no bytes-to-`GPrivate`
-constructor.
+Protocol 6 rejects this request. Protocol 6 binds each private-name stream to
+the complete authenticated deploy envelope. A key and timestamp cannot predict
+that stream before the client constructs and signs the deploy.
+
+Legacy protocols can generate private-name identities from a deployer and
+timestamp. The endpoint is then equivalent to gRPC `previewPrivateNames`.
 
 **Request body:**
 
@@ -441,12 +441,14 @@ curl -X POST http://localhost:40403/api/prepare-deploy \
 }
 ```
 
-The `names` array contains hex-encoded unforgeable names that will be produced by the deployer at the given timestamp. Clients can use these to pre-sign contracts that create private channels before deploying.
+For a legacy protocol, `names` contains the predicted private names. Protocol 6
+returns an error instead of returning identities that execution will not use.
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Sequence number and (optionally) names returned |
 | `400` | Malformed body or invalid deployer hex (`invalid_request_body`, `invalid_hash`) |
+| `409` | Protocol 6 rejects legacy private-name preview (`private_name_preview_unavailable`) |
 | `500` | Node-side failure (`runtime_error`) |
 
 ---
@@ -819,15 +821,15 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `cost` | number | Estimated committed-COMM count plus canonical RSpace byte cost; not a physical REV settlement |
+| `cost` | number | Estimated committed-COMM count plus canonical RSpace byte cost. The estimate uses the target block protocol and does not settle REV. |
 | `blockNumber` | number | Block number the estimate ran against |
 | `blockHash` | string | Block hash the estimate ran against |
-| `deployerIdentity` | string | Which identity produced the estimate: `"provided"` (the caller-supplied `deployer` key was used) or `"ephemeral"` (no `deployer` was passed, so the term ran under a process-wide random key). `"ephemeral"` may significantly underestimate the real deploy cost for identity-dependent terms |
+| `deployerIdentity` | string | Which identity produced the estimate. `"provided"` uses the supplied key. `"ephemeral"` uses a process-wide random key and can underestimate identity-dependent terms. |
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Cost estimated |
- | `400` | Malformed body, invalid Rholang, invalid block hash, invalid deployer key, or node is not read-only (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `400` | Malformed input, invalid Rholang, invalid hash or key, or a node mode other than read-only or dev (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
 | `404` | Specified block not found (`block_not_found`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
@@ -873,7 +875,7 @@ curl -X POST http://localhost:40405/api/propose
 | `listenForContinuationAtName` | `ContinuationAtNameQuery` | `ContinuationAtNameResponse` | Find processes waiting to receive on given channel names. Returns matching patterns and continuation bodies |
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only without settling a user purse. Returns result `Par`s, block context, and simulated cost. Readonly only |
 | `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
-| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate deterministic serialized identities for unforgeable names from deployer key + timestamp. This supports signing before deployment but does not disclose a secret or create a first-class Rholang capability. Max 1024 names |
+| `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate legacy private-name identities from deployer key and timestamp. Protocol 6 fails closed because its private-name stream uses the authenticated deploy envelope. Max 1024 names |
 | `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |

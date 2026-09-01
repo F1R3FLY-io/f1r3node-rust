@@ -724,6 +724,13 @@ either certificate.
   declared-parent set.
   A receiver validates and replays the declared parents from block-structural
   evidence and MUST NOT recompute them from its own possibly lagging LFB.
+- **R-PARENT-FLOOR.** A protocol-6 non-genesis block MUST declare at least one parent.
+  At least one declared parent MUST descend from the block's signed finalized floor.
+  Each effective parent floor MUST precede or equal that floor and preserve its admitted state.
+  All effective parent floors MUST form one comparable chain.
+  A verified certificate cache MUST NOT bypass this candidate-specific check.
+  The receiver MUST NOT require equality with its local preferred parent frontier.
+  Frozen justifications remain authority inputs even when a replay-safe parent subset omits one justified sibling.
 - **R-PARENT-STATE.** Parent selection preserves causality; floor-rebased replay
   preserves state. The produced pre-state MUST include every effect active at the
   selected certified floor. Rejections MAY remove only exact above-floor effect
@@ -1098,6 +1105,7 @@ authorization for an in-place protocol upgrade.
 | **S41** | Per-block floor derivation can defer on a dual-certified secondary-parent target that the durable finalizer cannot discover, or materialization substitutes evidence for a different target (violates R-FINALIZER-CLOSURE/R-FINALIZER-ORDER/R-FINALIZATION-BASE). |
 | **S42** | An honest node permanently parks because an admitted predecessor carrier commits a different honest local witness digest for the same floor/state; accepts the same floor with a different state; or splices a carrier block and foreign digest (violates R-CARRIER-EQUIVALENCE/R-CARRIER-PAIR/R-CARRIER-WAKE). |
 | **S43** | Certified validation erases a missing block hash or replay-state root, requests the wrong artifact type, drops the inconclusive block, leaks ready-path request ownership, releases a child from the wrong recovery, duplicates same-artifact requests, or globally serializes independent validators (violates R-LOCAL-FAULT-DEFER/R-RECOVERY-ARTIFACT-IDENTITY/R-RECOVERY-HISTORY-GUARD/R-RECOVERY-DEDUPLICATION). |
+| **S44** | A candidate's declared parents omit all ancestry of its signed finalized floor, or receiver-local fork choice rejects an otherwise replay-safe parent subset (violates R-PARENT-FLOOR). |
 
 ## 7. Liveness invariants — MUST eventually happen
 

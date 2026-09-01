@@ -7,7 +7,9 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::CasperSnapshot;
+use casper::rust::finality::floor_context::FloorContext;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
@@ -30,7 +32,8 @@ use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{
-    build_block, create_block, create_genesis_block, create_validator_block,
+    build_block, create_block, create_block_with_merge_facts, create_genesis_block,
+    create_validator_block, MergeFacts,
 };
 use crate::helper::block_util::generate_validator;
 use crate::util::genesis_builder::GenesisBuilder;
@@ -227,6 +230,29 @@ fn create_signed_deploy_with_data(
         Box::new(secp),
         construct_deploy::DEFAULT_SEC.clone(),
     )
+}
+
+fn legacy_validation_block(deploy: Signed<DeployData>) -> BlockMessage {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let mut block = build_block(
+        Vec::new(),
+        None,
+        now,
+        None,
+        None,
+        Some(vec![ProcessedDeploy::empty(deploy)]),
+        None,
+        None,
+        None,
+        None,
+    );
+    block.header.version = casper::rust::casper::CERTIFIED_VALIDATOR_INCARNATION_PROTOCOL_VERSION;
+    block.header.finalized_floor = None;
+    block.finalized_floor_certificate = None;
+    block
 }
 
 fn create_justifications(pairs: Vec<(Bytes, Bytes)>) -> HashMap<Bytes, Bytes> {
@@ -570,34 +596,18 @@ async fn block_number_validation_should_correctly_validate_a_multi_parent_block_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn future_deploy_validation_should_work() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
             let mut updated_deploy_data = deploy.deploy.data.clone();
             updated_deploy_data.valid_after_block_number = -1;
 
-            let updated_signed_deploy = create_signed_deploy_with_data(updated_deploy_data)
-                .expect("Failed to create signed deploy");
-
-            ProcessedDeploy {
-                deploy: updated_signed_deploy,
-                ..deploy
-            }
+            create_signed_deploy_with_data(updated_deploy_data)
+                .expect("Failed to create signed deploy")
         };
 
-        let block = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![updated_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block = legacy_validation_block(updated_processed_deploy);
 
         let status = Validate::future_transaction(&block);
 
@@ -609,34 +619,18 @@ async fn future_deploy_validation_should_work() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn future_deploy_validation_should_not_accept_blocks_with_a_deploy_for_a_future_block_number()
 {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
             let mut updated_deploy_data = deploy.deploy.data.clone();
             updated_deploy_data.valid_after_block_number = i64::MAX;
 
-            let updated_signed_deploy = create_signed_deploy_with_data(updated_deploy_data)
-                .expect("Failed to create signed deploy");
-
-            ProcessedDeploy {
-                deploy: updated_signed_deploy,
-                ..deploy
-            }
+            create_signed_deploy_with_data(updated_deploy_data)
+                .expect("Failed to create signed deploy")
         };
 
-        let block_with_future_deploy = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![updated_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block_with_future_deploy = legacy_validation_block(updated_processed_deploy);
 
         let status = Validate::future_transaction(&block_with_future_deploy);
 
@@ -672,34 +666,18 @@ async fn deploy_expiration_validation_should_work() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deploy_expiration_validation_should_not_accept_blocks_with_a_deploy_that_is_expired() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         let updated_processed_deploy = {
             let mut updated_deploy_data = deploy.deploy.data.clone();
             updated_deploy_data.valid_after_block_number = i64::MIN;
 
-            let updated_signed_deploy = create_signed_deploy_with_data(updated_deploy_data)
-                .expect("Failed to create signed deploy");
-
-            ProcessedDeploy {
-                deploy: updated_signed_deploy,
-                ..deploy
-            }
+            create_signed_deploy_with_data(updated_deploy_data)
+                .expect("Failed to create signed deploy")
         };
 
-        let block_with_expired_deploy = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![updated_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block_with_expired_deploy = legacy_validation_block(updated_processed_deploy);
 
         let status = Validate::transaction_expiration(&block_with_expired_deploy, 10);
         assert_eq!(
@@ -799,7 +777,7 @@ async fn time_based_expiration_should_accept_blocks_with_unexpired_deploys() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|_block_store, _block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
 
         // Force `expiration_timestamp = 1` — strictly less than the
@@ -809,26 +787,10 @@ async fn time_based_expiration_should_reject_blocks_with_a_time_expired_deploy()
         let expired_processed_deploy = {
             let mut data = deploy.deploy.data.clone();
             data.expiration_timestamp = Some(1);
-            let signed =
-                create_signed_deploy_with_data(data).expect("failed to sign expired deploy");
-            ProcessedDeploy {
-                deploy: signed,
-                ..deploy
-            }
+            create_signed_deploy_with_data(data).expect("failed to sign expired deploy")
         };
 
-        let block_with_time_expired_deploy = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
-            None,
-            None,
-            None,
-            Some(vec![expired_processed_deploy]),
-            None,
-            None,
-            None,
-            None,
-        );
+        let block_with_time_expired_deploy = legacy_validation_block(expired_processed_deploy);
 
         let status = Validate::time_based_expiration(&block_with_time_expired_deploy);
         assert_eq!(
@@ -941,12 +903,16 @@ async fn repeat_deploy_validation_should_return_valid_for_empty_blocks() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn repeat_deploy_validation_rejects_duplicate_signatures_within_one_block() {
-    with_storage(|mut block_store, mut block_dag_storage| async move {
+    with_storage(|block_store, block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let block = create_genesis_block(
-            &mut block_store,
-            &mut block_dag_storage,
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let block = build_block(
+            Vec::new(),
             None,
+            now,
             None,
             None,
             Some(vec![deploy.clone(), deploy]),
@@ -1050,7 +1016,13 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_id = deploy
+            .deploy_id_for_protocol(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION)
+            .expect("protocol-v6 deploy identity");
+        let deploy_id_v6 = match &deploy_id {
+            DeployLookupId::V6(deploy_id) => *deploy_id,
+            DeployLookupId::Legacy(_) => unreachable!(),
+        };
 
         // Genesis carries no user deploys: keeps the LFB clean of `deploy`
         // so the resolver cannot find a canonical clean inclusion.
@@ -1091,7 +1063,7 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
         // rejected_deploys record is the disposition the deterministic
         // exemption reads (and the source `rejected_in_scope` is derived
         // from in the real pipeline).
-        let mut block_m = create_block(
+        let block_m = create_block_with_merge_facts(
             &mut block_store,
             &mut block_dag_storage,
             vec![block_x.block_hash.clone()],
@@ -1105,15 +1077,15 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             None,
             None,
             None,
+            MergeFacts {
+                rejected_deploys: vec![RejectedDeploy::occurrence_v6(
+                    deploy_id_v6,
+                    block_x.block_hash.clone(),
+                    RejectedDeployReason::MergeConflict,
+                )],
+                ..Default::default()
+            },
         );
-        block_m.body.rejected_deploys = vec![crate::legacy_rejected_occurrence(
-            deploy_sig.clone(),
-            block_x.block_hash.clone(),
-            RejectedDeployReason::MergeConflict,
-        )];
-        block_store
-            .put(block_m.block_hash.clone(), &block_m)
-            .unwrap();
 
         // block_w re-includes the deploy. repeat_deploy walks block_w's
         // ancestor chain and finds block_x with deploy in body.deploys —
@@ -1126,7 +1098,10 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
             &genesis,
             None,
             None,
-            None,
+            Some(HashMap::from([(
+                block_m.sender.clone(),
+                block_m.block_hash.clone(),
+            )])),
             Some(vec![deploy]),
             None,
             None,
@@ -1137,15 +1112,42 @@ async fn repeat_deploy_validation_allows_recovered_deploy_from_rejected_in_scope
 
         let dag = block_dag_storage.get_representation().expect("dag representation");
         let mut snapshot = mk_casper_snapshot(dag);
+        let latest_messages = block_w
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect();
+        let floor_context = FloorContext::derive(
+            &snapshot.dag,
+            &block_store,
+            &block_w.header.parents_hash_list,
+            &latest_messages,
+            FtThreshold::from_ppm(0),
+            block_w.header.version,
+        )
+        .await
+        .expect("certified recovery floor");
+        assert_eq!(floor_context.floor.hash, block_m.block_hash);
 
         // The snapshot flag mirrors what the recovery pipeline derives from
         // the on-chain record above; the validation exemption itself no
         // longer reads it (node-local), but keep it for realism.
         let rejected: DashSet<DeployLookupId> = DashSet::new();
-        rejected.insert(crate::legacy_deploy_id(&deploy_sig));
+        rejected.insert(deploy_id);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
-        let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);
+        let result = Validate::repeat_deploy_at_floor(
+            &block_w,
+            &mut snapshot,
+            &block_store,
+            50,
+            Some(&floor_context),
+        );
         assert_eq!(
             result,
             Either::Right(ValidBlock::Valid),
@@ -1187,7 +1189,9 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
-        let deploy_sig: Bytes = deploy.deploy.sig.clone();
+        let deploy_id = deploy
+            .deploy_id_for_protocol(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION)
+            .expect("protocol-v6 deploy identity");
 
         // Genesis IS the LFB and contains `deploy` clean in body.deploys.
         // The resolver therefore reports `Finalized` for this sig.
@@ -1230,7 +1234,7 @@ async fn repeat_deploy_blocks_double_execution_when_finalized_and_in_rejected_in
         // "rejected somewhere, recoverable" from "finalized somewhere,
         // non-recoverable" via this set alone.
         let rejected: DashSet<DeployLookupId> = DashSet::new();
-        rejected.insert(crate::legacy_deploy_id(&deploy_sig));
+        rejected.insert(deploy_id);
         snapshot.rejected_in_scope = Arc::new(rejected);
 
         let result = Validate::repeat_deploy(&block_w, &mut snapshot, &block_store, 50);

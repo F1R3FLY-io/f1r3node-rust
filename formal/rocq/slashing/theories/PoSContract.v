@@ -178,13 +178,10 @@ Qed.
            vault is LEFT UNCHANGED (no transfer here; coop grows ONLY in the
            Guilty redemption branch).
 
-   This is an ADDITIVE embedding (the BugFixWithdrawTransferFailure.v `PoSStateW`
-   pattern): the legacy `PoSState` / `slash` / T-7 / T-8 (`slash_transfers_stake`)
-   / T-9 above are kept VERBATIM so the slashing-tree headline `MainTheorem.v`
-   (which consumes them, incl. the coop-transfer clause) stays green and is NOT
-   touched. The Stage-C two-effect transition `slashC` operates on a NEW state
-   record `PoSStateC` that embeds `PoSState` as `psc_pos` and adds the two new
-   sets. `ValidatorRedemption.v` (the redemption adjudication) builds on this. *)
+   The current model uses `PoSStateC` and `slashC`. The embedded `PoSState`
+   keeps the shared bond, active-set, and Coop-vault projections. The legacy
+   `slash` definition remains only for historical theorem comparison.
+   `ValidatorRedemption.v` models the later adjudication. *)
 
 (* ─────────────────────────────────────────────────────────────────────────
    §7.1 — Minting-halt set (Set[PublicKey], modeled as a list with decidable
@@ -362,6 +359,17 @@ Proof.
   destruct (Nat.eq_dec (bm_lookup (ps_allBonds (psc_pos psc)) v) 0) as [E | NE]; simpl.
   - assumption.
   - apply bm_slash_lookup.
+Qed.
+
+Theorem slashC_zero_bond_noop :
+  forall psc v,
+    bm_lookup (ps_allBonds (psc_pos psc)) v = 0 ->
+    slashC psc v = (psc, true).
+Proof.
+  intros psc v H.
+  unfold slashC.
+  rewrite H.
+  destruct (Nat.eq_dec 0 0) as [_ | Hneq]; [reflexivity | contradiction].
 Qed.
 
 (* ═══════════════════════════════════════════════════════════════════════════

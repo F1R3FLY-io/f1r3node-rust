@@ -1,7 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
 use casper::rust::block_status::ValidBlock;
-use casper::rust::casper::Casper;
 use casper::rust::util::{construct_deploy, rspace_util};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -145,7 +144,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         None
     };
     if deploy2_block.is_none() {
-        nodes[1].casper.deploy(deploys[2].clone()).ok();
+        nodes[1].submit_deploy(deploys[2].clone()).ok();
         for round in 0..6 {
             let proposer = round % 2;
             let block = {
@@ -412,7 +411,8 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
     assert_eq!(single_parent_block.body.rejected_deploys.len(), 1);
     let rejected_sig = single_parent_block.body.rejected_deploys[0].deploy_id();
     assert!(
-        rejected_sig == deploys[0].sig.as_ref() || rejected_sig == deploys[1].sig.as_ref(),
+        rejected_sig == block0.body.deploys[0].deploy_id()
+            || rejected_sig == block1.body.deploys[0].deploy_id(),
         "the rejected deploy must be one of the two conflicting deploys (the @1 producer or the @1 & @2 join)"
     );
 

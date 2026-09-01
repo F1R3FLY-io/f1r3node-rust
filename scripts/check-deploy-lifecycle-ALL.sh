@@ -193,6 +193,35 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "raw-byte identity failed for the wrong reason (see $LOG_DIR/deploy_identity_tlc_unsafe.log)"
   fi
+  if tlc_run "$(tlc_metadir protocol_deploy_ingress_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_tlc.log" 2>&1; then
+    pass "TLA+ deploy ingress preserves protocol-specific pool domains"
+    rm -f "$LOG_DIR/protocol_deploy_ingress_tlc.log"
+  else
+    fail "TLA+ protocol deploy ingress did NOT pass (see $LOG_DIR/protocol_deploy_ingress_tlc.log)"
+  fi
+  if tlc_run "$(tlc_metadir protocol_deploy_ingress_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress_permissive_unsafe.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log" 2>&1; then
+    fail "permissive protocol-v6 legacy ingress should produce a counterexample but passed"
+  elif grep -q "V6HasNoLegacyPool is violated" "$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log"; then
+    pass "permissive ingress reproduces protocol-v6 legacy-pool poisoning"
+    rm -f "$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log"
+  else
+    fail "permissive ingress failed for the wrong reason (see $LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir recovery_frontier_coverage_gate)" "$RECOVERY_TLA_DIR/MC_RecoveryFrontierCoverage.cfg" "$RECOVERY_TLA_DIR/RecoveryFrontierCoverage.tla" >"$LOG_DIR/recovery_frontier_coverage_tlc.log" 2>&1; then
+    pass "TLA+ collective parent coverage preserves owner retry and ordinary progress"
+    rm -f "$LOG_DIR/recovery_frontier_coverage_tlc.log"
+  else
+    fail "TLA+ collective recovery frontier coverage did NOT pass (see $LOG_DIR/recovery_frontier_coverage_tlc.log)"
+  fi
+  if tlc_run "$(tlc_metadir recovery_frontier_single_parent_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_RecoveryFrontierCoverage_single_parent_unsafe.cfg" "$RECOVERY_TLA_DIR/RecoveryFrontierCoverage.tla" >"$LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log" 2>&1; then
+    fail "one-parent retry coverage should produce a split-frontier counterexample but passed"
+  elif grep -q "CollectiveCoverageReadiesRetry is violated" "$LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log"; then
+    pass "TLA+ one-parent coverage reproduces split-frontier retry deferral"
+    rm -f "$LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log"
+  else
+    fail "one-parent recovery coverage failed for the wrong reason (see $LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log)"
+  fi
 
   if tlc_run "$(tlc_metadir merge_recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.cfg" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.tla" >"$LOG_DIR/merge_recovery_tlc_post.log" 2>&1; then
     pass "TLA+ finalized-base receipts, exact tombstones, chain filtering, and effect projection are coherent"
@@ -499,6 +528,72 @@ fi
 
 if command -v apalache-mc >/dev/null 2>&1; then
   apalache_out="$(mktemp -d "$LOG_DIR/apalache-admission-effect.XXXXXX")"
+  protocol_ingress_safe_log="$LOG_DIR/protocol_deploy_ingress_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/protocol-ingress-safe" \
+      check \
+      --config=MC_ProtocolDeployIngressApalache.cfg \
+      --length=3 \
+      --no-deadlock \
+      ProtocolDeployIngress.tla) >"$protocol_ingress_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$protocol_ingress_safe_log"; then
+    pass "Apalache deploy ingress preserves protocol-specific pool domains"
+    rm -f "$protocol_ingress_safe_log"
+  else
+    fail "Apalache protocol deploy ingress failed (see $protocol_ingress_safe_log)"
+  fi
+
+  protocol_ingress_unsafe_log="$LOG_DIR/protocol_deploy_ingress_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/protocol-ingress-unsafe" \
+      check \
+      --config=MC_ProtocolDeployIngress_permissive_unsafe_Apalache.cfg \
+      --length=2 \
+      --no-deadlock \
+      ProtocolDeployIngress.tla) >"$protocol_ingress_unsafe_log" 2>&1; then
+    fail "permissive protocol-v6 legacy ingress should produce an Apalache counterexample but passed"
+  elif grep -q 'V6HasNoLegacyPool' "$protocol_ingress_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$protocol_ingress_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$protocol_ingress_unsafe_log"; then
+    pass "permissive ingress reproduces protocol-v6 legacy-pool poisoning under Apalache"
+    rm -f "$protocol_ingress_unsafe_log"
+  else
+    fail "permissive ingress failed for the wrong reason under Apalache (see $protocol_ingress_unsafe_log)"
+  fi
+
+  recovery_frontier_safe_log="$LOG_DIR/recovery_frontier_coverage_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/recovery-frontier-safe" \
+      check \
+      --config=MC_RecoveryFrontierCoverageApalache.cfg \
+      --length=7 \
+      --no-deadlock \
+      RecoveryFrontierCoverage.tla) >"$recovery_frontier_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$recovery_frontier_safe_log"; then
+    pass "Apalache collective parent coverage preserves retry authorization"
+    rm -f "$recovery_frontier_safe_log"
+  else
+    fail "Apalache collective recovery frontier coverage failed (see $recovery_frontier_safe_log)"
+  fi
+
+  recovery_frontier_unsafe_log="$LOG_DIR/recovery_frontier_single_parent_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/recovery-frontier-unsafe" \
+      check \
+      --config=MC_RecoveryFrontierCoverage_single_parent_unsafe_Apalache.cfg \
+      --length=2 \
+      --no-deadlock \
+      RecoveryFrontierCoverage.tla) >"$recovery_frontier_unsafe_log" 2>&1; then
+    fail "one-parent retry coverage should produce an Apalache counterexample but passed"
+  elif grep -q 'CollectiveCoverageReadiesRetry' "$recovery_frontier_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$recovery_frontier_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$recovery_frontier_unsafe_log"; then
+    pass "Apalache one-parent coverage reproduces split-frontier retry deferral"
+    rm -f "$recovery_frontier_unsafe_log"
+  else
+    fail "one-parent recovery coverage failed for the wrong reason under Apalache (see $recovery_frontier_unsafe_log)"
+  fi
+
   safe_output="$(cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/safe" check --config=MC_AdmissionEffectAlignmentApalache.cfg --length=8 AdmissionEffectAlignment.tla 2>&1)"
   safe_rc=$?
   printf '%s\n' "$safe_output" >"$LOG_DIR/admission_effect_alignment_apalache.log"

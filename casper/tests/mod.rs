@@ -25,6 +25,14 @@ pub fn legacy_deploy_id(bytes: &[u8]) -> models::rust::deploy_id::DeployLookupId
     )
 }
 
+pub fn current_deploy_id(bytes: &[u8]) -> models::rust::deploy_id::DeployLookupId {
+    models::rust::deploy_id::DeployLookupId::from_protocol_bytes(
+        casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        bytes,
+    )
+    .expect("current protocol deploy identity")
+}
+
 pub fn pending_legacy(
     deploy: crypto::rust::signatures::signed::Signed<
         models::rust::casper::protocol::casper_message::DeployData,
@@ -32,6 +40,15 @@ pub fn pending_legacy(
 ) -> block_storage::rust::deploy::pending_deploy::PendingDeploy {
     block_storage::rust::deploy::pending_deploy::PendingDeploy::from_legacy(deploy)
         .expect("legacy pending deploy")
+}
+
+pub fn pending_envelope(
+    deploy: crypto::rust::signatures::signed::Cosigned<
+        models::rust::casper::protocol::casper_message::DeployData,
+    >,
+) -> block_storage::rust::deploy::pending_deploy::PendingDeploy {
+    block_storage::rust::deploy::pending_deploy::PendingDeploy::from_envelope_v6(deploy)
+        .expect("protocol-v6 pending deploy")
 }
 
 pub fn legacy_rejected_occurrence(

@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::deploy::pending_deploy::PendingDeploy;
@@ -229,6 +230,30 @@ fn trace_deploy_filter<'a>(reason: &'static str, deploy_ids: impl IntoIterator<I
 
 fn retry_frontier_deferral_lease_expired(next_block: i64, rejection_height: i64) -> bool {
     next_block.saturating_sub(rejection_height) > RETRY_FRONTIER_DEFERRAL_LEASE_BLOCKS
+}
+
+fn selected_parents_collectively_cover_latest_messages(
+    dag: &KeyValueDagRepresentation,
+    parents: &[BlockMessage],
+    justifications: &[Justification],
+    invalid_blocks: &HashMap<BlockHash, Validator>,
+) -> Result<bool, CasperError> {
+    for justification in justifications {
+        if invalid_blocks.contains_key(&justification.latest_block_hash) {
+            continue;
+        }
+        let mut covered = false;
+        for parent in parents {
+            if dag.is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)? {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// One line per deferred retry with the gate's basis — a recurring deferral
@@ -1013,22 +1038,12 @@ async fn prepare_user_deploys_with_policy(
         );
     }
     if !retry_candidates.is_empty() {
-        let mut retry_frontier_merged = false;
-        'parents: for parent in &casper_snapshot.parents {
-            for justification in &casper_snapshot.justifications {
-                if !casper_snapshot
-                    .invalid_blocks
-                    .contains_key(&justification.latest_block_hash)
-                    && !casper_snapshot
-                        .dag
-                        .is_dag_ancestor(&justification.latest_block_hash, &parent.block_hash)?
-                {
-                    continue 'parents;
-                }
-            }
-            retry_frontier_merged = true;
-            break;
-        }
+        let retry_frontier_merged = selected_parents_collectively_cover_latest_messages(
+            &casper_snapshot.dag,
+            &casper_snapshot.parents,
+            &casper_snapshot.justifications,
+            &casper_snapshot.invalid_blocks,
+        )?;
         if !retry_frontier_merged {
             let latest_message_count = casper_snapshot
                 .justifications
@@ -3720,27 +3735,7 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
             .iter()
             .map(|deploy| ProcessedDeploy::admission_rejected(deploy, pre_state_hash.clone())),
     );
-    let block_bonds = {
-        let context = floor_ctx.as_ref().ok_or_else(|| {
-            CasperError::Other(
-                "finalized_floor requires a non-empty parent set; genesis pre-state comes from config"
-                    .to_string(),
-            )
-        })?;
-        let committee =
-            crate::rust::finality::floor::floor_committee(runtime_manager, &context.floor_state)
-                .await?;
-        if committee.len() != new_bonds.len() {
-            tracing::info!(
-                target: "f1r3fly.casper.bonds_validation",
-                floor_number = context.floor.block_number,
-                committee = committee.len(),
-                post_state_bonds = new_bonds.len(),
-                "block bonds field differs from post-state bonds"
-            );
-        }
-        committee
-    };
+    let block_bonds = new_bonds;
     let mut bond_generations = runtime_manager
         .compute_bond_generations(&post_state_hash)
         .await?
@@ -7403,7 +7398,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_frontier_defers_then_accepts_covering_parent_or_lease_escape() {
+    async fn retry_frontier_uses_collective_parent_coverage_and_bounded_lease() {
         use block_storage::rust::dag::block_dag_key_value_storage::{
             BlockDagKeyValueStorage, InsertMode,
         };
@@ -7514,29 +7509,99 @@ mod tests {
             true,
         )
         .await
-        .expect("prepare deploys without covering parent");
+        .expect("prepare deploys with collectively covering parents");
 
         assert!(
-            prepared.deploys.is_empty(),
-            "merged-frontier retry packaging must defer a retry over visible sibling parents"
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.deploy_id() == &current_id_bytes(&retry)),
+            "split selected parents collectively cover their visible latest messages"
         );
 
-        let covering = test_block(
-            invalid_block_hash(0xB3),
-            validator(1),
-            vec![left.block_hash.clone(), right.block_hash.clone()],
+        snapshot.parents.reverse();
+        let mut reversed_justifications = snapshot.justifications.to_vec();
+        reversed_justifications.reverse();
+        snapshot.justifications = reversed_justifications.into_iter().collect();
+        let prepared = prepare_user_deploys(
+            &snapshot,
             61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with permuted collective coverage");
+        assert!(
+            prepared
+                .deploys
+                .iter()
+                .any(|deploy| deploy.deploy_id() == &current_id_bytes(&retry)),
+            "parent and latest-message order must not change collective coverage"
+        );
+
+        let missing = test_block(
+            invalid_block_hash(0xB3),
+            validator(3),
+            vec![floor.block_hash.clone()],
+            60,
             Vec::new(),
         );
         block_store
-            .put_block_message(&covering)
-            .expect("store covering parent");
+            .put_block_message(&missing)
+            .expect("store uncovered latest message");
         dag_storage
-            .insert(&covering, InsertMode::Normal)
-            .expect("insert covering parent");
+            .insert(&missing, InsertMode::Normal)
+            .expect("insert uncovered latest message");
         snapshot.dag = dag_storage.get_representation().expect("updated dag");
-        snapshot.parents = vec![covering, left.clone()];
+        snapshot.justifications = [
+            Justification {
+                validator: validator(1),
+                latest_block_hash: left.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: right.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(3),
+                latest_block_hash: missing.block_hash.clone(),
+            },
+        ]
+        .into_iter()
+        .collect();
+        snapshot.parents = vec![left.clone(), right.clone()];
 
+        let prepared = prepare_user_deploys(
+            &snapshot,
+            61,
+            10_000,
+            deploy_storage.clone(),
+            rejected_deploy_buffer.clone(),
+            &block_store,
+            true,
+            true,
+        )
+        .await
+        .expect("prepare deploys with an incomplete selected frontier");
+
+        assert!(
+            prepared.deploys.is_empty(),
+            "an uncovered valid latest message must defer retry before lease expiry"
+        );
+        assert!(
+            rejected_deploy_buffer
+                .lock()
+                .expect("rejected buffer lock")
+                .contains_id(&current_id(&retry))
+                .expect("contains retry after deferral"),
+            "frontier deferral must retain owner custody"
+        );
+
+        snapshot.parents = vec![left.clone(), right.clone(), missing.clone()];
         let prepared = prepare_user_deploys(
             &snapshot,
             62,
@@ -7548,14 +7613,13 @@ mod tests {
             true,
         )
         .await
-        .expect("prepare deploys with covering parent");
-
+        .expect("prepare deploys after collective frontier completion");
         assert!(
             prepared
                 .deploys
                 .iter()
                 .any(|deploy| deploy.deploy_id() == &current_id_bytes(&retry)),
-            "a covering parent must admit the retry when another selected parent is redundant"
+            "collective coverage must admit retry without a serial coalescing parent"
         );
 
         // Reflexive cover: a selected parent that IS the sole valid latest
@@ -7596,6 +7660,10 @@ mod tests {
             Justification {
                 validator: validator(2),
                 latest_block_hash: right.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(3),
+                latest_block_hash: missing.block_hash.clone(),
             },
         ]
         .into_iter()

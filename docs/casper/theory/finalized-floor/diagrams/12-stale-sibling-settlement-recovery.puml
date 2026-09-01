@@ -42,12 +42,17 @@ V1 -> F: settle exact frontier {A, B}
 F -> F: replay preserves B
 F -> R: tombstone exact occurrence (A signature, A source)
 par independent settlement observation
-  R --> V1: buffer rejected occurrence A
+  F --> V1: record canonical rejection A
 else
-  R --> V2: buffer rejected occurrence A
+  F --> V2: record canonical rejection A
 else
-  R --> V3: buffer rejected occurrence A
+  F --> V3: record canonical rejection A
 end
+R --> V1: store retry custody A
+V2 -> F: support settlement
+F --> V1: publish floor containing rejection A
+F --> V2: publish floor containing rejection A
+F --> V3: publish floor containing rejection A
 
 V1 -> F: carrier owner proposes {A, Fresh}
 V2 -[#B71C1C,dashed]> F: no custody for carrier A

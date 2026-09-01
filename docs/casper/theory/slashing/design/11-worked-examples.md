@@ -33,20 +33,23 @@ continue as the active set.
 
 **Theorems exercised.** T-1, T-2, T-7, T-10. **Diagram 02.**
 
-## 11.2 Two-level slashing (collusion ends in mutual destruction)
+## 11.2 Counterfactual two-level slashing
 
 **Setup.** 4 validators `{A, B, C, D}`. A equivocates; B colludes
 by citing A's equivocation in B's next block without attaching a
 SlashDeploy.
 
-**Trace.**
+This trace applies only when `EconomicNeglectSlashing = TRUE`. The current
+protocol rejects B without creating an evidence record.
+
+**Counterfactual trace.**
 
 ```
 1-6: same as 11.1 (A is detected and recorded)
 7.  sign(B, 7, bB)   ⟶  D += bB ; bB cites b₁ (the invalid block)
                           ; bB carries no SlashDeploy
-8.  detect(bB)       = NeglectedEquivocation  ; (B is recorded too)
-9.  record(B, 6)
+8.  detect(bB)       = NeglectedEquivocation
+9.  counterfactualRecord(B, 6)
 10. propose(C, [SlashDeploy(b₁', A, ...), SlashDeploy(bB, B, ...)])
 11. executeSlash(A, true)
 12. executeSlash(B, true)
@@ -194,32 +197,17 @@ bug #6).
 ```
 1. sign(A, 5, bX)             ⟶ D += bX (regression)
 2. validate(bX) = JustificationRegression
-3. is_slashable(JustificationRegression) = TRUE
-
-   Pre-fix dispatcher (engine/multi_parent_casper/validation_dispatcher.rs:502):
-4. handle_invalid_block_effect(bX, invalid = true)
-   ⟶ DAG marks bX invalid; NO EquivocationRecord;
-      A continues with bond intact unless a future proposer
-      happens to surface A's invalid latest message.
-
-   Post-fix #3 dispatcher:
-4'. insert_equivocation_record(A, 4, ∅)
-5'. update_equivocation_record(A, 4, bX.hash)
-6'. propose(B, [SlashDeploy(bX, A, ...)])
-7'. executeSlash(A, true)
-    ⟶ allBonds[A] := 0
-    ⟶ activeValidators := {B, C}
-    ⟶ coopVaultBalance := 100
+3. is_slashable(JustificationRegression) = FALSE
+4. persist_rejection(bX, JustificationRegression)
+   ⟶ DAG marks bX rejected
+   ⟶ no EquivocationRecord is created
+   ⟶ no SlashDeploy can cite bX as economic evidence
 ```
 
-**Final state.** Pre-fix: A unpunished. Post-fix: A is slashed in
-B's next block, mirroring the AdmissibleEquivocation flow. This
-example exercises the dispatcher uniformity claim of T-9.3.
-
-The same trace generalizes to every other `is_slashable() = ⊤`
-variant (`InvalidBondsCache`, `ContainsExpiredDeploy`,
-`ContainsTimeExpiredDeploy`, `InvalidBlockNumber`, etc.) — each
-populates an EquivocationRecord under the post-fix dispatcher.
+**Final state.** The block has durable terminal metadata. The contextual
+verdict does not change A's bond. The same rule applies to
+`InvalidBondsCache`, `ContainsExpiredDeploy`,
+`ContainsTimeExpiredDeploy`, and `InvalidBlockNumber`.
 
 **Theorems exercised.** T-9.3. **Diagram 05.**
 
@@ -555,7 +543,7 @@ B.replay(b)
 ```
 
 **Theorems exercised.** T-9.12 (`main_T9_12_stale_evidence_not_authorized`).
-TLA+ `Inv_StaleEvidenceCannotSlashRebondedKey`. Rust
+TLA+ `Inv_StaleGenerationCannotSlashRebondedKey`. Rust
 `stale_invalid_evidence_is_not_an_authorized_slash_candidate`.
 **Diagram.** Extends Diagram 06 (validator lifecycle) with generation and
 activation-epoch tags.
@@ -594,7 +582,7 @@ B.prepare_slashing_deploys()
 ```
 
 **Theorems exercised.** T-LivenessGap (`deploy_epoch_matches_target`).
-TLA+ `Inv_NoInvalidLatestLivenessGap`. Rust
+TLA+ `Inv_PendingSlashCompleteForCurrentPreState`. Rust
 `current_epoch_invalid_evidence_is_authorized_once_per_offender`.
 **Diagram.** Extends Diagram 08 with the new index path.
 
@@ -675,8 +663,7 @@ validate(b)
   if justifications.len() != justifications.iter().map(.validator)
                                             .collect::<HashSet>().len()
   ⟶ REJECT b as invalid (DuplicateJustification)
-  ⟶ b is recorded as invalid; if its sender is slashable, the dispatch
-     catch-all (bug #3 fix) inserts an equivocation record
+  ⟶ b is recorded as invalid without new economic evidence
 ```
 
 **Theorems exercised.** T-9.15 (`main_T9_15_duplicate_justifications_rejected`),

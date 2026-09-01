@@ -30,7 +30,7 @@
 #   TLC_WORKERS=4        TLC worker threads (a number; never `auto`)
 #   TLC_FP=0             TLC fingerprint polynomial index
 #   TLC_SEED=0           TLC fingerprint seed
-#   TLC_RSS=12G          cgroup MemoryMax (systemd size suffix: G/M)
+#   TLC_RSS=8G           cgroup MemoryMax (systemd size suffix: G/M)
 #   TLC_METADIR_ROOT=<repo>/target/tlc-metadir
 #   TLC_JAR=/usr/share/java/tla2tools.jar
 #   ALLOW_UNBOUNDED_TLC=1   debug escape hatch — skips the cgroup ceiling
@@ -51,7 +51,7 @@ TLC_HEAP="${TLC_HEAP:-4g}"
 TLC_WORKERS="${TLC_WORKERS:-4}"
 TLC_FP="${TLC_FP:-0}"
 TLC_SEED="${TLC_SEED:-0}"
-TLC_RSS="${TLC_RSS:-12G}"
+TLC_RSS="${TLC_RSS:-8G}"
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 
 # Resolve the repo root. Callers SHOULD export TLC_REPO_ROOT (each computes

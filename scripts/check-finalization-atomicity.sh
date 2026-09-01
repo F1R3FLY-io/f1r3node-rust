@@ -66,6 +66,7 @@ tla2sany "$MODEL_ROOT/FinalizationBoundHead.tla" >"$LOG_ROOT/sany-bound-head.log
 tla2sany "$MODEL_ROOT/FinalizationRecovery.tla" >"$LOG_ROOT/sany-recovery.log" 2>&1
 tla2sany "$MODEL_ROOT/FinalizationGenesisIdentity.tla" >"$LOG_ROOT/sany-genesis-identity.log" 2>&1
 tla2sany "$MODEL_ROOT/FinalizationWorkerRetry.tla" >"$LOG_ROOT/sany-worker-retry.log" 2>&1
+tla2sany "$MODEL_ROOT/FinalizationSnapshotRetry.tla" >"$LOG_ROOT/sany-snapshot-retry.log" 2>&1
 tla2sany "$MODEL_ROOT/ProposalFloorReadiness.tla" >"$LOG_ROOT/sany-proposal-readiness.log" 2>&1
 tla2sany "$MODEL_ROOT/FinalityThresholdAlignment.tla" >"$LOG_ROOT/sany-threshold-alignment.log" 2>&1
 tla2sany "$MODEL_ROOT/GenesisApprovalTrust.tla" >"$LOG_ROOT/sany-genesis-approval-trust.log" 2>&1
@@ -79,6 +80,8 @@ run_tlc_unsafe stale-overwrite MC_FinalizationAtomicity_stale_overwrite_unsafe.c
 run_tlc_unsafe regressive-publish MC_FinalizationAtomicity_regressive_publish_unsafe.cfg FinalizationAtomicity.tla Inv_PublicationMonotonic
 run_tlc_unsafe lost-wake MC_FinalizationAtomicity_lost_wake_unsafe.cfg FinalizationAtomicity.tla Inv_NoLostWake
 run_tlc_safe worker-retry MC_FinalizationWorkerRetry.cfg FinalizationWorkerRetry.tla
+run_tlc_safe snapshot-retry MC_FinalizationSnapshotRetry.cfg FinalizationSnapshotRetry.tla
+run_tlc_unsafe stale-snapshot-publish MC_FinalizationSnapshotRetry_stale_publish_unsafe.cfg FinalizationSnapshotRetry.tla Inv_ReaderResultCoherent
 run_tlc_unsafe failure-completes MC_FinalizationWorkerRetry_failure_completes_unsafe.cfg FinalizationWorkerRetry.tla Inv_CompletionRequiresSuccess
 run_tlc_safe proposal-readiness MC_ProposalFloorReadiness.cfg ProposalFloorReadiness.tla
 run_tlc_unsafe proposal-pending-no-request MC_ProposalFloorReadiness_pending_no_request_unsafe.cfg ProposalFloorReadiness.tla Inv_FloorPendingRequestsFinalization
@@ -109,6 +112,8 @@ run_tlc_unsafe effect-cursor-gap MC_FinalizationRecovery_effect_gap_unsafe.cfg F
 
 run_apalache_safe atomicity MC_FinalizationAtomicityApalache.cfg FinalizationAtomicity.tla "${FINALIZATION_ATOMICITY_APALACHE_LENGTH:-10}"
 run_apalache_safe worker-retry MC_FinalizationWorkerRetryApalache.cfg FinalizationWorkerRetry.tla "${FINALIZATION_WORKER_RETRY_APALACHE_LENGTH:-12}"
+run_apalache_safe snapshot-retry MC_FinalizationSnapshotRetryApalache.cfg FinalizationSnapshotRetry.tla "${FINALIZATION_SNAPSHOT_RETRY_APALACHE_LENGTH:-8}"
+run_apalache_unsafe stale-snapshot-publish MC_FinalizationSnapshotRetry_stale_publish_unsafe_Apalache.cfg FinalizationSnapshotRetry.tla 5 Inv_ReaderResultCoherent
 run_apalache_unsafe failure-completes MC_FinalizationWorkerRetry_failure_completes_unsafe_Apalache.cfg FinalizationWorkerRetry.tla 4 Inv_CompletionRequiresSuccess
 run_apalache_safe proposal-readiness MC_ProposalFloorReadinessApalache.cfg ProposalFloorReadiness.tla "${PROPOSAL_FLOOR_READINESS_APALACHE_LENGTH:-8}"
 run_apalache_unsafe proposal-pending-no-request MC_ProposalFloorReadiness_pending_no_request_unsafe_Apalache.cfg ProposalFloorReadiness.tla 2 Inv_FloorPendingRequestsFinalization

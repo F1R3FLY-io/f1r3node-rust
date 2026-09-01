@@ -1519,7 +1519,9 @@ fn stage_spine_state_divergence(
     state_parent_of_b: StateParentOfMerge,
 ) -> SpineStateDivergence {
     use casper::rust::util::construct_deploy::basic_processed_deploy;
-    use models::rust::casper::protocol::casper_message::RejectedDeployReason;
+    use models::rust::casper::protocol::casper_message::{RejectedDeploy, RejectedDeployReason};
+    use models::rust::deploy_id::DeployIdV6;
+    use prost::bytes::Bytes;
 
     use crate::helper::block_generator::{create_block_with_merge_facts, MergeFacts};
 
@@ -1614,8 +1616,8 @@ fn stage_spine_state_divergence(
     // missing, S carries the content B's merge keeps.
     let x = basic_processed_deploy(1, Some("root".to_string())).expect("deploy x");
     let z = basic_processed_deploy(2, Some("root".to_string())).expect("deploy z");
-    let x_sig = x.deploy.sig.clone();
-    let z_sig = z.deploy.sig.clone();
+    let x_sig = Bytes::copy_from_slice(x.deploy_id());
+    let z_sig = Bytes::copy_from_slice(z.deploy_id());
 
     let a = mk(
         &v1,
@@ -1644,8 +1646,8 @@ fn stage_spine_state_divergence(
     // applied; re-based onto A, nothing is rejected and A's x survives in
     // the state B inherits.
     let b_rejected = match state_parent_of_b {
-        StateParentOfMerge::Floor => vec![crate::legacy_rejected_occurrence(
-            x_sig.clone(),
+        StateParentOfMerge::Floor => vec![RejectedDeploy::occurrence_v6(
+            DeployIdV6::try_from(x_sig.as_ref()).expect("protocol-v6 x identity"),
             a.block_hash.clone(),
             RejectedDeployReason::MergeConflict,
         )],
@@ -1708,7 +1710,7 @@ fn stage_spine_state_divergence(
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == x_sig && !pd.is_failed),
+            .any(|pd| pd.deploy_id() == x_sig.as_ref() && !pd.is_failed),
         "staging: A must carry x as a non-failed deploy — it is the settled \
          content whose absence downstream is the whole specimen"
     );

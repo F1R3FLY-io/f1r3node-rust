@@ -66,6 +66,36 @@ fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
 fn find_deploy_max_attempts() -> u8 { FIND_DEPLOY_MAX_ATTEMPTS }
 
+fn private_name_preview_response(request: PrivateNamePreviewQuery) -> PrivateNamePreviewResponse {
+    match BlockAPI::preview_private_names(
+        &request.user.to_vec(),
+        request.timestamp,
+        request.name_qty,
+        casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+    ) {
+        Ok(ids) => {
+            let ids = ids.into_iter().map(Into::into).collect();
+            PrivateNamePreviewResponse {
+                message: Some(
+                    models::casper::v1::private_name_preview_response::Message::Payload(
+                        models::casper::v1::PrivateNamePreviewPayload { ids },
+                    ),
+                ),
+            }
+        }
+        Err(error) => {
+            tracing::debug!(%error, "Private-name preview is unavailable");
+            PrivateNamePreviewResponse {
+                message: Some(
+                    models::casper::v1::private_name_preview_response::Message::Error(
+                        error.into_service_error(),
+                    ),
+                ),
+            }
+        }
+    }
+}
+
 /// Deploy gRPC Service V1 implementation
 #[derive(Clone)]
 pub struct DeployGrpcServiceV1Impl {
@@ -674,35 +704,9 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<PrivateNamePreviewQuery>,
     ) -> Result<tonic::Response<PrivateNamePreviewResponse>, tonic::Status> {
-        let request = request.into_inner();
-        match BlockAPI::preview_private_names(
-            &request.user.to_vec(),
-            request.timestamp,
-            request.name_qty,
-        ) {
-            Ok(ids) => {
-                let ids_bytes: Vec<prost::bytes::Bytes> =
-                    ids.into_iter().map(|id| id.into()).collect();
-                let payload = models::casper::v1::PrivateNamePreviewPayload { ids: ids_bytes };
-                Ok(tonic::Response::new(PrivateNamePreviewResponse {
-                    message: Some(
-                        models::casper::v1::private_name_preview_response::Message::Payload(
-                            payload,
-                        ),
-                    ),
-                }))
-            }
-            Err(e) => {
-                error!("Deploy service method error preview_private_names: {}", e);
-                Ok(tonic::Response::new(PrivateNamePreviewResponse {
-                    message: Some(
-                        models::casper::v1::private_name_preview_response::Message::Error(
-                            e.into_service_error(),
-                        ),
-                    ),
-                }))
-            }
-        }
+        Ok(tonic::Response::new(private_name_preview_response(
+            request.into_inner(),
+        )))
     }
 
     /// Get last finalized block
@@ -1150,5 +1154,29 @@ fn deploy_state_to_proto(
         S::Failed => DeployFinalizationStateProto::DeployStateFailed,
         S::Pending => DeployFinalizationStateProto::DeployStatePending,
         S::Expired => DeployFinalizationStateProto::DeployStateExpired,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_v6_private_name_preview_returns_the_error_branch() {
+        let response = private_name_preview_response(PrivateNamePreviewQuery {
+            user: prost::bytes::Bytes::from_static(&[2; 33]),
+            timestamp: 1,
+            name_qty: 1,
+        });
+
+        match response.message {
+            Some(models::casper::v1::private_name_preview_response::Message::Error(error)) => {
+                assert!(error
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("authenticated deploy envelope")));
+            }
+            other => panic!("expected protocol-v6 preview error, got {other:?}"),
+        }
     }
 }

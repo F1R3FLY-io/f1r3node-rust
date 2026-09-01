@@ -842,6 +842,142 @@ Proof.
 Qed.
 
 (* ===========================================================================
+   Seam (4b) - honest proposal construction refines receiver admission
+
+   The proposer selects a complete protected frontier. The receiver replays the
+   declared parents and checks that they carry the committed finalized floor.
+   The receiver does not require equality with its local fork-choice result.
+   Justifications remain the frozen authority input and do not become replay
+   parents merely because a declared parent subset omits one justified sibling.
+   =========================================================================== *)
+
+Section ReceiverParentAdmission.
+  Variables ParentHash FloorHash Justification ReplayState Authority : Type.
+  Variable descends : FloorHash -> ParentHash -> Prop.
+  Variable effective_floor : ParentHash -> FloorHash.
+  Variable floor_leq : FloorHash -> FloorHash -> Prop.
+  Variable state_preserved : FloorHash -> FloorHash -> Prop.
+  Variable replay_from_parents : list ParentHash -> ReplayState.
+  Variable authority_from_justifications : list Justification -> Authority.
+
+  Definition floor_comparable (left right : FloorHash) : Prop :=
+    floor_leq left right \/ floor_leq right left.
+
+  Definition comparable_parent_floors (parents : list ParentHash) : Prop :=
+    forall left right,
+      In left parents ->
+      In right parents ->
+      floor_comparable (effective_floor left) (effective_floor right).
+
+  Definition receiver_parent_frontier_admissible
+    (floor : FloorHash) (parents : list ParentHash) : Prop :=
+    parents <> [] /\
+    Exists (descends floor) parents /\
+    Forall
+      (fun parent =>
+         floor_leq (effective_floor parent) floor /\
+         state_preserved (effective_floor parent) floor)
+      parents /\
+    comparable_parent_floors parents.
+
+  Definition honest_proposer_frontier
+    (floor : FloorHash) (protected : ParentHash) (secondary : list ParentHash) : Prop :=
+    descends floor protected /\
+    Forall
+      (fun parent =>
+         floor_leq (effective_floor parent) floor /\
+         state_preserved (effective_floor parent) floor)
+      (protected :: secondary) /\
+    comparable_parent_floors (protected :: secondary).
+
+  Theorem honest_proposer_frontier_refines_receiver_admission :
+    forall floor protected secondary,
+      honest_proposer_frontier floor protected secondary ->
+      receiver_parent_frontier_admissible floor (protected :: secondary).
+  Proof.
+    intros floor protected secondary [Hprotected [Hpreserved Hcomparable]].
+    unfold receiver_parent_frontier_admissible.
+    split; [discriminate |].
+    split.
+    - constructor. exact Hprotected.
+    - split; assumption.
+  Qed.
+
+  Definition receiver_admission_with_justifications
+    (floor : FloorHash) (parents : list ParentHash)
+    (_ : list Justification) : Prop :=
+    receiver_parent_frontier_admissible floor parents.
+
+  Theorem receiver_admission_justification_noninterference :
+    forall floor parents first second,
+      receiver_admission_with_justifications floor parents first <->
+      receiver_admission_with_justifications floor parents second.
+  Proof. intros; reflexivity. Qed.
+
+  Definition candidate_semantics
+    (parents : list ParentHash) (justifications : list Justification)
+    : ReplayState * Authority :=
+    (replay_from_parents parents, authority_from_justifications justifications).
+
+  Theorem candidate_semantics_replay_projection :
+    forall parents justifications,
+      fst (candidate_semantics parents justifications) = replay_from_parents parents.
+  Proof. reflexivity. Qed.
+
+  Theorem candidate_semantics_authority_projection :
+    forall parents justifications,
+      snd (candidate_semantics parents justifications) =
+      authority_from_justifications justifications.
+  Proof. reflexivity. Qed.
+End ReceiverParentAdmission.
+
+Definition nat_descends (floor parent : nat) : Prop := floor <= parent.
+Definition nat_effective_floor (_ : nat) : nat := 1.
+Definition nat_floor_leq (left right : nat) : Prop := left <= right.
+Definition nat_state_preserved (left right : nat) : Prop := left <= right.
+
+Theorem replay_safe_parent_subset_witness :
+  @receiver_parent_frontier_admissible
+    nat nat
+    nat_descends nat_effective_floor nat_floor_leq nat_state_preserved
+    1 [3] /\
+  ~ Permutation [3] [3; 4] /\
+  In 4 [3; 4] /\
+  ~ In 4 [3].
+Proof.
+  split.
+  - unfold receiver_parent_frontier_admissible.
+    split; [discriminate |].
+    split.
+    + constructor. unfold nat_descends; lia.
+    + split.
+      * constructor.
+        -- split; unfold nat_effective_floor, nat_floor_leq, nat_state_preserved; lia.
+        -- constructor.
+      * intros left right Hleft Hright.
+        destruct Hleft as [Hleft | Hleft]; [subst left | contradiction].
+        destruct Hright as [Hright | Hright]; [subst right | contradiction].
+        left. unfold nat_effective_floor, nat_floor_leq. lia.
+  - split.
+    + intro Hperm. apply Permutation_length in Hperm. simpl in Hperm. lia.
+    + split.
+      * simpl. auto.
+      * simpl. lia.
+Qed.
+
+Theorem disconnected_parent_frontier_rejected :
+  ~ @receiver_parent_frontier_admissible
+      nat nat
+      nat_descends nat_effective_floor nat_floor_leq nat_state_preserved
+      2 [1].
+Proof.
+  intros [_ [Hdescends _]].
+  inversion Hdescends as [head tail Hhead | head tail Htail]; subst.
+  - change (2 <= 1) in Hhead. lia.
+  - inversion Htail.
+Qed.
+
+(* ===========================================================================
    Pipeline seams: the whole estimator pipeline (filter -> score -> rank -> cap)
    composes with the bridges above. These re-exports make the Filter/Rank/Bound
    dependencies substantive - each names the exact Rust-enforced fact.

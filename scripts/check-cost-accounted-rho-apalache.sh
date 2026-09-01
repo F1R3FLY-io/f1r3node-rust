@@ -530,6 +530,13 @@ run_expected_violation replay-admission-cache-first-unsafe \
   "publishing cache state before durable evidence is independently refuted" \
   CacheFollowsDurablePublication \
   --config=ReplayAdmissionPublicationCacheFirstUnsafe.cfg --length=2 ReplayAdmissionPublication.tla || overall=1
+run_check merge-tag-binding \
+  "authenticated system URI bindings preserve numeric classification across validators and envelope changes" \
+  --config=MergeTagBindingApalache.cfg --length=4 MergeTagBinding.tla || overall=1
+run_expected_violation merge-tag-binding-envelope-derived-unsafe \
+  "deriving the integer-add merge tag from the protocol envelope is independently refuted" \
+  Inv_UriRegistryAgreement \
+  --config=MergeTagBindingEnvelopeDerivedUnsafeApalache.cfg --length=1 MergeTagBinding.tla || overall=1
 run_check deterministic-parallel-reduction \
   "complete causal frontiers preserve canonical COMM results, located-authority exclusion, and disjoint parallelism" \
   --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction.cfg --length=10 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1

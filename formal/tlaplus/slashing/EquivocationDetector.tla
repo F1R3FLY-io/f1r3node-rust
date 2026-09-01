@@ -307,16 +307,13 @@ Live_DetectionComplete ==
 (****************************************************************************)
 (* Invariant: taxonomy correctness (T-3).                                   *)
 (*                                                                          *)
-(* Ranges over the REAL 27-variant InvalidBlock enum                        *)
-(*   (casper/src/rust/block_status.rs) and PINS the 19-element is_slashable  *)
-(* set (block_status.rs:191-236), then asserts:                             *)
-(*   (a) the enum has 27 variants and the slashable set has 19, contained    *)
+(* Ranges over the REAL 29-variant InvalidBlock enum                        *)
+(*   (casper/src/rust/block_status.rs) and PINS the 2-element is_slashable   *)
+(* set, then asserts:                                                       *)
+(*   (a) the enum has 29 variants and the slashable set has 2, contained     *)
 (*       in the enum;                                                        *)
-(*   (b) the detector's status set is closed AND every non-valid status the  *)
-(*       detector emits (admissible/ignorable/neglected) maps to a slashable  *)
-(*       InvalidBlock variant.                                              *)
-(* This replaces the prior 5-element status-range-only check (which the      *)
-(* README overclaimed as covering the 17 slashable variants).               *)
+(*   (b) admissible and ignorable equivocations are evidence-eligible;       *)
+(*   (c) view-relative neglect remains invalid but is not slash evidence.    *)
 (****************************************************************************)
 InvalidBlockVariants ==
     { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
@@ -324,20 +321,15 @@ InvalidBlockVariants ==
       "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
       "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
       "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
-      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
+      "InvalidEquivocationEvidence", "UnauthorizedSlashDeploy",
+      "ContainsExpiredDeploy",
       "ContainsTimeExpiredDeploy", "ContainsFutureDeploy",
       "InvalidFormat", "InvalidSignature", "InvalidSender", "InvalidVersion",
-      "InvalidTimestamp", "InvalidRejectedDeploy", "NotOfInterest",
+      "InvalidTimestamp", "InvalidRejectedDeploy", "PrematureDeployRetry", "NotOfInterest",
       "LowDeployCost" }
 
 SlashableVariants ==
-    { "AdmissibleEquivocation", "IgnorableEquivocation", "NeglectedEquivocation",
-      "NeglectedInvalidBlock", "JustificationRegression", "InvalidParents",
-      "InvalidFollows", "InvalidBlockNumber", "InvalidSequenceNumber",
-      "InvalidShardId", "InvalidRepeatDeploy", "DeployNotSigned",
-      "InvalidTransaction", "InvalidBondsCache", "InvalidBlockHash",
-      "UnauthorizedSlashDeploy", "ContainsExpiredDeploy",
-      "ContainsTimeExpiredDeploy", "ContainsFutureDeploy" }
+    { "AdmissibleEquivocation", "IgnorableEquivocation" }
 
 StatusInvalidBlock(st) ==
     CASE st = "admissible" -> "AdmissibleEquivocation"
@@ -346,14 +338,16 @@ StatusInvalidBlock(st) ==
       [] OTHER             -> "AdmissibleEquivocation"
 
 Inv_TaxonomyCorrect ==
-    /\ Cardinality(InvalidBlockVariants) = 27
-    /\ Cardinality(SlashableVariants) = 19
+    /\ Cardinality(InvalidBlockVariants) = 29
+    /\ Cardinality(SlashableVariants) = 2
     /\ SlashableVariants \subseteq InvalidBlockVariants
     /\ \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :
          /\ detectedStatus[<<v, s, b>>] \in
               {"none", "valid", "admissible", "ignorable", "neglected"}
-         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable", "neglected"}
+         /\ ( detectedStatus[<<v, s, b>>] \in {"admissible", "ignorable"}
               => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \in SlashableVariants )
+         /\ ( detectedStatus[<<v, s, b>>] = "neglected"
+              => StatusInvalidBlock(detectedStatus[<<v, s, b>>]) \notin SlashableVariants )
 
 Inv_NeglectedHasDetectableView ==
     \A v \in Validators, s \in 1..MaxSeqNum, b \in 1..MaxBlocksPerSeq :

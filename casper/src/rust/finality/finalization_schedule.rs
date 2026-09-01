@@ -1,7 +1,9 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use models::rust::block_hash::BlockHash;
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -15,6 +17,7 @@ pub struct FinalizationSchedule {
     retry_ready: AtomicBool,
     consecutive_failures: AtomicU32,
     parked_revision: Mutex<Option<u64>>,
+    parked_dependencies: Mutex<BTreeMap<u64, BTreeSet<BlockHash>>>,
     workers: Arc<Semaphore>,
     worker_limit: usize,
 }
@@ -35,6 +38,7 @@ impl FinalizationSchedule {
             retry_ready: AtomicBool::new(false),
             consecutive_failures: AtomicU32::new(0),
             parked_revision: Mutex::new(None),
+            parked_dependencies: Mutex::new(BTreeMap::new()),
             workers: Arc::new(Semaphore::new(worker_limit)),
             worker_limit,
         }
@@ -161,10 +165,52 @@ impl FinalizationSchedule {
             *parked = None;
         }
     }
+
+    pub fn park_missing_dependency_if_current<E>(
+        &self,
+        generation: u64,
+        dependency: BlockHash,
+        snapshot_is_current_and_missing: impl FnOnce() -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        let mut parked = self.parked_dependencies.lock();
+        if !snapshot_is_current_and_missing()? {
+            return Ok(false);
+        }
+        parked.entry(generation).or_default().insert(dependency);
+        Ok(true)
+    }
+
+    pub fn take_ready_missing_dependencies(
+        &self,
+        current_generation: u64,
+        dependency: &BlockHash,
+    ) -> bool {
+        let mut parked = self.parked_dependencies.lock();
+        let mut found = false;
+        parked.retain(|generation, dependencies| {
+            if *generation < current_generation {
+                found |= !dependencies.is_empty();
+                return false;
+            }
+            found |= dependencies.remove(dependency);
+            !dependencies.is_empty()
+        });
+        found
+    }
+
+    pub fn clear_missing_dependencies_through(&self, generation: u64) {
+        self.parked_dependencies
+            .lock()
+            .retain(|parked_generation, _| *parked_generation > generation);
+    }
+
+    pub fn mark_deferred(&self) { self.in_flight.fetch_sub(1, Ordering::SeqCst); }
 }
 
 #[cfg(test)]
 mod tests {
+    use prost::bytes::Bytes;
+
     use super::*;
 
     #[test]
@@ -253,5 +299,70 @@ mod tests {
         schedule.park_certificate_carrier(8);
         schedule.clear_parked_certificate_carrier(7);
         assert!(schedule.take_parked_certificate_carrier(8));
+    }
+
+    #[test]
+    fn deferred_coverage_waits_for_a_new_dependency_request() {
+        let schedule = FinalizationSchedule::new(2);
+        assert_eq!(schedule.request(), Some(1));
+        assert_eq!(schedule.next_coverage(), Some(1));
+        schedule.mark_launched(1);
+        schedule.mark_deferred();
+        assert_eq!(schedule.next_coverage(), None);
+        assert!(!schedule.is_quiescent());
+
+        assert_eq!(schedule.request(), Some(2));
+        assert_eq!(schedule.next_coverage(), Some(2));
+        schedule.mark_launched(2);
+        schedule.mark_succeeded(2);
+        assert!(schedule.is_quiescent());
+    }
+
+    #[test]
+    fn one_dependency_arrival_wakes_all_matching_revisions_once() {
+        let schedule = Arc::new(FinalizationSchedule::new(2));
+        let dependency = Bytes::from(vec![7; models::rust::block_hash::LENGTH]);
+        let other = Bytes::from(vec![8; models::rust::block_hash::LENGTH]);
+        schedule
+            .park_missing_dependency_if_current(3, dependency.clone(), || Ok::<_, ()>(true))
+            .unwrap();
+        schedule
+            .park_missing_dependency_if_current(4, dependency.clone(), || Ok::<_, ()>(true))
+            .unwrap();
+        schedule
+            .park_missing_dependency_if_current(4, other.clone(), || Ok::<_, ()>(true))
+            .unwrap();
+
+        let wakes = (0..8)
+            .map(|_| {
+                let schedule = schedule.clone();
+                let dependency = dependency.clone();
+                std::thread::spawn(move || schedule.take_ready_missing_dependencies(4, &dependency))
+            })
+            .map(|thread| thread.join().unwrap())
+            .filter(|woke| *woke)
+            .count();
+
+        assert_eq!(wakes, 1);
+        assert!(!schedule.take_ready_missing_dependencies(4, &dependency));
+        assert!(schedule.take_ready_missing_dependencies(4, &other));
+        assert!(schedule.parked_dependencies.lock().is_empty());
+    }
+
+    #[test]
+    fn a_complete_revision_clears_only_its_parked_dependencies() {
+        let schedule = FinalizationSchedule::new(2);
+        let first = Bytes::from(vec![9; models::rust::block_hash::LENGTH]);
+        let second = Bytes::from(vec![10; models::rust::block_hash::LENGTH]);
+        schedule
+            .park_missing_dependency_if_current(5, first.clone(), || Ok::<_, ()>(true))
+            .unwrap();
+        schedule
+            .park_missing_dependency_if_current(6, second.clone(), || Ok::<_, ()>(true))
+            .unwrap();
+        schedule.clear_missing_dependencies_through(5);
+
+        assert!(!schedule.take_ready_missing_dependencies(6, &first));
+        assert!(schedule.take_ready_missing_dependencies(6, &second));
     }
 }

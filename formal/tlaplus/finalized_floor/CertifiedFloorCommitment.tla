@@ -13,6 +13,8 @@ CONSTANT
   \* @type: Bool;
   EnforceParentFloorCompatibility,
   \* @type: Bool;
+  EnforceCommittedFloorCausalInput,
+  \* @type: Bool;
   CacheSkipsCandidateCompatibility,
   \* @type: Bool;
   BindCandidateAuthorityContext,
@@ -25,17 +27,18 @@ ASSUME /\ ModelValidators \subseteq {"v1", "v2", "v3"}
        /\ VerifyCertificates \in BOOLEAN
        /\ FetchDependencies \in BOOLEAN
        /\ EnforceParentFloorCompatibility \in BOOLEAN
+       /\ EnforceCommittedFloorCausalInput \in BOOLEAN
        /\ CacheSkipsCandidateCompatibility \in BOOLEAN
        /\ BindCandidateAuthorityContext \in BOOLEAN
        /\ UseReceiverLocalFloor \in BOOLEAN
 
 Validators == ModelValidators
 Nodes == ModelValidators
-Blocks == {"G", "A", "S1", "S2", "N", "R1", "R2", "R3", "H", "Bad"}
+Blocks == {"G", "A", "S1", "S2", "N", "R1", "R2", "R3", "H", "Bad", "Detached"}
 HistoricalBlocks == {"G", "A", "S1", "S2", "N"}
 RebaseBlocks == {"R1", "R2", "R3"}
 AttackBlocks == {"H", "Bad"}
-CandidateBlocks == RebaseBlocks \union AttackBlocks
+CandidateBlocks == RebaseBlocks \union AttackBlocks \union {"Detached"}
 Certificates == {"CGenesis", "CA", "CBad"}
 NoFloor == "NoFloor"
 Effects == {"funding"}
@@ -58,7 +61,19 @@ Parents(block) ==
     [] block = "R2" -> {"S2"}
     [] block = "R3" -> {"S1"}
     [] block = "H" -> {"N"}
-    [] block = "Bad" -> {"G"}
+    [] block \in {"Bad", "Detached"} -> {"G"}
+
+CausalHistory(block) ==
+  CASE block = "G" -> {"G"}
+    [] block = "A" -> {"G", "A"}
+    [] block \in {"S1", "S2"} -> {"G", "A", block}
+    [] block = "N" -> {"G", "A", "N"}
+    [] block = "R1" -> {"G", "A", "S1", "R1"}
+    [] block = "R2" -> {"G", "A", "S2", "R2"}
+    [] block = "R3" -> {"G", "A", "S1", "R3"}
+    [] block = "H" -> {"G", "A", "N", "H"}
+    [] block = "Bad" -> {"G", "Bad"}
+    [] block = "Detached" -> {"G", "Detached"}
 
 StructuralFloor(block) ==
   IF block \in RebaseBlocks THEN "G"
@@ -67,6 +82,7 @@ StructuralFloor(block) ==
 
 CommittedFloor(block) ==
   IF block \in RebaseBlocks /\ UseCommittedFloor THEN "A"
+  ELSE IF block = "Detached" THEN "A"
   ELSE IF block \in AttackBlocks THEN "G"
   ELSE StructuralFloor(block)
 
@@ -74,6 +90,7 @@ CertificateFor(block) ==
   IF block \in RebaseBlocks /\ UseCommittedFloor THEN "CA"
   ELSE IF block = "H" THEN "CGenesis"
   ELSE IF block = "Bad" THEN "CBad"
+  ELSE IF block = "Detached" THEN "CA"
   ELSE ""
 
 CertificateTarget(certificate) ==
@@ -113,6 +130,10 @@ EffectiveCommittedFloor(block) ==
 ParentFloorsPreserved(block) ==
   \A parent \in Parents(block) :
     Dominates(EffectiveCommittedFloor(parent), CommittedFloor(block))
+
+CommittedFloorIsCausalInput(block) ==
+  \E parent \in Parents(block) :
+    CommittedFloor(block) \in CausalHistory(parent)
 
 ExpectedCandidateAuthorityContext(block) ==
   IF CommittedFloor(block) = "A" THEN "ContextA" ELSE "ContextG"
@@ -173,7 +194,7 @@ TypeOK ==
   /\ hasAdvanced \in [Nodes -> BOOLEAN]
 
 Init ==
-  /\ publishedBlocks = HistoricalBlocks \union AttackBlocks
+  /\ publishedBlocks = HistoricalBlocks \union AttackBlocks \union {"Detached"}
   /\ publishedCertificates = {"CGenesis", "CBad"}
   /\ knownBlocks = [node \in Nodes |-> {"G"}]
   /\ knownCertificates =
@@ -184,7 +205,10 @@ Init ==
   /\ bufferedBlocks = [node \in Nodes |-> {}]
   /\ acceptedBlocks = [node \in Nodes |-> {"G"}]
   /\ proposedAtFloor =
-       [block \in CandidateBlocks |-> IF block \in AttackBlocks THEN "G" ELSE NoFloor]
+       [block \in CandidateBlocks |->
+          IF block \in AttackBlocks
+          THEN "G"
+          ELSE IF block = "Detached" THEN "A" ELSE NoFloor]
   /\ lfb = [node \in Nodes |-> "G"]
   /\ hasAdvanced = [node \in Nodes |-> FALSE]
 
@@ -264,6 +288,8 @@ BlockCertificateReady(node, block) ==
 CandidateSpecificCompatibility(node, block) ==
   /\ (~EnforceParentFloorCompatibility
        \/ CompatibilityAtReceiverFloor(block, lfb[node]))
+  /\ (~EnforceCommittedFloorCausalInput
+       \/ CommittedFloorIsCausalInput(block))
   /\ CandidateAuthorityContextBound(block)
 
 BlockUseCompatible(node, block) ==
@@ -381,6 +407,11 @@ AcceptedCandidatesPreserveEveryParentFloor ==
   \A node \in Nodes :
     \A block \in acceptedBlocks[node] \cap CandidateBlocks :
       ParentFloorsPreserved(block)
+
+AcceptedCandidatesCarryCommittedFloor ==
+  \A node \in Nodes :
+    \A block \in acceptedBlocks[node] \cap CandidateBlocks :
+      CommittedFloorIsCausalInput(block)
 
 AcceptedCandidatesBindAuthorityContext ==
   \A node \in Nodes :

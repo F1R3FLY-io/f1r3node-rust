@@ -3,7 +3,7 @@
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
@@ -111,29 +111,29 @@ fn alpha_num_char() -> impl Strategy<Value = char> {
     prop::char::ranges(vec!['a'..='z', 'A'..='Z', '0'..='9'].into_iter().collect())
 }
 
-pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
+fn deploy_data_gen() -> impl Strategy<Value = DeployData> {
     let term_length = 32..=1024;
     let term = prop::collection::vec(alpha_num_char(), term_length)
         .prop_map(|chars| chars.into_iter().collect::<String>());
 
-    (any::<i64>(), term, any::<String>()).prop_map(|(timestamp, term, shard_id)| {
+    (any::<i64>(), term, any::<String>()).prop_map(|(timestamp, term, shard_id)| DeployData {
+        time_stamp: timestamp,
+        valid_after_block_number: 1,
+        term,
+        language: "rholang".to_string(),
+        shard_id,
+        expiration_timestamp: None,
+        authority_presentations: Vec::new(),
+    })
+}
+
+pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
+    deploy_data_gen().prop_map(|deploy_data| {
         let secp256k1 = Secp256k1;
         let (sec, _) = secp256k1.new_key_pair();
 
-        Signed::create(
-            DeployData {
-                time_stamp: timestamp,
-                valid_after_block_number: 1,
-                term,
-                language: "rholang".to_string(),
-                shard_id,
-                expiration_timestamp: None,
-                authority_presentations: Vec::new(),
-            },
-            Box::new(secp256k1),
-            sec,
-        )
-        .expect("Failed to create signed deploy data")
+        Signed::create(deploy_data, Box::new(secp256k1), sec)
+            .expect("Failed to create signed deploy data")
     })
 }
 
@@ -156,6 +156,32 @@ pub fn processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
     })
 }
 
+pub fn protocol_v6_processed_deploy_gen() -> impl Strategy<Value = ProcessedDeploy> {
+    let term = prop::collection::vec(alpha_num_char(), 32..=1024)
+        .prop_map(|chars| chars.into_iter().collect::<String>());
+    let shard_id = prop::collection::vec(alpha_num_char(), 1..=64)
+        .prop_map(|chars| chars.into_iter().collect::<String>());
+    (0..=i64::MAX, term, shard_id).prop_map(|(timestamp, term, shard_id)| {
+        let secp256k1 = Secp256k1;
+        let (secret, _) = secp256k1.new_key_pair();
+        let envelope = Cosigned::create_single_envelope(
+            DeployData {
+                time_stamp: timestamp,
+                valid_after_block_number: 1,
+                term,
+                language: "rholang".to_string(),
+                shard_id,
+                expiration_timestamp: None,
+                authority_presentations: Vec::new(),
+            },
+            Box::new(secp256k1),
+            secret,
+        )
+        .expect("Failed to create protocol-v6 deploy envelope");
+        ProcessedDeploy::empty_from_cosigned(&envelope)
+    })
+}
+
 pub fn block_element_gen(
     set_block_number: Option<i64>,
     set_seq_number: Option<i32>,
@@ -172,6 +198,7 @@ pub fn block_element_gen(
     set_shard_id: Option<String>,
     hash_f: Option<Box<dyn Fn(BlockMessage) -> BlockHash>>,
 ) -> impl Strategy<Value = BlockMessage> {
+    let version = set_version.unwrap_or(CERTIFIED_ADMISSION_PROTOCOL_VERSION);
     // Generate individual components using existing or provided values
     let pre_state_hash_gen = match set_pre_state_hash {
         Some(hash) => Just(hash).boxed(),
@@ -195,6 +222,9 @@ pub fn block_element_gen(
 
     let deploys_gen = match set_deploys {
         Some(list) => Just(list).boxed(),
+        None if version >= CERTIFIED_ADMISSION_PROTOCOL_VERSION => {
+            prop::collection::vec(protocol_v6_processed_deploy_gen(), 0..5).boxed()
+        }
         None => prop::collection::vec(processed_deploy_gen(), 0..5).boxed(),
     };
 
@@ -224,7 +254,6 @@ pub fn block_element_gen(
             .boxed(),
     };
 
-    let version = set_version.unwrap_or(CERTIFIED_ADMISSION_PROTOCOL_VERSION);
     let timestamp_gen = match set_timestamp {
         Some(t) => Just(t).boxed(),
         None => any::<i64>().boxed(),

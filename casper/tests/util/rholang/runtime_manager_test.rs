@@ -7,6 +7,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::errors::CasperError;
 use casper::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use casper::rust::rholang::runtime::RuntimeOps;
+use casper::rust::slashing_authorization::CanonicalSlashAuthority;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::check_balance::CheckBalance;
 use casper::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
@@ -2452,6 +2453,29 @@ async fn completed_withdrawal_rebond_scopes_slash_and_redemption_to_generation()
             )
             .await;
             let generation_one = BondGeneration::new(1).unwrap();
+            let (generation_zero_authority, generation_one_authority) = tokio::try_join!(
+                CanonicalSlashAuthority::load(&runtime_manager, &funded_state),
+                CanonicalSlashAuthority::load(&runtime_manager, &rebonded_state),
+            )
+            .unwrap();
+            assert_eq!(generation_zero_authority.state_hash(), &funded_state);
+            assert_eq!(generation_one_authority.state_hash(), &rebonded_state);
+            assert_eq!(
+                generation_zero_authority.generation(&offender.bytes),
+                Some(BondGeneration::GENESIS)
+            );
+            assert_eq!(
+                generation_one_authority.generation(&offender.bytes),
+                Some(generation_one)
+            );
+            assert_eq!(
+                generation_zero_authority.bond(&offender.bytes),
+                original_bond
+            );
+            assert_eq!(
+                generation_one_authority.bond(&offender.bytes),
+                original_bond
+            );
             assert_eq!(
                 pos_validator_lifecycle(&runtime_manager, &rebonded_state, &offender).await,
                 "Bonded"

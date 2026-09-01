@@ -21,6 +21,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, Justification
 use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 use shared::rust::dag::dag_ops;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{CasperSnapshot, OnChainCasperState};
@@ -31,7 +32,7 @@ use crate::rust::metrics_constants::{
     CASPER_METRICS_SOURCE, DAG_BLOCKS_SIZE_METRIC, DAG_CHILDREN_INDEX_SIZE_METRIC,
     DAG_FINALIZED_BLOCKS_SIZE_METRIC, DAG_HEIGHTS_SIZE_METRIC,
     DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC, DEPLOYS_IN_SCOPE_SIZE_METRIC,
-    PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC,
+    PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC, SNAPSHOT_FINALIZATION_CAPTURE_RETRIES_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util;
@@ -67,7 +68,7 @@ fn order_parents_by_ghost_head(
     Ok(parents)
 }
 
-fn prune_dag_covered_parents(
+fn prune_dag_covered_secondary_parents(
     dag: &KeyValueDagRepresentation,
     parents: Vec<BlockMessage>,
 ) -> Result<Vec<BlockMessage>, CasperError> {
@@ -75,10 +76,11 @@ fn prune_dag_covered_parents(
         return Ok(parents);
     }
 
-    let retained_indices = reachability_maximal_indices(parents.len(), |candidate, other| {
-        dag.is_dag_ancestor(&parents[candidate].block_hash, &parents[other].block_hash)
-            .map_err(CasperError::from)
-    })?;
+    let retained_indices =
+        protected_reachability_frontier_indices(parents.len(), |candidate, other| {
+            dag.is_dag_ancestor(&parents[candidate].block_hash, &parents[other].block_hash)
+                .map_err(CasperError::from)
+        })?;
     let retained = retained_indices
         .into_iter()
         .map(|index| parents[index].clone())
@@ -87,11 +89,44 @@ fn prune_dag_covered_parents(
         target: "f1r3fly.casper.parent_selection",
         original_parents = parents.len(),
         retained_parents = retained.len(),
-        "Parent selection retained the reachability-maximal antichain"
+        "Parent selection retained the protected GHOST head and maximal secondary frontier"
     );
     Ok(retained)
 }
 
+fn protected_reachability_frontier_indices<E>(
+    len: usize,
+    mut is_ancestor: impl FnMut(usize, usize) -> Result<bool, E>,
+) -> Result<Vec<usize>, E> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut secondary = Vec::with_capacity(len.saturating_sub(1));
+    for candidate in 1..len {
+        if !is_ancestor(candidate, 0)? {
+            secondary.push(candidate);
+        }
+    }
+
+    let mut retained = Vec::with_capacity(secondary.len().saturating_add(1));
+    retained.push(0);
+    for &candidate in &secondary {
+        let mut covered = false;
+        for &other in &secondary {
+            if candidate != other && is_ancestor(candidate, other)? {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            retained.push(candidate);
+        }
+    }
+    Ok(retained)
+}
+
+#[cfg(test)]
 fn reachability_maximal_indices<E>(
     len: usize,
     mut is_ancestor: impl FnMut(usize, usize) -> Result<bool, E>,
@@ -357,6 +392,32 @@ fn latest_sequence_numbers(
         .collect()
 }
 
+async fn retry_stale_finalization_capture<T, F>(mut capture: F) -> Result<T, KvStoreError>
+where F: FnMut() -> Result<T, KvStoreError> {
+    let mut retries = 0u64;
+    loop {
+        match capture() {
+            Ok(value) => return Ok(value),
+            Err(KvStoreError::StaleFinalization { .. }) => {
+                retries = retries.saturating_add(1);
+                metrics::counter!(
+                    SNAPSHOT_FINALIZATION_CAPTURE_RETRIES_METRIC,
+                    "source" => CASPER_METRICS_SOURCE
+                )
+                .increment(1);
+                if retries >= 8 && retries.is_power_of_two() {
+                    tracing::warn!(
+                        retries,
+                        "Snapshot capture remains contended by finalization"
+                    );
+                }
+                tokio::task::yield_now().await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<CasperSnapshot, CasperError> {
@@ -365,12 +426,12 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         .load(std::sync::atomic::Ordering::SeqCst)
         > 0
     {
-        tracing::debug!(
-            "Finalization in progress while creating snapshot; using best-effort snapshot"
-        );
+        tracing::debug!("Finalization in progress while creating a coherent snapshot");
     }
 
-    let finalization_base = this.block_dag_storage.capture_finalization_base()?;
+    let finalization_base =
+        retry_stale_finalization_capture(|| this.block_dag_storage.capture_finalization_base())
+            .await?;
     let snapshot_finalization_head = finalization_base.head;
     let dag = finalization_base.dag;
 
@@ -516,7 +577,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         selected
     };
     let sorted_parents_list = order_parents_by_ghost_head(parent_blocks_list, &ghost_main_parent)?;
-    let sorted_parents_list = prune_dag_covered_parents(&dag, sorted_parents_list)?;
+    let sorted_parents_list = prune_dag_covered_secondary_parents(&dag, sorted_parents_list)?;
     if sorted_parents_list
         .first()
         .is_none_or(|parent| parent.block_hash != ghost_main_parent)
@@ -913,11 +974,74 @@ mod tests {
         causal_tips_covered_by_parents, deploy_scope_cache_key_matches,
         fallback_to_finalized_parent, latest_sequence_numbers,
         local_rejected_buffer_has_recoverable_deploys, order_parents_by_ghost_head,
-        prune_dag_covered_parents, reachability_maximal_indices,
-        recovery_main_covers_floor_and_causal_tips, validate_causal_parent_coverage,
+        protected_reachability_frontier_indices, prune_dag_covered_secondary_parents,
+        reachability_maximal_indices, recovery_main_covers_floor_and_causal_tips,
+        retry_stale_finalization_capture, validate_causal_parent_coverage,
         validate_exact_parent_frontier_capacity,
     };
     use crate::rust::errors::CasperError;
+
+    fn forest_is_ancestor(
+        parent_by_node: &[Option<usize>],
+        ancestor: usize,
+        mut descendant: usize,
+    ) -> bool {
+        if ancestor == descendant {
+            return false;
+        }
+        while let Some(parent) = parent_by_node[descendant] {
+            if parent == ancestor {
+                return true;
+            }
+            descendant = parent;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn stale_finalization_capture_retries_until_coherent() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let value = retry_stale_finalization_capture(|| {
+            let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt < 2 {
+                Err(
+                    shared::rust::store::key_value_store::KvStoreError::StaleFinalization {
+                        expected_revision: attempt as u64,
+                        actual_revision: attempt as u64 + 1,
+                    },
+                )
+            } else {
+                Ok(17u64)
+            }
+        })
+        .await
+        .expect("coherent capture");
+
+        assert_eq!(value, 17);
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn snapshot_capture_propagates_non_stale_errors_without_retry() {
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let error = retry_stale_finalization_capture(|| {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err::<u64, _>(
+                shared::rust::store::key_value_store::KvStoreError::InvalidArgument(
+                    "invalid snapshot".to_string(),
+                ),
+            )
+        })
+        .await
+        .expect_err("non-stale capture error");
+
+        assert!(matches!(
+            error,
+            shared::rust::store::key_value_store::KvStoreError::InvalidArgument(message)
+                if message == "invalid snapshot"
+        ));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn sequence_snapshot_includes_invalid_latest_messages() {
@@ -1150,16 +1274,19 @@ mod tests {
         }
 
         let dag = dag_storage.get_representation().expect("dag");
-        let pruned =
-            prune_dag_covered_parents(&dag, vec![left.clone(), seal.clone(), right.clone()])
-                .expect("prune parents");
+        let pruned = prune_dag_covered_secondary_parents(&dag, vec![
+            seal.clone(),
+            left.clone(),
+            right.clone(),
+        ])
+        .expect("prune parents");
         assert_eq!(pruned.len(), 1);
         assert_eq!(pruned[0].block_hash, seal.block_hash);
         let causal_tips = HashSet::from([left.block_hash.clone(), right.block_hash.clone()]);
         validate_causal_parent_coverage(&dag, &genesis.block_hash, &causal_tips, &pruned)
             .expect("covering merge parent preserves both causal tips");
 
-        let siblings = prune_dag_covered_parents(&dag, vec![left.clone(), right.clone()])
+        let siblings = prune_dag_covered_secondary_parents(&dag, vec![left.clone(), right.clone()])
             .expect("keep siblings");
         assert_eq!(
             siblings
@@ -1182,12 +1309,44 @@ mod tests {
                 .is_err()
         );
 
-        let diverged_from_seal =
-            prune_dag_covered_parents(&dag, vec![left_child.clone(), right_child.clone(), seal])
-                .expect("remove every covered common anchor");
-        assert_eq!(diverged_from_seal.len(), 2);
-        assert_eq!(diverged_from_seal[0].block_hash, left_child.block_hash);
-        assert_eq!(diverged_from_seal[1].block_hash, right_child.block_hash);
+        let diverged_from_seal = prune_dag_covered_secondary_parents(&dag, vec![
+            seal.clone(),
+            left_child.clone(),
+            right_child.clone(),
+        ])
+        .expect("retain protected head and descendant causal tips");
+        assert_eq!(diverged_from_seal.len(), 3);
+        assert_eq!(diverged_from_seal[0].block_hash, seal.block_hash);
+        assert_eq!(diverged_from_seal[1].block_hash, left_child.block_hash);
+        assert_eq!(diverged_from_seal[2].block_hash, right_child.block_hash);
+
+        let ordered_forward = order_parents_by_ghost_head(
+            vec![right_child.clone(), seal.clone(), left_child.clone()],
+            &seal.block_hash,
+        )
+        .expect("order forward parent projection");
+        let ordered_reverse = order_parents_by_ghost_head(
+            vec![left_child.clone(), seal.clone(), right_child.clone()],
+            &seal.block_hash,
+        )
+        .expect("order reverse parent projection");
+        let canonical_forward = prune_dag_covered_secondary_parents(&dag, ordered_forward)
+            .expect("compact forward parent projection");
+        let canonical_reverse = prune_dag_covered_secondary_parents(&dag, ordered_reverse)
+            .expect("compact reverse parent projection");
+        assert_eq!(canonical_forward, canonical_reverse);
+        assert_eq!(canonical_forward[0].block_hash, seal.block_hash);
+
+        let generic = reachability_maximal_indices(2, |left_index, right_index| {
+            Ok::<bool, ()>(left_index < right_index)
+        })
+        .expect("generic negative control");
+        let protected = protected_reachability_frontier_indices(2, |left_index, right_index| {
+            Ok::<bool, ()>(left_index < right_index)
+        })
+        .expect("protected frontier");
+        assert_eq!(generic, vec![1]);
+        assert_eq!(protected, vec![0, 1]);
 
         let left_tip = HashSet::from([left.block_hash.clone()]);
         assert!(!recovery_main_covers_floor_and_causal_tips(
@@ -1260,6 +1419,78 @@ mod tests {
                 });
                 prop_assert!(covered);
             }
+        }
+
+        #[test]
+        fn protected_reachability_frontier_preserves_head_and_coverage(
+            raw_parents in proptest::collection::vec(any::<u8>(), 1..64),
+            anchor_seed in any::<u8>(),
+        ) {
+            let parent_by_node = raw_parents
+                .iter()
+                .enumerate()
+                .map(|(node, raw_parent)| {
+                    if node == 0 {
+                        None
+                    } else {
+                        let candidate = *raw_parent as usize % (node + 1);
+                        (candidate < node).then_some(candidate)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let anchor = anchor_seed as usize % parent_by_node.len();
+            let node_by_candidate = std::iter::once(anchor)
+                .chain((0..parent_by_node.len()).filter(|node| *node != anchor))
+                .collect::<Vec<_>>();
+            let retained = protected_reachability_frontier_indices(
+                node_by_candidate.len(),
+                |left, right| {
+                    Ok::<bool, ()>(forest_is_ancestor(
+                        &parent_by_node,
+                        node_by_candidate[left],
+                        node_by_candidate[right],
+                    ))
+                },
+            )
+            .unwrap();
+
+            prop_assert_eq!(retained.first(), Some(&0));
+            let unique = retained.iter().copied().collect::<HashSet<_>>();
+            prop_assert_eq!(unique.len(), retained.len());
+            for &left in retained.iter().skip(1) {
+                prop_assert!(left < node_by_candidate.len());
+                prop_assert!(!forest_is_ancestor(
+                    &parent_by_node,
+                    node_by_candidate[left],
+                    anchor,
+                ));
+                for &right in retained.iter().skip(1) {
+                    prop_assert!(
+                        left == right
+                            || (!forest_is_ancestor(
+                                &parent_by_node,
+                                node_by_candidate[left],
+                                node_by_candidate[right],
+                            ) && !forest_is_ancestor(
+                                &parent_by_node,
+                                node_by_candidate[right],
+                                node_by_candidate[left],
+                            ))
+                    );
+                }
+            }
+            for candidate in 0..node_by_candidate.len() {
+                let covered = retained.iter().any(|&parent| {
+                    candidate == parent
+                        || forest_is_ancestor(
+                            &parent_by_node,
+                            node_by_candidate[candidate],
+                            node_by_candidate[parent],
+                        )
+                });
+                prop_assert!(covered);
+            }
+            prop_assert!(retained.len() <= node_by_candidate.len());
         }
 
         #[test]

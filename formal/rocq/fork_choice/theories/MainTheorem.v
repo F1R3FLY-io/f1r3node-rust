@@ -165,11 +165,56 @@ Theorem fork_choice_parent_antichain_correct :
       In tip tips ->
       exists parent,
         In parent (reachability_maximal_antichain ancestorb candidates) /\
-        (tip = parent \/ ancestorb tip parent = true)).
+        (tip = parent \/ ancestorb tip parent = true))
+  /\
+  (forall ancestorb protected candidates,
+    hd_error (protected_parent_frontier ancestorb protected candidates) = Some protected)
+  /\
+  (forall ancestorb protected candidates parent,
+    In parent (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    parent <> protected /\ In parent candidates)
+  /\
+  (forall ancestorb protected candidates left right,
+    In left (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    In right (tl (protected_parent_frontier ancestorb protected candidates)) ->
+    left <> right ->
+    ancestorb left right = false)
+  /\
+  (forall ancestorb protected candidates,
+    NoDup candidates ->
+    NoDup (protected_parent_frontier ancestorb protected candidates))
+  /\
+  (forall ancestorb protected tips candidates,
+    causal_coverageb
+      ancestorb
+      tips
+      (protected_parent_frontier ancestorb protected candidates) = true ->
+    forall tip,
+      In tip tips ->
+      exists parent,
+        In parent (protected_parent_frontier ancestorb protected candidates) /\
+        (tip = parent \/ ancestorb tip parent = true))
+  /\
+  (reachability_maximal_antichain linear_ancestorb [0; 1] = [1]
+   /\ protected_parent_frontier linear_ancestorb 0 [0; 1] = [0; 1]).
 Proof.
-  exact
-    (conj retained_parents_are_pairwise_uncovered
-          compaction_and_coverage_guard_preserve_every_causal_tip).
+  split.
+  - exact retained_parents_are_pairwise_uncovered.
+  - split.
+    + exact compaction_and_coverage_guard_preserve_every_causal_tip.
+    + split.
+      * exact protected_frontier_has_exact_head.
+      * split.
+        -- intros. split.
+           ++ eapply protected_frontier_tail_excludes_head; eauto.
+           ++ eapply protected_frontier_tail_was_candidate; eauto.
+        -- split.
+           ++ exact protected_frontier_tail_is_pairwise_uncovered.
+           ++ split.
+              ** exact protected_frontier_is_duplicate_free.
+              ** split.
+                 --- exact protected_compaction_and_coverage_guard_preserve_every_causal_tip.
+                 --- exact generic_compaction_can_erase_protected_head.
 Qed.
 
 Print Assumptions fork_choice_parent_antichain_correct.

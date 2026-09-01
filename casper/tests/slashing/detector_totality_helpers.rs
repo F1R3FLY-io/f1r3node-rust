@@ -26,17 +26,20 @@
 //   3. Missing-pointer tolerance: a justification whose hash is not in the
 //      store is treated as obliviousness, not as a store inconsistency.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::equivocation_detector::EquivocationDetector;
+use models::rust::block_hash::BlockHashSerde;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header, Justification, ValidatorBondGeneration,
+    BlockMessage, Body, Bond, F1r3flyState, FinalizationCertificate, Header, Justification,
+    ValidatorBondGeneration,
 };
 use models::rust::equivocation_record::EquivocationRecord;
+use models::rust::validator::ValidatorSerde;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -60,6 +63,8 @@ impl DetectorFixture {
         let validators = (0u8..8u8).map(validator).collect::<Vec<_>>();
         let mut genesis = block(1, validators[0].clone(), 0, vec![], validators.clone());
         genesis.header.parents_hash_list.clear();
+        genesis.header.finalized_floor = None;
+        genesis.finalized_floor_certificate = None;
         genesis.body.state.pre_state_hash = hash(101);
         block_store
             .put_block_message(&genesis)
@@ -187,7 +192,42 @@ pub fn block(
     let active_validators = bond_generations
         .iter()
         .map(|generation| generation.validator.clone())
-        .collect();
+        .collect::<Vec<_>>();
+    let floor_hash = hash(1);
+    let floor_post_state_hash = hash(102);
+    let authority_context_digest = hash(104);
+    let manifest = BTreeSet::from([BlockHashSerde(floor_hash.clone())]);
+    let certificate = FinalizationCertificate {
+        schema_version: FinalizationCertificate::SCHEMA_VERSION,
+        protocol_version: models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+        shard_id: "root".to_string(),
+        genesis_hash: BlockHashSerde(floor_hash.clone()),
+        predecessor_floor_hash: BlockHashSerde(floor_hash.clone()),
+        predecessor_certificate_digest: BlockHashSerde(Bytes::from(vec![
+            0;
+            models::rust::block_hash::LENGTH
+        ])),
+        predecessor_certificate_block_hash: BlockHashSerde(Bytes::from(vec![
+            0;
+            models::rust::block_hash::LENGTH
+        ])),
+        target_floor_hash: BlockHashSerde(floor_hash),
+        target_post_state_hash: BlockHashSerde(floor_post_state_hash.clone()),
+        target_block_number: 0,
+        fault_tolerance_numerator: 0,
+        fault_tolerance_denominator: 1,
+        exact_latest_messages: active_validators
+            .iter()
+            .cloned()
+            .map(|validator| (ValidatorSerde(validator), BlockHashSerde(hash(1))))
+            .collect::<BTreeMap<_, _>>(),
+        authority_context_digest: BlockHashSerde(authority_context_digest.clone()),
+        supporting_manifest_digest: FinalizationCertificate::supporting_digest(&manifest),
+        finalized_manifest_digest: FinalizationCertificate::finalized_digest(&manifest),
+        supporting_block_count: 1,
+        finalized_block_count: 1,
+    };
+    let finalized_floor = certificate.commitment(authority_context_digest);
     BlockMessage {
         block_hash: hash(hash_byte),
         header: Header {
@@ -197,11 +237,11 @@ pub fn block(
             extra_bytes: Bytes::new(),
             sender_bond_generation: Some(BondGeneration::GENESIS),
             objective_equivocation_evidence_delta: vec![],
-            finalized_floor: None,
+            finalized_floor: Some(finalized_floor),
         },
         body: Body {
             state: F1r3flyState {
-                pre_state_hash: hash(102),
+                pre_state_hash: floor_post_state_hash,
                 post_state_hash: hash(hash_byte.saturating_add(101)),
                 bonds: bonded_validators
                     .into_iter()
@@ -229,7 +269,7 @@ pub fn block(
         sig_algorithm: String::new(),
         shard_id: "root".to_string(),
         extra_bytes: Bytes::new(),
-        finalized_floor_certificate: None,
+        finalized_floor_certificate: Some(certificate),
     }
 }
 

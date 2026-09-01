@@ -63,12 +63,16 @@ The unbounded algebraic obligations are in
 [`rocq/finalized_floor/theories/ObjectiveEquivocation.v`](rocq/finalized_floor/theories/ObjectiveEquivocation.v),
 and the implementation-level interleavings are in
 [`loom/cost_accounting/tests/loom_objective_equivocation.rs`](loom/cost_accounting/tests/loom_objective_equivocation.rs).
-The local and CI entry point is
+The local entry point is
 [`scripts/check-finalized-floor-ALL.sh`](../scripts/check-finalized-floor-ALL.sh).
 
 Protocol-6 finalized-floor evidence is split into four refinement boundaries.
 [`tlaplus/finalized_floor/CertifiedFloorCommitment.tla`](tlaplus/finalized_floor/CertifiedFloorCommitment.tla)
-checks target-bound signed commitment and receiver admission, while
+checks target-bound signed commitment and receiver admission. Its causal-input
+invariant accepts replay-safe parent subsets and rejects a frontier disconnected
+from the signed floor. The fork-choice `GuardBridge.v` proves that every honest
+preferred frontier refines this receiver predicate. It also proves that the
+converse is intentionally false. Meanwhile,
 [`tlaplus/finalized_floor/FinalizationCertificateRetrieval.tla`](tlaplus/finalized_floor/FinalizationCertificateRetrieval.tla)
 checks typed bounded sidecar retrieval, failed-send retention, validated
 content-addressed persistence, crash reconstruction, and one-time wakeup.

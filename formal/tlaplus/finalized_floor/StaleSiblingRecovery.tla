@@ -259,7 +259,9 @@ ObserveSettlement(v) ==
     /\ seenTombstone' =
        IF tombstoneSource = "None" THEN seenTombstone ELSE seenTombstone \union {v}
     /\ bufferedA' =
-       IF PropagateRejectedBuffer /\ tombstoneSource /= "None"
+       IF PropagateRejectedBuffer
+          /\ tombstoneSource /= "None"
+          /\ (IF EnforceCarrierCustody THEN v = CarrierOwner ELSE TRUE)
        THEN bufferedA \union {v}
        ELSE bufferedA
     /\ causalA' = causalA \ {v}
@@ -418,7 +420,11 @@ Inv_TombstoneNamesExactSource ==
     settlementPublished => tombstoneSource = "A"
 
 Inv_ObservedRejectionIsBuffered ==
-    seenSettlement \subseteq bufferedA
+    CarrierOwner \in seenSettlement /\ tombstoneSource = "A" =>
+        CarrierOwner \in bufferedA
+
+Inv_OnlyCarrierOwnerHasRetryCustody ==
+    EnforceCarrierCustody => bufferedA \subseteq {CarrierOwner}
 
 Inv_RetryRequiresLedgerAuthorization ==
     recoveryPublished =>

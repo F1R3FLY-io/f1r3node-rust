@@ -2374,7 +2374,11 @@ impl BlockDagKeyValueStorage {
                                     protocol_version: DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
                                     source_block_hash,
                                     source_block_height: block.body.state.block_number,
-                                    source_validator: block.sender.to_vec(),
+                                    source_validator: if approved {
+                                        Vec::new()
+                                    } else {
+                                        block.sender.to_vec()
+                                    },
                                     deploy_ordinal: u32::try_from(ordinal).map_err(|_| {
                                         KvStoreError::InvalidArgument(
                                             "deploy occurrence ordinal exceeds u32".to_string(),
@@ -2774,6 +2778,7 @@ impl BlockDagKeyValueStorage {
 
     pub fn reconcile_finalization_projection(&self) -> Result<(), KvStoreError> {
         for record in self.finalization_ledger.pending_projection_records()? {
+            let fault_tolerance = f32::from_bits(record.fault_tolerance_bits);
             let indirectly_finalized = record
                 .finalized
                 .iter()
@@ -2786,10 +2791,16 @@ impl BlockDagKeyValueStorage {
                 metadata.record_finalized(
                     record.directly_finalized.0.clone(),
                     indirectly_finalized,
-                    f32::from_bits(record.fault_tolerance_bits),
+                    fault_tolerance,
                 )?;
+                let current_lower_bound =
+                    f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed));
+                if fault_tolerance < current_lower_bound {
+                    self.ft_lower_bound
+                        .store(fault_tolerance.to_bits(), Ordering::Relaxed);
+                }
             }
-            self.propagate_ft_to_finalized_blocks(f32::from_bits(record.fault_tolerance_bits))?;
+            self.propagate_ft_to_finalized_blocks(fault_tolerance)?;
             self.finalization_ledger
                 .record_projection_completed(record.revision)?;
         }
@@ -3192,6 +3203,27 @@ fn commit_admission_mutations(
     mutations: &[AtomicStoreMutation<'_>],
 ) -> Result<(), KvStoreError> {
     if protocol_version >= DEPLOY_OCCURRENCE_PROTOCOL_VERSION {
+        if let [mutation] = mutations {
+            if let AtomicStoreOperation::PutIfAbsentOrEqual(value) = &mutation.operation {
+                if mutation
+                    .store
+                    .put_one_if_absent(mutation.key.clone(), value.clone())?
+                {
+                    return Ok(());
+                }
+                return match mutation.store.get_one(&mutation.key)? {
+                    Some(existing) if existing == *value => Ok(()),
+                    Some(_) => Err(KvStoreError::TransactionConflict(format!(
+                        "existing value differs for key {}",
+                        hex::encode(&mutation.key)
+                    ))),
+                    None => Err(KvStoreError::TransactionConflict(format!(
+                        "atomic insert lost key {}",
+                        hex::encode(&mutation.key)
+                    ))),
+                };
+            }
+        }
         return strict_atomic_mutate(mutations);
     }
     for mutation in mutations {

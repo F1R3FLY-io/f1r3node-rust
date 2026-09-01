@@ -46,12 +46,11 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
         Some(shard_id.clone()),
     )
     .expect("build plain send");
-    let plain_sig: Bytes = plain_send.sig.clone();
-
     let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&plain_send))
         .await
         .expect("validator 1 proposes the carrier");
+    let plain_deploy_id = Bytes::copy_from_slice(carrier.body.deploys[0].deploy_id());
     for idx in [1usize, 2] {
         nodes[idx]
             .process_block(carrier.clone())
@@ -62,10 +61,8 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
         nodes[0]
             .deploy_storage
             .lock()
-            .read_all()
-            .expect("storage read")
-            .iter()
-            .any(|d| d.sig == plain_sig),
+            .contains_envelope(&plain_deploy_id)
+            .expect("storage read"),
         "staging precondition: the owner's pool holds the deploy after \
          proposing its carrier"
     );
@@ -143,10 +140,8 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
         !nodes[0]
             .deploy_storage
             .lock()
-            .read_all()
-            .expect("storage read")
-            .iter()
-            .any(|d| d.sig == plain_sig),
+            .contains_envelope(&plain_deploy_id)
+            .expect("storage read"),
         "the deploy's effect is settled in the floor state: the register's \
          Finalized verdict must release the pool copy, whatever the \
          effect's shape — a shape-gated membership answer would hold this \

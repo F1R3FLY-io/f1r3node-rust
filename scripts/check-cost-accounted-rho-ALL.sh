@@ -20,9 +20,17 @@ declare -a names verdicts
 overall=0
 strict="${CA_ENFORCE_PROOFS:-1}"
 export CA_ENFORCE_PROOFS="$strict"
+log_dir="${CA_MATRIX_LOG_DIR:-$ROOT/target/verification/cost-accounted-rho/matrix-logs}"
+mkdir -p "$log_dir"
+
+skip_re='(^|[[:space:]])ADVISORY([[:space:]:()]|$)|(^|[[:space:]])SKIP[[:space:]]*\(|—[^[:cntrl:]]*skipped|leg skipped'
 
 gate_reported_skip() {
-  grep -qiE '(^|[[:space:]])ADVISORY([[:space:]:()]|$)|(^|[[:space:]])SKIP[[:space:]]*\(|—[^[:cntrl:]]*skipped|leg skipped' <<<"$1"
+  grep -qiE "$skip_re" <<<"$1"
+}
+
+gate_log_reported_skip() {
+  grep -qiE "$skip_re" "$1"
 }
 
 if gate_reported_skip $'Summary: 1319 tests run: 1319 passed, 8 skipped\n--skip configured-test'; then
@@ -50,11 +58,15 @@ for gate in "$ROOT"/scripts/check-cost-accounted-rho-*.sh; do
     fi
     continue
   fi
-  out="$(bash "$gate" 2>&1)"; rc=$?
+  log="$log_dir/${base%.sh}.log"
+  printf 'RUN      %s (log: %s)\n' "$base" "$log"
+  bash "$gate" >"$log" 2>&1
+  rc=$?
   if [ "$rc" -ne 0 ]; then
     verdict="FAIL"; overall=1
-    printf '\n--- %s failure output ---\n%s\n' "$base" "$out" >&2
-  elif gate_reported_skip "$out"; then
+    printf '\n--- %s failure output ---\n' "$base" >&2
+    cat "$log" >&2
+  elif gate_log_reported_skip "$log"; then
     if [ "$strict" = "1" ]; then
       verdict="FAIL(SKIP)"; overall=1
     else
@@ -64,19 +76,25 @@ for gate in "$ROOT"/scripts/check-cost-accounted-rho-*.sh; do
     verdict="PASS"
   fi
   names+=("$base"); verdicts+=("$verdict")
+  printf '%-8s %s\n' "$verdict" "$base"
 done
 
 if [ "${RUN_WOLFRAM:-0}" = "1" ]; then
   gate="$ROOT/scripts/check-cost-accounted-rho-wolfram.sh"
   base="$(basename "$gate")"
-  out="$(bash "$gate" 2>&1)"; rc=$?
+  log="$log_dir/${base%.sh}.log"
+  printf 'RUN      %s (log: %s)\n' "$base" "$log"
+  bash "$gate" >"$log" 2>&1
+  rc=$?
   if [ "$rc" -ne 0 ]; then
     verdict="FAIL"; overall=1
-    printf '\n--- %s failure output ---\n%s\n' "$base" "$out" >&2
+    printf '\n--- %s failure output ---\n' "$base" >&2
+    cat "$log" >&2
   else
     verdict="PASS"
   fi
   names+=("$base"); verdicts+=("$verdict")
+  printf '%-8s %s\n' "$verdict" "$base"
 fi
 
 echo ""

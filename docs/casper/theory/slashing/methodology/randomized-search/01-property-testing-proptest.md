@@ -146,13 +146,13 @@ the table below is a representative subset to illustrate the
 |-------------------------------------------|-----------|--------------------------------------------------------------------------|
 | `prop_t_1_detection_sound.rs`             | T-1       | Honest validators never recorded                                         |
 | `prop_t_2_detection_complete.rs`          | T-2       | Every real equivocator is eventually recorded                            |
-| `prop_t_3_slashable_taxonomy.rs`          | T-3       | `is_slashable(s)` ⇔ `s ∈ {19 slashable variants}` (17 pre-fix + `IgnorableEquivocation` + `UnauthorizedSlashDeploy`) |
+| `prop_t_3_slashable_taxonomy.rs`          | T-3       | `is_slashable(s)` is true exactly for `AdmissibleEquivocation` and `IgnorableEquivocation` |
 | `prop_t_4_record_uniqueness.rs`           | T-4       | At most one record per `(v, base_seq)`                                   |
 | `prop_t_5_record_monotonicity.rs`         | T-5       | Record set is non-decreasing in any trace                                |
 | `prop_t_6_neglect_detection.rs`           | T-6       | Neglected equivocations detected at all valid views                      |
 | `prop_t_7_slash_zeros_bond.rs`            | T-7       | `slash(v)` ⇒ `bond(v) = 0`                                               |
 | `prop_t_9_1_ignorable_safety.rs`          | T-9.1     | Ignorable equivocations record (Bug #1 post-fix invariant)               |
-| `prop_t_9_3_catchall_records.rs`          | T-9.3     | Every slashable variant records (Bug #3 post-fix invariant)              |
+| `prop_t_9_3_catchall_records.rs`          | T-9.3     | Every rejection persists, and only eligible equivocations create evidence |
 | `prop_t_9_4_transfer_failure.rs`          | T-9.4     | Failed `transfer` leaves bonds untouched (Bug #4)                        |
 | `prop_t_9_5_active_has_positive_bond.rs`  | T-9.5     | Active set ⊆ {validators with bond > 0} (Bug #5)                         |
 | `prop_t_9_6_self_regression.rs`           | T-9.6     | Self-regression detected as equivocation (Bug #6)                        |

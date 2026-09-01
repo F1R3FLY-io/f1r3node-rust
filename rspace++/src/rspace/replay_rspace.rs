@@ -735,6 +735,7 @@ where
             } else {
                 tracing::trace!(target: "f1r3fly.rspace.ops", channels = ?consume_ref.channel_hashes, "replay.consume STALL-A: no recorded COMM for this consume (validator did a consume absent from the proposer's trace -> execution diverged)");
             }
+            self.log_consume(consume_ref, &channels, &patterns, &wk.continuation, persist, &peeks);
             return Ok(self.store_waiting_continuation(channels, wk));
         }
         let comms_option = {

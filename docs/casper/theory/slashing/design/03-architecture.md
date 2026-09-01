@@ -194,7 +194,7 @@ The high-level data flow is:
 | Separate **storage** from **proposing**                               | The tracker store is small and read-only after detection; proposing reads it as part of normal block construction.                 |
 | **Proposing** is per-validator, **effect** is in the Rholang contract | The *who decides to slash* (proposer) and *what slashing does* (PoS contract) are independent: any proposer can fire any slash.    |
 | **Fork-choice** *pulls* from on-chain state                           | No notification queue or callback registration; on-chain bond is the source of truth for the GHOST estimator.                      |
-| **Two-level closure** (neglect detection)                             | Closes the collusion loophole: B cannot ignore A's equivocation, because B's own block becomes invalid (§08).                      |
+| **Neglect rejection**                                                 | B cannot extend certified invalid ancestry. B's block becomes invalid without creating new economic evidence (§08).               |
 | **System deploys are unauthenticated by user keys**                   | A `SlashDeploy` is *system-level*: signed by no user, executed under the system auth token. The auth-token guard is the only gate. |
 
 ## 3.5 Where each layer lives in code

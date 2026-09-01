@@ -45,7 +45,6 @@ where
             .increment(t0.elapsed().as_nanos() as u64);
 
         self.observe_produce(produce_ref, &channel, &data, persist)?;
-        self.log_produce(produce_ref, persist);
 
         let t1 = Instant::now();
         let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
@@ -59,11 +58,13 @@ where
         match extracted {
             Some(produce_candidate) => {
                 let t2 = Instant::now();
-                let result = self.process_match_found(produce_candidate).map(|result| {
-                    result.map(|consume_result| {
-                        (consume_result.0, consume_result.1, produce_ref.clone())
-                    })
-                });
+                let result = self
+                    .process_match_found(produce_candidate, produce_ref, persist)
+                    .map(|result| {
+                        result.map(|consume_result| {
+                            (consume_result.0, consume_result.1, produce_ref.clone())
+                        })
+                    });
                 metrics::counter!("rspace.produce.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
@@ -71,6 +72,7 @@ where
             }
             None => {
                 let t2 = Instant::now();
+                self.log_produce(produce_ref, persist);
                 let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
@@ -131,6 +133,8 @@ where
     fn process_match_found(
         &self,
         pc: ProduceCandidate<C, P, A, K>,
+        produce_ref: &Produce,
+        produce_persistent: bool,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
         let ProduceCandidate {
             channels,
@@ -147,7 +151,13 @@ where
             source: consume_ref,
         } = &continuation;
 
-        let produce_counters_closure = |produces: &[Produce]| self.produce_counters(produces);
+        let produce_counters_closure = |produces: &[Produce]| {
+            let mut counters = self.produce_counters(produces);
+            if !produce_persistent && produces.contains(produce_ref) {
+                *counters.entry(produce_ref.clone()).or_insert(0) += 1;
+            }
+            counters
+        };
         let comm = COMM::new(
             &data_candidates,
             consume_ref.clone(),
@@ -155,6 +165,7 @@ where
             produce_counters_closure,
         );
         self.observe_comm(&comm, _cont, *persist, &data_candidates)?;
+        self.log_produce(produce_ref, produce_persistent);
         self.log_comm(comm, PRODUCE_COMM_LABEL);
 
         if !persist {

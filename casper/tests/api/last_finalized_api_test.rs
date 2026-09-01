@@ -226,19 +226,24 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         produce_deploys.push(deploy);
     }
 
-    let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[produce_deploys[0].clone()])
+    let b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[produce_deploys[0].clone()])
         .await
         .unwrap();
 
-    let _b2 = TestNode::propagate_block_to_one(&mut nodes, 1, 0, &[produce_deploys[1].clone()])
+    let b2 = TestNode::propagate_block_to_one(&mut nodes, 1, 0, &[produce_deploys[1].clone()])
         .await
         .unwrap();
 
-    let _b3 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[2].clone()])
+    let b3 = TestNode::propagate_block_to_one(&mut nodes, 0, 1, &[produce_deploys[2].clone()])
         .await
         .unwrap();
 
     let b4 = TestNode::propagate_block_to_one(&mut nodes, 1, 0, &[produce_deploys[3].clone()])
+        .await
+        .unwrap();
+
+    nodes[0]
+        .settle_finalization(std::time::Duration::from_secs(30))
         .await
         .unwrap();
 
@@ -256,13 +261,31 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         .await
         .unwrap();
 
+    nodes[0]
+        .settle_finalization(std::time::Duration::from_secs(30))
+        .await
+        .unwrap();
+
     let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
+    let actual_name = [
+        ("b1", &b1),
+        ("b2", &b2),
+        ("b3", &b3),
+        ("b4", &b4),
+        ("b5", &b5),
+        ("b6", &b6),
+        ("b7", &b7),
+    ]
+    .into_iter()
+    .find_map(|(name, block)| (block.block_hash == last_finalized_block.block_hash).then_some(name))
+    .unwrap_or("unknown");
 
     let b4_block_hash = proto_util::hash_string(&b4);
     assert_eq!(
         proto_util::hash_string(&last_finalized_block),
         b4_block_hash,
-        "Expected last finalized block to be b4"
+        "Expected last finalized block to be b4, got {actual_name} at height {}",
+        last_finalized_block.body.state.block_number
     );
 
     let engine_cell = create_engine_cell(&nodes[0]).await;

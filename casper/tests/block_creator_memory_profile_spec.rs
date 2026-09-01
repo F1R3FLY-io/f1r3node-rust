@@ -24,9 +24,11 @@ use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::Cosigned;
 use dashmap::DashSet;
-use models::rust::casper::protocol::casper_message::{DeployData, Justification};
+use models::rust::casper::protocol::casper_message::{
+    DeployData, FinalizationCertificate, Justification,
+};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -68,7 +70,7 @@ fn create_deploy(
     iteration: usize,
     validator_sk: &PrivateKey,
     shard_id: &str,
-) -> Signed<DeployData> {
+) -> Cosigned<DeployData> {
     let timestamp = {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -85,19 +87,21 @@ fn create_deploy(
         authority_presentations: Vec::new(),
     };
 
-    Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
-        .expect("Failed to create signed deploy")
+    Cosigned::create_single_envelope(deploy_data, Box::new(Secp256k1), validator_sk.clone())
+        .expect("Failed to create deploy envelope")
 }
 
 fn create_snapshot_with_parent(
     dag: KeyValueDagRepresentation,
     parent: models::rust::casper::protocol::casper_message::BlockMessage,
+    finalized_floor: &models::rust::casper::protocol::casper_message::BlockMessage,
     validator: Validator,
     shard_name: String,
+    finalized_floor_certificate: FinalizationCertificate,
 ) -> CasperSnapshot {
     let mut snapshot = CasperSnapshot::new(dag);
     snapshot.max_block_num = parent.body.state.block_number;
-    snapshot.last_finalized_block = parent.block_hash.clone();
+    snapshot.last_finalized_block = finalized_floor.block_hash.clone();
     snapshot.parents = vec![parent.clone()];
     snapshot.justifications.push(Justification {
         validator: validator.clone(),
@@ -107,7 +111,7 @@ fn create_snapshot_with_parent(
     let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();
     max_seq_nums.insert(validator.clone(), parent.seq_num as u64);
     snapshot.max_seq_nums = max_seq_nums;
-    snapshot.finalized_floor_bonds = parent.body.state.bonds.clone();
+    snapshot.finalized_floor_bonds = finalized_floor.body.state.bonds.clone();
 
     let mut shard_conf = CasperShardConf::new();
     shard_conf.shard_name = shard_name;
@@ -135,9 +139,10 @@ fn create_snapshot_with_parent(
     snapshot.consensus_context =
         casper::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
             &snapshot.dag,
-            parent.block_hash,
+            finalized_floor.block_hash.clone(),
         )
         .expect("Failed to derive finalized-floor consensus context");
+    snapshot.finalized_floor_certificate = Some(finalized_floor_certificate);
     snapshot
 }
 
@@ -251,13 +256,28 @@ async fn run_block_creator_create_memory_profile() {
         )
         .expect("Failed to insert parent block in DAG");
 
+    let initial_dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    let initial_certificate =
+        casper::rust::finality::certificate::genesis_finalization_certificate(
+            &initial_dag,
+            &parent,
+            CURRENT_CASPER_PROTOCOL_VERSION,
+            shard_name.clone(),
+            0,
+            1_000_000,
+        )
+        .expect("Failed to create genesis finalization certificate");
+    let mut finalized_block = parent.clone();
+    let mut finalized_floor_certificate = initial_certificate;
     let mut snapshot = create_snapshot_with_parent(
-        dag_storage
-            .get_representation()
-            .expect("dag representation"),
+        initial_dag,
         parent,
+        &finalized_block,
         validator.clone(),
         shard_name.clone(),
+        finalized_floor_certificate.clone(),
     );
 
     let mut created_count = 0usize;
@@ -281,7 +301,8 @@ async fn run_block_creator_create_memory_profile() {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
             let mut ds = deploy_storage.lock();
-            ds.add(vec![deploy]).expect("Failed to add deploy");
+            ds.add_envelope_if_absent(deploy)
+                .expect("Failed to add deploy envelope");
         }
 
         let (outcome, created_block) = match timeout(
@@ -325,6 +346,7 @@ async fn run_block_creator_create_memory_profile() {
         };
 
         if let Some(block) = created_block {
+            let candidate_to_finalize = snapshot.parents[0].clone();
             post_state_roots.push(block.body.state.post_state_hash.clone());
             block_store
                 .put_block_message(&block)
@@ -335,26 +357,44 @@ async fn run_block_creator_create_memory_profile() {
                     block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
                 )
                 .expect("Failed to advance DAG");
-            dag_storage
-                .record_directly_finalized(block.block_hash.clone(), 1.0, |_| async { Ok(()) })
-                .await
-                .expect("Failed to finalize advancing block");
+            if candidate_to_finalize.block_hash != finalized_block.block_hash {
+                dag_storage
+                    .record_directly_finalized(
+                        candidate_to_finalize.block_hash.clone(),
+                        1.0,
+                        |_| async { Ok(()) },
+                    )
+                    .await
+                    .expect("Failed to finalize advancing block");
+                finalized_block = candidate_to_finalize;
+                finalized_floor_certificate = dag_storage
+                    .finalized_floor_certificate()
+                    .expect("Failed to read finalized-floor certificate")
+                    .expect("Finalized head must have a durable certificate");
+            }
             snapshot = create_snapshot_with_parent(
                 dag_storage
                     .get_representation()
                     .expect("dag representation"),
                 block,
+                &finalized_block,
                 validator.clone(),
                 shard_name.clone(),
+                finalized_floor_certificate.clone(),
             );
         }
 
         {
             let mut ds = deploy_storage.lock();
-            let all = ds.read_all().expect("Failed to read deploy pool");
-            if !all.is_empty() {
-                ds.remove(all.into_iter().collect())
-                    .expect("Failed to clear deploy pool");
+            let all = ds
+                .read_all_envelopes()
+                .expect("Failed to read deploy envelope pool");
+            for envelope in all {
+                let deploy_id = envelope
+                    .envelope_commitment()
+                    .expect("Stored envelope must have a commitment");
+                ds.remove_envelope_by_id(&deploy_id)
+                    .expect("Failed to clear deploy envelope");
             }
         }
 
@@ -531,13 +571,26 @@ async fn run_block_creator_phase_split_memory_profile() {
         )
         .expect("Failed to insert parent block in DAG");
 
+    let initial_dag = dag_storage
+        .get_representation()
+        .expect("dag representation");
+    let initial_certificate =
+        casper::rust::finality::certificate::genesis_finalization_certificate(
+            &initial_dag,
+            &parent,
+            CURRENT_CASPER_PROTOCOL_VERSION,
+            shard_name.clone(),
+            0,
+            1_000_000,
+        )
+        .expect("Failed to create genesis finalization certificate");
     let snapshot = create_snapshot_with_parent(
-        dag_storage
-            .get_representation()
-            .expect("dag representation"),
-        parent,
+        initial_dag,
+        parent.clone(),
+        &parent,
         validator.clone(),
         shard_name.clone(),
+        initial_certificate,
     );
 
     let baseline_rss = vm_rss_kb();
@@ -661,7 +714,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         let outcome = if skip_bonds {
             match timeout(
                 Duration::from_millis(timeout_ms),
-                runtime_manager.compute_state(
+                runtime_manager.compute_state_cosigned(
                     &pre_state_hash,
                     deploys,
                     system_deploys,
@@ -691,7 +744,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         } else {
             match timeout(
                 Duration::from_millis(timeout_ms),
-                runtime_manager.compute_state_with_bonds(
+                runtime_manager.compute_state_with_bonds_cosigned(
                     &pre_state_hash,
                     deploys,
                     system_deploys,

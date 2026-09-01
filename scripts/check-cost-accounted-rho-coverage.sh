@@ -11,6 +11,9 @@ OUT_DIR="$REPO_ROOT/target/verification/cost-accounted-rho-coverage"
 SUMMARY="$OUT_DIR/cost-accounted-rho-branch-summary.tsv"
 COVERAGE_JOBS="${COVERAGE_JOBS:-2}"
 COVERAGE_REUSE_PROFILES="${COVERAGE_REUSE_PROFILES:-0}"
+COVERAGE_RETAIN_PROFILES="${COVERAGE_RETAIN_PROFILES:-0}"
+COVERAGE_TARGET_ROOT="$REPO_ROOT/target/llvm-cov-isolated"
+ACTIVE_COVERAGE_TARGET=""
 RUST_HOST="$(rustc -vV | awk '/^host:/ { print $2 }')"
 LLVM_TOOLS="$(rustc --print sysroot)/lib/rustlib/$RUST_HOST/bin"
 LLVM_COV="$LLVM_TOOLS/llvm-cov"
@@ -26,13 +29,32 @@ if [[ "$COVERAGE_REUSE_PROFILES" != 0 && "$COVERAGE_REUSE_PROFILES" != 1 ]]; the
     printf 'COVERAGE_REUSE_PROFILES must be 0 or 1\n' >&2
     exit 1
 fi
+if [[ "$COVERAGE_RETAIN_PROFILES" != 0 && "$COVERAGE_RETAIN_PROFILES" != 1 ]]; then
+    printf 'COVERAGE_RETAIN_PROFILES must be 0 or 1\n' >&2
+    exit 1
+fi
 mkdir -p "$OUT_DIR"
 COVERAGE_SCRATCH="$(verification_tmpdir_create "$OUT_DIR")"
 export TMPDIR="$COVERAGE_SCRATCH"
 ulimit -c 0
 
+cleanup_coverage_target() {
+    local target="${1:-}"
+    if [[ "$COVERAGE_REUSE_PROFILES" == 1 || "$COVERAGE_RETAIN_PROFILES" == 1 || -z "$target" ]]; then
+        return
+    fi
+    case "$target" in
+        "$COVERAGE_TARGET_ROOT"/*) rm -rf -- "$target" ;;
+        *)
+            printf 'refusing to remove unexpected coverage target: %s\n' "$target" >&2
+            return 1
+            ;;
+    esac
+}
+
 cleanup() {
     rm -f "$OUT_DIR"/.coverage-export-*.lcov "$OUT_DIR"/.coverage-export-*.stderr
+    cleanup_coverage_target "$ACTIVE_COVERAGE_TARGET"
     verification_tmpdir_cleanup "$COVERAGE_SCRATCH" "$OUT_DIR"
 }
 trap cleanup EXIT
@@ -99,10 +121,19 @@ for entry in "${all_coverage_files[@]}"; do
     : >"$OUT_DIR/${entry%%:*}-$output_name.lcov"
 done
 
-packages=(crypto models rholang casper rspace_plus_plus)
+packages=()
+declare -A coverage_packages_seen=()
+for entry in "${critical_files[@]}"; do
+    package="${entry%%:*}"
+    if [[ -z "${coverage_packages_seen[$package]:-}" ]]; then
+        packages+=("$package")
+        coverage_packages_seen["$package"]=1
+    fi
+done
 export_sequence=0
 for package in "${packages[@]}"; do
-    package_target="$REPO_ROOT/target/llvm-cov-isolated/$package"
+    package_target="$COVERAGE_TARGET_ROOT/$package"
+    ACTIVE_COVERAGE_TARGET="$package_target"
     coverage_target="$package_target/llvm-cov-target"
     if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
         CARGO_TARGET_DIR="$package_target" cargo llvm-cov clean --workspace
@@ -231,9 +262,12 @@ for package in "${packages[@]}"; do
     fi
     printf 'Coverage object matching for %s: %s matched, %s transient build profiles ignored, %s LLVM export failures contained\n' \
         "$package" "$matched_objects" "$unmatched_profiles" "$failed_exports"
+    cleanup_coverage_target "$package_target"
+    ACTIVE_COVERAGE_TARGET=""
 done
 
-stable_target="$REPO_ROOT/target/llvm-cov-isolated/casper-engine-stable"
+stable_target="$COVERAGE_TARGET_ROOT/casper-engine-stable"
+ACTIVE_COVERAGE_TARGET="$stable_target"
 if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
     CARGO_TARGET_DIR="$stable_target" cargo llvm-cov clean --workspace
     test -d "$COVERAGE_SCRATCH"
@@ -254,8 +288,11 @@ CARGO_TARGET_DIR="$stable_target" cargo llvm-cov report \
     --release \
     --lcov \
     --output-path "$casper_stable_report"
+cleanup_coverage_target "$stable_target"
+ACTIVE_COVERAGE_TARGET=""
 
-rspace_stable_target="$REPO_ROOT/target/llvm-cov-isolated/rspace-engine-stable"
+rspace_stable_target="$COVERAGE_TARGET_ROOT/rspace-engine-stable"
+ACTIVE_COVERAGE_TARGET="$rspace_stable_target"
 if [[ "$COVERAGE_REUSE_PROFILES" == 0 ]]; then
     CARGO_TARGET_DIR="$rspace_stable_target" cargo llvm-cov clean --workspace
     test -d "$COVERAGE_SCRATCH"
@@ -274,6 +311,8 @@ CARGO_TARGET_DIR="$rspace_stable_target" cargo llvm-cov report \
     --release \
     --lcov \
     --output-path "$rspace_stable_report"
+cleanup_coverage_target "$rspace_stable_target"
+ACTIVE_COVERAGE_TARGET=""
 
 declare -A stable_reports=(
     [casper]="$casper_stable_report"

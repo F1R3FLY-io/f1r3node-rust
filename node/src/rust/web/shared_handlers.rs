@@ -9,7 +9,8 @@ use axum::response::{IntoResponse, Json, Response};
 use casper::rust::api::block_api::{
     BlockNotFoundError, BlockPendingAdmissionError, DeployNotFoundError, DeployValidationError,
     ExploratoryDeployReadOnlyError, ExploratoryDeployRejection, InvalidHashError,
-    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError, ProposeReadOnlyError,
+    InvalidPublicKeyError, LatestBlockMessageError, NoNewDeploysError,
+    PrivateNamePreviewUnavailable, ProposeReadOnlyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::casper::DeployError;
@@ -87,7 +88,7 @@ pub struct ApiErrorResponse {
     /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
-    /// `no_new_deploys`
+    /// `no_new_deploys`, `private_name_preview_unavailable`
     ///
     /// **500 Internal Server Error:**
     /// `interpreter_internal_error`, `signing_error`, `replay_failure`,
@@ -312,6 +313,16 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         }
         if cause.downcast_ref::<NoNewDeploysError>().is_some() {
             return (StatusCode::CONFLICT, "no_new_deploys", cause.to_string());
+        }
+        if cause
+            .downcast_ref::<PrivateNamePreviewUnavailable>()
+            .is_some()
+        {
+            return (
+                StatusCode::CONFLICT,
+                "private_name_preview_unavailable",
+                cause.to_string(),
+            );
         }
     }
 
@@ -698,5 +709,17 @@ mod tests {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(kind, "parent_frontier_capacity_exceeded");
         assert!(detail.contains("requires 3 parents"));
+    }
+
+    #[test]
+    fn protocol_v6_private_name_preview_is_a_stable_conflict() {
+        let error = eyre::Report::new(PrivateNamePreviewUnavailable {
+            protocol_version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+        });
+        let (status, kind, detail) = classify_error(&error);
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(kind, "private_name_preview_unavailable");
+        assert!(detail.contains("authenticated deploy envelope"));
     }
 }

@@ -50,6 +50,7 @@ use super::system_processes::{
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::grpc_client_service::GrpcClientService;
+use crate::rust::interpreter::merging::mergeable_tags::mergeable_tag_uri_bindings;
 use crate::rust::interpreter::metrics_constants::{
     CREATE_CHECKPOINT_TIME_METRIC, CREATE_SOFT_CHECKPOINT_TIME_METRIC, EVALUATE_TIME_METRIC,
     RUNTIME_CHECKPOINT_TOTAL_METRIC, RUNTIME_METRICS_SOURCE,
@@ -1408,25 +1409,23 @@ where
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
-    // via a URI binding. Genesis-defined tags are unforgeable names; they must
-    // be created at runtime startup and threaded into both the merge engine's
-    // tag registry and the URN map so contracts can bind them via
-    // `bootstrapName(`rho:system:...`)`.
-    for (tag_par, merge_type) in mergeable_tags.iter() {
-        if let MergeType::BitmaskOr = merge_type {
-            tracing::info!(
-                target: "f1r3fly.merge.tag_check.validation",
-                "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
-                tag_par.unforgeables.len(),
-                tag_par.exprs.len(),
-                tag_par.bundles.len(),
-            );
-            urn_map.insert(
-                "rho:system:bitmaskMergeableTag".to_string(),
-                tag_par.clone(),
-            );
-        }
+    let tag_uri_bindings = mergeable_tag_uri_bindings(&mergeable_tags)
+        .unwrap_or_else(|uri| panic!("duplicate mergeable tag URI: {uri}"));
+    for (uri, tag_par) in tag_uri_bindings {
+        let merge_type = mergeable_tags
+            .get(&tag_par)
+            .expect("mergeable URI binding references configured tag");
+        let previous = urn_map.insert(uri.to_string(), tag_par.clone());
+        assert!(previous.is_none(), "duplicate mergeable tag URI: {uri}");
+        tracing::info!(
+            target: "f1r3fly.merge.tag_check.validation",
+            uri,
+            merge_type = ?merge_type,
+            unforgeables = tag_par.unforgeables.len(),
+            exprs = tag_par.exprs.len(),
+            bundles = tag_par.bundles.len(),
+            "Mergeable tag URI binding inserted"
+        );
     }
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;

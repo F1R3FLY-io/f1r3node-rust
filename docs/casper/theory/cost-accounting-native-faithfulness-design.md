@@ -121,12 +121,8 @@ bisimilarity (fire one gate, residue ~ body), not a bisimulation across a `ca_st
   `ca_single_gate_bisimilar` (single-gate residue bisimilarity) — with the force-point obstruction
   settled as the separation rather than papered over by a (nonexistent) L4 collapse.
 
-**Progress note (this session):** the entire `CATranslationLemmas` module (L1/L2/
-lift_lift_comm) and the `CATranslationFaithfulness` Section + invariance foundation are
-committed and gate-green. The remaining items above form a layered development (proc
-lift/lift → st_tr_d + bridge → L3 → L4 → per-rule → Thm A → Thm C) whose crux (L3) is the
-genuinely-novel research step; each layer must compile axiom-free before the next, so it
-proceeds as a sequence of gate-green checkpoints, not one landing.
+**Historical progress note.** The former layered plan is no longer open work.
+The final reconciliation below records each completed or superseded item.
 
 > **Checkbox reconciliation (final).** The boxes above were the original plan for a *full
 > strong forward bisimulation* (Thm A) built layer-by-layer through an L4 dequote-collapse.

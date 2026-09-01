@@ -194,7 +194,7 @@ it.
 | **A**      | **A**nti-monotone reports (synonym for antitone)     | `view_closure_reports_antimonotone`                  |
 | **V**      | **V**iew-merge over-approximation                    | `graph_union_closure_overapproximates_*`             |
 | **RPT**    | **R**e**P**or**T** namespace exactness               | `unreported_visible_edge_remains_active`             |
-| **EID**    | **E**poch / **ID**entity filter                      | `Inv_StaleEvidenceCannotSlashRebondedKey`            |
+| **EID**    | **E**poch / **ID**entity filter                      | `Inv_StaleGenerationCannotSlashRebondedKey`          |
 | **HYP**    | **HYP**othesis-derived corpus check                  | (Sage Finding 91 + Rust Hypothesis corpus)           |
 | **AMP**    | **AMP**lification boundary                           | `weighted_amplification_boundary`                    |
 | **PF**     | **P**roposer **F**airness                            | `proposer_fairness_boundary`                         |

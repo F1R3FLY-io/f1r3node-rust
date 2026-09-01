@@ -121,10 +121,6 @@ async fn stage_contest(
         )
         .expect("build contender f")
     };
-    let contenders = vec![
-        (contender_d.sig.clone(), contender_d.clone()),
-        (contender_f.sig.clone(), contender_f.clone()),
-    ];
     let c_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_d))
         .await
@@ -133,6 +129,16 @@ async fn stage_contest(
         .add_block_from_deploys(std::slice::from_ref(&contender_f))
         .await
         .expect("block A with f");
+    let contenders = vec![
+        (
+            Bytes::copy_from_slice(c_block.body.deploys[0].deploy_id()),
+            contender_d,
+        ),
+        (
+            Bytes::copy_from_slice(a_block.body.deploys[0].deploy_id()),
+            contender_f,
+        ),
+    ];
     (c_block, a_block, contenders)
 }
 
@@ -243,17 +249,18 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    let loser_envelope = nodes[2]
+        .envelope_for_deploy(&loser_deploy)
+        .expect("loser envelope");
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_with_effects(
         &mut nodes[2].block_store,
         snapshot.parents.clone(),
-        vec![loser_deploy],
+        vec![loser_envelope],
         Vec::new(),
         &snapshot,
         &runtime_manager,
         block_data.clone(),
         HashMap::new(),
-        None,
-        None,
         None,
     )
     .await
@@ -274,7 +281,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
     let fresh_execution = checkpoint
         .deploys
         .iter()
-        .find(|pd| pd.deploy.sig == loser_sig)
+        .find(|pd| pd.deploy_id() == &loser_sig)
         .expect("the loser must execute fresh in this block");
     assert!(
         !fresh_execution.is_failed,

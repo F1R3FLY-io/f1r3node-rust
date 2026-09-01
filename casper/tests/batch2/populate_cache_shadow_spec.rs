@@ -178,7 +178,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::legacy_deploy_id(&rejected_sig))
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
             .expect("buffer.contains_sig"),
         "the bufferless computation must not have populated the buffer"
     );
@@ -225,7 +225,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_id(&crate::legacy_deploy_id(&rejected_sig))
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
             .expect("buffer.contains_sig"),
         "the buffered computation must populate the rejected-deploy buffer \
          even when a bufferless computation already seeded the cache"

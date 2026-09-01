@@ -12,7 +12,7 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
-async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
+async fn multi_parent_casper_should_reject_legacy_ingress_without_poisoning_the_v6_pool() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
         .await
@@ -24,20 +24,38 @@ async fn multi_parent_casper_should_accept_a_deploy_and_return_its_id() {
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
 
-    let result = node.casper.deploy(deploy.clone());
+    let legacy_result = node.casper.deploy(deploy.clone()).unwrap();
+    assert!(matches!(
+        legacy_result,
+        Either::Left(DeployError::ParsingError(message))
+            if message.contains("protocol-v6 admission requires")
+    ));
+    assert!(node.deploy_storage.lock().read_all().unwrap().is_empty());
+    assert!(node
+        .deploy_storage
+        .lock()
+        .read_all_envelopes()
+        .unwrap()
+        .is_empty());
 
-    assert!(result.is_ok(), "Deploy failed: {:?}", result.err());
-
-    // Scala: deployId = res.right.get
-    let deploy_id_either = result.unwrap();
-    let deploy_id = match deploy_id_either {
+    let envelope = node.envelope_for_deploy(&deploy).unwrap();
+    let expected_id = envelope.envelope_commitment().unwrap().to_vec();
+    let deploy_id = match node.casper.deploy_cosigned(envelope).unwrap() {
         Either::Right(id) => id,
         Either::Left(err) => {
             panic!("Deploy returned error: {:?}", err)
         }
     };
-
-    assert_eq!(deploy_id, deploy.sig.to_vec());
+    assert_eq!(deploy_id, expected_id);
+    assert!(node.deploy_storage.lock().read_all().unwrap().is_empty());
+    assert_eq!(
+        node.deploy_storage
+            .lock()
+            .read_all_envelopes()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -50,17 +68,18 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let expected_id = deploy.sig.to_vec();
+    let envelope = node.envelope_for_deploy(&deploy).unwrap();
+    let expected_id = envelope.envelope_commitment().unwrap().to_vec();
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
 
     let handles = (0..32)
         .map(|_| {
             let casper = node.casper.clone();
-            let deploy = deploy.clone();
+            let envelope = envelope.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                casper.deploy(deploy).unwrap()
+                casper.deploy_cosigned(envelope).unwrap()
             })
         })
         .collect::<Vec<_>>();
@@ -85,7 +104,7 @@ async fn multi_parent_casper_should_reject_concurrent_identical_deploys() {
     assert!(node
         .deploy_storage
         .lock()
-        .contains_sig(&expected_id)
+        .contains_envelope(&expected_id)
         .unwrap());
 }
 
@@ -99,7 +118,8 @@ async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let first = node.casper.deploy(deploy.clone()).unwrap();
+    let envelope = node.envelope_for_deploy(&deploy).unwrap();
+    let first = node.casper.deploy_cosigned(envelope.clone()).unwrap();
     assert!(matches!(first, Either::Right(_)));
 
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -112,10 +132,10 @@ async fn block_api_should_not_trigger_propose_for_a_duplicate_deploy() {
         })
     });
 
-    let expected_id = deploy.sig.to_vec();
-    let result = BlockAPI::deploy(
+    let expected_id = envelope.envelope_commitment().unwrap().to_vec();
+    let result = BlockAPI::deploy_cosigned(
         &node.engine_cell,
-        deploy,
+        envelope,
         &Some(trigger),
         0,
         false,
@@ -141,23 +161,26 @@ async fn multi_parent_casper_should_reject_a_deploy_already_in_the_dag() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let expected_id = deploy.sig.to_vec();
+    let envelope = node.envelope_for_deploy(&deploy).unwrap();
+    let expected_id = envelope.envelope_commitment().unwrap().to_vec();
 
     node.add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .unwrap();
     node.deploy_storage
         .lock()
-        .remove(vec![deploy.clone()])
+        .remove_envelope_by_id(&expected_id)
         .unwrap();
 
     assert!(node
         .block_dag_storage
-        .deploy_canonical_appearance(&crate::legacy_deploy_id(&expected_id))
+        .deploy_canonical_appearance(
+            &models::rust::deploy_id::DeployLookupId::from_protocol_bytes(6, &expected_id).unwrap(),
+        )
         .unwrap()
         .is_some());
     assert!(matches!(
-        node.casper.deploy(deploy).unwrap(),
+        node.submit_deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
     ));
 }
@@ -172,16 +195,17 @@ async fn multi_parent_casper_should_reject_a_deploy_in_the_rejected_buffer() {
     let deploy =
         construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
             .unwrap();
-    let expected_id = deploy.sig.to_vec();
+    let envelope = node.envelope_for_deploy(&deploy).unwrap();
+    let expected_id = envelope.envelope_commitment().unwrap().to_vec();
 
     node.rejected_deploy_buffer
         .lock()
         .unwrap()
-        .add(vec![crate::pending_legacy(deploy.clone())])
+        .add(vec![crate::pending_envelope(envelope)])
         .unwrap();
 
     assert!(matches!(
-        node.casper.deploy(deploy).unwrap(),
+        node.submit_deploy(deploy).unwrap(),
         Either::Left(DeployError::DuplicateDeploy(id)) if id == expected_id
     ));
 }

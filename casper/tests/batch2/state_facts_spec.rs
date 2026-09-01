@@ -79,17 +79,20 @@ async fn checkpoint_block_with(
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    let envelopes = deploys
+        .iter()
+        .map(|deploy| node.envelope_for_deploy(deploy))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("protocol-v6 deploy envelopes");
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_with_effects(
         &mut node.block_store,
         snapshot.parents.clone(),
-        deploys,
+        envelopes,
         Vec::new(),
         &snapshot,
         &runtime_manager,
         block_data,
         HashMap::new(),
-        None,
-        None,
         None,
     )
     .await
@@ -229,6 +232,9 @@ async fn merged_block_records_the_floor_base_and_the_applied_set() {
         .add_block_from_deploys(std::slice::from_ref(&marker))
         .await
         .expect("validator 1 proposes the merge");
+    let marker_id = nodes[0]
+        .canonical_deploy_id(&marker)
+        .expect("marker identity");
     assert_eq!(
         merge_block.header.parents_hash_list.len(),
         2,
@@ -262,15 +268,19 @@ async fn merged_block_records_the_floor_base_and_the_applied_set() {
     // state), a sibling above the floor is re-applied and recorded.
     let dag = nodes[0].casper.block_dag().await.expect("dag");
     for (block, sig, name) in [
-        (&block_a, &deploy_a.sig, "A"),
-        (&block_b, &deploy_b.sig, "B"),
+        (&block_a, block_a.body.deploys[0].deploy_id(), "A"),
+        (&block_b, block_b.body.deploys[0].deploy_id(), "B"),
     ] {
         let in_base = block.block_hash == expected_floor.hash
             || dag
                 .is_dag_ancestor(&block.block_hash, &expected_floor.hash)
                 .expect("ancestor query");
         assert_eq!(
-            merge_block.body.applied_from_scope.contains(sig),
+            merge_block
+                .body
+                .applied_from_scope
+                .iter()
+                .any(|applied| applied.as_ref() == sig),
             !in_base,
             "sibling {}: applied_from_scope records exactly the chains the \
              merge re-applied from ABOVE-floor scope (in_base={}, applied \
@@ -291,7 +301,11 @@ async fn merged_block_records_the_floor_base_and_the_applied_set() {
          incomparable siblings, so at least one chain is re-applied"
     );
     assert!(
-        !merge_block.body.applied_from_scope.contains(&marker.sig),
+        !merge_block
+            .body
+            .applied_from_scope
+            .iter()
+            .any(|applied| applied.as_ref() == marker_id.as_bytes()),
         "the marker executed FRESH in this block (a deploys entry), not \
          re-applied from scope"
     );
@@ -328,7 +342,7 @@ async fn a_block_lying_about_its_applied_set_is_invalid() {
         .expect("build deploy")
     };
     let lying_block = checkpoint_block_with(&mut nodes[0], &shard_id, vec![deploy], |body| {
-        body.applied_from_scope = vec![Bytes::from(vec![0xAB; 70])];
+        body.applied_from_scope = vec![Bytes::from(vec![0xAB; 32])];
     })
     .await;
 

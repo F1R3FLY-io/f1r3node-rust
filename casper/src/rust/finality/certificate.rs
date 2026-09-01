@@ -545,14 +545,24 @@ async fn validate_decision(
     if target == predecessor {
         return Ok(());
     }
-    let mut tips = latest.values().cloned().collect::<Vec<_>>();
-    tips.sort();
-    tips.dedup();
-    let selected =
-        crate::rust::finality::floor::finalized_floor(dag, block_store, &tips, &latest, ftt)
-            .await
-            .map_err(FinalizationCertificateError::Local)?;
-    if selected.hash != *target {
+    let current = crate::rust::finality::floor::Floor {
+        hash: predecessor.clone(),
+        block_number: predecessor_metadata.block_number,
+    };
+    let selected = crate::rust::finality::floor::floor_of_frozen_vote_projection(
+        dag,
+        block_store,
+        &current,
+        context.vote_projection().eligible_latest_messages(),
+        ftt,
+    )
+    .await
+    .map_err(FinalizationCertificateError::Local)?;
+    if !matches!(
+        selected,
+        crate::rust::finality::floor::FloorOfView::Advance(ref floor)
+            if floor.hash == *target
+    ) {
         return Err(invalid(
             "exact finalizer did not select the committed target",
         ));
@@ -733,8 +743,8 @@ mod tests {
     use super::{
         candidate_use_before_chain_cache, parent_floor_frontier_is_valid,
         select_predecessor_certificate_carrier, validate_accepted_predecessor_anchor,
-        CertificateVerificationSchedule, FinalizationCertificateError,
-        PredecessorCertificateCarrier,
+        validate_candidate_parent_frontier, CertificateVerificationSchedule,
+        FinalizationCertificateError, PredecessorCertificateCarrier,
     };
 
     fn rank(value: u8) -> BlockHash { Bytes::from(vec![value; 32]) }
@@ -940,6 +950,33 @@ mod tests {
     #[test]
     fn historical_floor_cannot_be_reused_over_a_newer_parent_floor() {
         assert!(!parent_floor_frontier_is_valid(&rank(0), &[rank(1)], ordered, ordered,).unwrap());
+    }
+
+    #[test]
+    fn candidate_parent_frontier_must_carry_committed_floor_ancestry() {
+        let genesis = approved_genesis();
+        let floor = carrier_metadata_at(&genesis, rank(1), rank(9), true);
+        let incompatible = carrier_metadata_at(&genesis, rank(2), rank(8), true);
+        let commitment = FinalizedFloorCommitment {
+            floor_hash: floor.block_hash.clone(),
+            floor_post_state_hash: floor.post_state_hash.clone(),
+            certificate_digest: rank(7),
+            authority_context_digest: rank(6),
+        };
+        let dag = anchor_dag_with_carriers(&genesis, vec![floor, incompatible]);
+        let error = validate_candidate_parent_frontier(
+            &[rank(2)],
+            &commitment,
+            &dag,
+            &block_store(),
+            &genesis,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            FinalizationCertificateError::Invalid(detail)
+                if detail == "candidate finalized floor is absent from the causal parent frontier"
+        ));
     }
 
     #[test]

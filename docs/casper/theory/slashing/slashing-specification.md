@@ -81,11 +81,11 @@ This work contributes:
    `formal/rocq/slashing/theories/EquivocationDetector.v` and as a TLA+
    transition relation in `formal/tlaplus/slashing/SlashFlow.tla`;
    proofs are reproduced in prose in `slashing-verification.md`.
-2. A **correctness proof**: under the sixteen documented bug-fix deltas, every
-   detected admissible/ignorable equivocation provably leads to bond zeroing,
-   witness recording, fork-choice exclusion, and stake transfer to the Coop
-   vault. The proof lives in `MainTheorem.v` (`main_slashing_algorithm_correct`)
-   and is summarized as Theorem 9.1 in this document. (An earlier
+2. A **correctness proof**: under the documented bug-fix deltas, every detected
+   admissible or ignorable equivocation leads to bond zeroing, witness recording,
+   fork-choice exclusion, stake quarantine, and a mint halt. The Coop vault stays
+   unchanged before adjudication. The proof lives in `MainTheorem.v`
+   (`main_slashing_algorithm_correct`) and is summarized as Theorem 9.1. (An earlier
    Rust ↔ Scala bisimilarity proof was removed under the cost-accounted-rho
    migration; see §9 and DR-6.)
 3. A **bug-fix manifest** of eleven numbered defects, each with a stated
@@ -95,7 +95,7 @@ This work contributes:
    audit blockers, slashable-variant completion, operational and
    adversarial), each tagged for automated regression-test generation
    against the bug fixes.
-5. **Ten PlantUML diagrams** (sources at `docs/casper/theory/slashing/diagrams/*.puml`,
+5. **Eleven PlantUML diagrams** (sources at `docs/casper/theory/slashing/diagrams/*.puml`,
    rendered to SVG alongside) that reify the LTS visually and stay 1:1
    with the formal model.
 
@@ -121,7 +121,7 @@ document. §3 catalogues the 13 sub-components of the slashing subsystem
 (grouped into 5 layers; cf. Diagram 01). §§4–5
 give the operational semantics of detection and the PoS slash transition.
 §6 captures the validator lifecycle. §7 walks the end-to-end slashing
-pipeline; §8 elaborates the two-level closure. §9 states the headline
+pipeline; §8 analyzes a counterfactual two-level closure. §9 states the headline
 correctness claim. §10 lists the bug-fix manifest. §11 gives worked examples. §12
 enumerates the use-case catalog. §13 declares scope boundaries. §14 lists
 references.
@@ -154,7 +154,7 @@ artifacts may still use the alias.
 |-------------------------------------|-------------------------------------------------|
 | This document                       | ~1,800 lines markdown (incl. embedded diagrams) |
 | `slashing-verification.md`          | ~1,300 lines markdown                           |
-| `formal/rocq/slashing/theories/*.v` | 27 modules / ~7,700 lines                       |
+| `formal/rocq/slashing/theories/*.v` | 30 modules                                      |
 | `formal/tlaplus/slashing/*.tla`     | 7 base specs + MC instances                     |
 | `formal/sage/slashing/*.sage`       | 32 finite/search models                         |
 | PlantUML sources                    | 11 diagrams / ~1,700 lines                      |
@@ -282,33 +282,28 @@ specification is self-contained.
 
 ### 2.4 InvalidBlock taxonomy
 
-The current `InvalidBlock` enum has **26 variants**, of which **17 are
-slashable** (`block_status.rs:37-72,361-387`):
+The current `InvalidBlock` enum has 29 variants. Only two variants can create
+slash evidence:
 
-```
-NeglectedEquivocation,     NeglectedInvalidBlock,     JustificationRegression,
-InvalidParents,            InvalidFollows,             InvalidBlockNumber,
-InvalidSequenceNumber,     InvalidShardId,              InvalidRepeatDeploy,
-DeployNotSigned,           InvalidTransaction,          InvalidBondsCache,
-InvalidEquivocationEvidence, UnauthorizedSlashDeploy,   ContainsExpiredDeploy,
-ContainsTimeExpiredDeploy, ContainsFutureDeploy
+```text
+AdmissibleEquivocation
+IgnorableEquivocation
 ```
 
-The remaining 9 variants — `InvalidFormat`, `InvalidSignature`,
-`InvalidSender`, `InvalidVersion`, `InvalidTimestamp`, `InvalidBlockHash`,
-`InvalidRejectedDeploy`, `NotOfInterest`, and `LowDeployCost` — are
-non-slashable.
+The other 27 variants remain objective rejection reasons. A rejection does
+not become economic evidence only because the node stores it.
 
-`AdmissibleEquivocation` and `IgnorableEquivocation` are historical/abstract
-detector labels, not current `InvalidBlock` variants. Production retains their
-distinction as `EquivocationObservation::{RequestedDependency, Unsolicited}`
-on an otherwise accepted validation (`block_status.rs:74-78,89-100`). The
-durable consensus fact is stronger: every certified accepted sibling extends
-the generation-scoped objective-evidence index keyed by
-`(validator, bond_generation, sequence)`, and two distinct hashes create the
-tracker identity (`block_dag_key_value_storage.rs:1499-1528`). This is the
-current refinement of Bug fix #1/T-9.1: unsolicited evidence cannot be
-dropped, but a unary observation alone does not falsely make a block invalid.
+Each certified rejection has durable `BlockMetadata`. The metadata contains
+its exact `AdmissionRejectionReason`. Dependency resolution uses this canonical
+metadata and does not use the derived invalid index.
+
+`AdmissionRejectionReason::is_slash_evidence_eligible` defines the economic
+boundary. The method returns `true` only for the two equivocation variants.
+`InvalidBlock::is_slashable` has the same exhaustive classification.
+
+The objective-evidence index uses the key
+`(validator, bond_generation, sequence)`. Two distinct certified block hashes
+for one key form an objective pair. Arrival order cannot change this pair.
 
 ### 2.5 Rocq ↔ TLA+ ↔ Rust crosswalk
 
@@ -322,7 +317,7 @@ verification doc §11 carries the full table; the most-cited ones:
 | InvalidBlock          | `InvalidBlock` (inductive)                       | string variant             | `InvalidBlock` (Rust enum, in `block_status.rs`) |
 | EquivocationRecord    | `EqRec`                                          | `equivocationRecords` set  | `EquivocationRecord` (Rust struct)               |
 | BondMap               | `BondMap := list (V * nat)`                      | `bonds` function           | `BondsMap: HashMap<Validator, Long>`             |
-| `is_slashable(s)`     | `is_slashable : InvalidBlock -> bool`            | (abstracted; not modeled)  | `InvalidBlock::is_slashable`                     |
+| `is_slashable(s)`     | `is_slashable : InvalidBlock -> bool`            | `SlashableVariants`        | `InvalidBlock::is_slashable`                     |
 | Detect equivocation   | `equivocates : DAGState -> V -> nat -> Prop`     | `IsRealEquivocation(v,s)`  | `check_equivocations`                            |
 | Slash effect          | `slash : PoSState -> V -> PoSState`              | `ExecuteSlash(o)`          | `@PoS!("slash", …)`                              |
 
@@ -630,43 +625,41 @@ deterministic byte projection.
 
 #### 3.4.1 PoS Rholang contract
 
-The on-chain `slash` method at
-`casper/src/main/resources/PoS.rhox:446-507` (signature on line 446;
-lines 432-434 are the `new commitRewards in {` wrapper plus block-comment
-header preceding the signature). Same file is loaded into
-both Rust and Scala interpreters; the contract logic is therefore
-identical by construction. The contract:
+The on-chain `slash` method is at
+`casper/src/main/resources/PoS.rhox:507-631`. The contract:
 
-1. Verifies the system auth token (rejects if invalid).
-2. Looks up the offender via `invalidBlocks[blockHash]`; if the lookup
-   misses, returns `(false, "invalid slash evidence")` without mutation.
-3. Reads the offender's bond.
-4. If the bond is already zero, returns `(true, Nil)` without mutation.
-5. Otherwise transfers the bond to the Coop vault.
-6. Updates `state.allBonds`, `state.activeValidators`,
-   `state.committedRewards` as a single atomic `stateUpdateCh!`
-   map-construction at `PoS.rhox:449-510` (one map write, not three
-   field writes).
-7. Returns `(true, Nil)` on `returnCh`; transfer failure returns
-   `(false, "transfer failed: ...")` deterministically.
+1. Verifies the system auth token.
+2. Resolves `blockHash` through the invalid-block map.
+3. Verifies `targetBondGeneration` against the current bond generation.
+4. Returns success without mutation for an existing quarantine in that generation.
+5. Locates positive locked stake in the bonded or withdrawal lifecycle state.
+6. Calls `protocolQuarantineAll` for that validator and generation.
+7. Removes the validator from bonded, withdrawal, active, and reward state.
+8. Stores the locked stake and lifecycle data in `quarantinedStake`.
+9. Adds the validator to `mintingHalted`.
+10. Applies all PoS changes through one `stateUpdateCh!` write.
 
-Bug fix #4 (T-9.4) addresses the missing error path on transfer failure.
-The zero-bond no-op branch is a defensive implementation safeguard. It is
-not an authorization path: candidate generation and received-block validation
-require a positive target bond in the canonical merged pre-state.
+An invalid token, unknown hash, stale generation, or custody failure leaves PoS state unchanged.
+Candidate generation and received-block validation require positive canonical stake before execution.
+
+The `redeemSlashed` method is at `PoS.rhox:632-814`.
+It requires the system token, a verified multisignature quorum, and a matching quarantine generation.
+A `Vindicated` outcome restores all stake and eligible lifecycle membership.
+A partial `Guilty` outcome transfers the penalty and restores the remainder.
+A `Burned` outcome destroys the quarantined stake and keeps minting halted.
 
 #### 3.4.2 Bond map / Validator registry
 
-State held inside the PoS contract: `state.allBonds`,
-`state.activeValidators`, `state.committedRewards`. Mutated by the slash
-contract; read by `BlockCreator.prepare_slashing_deploys`.
+The PoS contract holds bond, lifecycle, reward, quarantine, and mint-halt state.
+The slash transition removes locked stake from the active lifecycle maps.
+`BlockCreator.prepare_slashing_deploys` reads one canonical authority projection.
 
 #### 3.4.3 Coop vault
 
-Recipient of forfeited stake. Mutated by the `posVault!("transfer",
-coopMultiVaultAddr, valBond, …)` call in the slash contract. The vault is
-itself a Rholang contract; we model it abstractly as a `nat` balance in
-the formal account.
+The Coop vault receives only an adjudicated guilty penalty.
+The initial slash leaves the Coop vault unchanged.
+`redeemSlashed` applies the later custody decision through `protocolApplyStakeDisposition`.
+The formal Stage-C model represents the vault balance as a natural number.
 
 ### 3.5 Fork-choice layer
 
@@ -785,146 +778,110 @@ non-`Valid` status, so the disjunction holds. TLC verifies the temporal
 property `Live_DetectionComplete` under fairness.
 
 **Theorem 4.3 (T-3, Slashable taxonomy correctness).**
-*(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v`.)* The post-fix
-slashable set extends the pre-fix slashable set by exactly two variants —
-`IgnorableEquivocation` (Bug #1) and the 27th variant
-`UnauthorizedSlashDeploy`; on all other variants the two predicates agree
-(`slashable_diff_only_ignorable_or_unauth`). Proven by exhaustive case
-analysis on the 27-element enum.
+*(`slashable_current_exact`, `InvalidBlock.v`.)* For each rejection reason
+`ib`, the current predicate satisfies:
 
-The 19-element post-fix slashable set is
+```text
+is_slashable(ib) = true
+  if and only if
+ib = AdmissibleEquivocation or ib = IgnorableEquivocation
+```
 
-```
-{ AdmissibleEquivocation, IgnorableEquivocation, NeglectedEquivocation,
-  NeglectedInvalidBlock, JustificationRegression, InvalidParents,
-  InvalidFollows, InvalidBlockNumber, InvalidSequenceNumber,
-  InvalidShardId, InvalidRepeatDeploy, DeployNotSigned, InvalidTransaction,
-  InvalidBondsCache, InvalidBlockHash, UnauthorizedSlashDeploy,
-  ContainsExpiredDeploy, ContainsTimeExpiredDeploy, ContainsFutureDeploy }
-```
+Rocq proves this result by exhaustive analysis of all 29 variants. Rust tests
+verify the same mapping for `InvalidBlock` and `AdmissionRejectionReason`.
 
 ---
 
 ## 5 · The PoS slash transition
 
-The on-chain `@PoS!("slash", deployerId, invalidBlockHash, sysAuthToken,
-returnCh)` Rholang method is the punitive state transition. We model it
-abstractly as a function `slash : PoSState × V → PoSState × Bool` where
-the boolean indicates success. [Diagram 07](./diagrams/07-activity-pos-slash-contract.svg)
-gives the activity flow.
+The on-chain `slash` method accepts the deployer, evidence hash, bond generation,
+system token, and return channel. The current formal model uses
+`slashC : PoSStateC × V → PoSStateC × Bool`.
 
 [![Diagram 07 — PoS.slash() Rholang activity flow with the bug-#4 transfer-failure fix highlighted](./diagrams/07-activity-pos-slash-contract.svg)](./diagrams/07-activity-pos-slash-contract.svg)
 
 ### 5.1 PoS state
 
-**Definition 5.1** *(PoS state).*
-A `PoSState` is a 4-tuple `(allBonds, activeValidators, committedRewards,
-coopVaultBalance)` with:
+**Definition 5.1** *(Stage-C PoS state).*
+`PoSStateC` contains these formal projections:
 
-- `allBonds : V → ℕ` — the bond map
-- `activeValidators ⊆ V` — currently bonded validators
-- `committedRewards : V → ℕ` — pending rewards
-- `coopVaultBalance ∈ ℕ` — accumulated forfeited stake
+- `allBonds : V → ℕ` is the bond map.
+- `activeValidators ⊆ V` is the active validator set.
+- `coopVaultBalance ∈ ℕ` is the adjudicated penalty balance.
+- `mintingHalted ⊆ V` is the mint-halt set.
+- `quarantinedStake : V ⇀ ℕ` stores locked stake before adjudication.
 
-**Mechanization note.** The Rholang/Scala `PoSState` carries all four
-fields; the Rocq mechanization at `PoSContract.v:40-44` records only
-the three fields the slash transition actually mutates and observes:
-`ps_allBonds`, `ps_active`, and `ps_coopVault`. The
-`committedRewards` field is omitted from the Rocq record because
-`slash` does not read or modify it in the formalized fragment (the
-field is mutated by orthogonal reward-distribution logic outside the
-slashing scope). The §5.2 prose semantics presents the four-field
-view for parity with the Scala contract; T-7 / T-8 / T-Idem are
-proven against the three-field Rocq record.
+Production state also stores rewards and lifecycle origin data.
+`PoSContract.v` keeps the legacy `PoSState` and `slash` only for historical comparison.
+The current transition uses `PoSStateC` and `slashC`.
 
 ### 5.2 The slash transition
 
-**Definition 5.2** *(slash semantics).* Given `PoSState ps` and offender
-`v ∈ V`,
+**Definition 5.2** *(Stage-C slash semantics).* Given state `psc` and offender `v`,
 
 ```
-slash(ps, v) =
-  | not authTokenValid                    ⟹ (ps, false)  [auth failure]
+slashC(psc, v) =
+  | not authTokenValid                    ⟹ (psc, false)
+  | psc.allBonds[v] = 0                  ⟹ (psc, true)
   | otherwise:
-      let b = ps.allBonds[v]
-      transfer(coopVault, b)              [bug #4: pattern-match on result]
-      ps' = { allBonds[v] := 0;
-              activeValidators := activeValidators \\ {v};
-              committedRewards := committedRewards \\ {v};
-              coopVaultBalance += b }
-      return (ps', true)
+      let b = psc.allBonds[v]
+      psc' = { allBonds[v] := 0;
+               activeValidators := activeValidators \\ {v};
+               quarantinedStake[v] := b;
+               mintingHalted := mintingHalted ∪ {v};
+               coopVaultBalance := coopVaultBalance }
+      return (psc', true)
 ```
 
-**Idempotence is structural, not branch-explicit.** The implementation
-at `PoS.rhox:446-507` does not read `state.allBonds[v]` to short-circuit
-on a second slash. Instead, a second slash on the same offender hits the
-same `invalidBlocks.contains(blockHash)` predicate (`PoS.rhox:449`), and
-on the second attempt one of two structural identities applies: either
-(a) the block is no longer in `invalidBlocks` (the invalid-block index
-has been pruned post-slash), and the contract returns
-`(false, "invalid slash evidence")` at `PoS.rhox:449`; or (b) the
-`posVault.transfer` of an already-zero `valBond` is a no-op map
-identity, and the subsequent `state.allBonds[v := 0]` overwrite of an
-already-zero entry leaves the state unchanged. The Rocq proof of T-Idem
-(`PoSContract.v:117`) is consistent with this structural realisation.
+Production also verifies the evidence hash, generation, and locked stake.
+An existing quarantine in the same generation returns success without mutation.
+A custody failure returns an error without a PoS state change.
 
 ### 5.3 Theorems
 
-**Theorem 5.1 (T-7, Slash zeros bond).** *(`slash_zeros_bond`,
-`PoSContract.v:75`.)* For every `ps` and `v`,
+**Theorem 5.1 (T-7C, Slash zeros bond).** *(`slashC_zeros_bond`,
+`PoSContract.v:353`.)* For every `psc` and `v`,
 
 ```
-  let (ps', _) = slash(ps, v) in  ps'.allBonds[v] = 0
+  let (psc', _) = slashC(psc, v) in  psc'.allBonds[v] = 0
 ```
 
-Proven by direct unfolding. TLC verifies `Inv_BondsZeroAfterSlash` in
-`MC_SlashFlow.tla`.
+The proof unfolds `slashC` and covers the zero-bond branch.
 
-**Theorem 5.2 (T-8, Slash transfers stake).** *(`slash_transfers_stake`,
-`PoSContract.v:95`.)* If the transfer succeeds (the `Bool` in the result is
-`true`), then
+**Theorem 5.2 (T-8C, Slash quarantines stake).**
+*(`slash_quarantines_stake`, `PoSContract.v:384`.)* If the pre-slash bond is positive, then:
 
 ```
-  ps'.coopVaultBalance = ps.coopVaultBalance + ps.allBonds[v]
+  psc'.quarantinedStake[v] = psc.allBonds[v]
+  psc'.coopVaultBalance = psc.coopVaultBalance
 ```
 
-This relies on the transfer-success precondition; bug fix #4 (T-9.4)
-guarantees that the transition either succeeds with this property or
-returns `false` deterministically.
+`redeem_guilty_redistributes` proves the later partial-penalty transfer.
+Vindication restores all quarantined stake.
+Burning destroys quarantined stake and keeps minting halted.
 
-**Theorem 5.3 (T-Idem, Slash idempotence).** *(`slash_idempotent`,
-`PoSContract.v:117`. Historical alias **T-9**; the alias is retained in
-older artifacts but `T-Idem` is preferred to avoid collision with the
-`T-9.M` bug-fix family.)* For every `ps` and `v`,
+**Theorem 5.3 (Mint halt).** *(`slashC_halts`, `PoSContract.v:404`.)*
+A positive-bond slash adds the offender to `mintingHalted`.
+
+**Theorem 5.4 (T-IdemC, Slash idempotence).** *(`slashC_idempotent`,
+`PoSContract.v:427`.)* For every `psc` and `v`,
 
 ```
-  let (ps1, _) = slash(ps, v) in
-  let (ps2, _) = slash(ps1, v) in
-  ps2 = ps1
+  let (psc1, _) = slashC(psc, v) in
+  let (psc2, _) = slashC(psc1, v) in
+  psc2 = psc1
 ```
 
-A second slash on an already-slashed validator is a no-op. Proven via the
-`bm_slash_idempotent_lookup` foundation lemma at
-`Validator.v`.
+A second slash does not change bonds, membership, quarantine, halt state, or the Coop vault.
 
-**Theorem 5.4 (T-10, Fork-choice exclusion).** *(`fork_choice_exclusion`,
+**Theorem 5.5 (T-10, Fork-choice exclusion).** *(`fork_choice_exclusion`,
 `ForkChoice.v:60`.)* If `v ∈ slashedSet`, then `v`'s latest message is
 filtered from the fork-choice estimator.
 
-**Observation 5.5 (T-AuthCheck, System auth-token guard).**
-For every PoS deploy invoking `@PoS!("slash", deployerId, blockHash,
-sysAuthToken, returnCh)` with `sysAuthToken` not equal to the system auth
-token introduced at PoS contract instantiation, the contract rejects the
-deploy at the first guard
-(`PoS.rhox:448`, `sysAuthTokenOps!("check", sysAuthToken,
-*isValidTokenCh)`) with `returnCh!((false, "Invalid system auth
-token"))` at `PoS.rhox:449`. No state mutation occurs and no transfer is
-initiated. Rocq models this boundary with
-`execute_authenticated_slash_deploy`: invalid auth returns `(ps, false)`;
-valid auth is extensionally equal to `execute_slash_deploy`. TLA+ models the
-same guard with `ReceiveBadAuthSlash` and
-`Inv_InvalidAuthSlashNoPending`. Cf. Diagram 07 left branch for the
-Rholang activity flow.
+**Observation 5.6 (T-AuthCheck, System auth-token guard).**
+An invalid system token fails the first guard at `PoS.rhox:507-510`.
+The contract returns `(false, "Invalid system auth token")` without mutation.
+Rocq and TLA+ model the same no-op boundary.
 
 ---
 
@@ -993,38 +950,37 @@ Each transition's effect on the state tuple is given by the
 corresponding component's semantics in §§4–5. The composition rule is
 formalized in `MainTheorem.v`.
 
-### 7.2 Pre-fix vs post-fix behavior
+### 7.2 Historical and current behavior
 
-The pre-fix pipeline at `engine/multi_parent_casper/validation_dispatcher.rs:403` exhibits
-three documented gaps that prevent the pipeline from completing for some
-inputs:
+The historical pipeline had three evidence-handling defects:
 
 - `IgnorableEquivocation` short-circuits at `detect` (no record, no
   slash). Bug fix #1 closes this.
-- `is_slashable(ib) = true` for `ib ≠ AdmissibleEquivocation` falls
-  through to a stub. Bug fix #3 routes these through the standard pipeline.
+- Certified non-equivocation rejections did not have one durable terminal
+  representation. The current dispatcher persists every certified rejection.
 - The read-modify-write at `record(v, s-1)` is non-atomic in the Rust
   port. Bug fix #2 re-locks it.
 
-[Diagram 05](./diagrams/05-seq-invalid-block-dispatch-fixed.svg) shows
-the post-fix dispatch for a non-equivocation slashable variant
-(`JustificationRegression`).
-
-[![Diagram 05 — Generic invalid-block dispatch (post-fix #3) for JustificationRegression: detection → record → proposer's SlashDeploy](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)
+An intermediate implementation created economic evidence for contextual
+rejections. Concurrent delivery made those verdicts disagree across honest
+nodes. The current implementation limits economic evidence to the two
+objective-equivocation reasons.
 
 ---
 
-## 8 · Two-level slashing
+## 8 · Counterfactual neglect-slashing analysis
 
-F1r3fly slashing is **two-level**: in addition to slashing a direct
-equivocator, the protocol slashes any validator who *witnessed* an
-equivocation in their justifications and failed to slash it. This is the
-"neglected equivocation" case. The economic effect makes collusion
-mutually destructive: cover for an equivocator and you go down with them.
+The current protocol rejects a block that neglects known equivocation
+evidence. The derived rejection does not create new economic evidence.
+This rule prevents invalid ancestry without a recursive slash cascade.
+
+The artifacts in this section analyze a stronger, counterfactual policy.
+That policy would slash each validator that neglects an already slashed
+validator. The policy is disabled in the normative TLA+ configuration.
 
 [Diagram 04](./diagrams/04-seq-two-level-slashing.svg) walks the example.
 
-[![Diagram 04 — Two-level slashing: Validator A equivocates → A slashed; Validator B neglects → B also slashed in the same block (collusion is mutually destructive)](./diagrams/04-seq-two-level-slashing.svg)](./diagrams/04-seq-two-level-slashing.svg)
+[![Diagram 04 — Counterfactual two-level slashing policy](./diagrams/04-seq-two-level-slashing.svg)](./diagrams/04-seq-two-level-slashing.svg)
 
 The data-flow that computes the neglect predicate from a block's
 justifications is shown in [Diagram 08](./diagrams/08-dataflow-justifications-to-neglect.svg):
@@ -1051,15 +1007,15 @@ Sl ← Sl ∪ {v : neglect(v) ∩ Sl ≠ ∅}
 
 starting from the direct equivocators.
 
-**Operational realisation.** The closure operator is realised
-**incrementally** by the per-block neglected-invalid-block predicate
-at `casper/src/rust/validate.rs:1059-1069`, not as a single sweep.
-As the DAG grows block-by-block, the set of validators marked
-`NeglectedInvalidBlock` converges to the same least-fixed-point that
-the Rocq closure (`TwoLevelSlashing.v`) computes by explicit
-iteration. The two are equivalent at DAG-saturation; the Rocq
-theorem `t_11_level_2_termination` (`TwoLevelSlashing.v:331`) bounds
-the iteration count by `|universe|`.
+**Current realization.** The `neglected_invalid_block` predicate rejects the
+candidate. The dispatcher persists that rejection without a tracker record.
+`CertifiedRejectionDependency.tla` and `BugFixDispatcher.v` verify this
+separation.
+
+**Counterfactual realization.** `TwoLevelSlashing.tla` uses the
+`EconomicNeglectSlashing` constant. The normative configuration sets the
+constant to `FALSE`. Its closure functions remain available for policy-risk
+analysis.
 
 ### 8.2 Theorems
 
@@ -1253,21 +1209,18 @@ pipeline**, not equivalence to the Scala original.
 
 **Theorem 9.1 (Slashing-algorithm correctness).**
 *(`main_slashing_algorithm_correct`, `MainTheorem.v` §6.)* For every
-detected admissible or ignorable equivocation, applying the slash
-effect and the atomic record update yields: (i) a confirmed
-equivocation; (ii) the witnessing hash retained in the record store;
-(iii) the offender's bond zeroed; (iv) the offender excluded from
-fork choice; and (v) the forfeited stake credited to the Coop vault.
-This composes the detection layer (T-1..T-3), record persistence
-(T-4, T-5), the slash effect (T-7, T-8, T-10), and all sixteen
-documented bug fixes (T-9.1..T-9.15).
+detected admissible or ignorable equivocation, the transition confirms the
+equivocation and retains its witness. The transition zeros the offender's bond
+and excludes the offender from fork choice. Positive pre-slash stake enters
+quarantine, and minting stops for the offender. The Coop vault stays unchanged
+before adjudication. This theorem composes detection, record persistence,
+Stage-C slash effects, and the applicable bug-fix results.
 
 ### 9.1 Why correctness matters
 
-The correctness theorem is the audit-grade certification for the
-slashing subsystem: every Byzantine equivocation that is detected is
-provably punished by bond forfeiture, exclusion from consensus, and
-stake transfer, with no honest validator affected (T-1 soundness).
+The correctness theorem certifies the composed slashing transition.
+Each detected Byzantine equivocation causes bond removal, consensus exclusion,
+stake quarantine, and a mint halt. T-1 soundness protects honest validators.
 Nine Scala-inherited defects and one Rust-introduced regression were
 identified and fixed along the way (§10), each with its own
 mechanized correctness proof.
@@ -1402,41 +1355,22 @@ Scala behavior; T-9.9 establishes that the widening is sound.
 
   [![Diagram 09 — Tracker race and fix: pre-fix two threads overwrite each other's hash; post-fix the lock serializes the read-modify-write](./diagrams/09-seq-tracker-race-and-fix.svg)](./diagrams/09-seq-tracker-race-and-fix.svg)
 
-### 10.3 Bug #3 — Generic slash dispatcher stub
+### 10.3 Bug #3 — Rejection persistence and evidence separation
 
-- **Origin.** Scala-inherited. The Scala counterpart at
-  `MultiParentCasperImpl.scala:621-622` exhibits the same gap — the
-  catch-all `case ib: InvalidBlock if InvalidBlock.isSlashable(ib)` arm
-  only invokes `handleInvalidBlockEffect` (mark-invalid + buffer-remove);
-  no `EquivocationRecord` is created.
-- **Cause.** `engine/multi_parent_casper/validation_dispatcher.rs:502` carries
-  *"TODO: Slash block for status except InvalidUnslashableBlock - OLD"*.
-  The 15 non-equivocation slashable variants
-  (`JustificationRegression`, `InvalidBondsCache`,
-  `NeglectedInvalidBlock`, etc. — equivocation variants
-  `AdmissibleEquivocation`, `NeglectedEquivocation`, and post-fix
-  `IgnorableEquivocation` are excluded from this count) only get
-  marked invalid; no
-  `EquivocationRecord` is created and no slash effect runs unless a
-  later proposer picks up the offender via
-  `prepare_slashing_deploys`.
-- **Fix.** Dispatch every `is_slashable() = true` variant through the
-  same record-creation path used by `AdmissibleEquivocation`.
-- **Theorem.** T-9.3 — `t_9_3_dispatch_complete` in
-  `BugFixDispatcher.v`. Proves: under the fix, every slashable invalid
-  block triggers a slash within bounded liveness window.
-- **Statement.** *(`t_9_3_dispatch_complete`, `BugFixDispatcher.v:46`.)*
-  ∀ `ib offender baseSeq s`, `is_slashable(ib) = ⊤` ⟹
-  `has_key(dispatch_post_fix(ib, offender, baseSeq, s), (offender, baseSeq)) = ⊤`.
-- **Sketch.** Unfold `dispatch_post_fix` to `insert_cond s (mkEqRec offender baseSeq nil)`
-  using `is_slashable(ib) = ⊤`. Case-split on
-  `has_key s (offender, baseSeq)`: if present, `insert_cond_dup_noop`
-  preserves the key; if absent, `find_insert_cond_same_absent` gives the
-  inserted record under the same key. In both cases the post-state has
-  the key. See §9.3 of `slashing-verification.md` for the full proof.
-- **Diagram.**
-
-  [![Diagram 05 — Generic invalid-block dispatch (post-fix #3): detection of non-equivocation slashable variants now creates an EquivocationRecord and enters the standard slash pipeline](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)](./diagrams/05-seq-invalid-block-dispatch-fixed.svg)
+- **Origin.** The historical dispatcher removed some rejected dependencies
+  from the buffer without one canonical rejection record.
+- **Cause.** Persistence and economic evidence used the same slashable
+  predicate. This design could either lose terminal dependency state or create
+  false evidence from contextual verdicts.
+- **Fix.** Persist every attributable certified rejection. Create economic
+  evidence only for `AdmissibleEquivocation` and
+  `IgnorableEquivocation`.
+- **Theorem.** T-9.3 proves universal terminal persistence and exact evidence
+  eligibility in `BugFixDispatcher.v`.
+- **Statement.** Every certified rejection is terminal. A rejection changes
+  the evidence store if and only if its reason is eligible.
+- **Sketch.** The proof separates the terminal projection from the evidence
+  projection. Exhaustive case analysis covers all 29 reasons.
 
 ### 10.4 Bug #4 — PoS transfer-failure FIXME
 
@@ -1824,19 +1758,22 @@ Trace (showing only the slashing-relevant transitions):
 **Final state.** A is slashed; bond moved to Coop vault; B and C continue
 as the active set.
 
-### 11.2 Example: Two-level slashing (collusion)
+### 11.2 Example: Counterfactual two-level slashing
 
 Setup: 4 validators, A equivocates, B colludes by citing A's
 equivocation in B's next block without attaching a SlashDeploy.
 
-Trace:
+This trace applies only when `EconomicNeglectSlashing = TRUE`. The current
+protocol stops after step 8, persists B's rejection, and creates no B evidence.
+
+Counterfactual trace:
 
 ```
 1-6: same as 11.1 (A is detected and recorded)
 7.  sign(B, 7, bB)   ⟶  D += bB ; bB cites b1 (the invalid block)
                           ; bB carries no SlashDeploy
-8.  detect(bB)       = NeglectedEquivocation  ; (B is recorded too)
-9.  record(B, 6)
+8.  detect(bB)       = NeglectedEquivocation
+9.  counterfactualRecord(B, 6)
 10. propose(C, [SlashDeploy(b1', A, ...), SlashDeploy(bB, B, ...)])
 11. executeSlash(A, true)
 12. executeSlash(B, true)
@@ -1952,33 +1889,16 @@ Trace (showing only the slashing-relevant transitions):
 ```
 1. sign(A, 5, bX)             ⟶ D += bX (regression)
 2. validate(bX) = JustificationRegression
-3. is_slashable(JustificationRegression) = TRUE
-
-   Pre-fix dispatcher (engine/multi_parent_casper/validation_dispatcher.rs:502):
-4. handle_invalid_block_effect(bX, invalid = true)
-   ⟶ DAG marks bX invalid; NO EquivocationRecord;
-      A continues with bond intact unless a future proposer
-      happens to surface A's invalid latest message.
-
-   Post-fix #3 dispatcher:
-4'. insert_equivocation_record(A, 4, ∅)
-5'. update_equivocation_record(A, 4, bX.hash)
-6'. propose(B, [SlashDeploy(bX, A, ...)])
-7'. executeSlash(A, true)
-    ⟶ allBonds[A] := 0
-    ⟶ activeValidators := {B, C}
-    ⟶ coopVaultBalance := 100
+3. is_slashable(JustificationRegression) = FALSE
+4. persist_rejection(bX, JustificationRegression)
+   ⟶ DAG marks bX rejected
+   ⟶ no EquivocationRecord is created
+   ⟶ no SlashDeploy can cite bX as economic evidence
 ```
 
-**Final state.** Pre-fix: A unpunished. Post-fix: A is slashed in B's
-next block, mirroring the AdmissibleEquivocation flow. This example
-exercises the dispatcher uniformity claim of T-9.3
-(`t_9_3_dispatch_complete`). See Diagram 05 for the sequence diagram.
-
-The same trace generalizes to every other `is_slashable() = TRUE`
-variant (`InvalidBondsCache`, `ContainsExpiredDeploy`,
-`ContainsTimeExpiredDeploy`, `InvalidBlockNumber`, etc.) — each
-populates an EquivocationRecord under the post-fix dispatcher.
+**Final state.** The block has a durable terminal rejection. This contextual
+verdict cannot change A's bond. T-9.3 requires the same separation for every
+non-equivocation rejection reason.
 
 ### 11.9 Example: Self-regression slips through (bug #6 demo)
 
@@ -2081,7 +2001,7 @@ UC-37, UC-38, UC-39, UC-41, UC-42, UC-43)** — closures of the §10.8
 verification-doc findings,
 unmapped headline theorems, and high-priority pre-fix regressions;
 **Tier B variant catalog completion (UC-28–UC-36)** — one entry per
-remaining slashable `InvalidBlock` variant; **Tier C operational and
+remaining certified rejection reason; **Tier C operational and
 adversarial (UC-40, UC-44–UC-112)** — distributed-systems, lifecycle,
 and Sage-derived edge-case scenarios. UC numbering reflects the order in
 which each scenario was proposed; tiers do not partition the numeric
@@ -2102,13 +2022,13 @@ slashing), `error` (deterministic failure return path), `behavioral`
 | UC-01 | Single AdmissibleEquivocation                       | T-1, T-2, T-7, T-10 | slashed     | 02      | `casper/tests/slashing/uc_01_admissible_single.rs`        |
 | UC-02 | f validators equivocate in same epoch               | T-1, T-12           | slashed     | 02      | `casper/tests/slashing/uc_02_concurrent_admissible.rs`         |
 | UC-03 | IgnorableEquivocation under fix #1                  | T-9.1               | slashed     | 03      | `casper/tests/slashing/uc_03_ignorable_unrequested.rs`          |
-| UC-04 | NeglectedEquivocation triggers Level 2              | T-11, T-12          | slashed×2   | 04      | `casper/tests/slashing/uc_04_neglect_two_level.rs`                |
-| UC-05 | JustificationRegression (third party)               | T-9.3               | slashed     | 05      | `casper/tests/slashing/uc_05_justification_regression.rs` |
-| UC-06 | JustificationRegression (self) — Boolean predicate¹ | T-9.6 (Boolean)     | slashed     | 08      | `casper/tests/slashing/uc_06_self_regression.rs`          |
-| UC-07 | InvalidBondsCache                                   | T-9.3               | slashed     | 05      | `casper/tests/slashing/integration_t_invalid_bonds_cache.rs`      |
-| UC-08 | ContainsExpiredDeploy                               | T-9.3               | slashed     | 05      | `casper/tests/slashing/uc_08_contains_expired_deploy.rs`           |
-| UC-09 | ContainsTimeExpiredDeploy                           | T-9.3               | slashed     | 05      | `casper/tests/slashing/uc_09_contains_time_expired_deploy.rs`      |
-| UC-10 | InvalidBlockNumber                                  | T-9.3               | slashed     | 05      | `casper/tests/slashing/integration_t_invalid_block_number.rs`     |
+| UC-04 | NeglectedEquivocation rejection                     | T-9.3               | rejected    | 04      | `casper/tests/slashing/uc_04_neglect_two_level.rs`                |
+| UC-05 | JustificationRegression (third party)               | T-9.3               | rejected    | 05      | `casper/tests/slashing/uc_05_justification_regression.rs` |
+| UC-06 | JustificationRegression (self) — Boolean predicate¹ | T-9.6 (Boolean)     | rejected    | 08      | `casper/tests/slashing/uc_06_self_regression.rs`          |
+| UC-07 | InvalidBondsCache                                   | T-9.3               | rejected    | 05      | `casper/tests/slashing/integration_t_invalid_bonds_cache.rs`      |
+| UC-08 | ContainsExpiredDeploy                               | T-9.3               | rejected    | 05      | `casper/tests/slashing/uc_08_contains_expired_deploy.rs`           |
+| UC-09 | ContainsTimeExpiredDeploy                           | T-9.3               | rejected    | 05      | `casper/tests/slashing/uc_09_contains_time_expired_deploy.rs`      |
+| UC-10 | InvalidBlockNumber                                  | T-9.3               | rejected    | 05      | `casper/tests/slashing/integration_t_invalid_block_number.rs`     |
 | UC-11 | Stake-0 bonded validator under fix #5               | T-9.5               | not-slashed | 06      | `casper/tests/slashing/uc_11_stake_zero_protocol_unreachable.rs`               |
 | UC-12 | Concurrent equivocation insertions                  | T-9.2               | slashed     | 09      | `casper/tests/slashing/uc_12_tracker_race.rs`             |
 | UC-13 | PoS transfer failure mid-slash                      | T-9.4               | error       | 07      | `casper/tests/slashing/uc_13_transfer_failure.rs`         |
@@ -2117,7 +2037,7 @@ slashing), `error` (deterministic failure return path), `behavioral`
 | UC-16 | Multi-parent block with slashed parent              | T-10                | admitted    | 06      | `casper/tests/slashing/uc_16_slashed_parent_fork_choice.rs`           |
 | UC-17 | Fork choice with mixed slashed/active               | T-10                | admitted    | 06      | `casper/tests/slashing/uc_17_forkchoice_mixed.rs`         |
 | UC-18 | Bonded-proposer slash-deploy emission⁴              | T-9.8               | slashed     | 01      | `casper/tests/slashing/uc_18_bonded_proposer_slash_deploy.rs`       |
-| UC-19 | Two-level where neglecter is bond-zero              | T-11, T-9.5         | slashed     | 04      | `casper/tests/slashing/uc_19_two_level_bond_zero.rs`      |
+| UC-19 | Neglect rejection where signer is bond-zero         | T-11, T-9.5         | rejected    | 04      | `casper/tests/slashing/uc_19_two_level_bond_zero.rs`      |
 | UC-20 | Skipped seq number across equivocation              | T-9.7               | slashed     | 02      | `casper/tests/slashing/uc_20_seq_gap_equivocation.rs` |
 | UC-21 | Auth-token spoofing on slash deploy                 | T-AuthCheck         | rejected    | 07      | `casper/tests/slashing/uc_21_auth_token_check.rs`         |
 | UC-22 | Unbonded proposer slashes                           | T-9.8               | not-slashed | 02      | `casper/tests/slashing/uc_22_unbonded_proposer.rs`        |
@@ -2149,30 +2069,30 @@ catalog audit.
 | #     | Scenario                                       | Theorems          | Outcome     | Diagram | Current Rust test module                                            |
 |-------|------------------------------------------------|-------------------|-------------|---------|------------------------------------------------------|
 | UC-26 | F-neglectful active-set drop (§10.8.2 closure) | T-12, T-11        | behavioral  | 04      | `casper/tests/slashing/uc_26_quorum_drop.rs`  |
-| UC-27 | NeglectedInvalidBlock dispatch                 | T-3, T-6, T-9.3   | slashed     | 05      | `casper/tests/slashing/uc_27_neglected_invalid_block.rs`   |
-| UC-37 | Self-regression DAG-level (block-witness)      | T-9.6 (DAG-level) | slashed     | 08      | `casper/tests/slashing/uc_37_self_regression_dag_level.rs` |
+| UC-27 | NeglectedInvalidBlock dispatch                 | T-3, T-6, T-9.3   | rejected    | 05      | `casper/tests/slashing/uc_27_neglected_invalid_block.rs`   |
+| UC-37 | Self-regression DAG-level (block-witness)      | T-9.6 (DAG-level) | rejected    | 08      | `casper/tests/slashing/uc_37_self_regression_dag_level.rs` |
 | UC-38 | `detect_neglected` soundness/completeness      | T-6               | behavioral  | 04      | `casper/tests/slashing/uc_38_neglected_detection.rs`       |
 | UC-39 | Harness ↔ oracle cross-implementation agreement | —                 | behavioral  | —       | `casper/tests/slashing/uc_39_cross_impl_bisim.rs`               |
 | UC-41 | Pre-fix ignorable DOS regression               | T-9.1 (negative)  | not-slashed | 03      | `casper/tests/slashing/uc_41_ignorable_pre_fix_alias.rs`     |
-| UC-42 | Pre-fix dispatcher stub regression             | T-9.3 (negative)  | not-slashed | 05      | `casper/tests/slashing/uc_42_dispatcher_pre_fix_alias.rs`   |
+| UC-42 | Certified contextual rejection                 | T-9.3             | rejected    | 05      | `casper/tests/slashing/uc_42_dispatcher_pre_fix_alias.rs`   |
 | UC-43 | Pre-fix off-by-one seq density regression      | T-9.7 (negative)  | not-slashed | 02      | `casper/tests/slashing/uc_43_seqnum_pre_fix_alias.rs`; `prop_t_9_7_seqnum_density.rs` |
 
-### Tier B — Slashable-variant catalog completion (UC-28–UC-36)
+### Tier B — Rejection-reason catalog completion (UC-28–UC-36)
 
-One scenario per remaining slashable `InvalidBlock` variant from §2.4.
-Brings slashable-variant coverage to 18/18 (100%).
+Each scenario verifies one certified rejection reason from §2.4. The tests
+require durable invalid metadata and no contextual economic evidence.
 
 | #     | Scenario                                  | Theorems     | Outcome | Diagram | Current Rust test module                                          |
 |-------|-------------------------------------------|--------------|---------|---------|----------------------------------------------------|
-| UC-28 | InvalidParents (parent doesn't match LMD) | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_invalid_parents.rs`         |
-| UC-29 | InvalidFollows                            | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_invalid_follows.rs`         |
-| UC-30 | InvalidSequenceNumber                     | T-9.3, T-9.7 | slashed | 05      | `casper/tests/slashing/integration_t_invalid_sequence_number.rs` |
-| UC-31 | InvalidShardId                            | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_invalid_shard_id.rs`        |
-| UC-32 | InvalidRepeatDeploy                       | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_invalid_repeat_deploy.rs`   |
-| UC-33 | DeployNotSigned                           | T-9.3        | slashed | 05      | `casper/tests/slashing/uc_33_deploy_not_signed.rs`       |
-| UC-34 | InvalidTransaction                        | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_invalid_transaction.rs`     |
-| UC-35 | InvalidBlockHash                          | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_invalid_block_hash_records.rs`      |
-| UC-36 | ContainsFutureDeploy                      | T-9.3        | slashed | 05      | `casper/tests/slashing/integration_t_contains_future_deploy.rs`           |
+| UC-28 | InvalidParents (parent does not match LMD) | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_invalid_parents.rs`         |
+| UC-29 | InvalidFollows                            | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_invalid_follows.rs`         |
+| UC-30 | InvalidSequenceNumber                     | T-9.3, T-9.7 | rejected | 05      | `casper/tests/slashing/integration_t_invalid_sequence_number.rs` |
+| UC-31 | InvalidShardId                            | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_invalid_shard_id.rs`        |
+| UC-32 | InvalidRepeatDeploy                       | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_invalid_repeat_deploy.rs`   |
+| UC-33 | DeployNotSigned                           | T-9.3        | rejected | 05      | `casper/tests/slashing/uc_33_deploy_not_signed.rs`       |
+| UC-34 | InvalidTransaction                        | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_invalid_transaction.rs`     |
+| UC-35 | InvalidBlockHash                          | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_invalid_block_hash_records.rs`      |
+| UC-36 | ContainsFutureDeploy                      | T-9.3        | rejected | 05      | `casper/tests/slashing/integration_t_contains_future_deploy.rs`           |
 
 ### Tier C — Operational, adversarial, and frontier fixtures (UC-40, UC-44–UC-112)
 
@@ -2301,7 +2221,7 @@ likely objections by stating what is in and out of scope.
 | Rewriting `test_slash.py` (issue #25 fix 3d)                 | Out               | System-integration concern (`F1R3FLY-io/system-integration#51`); separate repo.                                                                                                                                              |
 | Replacing PoS multi-sig keys (issue #25 fix 3e)              | Out               | Operations / key-management concern; not a code change in `casper/`.                                                                                                                                                         |
 | Graduated/proportional slashing penalties (issue #25 fix 3c) | Out               | Requires protocol-level design decision; this spec covers the existing one-strike model. Future work mentioned at the end of §10.                                                                                            |
-| End-to-end shard reproduction of equivocation                | In                | The equivocation arms (`AdmissibleEquivocation`, `IgnorableEquivocation`, `NeglectedEquivocation` Level-2 closure, late-released within retention window) are covered at the Docker / wire-protocol level in `F1R3FLY-io/system-integration` by `integration-tests/test/test_slash.py::test_slash_admissible_equivocation`, `test_slash_ignorable_equivocation`, `test_slash_neglected_equivocation`, and `test_slash_late_released_equivocation`. The in-repo tests above remain the formal coverage; the Docker tests are an operator-regression complement that exercises the deployed binary, multi-process gossip, TLS transport, and gRPC bonds output. |
+| End-to-end shard reproduction of equivocation                | In                | Docker tests cover direct equivocation slashing, neglect rejection without recursive evidence, and retained late evidence. The in-repo tests provide the formal coverage. The Docker tests add deployed-binary, gossip, transport, and gRPC coverage. |
 | Replay protocol around slashed deploys                       | Partial           | Mentioned where adjacent (bug fix #8) but not formalized.                                                                                                                                                                    |
 | Cordial Miners / RGB PSSM / Casanova consensus paths         | Out               | This spec covers Casper CBC only; the project supports four consensus mechanisms but only one has slashing today.                                                                                                            |
 | Validator authentication (PKI, key rotation)                 | Out               | Adjacent topic; the slashing layer assumes authenticated identities and its correctness is conditional on this.                                                                                                              |
@@ -2436,10 +2356,10 @@ the proposer suppresses unary fallback for that offender even if the pair is
 cross-epoch and therefore ineligible. This prevents the locally second sibling
 from becoming arrival-dependent slash authority.
 
-Unknown invalid hashes, stale epochs, generation mismatch, issuer mismatch,
-non-positive canonical merged-pre-state target bonds, and duplicate `(v, g)`
-slash targets are invalid block conditions. They are classified as slashable
-proposer faults.
+Unknown hashes, stale epochs, generation mismatch, issuer mismatch, non-positive
+canonical bonds, and duplicate `(v, g)` targets fail slash authorization.
+The receiver records the carrier as `UnauthorizedSlashDeploy`.
+That rejection is invalid but not economic slash evidence.
 
 ### 15.3 Candidate generation
 

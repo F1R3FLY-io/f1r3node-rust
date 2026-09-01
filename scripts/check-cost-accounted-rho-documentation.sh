@@ -17,6 +17,7 @@ mapfile -d '' documentation < <(
     docs/casper/theory/slashing \
     -type f -name '*.md' -print0
   find docs/casper/theory -maxdepth 1 -type f -name 'cost-account*.md' -print0
+  find docs/formal-verification.md formal/README.md -type f -name '*.md' -print0
 )
 
 if [[ "${#documentation[@]}" -eq 0 ]]; then

@@ -203,8 +203,9 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
     );
 
     let m_rejected = rejected_sigs(&m);
+    let contender_x_id = Bytes::copy_from_slice(c.body.deploys[0].deploy_id());
     assert!(
-        !m_rejected.contains(&contender_x.sig),
+        !m_rejected.contains(&contender_x_id),
         "M rejected the chain carried by its OWN MAIN PARENT C. Cost-optimal \
          selection prefers the cheap chain and X is cheaper, so only the \
          main-parent pin stops this — and this is where the stall starts: M's \

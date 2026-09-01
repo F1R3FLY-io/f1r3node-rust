@@ -39,7 +39,7 @@ fn buffer_contains(node: &TestNode, sig: &Bytes) -> bool {
     node.rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .contains_id(&crate::legacy_deploy_id(sig))
+        .contains_id(&crate::current_deploy_id(sig))
         .expect("buffer.contains_sig")
 }
 

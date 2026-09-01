@@ -1739,11 +1739,10 @@ pub fn merge(
         })
     }
 
-    // Create history reader for base state
     let history_reader = std::sync::Arc::new(
         history_repository
             .get_history_reader(base_post_state)
-            .map_err(|e| CasperError::HistoryError(e))?,
+            .map_err(CasperError::HistoryError)?,
     );
 
     // Bind merge-logic closures to named variables so both resolve_conflicts

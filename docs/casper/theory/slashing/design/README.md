@@ -14,7 +14,7 @@ mental model, or jump to the layer you care about.
 | 05 | [Storage & records](05-storage-and-records.md)                       | The DAG, the equivocation tracker, and the lock-free race that bug #2 closes.                                  |
 | 06 | [Proposing & effect](06-proposing-and-effect.md)                     | How a `SlashDeploy` is assembled, signed, and executed in the PoS Rholang contract (Diagram 07).               |
 | 07 | [Fork-choice & validator lifecycle](07-fork-choice-and-lifecycle.md) | How a slashed validator loses influence; the seven-state lifecycle (Diagram 06).                               |
-| 08 | [Two-level slashing](08-two-level-and-collusion.md)                  | Why colluders are mutually destroyed; the BFT bound (Diagram 04).                                              |
+| 08 | [Counterfactual two-level slashing](08-two-level-and-collusion.md)   | Policy-risk analysis for economic neglect closure and its BFT bound.                                          |
 | 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The documented fixes and Rust-side deltas, what each one was, why it was wrong, and how the post-fix code is correct. |
 | 11 | [Worked examples](11-worked-examples.md)                             | Ten end-to-end traces that exercise each component path (Diagrams 02, 03, 05, 09).                             |
 | 12 | [Failure modes & recovery](12-failure-modes.md)                      | What goes wrong, why, and how the system recovers (transfer FIXME, lock race, stake-0, off-by-one density).    |
@@ -69,7 +69,7 @@ document to open the standalone image.
 | 01 | [Component overview](../diagrams/01-component-overview.svg)                                             | §03      |
 | 02 | [Admissible-equivocation slash flow](../diagrams/02-seq-admissible-equivocation.svg)                    | §04, §11 |
 | 03 | [Ignorable-equivocation slash flow (post-fix #1)](../diagrams/03-seq-ignorable-equivocation-fixed.svg)  | §09, §11 |
-| 04 | [Two-level slashing](../diagrams/04-seq-two-level-slashing.svg)                                         | §08, §11 |
+| 04 | [Counterfactual two-level slashing](../diagrams/04-seq-two-level-slashing.svg)                          | §08, §11 |
 | 05 | [Generic invalid-block dispatch (post-fix #3)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)     | §04, §09 |
 | 06 | [Validator lifecycle](../diagrams/06-state-validator-lifecycle.svg)                                     | §07      |
 | 07 | [PoS.slash() activity](../diagrams/07-activity-pos-slash-contract.svg)                                  | §06      |

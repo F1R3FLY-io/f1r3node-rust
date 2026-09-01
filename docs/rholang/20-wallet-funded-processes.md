@@ -9,9 +9,9 @@ delegate spending without revealing a wallet key, which cryptographic values
 bind each transition, and how Casper validators turn the result into consensus.
 
 The normative semantic sources are
-[*Cost-Accounted Rho Calculus*](../../../publications/cost-accounting/cost-accounted-rho.tex)
+[*Cost-Accounted Rho Calculus*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting/cost-accounted-rho.tex)
 and
-[*Continued Interactive GSLTs and the Cost Endofunctor*](../../../publications/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
+[*Continued Interactive GSLTs and the Cost Endofunctor*](https://github.com/F1R3FLY-io/publications/blob/main/cost-accounting-as-monad/continued-gslt-cost-v2.tex).
 The production implementation refines their RevVault, wallet, purse, located
 stack, and phlogiston roles onto F1R3node's existing `SystemVault`, RSpace, and
 Casper architecture. It does not introduce a second token or ledger.
@@ -218,14 +218,18 @@ it neither proves that a wallet funded a process nor authorizes a vault debit.
 
 ### Unforgeable capabilities and linear ownership
 
-An Rholang `new` name is not a public-key or confidentiality secret. Its
-deterministic byte identity can be known to validators and can be predicted by
-the private-name preview API from a deployer identity and timestamp. Its
-unforgeability is a language/runtime property: Rholang source has no
-bytes-to-`GPrivate` constructor. A contract can publish its derived vault
-address while retaining the name as a first-class process value. Only code that
-receives that value through Rholang can derive the matching unforgeable auth key
-or enter the located authority region.
+An Rholang `new` name is not a public-key or confidentiality secret. Validators
+can know its deterministic byte identity. Rholang source has no
+bytes-to-`GPrivate` constructor.
+
+Protocol 6 binds the private-name stream to the complete authenticated deploy
+envelope. The legacy key-and-timestamp preview API therefore fails closed.
+A process can publish a capability in one deploy. A later deploy can use
+dependent data without a circular deployment identity.
+
+A contract can publish its derived vault address while it retains the name as
+a first-class process value. Only code that receives that value can use the
+corresponding authority.
 
 Consensus witnesses carry canonical authority structure so validators can
 replay event attribution. Seeing a serialized name identity in evidence is not
@@ -425,8 +429,9 @@ merely because that sponsor deposited into it: the slot's unforgeable name, not
 the deposit history, controls debits. A refundable grant must install an
 explicit recovery branch before funding, retain the slot capability, authenticate
 the recovery authority, and keep recovery mutually exclusive with process
-consumption. The current `FundingSlotAPI` exposes installation, deposit, and
-gateway activation; it does not synthesize a sponsor-reclaim capability.
+consumption. The planned downstream `FundingSlotAPI` covers installation,
+deposit, and gateway activation. It does not synthesize a sponsor-reclaim
+capability. The downstream client integration remains pending.
 
 ## Minting, fees, and supply conservation
 
@@ -466,7 +471,8 @@ rescue an underfunded certificate, or serve as a hidden intermediate fee ledger.
 | Arithmetic or byte-schedule failure | Reject before the affected RSpace mutation |
 | Competing operations on one stack | Exactly one canonical physical allocation may consume each cell |
 | Top-up races with execution | Top-up conserves value but cannot expand the in-flight certificate |
-| Parser or reducer failure after earlier work | Restore the full deployment checkpoint and publish no final cost evidence |
+| Parser failure before execution | Restore the deployment checkpoint. Publish no cost witness. |
+| Reducer failure after earlier work | Restore user state and linear custody. Retain attempted compute and byte costs in the final witness. |
 | Missing replay history | Treat as a local recoverable fault, not peer misbehavior |
 | Concurrent sibling effects overdraw one purse | Deterministically retain only the funded exact effect set |
 
@@ -478,12 +484,13 @@ Generate the node-side encrypted wallet material with:
 cargo run -p node -- keygen ./user-keys
 ```
 
-The Python client can load a supported Ethereum keyfile or a securely supplied
-raw key; it does not directly consume the node CLI's encrypted PEM. Keep the
-key in its native keystore path unless a controlled migration is required. The
-following abbreviated sequence shows the intended separation of duties; every
-returned deploy identifier must be canonically finalized and its transfer
-result checked before the next dependent operation:
+The downstream Python client design accepts a supported Ethereum keyfile or a securely supplied raw key.
+It does not directly consume the node CLI's encrypted PEM.
+Keep the key in its native keystore path unless a controlled migration is necessary.
+The following non-executable pseudocode shows the intended separation of duties.
+It uses the planned `FundingSlotAPI` and `VaultAPI` integrations.
+Canonically finalize each returned deploy identifier.
+Check its transfer result before the next dependent operation.
 
 ```python
 from f1r3fly.cost_accounting import (
@@ -612,7 +619,7 @@ remains a scalar projection; applications must not infer exact settlement from
 | --- | --- | --- |
 | Signature and threshold verification | `crypto::signatures::signed::Cosigned`; Casper protobuf ingress | signature unit/property tests; multi-signature pipeline tests |
 | Wallet and slot address derivation | `VaultAddress`; `rho:vault:address`; `vault_payer` | address and vault-payer regressions |
-| Wallet transfer and refill | `SystemVault.rho`; `VaultAPI.transfer_batch_ensure` | SystemVault exact, rejected, invalid, and duplicate batch tests; Loom races; wallet integration tests |
+| Wallet transfer and refill | `SystemVault.rho` `transferBatch` | SystemVault exact, rejected, invalid, and duplicate batch tests. Loom races. Downstream client integration remains pending. |
 | Located purse and lollipop | cost signatures, regions, stack syntax, staged funding-slot client | `FundingSlotBootstrap.v`; `FundingSlotBootstrap.tla`; `WalletFundedLollipop.v`; `WalletFundedLollipop.tla`; cross-deploy tests |
 | Compute authority | `accounting/authority.rs`; RSpace `CommObserver` | `AtomicCommAccounting.v`; TLA+ and RSpace property tests |
 | Storage and byte cost | `accounting/byte_accounting.rs`; proposal/replay observers | `VaultBackedByteAccounting.v`; safe and unsafe TLA+ models; Loom races |
