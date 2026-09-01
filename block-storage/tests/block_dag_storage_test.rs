@@ -1619,6 +1619,182 @@ fn carrier_index_backfill_restores_missing_rows_and_certifies() {
     });
 }
 
+/// Fail-closed on DAG/metadata inconsistency: a hash the DAG set lists but
+/// the metadata store cannot resolve must leave the completeness marker
+/// unwritten — absence proofs over state the node could not read would
+/// claim more than the node can see.
+#[test]
+fn carrier_index_backfill_refuses_certification_on_missing_metadata() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        dag_storage.insert(&block, InsertMode::Normal).unwrap();
+
+        let block_store = KeyValueBlockStore::new(
+            kvm.store("blocks".to_string()).await.unwrap(),
+            kvm.store("blocks-approved".to_string()).await.unwrap(),
+        );
+        block_store
+            .put(genesis.block_hash.clone(), &genesis)
+            .unwrap();
+        block_store.put(block.block_hash.clone(), &block).unwrap();
+
+        dag_storage
+            .remove_block_metadata_row_for_tests(&block.block_hash)
+            .unwrap();
+
+        let certified = dag_storage
+            .ensure_carrier_index_complete(&block_store)
+            .unwrap();
+        assert!(
+            !certified,
+            "a DAG-listed hash with no metadata record must refuse certification"
+        );
+        let dag = dag_storage.get_representation().unwrap();
+        assert!(!dag.carrier_index_complete().unwrap());
+    });
+}
+
+/// Crash-retry idempotence for the ingest-first window: lifecycle rows
+/// written, metadata add lost (simulated crash), block redelivered to a
+/// restarted storage — the re-run must not duplicate events.
+#[test]
+fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use models::rust::block_implicits::processed_deploy_gen;
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let mut runner = TestRunner::default();
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut runner)
+            .unwrap()
+            .current();
+        let block = get_random_block(
+            Some(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        );
+        dag_storage.insert(&block, InsertMode::Normal).unwrap();
+
+        // Simulate the crash: the lifecycle write survived, the metadata
+        // add did not. A restart rebuilds DAG state without the block.
+        dag_storage
+            .remove_block_metadata_row_for_tests(&block.block_hash)
+            .unwrap();
+        let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        restarted.insert(&block, InsertMode::Normal).unwrap();
+
+        let dag = restarted.get_representation().unwrap();
+        let row = dag
+            .deploy_lifecycle_events(&deploy.deploy.sig)
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(
+            row.events.len(),
+            1,
+            "the redelivery re-run must not duplicate the Included event"
+        );
+        assert_eq!(
+            dag.deploy_canonical_appearance(&deploy.deploy.sig).unwrap(),
+            Some(block.block_hash.clone()),
+            "after the successful re-insert the appearance resolves"
+        );
+    });
+}
+
+/// Orphan events from a crash inside the ingest-first window never resolve
+/// as a canonical appearance: the visibility filter drops events whose
+/// block is not in the DAG set.
+#[test]
+fn orphan_lifecycle_event_is_not_a_canonical_appearance() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvent, LifecycleEventKind};
+
+    init_logger();
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let genesis = genesis_block();
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let dag = dag_storage.get_representation().unwrap();
+        let phantom_block: Vec<u8> = vec![0xEE; 32];
+        dag.lifecycle
+            .write()
+            .append_events(b"orphan-sig", Some(0), vec![LifecycleEvent {
+                height: 1,
+                block_hash: phantom_block,
+                kind: LifecycleEventKind::Included { is_failed: false },
+            }])
+            .unwrap();
+
+        assert!(
+            dag.deploy_canonical_appearance(b"orphan-sig")
+                .unwrap()
+                .is_none(),
+            "an event for a never-DAG-visible block must not resolve"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(b"orphan-sig").unwrap(),
+            "the orphan row still routes the sig to the exact scan"
+        );
+    });
+}
+
 // The bound has to follow blocks admitted at a LOWER value back down: tracking
 // the highest value seen instead would skip a scan those blocks still need.
 #[tokio::test]

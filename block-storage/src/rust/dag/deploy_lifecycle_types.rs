@@ -117,10 +117,20 @@ impl DeployLifecycleTables {
     }
 
     /// The sig's most recent canonical appearance — the latest INCLUSION
-    /// event by (height, hash), or the terminal record's frozen display
-    /// block once the row is pruned. A rejection record's block holds the
-    /// record, not the deploy, so record-only rows have no appearance.
-    pub fn canonical_appearance(&self, sig: &[u8]) -> Result<Option<ByteString>, KvStoreError> {
+    /// event by (height, hash) whose block `is_visible` accepts, or the
+    /// terminal record's frozen display block once the row is pruned. A
+    /// rejection record's block holds the record, not the deploy, so
+    /// record-only rows have no appearance. The visibility filter guards
+    /// against orphan events from a crash inside `insert`'s ingest-first
+    /// window: an event whose block never became DAG-visible must not
+    /// resolve as an appearance. The terminal path needs no filter — the
+    /// finality evaluator writes terminals from DAG facts (floor-closure
+    /// guarded), so the frozen block was visible at the write.
+    pub fn canonical_appearance(
+        &self,
+        sig: &[u8],
+        is_visible: &dyn Fn(&[u8]) -> bool,
+    ) -> Result<Option<ByteString>, KvStoreError> {
         if let Some(terminal) = self.get_terminal(sig)? {
             if terminal.latest_block_hash.is_empty() {
                 return Ok(None);
@@ -134,6 +144,7 @@ impl DeployLifecycleTables {
             .events
             .iter()
             .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
+            .filter(|e| is_visible(&e.block_hash))
             .max_by(|a, b| {
                 a.height
                     .cmp(&b.height)
@@ -355,7 +366,7 @@ mod tests {
             .expect("append");
         assert!(
             tables
-                .canonical_appearance(b"sig")
+                .canonical_appearance(b"sig", &|_| true)
                 .expect("appearance")
                 .is_none(),
             "an invalid block's body is not canonical history"

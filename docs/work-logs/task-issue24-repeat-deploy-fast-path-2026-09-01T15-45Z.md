@@ -78,3 +78,26 @@ amendment is part of this branch.
 - The old deploy_index fast path (d84f26c07) was unportable because
   1a5174e1f removed its foundation and lifecycle rows skip invalid
   blocks. `CarriedInvalid` closes exactly that gap.
+
+## Multi-review response (2026-09-01, comment 5497008226)
+
+The multi-agent review returned 3 major findings. All 3 are addressed:
+
+1. Backfill certification gap (openai, CONFIRMED): a DAG-listed hash
+   whose metadata read returns None now refuses certification, same as
+   a missing body. Test:
+   `carrier_index_backfill_refuses_certification_on_missing_metadata`.
+2. Orphan semantic events (openai, CONFIRMED in weakened form): the
+   insert path now appends through the idempotent `append_event_once`,
+   so a crash-then-redelivery cannot duplicate events, and canonical
+   appearance is DAG-visibility filtered at both twins, so an orphan
+   event never resolves as an appearance. The Failed-verdict path was
+   already safe (floor-closure guard: a never-visible block cannot be
+   in the floor closure). Tests:
+   `insert_retry_after_ingest_first_crash_does_not_duplicate_events`,
+   `orphan_lifecycle_event_is_not_a_canonical_appearance`.
+3. Lock ordering (bedrock, REFUTED as a deadlock but documented):
+   `insert` and the backfill already take `global_lock` ->
+   `block_metadata_index` -> `lifecycle` in the same order; the order
+   is now stated on `ensure_carrier_index_complete` and the storage
+   appearance twin.

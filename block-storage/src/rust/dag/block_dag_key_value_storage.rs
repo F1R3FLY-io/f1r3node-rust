@@ -250,7 +250,9 @@ impl KeyValueDagRepresentation {
     /// The sig's most recent canonical appearance — the latest lifecycle
     /// event by (height, hash), or the terminal record's frozen display
     /// block once the row is pruned. A pure function of the DAG's bodies,
-    /// so the answer never depends on node-local insertion order.
+    /// so the answer never depends on node-local insertion order. Events
+    /// whose block is not in this representation's `dag_set` are orphans
+    /// from a crash inside the ingest-first window and never resolve.
     pub fn deploy_canonical_appearance(
         &self,
         sig: &[u8],
@@ -258,7 +260,9 @@ impl KeyValueDagRepresentation {
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(sig)?
+            .canonical_appearance(sig, &|h| {
+                self.dag_set.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
     }
 
@@ -819,15 +823,19 @@ pub struct BlockDagKeyValueStorage {
 impl BlockDagKeyValueStorage {
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
-    /// than a representation.
+    /// than a representation. Lock order: `block_metadata_index` before
+    /// `lifecycle` (the DAG-visibility filter reads the metadata state).
     pub fn deploy_canonical_appearance(
         &self,
         sig: &[u8],
     ) -> Result<Option<BlockHash>, KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(sig)?
+            .canonical_appearance(sig, &|h| {
+                metadata_guard.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
     }
 
@@ -839,10 +847,13 @@ impl BlockDagKeyValueStorage {
     /// `append_event_once`, no-op behind terminal records (pruned rows must
     /// not reopen), and short-circuited by the marker on later starts.
     ///
-    /// The marker is written ONLY when every DAG-visible block's body was
-    /// readable. A missing body leaves the marker unwritten and the fast
-    /// path off: an absence proof over an unreadable body would claim more
-    /// than this node can see.
+    /// The marker is written ONLY when the walk examined every DAG-visible
+    /// block: a missing body OR a missing metadata record leaves the marker
+    /// unwritten and the fast path off — an absence proof over state this
+    /// node could not read would claim more than this node can see.
+    ///
+    /// Lock order (matches `insert` and every other mutator):
+    /// `global_lock` -> `block_metadata_index` -> `lifecycle`.
     pub fn ensure_carrier_index_complete(
         &self,
         block_store: &KeyValueBlockStore,
@@ -858,7 +869,7 @@ impl BlockDagKeyValueStorage {
             let metadata_guard = self.block_metadata_index.read();
             metadata_guard.dag_set()
         };
-        let mut all_bodies_readable = true;
+        let mut walk_complete = true;
         let mut restored: u64 = 0;
         let lifecycle_guard = self.lifecycle.write();
         for hash in hashes.iter() {
@@ -866,7 +877,15 @@ impl BlockDagKeyValueStorage {
                 let metadata_guard = self.block_metadata_index.read();
                 match metadata_guard.get(hash)? {
                     Some(meta) => meta.invalid,
-                    None => continue,
+                    None => {
+                        tracing::warn!(
+                            "carrier-index backfill: no metadata record for DAG-visible \
+                             block {}; the completeness marker stays unwritten",
+                            PrettyPrinter::build_string_bytes(hash),
+                        );
+                        walk_complete = false;
+                        continue;
+                    }
                 }
             };
             let Some(block) = block_store.get(hash)? else {
@@ -875,7 +894,7 @@ impl BlockDagKeyValueStorage {
                      the completeness marker stays unwritten",
                     PrettyPrinter::build_string_bytes(hash),
                 );
-                all_bodies_readable = false;
+                walk_complete = false;
                 continue;
             };
             let block_number = block.body.state.block_number;
@@ -911,16 +930,29 @@ impl BlockDagKeyValueStorage {
                 }
             }
         }
-        if all_bodies_readable {
+        if walk_complete {
             lifecycle_guard.mark_carrier_index_complete()?;
         }
         tracing::info!(
             blocks = hashes.len(),
             events_examined = restored,
-            marker_written = all_bodies_readable,
+            marker_written = walk_complete,
             "carrier-index backfill completed"
         );
-        Ok(all_bodies_readable)
+        Ok(walk_complete)
+    }
+
+    /// Test-only corruption helper (P2-14-style escape hatch): deletes the
+    /// PERSISTED metadata row for a block while the in-memory DAG state
+    /// still lists it, simulating an inconsistent or partially corrupted
+    /// database for the backfill's fail-closed paths.
+    #[doc(hidden)]
+    pub fn remove_block_metadata_row_for_tests(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
+        metadata_guard.delete_kv_row_for_tests(hash)
     }
 
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
@@ -1358,45 +1390,51 @@ impl BlockDagKeyValueStorage {
             // block with unindexed sigs. Every insert path (validated,
             // proposed, genesis, LFS, fixtures) flows through here, so
             // ingest coverage is total by construction.
+            // Appends go through `append_event_once`: after a crash inside
+            // this ingest-first window the block is not yet DAG-visible, so
+            // its redelivery re-runs this pass — the per-(block, kind)
+            // dedup makes that retry write nothing twice.
             {
                 let block_number = block.body.state.block_number;
                 let lifecycle_guard = self.lifecycle.write();
                 if !invalid {
                     for pd in &block.body.deploys {
-                        lifecycle_guard.append_events(
+                        lifecycle_guard.append_event_once(
                             &pd.deploy.sig,
                             Some(pd.deploy.data.valid_after_block_number),
-                            vec![LifecycleEvent {
+                            LifecycleEvent {
                                 height: block_number,
                                 block_hash: block.block_hash.to_vec(),
                                 kind: LifecycleEventKind::Included {
                                     is_failed: pd.is_failed,
                                 },
-                            }],
+                            },
                         )?;
                     }
                     for rd in &block.body.rejected_deploys {
-                        lifecycle_guard.append_events(&rd.sig, None, vec![LifecycleEvent {
+                        lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
                             height: block_number,
                             block_hash: block.block_hash.to_vec(),
                             kind: LifecycleEventKind::Rejected {
                                 duplicate: rd.duplicate,
                                 carrier: rd.carrier.to_vec(),
                             },
-                        }])?;
+                        })?;
                     }
                 } else {
                     // `valid_after` stays unset: `CarriedInvalid` is
                     // carrier-index testimony, not an inclusion, so the row
                     // remains record-only until a valid inclusion arrives.
                     for pd in &block.body.deploys {
-                        lifecycle_guard.append_events(&pd.deploy.sig, None, vec![
+                        lifecycle_guard.append_event_once(
+                            &pd.deploy.sig,
+                            None,
                             LifecycleEvent {
                                 height: block_number,
                                 block_hash: block.block_hash.to_vec(),
                                 kind: LifecycleEventKind::CarriedInvalid,
                             },
-                        ])?;
+                        )?;
                     }
                 }
                 drop(lifecycle_guard);
