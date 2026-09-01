@@ -1,7 +1,9 @@
 # Atomic finalization and crash recovery
 
 **Status:** protocol-6 implementation and verification contract
-**Audience:** consensus engineers, node operators, reviewers, and formal-methods maintainers  
+
+**Audience:** consensus engineers, node operators, reviewers, and formal-methods maintainers
+
 **Scope:** the transition from an independently computed Casper finality result to durable node state and externally visible effects
 
 This document specifies how a node turns a valid finalization result into a crash-consistent local state transition without serializing block admission or independent validator computation. It does not change the Casper clique certificate, fault-tolerance threshold, or vote-counting rule. It closes the implementation boundary after those rules have selected a candidate.
