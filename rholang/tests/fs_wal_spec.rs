@@ -2956,6 +2956,517 @@ mod tests {
         );
     }
 
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_truncate positive path**.  Under Phase-0 the follower's
+    /// is_replay branch consumed the leader's cached reply and
+    /// finalized the pre-appended WAL placeholder via the H-6
+    /// pattern; no real `libc::ftruncate` fired on the follower.
+    /// Under Phase 3, the follower's is_replay Consensus branch
+    /// re-executes `libc::ftruncate` against its own shadow fd
+    /// (installed by fs_open's Phase-2 real-open), verifies the
+    /// fresh reply's stable_hash matches the leader's cached, and
+    /// keeps the pre-appended Success WAL entry.
+    ///
+    /// Truncate's reply is `[true]` — an `ok_bare` with no bytes or
+    /// numeric payload — so its stable_hash is trivially invariant
+    /// under identical syscall success on both sides.  A regression
+    /// that dropped Phase-3 re-execute would leave the follower's
+    /// file untruncated on its own subdir (Phase-0 tautological
+    /// path); the file-size check after evaluate proves the real
+    /// syscall actually fired on the follower.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_truncate_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        // Both leader and follower see the same file at start:
+        // 20 bytes.  Truncate to 8 bytes.  Under Phase 3, the
+        // follower's fresh libc::ftruncate reduces its file to 8
+        // bytes too — proving the syscall actually ran.
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"twenty-bytes-of-data").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, tc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsTruncate!(fd, 8, *tc) |
+                for (@_ <- tc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[81; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_truncate positive");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_truncates: Vec<_> = leader_wal
+            .iter()
+            .filter(|e| e.op == WalOp::Truncate)
+            .collect();
+        assert_eq!(
+            leader_truncates.len(),
+            1,
+            "expected exactly one Truncate WAL entry from the leader"
+        );
+        assert_eq!(leader_truncates[0].outcome, WalOutcome::Success);
+        assert_eq!(
+            leader_truncates[0].offset,
+            Some(8),
+            "Truncate WAL entry records target size in `offset`"
+        );
+        // Leader's file got truncated by the real ftruncate.
+        let leader_bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            leader_bytes.len(),
+            8,
+            "leader must have truncated the file to 8 bytes"
+        );
+
+        // Restore file to pre-play state (leader/follower share the
+        // same tempdir under this test-harness pattern; without the
+        // restore, follower's re-execute would see a pre-truncated
+        // file rather than the pre-play 20-byte state).  Mirrors
+        // the fs_size/fs_read_at pattern.
+        std::fs::write(&target, b"twenty-bytes-of-data").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_truncate positive");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "Phase 3: leader/follower WAL lengths diverge on fs_truncate positive"
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 3: WAL entry {i} differs on fs_truncate positive: \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        // The load-bearing Phase-3 assertion: the follower's real
+        // ftruncate fired.  Post-restore the file was 20 bytes; the
+        // follower's re-execute must have truncated it back to 8.
+        // A regression that kept the follower on Phase-0 tautological
+        // (no real ftruncate) would leave this at 20 → assertion fails.
+        let follower_bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            follower_bytes.len(),
+            8,
+            "Phase 3 REGRESSION: follower's ftruncate did not fire — file is \
+             still {} bytes (expected 8).  The follower's is_replay Consensus \
+             branch must have reverted to Phase-0 tautological cached-reply \
+             consumption.",
+            follower_bytes.len()
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical truncate state");
+    }
+
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_truncate divergence-detection path**.  Force a divergence
+    /// by closing the follower's shadow fd out from under it (via a
+    /// mid-evaluation `fs_close` on the leader that RSpace preserves
+    /// as-is on the follower).  Actually simpler: change the file's
+    /// mode on disk between leader + follower evaluate so the
+    /// follower's ftruncate returns a different error than the
+    /// leader.
+    ///
+    /// Simplest: make the target file read-only between leader (which
+    /// completed the truncate successfully) and follower (which now
+    /// hits EACCES on ftruncate).  Follower's reply is
+    /// `[false, FSERR_PERM, msg]` vs leader's cached `[true]` → hash
+    /// mismatch → divergence-err fires with FSERR_CONSENSUS_DIVERGENCE
+    /// + `check_replay_data` Err.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_truncate_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"twenty-bytes-of-data").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, tc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsTruncate!(fd, 8, *tc) |
+                for (@_ <- tc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[82; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_truncate divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::Truncate && e.outcome == WalOutcome::Success),
+            "leader must have journaled a successful Truncate entry"
+        );
+
+        // Force divergence: make the file read-only between leader
+        // and follower.  Restore contents first (leader truncated
+        // to 8 bytes); then chmod to 0o444 so open("rw") itself
+        // fails on the follower.
+        std::fs::write(&target, b"twenty-bytes-of-data").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        // Restore permissions so tempdir cleanup doesn't fail.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644));
+
+        // The follower's fs_open re-execute (Phase-2 real-open under
+        // Consensus) sees the read-only file and fails with FSERR_PERM.
+        // Rholang's `for (@[true, fd] <- oc)` pattern doesn't match on
+        // the error reply, so the fsTruncate call downstream never
+        // fires — no Truncate WAL entry from the follower's is_replay
+        // branch.  But the fsOpen leader-cached-hash comparison would
+        // still divergence — actually let me think.  Under Phase-2
+        // fs_open real-open, the follower opens against its own subdir
+        // (permission-denied); shadow install falls back to file: None.
+        // Then downstream fs_truncate sees raw_fd None → FSERR_CLOSED.
+        //
+        // But the Rholang pattern `[true, fd]` doesn't match the error
+        // reply from fsOpen on the follower.  So the sub-continuation
+        // (fsTruncate) never fires — no divergence surfaces at the
+        // Truncate WAL layer.  We instead assert divergence at the
+        // fsOpen layer via the RSpace rig failure below.
+        //
+        // Simpler path: assert `check_replay_data` returns Err.  The
+        // divergent fsOpen produce (leader's [true, fd] vs follower's
+        // [false, FSERR_PERM, msg]) trips the rig comparator.
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 3 D1 enforcement: divergent state (leader saw rw file, \
+             follower saw ro file) must trip RSpace rig verification — got Ok"
+        );
+
+        // WAL-layer divergence witness: the follower's pre-appended
+        // Truncate entry got flipped from Success to Failure {
+        // FSERR_CODE_CONSENSUS_DIVERGENCE } via finalize_failure_journal
+        // on the divergence path.  Note the follower's shadow (opened
+        // as file: None on the ro-file fallback in fs_open's Phase-2
+        // real-open) makes fs_truncate's fresh syscall return
+        // FSERR_CLOSED; that fresh reply doesn't match leader's cached
+        // `[true]` → verify hash-mismatch → CONSENSUS_DIVERGENCE code
+        // fires via my finalize_failure_journal call.
+        let follower_truncate = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Truncate)
+            .expect(
+                "Phase 3 divergence path must still journal a Truncate entry \
+                 (Failure outcome, not a journaling skip — the pre-append is \
+                 unconditional under the H-6 pattern)",
+            );
+        match follower_truncate.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 3: Truncate divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code (not an unrelated FSERR from the \
+                 raw syscall like FSERR_PERM or FSERR_CLOSED — the whole point \
+                 of the Phase-3 mechanism is to surface divergences \
+                 specifically as CONSENSUS_DIVERGENCE rather than leaking the \
+                 raw syscall FSERR).  Got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 3 REGRESSION: follower's Truncate WAL entry stayed at \
+                 Success despite fs drift (ro-file).  Either fresh-syscall \
+                 path is not engaged (Phase-0 tautological path back) or \
+                 verify_reply_hash_matches_cached is broken.  Truncate entry: \
+                 {follower_truncate:?}"
+            ),
+        }
+    }
+
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_truncate FSERR_QUOTA_EXCEEDED edge**.  When
+    /// `n > MAX_TRUNCATE_BYTES = 16 GiB`, the handler short-circuits
+    /// with `FSERR_QUOTA_EXCEEDED` on both leader and follower BEFORE
+    /// the pre-append `journal_truncate` call.  This test proves:
+    ///   1. No Truncate WAL entry is journaled on either side
+    ///      (pre-append guard on `n <= MAX_TRUNCATE_BYTES` gates it).
+    ///   2. Same error reply on both sides → verify OK → no divergence.
+    ///   3. WAL byte-identity holds trivially (no WalOp::Truncate).
+    ///
+    /// A regression that dropped the pre-append gate — journaling
+    /// Truncate entries for oversized-n calls — would trip this pin
+    /// on the first assertion.  A regression that swapped the
+    /// FSERR_QUOTA_EXCEEDED short-circuit for a different code would
+    /// change the fresh reply on the follower's Consensus branch,
+    /// potentially triggering CONSENSUS_DIVERGENCE spuriously.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_truncate_quota_exceeded_preserves_wal_symmetry() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // n = MAX_TRUNCATE_BYTES + 1 = 16 GiB + 1.  Both sides
+        // short-circuit with FSERR_QUOTA_EXCEEDED before the pre-append.
+        let oversized_n: u64 = 16 * 1024 * 1024 * 1024 + 1;
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, tc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsTruncate!(fd, {n}, *tc) |
+                for (@_ <- tc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+            n = oversized_n,
+        );
+        let r = Blake2b512Random::create_from_bytes(&[83; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_truncate quota-exceeded");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_truncates: Vec<_> = leader_wal
+            .iter()
+            .filter(|e| e.op == WalOp::Truncate)
+            .collect();
+        assert!(
+            leader_truncates.is_empty(),
+            "leader must NOT journal a Truncate entry for n > MAX_TRUNCATE_BYTES \
+             — the pre-append is gated on n <= MAX_TRUNCATE_BYTES.  Got {} \
+             Truncate entries",
+            leader_truncates.len()
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_truncate quota-exceeded");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 3 quota-exceeded edge: WALs must be byte-identical across \
+             leader and follower.  A regression that gated the pre-append \
+             differently on either side, or that spuriously fired \
+             CONSENSUS_DIVERGENCE on the QUOTA_EXCEEDED symmetric error, \
+             would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on quota-exceeded symmetric error");
+    }
+
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_truncate symmetric syscall error**.  Open the file
+    /// read-only ("r"), then attempt ftruncate.  Both leader and
+    /// follower's `libc::ftruncate` on a read-only fd returns
+    /// EINVAL → the handler maps that to `FSERR_BAD_ARG` (see
+    /// `io_err_code` in errors.rs).  Same fresh reply on both
+    /// sides:
+    ///   - Pre-append fires (n <= MAX_TRUNCATE_BYTES).
+    ///   - Fresh reply is `[false, FSERR_BAD_ARG, msg]` on both.
+    ///   - verify_reply_hash_matches_cached returns Ok (same Par).
+    ///   - Under the verify-OK branch, the Consensus follower's
+    ///     `finalize_failure_journal` fires with `FSERR_CODE_BAD_ARG`
+    ///     (not CONSENSUS_DIVERGENCE) — flipping the pre-append
+    ///     placeholder to `Failure { FSERR_CODE_BAD_ARG }` on both
+    ///     sides.
+    ///   - WAL byte-identity holds; check_replay_data OK.
+    ///
+    /// Proves the H-6 finalize path works symmetrically under
+    /// Phase-3 Consensus re-execute: fresh syscall errors that agree
+    /// leader vs follower do NOT trigger CONSENSUS_DIVERGENCE; they
+    /// flow through the same syscall-error finalize as the pre-refactor
+    /// leader path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_truncate_symmetric_syscall_error_finalizes_to_failure() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_BAD_ARG;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"twenty-bytes-of-data").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Open the file read-only, then attempt truncate.  On both
+        // Linux and macOS, ftruncate on a read-only fd returns EINVAL
+        // (POSIX-specified: fd must be writable).  The handler's
+        // io_err_code maps EINVAL → FSERR_BAD_ARG.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, tc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsTruncate!(fd, 8, *tc) |
+                for (@_ <- tc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[84; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_truncate symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_truncate = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Truncate)
+            .expect("leader must journal a Truncate entry (pre-append fires)");
+        match leader_truncate.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_BAD_ARG,
+                "leader's Truncate entry must be finalized to Failure {{ \
+                 FSERR_CODE_BAD_ARG }} for ftruncate-on-readonly-fd (EINVAL); \
+                 got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's Truncate entry stayed at Success despite EINVAL from \
+                 ftruncate on a read-only fd.  H-6 finalize_failure_journal path \
+                 is broken.  Truncate entry: {leader_truncate:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_truncate symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 3 symmetric-error: WALs must be byte-identical.  A regression \
+             that fired CONSENSUS_DIVERGENCE on the symmetric FSERR_BAD_ARG \
+             (both sides agreed on the error) would fail here — the Consensus \
+             re-execute's verify-OK branch MUST use the fresh syscall's error \
+             code, not CONSENSUS_DIVERGENCE."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression

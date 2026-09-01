@@ -2267,20 +2267,35 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
-            // H-6 fix (2026-08-06): follower failure-finalize
-            // mirror of the leader path below.
+        // Phase 3 (Consensus re-execute + verify, 2026-09-01):
+        // Oracular follower unchanged — consumes cached reply and
+        // finalizes the pre-appended placeholder based on the
+        // cached error code.  Consensus follower now re-executes
+        // ftruncate via its shadow's real fd (installed by fs_open's
+        // Phase-2 real-open), verifies the fresh reply's stable_hash
+        // matches the leader's cached-reply hash, and either keeps
+        // the pre-appended Success placeholder (on match) or flips
+        // it to Failure { FSERR_CODE_CONSENSUS_DIVERGENCE } and
+        // emits a divergence-err reply (on mismatch).  See
+        // fileio_wal_replay_verification_gap.md for the design.
+        let jmode: Option<ConsensusMode> = match &parsed {
+            Some((fd, _)) => self.handles.with_mut(*fd, |h| h.cmode).await,
+            None => None,
+        };
+        if is_replay && jmode != Some(ConsensusMode::Consensus) {
+            // Oracular / no-shadow follower — H-6 Phase-0 shape.
             if let Some(code_str) = extract_err_code(&previous) {
                 self.finalize_failure_journal(fserr_to_code(&code_str), ack);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
+        // Fresh syscall — leader (always) or Consensus follower.
         // H-6 refactor: compute the reply without any early-return
         // so failure-finalize gets a single call site below.  The
         // FSERR_CLOSED "unknown fd" branch that previously returned
         // eagerly now folds into `reply` naturally.
-        let reply = match parsed {
+        let fresh_reply = match parsed {
             Some((fd, n)) => {
                 if n > super::MAX_TRUNCATE_BYTES {
                     err(
@@ -2310,15 +2325,49 @@ impl FsProcesses {
             }
             None => err(FSERR_BAD_ARG, "expected (u64, u64)"),
         };
-        // H-6 fix (2026-08-06): flip placeholder to Failure on
-        // syscall error so followers don't replay a truncate the
-        // leader never actually committed.
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        if is_replay {
+            // Consensus follower — Phase 3 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    // Match — reply is byte-identical to cached.
+                    // H-6 finalize path applies to fresh reply too
+                    // (in case both leader and follower saw the
+                    // same syscall error, e.g., ENOSPC agreed on
+                    // both sides).  Under the verify-succeeded
+                    // branch the fresh code equals the cached code,
+                    // so the finalize below is equivalent to the
+                    // Oracular branch's cached-based finalize.
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    // Divergence — flip the pre-appended placeholder
+                    // to Failure { CONSENSUS_DIVERGENCE } and emit a
+                    // divergence-err reply.  RSpace rig catches the
+                    // divergent produce and rejects the block.
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!("fs_truncate follower re-execute diverges from leader: {reason}",),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — H-6 finalize on syscall error.
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
