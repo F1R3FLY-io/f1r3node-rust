@@ -169,6 +169,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
             deploy_lifespan: 50,
+            // Zero derives the budget from the citability window
+            // (max-parent-depth heights of cadence) with a 5x margin.
+            deploy_play_budget_millis: if conf.deploy_play_budget.is_zero() {
+                (conf.max_parent_depth as i64).max(1)
+                    * (conf.heartbeat_conf.check_interval.as_millis() as i64)
+                    / 5
+            } else {
+                conf.deploy_play_budget.as_millis() as i64
+            },
             casper_version: 1,
             config_version: 1,
             bond_minimum: conf.genesis_block_data.bond_minimum,
