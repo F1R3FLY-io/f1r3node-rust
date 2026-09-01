@@ -5,7 +5,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export TLC_REPO_ROOT="$repo_root"
 export TLC_HEAP="${TLC_HEAP:-512m}"
 export TLC_WORKERS="${TLC_WORKERS:-1}"
+export TLC_MEMORY_HIGH="${TLC_MEMORY_HIGH:-768M}"
 export TLC_RSS="${TLC_RSS:-1G}"
+export TLC_CPU_QUOTA="${TLC_CPU_QUOTA:-100%}"
+export TLC_TASKS_MAX="${TLC_TASKS_MAX:-64}"
+export TLC_RUNTIME_MAX_SEC="${TLC_RUNTIME_MAX_SEC:-900}"
 
 # shellcheck source=scripts/lib/tlc-run.sh
 source "$repo_root/scripts/lib/tlc-run.sh"
@@ -16,37 +20,111 @@ if [[ ! -x "$coqc_bin" ]]; then
   echo "stack-safe-pda: Rocq compiler not found at $coqc_bin" >&2
   exit 3
 fi
+coqchk_bin="${COQCHK:-$(dirname "$coqc_bin")/coqchk}"
+if [[ ! -x "$coqchk_bin" ]]; then
+  echo "stack-safe-pda: Rocq kernel checker not found at $coqchk_bin" >&2
+  exit 3
+fi
+
+rocq_compile_with_closed_count() {
+  local source="$1" expected="$2" description="$3" output actual
+  output="$(tlc_bounded "$coqc_bin" -Q theories StackSafePDA "$source" 2>&1)"
+  printf '%s\n' "$output"
+  actual="$({
+    printf '%s\n' "$output" | grep -c '^Closed under the global context$'
+  } || true)"
+  if [[ "$actual" != "$expected" ]]; then
+    echo "stack-safe-pda: expected $expected closed-context reports for $description; got $actual" >&2
+    return 1
+  fi
+}
+
+rocq_check_modules() {
+  local description="$1" output
+  shift
+  output="$(tlc_bounded "$coqchk_bin" -Q theories StackSafePDA "$@" 2>&1)"
+  printf '%s\n' "$output"
+  if ! grep -q '^Modules were successfully checked$' <<<"$output"; then
+    echo "stack-safe-pda: Rocq kernel check did not complete for $description" >&2
+    return 1
+  fi
+}
+
+rocq_reject_placeholders() {
+  local source
+  for source in "$@"; do
+    if grep -En '\b(Admitted|Axiom|Axioms|Parameter|Parameters|TODO|FIXME)\b|\badmit\b' \
+        "$source"; then
+      echo "stack-safe-pda: forbidden proof placeholder in $source" >&2
+      return 1
+    fi
+  done
+}
 
 pushd "$rocq_root" >/dev/null
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/EPathMap.v
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/Bag.v
-pathmap_teardown_rocq_output="$(
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
-    theories/PathMapReversePruneTeardown.v 2>&1
-)"
-printf '%s\n' "$pathmap_teardown_rocq_output"
-pathmap_teardown_closed_capstones="$({
-  printf '%s\n' "$pathmap_teardown_rocq_output" | \
-    grep -c '^Closed under the global context$'
-} || true)"
-if [[ "$pathmap_teardown_closed_capstones" != "17" ]]; then
-  echo "stack-safe-pda: expected all seventeen PathMap teardown Rocq capstones, including the exact eighteen-invariant catalog proof, to be closed; got $pathmap_teardown_closed_capstones" >&2
-  exit 1
-fi
-pathmap_teardown_mutants_rocq_output="$(
-  tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
-    theories/PathMapReversePruneTeardownMutants.v 2>&1
-)"
-printf '%s\n' "$pathmap_teardown_mutants_rocq_output"
-pathmap_teardown_mutants_closed_capstones="$({
-  printf '%s\n' "$pathmap_teardown_mutants_rocq_output" | \
-    grep -c '^Closed under the global context$'
-} || true)"
-if [[ "$pathmap_teardown_mutants_closed_capstones" != "8" ]]; then
-  echo "stack-safe-pda: expected all eight PathMap teardown-mutant Rocq capstones, including the exact nineteen-mutant registry proof, to be closed; got $pathmap_teardown_mutants_closed_capstones" >&2
-  exit 1
-fi
+tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
+  theories/PathMapCanonicalStreamPublicationBase.v
+rocq_compile_with_closed_count \
+  theories/PathMapCanonicalStreamPublication.v 5 \
+  "the exact 45-invariant canonical PathMap stream-publication authority"
+rocq_compile_with_closed_count \
+  theories/PathMapCanonicalStreamPublicationMutants.v 3 \
+  "the exact 72-mutant canonical PathMap stream-publication controls"
+rocq_check_modules "canonical PathMap stream publication" \
+  StackSafePDA.PathMapCanonicalStreamPublicationBase \
+  StackSafePDA.PathMapCanonicalStreamPublication \
+  StackSafePDA.PathMapCanonicalStreamPublicationMutants
+rocq_compile_with_closed_count \
+  theories/CandidateCatalogAuthorityIsolation.v 5 \
+  "the exact 14-invariant candidate-catalog isolation authority"
+rocq_compile_with_closed_count \
+  theories/CandidateCatalogAuthorityIsolationMutants.v 2 \
+  "the exact 10-mutant candidate-catalog isolation controls"
+rocq_check_modules "candidate-catalog authority isolation" \
+  StackSafePDA.CandidateCatalogAuthorityIsolation \
+  StackSafePDA.CandidateCatalogAuthorityIsolationMutants
+rocq_compile_with_closed_count \
+  theories/PathMapPhysicalOwnership.v 8 \
+  "the exact eleven-invariant PathMap physical-ownership authority"
+rocq_compile_with_closed_count \
+  theories/PathMapPhysicalOwnershipMutants.v 2 \
+  "the exact eleven-mutant PathMap physical-ownership controls"
+rocq_check_modules "PathMap physical ownership" \
+  StackSafePDA.PathMapPhysicalOwnership \
+  StackSafePDA.PathMapPhysicalOwnershipMutants
+rocq_compile_with_closed_count \
+  theories/PathMapReversePruneTeardown.v 23 \
+  "the exact 25-primary/10-quarantine PathMap teardown authority and scoped production policies"
+rocq_compile_with_closed_count \
+  theories/PathMapReversePruneTeardownMutants.v 13 \
+  "the exact 27-teardown/13-quarantine PathMap teardown controls"
+rocq_check_modules "PathMap reverse teardown" \
+  StackSafePDA.PathMapReversePruneTeardown \
+  StackSafePDA.PathMapReversePruneTeardownMutants
+rocq_compile_with_closed_count \
+  theories/ChannelPrefixReplacement.v 5 \
+  "the exact 27-invariant channel-prefix replacement authority"
+rocq_compile_with_closed_count \
+  theories/ChannelPrefixReplacementMutants.v 2 \
+  "the exact 20-mutant channel-prefix replacement controls"
+rocq_check_modules "channel-prefix replacement" \
+  StackSafePDA.ChannelPrefixReplacement \
+  StackSafePDA.ChannelPrefixReplacementMutants
+rocq_reject_placeholders \
+  theories/PathMapCanonicalStreamPublicationBase.v \
+  theories/PathMapCanonicalStreamPublication.v \
+  theories/PathMapCanonicalStreamPublicationMutants.v \
+  theories/CandidateCatalogAuthorityIsolation.v \
+  theories/CandidateCatalogAuthorityIsolationMutants.v \
+  theories/PathMapPhysicalOwnership.v \
+  theories/PathMapPhysicalOwnershipMutants.v \
+  theories/PathMapReversePruneTeardown.v \
+  theories/PathMapReversePruneTeardownMutants.v \
+  theories/ChannelPrefixReplacement.v \
+  theories/ChannelPrefixReplacementMutants.v
 rspace_commit_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RSpaceCommit.v 2>&1
 )"

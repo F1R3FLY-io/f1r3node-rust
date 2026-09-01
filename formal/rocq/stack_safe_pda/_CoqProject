@@ -10,9 +10,16 @@ theories/SpatialMatcher.v
 theories/FreeMapJournal.v
 theories/AccountingDemand.v
 theories/ChannelImage.v
+theories/PathMapPhysicalOwnership.v
+theories/PathMapPhysicalOwnershipMutants.v
 theories/PathMapReversePruneTeardown.v
 theories/PathMapReversePruneTeardownMutants.v
 theories/CandidateProductPathContinuation.v
 theories/CandidateProductPathContinuationMutants.v
 theories/ChannelPrefixReplacement.v
 theories/ChannelPrefixReplacementMutants.v
+theories/PathMapCanonicalStreamPublicationBase.v
+theories/PathMapCanonicalStreamPublication.v
+theories/PathMapCanonicalStreamPublicationMutants.v
+theories/CandidateCatalogAuthorityIsolation.v
+theories/CandidateCatalogAuthorityIsolationMutants.v

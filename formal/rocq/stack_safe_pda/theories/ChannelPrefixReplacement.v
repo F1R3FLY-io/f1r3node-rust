@@ -1,4 +1,4 @@
-From Stdlib Require Import Bool List Arith Lia FunctionalExtensionality.
+From Stdlib Require Import Bool List Arith Lia.
 
 Import ListNotations.
 Set Implicit Arguments.
@@ -1031,10 +1031,221 @@ Definition channel_replacement_invariant_catalog :
    LoadedSetUniquenessInvariant; PreparationFailurePrecedenceInvariant;
    CatalogInvariantPreservationInvariant; PreparedAggregationRefinementInvariant].
 
+(** Total interpretation of every catalog name.  Keeping this binding next to
+    the catalog prevents a label from surviving after its proof obligation has
+    been weakened, removed, or silently redirected to a different property. *)
+Definition channel_replacement_invariant_binding
+    (invariant : channel_replacement_invariant_id) : Prop :=
+  match invariant with
+  | StrongFailureAtomicityInvariant =>
+      forall before marker preparation outcome,
+        @set_channel_transition before marker preparation outcome ->
+        channel_outcome_decision outcome = ChannelSetFailed ->
+        channel_outcome_state outcome = before
+  | ExactTargetPrefixInvariant =>
+      forall before marker prepared,
+        prefix_projection marker
+          (authoritative_entries
+            (publish_prepared_prefix before marker prepared)) =
+        prepared_entries prepared
+  | NonTargetKeyPreservationInvariant =>
+      forall before marker prepared selected,
+        strip_prefix marker selected = None ->
+        lookup_multiplicity selected
+          (authoritative_entries
+            (publish_prepared_prefix before marker prepared)) =
+        lookup_multiplicity selected (authoritative_entries before)
+  | IndependentChannelPreservationInvariant =>
+      forall before marker other prepared,
+        prefix_independent marker other ->
+        prefix_projection other
+          (authoritative_entries
+            (publish_prepared_prefix before marker prepared)) =
+        prefix_projection other (authoritative_entries before)
+  | PrefixSuffixCompositionInvariant =>
+      forall prefix suffix,
+        strip_prefix prefix (prefix ++ suffix) = Some suffix
+  | ReusableBufferRestorationInvariant =>
+      forall marker suffix,
+        buffer_restore_marker
+          (buffer_append_suffix (buffer_at_marker marker) suffix) =
+        buffer_at_marker marker
+  | LoadedSetInvariant =>
+      forall before marker prepared,
+        In marker
+          (loaded_markers (publish_prepared_prefix before marker prepared))
+  | LoadedCountInvariant =>
+      forall before marker prepared,
+        loaded_marker_count
+          (publish_prepared_prefix before marker prepared) =
+        length
+          (loaded_markers (publish_prepared_prefix before marker prepared))
+  | EmptyLoadedChannelInvariant =>
+      forall before marker prepared,
+        prepared_entries prepared = [] ->
+        In marker
+          (loaded_markers (publish_prepared_prefix before marker prepared))
+  | TargetCatalogInvalidationInvariant =>
+      forall before marker prepared,
+        candidate_catalogs
+          (publish_prepared_prefix before marker prepared) marker = None
+  | NonTargetCatalogIdentityInvariant =>
+      forall before marker other prepared,
+        other <> marker ->
+        candidate_catalogs
+          (publish_prepared_prefix before marker prepared) other =
+        candidate_catalogs before other
+  | ExternalCatalogSnapshotInvariant =>
+      forall before marker prepared,
+        external_catalog_snapshots
+          (publish_prepared_prefix before marker prepared) =
+        external_catalog_snapshots before
+  | DistinctCountFormulaInvariant =>
+      forall before marker prepared,
+        distinct_count
+          (authoritative_entries
+            (publish_prepared_prefix before marker prepared)) =
+        distinct_count (authoritative_entries before) -
+          distinct_count
+            (prefix_projection marker (authoritative_entries before)) +
+          distinct_count (prepared_entries prepared)
+  | CardinalityFormulaInvariant =>
+      forall before marker prepared,
+        cardinality
+          (authoritative_entries
+            (publish_prepared_prefix before marker prepared)) =
+        cardinality (authoritative_entries before) -
+          cardinality
+            (prefix_projection marker (authoritative_entries before)) +
+          cardinality (prepared_entries prepared)
+  | MultiplicityPreservationInvariant =>
+      forall before marker prepared suffix,
+        lookup_multiplicity suffix
+          (prefix_projection marker
+            (authoritative_entries
+              (publish_prepared_prefix before marker prepared))) =
+        lookup_multiplicity suffix (prepared_entries prepared)
+  | LegacySuccessEquivalenceInvariant =>
+      forall before marker prepared,
+        publish_prepared_prefix before marker prepared =
+        legacy_clone_clear_insert_publish before marker prepared
+  | PreparedBagWellFormedInvariant =>
+      forall prepared, entries_well_formed (prepared_entries prepared)
+  | CheckedU64MultiplicityInvariant =>
+      forall prepared, entries_fit_u64 (prepared_entries prepared)
+  | ResultWellFormedInvariant =>
+      forall before marker prepared,
+        entries_well_formed (authoritative_entries before) ->
+        entries_well_formed
+          (authoritative_entries
+            (publish_prepared_prefix before marker prepared))
+  | PrefixRootedCursorInvariant =>
+      forall cursor suffix,
+        cursor_target_root (cursor_rebase_relative cursor suffix) =
+        cursor_target_root cursor
+  | RelativeCursorNoEscapeInvariant =>
+      forall cursor,
+        strip_prefix (cursor_target_root cursor) (cursor_absolute_path cursor) =
+        Some (cursor_relative_path cursor)
+  | SingleCursorReplayInvariant =>
+      forall marker replacement,
+        cursor_replay_entries (open_target_cursor marker) replacement =
+        lift_suffix_entries marker replacement
+  | LoadedCapacityInvariant =>
+      forall before marker prepared,
+        loaded_marker_count before = length (loaded_markers before) ->
+        loaded_marker_count before <= max_loaded_channels ->
+        loaded_successor_safe before marker ->
+        loaded_marker_count
+          (publish_prepared_prefix before marker prepared) <=
+        max_loaded_channels
+  | LoadedSetUniquenessInvariant =>
+      forall before marker prepared,
+        NoDup (loaded_markers before) ->
+        NoDup
+          (loaded_markers (publish_prepared_prefix before marker prepared))
+  | PreparationFailurePrecedenceInvariant =>
+      forall before marker failure outcome,
+        @set_channel_transition before marker
+          (@PrepareFailed before marker failure) outcome ->
+        outcome = ChannelOutcome ChannelSetFailed before
+  | CatalogInvariantPreservationInvariant =>
+      forall before marker prepared,
+        catalog_invariant before ->
+        (forall other catalog,
+          other <> marker ->
+          candidate_catalogs before other = Some catalog ->
+          prefix_independent marker other) ->
+        catalog_invariant (publish_prepared_prefix before marker prepared)
+  | PreparedAggregationRefinementInvariant =>
+      forall before marker prepared source_entries,
+        staged_bag_refines_input source_entries (prepared_entries prepared) ->
+        (forall suffix,
+          total_multiplicity_at suffix
+            (prefix_projection marker
+              (authoritative_entries
+                (publish_prepared_prefix before marker prepared))) =
+          total_multiplicity_at suffix source_entries) /\
+        cardinality
+          (prefix_projection marker
+            (authoritative_entries
+              (publish_prepared_prefix before marker prepared))) =
+        cardinality source_entries
+  end.
+
+Theorem every_channel_replacement_invariant_is_bound : forall invariant,
+  channel_replacement_invariant_binding invariant.
+Proof.
+  intro invariant. destruct invariant; cbn.
+  - apply every_preparation_failure_preserves_the_entire_public_state.
+  - apply published_target_prefix_is_exact.
+  - apply published_non_target_key_is_preserved.
+  - apply published_independent_channel_is_preserved.
+  - apply strip_prefix_composed_path.
+  - apply reusable_buffer_restores_exact_marker_after_every_replay.
+  - apply target_is_loaded_even_when_replacement_is_empty.
+  - apply publication_loaded_count_matches_loaded_set.
+  - intros before marker prepared _.
+    exact (target_is_loaded_even_when_replacement_is_empty
+      before marker prepared).
+  - apply target_catalog_is_invalidated_exactly.
+  - apply non_target_catalog_identity_is_preserved.
+  - apply externally_held_catalog_snapshots_remain_valid_immutable_values.
+  - apply publication_preserves_distinct_count_formula.
+  - apply publication_preserves_cardinality_formula.
+  - apply published_target_multiplicity_is_exact.
+  - apply prepare_then_publish_equals_legacy_success_semantics.
+  - apply prepared_entries_well_formed.
+  - apply prepared_entries_fit_u64.
+  - apply publication_preserves_authoritative_well_formedness.
+  - apply relative_cursor_rebase_preserves_immutable_target_root.
+  - apply every_relative_cursor_position_is_inside_its_target_prefix.
+  - apply prefix_rooted_cursor_replay_is_exact_suffix_lifting.
+  - apply publication_respects_preflighted_loaded_capacity.
+  - apply publication_preserves_loaded_set_uniqueness.
+  - apply every_preparation_failure_has_precedence_over_publication.
+  - apply publication_preserves_catalog_invariant.
+  - apply publication_preserves_prepared_input_aggregation.
+Qed.
+
 Theorem channel_replacement_invariant_catalog_is_unique_and_exact :
   NoDup channel_replacement_invariant_catalog /\
   length channel_replacement_invariant_catalog = 27.
 Proof. split; [repeat constructor; simpl; intuition discriminate|reflexivity]. Qed.
+
+Theorem channel_replacement_invariant_catalog_is_unique_complete_and_exact :
+  NoDup channel_replacement_invariant_catalog /\
+  Forall channel_replacement_invariant_binding
+    channel_replacement_invariant_catalog /\
+  length channel_replacement_invariant_catalog = 27.
+Proof.
+  split.
+  - exact (proj1 channel_replacement_invariant_catalog_is_unique_and_exact).
+  - split.
+    + apply Forall_forall. intros invariant _.
+      apply every_channel_replacement_invariant_is_bound.
+    + exact (proj2 channel_replacement_invariant_catalog_is_unique_and_exact).
+Qed.
 
 (** Capstone: all publication effects are derived from one prepared suffix Bag
     and one prefix-rooted cursor.  Fallible preparation is separately covered

@@ -19,16 +19,21 @@
 #      ergonomic ~30 GB. Bounded models keep < 1 GB of fingerprints.
 #   3. BOUNDED WORKERS — -workers $TLC_WORKERS (default 4), NEVER `auto`
 #      (= 64 threads here), which multiplies the peak in-flight frontier.
-#   4. HARD cgroup CEILING — systemd-run --user --scope -p MemoryMax=$TLC_RSS
-#      -p MemorySwapMax=0 (so a runaway is killed cleanly at the cap rather
-#      than OOM-ing the host, and cannot thrash the 512 GB swap). Falls back
-#      to `prlimit --as`; if neither is available it refuses to run unless
+#   4. COMPLETE cgroup ENVELOPE — systemd-run --user --scope applies a soft
+#      memory throttle, a hard memory ceiling, disabled swap, bounded CPU and
+#      task counts, and a wall-clock limit. A runaway therefore cannot OOM or
+#      swap-thrash the host, fork without bound, or run indefinitely. Falls
+#      back to `prlimit --as`; if neither is available it refuses to run unless
 #      ALLOW_UNBOUNDED_TLC=1.
 #
 # Overridable knobs (environment):
 #   TLC_HEAP=4g          JVM -Xmx (use a JVM size suffix: g/m)
 #   TLC_WORKERS=4        TLC worker threads (a number; never `auto`)
+#   TLC_MEMORY_HIGH=10G  cgroup soft memory throttle
 #   TLC_RSS=12G          cgroup MemoryMax (systemd size suffix: G/M)
+#   TLC_CPU_QUOTA=400%   cgroup CPU quota
+#   TLC_TASKS_MAX=128    cgroup process/thread ceiling
+#   TLC_RUNTIME_MAX_SEC=900  cgroup wall-clock ceiling
 #   TLC_METADIR_ROOT=<repo>/target/tlc-metadir
 #   TLC_JAR=/usr/share/java/tla2tools.jar
 #   ALLOW_UNBOUNDED_TLC=1   debug escape hatch — skips the cgroup ceiling
@@ -43,7 +48,11 @@
 
 TLC_HEAP="${TLC_HEAP:-4g}"
 TLC_WORKERS="${TLC_WORKERS:-4}"
+TLC_MEMORY_HIGH="${TLC_MEMORY_HIGH:-10G}"
 TLC_RSS="${TLC_RSS:-12G}"
+TLC_CPU_QUOTA="${TLC_CPU_QUOTA:-400%}"
+TLC_TASKS_MAX="${TLC_TASKS_MAX:-128}"
+TLC_RUNTIME_MAX_SEC="${TLC_RUNTIME_MAX_SEC:-900}"
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 
 # Resolve the repo root. Callers SHOULD export TLC_REPO_ROOT (each computes
@@ -81,8 +90,15 @@ tlc_bounded() {
     return
   fi
   if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-    echo "+ systemd-run --user --scope -p MemoryMax=$TLC_RSS -p MemorySwapMax=0 -- $*" >&2
-    systemd-run --user --scope -p "MemoryMax=$TLC_RSS" -p "MemorySwapMax=0" -- "$@"
+    echo "+ systemd-run --user --scope -p MemoryHigh=$TLC_MEMORY_HIGH -p MemoryMax=$TLC_RSS -p MemorySwapMax=0 -p CPUQuota=$TLC_CPU_QUOTA -p TasksMax=$TLC_TASKS_MAX -p RuntimeMaxSec=$TLC_RUNTIME_MAX_SEC -- $*" >&2
+    systemd-run --user --scope \
+      -p "MemoryHigh=$TLC_MEMORY_HIGH" \
+      -p "MemoryMax=$TLC_RSS" \
+      -p "MemorySwapMax=0" \
+      -p "CPUQuota=$TLC_CPU_QUOTA" \
+      -p "TasksMax=$TLC_TASKS_MAX" \
+      -p "RuntimeMaxSec=$TLC_RUNTIME_MAX_SEC" \
+      -- "$@"
     return
   fi
   if command -v prlimit >/dev/null 2>&1; then

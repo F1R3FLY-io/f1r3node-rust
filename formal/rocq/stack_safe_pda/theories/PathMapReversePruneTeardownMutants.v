@@ -21,6 +21,22 @@ Definition root_par_trie : trie :=
 Definition topology_only_dense : trie := topology_dense 4.
 Definition topology_only_comb : trie := topology_comb 3.
 
+Definition compressed_internal_values : trie :=
+  Node (Some (SetMember 1))
+    (FCons
+      (Node (Some (BagMultiplicity 2 5))
+        (FCons (Node (Some (SetMember 3)) FNil) FNil))
+      FNil).
+
+Definition private_writer_authority : terminal_root_authority :=
+  verified_terminal_authority PrivateWriterEarlyDrop.
+
+Definition failed_candidate_authority : terminal_root_authority :=
+  verified_terminal_authority FailedFreshCandidate.
+
+Definition final_anchor_authority : terminal_root_authority :=
+  verified_terminal_authority FinalAnchorRootTeardown.
+
 Theorem adversarial_fixtures_are_non_vacuous :
   tree_edges topology_only_dense = 4 /\
   tree_edges topology_only_comb = 6 /\
@@ -71,31 +87,107 @@ Theorem kill_remove_value_with_recursive_prune :
   prune_widths mutant_remove_value_with_recursive_prune <> [1].
 Proof. vm_compute. discriminate. Qed.
 
-(** Mutants: a value endpoint is skipped or destroyed twice. *)
+(** Mutants: a Phase-A value endpoint is skipped or destroyed twice. *)
 Definition mutant_skip_first_payload : list payload :=
-  tl (reverse_payloads_tree valued_line).
+  tl (preorder_payloads_tree valued_line).
 
 Definition mutant_duplicate_first_payload : list payload :=
-  match reverse_payloads_tree valued_line with
+  match preorder_payloads_tree valued_line with
   | [] => []
   | first :: rest => first :: first :: rest
   end.
 
 Theorem kill_skipped_payload :
-  mutant_skip_first_payload <> detached_payloads (drain_tree valued_line).
+  mutant_skip_first_payload <>
+  removed_without_prune (terminal_two_phase_trace valued_line).
 Proof. vm_compute. discriminate. Qed.
 
 Theorem kill_duplicated_payload :
-  mutant_duplicate_first_payload <> detached_payloads (drain_tree valued_line).
+  mutant_duplicate_first_payload <>
+  disposed_values (terminal_two_phase_trace valued_line).
 Proof. vm_compute. discriminate. Qed.
 
 (** Mutant: root-value handling assumes all values have nonempty paths. *)
 Definition mutant_omit_root_payload : list payload :=
-  firstn 1 (reverse_payloads_tree valued_line).
+  preorder_payloads_forest
+    (match valued_line with Node _ children => children end).
 
 Theorem kill_root_payload_omission :
-  mutant_omit_root_payload <> detached_payloads (drain_tree valued_line).
+  mutant_omit_root_payload <>
+  removed_without_prune (terminal_two_phase_trace valued_line).
 Proof. vm_compute. discriminate. Qed.
+
+Definition mutant_root_and_leaf_only : list payload :=
+  [SetMember 1; SetMember 3].
+
+Theorem kill_compressed_internal_value_omission :
+  mutant_root_and_leaf_only <>
+  disposed_values (terminal_two_phase_trace compressed_internal_values).
+Proof. vm_compute. discriminate. Qed.
+
+Definition mutant_delayed_phase_a_disposal (value : payload) :
+    list teardown_event :=
+  [RemoveValueNoPrune value; CloseValueCursor; DisposeValue value].
+
+Theorem kill_delayed_phase_a_disposal :
+  firstn 2 (mutant_delayed_phase_a_disposal (SetMember 10)) <>
+  firstn 2 (phase_a_dispose_value (SetMember 10)).
+Proof. discriminate. Qed.
+
+(** Mutant: retain every extracted value until traversal completes.  Unlike
+    delayed disposal, this directly recreates the O(N) pending-value slope. *)
+Definition mutant_retained_phase_a_values (subject : trie) : nat :=
+  logical_value_count subject.
+
+Theorem kill_retain_all_phase_a_values_memory_slope :
+  phase_a_retained_values iterative_phase_a_resources <
+  mutant_retained_phase_a_values compressed_internal_values.
+Proof. vm_compute. lia. Qed.
+
+Definition mutant_omit_close_and_zero_validation (subject : trie) :
+    list teardown_event :=
+  flat_map phase_a_dispose_value (preorder_payloads_tree subject).
+
+Theorem kill_omitted_close_and_zero_validation :
+  mutant_omit_close_and_zero_validation valued_line <>
+  phase_a_value_trace valued_line.
+Proof. vm_compute. discriminate. Qed.
+
+Definition mutant_topology_before_zero_proof (subject : trie) :
+    list teardown_event := BeginTopologyPhase :: drain_tree subject.
+
+Theorem kill_topology_before_zero_value_proof :
+  detached_payloads (mutant_topology_before_zero_proof valued_line) <> [].
+Proof. vm_compute. discriminate. Qed.
+
+Theorem kill_phase_b_implicit_real_value_drop :
+  detached_payloads
+    (run_phase_b (run_phase_a valued_line)
+      (proj1 erase_values_produces_a_value_free_root valued_line)) = [] /\
+  detached_payloads (mutant_topology_before_zero_proof valued_line) <> [].
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+(** Mutant: canonical empty authority is reopened and sent through both
+    teardown phases instead of ordinary empty Drop. *)
+Definition mutant_reopen_canonical_empty : list teardown_event :=
+  terminal_two_phase_trace canonical_empty_root.
+
+Theorem kill_reopened_canonical_empty_final_anchor :
+  mutant_reopen_canonical_empty <>
+  release_trace
+    (release_final_anchor final_anchor_authority canonical_empty_root).
+Proof. vm_compute. discriminate. Qed.
+
+(** Mutant: topology teardown is entered despite the canonical root owning no
+    logical edge. *)
+Definition mutant_drain_canonical_empty : list teardown_event :=
+  [BeginTopologyPhase].
+
+Theorem kill_canonical_empty_topology_drain :
+  mutant_drain_canonical_empty <>
+  release_trace
+    (release_final_anchor final_anchor_authority canonical_empty_root).
+Proof. discriminate. Qed.
 
 (** Mutant: the last owner hands a nonempty trie directly to ordinary Drop. *)
 Definition mutant_raw_unique_release (subject : trie) : release_result :=
@@ -149,35 +241,35 @@ Theorem kill_unregistered_make_mut_raw_header :
   ~ anchor_well_formed mutant_unregistered_make_mut_anchor.
 Proof. simpl. intros [_ impossible]. discriminate. Qed.
 
-(** Mutant: Drop of a pending writer/iterator bypasses its local closure. *)
+(** Mutant: Drop of a private writer/iterator bypasses terminal closure. *)
 Definition mutant_early_owner_drop
     (_ : campaign_owned_exit) (subject : trie) : release_result :=
   mutant_raw_unique_release subject.
 
 Theorem kill_early_pending_writer_or_iterator_drop :
   residual_campaign_edges
-    (mutant_early_owner_drop PendingWriterEarlyDrop topology_only_comb) <>
+    (mutant_early_owner_drop PrivateWriterEarlyDrop topology_only_comb) <>
   residual_campaign_edges
-    (close_campaign_owned_exit PendingWriterEarlyDrop topology_only_comb).
+    (close_campaign_owned_exit private_writer_authority topology_only_comb).
 Proof. vm_compute. discriminate. Qed.
 
-(** Mutant: destructive replace/remove releases a detached dense subtree while
-    that subtree still owns branches. *)
-Theorem kill_destructive_detached_subtree_raw_drop :
+(** Mutant: a failed fresh whole-root candidate is handed to raw Drop. *)
+Theorem kill_failed_fresh_candidate_raw_drop :
   residual_campaign_edges (mutant_raw_unique_release topology_only_dense) <>
   residual_campaign_edges
-    (close_campaign_owned_exit
-      DestructiveSubtreeReplacement topology_only_dense).
+    (close_campaign_owned_exit failed_candidate_authority topology_only_dense).
 Proof. vm_compute. discriminate. Qed.
 
 (** Mutant: a [Par] value is detached and recursively dropped instead of being
     transferred to the explicit Par teardown PDA. *)
 Definition mutant_recursive_par_disposal : list teardown_event :=
-  [DetachOriginal (MapPar 7 [11; 12])].
+  [RemoveValueNoPrune (MapPar 7 [11; 12]);
+   DisposeValue (MapPar 7 [11; 12]);
+   DetachOriginal (MapPar 7 [11; 12])].
 
 Theorem kill_recursive_par_disposal :
   queued_par_jobs mutant_recursive_par_disposal <>
-  queued_par_jobs (dispose_payload (MapPar 7 [11; 12])).
+  queued_par_jobs (phase_a_dispose_value (MapPar 7 [11; 12])).
 Proof. vm_compute. discriminate. Qed.
 
 (** Mutants: reject publishes a private partial map, or accept publishes twice. *)
@@ -191,13 +283,15 @@ Theorem kill_early_partial_publication :
   publication_count (mutant_early_publication FramingFailure) <>
   publication_count
     (finalize_private_builder
+      failed_candidate_authority
       (RejectPrivate FramingFailure) topology_only_dense).
 Proof. discriminate. Qed.
 
 Theorem kill_double_complete_publication :
   publication_count mutant_double_publication <>
   publication_count
-    (finalize_private_builder AcceptComplete topology_only_dense).
+    (finalize_private_builder failed_candidate_authority
+      AcceptComplete topology_only_dense).
 Proof. discriminate. Qed.
 
 (** Mutant: deferred ACT failure is reported before an earlier child-PDA
@@ -227,8 +321,30 @@ Definition mutant_panicking_policy_dispatch
     (_ : payload) : policy_dispatch_outcome := PolicyUnwound.
 
 Theorem kill_panicking_production_policy_dispatch :
-  mutant_panicking_policy_dispatch (MapPar 7 [11; 12]) <>
-  dispatch_registered_policy (MapPar 7 [11; 12]).
+  mutant_panicking_policy_dispatch (CandidatePosition 7) <>
+  dispatch_named_policy (CandidatePosition 7).
+Proof. discriminate. Qed.
+
+(** Mutant: the concrete candidate-position disposer family is silently
+    omitted from the authoritative production registry. *)
+Definition mutant_omit_candidate_position_policy :
+    list named_teardown_policy :=
+  [BagMultiplicityPolicy].
+
+Theorem kill_candidate_position_policy_omission :
+  ~ In CandidatePositionPolicy mutant_omit_candidate_position_policy /\
+  In CandidatePositionPolicy production_guarded_teardown_policies.
+Proof. split; simpl; intuition discriminate. Qed.
+
+(** Mutant: a candidate-position payload is routed through the multiplicity
+    disposer policy even though the two concrete payload families have
+    distinct typed policy identities. *)
+Definition mutant_candidate_position_policy_misrouting :
+    named_teardown_policy := BagMultiplicityPolicy.
+
+Theorem kill_candidate_position_policy_misrouting :
+  mutant_candidate_position_policy_misrouting <>
+  policy_for_payload (CandidatePosition 7).
 Proof. discriminate. Qed.
 
 Definition mutant_unquarantined_fail_stop (subject : trie)
@@ -240,7 +356,7 @@ Theorem kill_raw_header_outside_fail_stop_quarantine :
   quarantine_retains_raw_header
     (mutant_unquarantined_fail_stop topology_only_comb) <>
   quarantine_retains_raw_header
-    (run_quarantined_teardown UniqueAnchorTeardown
+    (run_quarantined_teardown private_writer_authority
       NoAllocationRequired true topology_only_comb).
 Proof. discriminate. Qed.
 
@@ -263,7 +379,7 @@ Theorem kill_recoverable_continuation_after_unexpected_panic :
   quarantine_process
     (mutant_recover_after_unexpected_panic topology_only_comb) <>
   quarantine_process
-    (run_quarantined_teardown UniqueAnchorTeardown
+    (run_quarantined_teardown private_writer_authority
       NoAllocationRequired true topology_only_comb).
 Proof. discriminate. Qed.
 
@@ -285,37 +401,41 @@ Theorem kill_recursive_raw_drop_during_fail_stop :
   quarantine_recursive_raw_drops
     (mutant_recursive_drop_on_panic topology_only_comb) <>
   quarantine_recursive_raw_drops
-    (run_quarantined_teardown UniqueAnchorTeardown
+    (run_quarantined_teardown private_writer_authority
       NoAllocationRequired true topology_only_comb).
 Proof. vm_compute. discriminate. Qed.
 
 Definition mutant_skip_par_handoff : list teardown_event :=
-  [DetachOriginal (MapPar 7 [11; 12])].
+  [RemoveValueNoPrune (MapPar 7 [11; 12]);
+   DisposeValue (MapPar 7 [11; 12])].
 
 Definition mutant_duplicate_par_handoff : list teardown_event :=
-  [DetachOriginal (MapPar 7 [11; 12]);
+  [RemoveValueNoPrune (MapPar 7 [11; 12]);
+   DisposeValue (MapPar 7 [11; 12]);
    QueueParPda 7 [11; 12]; QueueParPda 7 [11; 12]].
 
 Theorem kill_skipped_par_handoff :
   queued_par_jobs mutant_skip_par_handoff <>
-  queued_par_jobs (dispose_payload (MapPar 7 [11; 12])).
+  queued_par_jobs (phase_a_dispose_value (MapPar 7 [11; 12])).
 Proof. vm_compute. discriminate. Qed.
 
 Theorem kill_duplicated_par_handoff :
   queued_par_jobs mutant_duplicate_par_handoff <>
-  queued_par_jobs (dispose_payload (MapPar 7 [11; 12])).
+  queued_par_jobs (phase_a_dispose_value (MapPar 7 [11; 12])).
 Proof. vm_compute. discriminate. Qed.
 
-Definition mutant_unique_anchor_allocation (subject : trie)
+(** Mutant: final-wrapper election is confused with internal-node uniqueness,
+    so a real public-zipper allocation is reported as allocation-free. *)
+Definition mutant_final_wrapper_assumes_no_allocation (subject : trie)
     : quarantined_teardown_result :=
-  completed_quarantined_teardown subject 1.
+  completed_quarantined_teardown subject 0.
 
-Theorem kill_unique_anchor_teardown_allocation :
+Theorem kill_final_wrapper_as_internal_node_uniqueness :
   quarantine_allocation_attempts
-    (mutant_unique_anchor_allocation topology_only_comb) <>
+    (mutant_final_wrapper_assumes_no_allocation topology_only_comb) <>
   quarantine_allocation_attempts
-    (run_quarantined_teardown UniqueAnchorTeardown
-      NoAllocationRequired false topology_only_comb).
+    (run_quarantined_teardown private_writer_authority
+      AllocationSucceeded false topology_only_comb).
 Proof. discriminate. Qed.
 
 Definition mutant_continue_after_cross_anchor_allocation_failure
@@ -327,13 +447,15 @@ Theorem kill_cross_anchor_allocation_failure_continuation :
     (mutant_continue_after_cross_anchor_allocation_failure
       topology_only_comb) <>
   quarantine_process
-    (run_quarantined_teardown CrossAnchorCowTeardown
+    (run_quarantined_teardown private_writer_authority
       AllocationFailed false topology_only_comb).
 Proof. discriminate. Qed.
 
 Inductive quarantine_mutant : Type :=
 | UnsealedCallerClosurePolicy
 | PanickingProductionPolicyDispatch
+| CandidatePositionPolicyOmission
+| CandidatePositionPolicyMisrouting
 | RawHeaderOutsideFailStopQuarantine
 | ExplicitDropWithLiveTopology
 | RecoverAfterUnexpectedPanic
@@ -341,12 +463,14 @@ Inductive quarantine_mutant : Type :=
 | RecursiveRawDropDuringFailStop
 | SkippedParHandoff
 | DuplicatedParHandoff
-| UniqueAnchorAllocation
-| CrossAnchorAllocationContinuation.
+| FinalWrapperInternalNodeUniqueness
+| TerminalAllocationContinuation.
 
 Definition all_quarantine_mutants : list quarantine_mutant :=
   [UnsealedCallerClosurePolicy;
    PanickingProductionPolicyDispatch;
+   CandidatePositionPolicyOmission;
+   CandidatePositionPolicyMisrouting;
    RawHeaderOutsideFailStopQuarantine;
    ExplicitDropWithLiveTopology;
    RecoverAfterUnexpectedPanic;
@@ -354,8 +478,8 @@ Definition all_quarantine_mutants : list quarantine_mutant :=
    RecursiveRawDropDuringFailStop;
    SkippedParHandoff;
    DuplicatedParHandoff;
-   UniqueAnchorAllocation;
-   CrossAnchorAllocationContinuation].
+   FinalWrapperInternalNodeUniqueness;
+   TerminalAllocationContinuation].
 
 Definition quarantine_mutant_killed (mutant : quarantine_mutant) : Prop :=
   match mutant with
@@ -363,13 +487,19 @@ Definition quarantine_mutant_killed (mutant : quarantine_mutant) : Prop :=
       mutant_accept_caller_closure RequestCallerClosure <>
       resolve_teardown_policy RequestCallerClosure
   | PanickingProductionPolicyDispatch =>
-      mutant_panicking_policy_dispatch (MapPar 7 [11; 12]) <>
-      dispatch_registered_policy (MapPar 7 [11; 12])
+      mutant_panicking_policy_dispatch (CandidatePosition 7) <>
+      dispatch_named_policy (CandidatePosition 7)
+  | CandidatePositionPolicyOmission =>
+      ~ In CandidatePositionPolicy mutant_omit_candidate_position_policy /\
+      In CandidatePositionPolicy production_guarded_teardown_policies
+  | CandidatePositionPolicyMisrouting =>
+      mutant_candidate_position_policy_misrouting <>
+      policy_for_payload (CandidatePosition 7)
   | RawHeaderOutsideFailStopQuarantine =>
       quarantine_retains_raw_header
         (mutant_unquarantined_fail_stop topology_only_comb) <>
       quarantine_retains_raw_header
-        (run_quarantined_teardown UniqueAnchorTeardown
+        (run_quarantined_teardown private_writer_authority
           NoAllocationRequired true topology_only_comb)
   | ExplicitDropWithLiveTopology =>
       ~ explicit_raw_drop_is_empty
@@ -378,7 +508,7 @@ Definition quarantine_mutant_killed (mutant : quarantine_mutant) : Prop :=
       quarantine_process
         (mutant_recover_after_unexpected_panic topology_only_comb) <>
       quarantine_process
-        (run_quarantined_teardown UniqueAnchorTeardown
+        (run_quarantined_teardown private_writer_authority
           NoAllocationRequired true topology_only_comb)
   | SilentLiveQuarantineLeak =>
       ~ no_live_process_quarantine_leak
@@ -387,26 +517,26 @@ Definition quarantine_mutant_killed (mutant : quarantine_mutant) : Prop :=
       quarantine_recursive_raw_drops
         (mutant_recursive_drop_on_panic topology_only_comb) <>
       quarantine_recursive_raw_drops
-        (run_quarantined_teardown UniqueAnchorTeardown
+        (run_quarantined_teardown private_writer_authority
           NoAllocationRequired true topology_only_comb)
   | SkippedParHandoff =>
       queued_par_jobs mutant_skip_par_handoff <>
-      queued_par_jobs (dispose_payload (MapPar 7 [11; 12]))
+      queued_par_jobs (phase_a_dispose_value (MapPar 7 [11; 12]))
   | DuplicatedParHandoff =>
       queued_par_jobs mutant_duplicate_par_handoff <>
-      queued_par_jobs (dispose_payload (MapPar 7 [11; 12]))
-  | UniqueAnchorAllocation =>
+      queued_par_jobs (phase_a_dispose_value (MapPar 7 [11; 12]))
+  | FinalWrapperInternalNodeUniqueness =>
       quarantine_allocation_attempts
-        (mutant_unique_anchor_allocation topology_only_comb) <>
+        (mutant_final_wrapper_assumes_no_allocation topology_only_comb) <>
       quarantine_allocation_attempts
-        (run_quarantined_teardown UniqueAnchorTeardown
-          NoAllocationRequired false topology_only_comb)
-  | CrossAnchorAllocationContinuation =>
+        (run_quarantined_teardown private_writer_authority
+          AllocationSucceeded false topology_only_comb)
+  | TerminalAllocationContinuation =>
       quarantine_process
         (mutant_continue_after_cross_anchor_allocation_failure
           topology_only_comb) <>
       quarantine_process
-        (run_quarantined_teardown CrossAnchorCowTeardown
+        (run_quarantined_teardown private_writer_authority
           AllocationFailed false topology_only_comb)
   end.
 
@@ -416,6 +546,8 @@ Proof.
   intro mutant. destruct mutant; cbn.
   - apply kill_unsealed_caller_closure_policy.
   - apply kill_panicking_production_policy_dispatch.
+  - apply kill_candidate_position_policy_omission.
+  - apply kill_candidate_position_policy_misrouting.
   - apply kill_raw_header_outside_fail_stop_quarantine.
   - apply kill_explicit_raw_drop_with_live_edges.
   - apply kill_recoverable_continuation_after_unexpected_panic.
@@ -423,18 +555,19 @@ Proof.
   - apply kill_recursive_raw_drop_during_fail_stop.
   - apply kill_skipped_par_handoff.
   - apply kill_duplicated_par_handoff.
-  - apply kill_unique_anchor_teardown_allocation.
+  - apply kill_final_wrapper_as_internal_node_uniqueness.
   - apply kill_cross_anchor_allocation_failure_continuation.
 Qed.
 
 Theorem quarantine_mutant_registry_is_unique_complete_and_exact :
   NoDup all_quarantine_mutants /\
   Forall quarantine_mutant_killed all_quarantine_mutants /\
-  length all_quarantine_mutants = 11.
+  length all_quarantine_mutants = 13.
 Proof.
   repeat split.
   - repeat constructor; simpl; intuition discriminate.
-  - repeat constructor; apply every_quarantine_mutant_has_a_causal_counterexample.
+  - apply Forall_forall. intros mutant _.
+    apply every_quarantine_mutant_has_a_causal_counterexample.
 Qed.
 
 Inductive teardown_mutant : Type :=
@@ -446,13 +579,21 @@ Inductive teardown_mutant : Type :=
 | SkippedPayload
 | DuplicatedPayload
 | RootPayloadOmission
+| CompressedInternalValueOmission
+| DelayedPhaseADisposal
+| RetainAllPhaseAValues
+| MissingCloseZeroValidation
+| TopologyBeforeZeroProof
+| PhaseBImplicitRealValueDrop
+| ReopenCanonicalEmpty
+| DrainCanonicalEmpty
 | RawUniqueRelease
 | StrongCountSnapshotRace
 | PerWrapperRawHeaderClone
 | ManualFamilyCounter
 | UnregisteredMakeMutAnchor
 | EarlyOwnerDrop
-| DetachedSubtreeRawDrop
+| FailedFreshCandidateRawDrop
 | RecursiveParDisposal
 | EarlyPartialPublication
 | DoubleCompletePublication
@@ -461,10 +602,15 @@ Inductive teardown_mutant : Type :=
 Definition all_teardown_mutants : list teardown_mutant :=
   [ValueOnlyWalk; MissingBarrier; WrongLevelBarrier; OverwriteRealParent;
    RecursiveRemoveValuePrune; SkippedPayload; DuplicatedPayload;
-   RootPayloadOmission; RawUniqueRelease; StrongCountSnapshotRace;
+   RootPayloadOmission; CompressedInternalValueOmission;
+   DelayedPhaseADisposal; RetainAllPhaseAValues;
+   MissingCloseZeroValidation;
+   TopologyBeforeZeroProof; PhaseBImplicitRealValueDrop;
+   ReopenCanonicalEmpty; DrainCanonicalEmpty;
+   RawUniqueRelease; StrongCountSnapshotRace;
    PerWrapperRawHeaderClone; ManualFamilyCounter;
    UnregisteredMakeMutAnchor; EarlyOwnerDrop;
-   DetachedSubtreeRawDrop; RecursiveParDisposal; EarlyPartialPublication;
+   FailedFreshCandidateRawDrop; RecursiveParDisposal; EarlyPartialPublication;
    DoubleCompletePublication; ErrorPrecedenceInversion].
 
 Definition teardown_mutant_killed (mutant : teardown_mutant) : Prop :=
@@ -480,12 +626,41 @@ Definition teardown_mutant_killed (mutant : teardown_mutant) : Prop :=
   | RecursiveRemoveValuePrune =>
       prune_widths mutant_remove_value_with_recursive_prune <> [1]
   | SkippedPayload =>
-      mutant_skip_first_payload <> detached_payloads (drain_tree valued_line)
+      mutant_skip_first_payload <>
+      removed_without_prune (terminal_two_phase_trace valued_line)
   | DuplicatedPayload =>
       mutant_duplicate_first_payload <>
-      detached_payloads (drain_tree valued_line)
+      disposed_values (terminal_two_phase_trace valued_line)
   | RootPayloadOmission =>
-      mutant_omit_root_payload <> detached_payloads (drain_tree valued_line)
+      mutant_omit_root_payload <>
+      removed_without_prune (terminal_two_phase_trace valued_line)
+  | CompressedInternalValueOmission =>
+      mutant_root_and_leaf_only <>
+      disposed_values (terminal_two_phase_trace compressed_internal_values)
+  | DelayedPhaseADisposal =>
+      firstn 2 (mutant_delayed_phase_a_disposal (SetMember 10)) <>
+      firstn 2 (phase_a_dispose_value (SetMember 10))
+  | RetainAllPhaseAValues =>
+      phase_a_retained_values iterative_phase_a_resources <
+      mutant_retained_phase_a_values compressed_internal_values
+  | MissingCloseZeroValidation =>
+      mutant_omit_close_and_zero_validation valued_line <>
+      phase_a_value_trace valued_line
+  | TopologyBeforeZeroProof =>
+      detached_payloads (mutant_topology_before_zero_proof valued_line) <> []
+  | PhaseBImplicitRealValueDrop =>
+      detached_payloads
+        (run_phase_b (run_phase_a valued_line)
+          (proj1 erase_values_produces_a_value_free_root valued_line)) = [] /\
+      detached_payloads (mutant_topology_before_zero_proof valued_line) <> []
+  | ReopenCanonicalEmpty =>
+      mutant_reopen_canonical_empty <>
+      release_trace
+        (release_final_anchor final_anchor_authority canonical_empty_root)
+  | DrainCanonicalEmpty =>
+      mutant_drain_canonical_empty <>
+      release_trace
+        (release_final_anchor final_anchor_authority canonical_empty_root)
   | RawUniqueRelease =>
       residual_campaign_edges (mutant_raw_unique_release topology_only_comb) <> 0
   | StrongCountSnapshotRace =>
@@ -500,26 +675,26 @@ Definition teardown_mutant_killed (mutant : teardown_mutant) : Prop :=
       ~ anchor_well_formed mutant_unregistered_make_mut_anchor
   | EarlyOwnerDrop =>
       residual_campaign_edges
-        (mutant_early_owner_drop PendingWriterEarlyDrop topology_only_comb) <>
+        (mutant_early_owner_drop PrivateWriterEarlyDrop topology_only_comb) <>
       residual_campaign_edges
-        (close_campaign_owned_exit PendingWriterEarlyDrop topology_only_comb)
-  | DetachedSubtreeRawDrop =>
+        (close_campaign_owned_exit private_writer_authority topology_only_comb)
+  | FailedFreshCandidateRawDrop =>
       residual_campaign_edges (mutant_raw_unique_release topology_only_dense) <>
       residual_campaign_edges
-        (close_campaign_owned_exit
-          DestructiveSubtreeReplacement topology_only_dense)
+        (close_campaign_owned_exit failed_candidate_authority topology_only_dense)
   | RecursiveParDisposal =>
       queued_par_jobs mutant_recursive_par_disposal <>
-      queued_par_jobs (dispose_payload (MapPar 7 [11; 12]))
+      queued_par_jobs (phase_a_dispose_value (MapPar 7 [11; 12]))
   | EarlyPartialPublication =>
       publication_count (mutant_early_publication FramingFailure) <>
       publication_count
-        (finalize_private_builder
+        (finalize_private_builder failed_candidate_authority
           (RejectPrivate FramingFailure) topology_only_dense)
   | DoubleCompletePublication =>
       publication_count mutant_double_publication <>
       publication_count
-        (finalize_private_builder AcceptComplete topology_only_dense)
+        (finalize_private_builder failed_candidate_authority
+          AcceptComplete topology_only_dense)
   | ErrorPrecedenceInversion =>
       mutant_deferred_act_first <>
       select_failure false true true true true
@@ -537,13 +712,21 @@ Proof.
   - apply kill_skipped_payload.
   - apply kill_duplicated_payload.
   - apply kill_root_payload_omission.
+  - apply kill_compressed_internal_value_omission.
+  - apply kill_delayed_phase_a_disposal.
+  - apply kill_retain_all_phase_a_values_memory_slope.
+  - apply kill_omitted_close_and_zero_validation.
+  - apply kill_topology_before_zero_value_proof.
+  - apply kill_phase_b_implicit_real_value_drop.
+  - apply kill_reopened_canonical_empty_final_anchor.
+  - apply kill_canonical_empty_topology_drain.
   - exact (proj1 kill_raw_unique_release).
   - apply kill_snapshot_only_strong_count_race.
   - apply kill_per_wrapper_raw_header_and_root_value_clone.
   - apply kill_manual_family_count_protocol.
   - apply kill_unregistered_make_mut_raw_header.
   - apply kill_early_pending_writer_or_iterator_drop.
-  - apply kill_destructive_detached_subtree_raw_drop.
+  - apply kill_failed_fresh_candidate_raw_drop.
   - apply kill_recursive_par_disposal.
   - apply kill_early_partial_publication.
   - apply kill_double_complete_publication.
@@ -556,20 +739,38 @@ Theorem teardown_mutant_registry_is_unique_and_complete :
 Proof.
   split.
   - repeat constructor; simpl; intuition discriminate.
-  - repeat constructor; apply every_teardown_mutant_has_a_causal_counterexample.
+  - apply Forall_forall. intros mutant _.
+    apply every_teardown_mutant_has_a_causal_counterexample.
 Qed.
 
-Theorem teardown_mutant_registry_has_exactly_nineteen_entries :
-  length all_teardown_mutants = 19.
+Theorem teardown_mutant_registry_has_exactly_twenty_seven_entries :
+  length all_teardown_mutants = 27.
 Proof. reflexivity. Qed.
+
+Theorem teardown_mutant_registry_is_unique_complete_and_exact :
+  NoDup all_teardown_mutants /\
+  Forall teardown_mutant_killed all_teardown_mutants /\
+  length all_teardown_mutants = 27.
+Proof.
+  split.
+  - exact (proj1 teardown_mutant_registry_is_unique_and_complete).
+  - split.
+    + exact (proj2 teardown_mutant_registry_is_unique_and_complete).
+    + apply teardown_mutant_registry_has_exactly_twenty_seven_entries.
+Qed.
 
 Print Assumptions adversarial_fixtures_are_non_vacuous.
 Print Assumptions kill_snapshot_only_strong_count_race.
 Print Assumptions kill_per_wrapper_raw_header_and_root_value_clone.
 Print Assumptions kill_early_pending_writer_or_iterator_drop.
-Print Assumptions kill_destructive_detached_subtree_raw_drop.
+Print Assumptions kill_failed_fresh_candidate_raw_drop.
+Print Assumptions kill_candidate_position_policy_omission.
+Print Assumptions kill_candidate_position_policy_misrouting.
+Print Assumptions quarantine_mutant_registry_is_unique_complete_and_exact.
 Print Assumptions every_teardown_mutant_has_a_causal_counterexample.
 Print Assumptions teardown_mutant_registry_is_unique_and_complete.
-Print Assumptions teardown_mutant_registry_has_exactly_nineteen_entries.
+Print Assumptions kill_retain_all_phase_a_values_memory_slope.
+Print Assumptions teardown_mutant_registry_has_exactly_twenty_seven_entries.
+Print Assumptions teardown_mutant_registry_is_unique_complete_and_exact.
 
 End PathMapReversePruneTeardownMutants.
