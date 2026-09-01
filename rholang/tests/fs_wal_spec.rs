@@ -1915,6 +1915,224 @@ mod tests {
         }
     }
 
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_read_at positive path**.  Positional read (`libc::pread`)
+    /// against the follower's own real fd, which was installed by
+    /// fs_open's Phase-2 real-open.  Since `pread` doesn't consume
+    /// or advance the fd position, this handler is the simplest of
+    /// the byte-returning observation ops — no shadow position
+    /// coordination.  On identical fs state, the follower's fresh
+    /// bytes hash to the same Blake2b256 as the leader's cached
+    /// bytes → verify OK → WAL byte-identity preserved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_at_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"phase-2-fs-read-at-positive-pin").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Open + pread(off=7, n=10) + close.  Positional read on a
+        // Consensus cap.  fs_open's real-open makes the follower's
+        // shadow's file usable for the follower's libc::pread.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsReadAt(`rho:io:fs:native:1.0.0/readAt`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, rdCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsReadAt!(fd, 7, 10, *rdCh) |
+                for (@_ <- rdCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[41; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read_at positive path");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_readat_entries: Vec<_> =
+            leader_wal.iter().filter(|e| e.op == WalOp::ReadAt).collect();
+        assert_eq!(
+            leader_readat_entries.len(),
+            1,
+            "expected exactly one ReadAt WAL entry from the leader; got {}",
+            leader_readat_entries.len()
+        );
+        assert_eq!(leader_readat_entries[0].outcome, WalOutcome::Success);
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_read_at positive path");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "Phase 2: leader/follower WAL lengths diverge for fs_read_at positive \
+             path: leader={} follower={}",
+            leader_wal.len(),
+            follower_wal.len()
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 2: WAL entry {i} differs between leader and follower on \
+                 fs_read_at positive path: leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs state");
+    }
+
+    /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_read_at divergence-detection path**.  Overwrite the
+    /// file's bytes between leader + follower `evaluate` calls;
+    /// follower's fs_read_at re-execute reads the DIFFERENT bytes
+    /// at the same (off, n) → verify hash-mismatch → follower's
+    /// ReadAt WAL entry carries `Failure { FSERR_CODE_CONSENSUS_
+    /// DIVERGENCE }` AND `check_replay_data` returns Err.
+    ///
+    /// Note: the divergence-err reply Par is `[false,
+    /// "FSERR_CONSENSUS_DIVERGENCE", msg]` — no bytes, hence the
+    /// Failure WAL entry has `payload_ref: None` + `length: None`
+    /// (journal_read hardcodes Success, so the divergence path
+    /// builds the WalEntry manually).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_at_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        // Leader sees "leader-sees-me" at the target.  fs_open's
+        // statCheck sees the file exists + regular; fs_read_at reads
+        // bytes 7..17 (i.e. "es-me" + null padding, or whatever the
+        // 10-byte window yields).
+        std::fs::write(&target, b"leader-sees-me-and-then-some-bytes-past").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsReadAt(`rho:io:fs:native:1.0.0/readAt`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, rdCh, closeCh
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsReadAt!(fd, 7, 10, *rdCh) |
+                for (@_ <- rdCh) {{
+                  fsClose!(fd, *closeCh) |
+                  for (@_ <- closeCh) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[42; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read_at divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal.iter().any(|e| e.op == WalOp::ReadAt
+                && e.outcome == WalOutcome::Success),
+            "leader must have journaled a successful ReadAt entry"
+        );
+
+        // Overwrite the file's bytes at the pread window.  Same
+        // length so the fs_stat statCheck (openFileImpl) still
+        // agrees on size — the divergence surfaces at the ReadAt
+        // level specifically, not at the Stat level.  This isolates
+        // the fs_read_at re-execute path in the assertion below.
+        std::fs::write(&target, b"FOLLOWER-SEES-DIFFERENT-BYTES-here-past").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let follower_readat = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::ReadAt)
+            .expect(
+                "Phase 2 divergence path must still journal a ReadAt entry \
+                 (Failure outcome, not a journaling skip)",
+            );
+        match follower_readat.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code,
+                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 2: ReadAt divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code, not an unrelated FSERR — got \
+                 code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 2 REGRESSION: follower's re-executed fs_read_at produced \
+                 a Success outcome despite the on-disk divergence.  Either the \
+                 fresh-syscall path is not engaged (Phase-0 tautological cached-\
+                 reply consumption came back) or verify_reply_hash_matches_cached \
+                 is broken.  ReadAt entry: {follower_readat:?}"
+            ),
+        }
+        // Divergence WAL entry shape: no bytes, so payload_ref +
+        // length are None.  A regression that reused journal_read
+        // for the divergence path would produce Hash(empty) +
+        // length=0 — assert the None shape holds.
+        assert_eq!(follower_readat.payload_ref, None);
+        assert_eq!(follower_readat.length, None);
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 2 D1 enforcement: divergent fs_read_at reply Par should trip \
+             RSpace rig verification — got Ok, which would silently accept a \
+             leader lie."
+        );
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): consensus-mode
     /// `entriesStreamNext` on a Consensus-cap dir stream journals one
     /// `WalOp::EntriesStreamNext` entry per call.  Oracular caps do
