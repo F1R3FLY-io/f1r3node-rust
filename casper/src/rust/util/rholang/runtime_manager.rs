@@ -2113,6 +2113,31 @@ impl RuntimeManager {
         self.root_id_registry.register(canon_root, id);
     }
 
+    /// Shape A (2026-08-31): register a per-validator logical → on-disk
+    /// mapping alongside the boot-captured `(dev, inode)` pair.
+    /// Called from `node::setup` and the test harness for each
+    /// Consensus-mode bundle entry: the composed Rholang source
+    /// carries the bundle-relative `/@bundle/<X>` logical root
+    /// (validator-independent — see
+    /// `format_bundle_for_rholang`), and every fs handler's
+    /// `resolve_or_identity(canonRoot)` call joins that logical
+    /// root to the validator's own on-disk staging directory before
+    /// `safe_descend_verified`.  Both the (dev, inode) identity and
+    /// the on-disk join are stored under `logical` — the identity is
+    /// captured from the on-disk path so `safe_descend_verified`'s
+    /// H-5 fstat-post-open check verifies against the real staging
+    /// dir.  Legacy `register_root_identity` (used by Oracular
+    /// bundles) collapses to `logical == on_disk`; this method is
+    /// the Shape A entry point that decouples them.
+    pub fn register_root_remap(
+        &self,
+        logical: std::path::PathBuf,
+        on_disk: std::path::PathBuf,
+        id: (u64, u64),
+    ) {
+        self.root_id_registry.register_with_remap(logical, on_disk, id);
+    }
+
     /// H-5 diagnostic — number of registered root identities.
     /// Used by boot to emit a one-line summary after populating.
     pub fn root_identity_count(&self) -> usize { self.root_id_registry.len() }

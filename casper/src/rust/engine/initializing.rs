@@ -1223,6 +1223,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),
                 snap_ctx.snapshot_dir.clone(),
+                self.runtime_manager.root_id_registry.clone(),
                 allowed_roots,
                 Some(std::sync::Arc::clone(&wal_ctx.payload_lookup)),
                 option2_ctx,

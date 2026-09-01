@@ -18,29 +18,35 @@
 //      bytes via `read_snapshot_bytes`, and decodes them to
 //      `Vec<WalEntry>` via `decode_wal_slice`.
 //   3. It invokes `apply_wal_slice_after_fetch(wal_payload_driver,
-//      wal_entries, |p| p.to_path_buf(), allowed_roots,
-//      BOOT_APPLY_TIMEOUT, BOOT_APPLY_POLL_INTERVAL)`:
+//      wal_entries, registry, allowed_roots, BOOT_APPLY_TIMEOUT,
+//      BOOT_APPLY_POLL_INTERVAL, ...)`:
 //      - The enumerator queues each unique payload hash for peer
-//        fetch (reducer is `|_| None` per DD-7b-2 (a)'s "no
-//        production caller yet" posture — a future reducer slice
-//        will reproduce bytes locally from block storage).
+//        fetch (or resolves locally via Tier 1 PayloadLookup /
+//        Tier 2 Option 2 block-storage replay).
 //      - The poll loop waits until `driver.is_complete()` returns
 //        true (or the timeout fires).
 //      - On completion, the applier writes each Consensus WAL
-//        entry's mutation to the joiner's filesystem, using the
-//        canonical path already recorded in the entry (identity
-//        `path_map` — no translation).
+//        entry's mutation to the joiner's filesystem — Consensus-
+//        cap entries are routed through `registry.resolve_wal_
+//        entry_path` (bundle-relative → per-validator on-disk);
+//        Oracular entries fall through to identity.
 //
-// # Identity path_map + allowed_roots
+// # `registry` (Shape A resolver) + `allowed_roots`
 //
-// Consensus-static roots are operator-frozen paths agreed across
-// validators.  A leader's WAL entry `path = /opt/f1r3fly/consensus-
-// static-01/data.bin` matches the joiner's on-disk path at boot;
-// the joiner applies directly with no translation.  Defense-in-
-// depth: an `allowed_roots: Vec<PathBuf>` argument (currently
-// empty from the boot sites, pending provisioning plumbing) can
-// bound the blast radius of a hypothetical leader-canonicalize bug
-// or a forged snapshot.  Empty vector skips validation.
+// Task 0.4 (2026-08-31): Consensus WAL entries record bundle-
+// relative paths (`/@bundle/<...>`; see `BUNDLE_ROOT_PREFIX`).
+// The joiner's `RootIdentityRegistry` (populated at
+// `node::setup` from the operator's fs bundle) rewrites those to
+// the joiner's per-validator on-disk subdir before the syscall.
+// Oracular entries have no matching prefix and fall through to
+// identity (matching pre-Shape-A behavior).
+//
+// Defense-in-depth: `allowed_roots` bounds where applier writes
+// may land.  Under Shape A production wire-in, this includes both
+// the operator's absolute on-disk roots (for Oracular entries) and
+// `BUNDLE_ROOT_PREFIX` (so bundle-relative Consensus entries pass
+// the raw-path check before the registry's rewrite kicks in for
+// the syscall).  Empty vector skips validation.
 //
 // # Failure modes (all log-and-continue)
 //
@@ -125,6 +131,7 @@ pub fn spawn_boot_apply_subscriber(
     mut rx: UnboundedReceiver<SnapshotCompletion>,
     wal_payload_driver: Arc<WalPayloadSyncDriver>,
     snapshot_dir: std::path::PathBuf,
+    registry: rholang::rust::interpreter::io::path::RootIdentityRegistry,
     allowed_roots: Vec<std::path::PathBuf>,
     payload_lookup: Option<Arc<dyn PayloadLookup>>,
     option2_ctx: Option<Option2ReducerContext>,
@@ -134,6 +141,7 @@ pub fn spawn_boot_apply_subscriber(
             handle_completion(
                 &wal_payload_driver,
                 &snapshot_dir,
+                &registry,
                 &allowed_roots,
                 payload_lookup.clone(),
                 option2_ctx.clone(),
@@ -151,6 +159,7 @@ pub fn spawn_boot_apply_subscriber(
 async fn handle_completion(
     wal_payload_driver: &Arc<WalPayloadSyncDriver>,
     snapshot_dir: &std::path::Path,
+    registry: &rholang::rust::interpreter::io::path::RootIdentityRegistry,
     allowed_roots: &[std::path::PathBuf],
     payload_lookup: Option<Arc<dyn PayloadLookup>>,
     option2_ctx: Option<Option2ReducerContext>,
@@ -198,7 +207,7 @@ async fn handle_completion(
     match apply_wal_slice_after_fetch(
         Arc::clone(wal_payload_driver),
         wal,
-        |p| p.to_path_buf(),
+        registry.clone(),
         allowed_roots.to_vec(),
         BOOT_APPLY_TIMEOUT,
         BOOT_APPLY_POLL_INTERVAL,
@@ -246,6 +255,7 @@ mod tests {
     use std::sync::Arc;
 
     use crypto::rust::hash::blake2b256::Blake2b256;
+    use rholang::rust::interpreter::io::path::RootIdentityRegistry;
     use rholang::rust::interpreter::io::snapshot::write_snapshot;
     use rholang::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 
@@ -303,6 +313,7 @@ mod tests {
             rx,
             Arc::clone(&wal_driver),
             snapshot_dir.path().to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             None,
             None,
@@ -341,6 +352,7 @@ mod tests {
             rx,
             Arc::clone(&wal_driver),
             snapshot_dir.path().to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             None,
             None,
@@ -417,6 +429,7 @@ mod tests {
             rx,
             Arc::clone(&wal_driver),
             snapshot_dir.path().to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             None,
             None,
@@ -491,6 +504,7 @@ mod tests {
             rx,
             Arc::clone(&wal_driver),
             snapshot_dir.path().to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             None,
             None,

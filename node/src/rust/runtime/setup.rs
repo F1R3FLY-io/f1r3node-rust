@@ -498,6 +498,26 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
                     .register_consensus_static_root(entry.path.clone())
                     .await;
             }
+            // Task 0.4 / Consensus-fs Shape A (2026-08-31):
+            // `format_bundle_for_rholang` emits Consensus entries with
+            // `canonRoot = BUNDLE_ROOT_PREFIX` (bundle-relative), so
+            // journal_write records WAL entries whose `path` field is
+            // `/@bundle/<...>`, NOT the operator's absolute on-disk
+            // path.  The joiner's applier does a raw-path
+            // `check_path_allowed` BEFORE the registry's Shape A
+            // resolver rewrites the path for the syscall — so
+            // `allowed_roots` must contain the bundle-root prefix or
+            // every Consensus write will be rejected as
+            // PathOutsideAllowedRoots at boot.  The registrations
+            // above already handle Oracular caps (paths carry the
+            // operator's absolute) and provide defense-in-depth for
+            // Consensus caps against a leader canonicalize bug on
+            // legacy absolute-path bundles.
+            runtime_manager
+                .register_consensus_static_root(std::path::PathBuf::from(
+                    casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX,
+                ))
+                .await;
             tracing::info!(
                 target: "f1r3fly.fs_wal.root_identity",
                 registered = runtime_manager.root_identity_count(),

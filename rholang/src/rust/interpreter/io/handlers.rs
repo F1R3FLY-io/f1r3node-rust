@@ -756,6 +756,23 @@ impl FsProcesses {
     /// for op-specific data; `extra_path` and `length` are
     /// unpopulated for single-path ops.
     #[allow(clippy::result_unit_err)]
+    /// # Shape A invariant (Task 0.4, 2026-08-31)
+    ///
+    /// `canon_path` MUST be derived from the RAW Rholang canonRoot
+    /// via `canonicalize_lexical(raw_root, rel)` — NOT from a root
+    /// that has been passed through `RootIdentityRegistry::
+    /// resolve_or_identity`.  Under Consensus-fs Shape A, Consensus
+    /// caps register `canonRoot = BUNDLE_ROOT_PREFIX`
+    /// (bundle-relative); the resolver rewrites it to a
+    /// per-validator on-disk absolute for the syscall step, but the
+    /// WAL entry must record the bundle-relative form so leader and
+    /// follower produce byte-identical WAL entries and the joiner's
+    /// applier can rewrite via its own registry at boot.  A journal
+    /// site that accidentally hands the RESOLVED root here would
+    /// silently record per-validator absolute paths and break both
+    /// leader/follower WAL byte-identity and joiner-side
+    /// applicability.  See handlers.rs::fs_remove_dir for the
+    /// working pattern (raw_root_pb, on_disk_root_pb, canon_wal_target).
     async fn journal_path_mutation_single(
         &self,
         cmode: ConsensusMode,
@@ -792,6 +809,16 @@ impl FsProcesses {
     /// Journal a two-path mutation entry (Rename, CopyFile).
     /// Same shape as `journal_path_mutation_single` but populates
     /// `extra_path` with the destination.
+    ///
+    /// # Shape A invariant (Task 0.4, 2026-08-31)
+    ///
+    /// BOTH `from_canon_path` and `to_canon_path` MUST be derived
+    /// from the RAW Rholang canonRoot via
+    /// `canonicalize_lexical(raw_root, rel)` — same discipline as
+    /// `journal_path_mutation_single`.  fs_rename and fs_copy_file's
+    /// current call sites use raw roots from parsed args (never
+    /// touching `resolve_or_identity` on the pair), so this
+    /// invariant holds today.
     #[allow(clippy::result_unit_err)]
     async fn journal_path_mutation_two(
         &self,
@@ -1044,6 +1071,19 @@ impl FsProcesses {
             );
         }
         let root_pb = PathBuf::from(&root);
+        // Shape A (2026-08-31): route the caller's `root` through
+        // the per-runtime `RootIdentityRegistry`.  For legacy
+        // (Oracular) bundles the resolver's fall-through returns
+        // the input path unchanged; for Consensus bundles under
+        // Shape A, the emitted logical `/@bundle/...` root remaps
+        // to the validator's on-disk staging dir + the boot-
+        // captured `(dev, inode)` identity.  Passing both to
+        // `safe_open_verified` preserves the H-5 rename-and-
+        // recreate defense at open time (previously fs_open
+        // silently skipped identity verification — a pre-existing
+        // gap surfaced by Shape A's landing).
+        let (root_pb, expected_root_id) =
+            self.handles.root_registry.resolve_or_identity(&root_pb);
         let intent_copy = intent;
         // C-29-1 review fix: keep `rel` accessible for canon_path
         // construction below.  Clone into the blocking closure and
@@ -1052,7 +1092,13 @@ impl FsProcesses {
         // openat descent + safe_open in a blocking task — sync fs.
         let opened = spawn_blocking(move || {
             let (flags, mode_bits) = fopen_flags(intent_copy);
-            super::path::safe_open(&root_pb, &rel_for_open, flags, mode_bits)
+            super::path::safe_open_verified(
+                &root_pb,
+                &rel_for_open,
+                flags,
+                mode_bits,
+                expected_root_id,
+            )
         })
         .await;
         let file = match opened {
@@ -2837,14 +2883,33 @@ impl FsProcesses {
         // Leader path.
         let reply = match parsed.clone() {
             Some((root, rel, recursive)) => {
-                let root_pb = PathBuf::from(root);
-                let (root_pb, expected_root_id) =
-                    self.handles.root_registry.resolve_or_identity(&root_pb);
+                // Task 0.4 / Shape A (2026-08-31): capture BOTH the
+                // raw Rholang canonRoot (bundle-relative for Consensus
+                // caps) AND the resolver's on-disk root separately.
+                //   - `raw_root_pb` / `canon_wal_target` — used for
+                //     WAL entry.path emission (Shape A invariant:
+                //     WAL entries carry bundle-relative paths).
+                //   - `on_disk_root_pb` — passed to safe_descend_verified
+                //     for the actual filesystem descent.
+                // Pre-0.4 the code shadowed `root_pb` with the resolver
+                // output and then reused it for `canon_target`, so the
+                // leader-side WAL RemoveDir entry recorded the
+                // RESOLVED absolute path instead of the raw
+                // bundle-relative one — the follower-side symmetric
+                // journaling at the top of this handler uses the raw
+                // root, so under Shape A the two sides would have
+                // recorded divergent path bytes for the same logical
+                // action.  No PB-M-14 canary exercises Consensus
+                // RemoveDir today, so the divergence was latent.
+                let raw_root_pb = PathBuf::from(&root);
+                let (on_disk_root_pb, expected_root_id) =
+                    self.handles.root_registry.resolve_or_identity(&raw_root_pb);
+                let canon_wal_target = canonicalize_lexical(&root, &rel);
                 let lock_registry = self.handles.lock_registry.clone();
                 let ack_clone = ack.clone();
                 let wal = self.handles.wal.clone();
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
+                    let parent = match safe_descend_verified(&on_disk_root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
                             let (c, m) = quarantine_err_reply(&qe);
@@ -2881,14 +2946,34 @@ impl FsProcesses {
                             );
                         }
                     }
-                    let canon_target = canonicalize_lexical(&root_pb.to_string_lossy(), &rel);
+                    // Task 0.4 / Shape A (2026-08-31): recursive
+                    // manifest emission below still walks the on-disk
+                    // tree via `collect_recursive_manifest(&canon_target)`
+                    // where canon_target must be a real path.  The
+                    // walker returns absolute on-disk children which
+                    // flow into WAL entries — that's a residual Shape
+                    // A gap (leader emits absolute per-validator paths
+                    // in the recursive Consensus manifest, follower
+                    // mirrors from the leader's cached reply so
+                    // there's no leader/follower divergence, but a
+                    // joiner-side applier would not resolve them via
+                    // the registry).  Deferred to Phase 4 (path-based
+                    // mutations); PB-M-14 canaries don't exercise
+                    // recursive Consensus RemoveDir today.
+                    let canon_target =
+                        canonicalize_lexical(&on_disk_root_pb.to_string_lossy(), &rel);
                     if !recursive {
                         // Non-recursive: single unlinkat(AT_REMOVEDIR).
                         if cmode == ConsensusMode::Consensus {
                             let e = wal.append_with_ack(
                                 WalEntry {
                                     op: WalOp::RemoveDir,
-                                    path: canon_target.clone(),
+                                    // Shape A: WAL records the raw
+                                    // bundle-relative path so leader
+                                    // and follower append identical
+                                    // bytes; syscall below uses
+                                    // canon_target (on-disk absolute).
+                                    path: canon_wal_target.clone(),
                                     extra_path: None,
                                     offset: None,
                                     length: None,

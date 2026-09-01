@@ -132,7 +132,7 @@ use casper::rust::genesis::contracts::standard_deploys;
 use casper::rust::util::construct_deploy;
 use serial_test::serial;
 
-use crate::helper::test_node::{TestFsProvisioning, TestNode};
+use crate::helper::test_node::{project_bundle_per_validator, TestFsProvisioning, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 /// The bytes written to the Consensus-cap file: "hello world".
@@ -151,16 +151,19 @@ const PAYLOAD_HEX: &str = "68656c6c6f20776f726c64";
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
-    // ---- shared fs setup ---------------------------------------------
-    // Shared tempdir (design option A): both validators point at the
-    // same on-disk root and bundle.  Per-node isolation (options B / C)
-    // would require path_map plumbing through Casper replay — out of
-    // scope for this canary.
-    let shared_root = tempfile::tempdir().expect("shared_root tempdir");
-    let file_path = shared_root.path().join("data.bin");
-    std::fs::write(&file_path, b"").expect("seed empty file so bundle projection sees it");
-    let canon_path =
-        std::fs::canonicalize(&file_path).expect("canonicalize shared bundle target path");
+    // ---- fs setup (Shape A per-validator) -----------------------------
+    // Phase 0 Stage 2 (2026-08-31): shared-fs (D3-inconsistent) was
+    // reworked to per-validator subdirs.  Each validator gets its own
+    // `<base>/validator-<ix>/bundle/target` seeded via
+    // `project_bundle_per_validator` from the operator's stage bytes,
+    // and the composed Rholang source uses `/@bundle/target` as the
+    // logical canonRoot (validator-independent → genesis-hash stable).
+    // Each validator's `RootIdentityRegistry` remaps `/@bundle` to its
+    // own subdir at `resolve_or_identity` time.
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_file = stage_dir.path().join("target");
+    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
         "target".to_string(),
@@ -178,35 +181,28 @@ async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
     // emission — `pending_wal_slices` populates at play/replay time,
     // pre-LFB.
     let genesis = GenesisBuilder::new()
-        .with_fs_bundle(bundle)
+        .with_fs_bundle(bundle.clone())
         .with_consensus_fs_snapshot_cadence(Some(1))
         .build_genesis_with_parameters(None)
         .await
         .expect("build genesis with fs bundle");
 
-    // ---- per-node fs provisioning ------------------------------------
-    // Both nodes register the same shared canonical root (parent of the
-    // bundle file, per production `node::runtime::setup:414-434` FILE
-    // handling).  Payload dirs are per-node — content-addressed writes
-    // hash to identical filenames, so retention/inspection stays
-    // independent even though the WAL entries are identical.
+    // ---- per-validator projection ------------------------------------
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let register_root = canon_path
-        .parent()
-        .expect("bundle path has parent")
-        .to_path_buf();
-
-    let mk_provisioning = |node_ix: usize| -> TestFsProvisioning {
-        let payload_dir: PathBuf = per_node_root
-            .path()
-            .join(format!("node-{node_ix}-wal_payload_store"));
-        TestFsProvisioning {
-            root_paths: vec![register_root.clone()],
-            payload_dir,
-        }
-    };
-
-    let fs_provisionings = vec![Some(mk_provisioning(0)), Some(mk_provisioning(1))];
+    let projections = project_bundle_per_validator(
+        &bundle,
+        2,
+        per_node_root.path(),
+        "wal_payload_store",
+    )
+    .expect("per-validator bundle projection");
+    // Keep subdir handles for post-execution on-disk assertions.
+    let leader_subdir = projections[0].subdir.clone();
+    let follower_subdir = projections[1].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
 
     let mut nodes =
         TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
@@ -298,19 +294,46 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         "PB-M-14: canonical WAL slice encoding must be byte-identical across validators"
     );
 
-    // ---- assertion 2: on-disk bytes ---------------------------------
-    // Under shared-fs, both nodes wrote to the same on-disk file.  This
-    // pin verifies the write actually happened; the interesting
-    // property (independent reproduction) is out of scope for this
-    // canary (see docstring).
-    let on_disk = std::fs::read(&canon_path).expect("read shared bundle file back");
+    // ---- assertion 2: on-disk bytes (Shape A per-validator) ---------
+    // Leader wrote through the play path — its own copy at
+    // `<leader_subdir>/target` holds PAYLOAD.  Follower's is_replay
+    // branch currently CONSUMES the leader's cached reply and skips
+    // the syscall (this is exactly the gap Phase 1's re-execute
+    // closes — see auto-memory `fileio_wal_replay_verification_gap.md`),
+    // so its own copy stays at the projection-seeded empty bytes.
+    // The operator's stage source is untouched (projection was a
+    // copy).
+    let leader_target = leader_subdir.join("target");
+    let leader_on_disk = std::fs::read(&leader_target).expect("read leader's own target");
     assert_eq!(
-        on_disk, PAYLOAD,
-        "on-disk bytes at shared bundle path must match the deployed payload"
+        leader_on_disk, PAYLOAD,
+        "leader's per-validator on-disk copy must contain the deployed payload"
+    );
+
+    let follower_target = follower_subdir.join("target");
+    let follower_on_disk = std::fs::read(&follower_target)
+        .expect("read follower's own target (should still be empty pre-Phase-1)");
+    assert_eq!(
+        follower_on_disk,
+        b"",
+        "PHASE-0 EXPECTATION: follower's is_replay branch skips fs syscalls \
+         and consumes the leader's cached reply — its own subdir file stays \
+         at the projection-seeded empty bytes.  Phase 1 flips this to REAL \
+         re-execute + hash-compare; this assertion will need inverting then."
+    );
+
+    let stage_source =
+        std::fs::read(&canon_path).expect("operator stage source stays untouched");
+    assert_eq!(
+        stage_source,
+        b"",
+        "Shape A invariant: bundle-projection reads canon_path once at \
+         provisioning and never mutates it.  A non-empty stage source here \
+         means the projection helper accidentally mirrored writes back."
     );
 
     // Sanity: at least one WAL entry was actually emitted (the
-    // assertion above would silently pass on empty vecs).
+    // byte-identity assertion above would silently pass on empty vecs).
     assert!(
         !a_slice.1.is_empty(),
         "expected at least one WAL entry from the Consensus write; \
@@ -343,11 +366,10 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
-    let shared_root = tempfile::tempdir().expect("shared_root tempdir");
-    let file_path = shared_root.path().join("data.bin");
-    std::fs::write(&file_path, b"").expect("seed empty file so bundle projection sees it");
-    let canon_path =
-        std::fs::canonicalize(&file_path).expect("canonicalize shared bundle target path");
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_file = stage_dir.path().join("target");
+    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
         "target".to_string(),
@@ -360,22 +382,29 @@ async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
     let bundle = vec![entry];
 
     let genesis = GenesisBuilder::new()
-        .with_fs_bundle(bundle)
+        .with_fs_bundle(bundle.clone())
         .with_consensus_fs_snapshot_cadence(Some(1))
         .build_genesis_with_parameters(None)
         .await
         .expect("build genesis with fs bundle");
 
+    // Shape A per-validator projection (single-validator case still
+    // exercises the per-validator path — the harness uniformity is
+    // load-bearing for the multi-validator canaries to share the same
+    // setup helper).
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let register_root = canon_path
-        .parent()
-        .expect("bundle path has parent")
-        .to_path_buf();
-    let payload_dir: PathBuf = per_node_root.path().join("node-0-wal_payload_store");
-    let fs_provisionings = vec![Some(TestFsProvisioning {
-        root_paths: vec![register_root],
-        payload_dir,
-    })];
+    let projections = project_bundle_per_validator(
+        &bundle,
+        1,
+        per_node_root.path(),
+        "wal_payload_store",
+    )
+    .expect("per-validator bundle projection");
+    let leader_subdir = projections[0].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
 
     let mut nodes =
         TestNode::create_network_with_fs_provisioning(genesis.clone(), 1, fs_provisionings)
@@ -454,11 +483,14 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         entries.iter().map(|e| e.op).collect::<Vec<_>>()
     );
 
-    // Sanity: on-disk file matches what we wrote.
-    let on_disk = std::fs::read(&canon_path).expect("read bundle file back");
+    // Sanity: leader's own per-validator subdir contains the write.
+    // (Shape A: the bundle emitted `/@bundle/target`, the registry
+    // resolved that to `<leader_subdir>` at syscall time.)
+    let leader_target = leader_subdir.join("target");
+    let on_disk = std::fs::read(&leader_target).expect("read leader's target back");
     assert_eq!(
         on_disk, PAYLOAD,
-        "on-disk bytes must match deployed payload"
+        "leader's per-validator on-disk copy must contain the deployed payload"
     );
 }
 
@@ -523,10 +555,10 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
     //      consensus_write; keeping the flow familiar and easy to
     //      diff.  Single-validator: the recording + reproduction
     //      chain lives entirely on validator A's own state.
-    let shared_root = tempfile::tempdir().expect("shared_root tempdir");
-    let file_path = shared_root.path().join("data.bin");
-    std::fs::write(&file_path, b"").expect("seed empty file");
-    let canon_path = std::fs::canonicalize(&file_path).expect("canonicalize");
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_file = stage_dir.path().join("target");
+    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
         "target".to_string(),
@@ -539,27 +571,25 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
     let bundle = vec![entry];
 
     let genesis = GenesisBuilder::new()
-        .with_fs_bundle(bundle)
+        .with_fs_bundle(bundle.clone())
         .with_consensus_fs_snapshot_cadence(Some(1))
         .build_genesis_with_parameters(None)
         .await
         .expect("build genesis with fs bundle");
 
+    // Uses the one-call `create_network_with_per_validator_fs`
+    // wrapper (Phase 0.3) — canary 3 doesn't need per-validator
+    // subdir handles because the scratch-replay + index assertions
+    // work entirely off the runtime's own state, not off-disk files.
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let register_root = canon_path
-        .parent()
-        .expect("bundle path has parent")
-        .to_path_buf();
-    let payload_dir: PathBuf = per_node_root.path().join("node-0-wal_payload_store");
-    let fs_provisionings = vec![Some(TestFsProvisioning {
-        root_paths: vec![register_root],
-        payload_dir,
-    })];
-
-    let mut nodes =
-        TestNode::create_network_with_fs_provisioning(genesis.clone(), 1, fs_provisionings)
-            .await
-            .expect("single-validator network with fs provisioning");
+    let mut nodes = TestNode::create_network_with_per_validator_fs(
+        genesis.clone(),
+        1,
+        &bundle,
+        per_node_root.path(),
+    )
+    .await
+    .expect("single-validator network with per-validator fs provisioning");
 
     // ---- Consensus write deploy ---------------------------------------
     let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
@@ -812,11 +842,20 @@ async fn pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier() {
         decode_wal_slice, read_snapshot_bytes, write_snapshot,
     };
 
-    // ---- shared fs setup (matches pb_m_14_two_validator pattern) ----
-    let shared_root = tempfile::tempdir().expect("shared_root tempdir");
-    let file_path = shared_root.path().join("data.bin");
-    std::fs::write(&file_path, b"").expect("seed empty file");
-    let canon_path = std::fs::canonicalize(&file_path).expect("canonicalize");
+    // ---- fs setup (Shape A per-validator, 2026-08-31) ---------------
+    // Producer (node 0) and pseudo-joiner (node 1) each get their own
+    // `<per_node_root>/validator-<ix>/bundle` subdir seeded from the
+    // operator's stage source.  Under Shape A the bundle emits
+    // `/@bundle/target` (validator-independent); each node's registry
+    // remaps that to its own subdir.  Task 0.4 (2026-08-31) plumbed
+    // the joiner's `RootIdentityRegistry` directly to
+    // `apply_wal_slice_after_fetch`, so the applier resolves each WAL
+    // entry's `/@bundle/target` to `<joiner_subdir>/target` via the
+    // same registry-lookup path the reducer uses.
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_file = stage_dir.path().join("target");
+    std::fs::write(&stage_file, b"").expect("seed empty file at stage source");
+    let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
 
     let entry = BundleEntry::try_new(
         "target".to_string(),
@@ -829,29 +868,25 @@ async fn pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier() {
     let bundle = vec![entry];
 
     let genesis = GenesisBuilder::new()
-        .with_fs_bundle(bundle)
+        .with_fs_bundle(bundle.clone())
         .with_consensus_fs_snapshot_cadence(Some(1))
         .build_genesis_with_parameters(None)
         .await
         .expect("build genesis with fs bundle");
 
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let register_root = canon_path
-        .parent()
-        .expect("bundle path has parent")
-        .to_path_buf();
-
-    let mk_provisioning = |node_ix: usize| -> TestFsProvisioning {
-        let payload_dir: PathBuf = per_node_root
-            .path()
-            .join(format!("node-{node_ix}-wal_payload_store"));
-        TestFsProvisioning {
-            root_paths: vec![register_root.clone()],
-            payload_dir,
-        }
-    };
-
-    let fs_provisionings = vec![Some(mk_provisioning(0)), Some(mk_provisioning(1))];
+    let projections = project_bundle_per_validator(
+        &bundle,
+        2,
+        per_node_root.path(),
+        "wal_payload_store",
+    )
+    .expect("per-validator bundle projection");
+    let joiner_subdir = projections[1].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
 
     let mut nodes =
         TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
@@ -900,16 +935,20 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         "producer's WAL slice must be non-empty (Stat + Write from openFile + writeByteArray)"
     );
 
-    // ---- Reset the on-disk file to prove the applier's write ---------
-    // Under shared-fs both nodes point at the same on-disk file, so
-    // the producer's write already landed at `canon_path`.  Blanking
-    // the file here proves that PAYLOAD at the end came from the
-    // joiner's applier, not a leftover producer write.
-    std::fs::write(&canon_path, b"").expect("reset on-disk file to empty");
+    // ---- Reset the joiner's on-disk file to prove the applier's write
+    // Under Shape A per-validator subdirs, each node wrote to its OWN
+    // copy.  The joiner's copy is at `<joiner_subdir>/target` — seeded
+    // to empty at projection time, then (in this test) the joiner
+    // never processed the producer's block, so its copy is still
+    // untouched.  Reset defensively so a hypothetical future
+    // wire-in that populates the joiner's disk pre-boot still exposes
+    // a "the applier's write happened" pin.
+    let joiner_target = joiner_subdir.join("target");
+    std::fs::write(&joiner_target, b"").expect("reset joiner's on-disk file to empty");
     assert_eq!(
-        std::fs::read(&canon_path).unwrap(),
+        std::fs::read(&joiner_target).unwrap(),
         b"",
-        "post-reset file must be empty before boot flow runs"
+        "post-reset joiner file must be empty before boot flow runs"
     );
 
     // ---- Snapshot round-trip through on-disk format --------------------
@@ -1005,17 +1044,29 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     );
 
     // ---- Drive the boot apply flow ------------------------------------
-    // Identity path_map: producer's canon_path IS the joiner's target
-    // (shared-fs).  allowed_roots restricts writes to `register_root`
-    // (the parent of canon_path) — exercises the Phase 7b-2 8cd8510f5
-    // whitelist plumbing.  Tight timeout + poll interval because we
-    // pre-injected bytes; the poll loop should exit on the first
-    // iteration.
+    // Task 0.4 (2026-08-31): the applier's path-resolution is now
+    // registry-based.  Under Shape A the producer's WAL entries carry
+    // the bundle-relative form `/@bundle/target` in the path field
+    // (via `canonicalize_lexical(&root, &rel)` where `root` is the
+    // UNRESOLVED Rholang canonRoot).  The joiner's applier joins each
+    // entry.path to the joiner's own on-disk root via
+    // `RootIdentityRegistry::resolve_wal_entry_path` — the same
+    // resolver the per-validator runtime uses on the reducer side.
+    // Passing `nodes[1].runtime_manager.root_id_registry` proves the
+    // production wire-in path: the applier and the handler layer
+    // consult the identical registry populated at TestNode setup.
+    // `allowed_roots` mirrors the WAL entry path shape (bundle-
+    // relative); the applier's check_path_allowed runs on the raw
+    // entry.path before the registry rewrites for the syscall.
+    // Tight timeout + poll interval because we pre-injected bytes;
+    // the poll loop should exit on the first iteration.
+    use casper::rust::genesis::contracts::fs_genesis::BUNDLE_ROOT_PREFIX;
+    let joiner_registry = nodes[1].runtime_manager.root_id_registry.clone();
     let report = apply_wal_slice_after_fetch(
         Arc::clone(&joiner_driver),
         decoded_wal,
-        |p| p.to_path_buf(),
-        vec![register_root.clone()],
+        joiner_registry,
+        vec![PathBuf::from(BUNDLE_ROOT_PREFIX)],
         Duration::from_secs(5),
         Duration::from_millis(25),
         None, // Tier 1: no PayloadLookup → miss for every hash.
@@ -1056,10 +1107,14 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     // ---- Assertion 4: on-disk bytes match PAYLOAD post-boot ----------
     // The applier's Write branch opens with `create: true, truncate:
     // false`, seeks to `entry.offset`, and writes the payload.  Since
-    // we reset the file to empty above, the file's final length equals
-    // `entry.offset + PAYLOAD.len()` — and offset is 0 for a fresh
-    // openFile with mode "rw" (no O_APPEND on the Consensus path).
-    let on_disk = std::fs::read(&canon_path).expect("read applied file back");
+    // we reset the joiner's file to empty above, the file's final
+    // length equals `entry.offset + PAYLOAD.len()` — and offset is 0
+    // for a fresh openFile with mode "rw" (no O_APPEND on the
+    // Consensus path).  Under Shape A the applier's write lands at
+    // `<joiner_subdir>/target` via the registry's Shape A resolver
+    // (`resolve_wal_entry_path` — see Task 0.4).
+    let on_disk =
+        std::fs::read(&joiner_target).expect("read joiner's applied file back");
     assert_eq!(
         on_disk, PAYLOAD,
         "on-disk bytes after joiner boot must match PAYLOAD — the applier \

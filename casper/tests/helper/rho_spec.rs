@@ -315,7 +315,7 @@ pub async fn get_results(
 ) -> Result<TestResult, InterpreterError> {
     let mut genesis_builder = GenesisBuilder::new();
     let genesis = genesis_builder
-        .build_genesis_with_parameters(Some(genesis_parameters))
+        .build_genesis_with_parameters(Some(genesis_parameters.clone()))
         .await
         .map_err(|e| {
             InterpreterError::BugFoundError(format!("Failed to build genesis: {:?}", e))
@@ -360,6 +360,133 @@ pub async fn get_results(
             &genesis.genesis_block.body.state.post_state_hash,
         ))
         .await?;
+
+    // Shape A (Phase 0.5, 2026-08-31): project every Consensus
+    // bundle entry into a per-suite staging directory whose on-disk
+    // layout matches the emitter's bundle-relative canonRoot shape
+    // (`/@bundle/<logical_name>`).  Registers `/@bundle/<...> →
+    // <staging>/<...>` remaps on the runtime's fs_handles.
+    //
+    // The projection step is load-bearing: Shape A uses
+    // `logical_name` (not the operator's `canon_path` filename) for
+    // the emitted `rel`, so opening `<canonRoot>/<rel>` at syscall
+    // time expects an on-disk file at `<resolved_root>/<leaf(
+    // logical_name)>`.  Operators are free to name their staging
+    // file anything (the two failing pre-Shape-A specs pair
+    // `logical_name="consensus-cap"` with `canon_path=".../
+    // consensus.dat"`), so we must copy the bytes to a location
+    // whose filename equals the logical name.
+    //
+    // Oracular entries are skipped — the emitter leaves their
+    // canonRoot as the absolute `canon_path` (unchanged from
+    // pre-Shape-A), so fall-through in the resolver returns the
+    // same path and the syscall works as before.
+    let _staging_dir: Option<tempfile::TempDir> = {
+        use casper::rust::genesis::contracts::fs_genesis::{
+            BundleConsensusMode, BundleEntryKind, BUNDLE_ROOT_PREFIX,
+        };
+        use rholang::rust::interpreter::io::path::capture_root_identity;
+        use crate::helper::test_node::copy_dir_recursive;
+        let consensus_entries: Vec<_> = genesis_parameters
+            .2
+            .fs_bundle
+            .iter()
+            .filter(|e| e.consensus_mode == BundleConsensusMode::Consensus)
+            .collect();
+        if consensus_entries.is_empty() {
+            None
+        } else {
+            let td = tempfile::Builder::new()
+                .prefix("rho-spec-shape-a-staging-")
+                .tempdir()
+                .map_err(|e| {
+                    InterpreterError::BugFoundError(format!(
+                        "Failed to create Shape A staging dir: {e}"
+                    ))
+                })?;
+            let staging_root = td.path().to_path_buf();
+            for entry in consensus_entries {
+                let on_disk_target = staging_root.join(&entry.logical_name);
+                let logical_key = match entry.kind {
+                    BundleEntryKind::File => {
+                        if let Some(parent) = on_disk_target.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| {
+                                InterpreterError::BugFoundError(format!(
+                                    "Failed to mkdir parent for {on_disk_target:?}: {e}"
+                                ))
+                            })?;
+                        }
+                        std::fs::copy(&entry.canon_path, &on_disk_target).map_err(|e| {
+                            InterpreterError::BugFoundError(format!(
+                                "Failed to project bundle entry '{}' from {:?} to {:?}: {e}",
+                                entry.logical_name, entry.canon_path, on_disk_target
+                            ))
+                        })?;
+                        // File-split canonRoot mirrors the emitter:
+                        // parent-of-logical-name (or `/@bundle` bare
+                        // for flat logical names) is what the deploy
+                        // sees; the resolver joins to the parent
+                        // on-disk.
+                        let logical_path = std::path::Path::new(&entry.logical_name);
+                        let parent_rel = logical_path
+                            .parent()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or("");
+                        if parent_rel.is_empty() {
+                            std::path::PathBuf::from(BUNDLE_ROOT_PREFIX)
+                        } else {
+                            std::path::PathBuf::from(format!(
+                                "{BUNDLE_ROOT_PREFIX}/{parent_rel}"
+                            ))
+                        }
+                    }
+                    BundleEntryKind::Dir => {
+                        // Deep-copy the directory tree so the caller's
+                        // Dir.openFile("child") lands on a real file
+                        // under the staging tree.
+                        copy_dir_recursive(&entry.canon_path, &on_disk_target).map_err(|e| {
+                            InterpreterError::BugFoundError(format!(
+                                "Failed to project Dir bundle entry '{}' from {:?} to {:?}: {e}",
+                                entry.logical_name, entry.canon_path, on_disk_target
+                            ))
+                        })?;
+                        std::path::PathBuf::from(format!(
+                            "{BUNDLE_ROOT_PREFIX}/{}",
+                            entry.logical_name
+                        ))
+                    }
+                };
+                // Register `logical_key → <staging_parent-or-dir>`
+                // matching the (canonRoot, rel) split the emitter
+                // produces.  For File the resolver target is the
+                // parent of the on-disk file (so `safe_descend`'s
+                // one-leaf walk lands on the file); for Dir the
+                // target IS the dir.
+                let on_disk_resolved = match entry.kind {
+                    BundleEntryKind::File => on_disk_target
+                        .parent()
+                        .expect("staging file has parent")
+                        .to_path_buf(),
+                    BundleEntryKind::Dir => on_disk_target.clone(),
+                };
+                match capture_root_identity(&on_disk_resolved) {
+                    Ok(id) => runtime.fs_handles.root_registry.register_with_remap(
+                        logical_key,
+                        on_disk_resolved,
+                        id,
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.rho_spec.shape_a",
+                        logical_key = ?entry.logical_name,
+                        on_disk = ?on_disk_resolved,
+                        error = %e,
+                        "RhoSpec Shape A wiring: capture_root_identity failed"
+                    ),
+                }
+            }
+            Some(td)
+        }
+    };
 
     println!("Starting tests from {}", test_object.path);
 

@@ -288,19 +288,64 @@ fn reject_char_set(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Bundle-relative root prefix for Consensus-mode entries under
+/// Shape A (2026-08-31).  See auto-memory
+/// `fileio_consensus_fs_shape_a.md`.
+///
+/// Consensus-mode bundle entries emit `/@bundle/<logical_name>` in
+/// the `canonRoot` slot of the Rholang tuple instead of the
+/// operator-configured absolute `canon_path`.  Rationale:
+///   1. **Genesis-hash stability**: the composed Rholang source bytes
+///      are validator-independent, so every validator computes the
+///      same genesis-block hash even when their on-disk staging
+///      directories differ.
+///   2. **Per-validator resolution at syscall time**: each validator's
+///      `RootIdentityRegistry` holds a `register_with_remap(logical
+///      = "/@bundle/...", on_disk = "<validator_subdir>/...", id)`
+///      entry, and every fs handler's `resolve_or_identity(canonRoot)`
+///      call maps the bundle-relative form to the validator's
+///      own on-disk absolute before `safe_descend_verified`.
+///   3. **Safe fall-through**: `/@bundle` is absolute-shaped, so a
+///      handler that forgets to route through the resolver hands the
+///      unresolved logical path to `safe_descend_verified`, which
+///      fails with ENOENT — a clean detection signal, not a
+///      cwd-relative surprise like a bare `target/data.bin` form
+///      would produce.
+///
+/// Oracular-mode bundle entries are unchanged and continue to emit
+/// the absolute `canon_path` (per the Shape A decision "non-Consensus
+/// paths untouched" — see auto-memory line 37-38).
+pub const BUNDLE_ROOT_PREFIX: &str = "/@bundle";
+
 /// Format a bundle as a Rholang map literal suitable for splicing
 /// into the `Fs!?(0, 1, 2, <bundle>)` position of the composed
 /// source.  Produces:
 ///
 /// ```text
-/// {"logical/name": ("/canon/path", "", "r", "file", "oracular"), ...}
+/// {"logical/name": ("/canon/path", "", "r", "file", "oracular"),
+///  "cap":         ("/@bundle", "cap", "rw", "file", "consensus"), ...}
 /// ```
 ///
 /// The tuple shape matches Fs.rho's `bMap.get(n)` match pattern
 /// `(canonRoot, rel, provisioned, kind, consensusMode)` (slice 26).
-/// For projection we use `rel = ""` (the whole provisioned path IS
-/// the canonical root of that entry's cap).  `consensusMode` is
-/// `"oracular"` or `"consensus"` per `BundleConsensusMode::as_str`.
+/// `consensusMode` is `"oracular"` or `"consensus"` per
+/// `BundleConsensusMode::as_str`.
+///
+/// Root-slot semantics (Shape A, 2026-08-31 — see
+/// `BUNDLE_ROOT_PREFIX` docs and auto-memory
+/// `fileio_consensus_fs_shape_a.md`):
+///   - **Oracular entries**: unchanged pre-Shape-A behavior — the
+///     root slot is derived from the absolute `canon_path` (parent
+///     directory for File entries, the path itself for Dir entries).
+///     Operators sync Oracular-mode staging paths across validators,
+///     so the composed source is byte-identical without further
+///     transformation.
+///   - **Consensus entries**: the root slot is `/@bundle/<X>` where
+///     `X` derives from `logical_name` using the same File-vs-Dir
+///     split as Oracular (parent-segments for File, whole
+///     `logical_name` for Dir).  The Rholang side stays oblivious to
+///     the on-disk absolute; each validator's registry resolves
+///     `/@bundle/<X>` to `<validator_subdir>/<X>` at syscall time.
 ///
 /// Deterministic output: entries sorted by logical name so the
 /// composed source is byte-identical across runs (required for
@@ -366,8 +411,19 @@ pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
         // The operator-facing bundle shape is unchanged (still
         // `{"logical": (root, rel, mode, kind, cmode)}`); only the
         // interpretation of the (root, rel) split differs by kind.
-        let (root_str, rel_str) = match entry.kind {
-            BundleEntryKind::File => {
+        //
+        // Shape A (2026-08-31): for Consensus-mode entries the root
+        // slot derives from `logical_name` prefixed with
+        // `BUNDLE_ROOT_PREFIX` instead of from the operator's
+        // absolute `canon_path`.  This keeps the composed Rholang
+        // source validator-independent (genesis-hash stable) while
+        // each validator resolves `/@bundle/...` against its own
+        // on-disk staging directory at syscall time.  Oracular
+        // entries continue to emit the canon_path split — the plan
+        // deliberately leaves non-Consensus paths untouched (see
+        // auto-memory `fileio_consensus_fs_shape_a.md`).
+        let (root_str, rel_str) = match (entry.kind, entry.consensus_mode) {
+            (BundleEntryKind::File, BundleConsensusMode::Oracular) => {
                 let parent = entry
                     .canon_path
                     .parent()
@@ -394,7 +450,53 @@ pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
                     });
                 (parent.to_string(), filename.to_string())
             }
-            BundleEntryKind::Dir => (path_str.to_string(), String::new()),
+            (BundleEntryKind::Dir, BundleConsensusMode::Oracular) => {
+                (path_str.to_string(), String::new())
+            }
+            (BundleEntryKind::File, BundleConsensusMode::Consensus) => {
+                // Shape A: split `logical_name` at its last `/` and
+                // prepend `BUNDLE_ROOT_PREFIX` to the parent segment,
+                // mirroring the Oracular File-split shape.  A bare
+                // logical name (no `/`) yields `(BUNDLE_ROOT_PREFIX,
+                // logical_name)` — the whole file lives directly under
+                // the validator's bundle root.
+                let logical_path = std::path::Path::new(&entry.logical_name);
+                let filename = logical_path
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "format_bundle_for_rholang: Consensus file entry `{}` \
+                             has no file_name component; logical_name must not end \
+                             in `/` or be `.`/`..`.  Upstream validation should \
+                             have rejected this.",
+                            entry.logical_name
+                        )
+                    });
+                let parent_rel = logical_path
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("");
+                let root = if parent_rel.is_empty() {
+                    BUNDLE_ROOT_PREFIX.to_string()
+                } else {
+                    format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")
+                };
+                (root, filename.to_string())
+            }
+            (BundleEntryKind::Dir, BundleConsensusMode::Consensus) => {
+                // Shape A: Dir caps root ON the bundled directory
+                // itself, so the whole `logical_name` sits under
+                // `BUNDLE_ROOT_PREFIX`.  Nested `Dir.openFile("child")`
+                // hands `("/@bundle/<logical_name>", "", "child")`
+                // to the handler; the resolver joins the bundle root
+                // to the validator's on-disk staging dir before
+                // safe_descend.
+                (
+                    format!("{BUNDLE_ROOT_PREFIX}/{}", entry.logical_name),
+                    String::new(),
+                )
+            }
         };
         let name = rholang_string_escape(&entry.logical_name);
         let root = rholang_string_escape(&root_str);
@@ -1772,6 +1874,153 @@ mod tests {
         assert!(src.contains("Fs!?(0, 1, 2, {})"));
     }
 
+    // -------------------- Phase 0.0-B Shape A pins (2026-08-31) --------------------
+    //
+    // Shape A: Consensus-mode entries emit `/@bundle/<logical_name>`
+    // in the root slot instead of the operator's absolute canon_path.
+    // Oracular entries stay on canon_path.  Every fresh pin below
+    // constructs the entry directly (not via `try_new`, which also
+    // enforces canon_path invariants that are unrelated to the
+    // emission shape) so the assertion isolates the Shape A behavior.
+
+    #[test]
+    fn format_bundle_consensus_file_bare_logical_name_yields_bundle_root_prefix() {
+        // Bare logical name (no `/`) → root = "/@bundle", rel = leaf.
+        // Composed source is validator-independent even though the
+        // operator's on-disk canon_path (`/tmp/A/cap`) is not.
+        let b = [BundleEntry {
+            logical_name: "cap".into(),
+            canon_path: PathBuf::from("/tmp/A/cap"),
+            kind: BundleEntryKind::File,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Consensus,
+        }];
+        assert_eq!(
+            format_bundle_for_rholang(&b),
+            r#"{"cap": ("/@bundle", "cap", "rw", "file", "consensus")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_consensus_file_nested_logical_name_prefixes_parent_segments() {
+        // Nested logical name → root = "/@bundle/<parent>", rel = leaf.
+        // Mirrors the Oracular File split shape.
+        let b = [BundleEntry {
+            logical_name: "cfg/theme.json".into(),
+            canon_path: PathBuf::from("/tmp/A/cfg/theme.json"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Consensus,
+        }];
+        assert_eq!(
+            format_bundle_for_rholang(&b),
+            r#"{"cfg/theme.json": ("/@bundle/cfg", "theme.json", "r", "file", "consensus")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_consensus_dir_yields_bundle_root_prefix_plus_logical() {
+        // Dir → root = "/@bundle/<logical_name>", rel = "".
+        let b = [BundleEntry {
+            logical_name: "shareddir".into(),
+            canon_path: PathBuf::from("/tmp/A/shareddir"),
+            kind: BundleEntryKind::Dir,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Consensus,
+        }];
+        assert_eq!(
+            format_bundle_for_rholang(&b),
+            r#"{"shareddir": ("/@bundle/shareddir", "", "rw", "dir", "consensus")}"#
+        );
+    }
+
+    #[test]
+    fn format_bundle_composed_source_is_validator_independent_under_consensus() {
+        // Shape A load-bearing property: two validators with distinct
+        // on-disk canon_paths (`/tmp/A/cap` vs `/tmp/B/cap`) emit
+        // byte-identical composed source for the same logical bundle
+        // — preserving the genesis-block hash across validators.
+        let a = [BundleEntry {
+            logical_name: "cap".into(),
+            canon_path: PathBuf::from("/tmp/validator-A/cap"),
+            kind: BundleEntryKind::File,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Consensus,
+        }];
+        let b = [BundleEntry {
+            logical_name: "cap".into(),
+            canon_path: PathBuf::from("/opt/some-other/place/cap"),
+            kind: BundleEntryKind::File,
+            mode: "rw".into(),
+            consensus_mode: BundleConsensusMode::Consensus,
+        }];
+        assert_eq!(
+            format_bundle_for_rholang(&a),
+            format_bundle_for_rholang(&b),
+            "Consensus emission must not depend on operator canon_path"
+        );
+    }
+
+    #[test]
+    fn format_bundle_oracular_emission_still_depends_on_canon_path() {
+        // Contrast pin: Oracular entries continue to bind the
+        // operator's absolute canon_path into the composed source.
+        // Two operators with mismatched paths compose to different
+        // bytes — exactly the "operators sync Oracular paths" model
+        // Shape A leaves in place.
+        let a = [BundleEntry {
+            logical_name: "cfg".into(),
+            canon_path: PathBuf::from("/etc/cfg"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        let b = [BundleEntry {
+            logical_name: "cfg".into(),
+            canon_path: PathBuf::from("/opt/cfg"),
+            kind: BundleEntryKind::File,
+            mode: "r".into(),
+            consensus_mode: BundleConsensusMode::Oracular,
+        }];
+        assert_ne!(
+            format_bundle_for_rholang(&a),
+            format_bundle_for_rholang(&b),
+            "Oracular emission must preserve canon_path"
+        );
+    }
+
+    #[test]
+    fn format_bundle_mixed_consensus_and_oracular_use_distinct_root_shapes() {
+        // A single bundle can legitimately mix modes.  The composed
+        // source must apply Shape A to Consensus entries only,
+        // leaving Oracular emission untouched.
+        let b = [
+            BundleEntry {
+                logical_name: "cfg".into(),
+                canon_path: PathBuf::from("/etc/cfg"),
+                kind: BundleEntryKind::File,
+                mode: "r".into(),
+                consensus_mode: BundleConsensusMode::Oracular,
+            },
+            BundleEntry {
+                logical_name: "cap".into(),
+                canon_path: PathBuf::from("/tmp/A/cap"),
+                kind: BundleEntryKind::File,
+                mode: "rw".into(),
+                consensus_mode: BundleConsensusMode::Consensus,
+            },
+        ];
+        let out = format_bundle_for_rholang(&b);
+        // Sorted: "cap" < "cfg" lexicographically.
+        assert_eq!(
+            out,
+            concat!(
+                r#"{"cap": ("/@bundle", "cap", "rw", "file", "consensus"), "#,
+                r#""cfg": ("/etc", "cfg", "r", "file", "oracular")}"#
+            )
+        );
+    }
+
     // -------------------- Slice 25 review-fix regression tests --------------------
 
     // M-25-6: `format_bundle_for_rholang` must panic on duplicate
@@ -2061,10 +2310,13 @@ mod tests {
             },
         ];
         let out = format_bundle_for_rholang(&b);
-        // Slice 30c H-P7-8: Dir stays (canon_path, ""); File splits.
+        // Slice 30c H-P7-8: Dir stays root-slot ("", ""); File splits.
         // Here `/o` has parent `/` and filename `o`.
+        // Shape A (2026-08-31): the Consensus Dir's root slot is
+        // `/@bundle/<logical_name>` (validator-independent), not
+        // the operator's canon_path `/c`.
         assert!(
-            out.contains(r#""con": ("/c", "", "rw", "dir", "consensus")"#),
+            out.contains(r#""con": ("/@bundle/con", "", "rw", "dir", "consensus")"#),
             "consensus tuple missing: {out}"
         );
         assert!(
@@ -2104,14 +2356,17 @@ mod tests {
         // appear in the composed source, in the correct 5th-position
         // syntactic slot.  A template regression that hard-coded
         // `"oracular"` would still compile — this test catches that.
-        // Slice 30c H-P7-8: File entries split into (parent, filename).
-        // Dirs stay (canon_path, "").
+        // Slice 30c H-P7-8: Oracular File entries split into (parent,
+        // filename).  Oracular Dirs stay (canon_path, "").
+        // Shape A (2026-08-31): Consensus entries emit
+        // `/@bundle/<logical_name>` in the root slot instead of the
+        // operator's canon_path.
         assert!(
             src.contains(r#"("/etc", "orc", "rw", "file", "oracular")"#),
             "oracular 5-tuple missing from composed source:\n{src}"
         );
         assert!(
-            src.contains(r#"("/var/con", "", "rw", "dir", "consensus")"#),
+            src.contains(r#"("/@bundle/con-dir", "", "rw", "dir", "consensus")"#),
             "consensus 5-tuple missing from composed source:\n{src}"
         );
         let r = CompiledRholangSource::new(src, HashMap::new(), "FsGenesisMixed".into());

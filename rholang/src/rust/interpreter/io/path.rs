@@ -302,9 +302,34 @@ pub fn fstat_dev_inode(fd: i32) -> Result<(u64, u64), QuarantineError> {
 /// sees it (`canonRoot` from Fs.rho's `bMap` — which under
 /// Shape A becomes bundle-relative in the composed source but
 /// remains identity-registered for legacy callers).
+/// Two-layer interior mutability so `share_root_registry` (called
+/// by `RuntimeManager::spawn_runtime` AFTER
+/// `rho_runtime::create_rho_runtime` has already cloned the
+/// enclosing `FileHandleTable` for the reducer) can attach a
+/// shared backing store visible to every existing clone.
+///
+/// - Outer `Arc<RwLock<...>>` — cloned when the enclosing
+///   `FileHandleTable` is cloned; every clone holds a handle to
+///   THE SAME slot.
+/// - Middle `Arc<RwLock<RegistryInner>>` — the current backing
+///   store.  `share_root_registry` atomically replaces this handle
+///   with the manager's backing store; all clones see the new
+///   backing on their next `read()` of the outer slot.
+/// - Inner `RegistryInner` — the actual `HashMap<PathBuf,
+///   RegisteredRoot>`.
+///
+/// After a share, register / resolve on ANY clone (or on the
+/// manager) go through the SAME middle Arc → the same inner
+/// map.  Late registrations on the manager are visible to every
+/// spawned runtime (pinned by
+/// `runtime_manager::h7_cross_runtime_wiring_tests::
+/// root_registry_is_shared_across_spawn_runtime_and_spawn_replay`);
+/// initial-share visibility to reducer clones is pinned by
+/// `handle_table::tests::share_root_registry_propagates_to_prior_clones`
+/// (the load-bearing 2026-08-31 Shape A regression guard).
 #[derive(Debug, Clone, Default)]
 pub struct RootIdentityRegistry {
-    inner: std::sync::Arc<std::sync::RwLock<RegistryInner>>,
+    slot: std::sync::Arc<std::sync::RwLock<std::sync::Arc<std::sync::RwLock<RegistryInner>>>>,
 }
 
 /// Per-registration record: the on-disk absolute root the
@@ -347,10 +372,10 @@ impl RootIdentityRegistry {
         on_disk: std::path::PathBuf,
         id: (u64, u64),
     ) {
-        let mut guard = self
-            .inner
+        let backing = self.current_backing();
+        let mut guard = backing
             .write()
-            .expect("root-identity registry poisoned");
+            .expect("root-identity registry inner poisoned");
         guard.entries.insert(
             logical,
             RegisteredRoot {
@@ -358,6 +383,55 @@ impl RootIdentityRegistry {
                 identity: id,
             },
         );
+    }
+
+    /// H-5 / Shape A (2026-08-31): atomically point `self`'s
+    /// backing at `other`'s backing so subsequent reads and writes
+    /// through `self` (and every clone that shares `self`'s outer
+    /// slot Arc) route through `other`'s inner map.
+    ///
+    /// **Why not just replace an outer field on the enclosing
+    /// FileHandleTable?**
+    /// `rho_runtime::create_rho_runtime` clones the FileHandleTable
+    /// to hand a copy of the handle table to the reducer BEFORE
+    /// `RuntimeManager::spawn_runtime` calls `share_root_registry`.
+    /// A field-replacement approach would only update the
+    /// runtime's outer field — the reducer's earlier clone still
+    /// holds its own old `RootIdentityRegistry` value, whose
+    /// backing stays disjoint from the manager's.  The handler
+    /// path goes through the reducer's clone, so it would resolve
+    /// against an empty backing → every Shape A `/@bundle/...`
+    /// canonRoot falls through to `NotFound` at open time.  That's
+    /// the exact PB-M-14 canary failure the 2026-08-31 investigation
+    /// surfaced.
+    ///
+    /// The two-layer indirection (outer `Arc<RwLock<Arc<RwLock<
+    /// Inner>>>>`) fixes both properties in one shot:
+    ///   1. **Reducer-clone visibility**: the reducer's captured
+    ///      clone shares the OUTER Arc with the runtime's copy;
+    ///      swapping the middle Arc is visible through both.
+    ///   2. **Late-registration propagation**: after the swap, ALL
+    ///      handles (manager, runtime, reducer's clone, any future
+    ///      clone) point at the SAME middle Arc.  A subsequent
+    ///      `register_with_remap` on the manager writes to the
+    ///      middle Arc's inner — visible everywhere.
+    pub fn share_from(&self, other: &RootIdentityRegistry) {
+        let src = other
+            .slot
+            .read()
+            .expect("root-identity registry outer slot poisoned (src)")
+            .clone();
+        *self
+            .slot
+            .write()
+            .expect("root-identity registry outer slot poisoned (dst)") = src;
+    }
+
+    fn current_backing(&self) -> std::sync::Arc<std::sync::RwLock<RegistryInner>> {
+        self.slot
+            .read()
+            .expect("root-identity registry outer slot poisoned")
+            .clone()
     }
 
     /// Look up a root's expected identity by ON-DISK path.
@@ -371,10 +445,10 @@ impl RootIdentityRegistry {
     /// Behaviorally identical to pre-Shape-A `get` in the
     /// logical == on_disk case (every current registration).
     pub fn get(&self, root: &std::path::Path) -> Option<(u64, u64)> {
-        let guard = self
-            .inner
+        let backing = self.current_backing();
+        let guard = backing
             .read()
-            .expect("root-identity registry poisoned");
+            .expect("root-identity registry inner poisoned");
         guard.entries.get(root).map(|r| r.identity)
     }
 
@@ -386,10 +460,10 @@ impl RootIdentityRegistry {
     /// treating the logical path as the on-disk path (the
     /// pre-Shape-A behavior).
     pub fn resolve(&self, logical: &std::path::Path) -> Option<RegisteredRoot> {
-        let guard = self
-            .inner
+        let backing = self.current_backing();
+        let guard = backing
             .read()
-            .expect("root-identity registry poisoned");
+            .expect("root-identity registry inner poisoned");
         guard.entries.get(logical).cloned()
     }
 
@@ -411,14 +485,71 @@ impl RootIdentityRegistry {
 
     /// Count of registered roots.  For diagnostics only.
     pub fn len(&self) -> usize {
-        let guard = self
-            .inner
+        let backing = self.current_backing();
+        let guard = backing
             .read()
-            .expect("root-identity registry poisoned");
+            .expect("root-identity registry inner poisoned");
         guard.entries.len()
     }
 
     pub fn is_empty(&self) -> bool { self.len() == 0 }
+
+    /// Consensus-fs Shape A / Task 0.4 (2026-08-31): given a WAL
+    /// entry's `path` (the `canonicalize_lexical(&root, &rel)` joined
+    /// form the leader recorded), find the longest registered logical
+    /// prefix, strip it, and rejoin the remainder to that
+    /// registration's `on_disk_root`.  Falls through to the
+    /// entry-path unchanged when no registered logical prefix
+    /// matches — preserves pre-Shape-A behavior for legacy callers
+    /// whose WAL entries carry absolute on-disk paths.
+    ///
+    /// # Longest-prefix discipline
+    ///
+    /// A single bundle may register both `/@bundle` (for flat File
+    /// entries) and `/@bundle/cfg` (for a nested File / Dir).  A WAL
+    /// entry with path `/@bundle/cfg/theme` must resolve against
+    /// `/@bundle/cfg` (the specific registration), not `/@bundle`
+    /// (the broader one) — else the applier would write to
+    /// `<broad_on_disk>/cfg/theme` instead of `<nested_on_disk>/theme`.
+    /// `Path::starts_with` is component-based, so a `/@bundle`
+    /// registration does NOT falsely match `/@bundle-other`.
+    ///
+    /// # Applier semantics
+    ///
+    /// This is what `apply_wal_slice_after_fetch` should call for
+    /// every entry.path (and Rename/CopyFile extra_path) before
+    /// handing to the syscall step.  See
+    /// `casper::rust::engine::wal_payload_sync::apply_wal_slice_
+    /// after_fetch` for the wire-in.
+    pub fn resolve_wal_entry_path(&self, entry_path: &std::path::Path) -> std::path::PathBuf {
+        let backing = self.current_backing();
+        let guard = backing
+            .read()
+            .expect("root-identity registry inner poisoned");
+        let mut best: Option<(&std::path::PathBuf, &RegisteredRoot)> = None;
+        for (logical, reg) in guard.entries.iter() {
+            if entry_path.starts_with(logical) {
+                let is_better = match best {
+                    None => true,
+                    Some((cur_logical, _)) => {
+                        logical.components().count() > cur_logical.components().count()
+                    }
+                };
+                if is_better {
+                    best = Some((logical, reg));
+                }
+            }
+        }
+        match best {
+            Some((logical, reg)) => {
+                let rel = entry_path
+                    .strip_prefix(logical)
+                    .expect("starts_with matched above; strip_prefix must succeed");
+                reg.on_disk_root.join(rel)
+            }
+            None => entry_path.to_path_buf(),
+        }
+    }
 }
 
 /// Descend to the leaf itself as a fresh `File` handle, using the caller-
@@ -435,7 +566,39 @@ pub fn safe_open(
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> Result<File, QuarantineError> {
-    let parent = safe_descend(root, rel)?;
+    safe_open_verified(root, rel, flags, mode, None)
+}
+
+/// Shape A / H-5 variant of `safe_open` (2026-08-31): opens
+/// `<root>/<rel>` under the same TOCTOU-immune openat descent, but
+/// also verifies the root's `(dev, inode)` matches the caller's
+/// `expected_root_id` if provided.  Pass `None` to fall back to the
+/// unverified path (matches pre-2026-08-31 `safe_open` semantics
+/// exactly).
+///
+/// The verified variant closes two gaps in one shot for handlers
+/// that took `safe_open`'s legacy shape:
+///   - **Shape A remap**: callers routing `root` through
+///     `RootIdentityRegistry::resolve_or_identity` now receive the
+///     on-disk absolute AND an `expected_root_id`; passing both to
+///     `safe_open_verified` preserves the resolver's remap without
+///     losing the H-5 rename-and-recreate defense that
+///     `safe_descend_verified` provides at the descent step.
+///   - **H-5 pre-existing gap**: `fs_open` and `fs_copy_file`
+///     previously called `safe_open` (unverified) directly.  Under
+///     an active rename-and-recreate attack against the operator's
+///     staged root, the descent would land in the attacker's tree
+///     silently.  Migrating to `safe_open_verified(..., Some(id))`
+///     gives these handlers the same defense every
+///     `safe_descend_verified` call site already enjoys.
+pub fn safe_open_verified(
+    root: &Path,
+    rel: &str,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+    expected_root_id: Option<(u64, u64)>,
+) -> Result<File, QuarantineError> {
+    let parent = safe_descend_verified(root, rel, expected_root_id)?;
     unsafe {
         let full_flags = flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
         let fd = libc::openat(
@@ -1107,5 +1270,112 @@ mod tests {
         assert_eq!(on_disk, unknown, "fall-through returns the caller's own path");
         assert!(id.is_none(), "no identity available for unregistered logical roots");
         assert!(reg.resolve(&unknown).is_none());
+    }
+
+    /// Task 0.4 / Shape A (2026-08-31): a WAL entry whose path
+    /// begins with the registered logical prefix resolves to the
+    /// registered on-disk root plus the remainder.  This is what
+    /// `apply_wal_slice_after_fetch` calls per entry post-0.4.
+    #[test]
+    fn root_registry_resolve_wal_entry_path_strips_registered_prefix() {
+        let reg = RootIdentityRegistry::new();
+        reg.register_with_remap(
+            std::path::PathBuf::from("/@bundle"),
+            std::path::PathBuf::from("/tmp/joiner/bundle"),
+            (5, 7),
+        );
+
+        let entry = std::path::PathBuf::from("/@bundle/target");
+        let resolved = reg.resolve_wal_entry_path(&entry);
+        assert_eq!(resolved, std::path::PathBuf::from("/tmp/joiner/bundle/target"));
+    }
+
+    /// Task 0.4 / Shape A (2026-08-31): longest-prefix discipline.
+    /// With `/@bundle` and `/@bundle/cfg` both registered to
+    /// distinct on-disk roots, a WAL entry under `/@bundle/cfg/...`
+    /// must resolve against the more-specific `/@bundle/cfg`
+    /// registration.  A regression to insertion-order or
+    /// alphabetical-shortest matching would route the write to
+    /// the wrong on-disk subtree.
+    #[test]
+    fn root_registry_resolve_wal_entry_path_prefers_longest_prefix() {
+        let reg = RootIdentityRegistry::new();
+        reg.register_with_remap(
+            std::path::PathBuf::from("/@bundle"),
+            std::path::PathBuf::from("/tmp/joiner/broad"),
+            (5, 7),
+        );
+        reg.register_with_remap(
+            std::path::PathBuf::from("/@bundle/cfg"),
+            std::path::PathBuf::from("/tmp/joiner/nested"),
+            (9, 11),
+        );
+
+        let entry = std::path::PathBuf::from("/@bundle/cfg/theme");
+        let resolved = reg.resolve_wal_entry_path(&entry);
+        assert_eq!(
+            resolved,
+            std::path::PathBuf::from("/tmp/joiner/nested/theme"),
+            "longest matching prefix wins — must land under /tmp/joiner/nested, \
+             NOT /tmp/joiner/broad/cfg/theme"
+        );
+
+        // Sanity: an entry directly under the broad root still resolves
+        // to the broad on-disk (no nested match).
+        let flat = std::path::PathBuf::from("/@bundle/target");
+        let resolved_flat = reg.resolve_wal_entry_path(&flat);
+        assert_eq!(resolved_flat, std::path::PathBuf::from("/tmp/joiner/broad/target"));
+    }
+
+    /// Task 0.4 / Shape A (2026-08-31): an entry with no registered
+    /// prefix falls through to the caller's original path.  This is
+    /// the pre-Shape-A identity behavior legacy Oracular callers
+    /// depend on — their WAL entries carry absolute on-disk paths
+    /// with no registered `/@bundle` prefix, so the applier just
+    /// syscalls at the recorded absolute path.
+    #[test]
+    fn root_registry_resolve_wal_entry_path_falls_through_for_unregistered() {
+        let reg = RootIdentityRegistry::new();
+        reg.register_with_remap(
+            std::path::PathBuf::from("/@bundle"),
+            std::path::PathBuf::from("/tmp/joiner/bundle"),
+            (5, 7),
+        );
+
+        let oracular = std::path::PathBuf::from("/opt/f1r3fly/consensus-static-01/data.bin");
+        let resolved = reg.resolve_wal_entry_path(&oracular);
+        assert_eq!(resolved, oracular, "unregistered prefix → identity fall-through");
+
+        // Empty registry: every entry falls through identically.
+        let empty = RootIdentityRegistry::new();
+        assert_eq!(empty.resolve_wal_entry_path(&oracular), oracular);
+        assert_eq!(
+            empty.resolve_wal_entry_path(std::path::Path::new("/@bundle/target")),
+            std::path::PathBuf::from("/@bundle/target"),
+            "empty registry means NO Shape A resolution — bundle-relative paths pass through \
+             unchanged (the applier's allowed_roots check catches them separately)"
+        );
+    }
+
+    /// Task 0.4 / Shape A (2026-08-31): `Path::starts_with` is
+    /// component-based, so `/@bundle` MUST NOT falsely match an
+    /// entry under `/@bundle-other`.  Prevents a similarly-named
+    /// sibling registration from stealing writes intended for a
+    /// distinct bundle root.
+    #[test]
+    fn root_registry_resolve_wal_entry_path_component_boundaries() {
+        let reg = RootIdentityRegistry::new();
+        reg.register_with_remap(
+            std::path::PathBuf::from("/@bundle"),
+            std::path::PathBuf::from("/tmp/joiner/bundle"),
+            (5, 7),
+        );
+
+        let sibling = std::path::PathBuf::from("/@bundle-other/target");
+        let resolved = reg.resolve_wal_entry_path(&sibling);
+        assert_eq!(
+            resolved, sibling,
+            "component-based starts_with must not match /@bundle-other against /@bundle"
+        );
     }
 }

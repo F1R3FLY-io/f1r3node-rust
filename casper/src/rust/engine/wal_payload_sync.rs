@@ -736,11 +736,25 @@ pub enum BootApplyError {
 /// count.  The applier is NOT invoked in this branch — a partial
 /// sidecar would panic on missing hashes.
 ///
-/// # `path_map`
+/// # `registry` — Consensus-fs Shape A resolver
 ///
-/// Production joiners pass `|p| p.to_path_buf()` (identity —
-/// WAL's `canon_path` is the target).  Test callers pass a
-/// translation closure.
+/// Task 0.4 (2026-08-31): the applier resolves each WAL entry's
+/// `path` (and Rename/CopyFile `extra_path`) through the joiner's
+/// `RootIdentityRegistry` via `resolve_wal_entry_path`, which
+/// finds the longest registered logical prefix and rewrites to
+/// the joiner's on-disk root.  Consensus WAL entries carry
+/// bundle-relative paths (`/@bundle/<...>`; see
+/// `BUNDLE_ROOT_PREFIX`); the registry maps them to per-validator
+/// on-disk subdirs.  Non-Consensus (Oracular) entries have no
+/// matching prefix and fall through to identity — the applier
+/// then syscalls at the recorded absolute path exactly as
+/// pre-Shape-A joiners did.  Production callers pass the
+/// joiner's `runtime_manager.root_id_registry` (populated at
+/// `node::setup` boot-time from the operator's fs bundle); test
+/// callers construct a fresh registry with just the mappings
+/// each pin needs, or pass an empty registry for pure identity
+/// behavior.  The registry is `Clone` (double-Arc slot); clones
+/// share backing so the applier sees late registrations too.
 ///
 /// # Blocking IO
 ///
@@ -748,18 +762,16 @@ pub enum BootApplyError {
 /// This function runs it via `tokio::task::spawn_blocking` so the
 /// async runtime keeps making progress on other tasks (peer
 /// dispatch, tick loop) during a long apply.
-pub async fn apply_wal_slice_after_fetch<F>(
+pub async fn apply_wal_slice_after_fetch(
     driver: Arc<WalPayloadSyncDriver>,
     wal: Vec<rholang::rust::interpreter::io::wal::WalEntry>,
-    path_map: F,
+    registry: rholang::rust::interpreter::io::path::RootIdentityRegistry,
     allowed_roots: Vec<std::path::PathBuf>,
     timeout: std::time::Duration,
     poll_interval: std::time::Duration,
     payload_lookup: Option<Arc<dyn crate::rust::engine::wal_payload_server::PayloadLookup>>,
     option2_ctx: Option<Option2ReducerContext>,
 ) -> Result<BootApplyReport, BootApplyError>
-where
-    F: Fn(&std::path::Path) -> std::path::PathBuf + Send + Sync + 'static,
 {
     use rholang::rust::interpreter::io::wal::PayloadRef;
 
@@ -913,6 +925,13 @@ where
     // The applier is Result-based post-hardening; JoinError on
     // panic surfaces as ApplierPanic so a future refactor that
     // reintroduces a panic path can't take down the subscriber.
+    //
+    // Shape A / Task 0.4 (2026-08-31): build the path resolver
+    // closure from the registry.  Each entry.path (bundle-relative
+    // for Consensus, absolute for Oracular) is routed through
+    // `resolve_wal_entry_path` which does longest-prefix + rejoin
+    // or identity fall-through.
+    let path_map = move |p: &std::path::Path| registry.resolve_wal_entry_path(p);
     let join_result = tokio::task::spawn_blocking(move || {
         rholang::rust::interpreter::io::wal_applier::apply_wal_to_fresh_tree(
             &wal,
@@ -1219,6 +1238,7 @@ where
 #[cfg(test)]
 mod tests {
     use prost::bytes::Bytes;
+    use rholang::rust::interpreter::io::path::RootIdentityRegistry;
 
     use super::*;
     use crate::rust::engine::wal_payload_server::InMemoryPayloadStore;
@@ -1745,7 +1765,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            move |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -1789,7 +1809,7 @@ mod tests {
         let err = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_millis(120),
             std::time::Duration::from_millis(20),
@@ -1838,7 +1858,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -1891,7 +1911,7 @@ mod tests {
         let err = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             vec![allowed.path().to_path_buf()],
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -1950,7 +1970,7 @@ mod tests {
         let err = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -1988,7 +2008,7 @@ mod tests {
         let err = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal.clone(),
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_millis(80),
             std::time::Duration::from_millis(20),
@@ -2010,7 +2030,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2120,12 +2140,15 @@ mod tests {
         assert!(result.is_ok(), "cloned stop handle must exit the tick loop");
     }
 
-    /// Applier path_map is honored — a closure that redirects
-    /// writes into a separate root leaves the original target
-    /// untouched.  Mirrors the wal_applier unit `path_map_closure_
+    /// Applier registry lookup is honored — a `RootIdentityRegistry`
+    /// entry that remaps a logical source root to a distinct on-disk
+    /// destination leaves the original path untouched and writes at
+    /// the remapped location.  Post-0.4 replacement for the pre-Shape-A
+    /// `apply_wal_slice_after_fetch_honors_path_map` closure-based
+    /// pin.  Mirrors the wal_applier unit `path_map_closure_
     /// redirects_writes` at the boot-flow level.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn apply_wal_slice_after_fetch_honors_path_map() {
+    async fn apply_wal_slice_after_fetch_honors_registry_remap() {
         let src_dir = tempfile::tempdir().unwrap();
         let dst_dir = tempfile::tempdir().unwrap();
         std::fs::write(src_dir.path().join("f.bin"), vec![0u8; 8]).unwrap();
@@ -2143,15 +2166,19 @@ mod tests {
         let src_path = src_dir.path().join("f.bin");
         let wal = vec![write_entry(src_path.to_str().unwrap(), 0, &payload)];
 
-        let src = src_dir.path().to_path_buf();
-        let dst = dst_dir.path().to_path_buf();
+        // Register logical=src_dir → on_disk=dst_dir.  Identity is
+        // synthesized (0, 0) — the applier does not enforce it, only
+        // the `resolve_wal_entry_path` prefix rewrite matters here.
+        let registry = RootIdentityRegistry::new();
+        registry.register_with_remap(
+            src_dir.path().to_path_buf(),
+            dst_dir.path().to_path_buf(),
+            (0, 0),
+        );
         apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            move |p| {
-                let rel = p.strip_prefix(&src).unwrap();
-                dst.join(rel)
-            },
+            registry,
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2159,7 +2186,7 @@ mod tests {
             None,
         )
         .await
-        .expect("apply with path_map");
+        .expect("apply with registry remap");
 
         // src untouched.
         assert_eq!(
@@ -2208,7 +2235,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            move |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2260,7 +2287,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            move |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2325,7 +2352,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            move |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2388,7 +2415,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            move |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             Vec::new(),
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2549,7 +2576,7 @@ mod tests {
     fn two_tier_reducer_runs_tier1_before_tier2() {
         let src = include_str!("wal_payload_sync.rs");
         let fn_start = src
-            .find("pub async fn apply_wal_slice_after_fetch<F>(")
+            .find("pub async fn apply_wal_slice_after_fetch(")
             .expect("apply_wal_slice_after_fetch must exist");
         let end = std::cmp::min(fn_start + 8192, src.len());
         let body = &src[fn_start..end];
@@ -2762,7 +2789,7 @@ mod tests {
         let err = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             plumbed_allowed_roots,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),
@@ -2823,7 +2850,7 @@ mod tests {
         let report = apply_wal_slice_after_fetch(
             Arc::clone(&driver),
             wal,
-            |p| p.to_path_buf(),
+            RootIdentityRegistry::new(),
             plumbed_allowed_roots,
             std::time::Duration::from_secs(1),
             std::time::Duration::from_millis(10),

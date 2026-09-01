@@ -62,6 +62,21 @@ pub struct FileHandle {
     /// correct failure mode (should never happen in practice
     /// because is_replay short-circuits earlier).
     pub file: Option<File>,
+    /// Task 0.4 / Shape A invariant (2026-08-31): this MUST be the
+    /// RAW `canonicalize_lexical(rholang_canon_root, rel)` — the
+    /// Rholang-side canonRoot as the reducer received it, NOT the
+    /// output of `RootIdentityRegistry::resolve_or_identity`.  Under
+    /// Consensus-fs Shape A, Consensus caps carry
+    /// `canonRoot = BUNDLE_ROOT_PREFIX` so this field is
+    /// bundle-relative (e.g. `/@bundle/target`); the registry
+    /// rewrites for the syscall via `resolve_or_identity` at every
+    /// handler entry.  Downstream `journal_write` / `journal_read` /
+    /// `journal_truncate` / `journal_state_read` copy this field
+    /// verbatim into the WAL `entry.path`, so a Shape A violation
+    /// here would silently record per-validator absolute paths and
+    /// break leader/follower WAL byte-identity.  See the fs_open
+    /// leader-path canon_path derivation (handlers.rs::open_impl)
+    /// for the working pattern.
     pub canon_path: PathBuf,
     pub mode: AccessMode,
     /// Slice 29 (PB-M-14): per-cap consensus mode captured at
@@ -328,7 +343,30 @@ impl FileHandleTable {
     /// by `RuntimeManager::spawn_runtime` mirroring the
     /// `fs_snapshot_writer` sharing pattern.
     pub fn share_root_registry(&mut self, shared: super::path::RootIdentityRegistry) {
-        self.root_registry = shared;
+        // 2026-08-31 Shape A fix: attach `shared`'s middle backing
+        // Arc to `self.root_registry`'s outer slot so every clone
+        // that shares the outer slot Arc (including the reducer's
+        // pre-share clone captured by `rho_runtime::
+        // create_rho_runtime` at line 1944-ish) routes register /
+        // resolve through `shared`'s middle Arc.  See
+        // `RootIdentityRegistry::share_from`'s docstring for the
+        // load-bearing rationale.
+        //
+        // Two properties this call preserves:
+        //   1. **Reducer-clone visibility**: the reducer's earlier
+        //      clone points at the SAME outer slot Arc as `self`;
+        //      the swap of the middle Arc is observed by both.
+        //   2. **Late-registration propagation**: after the swap,
+        //      `self`, `self`'s reducer clone, and every manager
+        //      clone all route through `shared`'s middle Arc — a
+        //      later `register_root_remap` on the manager writes
+        //      to the shared inner and every runtime sees it.
+        //
+        // The pre-fix `self.root_registry = shared` replaced the
+        // OUTER field, which broke (1); an earlier `copy_from`
+        // attempt preserved (1) but broke (2).  `share_from` is
+        // the design that gives both.
+        self.root_registry.share_from(&shared);
     }
 
     /// Phase 8 slice 8a: attach the manager-shared range-lock
@@ -1218,5 +1256,135 @@ mod tests {
             ConsensusMode::Oracular /* from make_handle default */
         );
         assert_eq!(meta.1, path);
+    }
+
+    // ---------------------------------------------------------
+    // Shape A / share_root_registry interior-mutability pin
+    // (2026-08-31): load-bearing regression guard.
+    // ---------------------------------------------------------
+
+    /// `share_root_registry` MUST propagate the shared registry's
+    /// entries into `self.root_registry`'s existing Arc — not
+    /// replace the outer field.
+    ///
+    /// **Why load-bearing**: `rho_runtime::create_rho_runtime`
+    /// clones the FileHandleTable to hand a copy to the reducer
+    /// BEFORE `RuntimeManager::spawn_runtime` calls
+    /// `share_root_registry`.  Pre-fix (2026-08-31), the outer
+    /// field was replaced with the shared registry's Arc, but the
+    /// reducer's clone still held the original empty Arc — every
+    /// fs handler resolving through `self.handles.root_registry`
+    /// (which routes through the reducer's clone) saw an EMPTY map.
+    ///
+    /// Pre-Shape-A this bug was silently harmless: the resolver's
+    /// fall-through returned the caller's absolute `canon_path`
+    /// unchanged, so `safe_descend_verified` still opened the real
+    /// file (identity verification just silently skipped).  Post-
+    /// Shape-A the fall-through returns a bundle-relative path
+    /// (`/@bundle/...`) that isn't a real filesystem path, so open
+    /// fails with `NotFound` and every Consensus deploy's `openFile`
+    /// short-circuits with an error → only a `Stat` lands in the
+    /// WAL, no `Write` ever fires.  The PB-M-14 canaries surfaced
+    /// this by failing at the "WAL must contain at least one Write"
+    /// pin.
+    ///
+    /// This test pins the interior-mutability semantic by cloning
+    /// the FileHandleTable BEFORE `share_root_registry` and asserting
+    /// the clone sees the shared entries after the share call.  A
+    /// regression that returned to field-replacement (e.g. `self.
+    /// root_registry = shared`) would trip this pin at unit-test
+    /// time, closing the diagnostic gap that let the reducer-clone
+    /// staleness slip through 0.0-A's landing.
+    #[tokio::test]
+    async fn share_root_registry_propagates_to_prior_clones() {
+        use super::super::path::RootIdentityRegistry;
+
+        let table = FileHandleTable::new();
+
+        // Populate a MANAGER-side registry with a Shape A remap
+        // before `share_root_registry` is called.  This matches the
+        // production ordering: boot pipeline registers remaps on
+        // the RuntimeManager, then spawn_runtime shares the
+        // populated registry into the freshly-created runtime.
+        let manager_registry = RootIdentityRegistry::new();
+        let logical = PathBuf::from("/@bundle");
+        let on_disk = PathBuf::from("/tmp/validator-0/bundle");
+        let id = (42u64, 137u64);
+        manager_registry.register_with_remap(logical.clone(), on_disk.clone(), id);
+        assert_eq!(
+            manager_registry.len(),
+            1,
+            "manager-side registry must be populated pre-share"
+        );
+
+        // Clone the FileHandleTable BEFORE the share call.  This
+        // is the exact ordering `rho_runtime::create_rho_runtime`
+        // uses: fs_handles.clone() is handed to `setup_reducer`
+        // right after FileHandleTable construction and before
+        // `spawn_runtime` gets a chance to share the manager
+        // registry.
+        let reducer_clone = table.clone();
+
+        // Now share.  Under the pre-fix behavior (field
+        // replacement), `table.root_registry` becomes the manager's
+        // Arc but `reducer_clone.root_registry` still points at
+        // the empty original Arc.  Under the post-fix behavior
+        // (`copy_from` into the shared inner Arc), both `table`
+        // and `reducer_clone` share the SAME outer Arc and both
+        // see the populated entries.
+        let mut table = table;
+        table.share_root_registry(manager_registry);
+
+        // Load-bearing assertion: the reducer's PRIOR clone sees
+        // the shared entries.  A field-replacement regression
+        // trips here.
+        let (resolved_on_disk, resolved_id) = reducer_clone
+            .root_registry
+            .resolve_or_identity(&logical);
+        assert_eq!(
+            resolved_on_disk, on_disk,
+            "reducer-clone must resolve /@bundle to the manager-registered on-disk; \
+             a stale resolver here means `share_root_registry` replaced the outer \
+             field instead of writing through the shared inner Arc — the 2026-08-31 \
+             Shape A regression."
+        );
+        assert_eq!(
+            resolved_id,
+            Some(id),
+            "reducer-clone must see the manager-registered identity too"
+        );
+
+        // Symmetry sanity: the outer table also sees the share
+        // (any regression that only fixed one side would trip here).
+        let (outer_on_disk, outer_id) = table
+            .root_registry
+            .resolve_or_identity(&logical);
+        assert_eq!(outer_on_disk, on_disk);
+        assert_eq!(outer_id, Some(id));
+
+        // Late-registration propagation: after the share, a NEW
+        // register on the runtime's registry handle must be visible
+        // through the reducer's earlier clone.  This pins the
+        // second half of `share_root_registry`'s contract — an
+        // earlier failed fix that COPIED entries instead of
+        // sharing the middle Arc would trip here because the two
+        // backings would have decoupled.  Since manager and
+        // runtime share the middle Arc after `share_from`, we can
+        // observe propagation via either side.
+        let late_logical = PathBuf::from("/@bundle/late");
+        let late_on_disk = PathBuf::from("/tmp/validator-0/bundle/late");
+        table
+            .root_registry
+            .register_with_remap(late_logical.clone(), late_on_disk.clone(), (99, 100));
+        let (late_seen_on_disk, late_seen_id) = reducer_clone
+            .root_registry
+            .resolve_or_identity(&late_logical);
+        assert_eq!(
+            late_seen_on_disk, late_on_disk,
+            "late registration must propagate through the shared middle Arc \
+             to prior clones; a regression to per-registry copy semantics \
+             (rather than middle-Arc sharing) trips here"
+        );
+        assert_eq!(late_seen_id, Some((99, 100)));
     }
 }

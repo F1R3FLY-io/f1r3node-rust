@@ -203,7 +203,23 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 ///   field encodes `1` for yielded entries and `0` for
 ///   EOS/error terminators so a replay-side auditor can count
 ///   the stream without re-parsing.
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 4;
+/// - `5`: Consensus-fs Shape A / Task 0.4 (2026-08-31) — the
+///   encoding itself is unchanged, but the semantics of every
+///   Consensus-cap entry's `path` field flip from an absolute
+///   on-disk canon_path to a **bundle-relative** logical form
+///   (typically `/@bundle/<logical_name>` — see
+///   `BUNDLE_ROOT_PREFIX` in `casper/src/rust/genesis/contracts/
+///   fs_genesis.rs`).  A pre-Shape-A joiner reading a Shape A
+///   snapshot would fall through the applier's registry lookup
+///   and syscall against `/@bundle/...` on its local disk (ENOENT
+///   at best; worse if a shell alias resolves `@` somewhere real).
+///   The version bump makes the mis-decode surface as
+///   `SnapshotError::UnsupportedVersion` before any syscall.
+///   Non-Consensus (Oracular) entries continue to carry absolute
+///   on-disk paths and are handled by the resolver's identity
+///   fall-through unchanged.  No running network per auto-memory
+///   `f1r3node_no_running_network.md` — the bump is a normal edit.
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 5;
 
 /// M-1 fix (2026-08-06): manifest.jsonl line-format version.
 /// Distinct from `SNAPSHOT_FORMAT_VERSION` because the two are
@@ -2337,12 +2353,15 @@ mod tests {
             let _ = write!(acc, "{b:02x}");
             acc
         });
-        // Golden value re-pinned 2026-08-25 (streaming-slice Step 3:
-        // bumped `SNAPSHOT_FORMAT_VERSION` from 3 to 4 for the new
-        // `EntriesStreamNext` op tag 15).  Only the version byte
+        // Golden value re-pinned 2026-08-31 (Task 0.4 / Consensus-fs
+        // Shape A: bumped `SNAPSHOT_FORMAT_VERSION` from 4 to 5 to
+        // distinguish the pre-Shape-A snapshot semantics — Consensus
+        // WAL entries' `path` field is now bundle-relative, not an
+        // absolute on-disk canon_path).  Only the version byte
         // changed for THIS test's entry shape (Write op), so the
         // hash differs solely because of the leading version-byte
         // increment.  Prior anchors:
+        //   pre-Shape-A (v=4): 0db9a41865abc2e7e00e96f66a26267f2b9e1815ef55490c237675bff1c60a73
         //   pre-streaming-slice (v=3): 9f2553c38cce8b72bbf6ad78c22f4b32f195b8bed781c952403f5404c25891c4
         //   pre-M-5 (v=2): eaeb49f95ec12631c4d59da9520f23cd9558c98e60529deda1fbc42395b5811a
         //   pre-H-6 (v=1): 532eea9096eb6962acbb48374e79167149960ec132f8e95838678e20e2fa38b2
@@ -2350,7 +2369,7 @@ mod tests {
         // Regenerate via
         //   cargo test -p rholang --lib -- compute_wal_root_golden_hex --nocapture
         // ONLY when intentionally hard-forking the encoding.
-        const EXPECTED: &str = "0db9a41865abc2e7e00e96f66a26267f2b9e1815ef55490c237675bff1c60a73";
+        const EXPECTED: &str = "1bdd5f4536180b811f139ea762c6659f29bf6cf5008ec85b970bb618d10786c9";
         assert_eq!(
             hex, EXPECTED,
             "WAL root golden-hex mismatch — did you accidentally change the encoding? \

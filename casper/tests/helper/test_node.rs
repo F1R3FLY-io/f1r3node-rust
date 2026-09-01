@@ -1,7 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/TestNode.scala
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
@@ -105,13 +105,42 @@ pub struct TestNode {
 #[derive(Debug, Clone)]
 pub struct TestFsProvisioning {
     /// Absolute paths to register with the RuntimeManager's root-
-    /// identity registry.  For File-kind bundle entries pass the
-    /// file's parent directory; for Dir-kind entries pass the dir
-    /// itself.  Every fs handler consults this registry through
+    /// identity registry via the legacy identity-collapsed API
+    /// (`register_root_identity`, i.e. `logical == on_disk == canon`).
+    /// For File-kind bundle entries pass the file's parent
+    /// directory; for Dir-kind entries pass the dir itself.  Every
+    /// fs handler consults this registry through
     /// `safe_descend_verified` — a missing entry causes the first
     /// syscall on that root to fail with `RootIdentityChanged`, so
     /// tests that never touch the fs can pass `Vec::new()`.
+    ///
+    /// Use this for Oracular bundle entries and any legacy-shape
+    /// registrations that don't need Shape A's per-validator
+    /// on-disk remapping.
     pub root_paths: Vec<PathBuf>,
+    /// Shape A (Phase 0.1, 2026-08-31): per-validator logical →
+    /// on-disk root map.  Each entry `(logical, on_disk)` is
+    /// registered via `register_root_remap` — the Consensus-mode
+    /// bundle emission (`format_bundle_for_rholang`) puts
+    /// `logical = "/@bundle/<X>"` into the composed Rholang source
+    /// (validator-independent), and the handler's
+    /// `resolve_or_identity(canonRoot)` maps that to
+    /// `on_disk = "<validator_subdir>/<X>"` before
+    /// `safe_descend_verified`.  The `(dev, inode)` identity is
+    /// captured from `on_disk` at provisioning time, so the H-5
+    /// fstat-post-open check still verifies against the real
+    /// staging directory.
+    ///
+    /// A missing entry for a Consensus bundle's logical root causes
+    /// `resolve_or_identity` to fall through to the logical path
+    /// unchanged, which `safe_descend_verified` opens as
+    /// `/@bundle/<X>` — a nonexistent path → ENOENT.  This is a
+    /// clean failure mode (not a cwd-relative surprise) that
+    /// surfaces "you forgot to remap this validator's bundle".
+    ///
+    /// Left empty for pre-Shape-A tests (only `root_paths` is
+    /// consulted).
+    pub logical_to_on_disk: Vec<(PathBuf, PathBuf)>,
     /// Directory to back the content-addressed payload store.  Auto-
     /// created on `create_node` (via `DirectoryPayloadStore::insert`,
     /// which mkdirs on first write; the helper mkdirs eagerly so a
@@ -120,6 +149,173 @@ pub struct TestFsProvisioning {
     /// bytes produce identically-named files in their respective
     /// dirs.
     pub payload_dir: PathBuf,
+}
+
+/// Shape A (Phase 0.2, 2026-08-31): the per-validator projection of
+/// a canonical bundle spec into an isolated on-disk staging tree
+/// plus a ready-to-wire `TestFsProvisioning`.
+///
+/// `project_bundle_per_validator` returns one of these per
+/// validator: each holds
+///   - `subdir`  — the validator's on-disk bundle root
+///     (`<base>/validator-<ix>/bundle`, seeded with per-entry byte
+///     copies of the operator's `canon_path` staging).
+///   - `provisioning` — a `TestFsProvisioning` whose
+///     `logical_to_on_disk` map registers `/@bundle/<X> →
+///     <subdir>/<X>` for every Consensus bundle entry
+///     (matching the canonRoot form `format_bundle_for_rholang`
+///     emits under Shape A), plus a per-validator `payload_dir`.
+///
+/// Feed the `provisioning` list to
+/// `create_network_with_per_validator_fs` (Phase 0.3) or directly
+/// to `create_network_with_fs_provisioning`.
+pub struct PerValidatorProjection {
+    pub subdir: PathBuf,
+    pub provisioning: TestFsProvisioning,
+}
+
+/// Shape A (Phase 0.2, 2026-08-31): given a canonical bundle spec
+/// (identical across validators — the same one that goes to
+/// genesis) and a base directory, materialize a per-validator
+/// on-disk projection.
+///
+/// For each validator ix in `0..validator_count`:
+///   1. Creates `<base>/validator-<ix>/bundle/` as that validator's
+///      bundle root.
+///   2. For each Consensus-mode entry in `bundle`, mirrors the
+///      operator's `canon_path` into
+///      `<bundle root>/<logical_name>`:
+///        - Files: copies the source bytes verbatim.  Nested
+///          `logical_name`s (e.g. `cfg/theme.json`) get their
+///          parent directories created on the fly.
+///        - Dirs: recursively copies the source dir tree
+///          (`fs_extra::copy_items` isn't a dep here, so we
+///          walk with `walkdir`-style manual recursion via
+///          `read_dir`).
+///   3. Populates the returned `TestFsProvisioning`'s
+///      `logical_to_on_disk` with one entry per distinct
+///      `canonRoot` string that `format_bundle_for_rholang`
+///      emits — the resolver's HashMap is keyed on exact match, so
+///      the projection helper computes the same
+///      `(canonRoot, on_disk_root)` split as the emitter to keep
+///      the two in lock-step.
+///
+/// Oracular entries are skipped by projection — Shape A leaves them
+/// on the operator's staged `canon_path` (per auto-memory
+/// `fileio_consensus_fs_shape_a.md` line 37-38).  Callers that
+/// need Oracular file-serving should stage the operator paths
+/// themselves and set `root_paths` on the returned
+/// `TestFsProvisioning`.
+///
+/// `payload_dir_leaf` names the per-validator payload store
+/// subdirectory under `<base>/validator-<ix>/` — the caller can
+/// keep the default `"wal_payload_store"` or override for tests
+/// that need a distinguishing path.
+pub fn project_bundle_per_validator(
+    bundle: &[casper::rust::genesis::contracts::fs_genesis::BundleEntry],
+    validator_count: usize,
+    base: &Path,
+    payload_dir_leaf: &str,
+) -> std::io::Result<Vec<PerValidatorProjection>> {
+    use casper::rust::genesis::contracts::fs_genesis::{
+        BundleConsensusMode, BundleEntryKind, BUNDLE_ROOT_PREFIX,
+    };
+
+    let mut result = Vec::with_capacity(validator_count);
+    for ix in 0..validator_count {
+        let validator_root = base.join(format!("validator-{ix}"));
+        let subdir = validator_root.join("bundle");
+        std::fs::create_dir_all(&subdir)?;
+        let payload_dir = validator_root.join(payload_dir_leaf);
+
+        // Dedupe registrations by `canonRoot` string — a bundle
+        // with a bare File `"cap"` and a nested File `"cap2"` both
+        // resolve `/@bundle → <subdir>`, so we only register once.
+        // Deterministic iteration order (Vec-of-tuples) keeps the
+        // registry population reproducible across runs.
+        let mut logical_to_on_disk_map: std::collections::BTreeMap<PathBuf, PathBuf> =
+            std::collections::BTreeMap::new();
+
+        for entry in bundle {
+            if entry.consensus_mode != BundleConsensusMode::Consensus {
+                continue;
+            }
+            let on_disk_target = subdir.join(&entry.logical_name);
+
+            match entry.kind {
+                BundleEntryKind::File => {
+                    if let Some(parent) = on_disk_target.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::copy(&entry.canon_path, &on_disk_target)?;
+
+                    // canonRoot the emitter produces:
+                    //   bare `logical_name` (no `/`) → `/@bundle`
+                    //   nested → `/@bundle/<parent-segments>`
+                    let logical_path = Path::new(&entry.logical_name);
+                    let parent_rel = logical_path
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or("");
+                    let (logical_root, on_disk_root) = if parent_rel.is_empty() {
+                        (
+                            PathBuf::from(BUNDLE_ROOT_PREFIX),
+                            subdir.clone(),
+                        )
+                    } else {
+                        (
+                            PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")),
+                            subdir.join(parent_rel),
+                        )
+                    };
+                    logical_to_on_disk_map.insert(logical_root, on_disk_root);
+                }
+                BundleEntryKind::Dir => {
+                    copy_dir_recursive(&entry.canon_path, &on_disk_target)?;
+                    let logical_root = PathBuf::from(format!(
+                        "{BUNDLE_ROOT_PREFIX}/{}",
+                        entry.logical_name
+                    ));
+                    logical_to_on_disk_map.insert(logical_root, on_disk_target);
+                }
+            }
+        }
+
+        let logical_to_on_disk = logical_to_on_disk_map.into_iter().collect();
+        result.push(PerValidatorProjection {
+            subdir,
+            provisioning: TestFsProvisioning {
+                root_paths: Vec::new(),
+                logical_to_on_disk,
+                payload_dir,
+            },
+        });
+    }
+    Ok(result)
+}
+
+/// Recursively copy `src` → `dst`.  Used by
+/// `project_bundle_per_validator` (and, out-of-crate, by the
+/// RhoSpec-side Shape A wiring in `helper::rho_spec::get_results`)
+/// to seed a bundle Dir entry's target tree with an identical
+/// mirror of the operator's staging tree.  Follows symlinks (via
+/// `std::fs::copy`) — bundle entries are provisioner-configured
+/// staging paths, not user input, so link-following matches the
+/// operator's intent.
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_child = entry.path();
+        let dst_child = dst.join(entry.file_name());
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            copy_dir_recursive(&src_child, &dst_child)?;
+        } else {
+            std::fs::copy(&src_child, &dst_child)?;
+        }
+    }
+    Ok(())
 }
 
 impl TestNode {
@@ -901,6 +1097,44 @@ impl TestNode {
         .await
     }
 
+    /// Shape A (Phase 0.3, 2026-08-31): one-call wrapper around
+    /// `project_bundle_per_validator` +
+    /// `create_network_with_fs_provisioning` for the common case
+    /// where every validator gets its own on-disk mirror of the
+    /// bundle (see `PerValidatorProjection`).  Materializes the
+    /// per-validator subtree under `base`, wires each node's
+    /// registry with the resulting `logical_to_on_disk` map, and
+    /// returns the created `TestNode`s.
+    ///
+    /// The caller owns `base` (typically `tempfile::tempdir()`);
+    /// the projection helper mkdirs `<base>/validator-<ix>/bundle`
+    /// and `<base>/validator-<ix>/wal_payload_store` for every
+    /// validator.
+    ///
+    /// Errors surface through `CasperError::RuntimeError` — this
+    /// covers both the projection IO (missing operator-staged
+    /// source path, permission failure, etc.) and the underlying
+    /// network setup.
+    pub async fn create_network_with_per_validator_fs(
+        genesis: GenesisContext,
+        network_size: usize,
+        bundle: &[casper::rust::genesis::contracts::fs_genesis::BundleEntry],
+        base: &Path,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        let projections =
+            project_bundle_per_validator(bundle, network_size, base, "wal_payload_store")
+                .map_err(|e| {
+                    CasperError::RuntimeError(format!(
+                        "project_bundle_per_validator failed: {e}"
+                    ))
+                })?;
+        let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+            .into_iter()
+            .map(|p| Some(p.provisioning))
+            .collect();
+        Self::create_network_with_fs_provisioning(genesis, network_size, fs_provisionings).await
+    }
+
     /// Creates a network with per-node fs provisioning.  Each entry in
     /// `fs_provisionings` corresponds positionally to a node — passing
     /// `Some(cfg)` wires that node's RuntimeManager with a payload
@@ -1178,6 +1412,32 @@ impl TestNode {
                         path = ?root,
                         error = %e,
                         "TestFsProvisioning: capture_root_identity failed; \
+                         first syscall on this root will fail with RootIdentityChanged"
+                    ),
+                }
+            }
+
+            // Shape A (Phase 0.1, 2026-08-31): per-validator logical
+            // → on-disk registrations for Consensus bundle entries.
+            // The (dev, inode) identity is captured from `on_disk`
+            // (the real staging dir) so H-5's fstat-post-open check
+            // still verifies against a genuine filesystem inode.
+            // Logical roots (`/@bundle/<X>`) are validator-
+            // independent; on-disk staging dirs are per-node.
+            for (logical, on_disk) in &prov.logical_to_on_disk {
+                match capture_root_identity(on_disk) {
+                    Ok(id) => runtime_manager.register_root_remap(
+                        logical.clone(),
+                        on_disk.clone(),
+                        id,
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "f1r3fly.test.fs_provisioning",
+                        node = %name,
+                        logical = ?logical,
+                        on_disk = ?on_disk,
+                        error = %e,
+                        "TestFsProvisioning: Shape A remap capture_root_identity failed; \
                          first syscall on this root will fail with RootIdentityChanged"
                     ),
                 }
