@@ -49,6 +49,7 @@ use super::path::{
 };
 use super::response::*;
 use super::stat::{error_record, stat_record};
+use super::verify::verify_reply_hash_matches_cached;
 use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
 use super::{costs, ConsensusMode, CMODE_CONSENSUS_STR, CMODE_ORACULAR_STR};
 
@@ -2094,9 +2095,19 @@ impl FsProcesses {
                 }
                 _ => None,
             };
-        if is_replay {
-            // M-5: follower journals from cached `previous` so
-            // WAL is byte-identical with the leader.
+        // Phase 1 (Consensus re-execute + verify, 2026-09-01):
+        // Oracular follower is unchanged from M-5's Phase-0 behavior
+        // — it consumes the leader's cached reply, since Oracle-mode
+        // state isn't reproducible on the follower's own fs.  The
+        // Consensus follower now re-executes the syscall against its
+        // own fs and verifies the fresh reply's stable_hash matches
+        // the leader's cached reply hash extracted from `previous`.
+        // See auto-memory `fileio_wal_replay_verification_gap.md`.
+        if is_replay && mode != ConsensusMode::Consensus {
+            // Oracular follower — Phase-0 tautological branch.
+            // `journal_state_read` self-guards on Consensus so the
+            // call here is a WAL no-op today, kept for structural
+            // parity with the Consensus branch's Success path.
             if let Some(p) = journal_path.clone() {
                 if let Some(reply_par) = previous.first() {
                     self.journal_state_read(mode, WalOp::Stat, p, reply_par, ack, None);
@@ -2105,7 +2116,13 @@ impl FsProcesses {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
+        // Fresh syscall reply — required by BOTH the leader (always)
+        // and the Consensus follower (Phase 1 re-execute + verify).
+        // Under Shape A, `resolve_or_identity` remaps a Consensus
+        // bundle root (e.g., `/@bundle/target`) to this validator's
+        // on-disk subdir before descent; unregistered roots fall
+        // through to identity resolution (Oracular / raw absolute).
+        let fresh_reply = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => {
                 let leaf_name = leaf_of(&rel);
                 let root_pb = PathBuf::from(root);
@@ -2129,13 +2146,71 @@ impl FsProcesses {
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
-        // M-5: leader journals from fresh syscall reply.
-        if let Some(p) = journal_path {
-            self.journal_state_read(mode, WalOp::Stat, p, &reply, ack, None);
+        if is_replay {
+            // Consensus follower — Phase 1 re-execute + verify.
+            // `verify_reply_hash_matches_cached` compares
+            // stable_hash(fresh_reply) against
+            // stable_hash(previous.first()); RSpace guarantees
+            // `previous.first()` is the leader's play-time reply
+            // verbatim, so its hash equals the `PayloadRef::Hash`
+            // the leader's `journal_state_read` wrote at play time.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    // Match — journal the FRESH reply.  Its hash is
+                    // byte-identical to the leader's WAL entry hash,
+                    // preserving the leader/follower WAL byte-identity
+                    // property post-verification (no longer tautological).
+                    if let Some(p) = journal_path {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Stat,
+                            p,
+                            &fresh_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    // Divergence (D1 = Option A per
+                    // `fileio_wal_replay_verification_gap.md`):
+                    // divergent DEPLOY fails; block still proceeds.
+                    // `journal_state_read` auto-derives the WAL entry's
+                    // outcome to `Failure { code: FSERR_CODE_CONSENSUS_
+                    // DIVERGENCE }` from the reply's error slot.
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_stat follower re-execute diverges from leader: {reason}",
+                        ),
+                    );
+                    if let Some(p) = journal_path {
+                        self.journal_state_read(
+                            mode,
+                            WalOp::Stat,
+                            p,
+                            &divergence_reply,
+                            ack,
+                            None,
+                        );
+                    }
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — journal fresh reply, produce it.
+            if let Some(p) = journal_path {
+                self.journal_state_read(mode, WalOp::Stat, p, &fresh_reply, ack, None);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------

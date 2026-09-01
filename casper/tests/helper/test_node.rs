@@ -166,9 +166,12 @@ pub struct TestFsProvisioning {
 ///     (matching the canonRoot form `format_bundle_for_rholang`
 ///     emits under Shape A), plus a per-validator `payload_dir`.
 ///
-/// Feed the `provisioning` list to
-/// `create_network_with_per_validator_fs` (Phase 0.3) or directly
-/// to `create_network_with_fs_provisioning`.
+/// Feed the `provisioning` list to `create_network_with_fs_provisioning`
+/// (the Phase 0.3 convenience wrapper `create_network_with_per_
+/// validator_fs` was retired in Phase 1 — all canaries now use the
+/// direct projection pattern because they need the `subdir` handle
+/// for fs-restore between play and scratch-replay under the Phase 1
+/// re-execute + verify model).
 pub struct PerValidatorProjection {
     pub subdir: PathBuf,
     pub provisioning: TestFsProvisioning,
@@ -1095,44 +1098,6 @@ impl TestNode {
             vec![None; network_size],
         )
         .await
-    }
-
-    /// Shape A (Phase 0.3, 2026-08-31): one-call wrapper around
-    /// `project_bundle_per_validator` +
-    /// `create_network_with_fs_provisioning` for the common case
-    /// where every validator gets its own on-disk mirror of the
-    /// bundle (see `PerValidatorProjection`).  Materializes the
-    /// per-validator subtree under `base`, wires each node's
-    /// registry with the resulting `logical_to_on_disk` map, and
-    /// returns the created `TestNode`s.
-    ///
-    /// The caller owns `base` (typically `tempfile::tempdir()`);
-    /// the projection helper mkdirs `<base>/validator-<ix>/bundle`
-    /// and `<base>/validator-<ix>/wal_payload_store` for every
-    /// validator.
-    ///
-    /// Errors surface through `CasperError::RuntimeError` — this
-    /// covers both the projection IO (missing operator-staged
-    /// source path, permission failure, etc.) and the underlying
-    /// network setup.
-    pub async fn create_network_with_per_validator_fs(
-        genesis: GenesisContext,
-        network_size: usize,
-        bundle: &[casper::rust::genesis::contracts::fs_genesis::BundleEntry],
-        base: &Path,
-    ) -> Result<Vec<TestNode>, CasperError> {
-        let projections =
-            project_bundle_per_validator(bundle, network_size, base, "wal_payload_store")
-                .map_err(|e| {
-                    CasperError::RuntimeError(format!(
-                        "project_bundle_per_validator failed: {e}"
-                    ))
-                })?;
-        let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
-            .into_iter()
-            .map(|p| Some(p.provisioning))
-            .collect();
-        Self::create_network_with_fs_provisioning(genesis, network_size, fs_provisionings).await
     }
 
     /// Creates a network with per-node fs provisioning.  Each entry in

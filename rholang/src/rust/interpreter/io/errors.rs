@@ -19,6 +19,18 @@ pub const FSERR_CROSS_DEVICE: &str = "FSERR_CROSS_DEVICE";
 /// parked.  Distinct from `FSERR_BUSY` so callers can tell "conflict
 /// at request time" apart from "was in the queue but got cancelled".
 pub const FSERR_CANCELLED: &str = "FSERR_CANCELLED";
+/// Phase 1 (Consensus re-execute + verify, 2026-09-01): the
+/// follower's re-executed syscall reply hash does NOT match the
+/// leader's cached reply hash extracted from `previous`.  Surfaces
+/// on Consensus-cap observation ops (fs_stat first; fs_read /
+/// fs_read_at / fs_entries / fs_size / fs_entries_stream_next
+/// follow in Phase 2).  Per D1 = Option A: the divergent DEPLOY
+/// fails with this code; the block still proceeds.  Escalation to
+/// block-level rejection (D1 = Option B) is future work.
+///
+/// See auto-memory `fileio_wal_replay_verification_gap.md` for the
+/// design authority.
+pub const FSERR_CONSENSUS_DIVERGENCE: &str = "FSERR_CONSENSUS_DIVERGENCE";
 
 use std::io;
 
@@ -61,6 +73,10 @@ pub const FSERR_CODE_CROSS_DEVICE: u32 = 11;
 /// "new codes append at the end" convention.  DO NOT reorder or
 /// renumber existing codes.
 pub const FSERR_CODE_CANCELLED: u32 = 12;
+/// Phase 1 (Consensus re-execute + verify, 2026-09-01) — appended
+/// (code 13) per the "new codes append at the end" convention.
+/// DO NOT reorder or renumber existing codes.
+pub const FSERR_CODE_CONSENSUS_DIVERGENCE: u32 = 13;
 
 /// Map a spec-canonical FSERR string to its stable u32 code for
 /// on-wire encoding in the WAL.  Unknown / non-canonical inputs
@@ -80,6 +96,7 @@ pub fn fserr_to_code(s: &str) -> u32 {
         FSERR_QUOTA_EXCEEDED => FSERR_CODE_QUOTA_EXCEEDED,
         FSERR_CROSS_DEVICE => FSERR_CODE_CROSS_DEVICE,
         FSERR_CANCELLED => FSERR_CODE_CANCELLED,
+        FSERR_CONSENSUS_DIVERGENCE => FSERR_CODE_CONSENSUS_DIVERGENCE,
         _ => FSERR_CODE_UNKNOWN,
     }
 }

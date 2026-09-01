@@ -296,13 +296,33 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     // ---- assertion 2: on-disk bytes (Shape A per-validator) ---------
     // Leader wrote through the play path — its own copy at
-    // `<leader_subdir>/target` holds PAYLOAD.  Follower's is_replay
-    // branch currently CONSUMES the leader's cached reply and skips
-    // the syscall (this is exactly the gap Phase 1's re-execute
-    // closes — see auto-memory `fileio_wal_replay_verification_gap.md`),
-    // so its own copy stays at the projection-seeded empty bytes.
-    // The operator's stage source is untouched (projection was a
-    // copy).
+    // `<leader_subdir>/target` holds PAYLOAD.  Follower's on-disk
+    // file MIXED-STATE per-op split as of Phase 1 (2026-09-01):
+    //
+    //   - The openFileImpl `statCheck` on the follower NOW does a
+    //     real fs_stat re-execute against `<follower_subdir>/target`
+    //     (its own copy of the 0-byte projection-seeded file) and
+    //     verifies the hash matches the leader's cached statCheck
+    //     reply (also 0 bytes at leader-statCheck time, since
+    //     statCheck runs BEFORE the write).  Both replies agree →
+    //     Success.  See `fs_stat_reexecute_detects_divergence` in
+    //     `rholang/tests/fs_wal_spec.rs` for the divergence-side pin.
+    //
+    //   - The `fsWrite` on the follower still consumes the leader's
+    //     cached reply and skips the actual `libc::write` syscall
+    //     (Phase 3's fs_write re-execute is a separate slice per
+    //     D2 = deploy source re-evaluation for bytes — reducer bytes
+    //     plumbing is out of scope for Phase 1).  So the follower's
+    //     own copy of `target` stays at the projection-seeded empty
+    //     bytes.
+    //
+    // When Phase 3 lands the follower's fs_write re-execute, this
+    // assertion flips to `== PAYLOAD` (the follower will run
+    // `libc::write(bytes)` against its own subdir and produce a
+    // Success verification).  Until then, the "== b\"\"" assertion
+    // pins the current per-op split and will surface any accidental
+    // Phase-3-adjacent scope creep.  The operator's stage source is
+    // untouched (projection was a copy).
     let leader_target = leader_subdir.join("target");
     let leader_on_disk = std::fs::read(&leader_target).expect("read leader's own target");
     assert_eq!(
@@ -312,14 +332,15 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     let follower_target = follower_subdir.join("target");
     let follower_on_disk = std::fs::read(&follower_target)
-        .expect("read follower's own target (should still be empty pre-Phase-1)");
+        .expect("read follower's own target (empty until Phase 3 fs_write re-execute lands)");
     assert_eq!(
         follower_on_disk,
         b"",
-        "PHASE-0 EXPECTATION: follower's is_replay branch skips fs syscalls \
-         and consumes the leader's cached reply — its own subdir file stays \
-         at the projection-seeded empty bytes.  Phase 1 flips this to REAL \
-         re-execute + hash-compare; this assertion will need inverting then."
+        "Phase-1-through-Phase-2 EXPECTATION: follower's fs_stat is_replay \
+         branch NOW re-executes + verifies (statCheck agrees, Success), but \
+         fs_write is_replay still consumes cached reply (no `libc::write` \
+         re-execute yet).  Phase 3's fs_write re-execute will flip this to \
+         `== PAYLOAD`; the flip is the completion signal for that phase."
     );
 
     let stage_source =
@@ -577,19 +598,44 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
         .await
         .expect("build genesis with fs bundle");
 
-    // Uses the one-call `create_network_with_per_validator_fs`
-    // wrapper (Phase 0.3) — canary 3 doesn't need per-validator
-    // subdir handles because the scratch-replay + index assertions
-    // work entirely off the runtime's own state, not off-disk files.
+    // Phase 1 harness note (2026-09-01): this canary previously used
+    // a one-call `create_network_with_per_validator_fs` wrapper (now
+    // retired) and did not need subdir handles.  Under Phase 1's
+    // fs_stat re-execute
+    // + verify, the scratch-replay step below needs the fs at the
+    // block's PRE-STATE (matching what the leader's play saw at
+    // statCheck time).  In production this is naturally true — a
+    // joiner boots with a fresh per-validator fs and only replays
+    // deploys against pre-block state.  In this single-validator
+    // canary the same runtime played the block AND runs the scratch
+    // replay, so the leader's own play mutated its subdir (empty →
+    // PAYLOAD) before the scratch replay runs.  We therefore need
+    // the subdir handle so we can restore the file to its pre-play
+    // (empty) state between `add_block_from_deploys` and
+    // `capture_consensus_writes_by_replaying_deploy`.  Without the
+    // restore, the scratch replay's fs_stat re-execute would fire
+    // `FSERR_CONSENSUS_DIVERGENCE` on the mutated file → openFile
+    // fails → fs_write never runs → capture returns empty →
+    // `ReplayCostMismatch` from the deploy consuming less than the
+    // recorded initial_cost.  See auto-memory
+    // `fileio_wal_replay_verification_gap.md`.
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let mut nodes = TestNode::create_network_with_per_validator_fs(
-        genesis.clone(),
-        1,
+    let projections = project_bundle_per_validator(
         &bundle,
+        1,
         per_node_root.path(),
+        "wal_payload_store",
     )
-    .await
-    .expect("single-validator network with per-validator fs provisioning");
+    .expect("per-validator bundle projection");
+    let validator_subdir = projections[0].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 1, fs_provisionings)
+            .await
+            .expect("single-validator network with per-validator fs provisioning");
 
     // ---- Consensus write deploy ---------------------------------------
     let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
@@ -681,6 +727,25 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         .find(|pd| pd.deploy.sig.as_ref() == recorded_sig.as_slice())
         .expect("chain step 4 must find the sig-matching ProcessedDeploy")
         .clone();
+
+    // ---- Restore the fs to pre-play state before scratch replay ----
+    // Phase 1 (2026-09-01): the scratch replay below runs the deploy
+    // on the SAME runtime the leader played it on, and under Phase 1
+    // the fs_stat is_replay branch re-executes fstatat.  The leader's
+    // play mutated `<validator_subdir>/target` from empty → PAYLOAD;
+    // without a restore, scratch replay's statCheck would see PAYLOAD
+    // while the RSpace-cached statCheck saw empty → divergence →
+    // openFile fails → ReplayCostMismatch.  Truncate the file back
+    // to its pre-play state (empty bytes) so the scratch replay's
+    // fs_stat re-execute matches the leader's cached reply, exactly
+    // as it would in production where the joiner boots with a fresh
+    // per-validator fs.  See auto-memory
+    // `fileio_wal_replay_verification_gap.md` for the design.
+    std::fs::write(validator_subdir.join("target"), b"").expect(
+        "restore validator subdir file to pre-play state before scratch replay — \
+         Phase 1's fs_stat re-execute requires the fs to match what the leader's \
+         play saw at cached-reply time",
+    );
 
     // ---- Assertion 4: scratch replay reproduces bytes ---------------
     // Full Option 2 primitive invocation.  Derives the purse

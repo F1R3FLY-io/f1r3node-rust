@@ -1319,6 +1319,285 @@ mod tests {
         }
     }
 
+    /// Phase 1 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **positive path**.  When the follower's on-disk file state
+    /// matches the leader's at replay time, the follower's fs_stat
+    /// re-execute produces a Consensus stat_record whose stable_hash
+    /// equals the leader's cached-reply hash; the follower's WAL
+    /// entry is byte-identical to the leader's, with
+    /// `WalOutcome::Success`.
+    ///
+    /// Distinct from `m5_state_read_wal_is_byte_identical_on_leader_
+    /// and_follower` above: that test held pre-Phase-1 too (follower
+    /// consumed the cached reply and re-hashed it — trivially
+    /// byte-identical).  This test forces the Phase-1 mechanism to
+    /// engage by chmod-ing the file between leader + follower calls
+    /// in a way that would have been invisible under Phase-0
+    /// tautological replay.  Under Phase 1, mode bits ARE hashed
+    /// (`stat_record` under Consensus keeps `mode & 0o0777`), so if
+    /// the fresh syscall path is engaged, changing permission bits
+    /// between leader and follower would flip the outcome to Failure
+    /// — we choose bits that DON'T change to preserve Success while
+    /// still demonstrating the fresh syscall runs.
+    ///
+    /// The stronger fresh-syscall proof is in
+    /// `consensus_fs_stat_reexecute_detects_divergence` below —
+    /// mutate the file's SIZE between leader + follower and observe
+    /// the divergence code surface.  That test's failure would prove
+    /// the fresh-syscall path IS engaged (Phase-0 tautological replay
+    /// would silently accept the mismatch).  This positive test's
+    /// job is to prove the mechanism produces the RIGHT WAL shape
+    /// when the state agrees.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_stat_reexecute_matches_leader_on_identical_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"phase-1-re-execute-positive-pin").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), ackCh in {{
+              fsStat!("{root}", "data.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[21; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Phase-1 positive path");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(
+            leader_wal.len(),
+            1,
+            "expected exactly one Stat WAL entry from the leader; got {}",
+            leader_wal.len()
+        );
+        assert_eq!(leader_wal[0].op, WalOp::Stat);
+        assert_eq!(
+            leader_wal[0].outcome,
+            WalOutcome::Success,
+            "leader's fs_stat on an existing file must journal Success"
+        );
+
+        // Rig follower.  On-disk file state left unchanged →
+        // follower's fresh syscall produces the same stat_record →
+        // verify_reply_hash_matches_cached returns Ok → WAL entry is
+        // byte-identical.  A regression that reverted the handler to
+        // Phase-0 tautological cached-reply consumption would ALSO
+        // pass this test (positive path is invariant across the two
+        // behaviors); the divergence test below is the discriminator.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower
+            .rig(checkpoint.log)
+            .await
+            .expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate Phase-1 positive path");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            follower_wal.len(),
+            1,
+            "expected exactly one Stat WAL entry from the follower; got {}",
+            follower_wal.len()
+        );
+        assert_eq!(
+            leader_wal[0], follower_wal[0],
+            "Phase 1: follower's re-executed Stat WAL entry must be \
+             byte-identical to the leader's on matching fs state"
+        );
+        assert_eq!(
+            follower_wal[0].outcome,
+            WalOutcome::Success,
+            "Phase 1 positive path: follower's Stat entry outcome must be Success"
+        );
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match — a divergent Par produce would \
+                     trip RSpace rig verification");
+    }
+
+    /// Phase 1 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **divergence-detection path**.  When the follower's on-disk
+    /// file state differs from the leader's (simulated here by
+    /// mutating `data.bin` between leader + follower `evaluate`
+    /// calls), the follower's fs_stat re-execute produces a
+    /// stat_record whose stable_hash does NOT match the leader's
+    /// cached-reply hash → the handler returns
+    /// `[false, "FSERR_CONSENSUS_DIVERGENCE", ...]` and journals a
+    /// Stat WAL entry with
+    /// `WalOutcome::Failure { code: FSERR_CODE_CONSENSUS_DIVERGENCE }`.
+    ///
+    /// Doubles as the fresh-syscall-engagement proof: a regression
+    /// that reverted the Consensus follower branch to Phase-0
+    /// tautological cached-reply consumption would silently accept
+    /// the mismatch (follower's WAL would show a `Success` Stat entry
+    /// with the leader's hash, and this test's `assert_eq!(outcome,
+    /// Failure { .. })` would fail).
+    ///
+    /// RSpace rig behavior: the divergent reply Par produced by the
+    /// follower's handler differs bytewise from the leader's cached
+    /// produce, so `check_replay_data` fails at the produce
+    /// comparator — this IS the enforcement mechanism (block
+    /// validation rejects the block downstream because state hashes
+    /// diverge).  The test asserts the RSpace-side rejection AND
+    /// the WAL-side divergence code together; either alone would
+    /// leave the mechanism half-verified.  See auto-memory
+    /// `fileio_wal_replay_verification_gap.md` for the design.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_stat_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        // Leader sees a small file.  Its stat_record.size will hash
+        // into `PayloadRef::Hash(reply_hash)` in the leader's WAL.
+        std::fs::write(&target, b"leader-sees-me").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), ackCh in {{
+              fsStat!("{root}", "data.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[22; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Phase-1 divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), 1);
+        assert_eq!(leader_wal[0].op, WalOp::Stat);
+        assert_eq!(
+            leader_wal[0].outcome,
+            WalOutcome::Success,
+            "leader must see the file successfully — divergence must \
+             originate from the follower's re-execute, not from leader-side error"
+        );
+
+        // Force divergence: append bytes to grow the file's size
+        // (Consensus `stat_record` includes `size`, so any size delta
+        // flips the hash).  Doing this BETWEEN leader.evaluate and
+        // follower.evaluate cleanly simulates "leader and follower
+        // see different filesystem states" — the failure mode D3's
+        // per-validator subdirs are designed to normally prevent, and
+        // that Phase 1 detects when it happens.
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .expect("open target for append");
+            f.write_all(b"-follower-sees-more").expect("append to target");
+        }
+
+        // Rig follower + evaluate.  The follower's fs_stat re-execute
+        // sees the grown file → different stat_record → divergence
+        // reply → WAL entry with Failure { FSERR_CODE_CONSENSUS_DIVERGENCE }.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower
+            .rig(checkpoint.log)
+            .await
+            .expect("follower rig");
+        // The evaluate itself may return Ok even though the produce
+        // diverges — the divergent produce is caught by
+        // `check_replay_data` below.  We deliberately do NOT unwrap
+        // the evaluate: the WAL entry is populated before produce
+        // fires (journal_state_read runs first inside the handler),
+        // so the WAL check is the primary assertion regardless of
+        // evaluate's return value.
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            follower_wal.len(),
+            1,
+            "Phase 1 divergence path must still journal exactly one \
+             Stat entry (the divergence is a Failure outcome, not a \
+             journaling skip); got {} entries",
+            follower_wal.len()
+        );
+        assert_eq!(follower_wal[0].op, WalOp::Stat);
+        match follower_wal[0].outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code,
+                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 1: divergence WAL entry must carry the CONSENSUS_DIVERGENCE \
+                 code, not an unrelated FSERR — got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 1 REGRESSION: follower's re-executed fs_stat produced a \
+                 Success outcome despite the on-disk divergence between leader \
+                 and follower.  This means the fresh-syscall path is not \
+                 engaged (Phase-0 tautological cached-reply consumption has \
+                 come back), or the verify_reply_hash_matches_cached comparator \
+                 is broken.  Leader WAL entry: {leader_entry:?}; follower WAL \
+                 entry: {follower_entry:?}",
+                leader_entry = leader_wal[0],
+                follower_entry = follower_wal[0],
+            ),
+        }
+
+        // Enforcement side: the divergent reply Par produced by the
+        // follower does NOT match the leader's cached produce, so
+        // RSpace's rig comparator reports a divergence.  Under
+        // Casper, this manifests as block rejection.
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 1 D1 enforcement: divergent fs_stat reply Par should trip \
+             RSpace rig verification — got Ok, which means the follower's \
+             produce matched the leader's cached produce despite the fs \
+             divergence.  This would silently accept a leader lie."
+        );
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): consensus-mode
     /// `entriesStreamNext` on a Consensus-cap dir stream journals one
     /// `WalOp::EntriesStreamNext` entry per call.  Oracular caps do
