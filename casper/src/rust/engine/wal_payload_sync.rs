@@ -771,8 +771,7 @@ pub async fn apply_wal_slice_after_fetch(
     poll_interval: std::time::Duration,
     payload_lookup: Option<Arc<dyn crate::rust::engine::wal_payload_server::PayloadLookup>>,
     option2_ctx: Option<Option2ReducerContext>,
-) -> Result<BootApplyReport, BootApplyError>
-{
+) -> Result<BootApplyReport, BootApplyError> {
     use rholang::rust::interpreter::io::wal::PayloadRef;
 
     // DD-7b-2 (a) Option 2 (2026-08-29): pre-populate a two-tier

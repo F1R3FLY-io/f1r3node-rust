@@ -1402,10 +1402,7 @@ mod tests {
             .reset(&checkpoint.root)
             .await
             .expect("follower reset");
-        follower
-            .rig(checkpoint.log)
-            .await
-            .expect("follower rig");
+        follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
                 &term,
@@ -1434,11 +1431,10 @@ mod tests {
             "Phase 1 positive path: follower's Stat entry outcome must be Success"
         );
 
-        follower
-            .check_replay_data()
-            .await
-            .expect("replay data must match — a divergent Par produce would \
-                     trip RSpace rig verification");
+        follower.check_replay_data().await.expect(
+            "replay data must match — a divergent Par produce would \
+                     trip RSpace rig verification",
+        );
     }
 
     /// Phase 1 pin (Consensus re-execute + verify, 2026-09-01):
@@ -1523,7 +1519,8 @@ mod tests {
                 .append(true)
                 .open(&target)
                 .expect("open target for append");
-            f.write_all(b"-follower-sees-more").expect("append to target");
+            f.write_all(b"-follower-sees-more")
+                .expect("append to target");
         }
 
         // Rig follower + evaluate.  The follower's fs_stat re-execute
@@ -1534,10 +1531,7 @@ mod tests {
             .reset(&checkpoint.root)
             .await
             .expect("follower reset");
-        follower
-            .rig(checkpoint.log)
-            .await
-            .expect("follower rig");
+        follower.rig(checkpoint.log).await.expect("follower rig");
         // The evaluate itself may return Ok even though the produce
         // diverges — the divergent produce is caught by
         // `check_replay_data` below.  We deliberately do NOT unwrap
@@ -1566,8 +1560,7 @@ mod tests {
         assert_eq!(follower_wal[0].op, WalOp::Stat);
         match follower_wal[0].outcome {
             WalOutcome::Failure { code } => assert_eq!(
-                code,
-                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
                 "Phase 1: divergence WAL entry must carry the CONSENSUS_DIVERGENCE \
                  code, not an unrelated FSERR — got code {code}"
             ),
@@ -1663,7 +1656,10 @@ mod tests {
         assert_eq!(leader_size_entries[0].outcome, WalOutcome::Success);
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -1766,11 +1762,15 @@ mod tests {
                 .append(true)
                 .open(&target)
                 .expect("open target for append");
-            f.write_all(b"-follower-sees-more-bytes").expect("append to target");
+            f.write_all(b"-follower-sees-more-bytes")
+                .expect("append to target");
         }
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         let _ = follower
             .evaluate(
@@ -1785,17 +1785,13 @@ mod tests {
         // Look up the Size entry specifically — the fs_stat divergence
         // from openFile's statCheck also fires and may be earlier in
         // the log, but this test's contract is fs_size specifically.
-        let follower_size = follower_wal
-            .iter()
-            .find(|e| e.op == WalOp::Size)
-            .expect(
-                "Phase 2 divergence path must still journal a Size entry \
+        let follower_size = follower_wal.iter().find(|e| e.op == WalOp::Size).expect(
+            "Phase 2 divergence path must still journal a Size entry \
                  (Failure outcome, not a journaling skip)",
-            );
+        );
         match follower_size.outcome {
             WalOutcome::Failure { code } => assert_eq!(
-                code,
-                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
                 "Phase 2: Size divergence WAL entry must carry CONSENSUS_DIVERGENCE \
                  code, not an unrelated FSERR — got code {code}"
             ),
@@ -1884,7 +1880,10 @@ mod tests {
         );
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -1927,7 +1926,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn consensus_fs_read_at_reexecute_matches_leader_on_identical_state() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("data.bin"), b"phase-2-fs-read-at-positive-pin").unwrap();
+        std::fs::write(
+            dir.path().join("data.bin"),
+            b"phase-2-fs-read-at-positive-pin",
+        )
+        .unwrap();
 
         let (mut leader, mut follower) = create_leader_and_follower().await;
 
@@ -1965,8 +1968,10 @@ mod tests {
             .await
             .expect("leader evaluate fs_read_at positive path");
         let leader_wal = leader.fs_handles.wal.snapshot();
-        let leader_readat_entries: Vec<_> =
-            leader_wal.iter().filter(|e| e.op == WalOp::ReadAt).collect();
+        let leader_readat_entries: Vec<_> = leader_wal
+            .iter()
+            .filter(|e| e.op == WalOp::ReadAt)
+            .collect();
         assert_eq!(
             leader_readat_entries.len(),
             1,
@@ -1976,7 +1981,10 @@ mod tests {
         assert_eq!(leader_readat_entries[0].outcome, WalOutcome::Success);
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -2069,8 +2077,9 @@ mod tests {
             .expect("leader evaluate fs_read_at divergence setup");
         let leader_wal = leader.fs_handles.wal.snapshot();
         assert!(
-            leader_wal.iter().any(|e| e.op == WalOp::ReadAt
-                && e.outcome == WalOutcome::Success),
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::ReadAt && e.outcome == WalOutcome::Success),
             "leader must have journaled a successful ReadAt entry"
         );
 
@@ -2082,7 +2091,10 @@ mod tests {
         std::fs::write(&target, b"FOLLOWER-SEES-DIFFERENT-BYTES-here-past").unwrap();
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         let _ = follower
             .evaluate(
@@ -2094,17 +2106,13 @@ mod tests {
             .await;
         let follower_wal = follower.fs_handles.wal.snapshot();
 
-        let follower_readat = follower_wal
-            .iter()
-            .find(|e| e.op == WalOp::ReadAt)
-            .expect(
-                "Phase 2 divergence path must still journal a ReadAt entry \
+        let follower_readat = follower_wal.iter().find(|e| e.op == WalOp::ReadAt).expect(
+            "Phase 2 divergence path must still journal a ReadAt entry \
                  (Failure outcome, not a journaling skip)",
-            );
+        );
         match follower_readat.outcome {
             WalOutcome::Failure { code } => assert_eq!(
-                code,
-                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
                 "Phase 2: ReadAt divergence WAL entry must carry \
                  CONSENSUS_DIVERGENCE code, not an unrelated FSERR — got \
                  code {code}"
@@ -2206,7 +2214,10 @@ mod tests {
         );
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -2300,8 +2311,7 @@ mod tests {
             .await
             .expect("leader evaluate multi-read");
         let leader_wal = leader.fs_handles.wal.snapshot();
-        let leader_reads: Vec<_> =
-            leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
+        let leader_reads: Vec<_> = leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
         assert_eq!(
             leader_reads.len(),
             2,
@@ -2320,7 +2330,10 @@ mod tests {
         );
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -2402,8 +2415,7 @@ mod tests {
             .await
             .expect("leader evaluate fs_read n=0");
         let leader_wal = leader.fs_handles.wal.snapshot();
-        let leader_reads: Vec<_> =
-            leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
+        let leader_reads: Vec<_> = leader_wal.iter().filter(|e| e.op == WalOp::Read).collect();
         assert_eq!(
             leader_reads.len(),
             1,
@@ -2422,7 +2434,10 @@ mod tests {
         );
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -2511,7 +2526,10 @@ mod tests {
         std::fs::write(&target, b"FOLLOWER-SEES-DIFFERENT-CONTENT").unwrap();
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         let _ = follower
             .evaluate(
@@ -2523,17 +2541,13 @@ mod tests {
             .await;
         let follower_wal = follower.fs_handles.wal.snapshot();
 
-        let follower_read = follower_wal
-            .iter()
-            .find(|e| e.op == WalOp::Read)
-            .expect(
-                "Phase 2 divergence path must still journal a Read entry \
+        let follower_read = follower_wal.iter().find(|e| e.op == WalOp::Read).expect(
+            "Phase 2 divergence path must still journal a Read entry \
                  (Failure outcome, not a journaling skip)",
-            );
+        );
         match follower_read.outcome {
             WalOutcome::Failure { code } => assert_eq!(
-                code,
-                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
                 "Phase 2: Read divergence WAL entry must carry \
                  CONSENSUS_DIVERGENCE code — got code {code}"
             ),
@@ -2597,8 +2611,10 @@ mod tests {
             .await
             .expect("leader evaluate fs_entries positive path");
         let leader_wal = leader.fs_handles.wal.snapshot();
-        let leader_entries_entries: Vec<_> =
-            leader_wal.iter().filter(|e| e.op == WalOp::Entries).collect();
+        let leader_entries_entries: Vec<_> = leader_wal
+            .iter()
+            .filter(|e| e.op == WalOp::Entries)
+            .collect();
         assert_eq!(
             leader_entries_entries.len(),
             1,
@@ -2607,7 +2623,10 @@ mod tests {
         assert_eq!(leader_entries_entries[0].outcome, WalOutcome::Success);
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(
@@ -2698,7 +2717,10 @@ mod tests {
         std::fs::write(dir.path().join("sub/gamma_new"), b"added-post-leader").unwrap();
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         let _ = follower
             .evaluate(
@@ -2710,17 +2732,13 @@ mod tests {
             .await;
         let follower_wal = follower.fs_handles.wal.snapshot();
 
-        let follower_entries = follower_wal
-            .iter()
-            .find(|e| e.op == WalOp::Entries)
-            .expect(
-                "Phase 2 divergence path must still journal an Entries entry \
+        let follower_entries = follower_wal.iter().find(|e| e.op == WalOp::Entries).expect(
+            "Phase 2 divergence path must still journal an Entries entry \
                  (Failure outcome, not a journaling skip)",
-            );
+        );
         match follower_entries.outcome {
             WalOutcome::Failure { code } => assert_eq!(
-                code,
-                FSERR_CODE_CONSENSUS_DIVERGENCE,
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
                 "Phase 2: Entries divergence WAL entry must carry \
                  CONSENSUS_DIVERGENCE code — got code {code}"
             ),
@@ -2802,8 +2820,10 @@ mod tests {
             .await
             .expect("leader evaluate fs_entries empty-dir");
         let leader_wal = leader.fs_handles.wal.snapshot();
-        let leader_entries: Vec<_> =
-            leader_wal.iter().filter(|e| e.op == WalOp::Entries).collect();
+        let leader_entries: Vec<_> = leader_wal
+            .iter()
+            .filter(|e| e.op == WalOp::Entries)
+            .collect();
         assert_eq!(
             leader_entries.len(),
             1,
@@ -2814,7 +2834,10 @@ mod tests {
         assert_eq!(leader_entries[0].outcome, WalOutcome::Success);
 
         let checkpoint = leader.create_checkpoint().await;
-        follower.reset(&checkpoint.root).await.expect("follower reset");
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
         follower.rig(checkpoint.log).await.expect("follower rig");
         follower
             .evaluate(

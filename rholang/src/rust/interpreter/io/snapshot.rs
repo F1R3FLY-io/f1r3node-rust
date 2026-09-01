@@ -773,10 +773,9 @@ impl std::fmt::Display for SnapshotError {
                 f,
                 "snapshot blob truncated: {got} bytes, need at least {need}"
             ),
-            SnapshotError::MalformedBlob { offset, message } => write!(
-                f,
-                "snapshot blob malformed at offset {offset}: {message}"
-            ),
+            SnapshotError::MalformedBlob { offset, message } => {
+                write!(f, "snapshot blob malformed at offset {offset}: {message}")
+            }
         }
     }
 }
@@ -946,9 +945,7 @@ pub fn write_snapshot(
 /// `payload_ref` is None or `DeployRef` (only `Hash` variant
 /// references bytes that live in the payload store).  Deduplicates
 /// automatically via the HashSet.
-pub fn referenced_payload_hashes(
-    entries: &[WalEntry],
-) -> std::collections::HashSet<[u8; 32]> {
+pub fn referenced_payload_hashes(entries: &[WalEntry]) -> std::collections::HashSet<[u8; 32]> {
     let mut set = std::collections::HashSet::new();
     for e in entries {
         if let Some(PayloadRef::Hash(h)) = e.payload_ref {

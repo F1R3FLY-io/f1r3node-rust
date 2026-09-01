@@ -376,13 +376,10 @@ impl RootIdentityRegistry {
         let mut guard = backing
             .write()
             .expect("root-identity registry inner poisoned");
-        guard.entries.insert(
-            logical,
-            RegisteredRoot {
-                on_disk_root: on_disk,
-                identity: id,
-            },
-        );
+        guard.entries.insert(logical, RegisteredRoot {
+            on_disk_root: on_disk,
+            identity: id,
+        });
     }
 
     /// H-5 / Shape A (2026-08-31): atomically point `self`'s
@@ -1214,8 +1211,13 @@ mod tests {
 
         assert_eq!(reg.get(&canon), Some((17, 42)), "legacy get() unchanged");
 
-        let resolved = reg.resolve(&canon).expect("legacy register also visible via resolve");
-        assert_eq!(resolved.on_disk_root, canon, "logical == on_disk under legacy register");
+        let resolved = reg
+            .resolve(&canon)
+            .expect("legacy register also visible via resolve");
+        assert_eq!(
+            resolved.on_disk_root, canon,
+            "logical == on_disk under legacy register"
+        );
         assert_eq!(resolved.identity, (17, 42));
 
         let (on_disk, id) = reg.resolve_or_identity(&canon);
@@ -1240,12 +1242,17 @@ mod tests {
         let on_disk = std::path::PathBuf::from("/tmp/validator-A/target");
         reg.register_with_remap(logical.clone(), on_disk.clone(), (7, 11));
 
-        let resolved = reg.resolve(&logical).expect("remap must be resolvable by logical key");
+        let resolved = reg
+            .resolve(&logical)
+            .expect("remap must be resolvable by logical key");
         assert_eq!(resolved.on_disk_root, on_disk);
         assert_eq!(resolved.identity, (7, 11));
 
         let (r_on_disk, r_id) = reg.resolve_or_identity(&logical);
-        assert_eq!(r_on_disk, on_disk, "handler gets the on-disk path to syscall against");
+        assert_eq!(
+            r_on_disk, on_disk,
+            "handler gets the on-disk path to syscall against"
+        );
         assert_eq!(r_id, Some((7, 11)));
 
         assert!(
@@ -1267,8 +1274,14 @@ mod tests {
         let unknown = std::path::PathBuf::from("/some/never-registered/path");
 
         let (on_disk, id) = reg.resolve_or_identity(&unknown);
-        assert_eq!(on_disk, unknown, "fall-through returns the caller's own path");
-        assert!(id.is_none(), "no identity available for unregistered logical roots");
+        assert_eq!(
+            on_disk, unknown,
+            "fall-through returns the caller's own path"
+        );
+        assert!(
+            id.is_none(),
+            "no identity available for unregistered logical roots"
+        );
         assert!(reg.resolve(&unknown).is_none());
     }
 
@@ -1287,7 +1300,10 @@ mod tests {
 
         let entry = std::path::PathBuf::from("/@bundle/target");
         let resolved = reg.resolve_wal_entry_path(&entry);
-        assert_eq!(resolved, std::path::PathBuf::from("/tmp/joiner/bundle/target"));
+        assert_eq!(
+            resolved,
+            std::path::PathBuf::from("/tmp/joiner/bundle/target")
+        );
     }
 
     /// Task 0.4 / Shape A (2026-08-31): longest-prefix discipline.
@@ -1324,7 +1340,10 @@ mod tests {
         // to the broad on-disk (no nested match).
         let flat = std::path::PathBuf::from("/@bundle/target");
         let resolved_flat = reg.resolve_wal_entry_path(&flat);
-        assert_eq!(resolved_flat, std::path::PathBuf::from("/tmp/joiner/broad/target"));
+        assert_eq!(
+            resolved_flat,
+            std::path::PathBuf::from("/tmp/joiner/broad/target")
+        );
     }
 
     /// Task 0.4 / Shape A (2026-08-31): an entry with no registered
@@ -1344,7 +1363,10 @@ mod tests {
 
         let oracular = std::path::PathBuf::from("/opt/f1r3fly/consensus-static-01/data.bin");
         let resolved = reg.resolve_wal_entry_path(&oracular);
-        assert_eq!(resolved, oracular, "unregistered prefix → identity fall-through");
+        assert_eq!(
+            resolved, oracular,
+            "unregistered prefix → identity fall-through"
+        );
 
         // Empty registry: every entry falls through identically.
         let empty = RootIdentityRegistry::new();

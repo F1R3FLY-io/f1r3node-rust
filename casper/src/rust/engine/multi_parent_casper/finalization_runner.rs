@@ -447,8 +447,7 @@ async fn apply_finalization_effects(
                                     // index using the SAME `keep`
                                     // set derived from retained
                                     // snapshots.
-                                    let block_dag_storage_for_prune =
-                                        ctx.block_dag_storage.clone();
+                                    let block_dag_storage_for_prune = ctx.block_dag_storage.clone();
                                     let prune_result = tokio::task::spawn_blocking(move || {
                                         let keep = rholang::rust::interpreter::io::snapshot::
                                             scan_retained_payload_hashes(&snapshot_dir)?;

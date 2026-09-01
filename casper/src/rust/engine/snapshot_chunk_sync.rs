@@ -136,7 +136,8 @@ pub struct SnapshotChunkSyncDriver {
     /// via `install_completion_sink`.  If Some, `on_chunk_response`
     /// sends a `SnapshotCompletion` after each snapshot is
     /// assembled + written to disk.
-    completion_sink: Arc<std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<SnapshotCompletion>>>>,
+    completion_sink:
+        Arc<std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<SnapshotCompletion>>>>,
 }
 
 impl SnapshotChunkSyncDriver {
@@ -157,8 +158,14 @@ impl SnapshotChunkSyncDriver {
     /// The driver holds a `sync` RwLock (not tokio) so
     /// `on_chunk_response` can take a snapshot of the sender
     /// without an await-point in the middle of the receive path.
-    pub fn install_completion_sink(&self, tx: tokio::sync::mpsc::UnboundedSender<SnapshotCompletion>) {
-        let mut g = self.completion_sink.write().expect("completion_sink poisoned");
+    pub fn install_completion_sink(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<SnapshotCompletion>,
+    ) {
+        let mut g = self
+            .completion_sink
+            .write()
+            .expect("completion_sink poisoned");
         *g = Some(tx);
     }
 
@@ -869,7 +876,10 @@ mod tests {
         assert!(driver.on_chunk_response(peer, &response).await);
 
         // rx1 receives nothing (it was orphaned).
-        assert!(rx1.try_recv().is_err(), "first sink must not receive after replace");
+        assert!(
+            rx1.try_recv().is_err(),
+            "first sink must not receive after replace"
+        );
         // rx2 receives the notification.
         let msg = rx2.try_recv().expect("second sink must receive");
         assert_eq!(msg.atomic_root, atomic_root);

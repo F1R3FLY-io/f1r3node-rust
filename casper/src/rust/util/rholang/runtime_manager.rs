@@ -618,26 +618,22 @@ impl RuntimeManager {
         // back from.  A `None` slot (observer nodes without
         // consensus-static provisioning) becomes a no-op inside
         // `journal_write`.
-        runtime
-            .fs_handles
-            .share_payload_store(
-                self.payload_store
-                    .read()
-                    .await
-                    .as_ref()
-                    .map(|b| b.persistence.clone()),
-            );
+        runtime.fs_handles.share_payload_store(
+            self.payload_store
+                .read()
+                .await
+                .as_ref()
+                .map(|b| b.persistence.clone()),
+        );
         // DD-7b-2 (a) Option 2 (2026-08-29): share the payload-
         // source recorder so every Consensus-cap `journal_write`
         // on this runtime records `payload_hash → deploy_sig`
         // into the manager-shared block-storage-backed index.
         // A `None` slot (observer nodes, tests) becomes a no-op
         // inside journal_write.
-        runtime
-            .fs_handles
-            .share_payload_source_recorder(
-                self.payload_source_recorder.read().await.as_ref().cloned(),
-            );
+        runtime.fs_handles.share_payload_source_recorder(
+            self.payload_source_recorder.read().await.as_ref().cloned(),
+        );
         metrics::histogram!(RUNTIME_SPAWN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -694,15 +690,13 @@ impl RuntimeManager {
         // runtimes.  Replay runtimes don't write bytes themselves
         // in practice (leader-side journal_write does), but
         // keeping parity avoids leader/follower divergence.
-        runtime
-            .fs_handles
-            .share_payload_store(
-                self.payload_store
-                    .read()
-                    .await
-                    .as_ref()
-                    .map(|b| b.persistence.clone()),
-            );
+        runtime.fs_handles.share_payload_store(
+            self.payload_store
+                .read()
+                .await
+                .as_ref()
+                .map(|b| b.persistence.clone()),
+        );
         // DD-7b-2 (a) Option 2 (2026-08-29): symmetric with the
         // play-side spawn — replay runtimes also share the
         // payload-source recorder so a follower's replay-branch
@@ -711,11 +705,9 @@ impl RuntimeManager {
         // deploy_sig` mapping.  Keeps leader/follower symmetric so
         // any node whose block processing succeeded can serve the
         // Option 2 tier at boot to a later joiner.
-        runtime
-            .fs_handles
-            .share_payload_source_recorder(
-                self.payload_source_recorder.read().await.as_ref().cloned(),
-            );
+        runtime.fs_handles.share_payload_source_recorder(
+            self.payload_source_recorder.read().await.as_ref().cloned(),
+        );
         metrics::histogram!(RUNTIME_SPAWN_REPLAY_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
 
@@ -2135,7 +2127,8 @@ impl RuntimeManager {
         on_disk: std::path::PathBuf,
         id: (u64, u64),
     ) {
-        self.root_id_registry.register_with_remap(logical, on_disk, id);
+        self.root_id_registry
+            .register_with_remap(logical, on_disk, id);
     }
 
     /// H-5 diagnostic — number of registered root identities.
@@ -2557,9 +2550,8 @@ mod payload_store_wiring_tests {
         // Now share a store on the runtime's copy — this is the
         // path `RuntimeManager::spawn_runtime` uses, after the
         // FsProcesses clone was already taken.
-        let store: Arc<
-            dyn rholang::rust::interpreter::io::wal::PayloadPersistence,
-        > = Arc::new(InMemoryPayloadStore::new());
+        let store: Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence> =
+            Arc::new(InMemoryPayloadStore::new());
         runtime.fs_handles.share_payload_store(Some(store));
         // The clone MUST see the newly-attached store.
         assert!(
@@ -2887,7 +2879,9 @@ mod consensus_static_roots_wiring_tests {
             "fresh manager has no roots"
         );
         manager
-            .register_consensus_static_root(PathBuf::from("/opt/f1r3fly/consensus-static-01/data.bin"))
+            .register_consensus_static_root(PathBuf::from(
+                "/opt/f1r3fly/consensus-static-01/data.bin",
+            ))
             .await;
         manager
             .register_consensus_static_root(PathBuf::from("/opt/f1r3fly/consensus-static-dir/"))
@@ -3350,9 +3344,7 @@ mod tests {
             evidence: Arc::from(Vec::<ProcessedDeploy>::new()),
             user_post_state: vec![1; 32].into(),
             user_mergeable: Arc::from(Vec::<NumberChannelsEndVal>::new()),
-            fs_wal: Arc::from(
-                Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new(),
-            ),
+            fs_wal: Arc::from(Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new()),
         }
     }
 
@@ -3414,9 +3406,7 @@ mod tests {
         let src = include_str!("runtime_manager.rs");
         let start_idx = src
             .find("pub async fn compute_state_with_bonds_cosigned_admitted")
-            .expect(
-                "compute_state_with_bonds_cosigned_admitted must exist in this file",
-            );
+            .expect("compute_state_with_bonds_cosigned_admitted must exist in this file");
         let end_marker = "Ok((state_hash, usr_processed, sys_processed, bonds))";
         let body_end = src[start_idx..].find(end_marker).expect(
             "terminal return `Ok((state_hash, usr_processed, sys_processed, bonds))` \
@@ -3503,9 +3493,7 @@ mod tests {
             evidence: Arc::from(vec![witness.clone()]),
             user_post_state: witness.post_state_hash.clone(),
             user_mergeable: Arc::from(vec![NumberChannelsEndVal::new()]),
-            fs_wal: Arc::from(
-                Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new(),
-            ),
+            fs_wal: Arc::from(Vec::<rholang::rust::interpreter::io::wal::WalEntry>::new()),
         };
 
         assert_eq!(admission.evidence.as_ref(), std::slice::from_ref(&witness));

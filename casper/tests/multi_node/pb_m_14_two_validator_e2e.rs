@@ -189,13 +189,9 @@ async fn pb_m_14_two_validator_wal_and_file_byte_identity() {
 
     // ---- per-validator projection ------------------------------------
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let projections = project_bundle_per_validator(
-        &bundle,
-        2,
-        per_node_root.path(),
-        "wal_payload_store",
-    )
-    .expect("per-validator bundle projection");
+    let projections =
+        project_bundle_per_validator(&bundle, 2, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
     // Keep subdir handles for post-execution on-disk assertions.
     let leader_subdir = projections[0].subdir.clone();
     let follower_subdir = projections[1].subdir.clone();
@@ -334,8 +330,7 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     let follower_on_disk = std::fs::read(&follower_target)
         .expect("read follower's own target (empty until Phase 3 fs_write re-execute lands)");
     assert_eq!(
-        follower_on_disk,
-        b"",
+        follower_on_disk, b"",
         "Phase-1-through-Phase-2 EXPECTATION: follower's fs_stat is_replay \
          branch NOW re-executes + verifies (statCheck agrees, Success), but \
          fs_write is_replay still consumes cached reply (no `libc::write` \
@@ -343,11 +338,9 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
          `== PAYLOAD`; the flip is the completion signal for that phase."
     );
 
-    let stage_source =
-        std::fs::read(&canon_path).expect("operator stage source stays untouched");
+    let stage_source = std::fs::read(&canon_path).expect("operator stage source stays untouched");
     assert_eq!(
-        stage_source,
-        b"",
+        stage_source, b"",
         "Shape A invariant: bundle-projection reads canon_path once at \
          provisioning and never mutates it.  A non-empty stage source here \
          means the projection helper accidentally mirrored writes back."
@@ -414,13 +407,9 @@ async fn pb_m_14_leader_pending_wal_slice_publishes_consensus_write() {
     // load-bearing for the multi-validator canaries to share the same
     // setup helper).
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let projections = project_bundle_per_validator(
-        &bundle,
-        1,
-        per_node_root.path(),
-        "wal_payload_store",
-    )
-    .expect("per-validator bundle projection");
+    let projections =
+        project_bundle_per_validator(&bundle, 1, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
     let leader_subdir = projections[0].subdir.clone();
     let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
         .into_iter()
@@ -620,13 +609,9 @@ async fn pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay() {
     // recorded initial_cost.  See auto-memory
     // `fileio_wal_replay_verification_gap.md`.
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let projections = project_bundle_per_validator(
-        &bundle,
-        1,
-        per_node_root.path(),
-        "wal_payload_store",
-    )
-    .expect("per-validator bundle projection");
+    let projections =
+        project_bundle_per_validator(&bundle, 1, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
     let validator_subdir = projections[0].subdir.clone();
     let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
         .into_iter()
@@ -940,13 +925,9 @@ async fn pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier() {
         .expect("build genesis with fs bundle");
 
     let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
-    let projections = project_bundle_per_validator(
-        &bundle,
-        2,
-        per_node_root.path(),
-        "wal_payload_store",
-    )
-    .expect("per-validator bundle projection");
+    let projections =
+        project_bundle_per_validator(&bundle, 2, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
     let joiner_subdir = projections[1].subdir.clone();
     let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
         .into_iter()
@@ -1178,8 +1159,7 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     // Consensus path).  Under Shape A the applier's write lands at
     // `<joiner_subdir>/target` via the registry's Shape A resolver
     // (`resolve_wal_entry_path` — see Task 0.4).
-    let on_disk =
-        std::fs::read(&joiner_target).expect("read joiner's applied file back");
+    let on_disk = std::fs::read(&joiner_target).expect("read joiner's applied file back");
     assert_eq!(
         on_disk, PAYLOAD,
         "on-disk bytes after joiner boot must match PAYLOAD — the applier \

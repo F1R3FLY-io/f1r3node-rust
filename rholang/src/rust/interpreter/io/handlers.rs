@@ -646,12 +646,7 @@ impl FsProcesses {
     /// IS exercised via the Oracular is_replay tautological path).
     /// A future caller that hits this branch through a NEW
     /// dispatch site would need its own coverage pin.
-    async fn journal_read_divergence(
-        &self,
-        fd: u64,
-        offset: Option<u64>,
-        ack: &Par,
-    ) -> bool {
+    async fn journal_read_divergence(&self, fd: u64, offset: Option<u64>, ack: &Par) -> bool {
         let wal_meta = self
             .handles
             .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
@@ -1095,38 +1090,35 @@ impl FsProcesses {
                     // leader never returns [true, fd] on that
                     // combination so `extract_ok_fd` wouldn't have
                     // succeeded here.  Guard defensively regardless.
-                    let file: Option<std::fs::File> =
-                        if cmode == ConsensusMode::Consensus {
-                            match intent {
-                                Some(intent) if !intent.append => {
-                                    let root_pb = PathBuf::from(&root);
-                                    let (root_pb, expected_root_id) = self
-                                        .handles
-                                        .root_registry
-                                        .resolve_or_identity(&root_pb);
-                                    let rel_for_open = rel.clone();
-                                    let intent_copy = intent;
-                                    let opened = spawn_blocking(move || {
-                                        let (flags, mode_bits) = fopen_flags(intent_copy);
-                                        super::path::safe_open_verified(
-                                            &root_pb,
-                                            &rel_for_open,
-                                            flags,
-                                            mode_bits,
-                                            expected_root_id,
-                                        )
-                                    })
-                                    .await;
-                                    match opened {
-                                        Ok(Ok(f)) => Some(f),
-                                        _ => None,
-                                    }
+                    let file: Option<std::fs::File> = if cmode == ConsensusMode::Consensus {
+                        match intent {
+                            Some(intent) if !intent.append => {
+                                let root_pb = PathBuf::from(&root);
+                                let (root_pb, expected_root_id) =
+                                    self.handles.root_registry.resolve_or_identity(&root_pb);
+                                let rel_for_open = rel.clone();
+                                let intent_copy = intent;
+                                let opened = spawn_blocking(move || {
+                                    let (flags, mode_bits) = fopen_flags(intent_copy);
+                                    super::path::safe_open_verified(
+                                        &root_pb,
+                                        &rel_for_open,
+                                        flags,
+                                        mode_bits,
+                                        expected_root_id,
+                                    )
+                                })
+                                .await;
+                                match opened {
+                                    Ok(Ok(f)) => Some(f),
+                                    _ => None,
                                 }
-                                _ => None,
                             }
-                        } else {
-                            None
-                        };
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     // Same canon_path derivation as `open_impl`
                     // (C-29-1 fix) — must be byte-identical so WAL
                     // paths match across leader/follower.
@@ -1222,8 +1214,7 @@ impl FsProcesses {
         // recreate defense at open time (previously fs_open
         // silently skipped identity verification — a pre-existing
         // gap surfaced by Shape A's landing).
-        let (root_pb, expected_root_id) =
-            self.handles.root_registry.resolve_or_identity(&root_pb);
+        let (root_pb, expected_root_id) = self.handles.root_registry.resolve_or_identity(&root_pb);
         let intent_copy = intent;
         // C-29-1 review fix: keep `rel` accessible for canon_path
         // construction below.  Clone into the blocking closure and
@@ -1459,9 +1450,7 @@ impl FsProcesses {
                         let n = bytes.len() as u64;
                         let _ = self
                             .handles
-                            .with_mut(fd_u, |h| {
-                                h.position = h.position.saturating_add(n)
-                            })
+                            .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
                             .await;
                     }
                     let out = vec![fresh_reply];
@@ -1483,22 +1472,16 @@ impl FsProcesses {
                     // the advance.
                     let divergence_reply = err(
                         FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_read follower re-execute diverges from leader: {reason}",
-                        ),
+                        format!("fs_read follower re-execute diverges from leader: {reason}",),
                     );
                     if let Some(fd) = RhoNumber::unapply(fd_par) {
                         let fd_u = fd as u64;
                         let _ = self.journal_read_divergence(fd_u, None, ack).await;
-                        if let Some(bytes) =
-                            extract_ok_bytes(std::slice::from_ref(&fresh_reply))
-                        {
+                        if let Some(bytes) = extract_ok_bytes(std::slice::from_ref(&fresh_reply)) {
                             let n = bytes.len() as u64;
                             let _ = self
                                 .handles
-                                .with_mut(fd_u, |h| {
-                                    h.position = h.position.saturating_add(n)
-                                })
+                                .with_mut(fd_u, |h| h.position = h.position.saturating_add(n))
                                 .await;
                         }
                     }
@@ -1627,9 +1610,7 @@ impl FsProcesses {
                     // reply carries no bytes).
                     let divergence_reply = err(
                         FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_read_at follower re-execute diverges from leader: {reason}",
-                        ),
+                        format!("fs_read_at follower re-execute diverges from leader: {reason}",),
                     );
                     if let (Some(fd), Some(off)) =
                         (RhoNumber::unapply(fd_par), RhoNumber::unapply(off_par))
@@ -2222,14 +2203,7 @@ impl FsProcesses {
             match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
                 Ok(()) => {
                     if let (Some(mode), Some(p)) = (jmode, jpath) {
-                        self.journal_state_read(
-                            mode,
-                            WalOp::Size,
-                            p,
-                            &fresh_reply,
-                            ack,
-                            None,
-                        );
+                        self.journal_state_read(mode, WalOp::Size, p, &fresh_reply, ack, None);
                     }
                     let out = vec![fresh_reply];
                     produce(&out, ack).await?;
@@ -2238,19 +2212,10 @@ impl FsProcesses {
                 Err(reason) => {
                     let divergence_reply = err(
                         FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_size follower re-execute diverges from leader: {reason}",
-                        ),
+                        format!("fs_size follower re-execute diverges from leader: {reason}",),
                     );
                     if let (Some(mode), Some(p)) = (jmode, jpath) {
-                        self.journal_state_read(
-                            mode,
-                            WalOp::Size,
-                            p,
-                            &divergence_reply,
-                            ack,
-                            None,
-                        );
+                        self.journal_state_read(mode, WalOp::Size, p, &divergence_reply, ack, None);
                     }
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -2529,14 +2494,7 @@ impl FsProcesses {
                     // preserving the leader/follower WAL byte-identity
                     // property post-verification (no longer tautological).
                     if let Some(p) = journal_path {
-                        self.journal_state_read(
-                            mode,
-                            WalOp::Stat,
-                            p,
-                            &fresh_reply,
-                            ack,
-                            None,
-                        );
+                        self.journal_state_read(mode, WalOp::Stat, p, &fresh_reply, ack, None);
                     }
                     let out = vec![fresh_reply];
                     produce(&out, ack).await?;
@@ -2551,19 +2509,10 @@ impl FsProcesses {
                     // DIVERGENCE }` from the reply's error slot.
                     let divergence_reply = err(
                         FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_stat follower re-execute diverges from leader: {reason}",
-                        ),
+                        format!("fs_stat follower re-execute diverges from leader: {reason}",),
                     );
                     if let Some(p) = journal_path {
-                        self.journal_state_read(
-                            mode,
-                            WalOp::Stat,
-                            p,
-                            &divergence_reply,
-                            ack,
-                            None,
-                        );
+                        self.journal_state_read(mode, WalOp::Stat, p, &divergence_reply, ack, None);
                     }
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -2823,14 +2772,7 @@ impl FsProcesses {
             match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
                 Ok(()) => {
                     if let Some(p) = journal_path {
-                        self.journal_state_read(
-                            mode,
-                            WalOp::Entries,
-                            p,
-                            &fresh_reply,
-                            ack,
-                            None,
-                        );
+                        self.journal_state_read(mode, WalOp::Entries, p, &fresh_reply, ack, None);
                     }
                     let out = vec![fresh_reply];
                     produce(&out, ack).await?;
@@ -2839,9 +2781,7 @@ impl FsProcesses {
                 Err(reason) => {
                     let divergence_reply = err(
                         FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_entries follower re-execute diverges from leader: {reason}",
-                        ),
+                        format!("fs_entries follower re-execute diverges from leader: {reason}",),
                     );
                     if let Some(p) = journal_path {
                         self.journal_state_read(
@@ -2941,8 +2881,10 @@ impl FsProcesses {
             Some((from_root, from_rel, to_root, to_rel)) => {
                 let from_root_pb = PathBuf::from(from_root);
                 let to_root_pb = PathBuf::from(to_root);
-                let (from_root_pb, from_expected_id) =
-                    self.handles.root_registry.resolve_or_identity(&from_root_pb);
+                let (from_root_pb, from_expected_id) = self
+                    .handles
+                    .root_registry
+                    .resolve_or_identity(&from_root_pb);
                 let (to_root_pb, to_expected_id) =
                     self.handles.root_registry.resolve_or_identity(&to_root_pb);
                 spawn_blocking(move || -> Par {
@@ -3406,13 +3348,14 @@ impl FsProcesses {
                 let ack_clone = ack.clone();
                 let wal = self.handles.wal.clone();
                 spawn_blocking(move || -> Par {
-                    let parent = match safe_descend_verified(&on_disk_root_pb, &rel, expected_root_id) {
-                        Ok(p) => p,
-                        Err(qe) => {
-                            let (c, m) = quarantine_err_reply(&qe);
-                            return err(c, m);
-                        }
-                    };
+                    let parent =
+                        match safe_descend_verified(&on_disk_root_pb, &rel, expected_root_id) {
+                            Ok(p) => p,
+                            Err(qe) => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                return err(c, m);
+                            }
+                        };
                     let target_dev_inode = target_dev_inode_at(&parent);
                     let target_is_locked = target_dev_inode
                         .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
@@ -4061,8 +4004,7 @@ impl FsProcesses {
             }
         };
         let root_pb = PathBuf::from(&root);
-        let (root_pb, expected_root_id) =
-            self.handles.root_registry.resolve_or_identity(&root_pb);
+        let (root_pb, expected_root_id) = self.handles.root_registry.resolve_or_identity(&root_pb);
         let rel_for_open = rel.clone();
         // safe_descend + openat + fdopendir in a blocking task —
         // mirrors bulk fs_entries' opening syscall sequence exactly

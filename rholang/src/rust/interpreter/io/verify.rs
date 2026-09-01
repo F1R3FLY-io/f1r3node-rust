@@ -76,7 +76,9 @@ pub fn verify_reply_hash_matches_cached(
     fresh: &Par,
     previous: &[Par],
 ) -> Result<(), DivergenceReason> {
-    let cached_par = previous.first().ok_or(DivergenceReason::MissingCachedReply)?;
+    let cached_par = previous
+        .first()
+        .ok_or(DivergenceReason::MissingCachedReply)?;
     let fresh_hash = par_stable_hash(fresh);
     let cached_hash = par_stable_hash(cached_par);
     if fresh_hash == cached_hash {
@@ -104,11 +106,12 @@ fn par_stable_hash(par: &Par) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::rust::interpreter::io::response::{err, ok_par};
     use crate::rust::interpreter::io::stat::stat_record;
     use crate::rust::interpreter::io::ConsensusMode;
-    use std::fs;
 
     /// Baseline: identical reply Pars hash equal → verify returns Ok.
     #[test]
@@ -125,7 +128,10 @@ mod tests {
         let fresh = err("FSERR_NOT_FOUND", "cake was a lie");
         let cached = err("FSERR_IO", "disk on fire");
         match verify_reply_hash_matches_cached(&fresh, &[cached]) {
-            Err(DivergenceReason::HashMismatch { fresh: f, cached: c }) => {
+            Err(DivergenceReason::HashMismatch {
+                fresh: f,
+                cached: c,
+            }) => {
                 assert_ne!(f, c, "mismatched replies must hash to distinct digests");
             }
             other => panic!("expected HashMismatch, got {other:?}"),

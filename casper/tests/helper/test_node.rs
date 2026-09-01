@@ -256,15 +256,9 @@ pub fn project_bundle_per_validator(
                     //   bare `logical_name` (no `/`) → `/@bundle`
                     //   nested → `/@bundle/<parent-segments>`
                     let logical_path = Path::new(&entry.logical_name);
-                    let parent_rel = logical_path
-                        .parent()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or("");
+                    let parent_rel = logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
                     let (logical_root, on_disk_root) = if parent_rel.is_empty() {
-                        (
-                            PathBuf::from(BUNDLE_ROOT_PREFIX),
-                            subdir.clone(),
-                        )
+                        (PathBuf::from(BUNDLE_ROOT_PREFIX), subdir.clone())
                     } else {
                         (
                             PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}")),
@@ -275,10 +269,8 @@ pub fn project_bundle_per_validator(
                 }
                 BundleEntryKind::Dir => {
                     copy_dir_recursive(&entry.canon_path, &on_disk_target)?;
-                    let logical_root = PathBuf::from(format!(
-                        "{BUNDLE_ROOT_PREFIX}/{}",
-                        entry.logical_name
-                    ));
+                    let logical_root =
+                        PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{}", entry.logical_name));
                     logical_to_on_disk_map.insert(logical_root, on_disk_target);
                 }
             }
@@ -1340,15 +1332,16 @@ impl TestNode {
             };
             use rholang::rust::interpreter::io::path::capture_root_identity;
 
-            std::fs::create_dir_all(&prov.payload_dir)
-                .unwrap_or_else(|e| panic!(
+            std::fs::create_dir_all(&prov.payload_dir).unwrap_or_else(|e| {
+                panic!(
                     "TestNode({}): create_dir_all({:?}) failed: {e}",
                     name, prov.payload_dir,
-                ));
+                )
+            });
 
-            let store_bundle = PayloadStoreBundle::from_directory(
-                DirectoryPayloadStore::new(prov.payload_dir.clone()),
-            );
+            let store_bundle = PayloadStoreBundle::from_directory(DirectoryPayloadStore::new(
+                prov.payload_dir.clone(),
+            ));
             runtime_manager.set_payload_store(Some(store_bundle)).await;
 
             // DD-7b-2 (a) Option 2 (2026-08-30): mirror the production
@@ -1358,12 +1351,11 @@ impl TestNode {
             // for the joiner-side Option 2 reducer to walk.  Without
             // this, the Option 2 E2E canary would see an empty index
             // even after a Consensus write.
-            let recorder = std::sync::Arc::new(
-                BlockStorageBackedRecorder::new(block_dag_storage.clone()),
-            )
-                as std::sync::Arc<
-                    dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder,
-                >;
+            let recorder =
+                std::sync::Arc::new(BlockStorageBackedRecorder::new(block_dag_storage.clone()))
+                    as std::sync::Arc<
+                        dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder,
+                    >;
             runtime_manager
                 .set_payload_source_recorder(Some(recorder))
                 .await;
@@ -1391,11 +1383,9 @@ impl TestNode {
             // independent; on-disk staging dirs are per-node.
             for (logical, on_disk) in &prov.logical_to_on_disk {
                 match capture_root_identity(on_disk) {
-                    Ok(id) => runtime_manager.register_root_remap(
-                        logical.clone(),
-                        on_disk.clone(),
-                        id,
-                    ),
+                    Ok(id) => {
+                        runtime_manager.register_root_remap(logical.clone(), on_disk.clone(), id)
+                    }
                     Err(e) => tracing::warn!(
                         target: "f1r3fly.test.fs_provisioning",
                         node = %name,

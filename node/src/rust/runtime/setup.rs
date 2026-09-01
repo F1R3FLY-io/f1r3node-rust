@@ -409,11 +409,14 @@ pub(crate) async fn setup_node_program<T: TransportLayer + Send + Sync + Clone +
         // restart to start populating the index.
         {
             use casper::rust::engine::wal_payload_server::BlockStorageBackedRecorder;
-            let recorder = std::sync::Arc::new(BlockStorageBackedRecorder::new(
-                block_dag_storage.clone(),
-            ))
-                as std::sync::Arc<dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder>;
-            runtime_manager.set_payload_source_recorder(Some(recorder)).await;
+            let recorder =
+                std::sync::Arc::new(BlockStorageBackedRecorder::new(block_dag_storage.clone()))
+                    as std::sync::Arc<
+                        dyn rholang::rust::interpreter::io::wal::PayloadSourceRecorder,
+                    >;
+            runtime_manager
+                .set_payload_source_recorder(Some(recorder))
+                .await;
             tracing::info!(
                 target: "f1r3fly.fs_wal.payload_source_index",
                 "DD-7b-2 (a) Option 2: payload-source recorder attached — Consensus-cap \

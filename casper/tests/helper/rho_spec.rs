@@ -386,6 +386,7 @@ pub async fn get_results(
             BundleConsensusMode, BundleEntryKind, BUNDLE_ROOT_PREFIX,
         };
         use rholang::rust::interpreter::io::path::capture_root_identity;
+
         use crate::helper::test_node::copy_dir_recursive;
         let consensus_entries: Vec<_> = genesis_parameters
             .2
@@ -428,16 +429,12 @@ pub async fn get_results(
                         // sees; the resolver joins to the parent
                         // on-disk.
                         let logical_path = std::path::Path::new(&entry.logical_name);
-                        let parent_rel = logical_path
-                            .parent()
-                            .and_then(|p| p.to_str())
-                            .unwrap_or("");
+                        let parent_rel =
+                            logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
                         if parent_rel.is_empty() {
                             std::path::PathBuf::from(BUNDLE_ROOT_PREFIX)
                         } else {
-                            std::path::PathBuf::from(format!(
-                                "{BUNDLE_ROOT_PREFIX}/{parent_rel}"
-                            ))
+                            std::path::PathBuf::from(format!("{BUNDLE_ROOT_PREFIX}/{parent_rel}"))
                         }
                     }
                     BundleEntryKind::Dir => {

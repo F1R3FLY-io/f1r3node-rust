@@ -301,21 +301,11 @@ mod tests {
             self.sends.lock().unwrap().push((peer.clone(), msg.clone()));
             Ok(())
         }
-        async fn broadcast(
-            &self,
-            _peers: &[PeerNode],
-            _msg: &Protocol,
-        ) -> Result<(), CommError> {
+        async fn broadcast(&self, _peers: &[PeerNode], _msg: &Protocol) -> Result<(), CommError> {
             Ok(())
         }
-        async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> {
-            Ok(())
-        }
-        async fn stream_mult(
-            &self,
-            _peers: &[PeerNode],
-            _blob: &Blob,
-        ) -> Result<(), CommError> {
+        async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> { Ok(()) }
+        async fn stream_mult(&self, _peers: &[PeerNode], _blob: &Blob) -> Result<(), CommError> {
             Ok(())
         }
         async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> { Ok(()) }

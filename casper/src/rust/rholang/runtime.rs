@@ -3448,9 +3448,7 @@ mod tests {
         let src = include_str!("runtime.rs");
         let start_idx = src
             .find("pub(crate) async fn state_bound_cost_evidence_for_state_cosigned")
-            .expect(
-                "state_bound_cost_evidence_for_state_cosigned must exist in this file",
-            );
+            .expect("state_bound_cost_evidence_for_state_cosigned must exist in this file");
         let end_marker = "Ok((current_root, accepted, outcome, block_fs_wal))";
         let body_end = src[start_idx..].find(end_marker).expect(
             "terminal return `Ok((current_root, accepted, outcome, block_fs_wal))` \
@@ -4014,15 +4012,14 @@ mod tests {
         // debug_assert! would still pass this test in debug mode
         // but fail in release; both build modes' CI runs would
         // catch the regression.
-        let _scope =
-            WalDeployScope::new_with_lock_sweep(
-                wal,
-                lock_registry,
-                [0u8; 32],
-                current_scope_cell,
-                Vec::new(),
-                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
-            );
+        let _scope = WalDeployScope::new_with_lock_sweep(
+            wal,
+            lock_registry,
+            [0u8; 32],
+            current_scope_cell,
+            Vec::new(),
+            std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+        );
     }
 
     // ---------------------------------------------------------------

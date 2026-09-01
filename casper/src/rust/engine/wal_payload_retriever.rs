@@ -685,7 +685,11 @@ mod tests {
         let real_payload = b"pristine".to_vec();
         let h = hash_bytes(&real_payload);
         let retriever = WalPayloadRetriever::new();
-        assert!(!retriever.mark_resolved(h, b"different bytes".to_vec()).await);
+        assert!(
+            !retriever
+                .mark_resolved(h, b"different bytes".to_vec())
+                .await
+        );
         // The entry was created (side-effect of the write) but has
         // no bytes → still pending.
         assert!(!retriever.is_complete().await);
@@ -703,7 +707,9 @@ mod tests {
         let h = hash_bytes(&real_payload);
         let retriever = WalPayloadRetriever::new();
         let result = std::panic::AssertUnwindSafe(async move {
-            retriever.mark_resolved(h, b"different bytes".to_vec()).await
+            retriever
+                .mark_resolved(h, b"different bytes".to_vec())
+                .await
         });
         // `catch_unwind` around an async block requires poll-based
         // catching — easier to catch on the join.  Run in a

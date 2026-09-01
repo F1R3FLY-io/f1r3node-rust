@@ -1213,12 +1213,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // source deploy in a scratch runtime to reproduce
             // bytes for hashes the local `PayloadLookup` misses.
             // See casper_launch.rs for the full flow.
-            let option2_ctx =
-                Some(crate::rust::engine::wal_payload_sync::Option2ReducerContext {
+            let option2_ctx = Some(
+                crate::rust::engine::wal_payload_sync::Option2ReducerContext {
                     block_storage: self.block_dag_storage.clone(),
                     block_store: self.block_store.clone(),
                     runtime_manager: self.runtime_manager.clone(),
-                });
+                },
+            );
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),

@@ -666,14 +666,8 @@ mod tests {
             ("casper_launch", "casper/src/rust/engine/casper_launch.rs"),
             ("initializing", "casper/src/rust/engine/initializing.rs"),
         ] {
-            let path = format!(
-                "{}/../{}",
-                env!("CARGO_MANIFEST_DIR"),
-                rel,
-            );
-            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("read {rel}: {e}")
-            });
+            let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
             assert!(
                 src.contains("spawn_boot_apply_subscriber"),
                 "{name} ({rel}) must call spawn_boot_apply_subscriber \
@@ -710,8 +704,7 @@ mod tests {
             ("initializing", "casper/src/rust/engine/initializing.rs"),
         ] {
             let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
             // Load the region between spawn_boot_apply_subscriber(
             // and its terminating `);` — we want to freeze that the
             // final argument on the same call site names the
@@ -816,7 +809,10 @@ mod tests {
         // Both file + dir loops must register.  Find the loop bodies
         // and confirm each contains the register call.
         for (loop_marker, shape) in [
-            ("for entry in merged.consensus_static_files.values()", "files"),
+            (
+                "for entry in merged.consensus_static_files.values()",
+                "files",
+            ),
             ("for entry in merged.consensus_static_dirs.values()", "dirs"),
         ] {
             let loop_start = setup_rs.find(loop_marker).unwrap_or_else(|| {
@@ -851,8 +847,7 @@ mod tests {
             ("initializing", "casper/src/rust/engine/initializing.rs"),
         ] {
             let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
             // Find the subscriber call region.
             let call_idx = src
                 .find("spawn_boot_apply_subscriber(")
@@ -896,8 +891,7 @@ mod tests {
             ("initializing", "casper/src/rust/engine/initializing.rs"),
         ] {
             let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
             let call_idx = src
                 .find("spawn_boot_apply_subscriber(")
                 .unwrap_or_else(|| panic!("{name}: spawn_boot_apply_subscriber call not found"));
@@ -938,8 +932,7 @@ mod tests {
             ("initializing", "casper/src/rust/engine/initializing.rs"),
         ] {
             let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
-            let src = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
             let ctor_idx = src
                 .find("Option2ReducerContext {")
                 .unwrap_or_else(|| panic!("{name}: Option2ReducerContext construction not found"));
@@ -971,8 +964,7 @@ mod tests {
     fn finalization_runner_prunes_both_payload_store_and_index() {
         let rel = "casper/src/rust/engine/multi_parent_casper/finalization_runner.rs";
         let path = format!("{}/../{}", env!("CARGO_MANIFEST_DIR"), rel,);
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
         // Locate the payload-retention block (starts right after the
         // snapshot-write LFB branch caches the merkle root).
         let block_start = src
@@ -1012,7 +1004,8 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_returns_none_without_consensus_provisioning() {
-        let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, 100, None, None).unwrap();
+        let w =
+            build_snapshot_writer(&empty_provisioning(), Some(100), None, 100, None, None).unwrap();
         assert!(w.is_none());
     }
 
@@ -1039,8 +1032,15 @@ mod tests {
 
     #[test]
     fn build_snapshot_writer_propagates_validation_error() {
-        let err = build_snapshot_writer(&provisioning_with_consensus_file(), None, None, 100, None, None)
-            .unwrap_err();
+        let err = build_snapshot_writer(
+            &provisioning_with_consensus_file(),
+            None,
+            None,
+            100,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(err, SnapshotConfigError::MissingCadence);
     }
 
@@ -1102,8 +1102,9 @@ mod tests {
         // force a writer to exist, and any retain (including 0)
         // is accepted since it's unused.
         for retain in [0usize, 500, 999_999] {
-            let w = build_snapshot_writer(&empty_provisioning(), Some(100), None, retain, None, None)
-                .unwrap();
+            let w =
+                build_snapshot_writer(&empty_provisioning(), Some(100), None, retain, None, None)
+                    .unwrap();
             assert!(
                 w.is_none(),
                 "retain {retain} must not conjure a writer without provisioning"

@@ -861,8 +861,7 @@ pub struct BlockDagKeyValueStorage {
     /// invariant across other indices, so record does NOT
     /// acquire `global_lock` (contention with block-insert
     /// writers would slow deploy execution).
-    pub(crate) payload_source_index:
-        Arc<PlRwLock<KeyValueTypedStoreImpl<Vec<u8>, DeployId>>>,
+    pub(crate) payload_source_index: Arc<PlRwLock<KeyValueTypedStoreImpl<Vec<u8>, DeployId>>>,
     pub(crate) invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     /// Memoized justification-derived floor per block (block hash -> floor hash).
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
@@ -915,8 +914,7 @@ impl BlockDagKeyValueStorage {
         // payload_hash → deploy_sig index co-located with the
         // existing deploy_index.  Same lifecycle as block_storage
         // — pruning-together is natural.
-        let payload_source_index_kv_store =
-            kvm.store("payload-source-index".to_string()).await?;
+        let payload_source_index_kv_store = kvm.store("payload-source-index".to_string()).await?;
         let floor_index_kv_store = kvm.store("floor-index".to_string()).await?;
         let frontier_index_kv_store = kvm.store("frontier-index".to_string()).await?;
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;

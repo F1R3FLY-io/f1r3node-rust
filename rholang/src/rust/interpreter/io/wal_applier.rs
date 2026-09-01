@@ -115,10 +115,7 @@ pub enum ApplierError {
     /// (not ERANGE — that is retried internally with a bigger
     /// buffer).  Almost always indicates a system-level NSS
     /// problem rather than a WAL bug.
-    NssResolutionFailed {
-        name: String,
-        errno: i32,
-    },
+    NssResolutionFailed { name: String, errno: i32 },
     /// `getpwnam_r` / `getgrnam_r` returned success but the
     /// result pointer is NULL — i.e., the name resolved to no
     /// entry.  Operator responsibility to keep NSS consistent
@@ -144,7 +141,10 @@ pub enum ApplierError {
 impl std::fmt::Display for ApplierError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ApplierError::MissingSidecarEntry { entry_index, hash_hex } => write!(
+            ApplierError::MissingSidecarEntry {
+                entry_index,
+                hash_hex,
+            } => write!(
                 f,
                 "WAL entry {entry_index}: hash {hash_hex} missing from payload sidecar"
             ),
@@ -273,13 +273,12 @@ where
                         path: dst.clone(),
                         message: format!("seek: {e}"),
                     })?;
-                f.write_all(bytes)
-                    .map_err(|e| ApplierError::IoFailure {
-                        entry_index: i,
-                        op: entry.op,
-                        path: dst.clone(),
-                        message: format!("write: {e}"),
-                    })?;
+                f.write_all(bytes).map_err(|e| ApplierError::IoFailure {
+                    entry_index: i,
+                    op: entry.op,
+                    path: dst.clone(),
+                    message: format!("write: {e}"),
+                })?;
             }
             WalOp::Truncate => {
                 let dst = path_map(&entry.path);
@@ -344,9 +343,7 @@ where
                     .map_err(|_| ApplierError::PathContainsNull { entry_index: i })?;
                 let rc = unsafe { libc::chown(cpath.as_ptr(), uid, gid) };
                 if rc != 0 {
-                    let errno = std::io::Error::last_os_error()
-                        .raw_os_error()
-                        .unwrap_or(0);
+                    let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                     // Unprivileged hosts (typical CI) can't chown
                     // to arbitrary owners.  EPERM is treated as a
                     // no-op success — tests should use current-
@@ -447,10 +444,9 @@ fn os_str_to_cstring(s: &std::ffi::OsStr) -> Result<CString, std::ffi::NulError>
 /// pointers.  Grows the caller-provided buffer on ERANGE up to a
 /// reasonable ceiling (16 MiB) so long entries still succeed.
 fn resolve_uid(name: &str) -> Result<u32, ApplierError> {
-    let cname =
-        CString::new(name.as_bytes()).map_err(|_| ApplierError::NssNotFound {
-            name: name.to_string(),
-        })?;
+    let cname = CString::new(name.as_bytes()).map_err(|_| ApplierError::NssNotFound {
+        name: name.to_string(),
+    })?;
     let mut buf_len: usize = 1024;
     let ceiling: usize = 16 * 1024 * 1024;
     loop {
@@ -493,10 +489,9 @@ fn resolve_uid(name: &str) -> Result<u32, ApplierError> {
 
 /// Thread-safe `getgrnam` companion — same shape as `resolve_uid`.
 fn resolve_gid(name: &str) -> Result<u32, ApplierError> {
-    let cname =
-        CString::new(name.as_bytes()).map_err(|_| ApplierError::NssNotFound {
-            name: name.to_string(),
-        })?;
+    let cname = CString::new(name.as_bytes()).map_err(|_| ApplierError::NssNotFound {
+        name: name.to_string(),
+    })?;
     let mut buf_len: usize = 1024;
     let ceiling: usize = 16 * 1024 * 1024;
     loop {
@@ -676,13 +671,10 @@ mod tests {
         let sidecar: HashMap<[u8; 32], Vec<u8>> = HashMap::new();
         let err = apply_wal_to_fresh_tree(&[entry], &sidecar, |p| p.to_path_buf(), &[])
             .expect_err("missing sidecar must Err");
-        assert_eq!(
-            err,
-            ApplierError::MissingSidecarEntry {
-                entry_index: 0,
-                hash_hex: hex::encode(h),
-            }
-        );
+        assert_eq!(err, ApplierError::MissingSidecarEntry {
+            entry_index: 0,
+            hash_hex: hex::encode(h),
+        });
         // File unchanged since the applier failed before writing.
         assert_eq!(std::fs::read(&dst).unwrap(), vec![0u8; 8]);
     }
@@ -735,7 +727,10 @@ mod tests {
         let err = apply_wal_to_fresh_tree(&[entry], &sidecar, |p| p.to_path_buf(), &allowed)
             .expect_err("out-of-root must Err");
         assert!(
-            matches!(err, ApplierError::PathOutsideAllowedRoots { entry_index: 0, .. }),
+            matches!(err, ApplierError::PathOutsideAllowedRoots {
+                entry_index: 0,
+                ..
+            }),
             "got {err:?}"
         );
         // Outside file untouched.
@@ -866,13 +861,10 @@ mod tests {
         };
         let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
             .expect_err("missing extra_path must Err");
-        assert_eq!(
-            err,
-            ApplierError::MissingExtraPath {
-                entry_index: 0,
-                op: WalOp::Rename,
-            }
-        );
+        assert_eq!(err, ApplierError::MissingExtraPath {
+            entry_index: 0,
+            op: WalOp::Rename,
+        });
     }
 
     /// Truncate without offset returns MissingOffset (previously
@@ -896,13 +888,10 @@ mod tests {
         };
         let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
             .expect_err("missing offset on Truncate must Err");
-        assert_eq!(
-            err,
-            ApplierError::MissingOffset {
-                entry_index: 0,
-                op: WalOp::Truncate,
-            }
-        );
+        assert_eq!(err, ApplierError::MissingOffset {
+            entry_index: 0,
+            op: WalOp::Truncate,
+        });
     }
 
     /// An IO failure (e.g., open of a nonexistent parent dir for
@@ -926,14 +915,11 @@ mod tests {
         let err = apply_wal_to_fresh_tree(&[entry], &HashMap::new(), |p| p.to_path_buf(), &[])
             .expect_err("truncate on missing file must Err");
         assert!(
-            matches!(
-                err,
-                ApplierError::IoFailure {
-                    entry_index: 0,
-                    op: WalOp::Truncate,
-                    ..
-                }
-            ),
+            matches!(err, ApplierError::IoFailure {
+                entry_index: 0,
+                op: WalOp::Truncate,
+                ..
+            }),
             "got {err:?}"
         );
     }

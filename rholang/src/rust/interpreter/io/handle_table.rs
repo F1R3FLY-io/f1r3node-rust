@@ -1338,9 +1338,8 @@ mod tests {
         // Load-bearing assertion: the reducer's PRIOR clone sees
         // the shared entries.  A field-replacement regression
         // trips here.
-        let (resolved_on_disk, resolved_id) = reducer_clone
-            .root_registry
-            .resolve_or_identity(&logical);
+        let (resolved_on_disk, resolved_id) =
+            reducer_clone.root_registry.resolve_or_identity(&logical);
         assert_eq!(
             resolved_on_disk, on_disk,
             "reducer-clone must resolve /@bundle to the manager-registered on-disk; \
@@ -1356,9 +1355,7 @@ mod tests {
 
         // Symmetry sanity: the outer table also sees the share
         // (any regression that only fixed one side would trip here).
-        let (outer_on_disk, outer_id) = table
-            .root_registry
-            .resolve_or_identity(&logical);
+        let (outer_on_disk, outer_id) = table.root_registry.resolve_or_identity(&logical);
         assert_eq!(outer_on_disk, on_disk);
         assert_eq!(outer_id, Some(id));
 
@@ -1373,9 +1370,11 @@ mod tests {
         // observe propagation via either side.
         let late_logical = PathBuf::from("/@bundle/late");
         let late_on_disk = PathBuf::from("/tmp/validator-0/bundle/late");
-        table
-            .root_registry
-            .register_with_remap(late_logical.clone(), late_on_disk.clone(), (99, 100));
+        table.root_registry.register_with_remap(
+            late_logical.clone(),
+            late_on_disk.clone(),
+            (99, 100),
+        );
         let (late_seen_on_disk, late_seen_id) = reducer_clone
             .root_registry
             .resolve_or_identity(&late_logical);

@@ -539,12 +539,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // reproduce the bytes locally.  Fresh joiners (empty
             // index) get zero help from this tier and fall back to
             // peer fetch — no regression.
-            let option2_ctx =
-                Some(crate::rust::engine::wal_payload_sync::Option2ReducerContext {
+            let option2_ctx = Some(
+                crate::rust::engine::wal_payload_sync::Option2ReducerContext {
                     block_storage: self.block_dag_storage.clone(),
                     block_store: self.block_store.clone(),
                     runtime_manager: self.runtime_manager.clone(),
-                });
+                },
+            );
             let _handle = crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
                 rx,
                 std::sync::Arc::clone(&wal_ctx.sync_driver),

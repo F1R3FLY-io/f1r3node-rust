@@ -147,7 +147,10 @@ impl InMemoryPayloadStore {
     /// can echo it into a WAL entry.
     pub fn insert(&self, bytes: Vec<u8>) -> [u8; 32] {
         let h = hash_bytes(&bytes);
-        self.map.write().expect("payload store lock poisoned").insert(h, bytes);
+        self.map
+            .write()
+            .expect("payload store lock poisoned")
+            .insert(h, bytes);
         h
     }
 
@@ -157,15 +160,19 @@ impl InMemoryPayloadStore {
     /// (the `serve_payload` rehash check would still catch it).
     pub fn insert_with_hash(&self, hash: [u8; 32], bytes: Vec<u8>) {
         debug_assert_eq!(hash, hash_bytes(&bytes), "hash/bytes mismatch");
-        self.map.write().expect("payload store lock poisoned").insert(hash, bytes);
+        self.map
+            .write()
+            .expect("payload store lock poisoned")
+            .insert(hash, bytes);
     }
 
     /// Number of entries stored.
-    pub fn len(&self) -> usize {
-        self.map.read().expect("payload store lock poisoned").len()
-    }
+    pub fn len(&self) -> usize { self.map.read().expect("payload store lock poisoned").len() }
     pub fn is_empty(&self) -> bool {
-        self.map.read().expect("payload store lock poisoned").is_empty()
+        self.map
+            .read()
+            .expect("payload store lock poisoned")
+            .is_empty()
     }
 
     /// DD-7b-2 (a) Option 2 (2026-08-29): return a cloned snapshot
@@ -272,18 +279,14 @@ impl PayloadLookup for DirectoryPayloadStore {
 /// (which owns the payload store) without introducing a circular
 /// dependency.
 impl rholang::rust::interpreter::io::wal::PayloadPersistence for DirectoryPayloadStore {
-    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
-        self.insert(bytes)
-    }
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> { self.insert(bytes) }
 }
 
 /// Phase 7b-2 (2026-08-27): same trait impl for the in-memory
 /// store, so tests can wire an in-process persistence backend
 /// without touching disk.
 impl rholang::rust::interpreter::io::wal::PayloadPersistence for InMemoryPayloadStore {
-    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> {
-        Ok(self.insert(bytes.to_vec()))
-    }
+    fn persist(&self, bytes: &[u8]) -> Result<[u8; 32], String> { Ok(self.insert(bytes.to_vec())) }
 }
 
 /// DD-7b-2 (a) Option 2 (2026-08-29): block-storage-backed
@@ -373,7 +376,8 @@ impl PayloadStoreBundle {
     pub fn from_directory(store: DirectoryPayloadStore) -> Self {
         let arc = Arc::new(store);
         Self {
-            persistence: arc.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+            persistence: arc.clone()
+                as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
             lookup: arc as Arc<dyn PayloadLookup>,
         }
     }
@@ -384,7 +388,8 @@ impl PayloadStoreBundle {
     pub fn from_in_memory(store: InMemoryPayloadStore) -> Self {
         let arc = Arc::new(store);
         Self {
-            persistence: arc.clone() as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
+            persistence: arc.clone()
+                as Arc<dyn rholang::rust::interpreter::io::wal::PayloadPersistence>,
             lookup: arc as Arc<dyn PayloadLookup>,
         }
     }
@@ -766,9 +771,11 @@ mod tests {
     ) -> block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage {
         use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
         let mut kvm = InMemoryStoreManager::new();
-        block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(&mut kvm)
-            .await
-            .expect("in-memory DAG storage")
+        block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new(
+            &mut kvm,
+        )
+        .await
+        .expect("in-memory DAG storage")
     }
 
     /// `BlockStorageBackedRecorder::record` writes through to the
@@ -806,9 +813,8 @@ mod tests {
     async fn recorder_write_through_survives_arc_dyn_erasure() {
         use rholang::rust::interpreter::io::wal::PayloadSourceRecorder;
         let storage = make_dag_storage().await;
-        let recorder: std::sync::Arc<dyn PayloadSourceRecorder> = std::sync::Arc::new(
-            BlockStorageBackedRecorder::new(storage.clone()),
-        );
+        let recorder: std::sync::Arc<dyn PayloadSourceRecorder> =
+            std::sync::Arc::new(BlockStorageBackedRecorder::new(storage.clone()));
 
         let payload_hash = [0x44u8; 32];
         let deploy_sig: Vec<u8> = vec![0xAA, 0xBB];
@@ -823,4 +829,3 @@ mod tests {
         assert_eq!(got, deploy_sig);
     }
 }
-

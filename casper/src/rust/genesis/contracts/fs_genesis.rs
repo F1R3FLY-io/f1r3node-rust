@@ -473,10 +473,7 @@ pub fn format_bundle_for_rholang(bundle: &[BundleEntry]) -> String {
                             entry.logical_name
                         )
                     });
-                let parent_rel = logical_path
-                    .parent()
-                    .and_then(|p| p.to_str())
-                    .unwrap_or("");
+                let parent_rel = logical_path.parent().and_then(|p| p.to_str()).unwrap_or("");
                 let root = if parent_rel.is_empty() {
                     BUNDLE_ROOT_PREFIX.to_string()
                 } else {
