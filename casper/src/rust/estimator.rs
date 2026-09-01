@@ -94,6 +94,24 @@ impl Estimator {
         filtered_latest_messages_hashes
             .retain(|validator, _| !invalid_latest_messages.contains_key(validator));
 
+        // A latest message this node does not hold (a stale slot below an
+        // LFS restore horizon) cannot be cited or scored; abstain the
+        // validator instead of failing every fork-choice run.
+        let mut unheld: Vec<Validator> = Vec::new();
+        for (validator, hash) in filtered_latest_messages_hashes.iter() {
+            if dag.lookup(hash)?.is_none() {
+                tracing::debug!(
+                    target: "f1r3fly.casper.estimator",
+                    "abstaining validator with unheld latest message {:?}",
+                    hash
+                );
+                unheld.push(validator.clone());
+            }
+        }
+        for validator in unheld {
+            filtered_latest_messages_hashes.remove(&validator);
+        }
+
         let genesis_metadata = BlockMetadata::from_block(genesis, false, None, None);
 
         tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
