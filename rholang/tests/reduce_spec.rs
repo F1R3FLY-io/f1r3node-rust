@@ -36,6 +36,8 @@ use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reduce::DebruijnInterpreter;
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+use rspace_plus_plus::rspace::bag::{Bag, BagDelta, Multiplicity};
+use rspace_plus_plus::rspace::data_index::{RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
@@ -6259,21 +6261,225 @@ fn resting_offers(
     result: &HashMap<Vec<Par>, Row<BindPattern, ListParWithRandom, TaggedContinuation>>,
 ) -> Vec<i64> {
     let key = vec![new_gstring_par("offer".to_string(), Vec::new(), false)];
-    let mut amounts: Vec<i64> = match result.get(&key) {
-        None => Vec::new(),
-        Some(row) => row
-            .data
-            .iter()
-            .flat_map(|datum| datum.a.pars.iter())
-            .flat_map(|par| par.decode_occurrences::<Expr>().into_iter())
-            .filter_map(|expr| match expr.expr_instance {
-                Some(ExprInstance::GInt(value)) => Some(value),
-                _ => None,
-            })
-            .collect(),
-    };
+    let mut amounts = result
+        .get(&key)
+        .map_or_else(Vec::new, |row| offer_amounts(&row.data));
     amounts.sort();
     amounts
+}
+
+fn offer_amounts(datums: &[Datum<ListParWithRandom>]) -> Vec<i64> {
+    let mut amounts = datums
+        .iter()
+        .flat_map(|datum| datum.a.pars.iter())
+        .flat_map(|par| par.decode_occurrences::<Expr>().into_iter())
+        .filter_map(|expr| match expr.expr_instance {
+            Some(ExprInstance::GInt(value)) => Some(value),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    amounts.sort_unstable();
+    amounts
+}
+
+fn guarded_offer_paths(
+    channel: &Par,
+    datums: &[Datum<ListParWithRandom>],
+) -> BTreeMap<i64, Vec<u8>> {
+    let paths = datums
+        .iter()
+        .map(|datum| {
+            let amounts = offer_amounts(std::slice::from_ref(datum));
+            assert_eq!(
+                amounts.len(),
+                1,
+                "each fixture datum contains exactly one amount"
+            );
+            (amounts[0], RSpaceDataIndex::datum_path(channel, datum))
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(paths.keys().copied().collect::<Vec<_>>(), vec![42, 55]);
+    let selected = &paths[&42];
+    let sibling = &paths[&55];
+    let lcp = selected
+        .iter()
+        .zip(sibling)
+        .take_while(|(left, right)| left == right)
+        .count();
+    assert_eq!((selected.len(), sibling.len(), lcp), (939, 939, 203));
+    paths
+}
+
+fn assert_guarded_offer_paths_survive_every_bag_order(paths: &BTreeMap<i64, Vec<u8>>) {
+    let selected = &paths[&42];
+    let sibling = &paths[&55];
+    for selected_inserted_first in [false, true] {
+        for shared in [false, true] {
+            let drop_orders: &[bool] = if shared { &[false, true] } else { &[false] };
+            for &drop_snapshot_first in drop_orders {
+                let mut target = Bag::new();
+                if selected_inserted_first {
+                    target.insert(selected).unwrap();
+                    target.insert(sibling).unwrap();
+                } else {
+                    target.insert(sibling).unwrap();
+                    target.insert(selected).unwrap();
+                }
+                let snapshot = shared.then(|| target.clone());
+                let mut delta = BagDelta::new();
+                delta.record_removal(selected, Multiplicity::ONE).unwrap();
+                delta.apply_to(&mut target).unwrap();
+
+                assert_eq!(target.count(selected), 0);
+                assert_eq!(target.count(sibling), 1);
+                assert_eq!((target.distinct_len(), target.cardinality()), (1, 1));
+                assert_eq!(
+                    target
+                        .iter()
+                        .map(|(path, multiplicity)| (path, multiplicity.get()))
+                        .collect::<Vec<_>>(),
+                    vec![(sibling.clone(), 1)]
+                );
+                let mut expected = Bag::new();
+                expected.insert(sibling).unwrap();
+                assert_eq!(target.compact_bytes(), expected.compact_bytes());
+                if let Some(snapshot) = snapshot {
+                    assert_eq!(snapshot.count(selected), 1);
+                    assert_eq!(snapshot.count(sibling), 1);
+                    if drop_snapshot_first {
+                        drop(snapshot);
+                        assert_eq!(target.count(sibling), 1);
+                    } else {
+                        drop(target);
+                        assert_eq!(snapshot.count(selected), 1);
+                        assert_eq!(snapshot.count(sibling), 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn assert_guarded_offer_data_store_publication_preserves_sibling(
+    channel: &Par,
+    datums: &[Datum<ListParWithRandom>],
+) {
+    let by_amount = datums
+        .iter()
+        .map(|datum| {
+            let amounts = offer_amounts(std::slice::from_ref(datum));
+            assert_eq!(amounts.len(), 1);
+            (amounts[0], datum.clone())
+        })
+        .collect::<BTreeMap<_, _>>();
+    let pool_amounts =
+        |pool: &rspace_plus_plus::rspace::data_index::CandidatePool<ListParWithRandom>| {
+            let mut amounts = (0..pool.len())
+                .filter_map(|position| pool.candidate(position).map(|(datum, _)| datum.clone()))
+                .flat_map(|datum| offer_amounts(std::slice::from_ref(&datum)))
+                .collect::<Vec<_>>();
+            amounts.sort_unstable();
+            amounts
+        };
+    let assert_state = |store: &RSpaceDataStore<Par, ListParWithRandom>, survivor: i64| {
+        let selected = if survivor == 42 { 55 } else { 42 };
+        assert_eq!(store.index().count(channel, &by_amount[&selected]), 0);
+        assert_eq!(store.index().count(channel, &by_amount[&survivor]), 1);
+        assert_eq!((store.distinct_len(), store.cardinality()), (1, 1));
+        assert_eq!(
+            offer_amounts(&store.channel_data(channel).unwrap().unwrap()),
+            vec![survivor],
+            "prefix traversal must preserve the unselected sibling"
+        );
+        let fresh_pool = store.channel_pool(channel).unwrap().unwrap();
+        assert_eq!(pool_amounts(&fresh_pool), vec![survivor]);
+
+        let mut expected = RSpaceDataStore::new();
+        expected
+            .set_channel(channel.clone(), [by_amount[&survivor].clone()])
+            .unwrap();
+        assert_eq!(
+            store.index().as_bag().compact_bytes(),
+            expected.index().as_bag().compact_bytes(),
+            "the candidate root must publish the canonical ACT image"
+        );
+    };
+    let assert_source = |store: &RSpaceDataStore<Par, ListParWithRandom>| {
+        assert_eq!(
+            offer_amounts(&store.channel_data(channel).unwrap().unwrap()),
+            vec![42, 55]
+        );
+        assert_eq!((store.distinct_len(), store.cardinality()), (2, 2));
+    };
+
+    for construction in 0..4 {
+        for selected in [42, 55] {
+            for ownership in 0..3 {
+                for catalog_mode in 0..3 {
+                    let other = if selected == 42 { 55 } else { 42 };
+                    let mut store = RSpaceDataStore::new();
+                    match construction {
+                        0 => {
+                            store
+                                .set_channel(channel.clone(), [by_amount[&selected].clone()])
+                                .unwrap();
+                            store.insert(channel, &by_amount[&other]).unwrap();
+                        }
+                        1 => {
+                            store
+                                .set_channel(channel.clone(), [by_amount[&other].clone()])
+                                .unwrap();
+                            store.insert(channel, &by_amount[&selected]).unwrap();
+                        }
+                        2 => store
+                            .set_channel(channel.clone(), [
+                                by_amount[&selected].clone(),
+                                by_amount[&other].clone(),
+                            ])
+                            .unwrap(),
+                        3 => store
+                            .set_channel(channel.clone(), [
+                                by_amount[&other].clone(),
+                                by_amount[&selected].clone(),
+                            ])
+                            .unwrap(),
+                        _ => unreachable!(),
+                    }
+                    let held_pool = match catalog_mode {
+                        0 => None,
+                        1 => {
+                            drop(store.channel_pool(channel).unwrap().unwrap());
+                            None
+                        }
+                        2 => Some(store.channel_pool(channel).unwrap().unwrap()),
+                        _ => unreachable!(),
+                    };
+                    let source = (ownership != 0).then(|| store.clone());
+                    let selected_path = RSpaceDataIndex::datum_path(channel, &by_amount[&selected]);
+                    let mut delta = BagDelta::new();
+                    delta
+                        .record_removal(&selected_path, Multiplicity::ONE)
+                        .unwrap();
+                    store.apply_delta(&delta).unwrap();
+
+                    assert_state(&store, other);
+                    if let Some(pool) = &held_pool {
+                        assert_eq!(pool_amounts(pool), vec![42, 55]);
+                    }
+                    if let Some(source) = source {
+                        assert_source(&source);
+                        if ownership == 1 {
+                            drop(source);
+                            assert_state(&store, other);
+                        } else {
+                            drop(store);
+                            assert_source(&source);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// ⚠ Defect **D1**, end to end through the real reducer and the real matcher.
@@ -6313,10 +6519,23 @@ async fn guard_rejection_backtracks_to_the_next_resting_datum() {
         .eval(offer_send(42), &env, rand().split_byte(1))
         .await
         .expect("the admissible offer rests");
+    let channel = new_gstring_par("offer".to_string(), Vec::new(), false);
+    let before = space.get_data(&channel).await;
+    assert_eq!(offer_amounts(&before), vec![42, 55]);
+    let paths = guarded_offer_paths(&channel, &before);
+    assert_guarded_offer_paths_survive_every_bag_order(&paths);
+    assert_guarded_offer_data_store_publication_preserves_sibling(&channel, &before);
     reducer
         .eval(guarded_offer_receive(), &env, rand().split_byte(2))
         .await
         .expect("the guarded receive evaluates");
+
+    let direct_after = space.get_data(&channel).await;
+    assert_eq!(
+        offer_amounts(&direct_after),
+        vec![55],
+        "the authoritative channel view must preserve the rejected datum"
+    );
 
     let result = space.to_map().await;
     assert_eq!(
@@ -6358,11 +6577,18 @@ async fn the_guarded_selection_does_not_depend_on_arrival_order() {
         .eval(offer_send(55), &env, rand().split_byte(1))
         .await
         .expect("the inadmissible offer rests");
+    let channel = new_gstring_par("offer".to_string(), Vec::new(), false);
+    let before = space.get_data(&channel).await;
+    assert_eq!(offer_amounts(&before), vec![42, 55]);
+    let paths = guarded_offer_paths(&channel, &before);
+    assert_guarded_offer_paths_survive_every_bag_order(&paths);
+    assert_guarded_offer_data_store_publication_preserves_sibling(&channel, &before);
     reducer
         .eval(guarded_offer_receive(), &env, rand().split_byte(2))
         .await
         .expect("the guarded receive evaluates");
 
+    assert_eq!(offer_amounts(&space.get_data(&channel).await), vec![55]);
     assert_eq!(
         resting_offers(&space.to_map().await),
         vec![55],

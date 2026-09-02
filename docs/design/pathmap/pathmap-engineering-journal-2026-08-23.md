@@ -3646,6 +3646,66 @@ EPM1, RMP2, cold-store, post-state, compute-charge, and storage-charge semantics
 does not claim that final guarded-root destruction is allocation-optimal, retire CBR-053's wider
 generated replay obligations, or activate the dormant PathMap persistence backend.
 
+### J-051 — 2026-09-01: structural deletion publishes a value-and-node-disjoint trie
+
+**QUESTION.** Can exact/prefix deletion safely prune a shallow CoW clone of PathMap 0.2.2, and can
+final guarded-root destruction keep both native stack and retained detached payloads bounded?
+
+**DISCOVERY.** No released PathMap operation used by the integration promises that destructive
+pruning of a shallow clone yields a node-and-value-disjoint candidate. Mixed insertion order,
+explicit value-free topology, realistic 939-byte Rholang datum keys with a 203-byte common prefix,
+and clone/drop order exposed sibling disconnection and duplicate payload-instance retirement.
+`PendingDisposals` also retained one detached value per cursor update. The former is an ownership
+correctness defect; the latter is a live-memory slope independent of native-stack safety.
+
+**FORMAL ORDER.** Commit `c3d48beb1` proves canonical publication, candidate/source ownership
+separation, exact endpoint conservation, two-phase final-owner teardown, and rejection of premature
+publication/partial disposal controls before the implementation checkpoint. The executable catalog
+binds 27 channel invariants to 20 causal mutants; it invokes production witnesses rather than
+searching source strings.
+
+**ALGORITHM.** Structural edits borrow one source read zipper and drive one destination write zipper
+over a fresh guarded PathMap. Retained valued endpoints are cloned once in canonical byte order;
+retained maximal value-free leaves recreate exact prefix-closed topology; selected values are not
+cloned. The candidate's guarded count and an independent iterative endpoint count must agree before
+the removal fold runs and before one root publication. Value-only updates retain ordinary PathMap
+CoW semantics and do not take this structural path.
+
+Final-owner teardown first removes and immediately disposes every real value in byte preorder without
+pruning topology. It then reverse-walks the value-free trie, installing only synthetic parent
+barriers and pruning one logical edge per step. Barriers bypass the real-value sink. Guarded write
+cursors dispose replacements immediately, so no proportional pending-value vector remains.
+
+**COMPLEXITY.** For $`B`$ logical source bytes and $`E`$ endpoints, structural rebuild is
+$`O(B + E)`$ time, retains the fresh result plus zipper state, and uses $`O(1)`$ native stack in path
+depth. Final teardown is $`O(B + E)`$ time, $`O(1)`$ retained detached payloads, and $`O(1)`$ native
+stack. An already-loaded channel replacement now scans retained Bag bytes; a new channel continues
+to use J-050's prefix-rooted unique-root insertion. The August 31 distinct-new-channel benchmark is
+therefore still applicable, while loaded replacement requires a separate benchmark.
+
+**EVIDENCE.** `68534b6fc` passes 28/28 GuardedPathMap tests, 33/33 Bag integration tests, 3/3 Bag CoW
+tests, 27/27 DataIndex integration tests, the 27-invariant/20-mutant channel registry, and a dedicated
+legacy-teardown regression under hard RSS ceilings and zero swap. The fixed-stack matrix includes
+65,536-byte valued and value-free paths on 256 KiB, arbitrary tries, root-plus-dense children, deep
+combs, early iterator/writer exits, alias races, exact payload-instance conservation, and fail-stop
+disposer failure. Two exact real-Rholang reducer regressions use 939-byte datum paths with a 203-byte
+common prefix and preserve both guard backtracking and arrival-order independence.
+
+**DECISION.** Use fresh streaming reconstruction for every structural Bag/guarded-map deletion until
+upstream PathMap provides an ownership-disjoint destructive primitive with the same topology and
+payload guarantees. Keep direct CoW zipper mutation for value-only updates. Do not fork PathMap and
+do not project entries into `Vec<Par>`, collect keys, or sort a flattened representation.
+
+**CONSENSUS AND ACCOUNTING.** The correction preserves successful RSpace state, channel/datum
+identity, multiplicity, candidate order, matching, COMM order, protobuf/bincode/EPM1/RMP2 bytes,
+hashes, compute charge, and storage charge. It repairs only an implementation state that could lose
+a resident sibling or retire shared payload ownership incorrectly.
+
+**BOUNDARY.** Native-stack and retained-payload closure are established. Final topology allocation
+and elapsed-time efficiency are not yet remeasured; J-050's historical Heaptrack/uProf hotspot and a
+new loaded-replacement ladder remain explicit follow-up experiments. PMU-005 remains the upstream
+request for intrinsic iterative PathMap destruction and ownership-safe destructive APIs.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

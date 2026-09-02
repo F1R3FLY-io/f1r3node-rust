@@ -96,3 +96,31 @@ AMD uProf is sampling-based, and absence from its top-100 table means below the 
 floor, not zero cycles. Heaptrack's process-wide counts include setup, candidate traversal, and
 final teardown. The exposed final-root teardown is a separate open optimization and must not be
 silently folded into this accepted channel-publication result.
+
+## Safety-closure addendum — 2026-09-01
+
+Commit `68534b6fc` changes the structural branch used when an **already-loaded** channel is replaced.
+It streams retained endpoints and maximal value-free leaves into a fresh ownership-disjoint Bag,
+replays the prepared relative channel Bag, validates exact endpoint authority, and publishes once.
+This closes a representation/order-dependent shallow-CoW pruning defect and prevents a write cursor
+from retaining $`O(k)`$ detached payloads across $`k`$ updates. Final-owner teardown now disposes real
+payloads immediately in byte preorder, then prunes value-free topology one logical edge at a time.
+
+The raw TSV in this document remains valid for its declared treatment: every observation loads
+**distinct new channels**, so `clear_existing` is false and the current implementation still takes
+the same prefix-rooted insertion branch measured above. The addendum does not reinterpret or replace
+those samples.
+
+The loaded-channel structural replacement branch now has $`O(B)`$ work in retained Bag bytes $`B`$.
+No replacement-specific latency, allocation, RSS, instruction, or cache claim is made yet. Likewise,
+the historical final-coordinate Heaptrack/uProf attribution remains motivation, not a measurement of
+the new two-phase teardown. A matched headless rerun must separately measure:
+
+1. new-channel construction, to reproduce the accepted SS-C32 control;
+2. loaded-channel replacement across resident-store and replaced-prefix cardinality ladders;
+3. unique and shared final-root teardown over line, dense, comb, and realistic RSpace geometries; and
+4. allocation calls, live requested bytes, peak RSS, elapsed time, and uProf attribution.
+
+The focused post-change verification is semantic/resource-shape evidence only: GuardedPathMap
+28/28, Bag 33/33, Bag CoW 3/3, DataIndex 27/27, the executable 27-invariant / 20-mutant registry,
+and the dedicated legacy-teardown regression pass under hard RSS ceilings with disabled swap.

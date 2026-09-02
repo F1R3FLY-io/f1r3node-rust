@@ -331,6 +331,8 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C29** | this checkpoint; campaign-root-4131 | f1r3node | partially specified generation checkpoint $`\rightarrow`$ formally verified affine publisher with exact inventory receipts, proof-derived pre-mutation resource admission, restart-path readmission, and deterministic derived-index repair | native stack $`O(1)`$ in trie depth, key length, retained-state depth, and object count; inventories and WAL/index emission remain streaming; one $`O(d)`$ recovery PathMap; every retained work slope has an explicit total-resource certificate | **yes for dormant checkpoint publication**; 74/74 invariant bindings, 17 Rocq capstones, 7,896 TLA+ states, 28 rejected mutants, 14 reached witnesses, 392/392 library and 817/817 package tests | [5.56](#556-formally-verified-generation-checkpoint-publication-ss-c29) |
 | **SS-C30** | this checkpoint; campaign-root-4131 | f1r3node | record-sized kind-1 PREPARE recovery buffer $`\rightarrow`$ formally refined phase-split streaming PDA with one reusable 64 KiB scratch region and source-authenticated replay | native stack $`O(1)`$ in record/key/object depth; fixed scratch plus boxed constant state; two WAL scans for index repair rather than three | **yes for dormant physical recovery**; 89/89 invariant bindings, 53 generated properties, fixed 128/256 KiB stack matrix, 452/452 library and 877/877 package tests | [5.57](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30) |
 | **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
+| **SS-C32** | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | f1r3node | whole-store clone/mutate/publish for each newly loaded channel $`\rightarrow`$ private relative Bag plus prefix-rooted insertion into one unique guarded trie | measured new-channel construction exponent **1.99273 $`\rightarrow`$ 1.00258** through 16,000 channels; exact 20,000-bind release gate **7.52 s / 151,408 KiB / zero swap** | **yes for new-channel construction**; 27 Rocq invariants, 20 rejected mutants, frozen-success differential, and exact state metrics | [5.59](#559-prefix-local-rspace-channel-publication-ss-c32) |
+| **SS-C33** | `c3d48beb1`, `68534b6fc`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded-channel replacement now explicitly $`O(B)`$ in retained Bag bytes pending measurement | **yes for ownership/stack closure; no new latency claim**; 28/28 guard, 33/33 Bag, 3/3 CoW, 27/27 DataIndex, 27-invariant/20-mutant registry, and dedicated legacy teardown | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -11489,6 +11491,102 @@ The raw matrix, profiler hashes, allocation counts, threats, and protocol are re
 SS-C32 introduces no recursive fallback, native-stack growth, `RUST_MIN_STACK`, `stacker`, traversal
 limit, `Vec<Par>` projection, PathMap fork, or new wire form. The successful store, multiplicities,
 loaded status, catalog behavior, match results, COMM schedule, and charge semantics are unchanged.
+
+### 5.60 Ownership-disjoint structural publication and two-phase PathMap teardown [SS-C33]
+
+#### 5.60.1 Why the prefix-local result needed an ownership correction
+
+SS-C32 correctly removed whole-store cloning from the common **new-channel** path, but a later
+mixed-construction and clone/drop matrix exposed a different boundary in PathMap 0.2.2. A shallow
+CoW header clone followed by destructive exact or prefix pruning did not establish a disjoint
+physical node-and-value region. Depending on insertion order and compressed-node geometry, the
+candidate could retain shared payload instances or disconnect a sibling that remained visible by
+point lookup. Separately, `PendingDisposals` retained every detached payload until a write cursor
+closed, so a bulk value update carried $`O(k)`$ live payloads for $`k`$ replacements. Those are
+ownership and retained-memory defects even though the traversal itself is iterative.
+
+Commit `c3d48beb1` proves the publication and final-owner protocols before implementation. Commit
+`68534b6fc` implements the derived invariants without changing PathMap or adding a dependency.
+Value-only multiplicity updates keep PathMap's intended CoW behavior: a unique anchor updates in
+place, while a shared anchor detaches through `Arc::make_mut`. Structural exact/prefix deletion uses
+a fresh `PathMap` allocation because none of the released clone, graft, restrict, subtract, join,
+meet, ACT, or zipper operations promises a node-and-value-disjoint result after destructive prune.
+
+#### 5.60.2 Streaming structural rebuild
+
+The source remains immutable until publication. One read zipper visits the complete logical trie in
+canonical byte preorder. The destination is a fresh guarded trie driven by one moving write zipper.
+Every retained valued endpoint is cloned exactly once; every retained maximal value-free leaf is
+recreated so prefix-closed topology is preserved; selected values are never cloned. Candidate
+construction and endpoint-count validation complete before a removal fold can observe the source.
+Only then is the root published once. If an alias retains the old root, it remains immutable; when
+its final owner retires, the ordinary guarded teardown disposes its original payload instances.
+
+**Algorithm 44 (OWNERSHIP-DISJOINT-STRUCTURAL-PUBLISH).** The pseudocode names the two authorities
+explicitly: `source` remains the only authoritative root until `candidate` is complete.
+
+```pseudocode
+candidate := fresh guarded PathMap with cloned disposal policy
+removed := 0
+
+for each logical node (path, optional_value, is_leaf) in source byte preorder:
+    if deletion_predicate(path):
+        removed += optional_value.is_present
+    else if optional_value is present:
+        candidate.move_to(path)
+        candidate.set(clone(optional_value))
+    else if is_leaf and path is not the root:
+        candidate.move_to(path)
+        candidate.create_value_free_path()
+
+assert candidate.endpoint_count = source.endpoint_count - removed
+assert iterative_count(candidate) = candidate.endpoint_count
+fold selected source values in the same canonical order
+publish candidate exactly once
+```
+
+For $`B`$ logical source bytes and $`E`$ valued endpoints, a structural rebuild performs
+$`O(B + E)`$ work and retains the fresh result plus zipper state; native stack is $`O(1)`$ in path
+depth. This is intentionally distinct from a value-only mutation, which retains the unique CoW
+anchor. An already-loaded channel replacement now pays for the retained Bag stream; the previously
+measured SS-C32 ladder consists of distinct new channels and continues to take the prefix-rooted
+in-place branch. A replacement-specific timing/allocation ladder is therefore required before any
+performance claim is made for the structural branch.
+
+#### 5.60.3 Final-owner teardown and bounded payload retention
+
+Final-root destruction is a two-phase pushdown automaton (PDA). Phase A visits real values in byte
+preorder, removes only the value, and immediately calls the named stack-safe disposer before the
+next zipper movement. Phase B begins from value-free provenance, walks topology in reverse
+byte/postorder, and uses a synthetic immediate-parent barrier so each `prune_ascend` removes exactly
+one logical edge. Barriers never enter the real-payload sink. Guarded mutation uses the same
+immediate-disposal rule, eliminating the proportional `PendingDisposals` vector.
+
+The exact endpoint count carried by `AnchorRoot` is updated by every guarded mutation gateway and
+audited iteratively before a rebuilt candidate is published. Final teardown must consume that exact
+count; it never invokes PathMap's depth-recursive subtree counter. A quarantined raw header remains
+inside the fail-stop unwind boundary until both values and topology are empty.
+
+The capped zero-swap verification matrix is: GuardedPathMap **28/28** (including 65,536-byte valued
+and value-free lines on a 256 KiB stack, arbitrary topology, dense root, comb, clone races, and
+fail-stop disposal); Bag integration **33/33**; Bag CoW publication **3/3**; DataIndex integration
+**27/27**; the executable **27-invariant / 20-mutant** channel registry; and the dedicated
+legacy-teardown regression. Two exact `reduce_spec` cases additionally exercise 939-byte production
+datum keys with a 203-byte common prefix through Bag/DataIndex before proving Rholang guard
+backtracking and arrival-order independence. These peaks include compilation and are resource envelopes, not
+algorithmic heap measurements: 85.1 MiB, 928.7 MiB, 1.8 GiB, 82.7 MiB, 81.8 MiB, and 86.4 MiB,
+respectively, with zero swap.
+
+#### 5.60.4 Result boundary
+
+SS-C33 closes native-stack safety, exact payload conservation, sibling preservation, candidate
+ownership disjointness, and the retained detached-payload slope. It does **not** yet establish that
+the final topology PDA is allocation- or time-optimal. The August 31 profile's 23,208,116
+process-wide PathMap line-list allocation calls and final-coordinate `AnchorRoot::drop` hotspot
+remain historical motivation until the new implementation receives a matched headless uProf and
+Heaptrack rerun. No Rholang value, datum identity, multiplicity, candidate order, matcher result,
+binding, protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap
+algebra, accepted program, or parallel execution order changes.
 
 ---
 
