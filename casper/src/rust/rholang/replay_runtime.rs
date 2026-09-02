@@ -586,6 +586,10 @@ impl ReplayRuntimeOps {
                 .fs_handles
                 .current_deploy_sig
                 .clone(),
+            // Phase 7 deploy-end sweep (2026-09-02): pass the file
+            // handle table clone so the follower's Drop also sweeps
+            // any file/dir-stream fds the replay left open.
+            self.runtime_ops.runtime.fs_handles.clone(),
         );
 
         // Cost-accounted merge: `process_deploy_with_cost_accounting`

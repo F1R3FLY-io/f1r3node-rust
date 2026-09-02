@@ -1216,6 +1216,11 @@ impl FsProcesses {
                     // Same canon_path derivation as `open_impl`
                     // (C-29-1 fix) — must be byte-identical so WAL
                     // paths match across leader/follower.
+                    let deploy = *self
+                        .handles
+                        .current_deploy_scope
+                        .read()
+                        .expect("current_deploy_scope RwLock poisoned");
                     let shadow = FileHandle {
                         file,
                         // M-R2: same lexical normalization as the leader's
@@ -1230,6 +1235,11 @@ impl FsProcesses {
                         // replay branch we never see a shadow handle
                         // whose real fd was O_APPEND.
                         position: 0,
+                        // Deploy-end sweep (2026-09-02): shadow handles
+                        // also carry the deploy scope so the follower's
+                        // sweep symmetrically drops shadows the leader
+                        // dropped.
+                        deploy,
                     };
                     // Ignore the return value: if the slot is already
                     // occupied (shouldn't happen on a fresh follower),
@@ -1350,6 +1360,11 @@ impl FsProcesses {
         // `rel` entirely, causing every WAL entry to record only the
         // canonRoot — replay had no way to tell which file to apply
         // the payload to.
+        let deploy = *self
+            .handles
+            .current_deploy_scope
+            .read()
+            .expect("current_deploy_scope RwLock poisoned");
         let handle = FileHandle {
             file: Some(file),
             // M-R2 round-2 fix: lexically normalize so `a/b.txt` and
@@ -1367,6 +1382,12 @@ impl FsProcesses {
             // our sequential-write path doesn't consult `position`
             // when the WAL journal is a no-op).
             position: 0,
+            // Deploy-end sweep (2026-09-02): capture the scope so
+            // FileHandleTable::close_all_for_deploy can identify this
+            // file as belonging to the ending deploy.  Read from the
+            // per-runtime current_deploy_scope cell, populated by
+            // WalDeployScope::new_with_lock_sweep at deploy entry.
+            deploy,
         };
         match self.handles.insert(handle).await {
             Ok(fd) => ok_u64(fd),

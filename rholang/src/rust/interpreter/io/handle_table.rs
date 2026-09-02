@@ -120,6 +120,14 @@ pub struct FileHandle {
     /// reads identical `position` on both sides for the same
     /// syscall and produces byte-identical WAL entries.
     pub position: u64,
+    /// Deploy scope this file was opened under (2026-09-02, Phase 7
+    /// deploy-end sweep parity with `DirHandle::deploy`).  Populated
+    /// at `fs_open` time from `handles.current_deploy_scope`;
+    /// consulted by `FileHandleTable::close_all_for_deploy` to sweep
+    /// files the deploy left open past its `WalDeployScope::drop`.
+    /// Sentinel `[0; 32]` for out-of-deploy opens (test paths only
+    /// under normal operation).
+    pub deploy: super::lock::DeployScope,
 }
 
 #[derive(Debug, Clone)]
@@ -657,6 +665,38 @@ impl FileHandleTable {
             .get(&fd)
             .and_then(|h| h.file.as_ref().map(|f| f.as_raw_fd()))
     }
+
+    /// Close every file fd owned by `scope`.  Mirrors
+    /// `LockRegistry::release_all_for_deploy` and
+    /// `DirHandleTable::close_all_for_deploy` — called from
+    /// `WalDeployScope::Drop` to sweep files the caller left open
+    /// past deploy end (via `drop(File)` without dispatching
+    /// `fs_close`, or by dropping the Rholang cap holding the fd).
+    /// Returns the count of fds swept, for diagnostics.
+    ///
+    /// Sentinel `[0; 32]` is a hard error: `WalDeployScope::Drop`
+    /// only calls this with a Blake2b256-derived scope, which never
+    /// collides with the sentinel.  A sentinel call would sweep
+    /// every file opened outside a deploy (test scaffolding), so
+    /// fail loudly on the assumption that it indicates a code bug.
+    ///
+    /// Dropping a `FileHandle` (whose `file: Option<File>` holds
+    /// the OS fd) automatically closes the underlying kernel fd via
+    /// `File`'s Drop impl, so the sweep also reclaims OS-level
+    /// resources.  Shadow handles (`file: None`, follower's
+    /// is_replay path) have no OS fd; sweeping them is a pure
+    /// HashMap-entry removal.
+    pub async fn close_all_for_deploy(&self, scope: &super::lock::DeployScope) -> usize {
+        assert!(
+            *scope != [0u8; 32],
+            "FileHandleTable::close_all_for_deploy called with sentinel scope [0; 32]; \
+             callers must pass a Blake2b256-derived deploy scope"
+        );
+        let mut table = self.inner.table.write().await;
+        let before = table.len();
+        table.retain(|_, h| &h.deploy != scope);
+        before - table.len()
+    }
 }
 
 impl Default for FileHandleTable {
@@ -687,6 +727,7 @@ mod tests {
             mode: AccessMode::Read,
             cmode: ConsensusMode::Oracular,
             position: 0,
+            deploy: [0u8; 32],
         }
     }
 
@@ -697,6 +738,7 @@ mod tests {
             mode: AccessMode::Read,
             cmode,
             position: 0,
+            deploy: [0u8; 32],
         }
     }
 
@@ -1385,5 +1427,84 @@ mod tests {
              (rather than middle-Arc sharing) trips here"
         );
         assert_eq!(late_seen_id, Some((99, 100)));
+    }
+
+    // Phase 7 deploy-end sweep pins (2026-09-02).  Symmetric with
+    // DirHandleTable's close_all_for_deploy tests — proves the
+    // scope-keyed retain filter and the sentinel-scope guard.
+
+    fn mk_handle_with_deploy(deploy: super::super::lock::DeployScope) -> FileHandle {
+        FileHandle {
+            file: None,
+            canon_path: PathBuf::from("/root/f.bin"),
+            mode: AccessMode::Read,
+            cmode: ConsensusMode::Oracular,
+            position: 0,
+            deploy,
+        }
+    }
+
+    /// close_all_for_deploy sweeps handles whose deploy matches the
+    /// requested scope; other-deploy handles are untouched.
+    #[tokio::test]
+    async fn close_all_for_deploy_sweeps_only_matching_deploy() {
+        let table = FileHandleTable::new();
+        let scope_a: super::super::lock::DeployScope = [0xAAu8; 32];
+        let scope_b: super::super::lock::DeployScope = [0xBBu8; 32];
+        let fd_a1 = table
+            .insert(mk_handle_with_deploy(scope_a))
+            .await
+            .expect("insert scope_a #1");
+        let fd_a2 = table
+            .insert(mk_handle_with_deploy(scope_a))
+            .await
+            .expect("insert scope_a #2");
+        let fd_b = table
+            .insert(mk_handle_with_deploy(scope_b))
+            .await
+            .expect("insert scope_b");
+        let n = table.close_all_for_deploy(&scope_a).await;
+        assert_eq!(n, 2, "both scope_a files swept");
+        assert!(
+            table.with_mut(fd_a1, |_| ()).await.is_none(),
+            "scope_a fd #1 must be gone"
+        );
+        assert!(
+            table.with_mut(fd_a2, |_| ()).await.is_none(),
+            "scope_a fd #2 must be gone"
+        );
+        assert!(
+            table.with_mut(fd_b, |_| ()).await.is_some(),
+            "scope_b fd must survive"
+        );
+    }
+
+    /// close_all_for_deploy panics on the sentinel scope — same
+    /// fail-loud invariant WalDeployScope::new_with_lock_sweep
+    /// enforces at construction.
+    #[tokio::test]
+    #[should_panic(expected = "sentinel scope")]
+    async fn close_all_for_deploy_panics_on_sentinel_scope() {
+        let table = FileHandleTable::new();
+        let _ = table.close_all_for_deploy(&[0u8; 32]).await;
+    }
+
+    /// close_all_for_deploy is a no-op when no handles match the
+    /// scope (return count is 0, no panics on empty tables).
+    #[tokio::test]
+    async fn close_all_for_deploy_no_match_is_noop() {
+        let table = FileHandleTable::new();
+        let scope: super::super::lock::DeployScope = [0xAAu8; 32];
+        let other: super::super::lock::DeployScope = [0xBBu8; 32];
+        let fd = table
+            .insert(mk_handle_with_deploy(scope))
+            .await
+            .expect("insert");
+        let n = table.close_all_for_deploy(&other).await;
+        assert_eq!(n, 0, "no-match sweep is a no-op");
+        assert!(
+            table.with_mut(fd, |_| ()).await.is_some(),
+            "handle must remain present"
+        );
     }
 }

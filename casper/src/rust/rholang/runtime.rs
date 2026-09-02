@@ -313,6 +313,31 @@ pub(crate) struct WalDeployScope {
     /// reducer walks (payload_hash → deploy_sig → block_hash →
     /// block → ProcessedDeploy).
     current_deploy_sig_cell: std::sync::Arc<std::sync::RwLock<Vec<u8>>>,
+    /// Phase 7 open-item close-out (2026-09-02): Arc-shared clones
+    /// of the per-runtime file and dir handle tables.  Drop uses
+    /// these to sweep any files/dir-streams the deploy left open
+    /// past its scope (via drop-without-close on the Rholang side).
+    ///
+    /// Fire-and-forget spawn model: Drop is sync, but the tables'
+    /// close_all_for_deploy methods are async (tokio::sync::RwLock
+    /// internals).  Drop spawns a detached tokio task holding the
+    /// clones; the sweep completes on the shared runtime pool
+    /// asynchronously.  Correctness: within a block, deploys run
+    /// sequentially and the next deploy's fs_open calls allocate
+    /// fresh (monotonic) fds regardless of pending-sweep state, so
+    /// races don't produce aliasing.  DoS mitigation window: the
+    /// sweep may lag one deploy behind under adversarial Rholang,
+    /// but the per-runtime `MAX_OPEN_FDS = 1024` cap plus per-block
+    /// runtime respawn still bound the total leak surface.
+    ///
+    /// Both tables use their own DeployScope-keyed retain filter,
+    /// so a stale sweep from a prior deploy can't accidentally
+    /// remove entries from a later deploy.
+    ///
+    /// See auto-memory `fileio_deploy_end_fd_sweep.md` (if extant)
+    /// and plan-doc entry "Dir-stream fd deploy-end sweep" for the
+    /// history.
+    fs_handles: rholang::rust::interpreter::io::handle_table::FileHandleTable,
 }
 
 impl WalDeployScope {
@@ -340,6 +365,10 @@ impl WalDeployScope {
         // fine because the legacy test constructor doesn't wire
         // any payload-source recorder, so the recorder-skip guard
         // in journal_write covers it either way.
+        //
+        // Phase 7 deploy-end sweep (2026-09-02): test-only fresh
+        // FileHandleTable so Drop's fd sweep spawns against an
+        // empty table (no-op).
         Self::new_with_lock_sweep(
             wal,
             LockRegistry::new(),
@@ -347,6 +376,7 @@ impl WalDeployScope {
             std::sync::Arc::new(std::sync::RwLock::new([0u8; 32])),
             Vec::new(),
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
         )
     }
 
@@ -370,6 +400,11 @@ impl WalDeployScope {
         current_scope_cell: std::sync::Arc<std::sync::RwLock<DeployScope>>,
         deploy_sig: Vec<u8>,
         current_deploy_sig_cell: std::sync::Arc<std::sync::RwLock<Vec<u8>>>,
+        // Phase 7 deploy-end sweep (2026-09-02): Arc-shared clone of
+        // the per-runtime file handle table.  Drop sweeps any files
+        // (and via FileHandleTable::dir_handles, any dir streams)
+        // this deploy left open.
+        fs_handles: rholang::rust::interpreter::io::handle_table::FileHandleTable,
     ) -> Self {
         // Promoted from debug_assert to assert during step-5 review
         // (2026-08-13) for release-build defense-in-depth: the 3 call
@@ -412,6 +447,7 @@ impl WalDeployScope {
             deploy_scope,
             current_scope_cell,
             current_deploy_sig_cell,
+            fs_handles,
         }
     }
 
@@ -548,6 +584,36 @@ impl Drop for WalDeployScope {
             .write()
             .expect("current_deploy_sig RwLock poisoned")
             .clear();
+        // Phase 7 open-item close-out (2026-09-02): sweep any file
+        // and dir-stream handles the deploy left open.  Fire-and-
+        // forget spawn: the tables' close_all_for_deploy methods
+        // are async (tokio::sync::RwLock internals) but Drop is
+        // sync, so we spawn a detached task holding Arc-shared
+        // clones of both tables.  Within-block correctness: deploys
+        // run sequentially; the next deploy's fs_open calls
+        // allocate fresh monotonic fds regardless of pending-sweep
+        // state, so races don't produce aliasing.  Between-block
+        // correctness: per-block runtime respawn creates fresh
+        // handle tables, so any pending sweep against the old
+        // tables races safely against unrelated state.  Skip when
+        // no tokio runtime is available (rare: only test paths
+        // that construct WalDeployScope outside an async context).
+        let fs_handles = self.fs_handles.clone();
+        let scope = self.deploy_scope;
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let n_file = fs_handles.close_all_for_deploy(&scope).await;
+                let n_dir = fs_handles.dir_handles.close_all_for_deploy(&scope).await;
+                if n_file > 0 || n_dir > 0 {
+                    tracing::debug!(
+                        target: "f1r3fly.casper.fs_handles",
+                        n_files_swept = n_file,
+                        n_dir_streams_swept = n_dir,
+                        "deploy-end fd sweep: closed handles the deploy left open"
+                    );
+                }
+            });
+        }
     }
 }
 
@@ -1857,6 +1923,10 @@ impl RuntimeOps {
             // canonical and avoids duplicate mappings.
             cosigned.primary().sig.to_vec(),
             self.runtime.fs_handles.current_deploy_sig.clone(),
+            // Phase 7 deploy-end sweep (2026-09-02): Arc-shared
+            // clone of the file handle table so Drop can sweep any
+            // file/dir-stream fds this deploy left open.
+            self.runtime.fs_handles.clone(),
         );
 
         // INNER soft-checkpoint — wraps the USER DEPLOY only. On a failed user
@@ -2273,6 +2343,10 @@ impl RuntimeOps {
             // pre-Option-2 behavior.
             Vec::new(),
             self.runtime.fs_handles.current_deploy_sig.clone(),
+            // Phase 7 deploy-end sweep (2026-09-02): also sweep any
+            // file/dir-stream fds a system deploy leaves open.
+            // System deploys are trusted but consistency > laxity.
+            self.runtime.fs_handles.clone(),
         );
 
         let (event_log, result, mergeable_channels) =
@@ -3785,6 +3859,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             lock_registry
                 .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy_scope)
@@ -3831,6 +3906,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             lock_registry
                 .try_acquire_range((1, 43), 0, 100, LockMode::Write, holder(1), deploy_a)
@@ -3842,6 +3918,107 @@ mod tests {
             1,
             "sweep MUST be scope-scoped: only deploy A's lock cleared, \
              deploy B's survives"
+        );
+    }
+
+    /// Phase 7 open-item close-out (2026-09-02): Drop spawns the
+    /// FileHandleTable + DirHandleTable sweep for this deploy's
+    /// scope.  Populate a handle under a known scope, drop the
+    /// WalDeployScope inside a tokio runtime, then poll until the
+    /// spawned sweep completes.  Verifies that:
+    ///   (a) the sweep spawn actually fires from Drop,
+    ///   (b) it targets the correct scope (only matching entries
+    ///       removed),
+    ///   (c) it drains both file and dir handle tables.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wal_deploy_scope_drop_spawns_fd_sweep() {
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        use rholang::rust::interpreter::io::dir_handle_table::DirHandle;
+        use rholang::rust::interpreter::io::handle_table::{FileHandle, FileHandleTable};
+        use rholang::rust::interpreter::io::mode::AccessMode;
+        use rholang::rust::interpreter::io::ConsensusMode;
+
+        let wal = Wal::new();
+        let lock_registry = LockRegistry::new();
+        let current_scope_cell = std::sync::Arc::new(std::sync::RwLock::new([0u8; 32]));
+        let deploy_scope: DeployScope = [0xE5u8; 32];
+        let other_scope: DeployScope = [0xF6u8; 32];
+
+        // Fresh table clone-shared with WalDeployScope.
+        let fs_handles = FileHandleTable::new();
+
+        // Insert a file handle under deploy_scope + another under
+        // other_scope; also a dir handle under deploy_scope.
+        let fd_swept = fs_handles
+            .insert(FileHandle {
+                file: None,
+                canon_path: PathBuf::from("/root/x"),
+                mode: AccessMode::Read,
+                cmode: ConsensusMode::Oracular,
+                position: 0,
+                deploy: deploy_scope,
+            })
+            .await
+            .expect("file insert scope");
+        let fd_other = fs_handles
+            .insert(FileHandle {
+                file: None,
+                canon_path: PathBuf::from("/root/y"),
+                mode: AccessMode::Read,
+                cmode: ConsensusMode::Oracular,
+                position: 0,
+                deploy: other_scope,
+            })
+            .await
+            .expect("file insert other");
+        let dir_fd_swept = fs_handles
+            .dir_handles
+            .insert(DirHandle::shadow(
+                PathBuf::from("/root/dir"),
+                ConsensusMode::Oracular,
+                deploy_scope,
+            ))
+            .await
+            .expect("dir insert scope");
+
+        {
+            let _scope = WalDeployScope::new_with_lock_sweep(
+                wal.clone(),
+                lock_registry.clone(),
+                deploy_scope,
+                current_scope_cell.clone(),
+                Vec::new(),
+                std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                fs_handles.clone(),
+            );
+            // Scope drops at end of block — spawns the sweep.
+        }
+
+        // Poll until the fire-and-forget sweep completes (bounded
+        // by 500ms so an infinite hang surfaces as a test failure).
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            let file_gone = fs_handles.with_mut(fd_swept, |_| ()).await.is_none();
+            let dir_gone = fs_handles.dir_handles.get(dir_fd_swept).await.is_none();
+            if file_gone && dir_gone {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!(
+                    "sweep did not complete within 500ms; file_gone={file_gone} \
+                     dir_gone={dir_gone} — Drop spawn may not have fired, or the \
+                     tokio runtime did not schedule the sweep task"
+                );
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // Other-scope file survives (sweep is scope-scoped).
+        assert!(
+            fs_handles.with_mut(fd_other, |_| ()).await.is_some(),
+            "other-scope file must survive scope-scoped sweep"
         );
     }
 
@@ -3866,6 +4043,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             // Inside the guard: real scope.
             assert_eq!(
@@ -3900,6 +4078,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             // Acquire 5 range locks + 1 sequential (on different inode).
             for i in 0..5 {
@@ -3972,6 +4151,7 @@ mod tests {
                 current_scope_cell,
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             registry_snapshot
                 .try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy_scope)
@@ -4019,6 +4199,7 @@ mod tests {
             current_scope_cell,
             Vec::new(),
             std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+            rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
     }
 
@@ -4059,6 +4240,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             let outcome = lock_registry
                 .try_acquire_range_wait(
@@ -4154,6 +4336,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             let _a_outcome = lock_registry
                 .try_acquire_range_wait(
@@ -4275,6 +4458,7 @@ mod tests {
                 current_scope_cell.clone(),
                 Vec::new(),
                 std::sync::Arc::new(std::sync::RwLock::new(Vec::new())),
+                rholang::rust::interpreter::io::handle_table::FileHandleTable::new(),
             );
             lock_registry
                 .try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy_scope)
