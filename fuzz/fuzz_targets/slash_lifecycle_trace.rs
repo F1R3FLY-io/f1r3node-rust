@@ -102,11 +102,19 @@ fuzz_target!(|input: Input| {
     let deploys = candidates
         .iter()
         .map(|candidate| {
-            support::slash_deploy(
-                candidate.invalid_block_hash.clone(),
-                proposer.clone(),
-                candidate.target_activation_epoch.get(),
-            )
+            match &candidate.equivocation_block_hash {
+                Some(second_hash) => support::equivocation_slash_deploy(
+                    candidate.invalid_block_hash.clone(),
+                    second_hash.clone(),
+                    proposer.clone(),
+                    candidate.target_activation_epoch.get(),
+                ),
+                None => support::slash_deploy(
+                    candidate.invalid_block_hash.clone(),
+                    proposer.clone(),
+                    candidate.target_activation_epoch.get(),
+                ),
+            }
         })
         .collect::<Vec<_>>();
     let block =
@@ -115,22 +123,24 @@ fuzz_target!(|input: Input| {
     assert!(validate_received_slash_deploys(&block, &snapshot, &authority,).is_ok());
 
     if let Some(candidate) = candidates.first() {
+        let duplicate = match &candidate.equivocation_block_hash {
+            Some(second_hash) => support::equivocation_slash_deploy(
+                candidate.invalid_block_hash.clone(),
+                second_hash.clone(),
+                proposer.clone(),
+                candidate.target_activation_epoch.get(),
+            ),
+            None => support::slash_deploy(
+                candidate.invalid_block_hash.clone(),
+                proposer.clone(),
+                candidate.target_activation_epoch.get(),
+            ),
+        };
         let duplicate_block = support::block_with_system_deploys(
             input.proposer.wrapping_add(1),
-            proposer.clone(),
+            proposer,
             block_number,
-            vec![
-                support::slash_deploy(
-                    candidate.invalid_block_hash.clone(),
-                    proposer.clone(),
-                    candidate.target_activation_epoch.get(),
-                ),
-                support::slash_deploy(
-                    candidate.invalid_block_hash.clone(),
-                    proposer,
-                    candidate.target_activation_epoch.get(),
-                ),
-            ],
+            vec![duplicate.clone(), duplicate],
         );
         assert!(validate_received_slash_deploys(&duplicate_block, &snapshot, &authority,).is_err());
     }

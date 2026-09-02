@@ -2219,6 +2219,11 @@ Definition finalized_floor_restore_first_proposal_correct :=
 
 Print Assumptions finalized_floor_restore_first_proposal_correct.
 
+Definition finalized_floor_restore_first_authored_sequence_correct :=
+  @genesis_placeholder_first_authored_sequence_is_one.
+
+Print Assumptions finalized_floor_restore_first_authored_sequence_correct.
+
 Definition finalized_floor_restore_sequence_correct :=
   @generation_change_preserves_monotonic_key_sequence.
 

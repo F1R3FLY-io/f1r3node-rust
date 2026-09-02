@@ -20,6 +20,8 @@ use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
+use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::slashing_authorization::CanonicalSlashAuthority;
@@ -32,8 +34,8 @@ use models::rust::block_metadata::{
 };
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedSystemDeploy, SystemDeployData,
-    ValidatorBondGeneration,
+    BlockMessage, Body, Bond, F1r3flyState, FinalizedFloorCommitment, Header,
+    ProcessedSystemDeploy, SystemDeployData, ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use parking_lot::RwLock;
@@ -156,6 +158,12 @@ pub fn block_with_system_deploys(
             extra_bytes: Bytes::new(),
             sender_bond_generation: Some(BondGeneration::GENESIS),
             objective_equivocation_evidence_delta: Vec::new(),
+            finalized_floor: Some(FinalizedFloorCommitment {
+                floor_hash: block_hash(251),
+                floor_post_state_hash: block_hash(250),
+                certificate_digest: block_hash(248),
+                authority_context_digest: block_hash(249),
+            }),
         },
         body: Body {
             state: F1r3flyState {
@@ -171,6 +179,8 @@ pub fn block_with_system_deploys(
             rejected_state_effects: vec![],
             system_deploys,
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         },
         justifications: vec![],
         sender,
@@ -179,6 +189,7 @@ pub fn block_with_system_deploys(
         sig_algorithm: String::new(),
         shard_id: "root".to_string(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     }
 }
 
@@ -190,7 +201,7 @@ pub fn block_with_system_deploys(
 fn empty_dag() -> KeyValueDagRepresentation {
     let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let deploy_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let occurrence_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
+    let occurrence_store = Arc::new(InMemoryKeyValueStore::new());
     let floor_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     KeyValueDagRepresentation {
@@ -210,9 +221,10 @@ fn empty_dag() -> KeyValueDagRepresentation {
             BlockMetadataStore::new(metadata_store).unwrap(),
         )),
         deploy_index: Arc::new(RwLock::new(deploy_store)),
-        deploy_occurrence_index: Arc::new(RwLock::new(occurrence_store)),
+        deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(occurrence_store).unwrap(),
         floor_index: floor_store,
         frontier_index: frontier_store,
+        lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
     }
 }
 
@@ -226,6 +238,12 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
             extra_bytes: Bytes::new(),
             sender_bond_generation: Some(BondGeneration::GENESIS),
             objective_equivocation_evidence_delta: Vec::new(),
+            finalized_floor: Some(FinalizedFloorCommitment {
+                floor_hash: block_hash(251),
+                floor_post_state_hash: block_hash(250),
+                certificate_digest: block_hash(248),
+                authority_context_digest: block_hash(249),
+            }),
         },
         body: Body {
             state: F1r3flyState {
@@ -247,6 +265,8 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
             rejected_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
         },
         justifications: Vec::new(),
         sender: evidence.sender.clone(),
@@ -255,6 +275,7 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         sig_algorithm: "fuzz".to_string(),
         shard_id: "root".to_string(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
     let authority = CertifiedSenderAuthority::new(
         &block,
@@ -269,7 +290,7 @@ fn metadata(evidence: &Evidence) -> BlockMetadata {
         CertifiedAdmissionOutcome::rejected(
             &block,
             &authority,
-            AdmissionRejectionReason::InvalidTransaction,
+            AdmissionRejectionReason::AdmissibleEquivocation,
         )
     } else {
         CertifiedAdmissionOutcome::accepted(&block, &authority)
@@ -371,6 +392,7 @@ pub fn snapshot(
             active_validators,
         },
         consensus_context: CertifiedConsensusContext::pre_genesis(),
+        finalized_floor_certificate: None,
     }
 }
 

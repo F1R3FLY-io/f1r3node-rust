@@ -229,6 +229,12 @@ Definition latest_slot_sequence
   (latest : BlockHash) : nat :=
   if Nat.eqb latest canonical then 0 else sequence latest.
 
+Definition next_latest_sequence
+  (canonical : BlockHash)
+  (sequence : BlockHash -> nat)
+  (latest : BlockHash) : nat :=
+  S (latest_slot_sequence canonical sequence latest).
+
 Theorem genesis_first_proposal_is_heldness_independent :
   forall canonical held_left held_right,
     first_proposal_allowed canonical held_left canonical =
@@ -246,6 +252,16 @@ Proof.
   unfold latest_slot_sequence. rewrite Nat.eqb_refl. reflexivity.
 Qed.
 
+Theorem genesis_placeholder_first_authored_sequence_is_one :
+  forall canonical sequence,
+    next_latest_sequence canonical sequence canonical = 1.
+Proof.
+  intros canonical sequence.
+  unfold next_latest_sequence.
+  rewrite genesis_placeholder_has_sequence_zero.
+  reflexivity.
+Qed.
+
 Theorem generation_change_preserves_monotonic_key_sequence :
   forall previous_sequence,
     previous_sequence < S previous_sequence.
@@ -261,4 +277,5 @@ Print Assumptions reconciled_slot_is_materialized.
 Print Assumptions canonical_identity_is_always_in_certified_support.
 Print Assumptions genesis_first_proposal_is_heldness_independent.
 Print Assumptions genesis_placeholder_has_sequence_zero.
+Print Assumptions genesis_placeholder_first_authored_sequence_is_one.
 Print Assumptions generation_change_preserves_monotonic_key_sequence.

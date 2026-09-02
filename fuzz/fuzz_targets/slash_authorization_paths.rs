@@ -179,7 +179,7 @@ fn expected_validation_ok(
             {
                 return false;
             }
-        } else if !metadata.is_rejected() {
+        } else if !metadata.is_slash_evidence_eligible() {
             return false;
         }
         if epoch_for_block_number(metadata.block_number, epoch_length)
@@ -286,7 +286,7 @@ fuzz_target!(|input: Input| {
                 objective_offenders.insert(validator);
             }
             for metadata in snapshot.dag.invalid_blocks() {
-                if !metadata.is_rejected() {
+                if !metadata.is_slash_evidence_eligible() {
                     continue;
                 }
                 if epoch_for_block_number(metadata.block_number, epoch_length) != Ok(current_epoch)

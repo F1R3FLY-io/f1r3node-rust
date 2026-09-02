@@ -217,7 +217,12 @@ env:
   # commit; the branch pin's content, now immutable on main). Verified:
   # descends from ce5a825 (merge-base --is-ancestor), and full node CI green
   # on the ce5a825 content (this PR's heavy pipeline, all six legs).
-  SYSTEM_INTEGRATION_REF: e4a26eb69fcfc611d56d8473f4de2b09960bc173
+  # 2026-09-02: e4a26eb -> f6db0f1 (SI PR #135 branch, draft). The merge
+  # preserves current main and adds the cost-accounted protocol-v6 harness.
+  # It pins pyf1r3fly 0189d17 for DeployId and progress-aware finalization.
+  # Verified: descends from e4a26eb; 305 unit tests, Ruff, and lock checks pass.
+  # The suite collects 127 integration cases. Re-pin after SI PR #135 merges.
+  SYSTEM_INTEGRATION_REF: f6db0f1915e27397d827efe8beaf9aec840b78ce
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

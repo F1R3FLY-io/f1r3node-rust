@@ -66,9 +66,11 @@ impl IndexedBlockDagStorage {
         }
         let dag = self.underlying.get_representation_internal()?;
         let next_creator_seq_num = if block.seq_num == 0 {
-            dag.latest_message(&block.sender)?
-                .map_or(-1, |b| b.sequence_number)
-                + 1
+            match dag.latest_message_hash(&block.sender) {
+                Some(hash) if dag.canonical_genesis_hash() == Some(&hash) => 1,
+                Some(hash) => dag.lookup_unsafe(&hash)?.sequence_number + 1,
+                None => 0,
+            }
         } else {
             block.seq_num
         };
