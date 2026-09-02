@@ -25,6 +25,7 @@ mod property_support;
 mod generation_checkpoint_properties;
 mod retention_manifest;
 mod rho_path_streaming_properties;
+mod rba1_checkpoint_recovery_properties;
 mod rewrite_differential;
 mod semantic_validation;
 mod staging_store;
