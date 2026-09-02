@@ -4564,6 +4564,271 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_remove_file positive path** with load-bearing on-disk
+    /// file-existence check.  Path-based mutation via `unlinkat`.
+    /// Under Phase-0 tautological replay, the follower's is_replay
+    /// branch consumed cached reply and never fired unlinkat — the
+    /// follower's on-disk file stayed present.  Under Phase 4, the
+    /// follower's Consensus re-execute does a real unlinkat via
+    /// the Shape A resolver.
+    ///
+    /// Uses the restore-file-between pattern (like fs_truncate /
+    /// fs_write / fs_chmod pins): recreate the file pre-follower
+    /// so the follower's real unlinkat has to re-remove it.  Load-
+    /// bearing post-follower file-existence check: file must be
+    /// gone (not present).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_file_reexecute_removes_follower_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("removable.bin");
+        std::fs::write(&target, b"content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemove(`rho:io:fs:native:1.0.0/removeFile`), ackCh in {{
+              fsRemove!("{root}", "removable.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[111; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_file positive");
+        assert!(
+            !target.exists(),
+            "leader's unlinkat must have removed the file"
+        );
+
+        // Restore file pre-follower — proves follower's own real
+        // unlinkat re-did the removal.
+        std::fs::write(&target, b"content").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_remove_file positive");
+
+        // LOAD-BEARING: file must be gone post-follower-evaluate.
+        // Regression to Phase-0 tautological leaves the file present.
+        assert!(
+            !target.exists(),
+            "Phase 4 REGRESSION: follower's fs_remove_file did NOT fire — file \
+             still exists after follower.evaluate.  Either fresh-syscall path \
+             not engaged (Phase-0 tautological came back) or Shape A resolver \
+             failed to route."
+        );
+
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 4: WAL entry {i} differs on fs_remove_file positive: \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        let rf_entry = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::RemoveFile)
+            .expect("leader must journal a RemoveFile entry");
+        assert_eq!(rf_entry.outcome, WalOutcome::Success);
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs_remove_file");
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_remove_file divergence-detection**.  Between leader +
+    /// follower evaluate, do NOT restore the file — follower's
+    /// unlinkat sees ENOENT (leader already removed it) → fresh err
+    /// vs cached [true] → CONSENSUS_DIVERGENCE fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_file_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("removable.bin"), b"content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemove(`rho:io:fs:native:1.0.0/removeFile`), ackCh in {{
+              fsRemove!("{root}", "removable.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[112; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_file divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::RemoveFile && e.outcome == WalOutcome::Success),
+            "leader must journal a successful RemoveFile entry"
+        );
+
+        // DO NOT restore the file — follower's re-execute sees
+        // leader's post-play state (file gone).  Follower's fresh
+        // unlinkat returns ENOENT → CONSENSUS_DIVERGENCE.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 4 D1 enforcement: follower's fresh ENOENT vs leader's cached \
+             [true] must trip RSpace rig verification"
+        );
+
+        let follower_rf = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::RemoveFile)
+            .expect("follower must have a pre-appended RemoveFile entry");
+        match follower_rf.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 4: RemoveFile divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 4 REGRESSION: follower's RemoveFile entry stayed at \
+                 Success despite fs drift.  Entry: {follower_rf:?}"
+            ),
+        }
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_remove_file symmetric syscall error**.  Attempt unlinkat
+    /// on a non-existent file on both sides → both see ENOENT →
+    /// FSERR_NOT_FOUND → verify OK → both finalize to Failure {
+    /// FSERR_CODE_NOT_FOUND }, NOT CONSENSUS_DIVERGENCE.  Parity
+    /// with fs_chmod / fs_truncate / fs_write symmetric-error pins.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_file_symmetric_syscall_error_finalizes_to_failure() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_NOT_FOUND;
+
+        let dir = tempfile::tempdir().unwrap();
+        // No file at "does-not-exist.bin".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemove(`rho:io:fs:native:1.0.0/removeFile`), ackCh in {{
+              fsRemove!("{root}", "does-not-exist.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[113; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_file symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_rf = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::RemoveFile)
+            .expect("leader must journal a RemoveFile entry");
+        match leader_rf.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_NOT_FOUND,
+                "leader's RemoveFile entry must finalize to Failure with \
+                 NOT_FOUND for unlinkat on missing file (ENOENT); got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's RemoveFile entry stayed at Success despite ENOENT.  \
+                 H-6 finalize broken.  Entry: {leader_rf:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_remove_file symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 fs_remove_file symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_NOT_FOUND would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression
@@ -6196,6 +6461,18 @@ mod tests {
         assert_eq!(l[1].op, WalOp::CopyFile);
         assert_eq!(l[2].op, WalOp::Rename);
         assert_eq!(l[3].op, WalOp::RemoveFile);
+        // Phase 4 (2026-09-02): under fs_remove_file re-execute, the
+        // follower's real unlinkat runs against the shared tempdir
+        // file that leader already removed.  Restore g.bin to
+        // pre-play state so follower's re-execute succeeds
+        // symmetrically.  fs_chmod (Phase 4 landed) is idempotent
+        // — re-chmoding to the same mode succeeds on either mode.
+        // fs_copy_file / fs_rename (still Phase-0 tautological on
+        // the follower — Phase 4 hasn't refactored them yet) don't
+        // do real syscalls on the follower, so no restore needed
+        // for h.bin / i.bin.  When those slices land, this test
+        // will need parallel restores for those state changes too.
+        std::fs::write(dir.path().join("g.bin"), b"other").unwrap();
         let checkpoint = leader.create_checkpoint().await;
         follower.reset(&checkpoint.root).await.unwrap();
         follower.rig(checkpoint.log).await.unwrap();

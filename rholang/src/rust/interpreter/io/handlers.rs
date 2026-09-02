@@ -3314,23 +3314,37 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
+        // Phase 4 (Consensus re-execute + verify, 2026-09-02):
+        // Path-based mutation.  Under Consensus, the follower now
+        // re-executes unlinkat against its own subdir file via the
+        // Shape A resolver, verifies fresh reply vs cached, and
+        // finalizes accordingly.  Oracular unchanged (H-6
+        // tautological finalize path).
+        //
+        // Idempotency concern (per plan Risk R2, largely dissolved
+        // by D3): under per-validator subdirs, the follower's own
+        // copy of the file exists at pre-play state when the
+        // follower's re-execute runs (leader's play only touched
+        // leader's subdir).  Re-unlinkat succeeds on both sides
+        // symmetrically.  A prior deploy in the SAME block that
+        // removed the same file would fail on both sides with
+        // FSERR_NOT_FOUND — symmetric error, no divergence.
+        if is_replay && cmode != ConsensusMode::Consensus {
+            // Oracular follower — Phase-0 H-6 shape.
             if let Some(code_str) = extract_err_code(&previous) {
                 self.finalize_failure_journal(fserr_to_code(&code_str), ack);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
+        // Fresh syscall — leader (always) or Consensus follower.
         // Phase 8 slice 8a step 6 (2026-08-13): mode-differentiated
         // unlink gate.  Consensus+locked returns FSERR_BUSY per plan
         // §Mode-differentiated invariants ("fs_remove_file consults
         // LockRegistry at handler entry and refuses if any lock is
         // held on (dev, inode)").  Oracular+locked proceeds with the
-        // unlink but log-warns for observability.  Post-H-29-3-lift
-        // (2026-08-26): Consensus+unlocked no longer short-circuits
-        // with FSERR_UNSUPPORTED — it proceeds with unlinkat and
-        // relies on the WAL entry journaled above for replay.
-        let reply = match parsed {
+        // unlink but log-warns for observability.
+        let fresh_reply = match parsed {
             Some((root, rel)) => {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
@@ -3396,12 +3410,40 @@ impl FsProcesses {
             }
             None => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        if is_replay {
+            // Consensus follower — Phase 4 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_remove_file follower re-execute diverges from leader: \
+                             {reason}",
+                        ),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — H-6 finalize on syscall error.
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
