@@ -195,7 +195,7 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceOperations.v 8 \
   "the exact two-level RSpace operation authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceDelta.v 7 \
+  theories/TwoLevelRSpaceDelta.v 8 \
   "the exact two-level RSpace delta authority"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceRepresentation.v 5 \

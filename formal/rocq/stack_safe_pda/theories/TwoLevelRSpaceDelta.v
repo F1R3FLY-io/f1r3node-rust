@@ -148,6 +148,63 @@ Proof.
   inversion Hunique. assumption.
 Qed.
 
+(** Every member of a prepared multi-channel delta owns the exact output at
+    its channel after the complete unique-channel batch.  This is the reusable
+    bridge needed by accepted matches: a selected vector may mention the same
+    channel repeatedly, but PREPARE aggregates those occurrences into one
+    [PreparedChannelDelta], and no later operation may overwrite it. *)
+Lemma prepared_delta_member_output_is_exact_list : forall before
+    (deltas : list (PreparedChannelDelta before)) delta authority,
+  NoDup (prepared_delta_channels deltas) ->
+  In delta deltas ->
+  lookup_channel (prepared_delta_channel delta)
+    (apply_prepared_channel_operations authority
+      (prepared_delta_operations deltas)) =
+  Some (prepared_delta_output delta).
+Proof.
+  intros before deltas. induction deltas as [|head tail IH];
+    intros delta authority Hunique Hin; [contradiction|].
+  inversion Hunique as [|head_channel tail_channels Hhead Htail]; subst.
+  destruct Hin as [Heq | Hin].
+  - subst delta.
+    change
+      (lookup_channel (prepared_delta_channel head)
+        (apply_prepared_channel_operations
+          (upsert_channel_exact
+            (prepared_delta_channel head) (prepared_delta_output head) authority)
+          (prepared_delta_operations tail)) =
+       Some (prepared_delta_output head)).
+    transitivity
+      (lookup_channel (prepared_delta_channel head)
+        (upsert_channel_exact
+          (prepared_delta_channel head) (prepared_delta_output head) authority)).
+    + apply untouched_channel_is_preserved_by_prepared_operations.
+      rewrite prepared_delta_operation_channels_are_exact. exact Hhead.
+    + apply upsert_target_lookup_is_exact.
+  - change
+      (lookup_channel (prepared_delta_channel delta)
+        (apply_prepared_channel_operations
+          (upsert_channel_exact
+            (prepared_delta_channel head) (prepared_delta_output head) authority)
+          (prepared_delta_operations tail)) =
+       Some (prepared_delta_output delta)).
+    apply IH; assumption.
+Qed.
+
+Theorem prepared_rspace_delta_member_output_is_exact : forall before
+    (prepared : PreparedRSpaceDelta before) delta,
+  In delta (prepared_channel_deltas prepared) ->
+  lookup_channel (prepared_delta_channel delta)
+    (apply_prepared_rspace_delta prepared) =
+  Some (prepared_delta_output delta).
+Proof.
+  intros before prepared delta Hin.
+  unfold apply_prepared_rspace_delta.
+  eapply prepared_delta_member_output_is_exact_list.
+  - exact (prepared_delta_channels_are_unique prepared).
+  - exact Hin.
+Qed.
+
 Theorem prepared_rspace_delta_preserves_every_untouched_channel : forall
     before (prepared : PreparedRSpaceDelta before) channel,
   ~ In channel (prepared_delta_channels (prepared_channel_deltas prepared)) ->
@@ -178,8 +235,22 @@ Definition publish_prepared_rspace_delta
     (before : @transactional_store_state Catalog ExternalSnapshots)
     (prepared : PreparedRSpaceDelta (store_authority before))
     : transactional_store_state :=
-  publish_prepared_channel_batch before
-    (prepared_rspace_delta_as_batch prepared).
+  match prepared_channel_deltas prepared with
+  | [] => before
+  | _ :: _ =>
+      publish_prepared_channel_batch before
+        (prepared_rspace_delta_as_batch prepared)
+  end.
+
+(** Production [BagDelta::apply_delta] publishes no derived datum root for an
+    empty normalized delta.  The count is therefore a property of the exact
+    prepared batch, rather than of logical acceptance. *)
+Definition prepared_rspace_delta_publication_count {before}
+    (prepared : PreparedRSpaceDelta before) : nat :=
+  match prepared_channel_deltas prepared with
+  | [] => 0%nat
+  | _ :: _ => 1%nat
+  end.
 
 Inductive rspace_delta_decision : Type :=
 | RSpaceDeltaRefused
@@ -202,7 +273,8 @@ Inductive rspace_delta_transition
 | PublishRSpaceDelta : forall prepared,
     rspace_delta_transition before (Some prepared)
       (RSpaceDeltaOutcome RSpaceDeltaPublished
-        (publish_prepared_rspace_delta before prepared) 1).
+        (publish_prepared_rspace_delta before prepared)
+        (prepared_rspace_delta_publication_count prepared)).
 
 Theorem refused_rspace_delta_preserves_every_public_observation : forall
     before outcome,
@@ -215,16 +287,33 @@ Proof.
   inversion Htransition; subst. repeat split; reflexivity.
 Qed.
 
-Theorem accepted_rspace_delta_publishes_exactly_one_complete_root : forall
+Theorem accepted_rspace_delta_publishes_at_most_one_complete_root : forall
     before prepared outcome,
   rspace_delta_transition before (Some prepared) outcome ->
   rspace_delta_outcome_state outcome =
       publish_prepared_rspace_delta before prepared /\
-  rspace_delta_publication_count outcome = 1%nat /\
+  rspace_delta_publication_count outcome =
+      prepared_rspace_delta_publication_count prepared /\
+  (rspace_delta_publication_count outcome = 0%nat \/
+   rspace_delta_publication_count outcome = 1%nat) /\
   rspace_delta_outcome_decision outcome = RSpaceDeltaPublished.
 Proof.
-  intros before prepared outcome Htransition.
-  inversion Htransition; subst. repeat split; reflexivity.
+  intros before prepared outcome Htransition. inversion Htransition; subst.
+  repeat split; try reflexivity.
+  unfold prepared_rspace_delta_publication_count.
+  destruct (prepared_channel_deltas prepared); auto.
+Qed.
+
+Theorem empty_rspace_delta_preserves_exact_state_and_generation : forall
+    before (prepared : PreparedRSpaceDelta (store_authority before)),
+  prepared_channel_deltas prepared = [] ->
+  publish_prepared_rspace_delta before prepared = before /\
+  prepared_rspace_delta_publication_count prepared = 0%nat.
+Proof.
+  intros before prepared Hempty.
+  unfold publish_prepared_rspace_delta,
+    prepared_rspace_delta_publication_count.
+  now rewrite Hempty.
 Qed.
 
 Theorem accepted_rspace_delta_preserves_every_untouched_channel : forall
@@ -237,9 +326,12 @@ Theorem accepted_rspace_delta_preserves_every_untouched_channel : forall
 Proof.
   intros before prepared outcome channel Htransition Hnot_touched.
   inversion Htransition; subst.
-  unfold publish_prepared_rspace_delta, publish_prepared_channel_batch; cbn.
-  apply prepared_rspace_delta_preserves_every_untouched_channel.
-  exact Hnot_touched.
+  unfold publish_prepared_rspace_delta.
+  destruct (prepared_channel_deltas prepared) as [|head tail] eqn:Hdeltas.
+  - reflexivity.
+  - unfold publish_prepared_channel_batch; cbn.
+    apply prepared_rspace_delta_preserves_every_untouched_channel.
+    rewrite Hdeltas. exact Hnot_touched.
 Qed.
 
 Theorem accepted_rspace_delta_invalidates_every_touched_catalog : forall
@@ -251,8 +343,11 @@ Proof.
   intros before prepared outcome channel Htransition Htouched.
   inversion Htransition; subst.
   unfold publish_prepared_rspace_delta.
-  apply successful_publication_invalidates_every_touched_catalog.
-  simpl. rewrite prepared_delta_operation_channels_are_exact. exact Htouched.
+  destruct (prepared_channel_deltas prepared) as [|head tail] eqn:Hdeltas.
+  - simpl in Htouched. contradiction.
+  - apply successful_publication_invalidates_every_touched_catalog.
+    simpl. rewrite prepared_delta_operation_channels_are_exact, Hdeltas.
+    exact Htouched.
 Qed.
 
 Theorem accepted_rspace_delta_preserves_store_well_formedness : forall
@@ -260,7 +355,9 @@ Theorem accepted_rspace_delta_preserves_store_well_formedness : forall
   store_state_well_formed before ->
   store_state_well_formed (publish_prepared_rspace_delta before prepared).
 Proof.
-  intros. unfold publish_prepared_rspace_delta.
+  intros before prepared Hwell_formed.
+  unfold publish_prepared_rspace_delta.
+  destruct (prepared_channel_deltas prepared); [exact Hwell_formed|].
   now apply successful_publication_preserves_store_well_formedness.
 Qed.
 
@@ -285,7 +382,8 @@ Inductive two_level_delta_invariant_id : Type :=
 | DeltaInvUntouchedChannelPreserved
 | DeltaInvAuthorityCanonical
 | DeltaInvFailureAtomic
-| DeltaInvAcceptedOneRoot
+| DeltaInvAcceptedConditionalRoot
+| DeltaInvEmptyPreservesIdentity
 | DeltaInvAcceptedUntouchedChannel
 | DeltaInvTouchedCatalogInvalidated
 | DeltaInvPublishedStoreWellFormed
@@ -301,7 +399,8 @@ Definition two_level_delta_invariant_catalog :
     DeltaInvUntouchedChannelPreserved;
     DeltaInvAuthorityCanonical;
     DeltaInvFailureAtomic;
-    DeltaInvAcceptedOneRoot;
+    DeltaInvAcceptedConditionalRoot;
+    DeltaInvEmptyPreservesIdentity;
     DeltaInvAcceptedUntouchedChannel;
     DeltaInvTouchedCatalogInvalidated;
     DeltaInvPublishedStoreWellFormed;
@@ -349,15 +448,25 @@ Definition two_level_delta_invariant_binding
         rspace_delta_outcome_state outcome = before /\
         rspace_delta_publication_count outcome = 0%nat /\
         rspace_delta_outcome_decision outcome = RSpaceDeltaRefused
-  | DeltaInvAcceptedOneRoot =>
+  | DeltaInvAcceptedConditionalRoot =>
       forall (Catalog ExternalSnapshots : Type)
         (before : @transactional_store_state Catalog ExternalSnapshots)
         prepared outcome,
         rspace_delta_transition before (Some prepared) outcome ->
         rspace_delta_outcome_state outcome =
             publish_prepared_rspace_delta before prepared /\
-        rspace_delta_publication_count outcome = 1%nat /\
+        rspace_delta_publication_count outcome =
+            prepared_rspace_delta_publication_count prepared /\
+        (rspace_delta_publication_count outcome = 0%nat \/
+         rspace_delta_publication_count outcome = 1%nat) /\
         rspace_delta_outcome_decision outcome = RSpaceDeltaPublished
+  | DeltaInvEmptyPreservesIdentity =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots)
+        (prepared : PreparedRSpaceDelta (store_authority before)),
+        prepared_channel_deltas prepared = [] ->
+        publish_prepared_rspace_delta before prepared = before /\
+        prepared_rspace_delta_publication_count prepared = 0%nat
   | DeltaInvAcceptedUntouchedChannel =>
       forall (Catalog ExternalSnapshots : Type)
         (before : @transactional_store_state Catalog ExternalSnapshots)
@@ -405,8 +514,11 @@ Proof.
     exact (@refused_rspace_delta_preserves_every_public_observation
       Catalog ExternalSnapshots before outcome Htransition).
   - intros Catalog ExternalSnapshots before prepared outcome Htransition.
-    exact (@accepted_rspace_delta_publishes_exactly_one_complete_root
+    exact (@accepted_rspace_delta_publishes_at_most_one_complete_root
       Catalog ExternalSnapshots before prepared outcome Htransition).
+  - intros Catalog ExternalSnapshots before prepared Hempty.
+    exact (@empty_rspace_delta_preserves_exact_state_and_generation
+      Catalog ExternalSnapshots before prepared Hempty).
   - intros Catalog ExternalSnapshots before prepared outcome channel
       Htransition Hnot_touched.
     exact (@accepted_rspace_delta_preserves_every_untouched_channel
@@ -428,7 +540,7 @@ Qed.
 Theorem two_level_delta_invariant_catalog_is_unique_complete_and_exact :
   NoDup two_level_delta_invariant_catalog /\
   Forall two_level_delta_invariant_binding two_level_delta_invariant_catalog /\
-  length two_level_delta_invariant_catalog = 13%nat.
+  length two_level_delta_invariant_catalog = 14%nat.
 Proof.
   split.
   - unfold two_level_delta_invariant_catalog.
@@ -446,7 +558,8 @@ Print Assumptions prepared_delta_output_is_canonical.
 Print Assumptions prepared_rspace_delta_head_output_is_exact.
 Print Assumptions prepared_rspace_delta_preserves_every_untouched_channel.
 Print Assumptions refused_rspace_delta_preserves_every_public_observation.
-Print Assumptions accepted_rspace_delta_publishes_exactly_one_complete_root.
+Print Assumptions accepted_rspace_delta_publishes_at_most_one_complete_root.
+Print Assumptions empty_rspace_delta_preserves_exact_state_and_generation.
 Print Assumptions accepted_rspace_delta_invalidates_every_touched_catalog.
 Print Assumptions two_level_delta_invariant_catalog_is_unique_complete_and_exact.
 

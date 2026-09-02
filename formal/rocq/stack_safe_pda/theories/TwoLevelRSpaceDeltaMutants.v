@@ -68,6 +68,12 @@ Proof.
   - constructor.
 Defined.
 
+Definition prepared_empty_batch : PreparedRSpaceDelta authority_fixture.
+Proof.
+  refine {| prepared_channel_deltas := [] |}.
+  constructor.
+Defined.
+
 Theorem prepared_target_delta_is_non_vacuous :
   lookup_channel target_channel
     (apply_prepared_rspace_delta prepared_target_batch) =
@@ -166,12 +172,22 @@ Theorem kill_failed_delta_state_mutation :
   mutant_failed_delta_state <> transaction_fixture.
 Proof. apply kill_failure_public_state_mutation. Qed.
 
-(** DeltaInvAcceptedOneRoot. *)
+(** DeltaInvAcceptedConditionalRoot. *)
 Definition mutant_delta_publication_count : nat := 2%nat.
 
 Theorem kill_duplicate_delta_publication :
-  mutant_delta_publication_count <> 1%nat.
+  mutant_delta_publication_count <>
+    prepared_rspace_delta_publication_count prepared_target_batch.
 Proof. discriminate. Qed.
+
+(** DeltaInvEmptyPreservesIdentity. *)
+Definition mutant_empty_delta_published_state :
+    @transactional_store_state nat nat := mutant_failed_state.
+
+Theorem kill_empty_delta_publication :
+  mutant_empty_delta_published_state <> transaction_fixture /\
+  prepared_rspace_delta_publication_count prepared_empty_batch = 0%nat.
+Proof. split; [apply kill_failure_public_state_mutation | reflexivity]. Qed.
 
 (** DeltaInvAcceptedUntouchedChannel. *)
 Definition mutant_published_delta_erases_sibling : TwoLevelAuthority :=
@@ -230,8 +246,12 @@ Definition two_level_delta_mutant_killed
       ~ canonical_channels mutant_delta_reverses_authority
   | DeltaInvFailureAtomic =>
       mutant_failed_delta_state <> transaction_fixture
-  | DeltaInvAcceptedOneRoot =>
-      mutant_delta_publication_count <> 1%nat
+  | DeltaInvAcceptedConditionalRoot =>
+      mutant_delta_publication_count <>
+        prepared_rspace_delta_publication_count prepared_target_batch
+  | DeltaInvEmptyPreservesIdentity =>
+      mutant_empty_delta_published_state <> transaction_fixture /\
+      prepared_rspace_delta_publication_count prepared_empty_batch = 0%nat
   | DeltaInvAcceptedUntouchedChannel =>
       lookup_channel sibling_channel mutant_published_delta_erases_sibling <>
       lookup_channel sibling_channel authority_fixture
@@ -256,6 +276,7 @@ Proof.
   - apply kill_noncanonical_delta_authority.
   - apply kill_failed_delta_state_mutation.
   - apply kill_duplicate_delta_publication.
+  - apply kill_empty_delta_publication.
   - apply kill_published_delta_untouched_erasure.
   - apply kill_delta_touched_catalog_retention.
   - apply kill_delta_wrong_loaded_count.
@@ -265,7 +286,7 @@ Qed.
 Theorem two_level_delta_mutant_catalog_is_total_unique_and_exact :
   NoDup two_level_delta_invariant_catalog /\
   Forall two_level_delta_mutant_killed two_level_delta_invariant_catalog /\
-  length two_level_delta_invariant_catalog = 13%nat.
+  length two_level_delta_invariant_catalog = 14%nat.
 Proof.
   destruct two_level_delta_invariant_catalog_is_unique_complete_and_exact
     as [Hunique [_ Hlength]].
