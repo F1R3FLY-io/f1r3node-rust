@@ -70,6 +70,7 @@ From FinalizedFloor Require Import BondGenerationLifecycle.
 From FinalizedFloor Require Import CertifiedObjectiveEquivocation.
 From FinalizedFloor Require Import CertifiedCausalAdmission.
 From FinalizedFloor Require Import CausalFinalityProjection.
+From FinalizedFloor Require Import RestoreHorizonCertifiedContext.
 From FinalizedFloor Require Import HeartbeatFinalityBackpressure.
 From FinalizedFloor Require Import TargetDeployTerminality.
 From FinalizedFloor Require Import NodeLocalProductLifting.
@@ -2197,3 +2198,28 @@ Definition finalized_floor_recovery_latest_order_independent :=
   @collective_coverage_latest_message_permutation.
 
 Print Assumptions finalized_floor_recovery_latest_order_independent.
+
+Definition finalized_floor_restore_reconciliation_stale_index_correct :=
+  @reconciliation_eliminates_stale_raw_index.
+
+Print Assumptions finalized_floor_restore_reconciliation_stale_index_correct.
+
+Definition finalized_floor_restore_reconciliation_materialization_correct :=
+  @reconciled_slot_is_materialized.
+
+Print Assumptions finalized_floor_restore_reconciliation_materialization_correct.
+
+Definition finalized_floor_restore_certificate_support_correct :=
+  @canonical_identity_is_always_in_certified_support.
+
+Print Assumptions finalized_floor_restore_certificate_support_correct.
+
+Definition finalized_floor_restore_first_proposal_correct :=
+  @genesis_first_proposal_is_heldness_independent.
+
+Print Assumptions finalized_floor_restore_first_proposal_correct.
+
+Definition finalized_floor_restore_sequence_correct :=
+  @generation_change_preserves_monotonic_key_sequence.
+
+Print Assumptions finalized_floor_restore_sequence_correct.

@@ -1184,6 +1184,7 @@ mod frontier_determinism_tests {
 
         let dag = KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1252,6 +1253,7 @@ mod frontier_determinism_tests {
 
         let dag = KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1556,6 +1558,7 @@ mod frontier_determinism_tests {
         }
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),

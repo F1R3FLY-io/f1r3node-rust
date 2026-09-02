@@ -141,6 +141,7 @@ pub enum InsertMode {
 #[derive(Clone)]
 pub struct KeyValueDagRepresentation {
     pub dag_set: imbl::HashSet<BlockHash>,
+    pub canonical_genesis_hash: Option<BlockHash>,
     pub latest_messages_map: imbl::HashMap<Validator, BlockHash>,
     pub child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>>,
     pub height_map: imbl::OrdMap<i64, imbl::HashSet<BlockHash>>,
@@ -183,6 +184,10 @@ pub struct KeyValueDagRepresentation {
 }
 
 impl KeyValueDagRepresentation {
+    pub fn canonical_genesis_hash(&self) -> Option<&BlockHash> {
+        self.canonical_genesis_hash.as_ref()
+    }
+
     pub fn lookup(&self, block_hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
         if self.dag_set.contains(block_hash) {
             let block_metadata_index_guard = self.block_metadata_index.read();
@@ -206,6 +211,23 @@ impl KeyValueDagRepresentation {
 
     pub fn latest_message_hashes(&self) -> imbl::HashMap<Validator, BlockHash> {
         self.latest_messages_map.clone()
+    }
+
+    pub fn validate_latest_message_materialization(&self) -> Result<(), KvStoreError> {
+        for (validator, hash) in &self.latest_messages_map {
+            if self.canonical_genesis_hash() == Some(hash) {
+                continue;
+            }
+            self.lookup_unsafe(hash)
+                .map_err(|_| KvStoreError::MissingBlock {
+                    hash: hash.clone(),
+                    context: format!(
+                        "latest message for validator {}",
+                        PrettyPrinter::build_string_bytes(validator)
+                    ),
+                })?;
+        }
+        Ok(())
     }
 
     pub fn invalid_blocks(&self) -> imbl::HashSet<BlockMetadata> { self.invalid_blocks_set.clone() }
@@ -631,6 +653,7 @@ impl KeyValueDagRepresentation {
         validator: &Validator,
     ) -> Result<Option<BlockMetadata>, KvStoreError> {
         match self.latest_message_hash(validator) {
+            Some(hash) if self.canonical_genesis_hash() == Some(&hash) => Ok(None),
             Some(hash) => self.lookup_unsafe(&hash).map(Some),
             None => Ok(None),
         }
@@ -641,8 +664,20 @@ impl KeyValueDagRepresentation {
 
         let mut result = HashMap::new();
         for (validator, hash) in latest_messages.iter() {
-            let metadata = self.lookup_unsafe(hash)?;
-            result.insert(validator.clone(), metadata);
+            if self.canonical_genesis_hash() == Some(hash) {
+                continue;
+            }
+            match self.lookup(hash)? {
+                Some(metadata) => {
+                    result.insert(validator.clone(), metadata);
+                }
+                None => {
+                    return Err(KvStoreError::MissingBlock {
+                        hash: hash.clone(),
+                        context: "latest message".to_string(),
+                    });
+                }
+            }
         }
 
         Ok(result)
@@ -989,6 +1024,9 @@ impl KeyValueDagRepresentation {
                     maximum_supporting_blocks
                 )));
             }
+            if self.canonical_genesis_hash() == Some(&hash) {
+                continue;
+            }
             let metadata = self.lookup_unsafe(&hash)?;
             let predecessor_history = self.is_predecessor_history_certified_support(
                 &hash,
@@ -1265,6 +1303,9 @@ fn predecessor_certificate_carrier_digest(
     predecessor_post_state: &BlockHash,
     protocol_version: i64,
 ) -> Result<Option<BlockHash>, KvStoreError> {
+    if dag.canonical_genesis_hash() == Some(carrier) {
+        return Ok(None);
+    }
     let metadata = dag.lookup_unsafe(carrier)?;
     metadata
         .validate()
@@ -1509,6 +1550,18 @@ impl BlockDagKeyValueStorage {
 
     #[cfg(any(test, feature = "test-internals"))]
     #[doc(hidden)]
+    pub fn put_latest_message_for_test(
+        &self,
+        validator: Validator,
+        hash: BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        self.latest_messages_index
+            .put_one(ValidatorSerde(validator), BlockHashSerde(hash))
+    }
+
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
     pub fn delete_objective_evidence_for_test(
         &self,
         validator: Validator,
@@ -1694,7 +1747,8 @@ impl BlockDagKeyValueStorage {
         if !stale.is_empty() {
             self.latest_messages_index.delete(stale)?;
         }
-        Ok(())
+        self.get_representation_internal()?
+            .validate_latest_message_materialization()
     }
 
     // P2-16: the following three methods bypass `global_lock` — production
@@ -1882,6 +1936,7 @@ impl BlockDagKeyValueStorage {
 
         Ok(KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: self.genesis_hash_internal()?,
             latest_messages_map: latest_messages,
             child_map,
             height_map,
@@ -3413,7 +3468,7 @@ mod certified_closure_tests {
         let oracle = dag
             .certified_support_closure(
                 &rank(1),
-                [rank(4)],
+                [rank(4), rank(0)],
                 FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
                 &mut oracle_work,
             )
@@ -3422,7 +3477,7 @@ mod certified_closure_tests {
         let mut runner = TestRunner::new(Config::with_cases(256));
         runner
             .run(&strategy, |indices| {
-                let mut roots = vec![rank(4)];
+                let mut roots = vec![rank(4), rank(0)];
                 roots.extend(indices.into_iter().map(|index| rank(index as u8 + 1)));
                 let mut remaining = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
                 let actual = dag
@@ -3437,6 +3492,62 @@ mod certified_closure_tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn canonical_genesis_support_identity_is_stable_when_its_body_is_omitted() {
+        let (full, _) = fixture(false).await;
+        let mut restored = full.clone();
+        restored.dag_set.remove(&rank(0));
+
+        let mut full_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let full_support = full
+            .certified_support_closure(
+                &rank(1),
+                [rank(4), rank(0)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut full_work,
+            )
+            .unwrap();
+        let mut restored_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        let restored_support = restored
+            .certified_support_closure(
+                &rank(1),
+                [rank(0), rank(4)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut restored_work,
+            )
+            .unwrap();
+
+        assert_eq!(restored_support, full_support);
+        assert!(restored_support.contains(&BlockHashSerde(rank(0))));
+
+        let mut missing_work = FinalizationCertificate::MAX_DAG_VISITS_PER_VERIFICATION;
+        assert!(restored
+            .certified_support_closure(
+                &rank(1),
+                [rank(6)],
+                FinalizationCertificate::MAX_SUPPORTING_BLOCKS,
+                &mut missing_work,
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn canonical_genesis_latest_reader_is_invariant_when_its_body_is_omitted() {
+        let (mut full, _) = fixture(false).await;
+        let validator = validator();
+        full.latest_messages_map.insert(validator.clone(), rank(0));
+        let mut restored = full.clone();
+        restored.dag_set.remove(&rank(0));
+
+        assert!(full.latest_message(&validator).unwrap().is_none());
+        assert!(restored.latest_message(&validator).unwrap().is_none());
+        assert_eq!(
+            full.latest_messages().unwrap(),
+            restored.latest_messages().unwrap()
+        );
+        assert!(full.latest_messages().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -315,6 +315,10 @@ pub async fn check(
 
     match snapshot.dag.latest_message_hash(&validator) {
         Some(last_proposed_block_hash) => {
+            if snapshot.dag.canonical_genesis_hash() == Some(&last_proposed_block_hash) {
+                update_recovery_state_on_success(&validator);
+                return Ok(CheckProposeConstraintsResult::success());
+            }
             let last_proposed_block_meta = snapshot.dag.lookup_unsafe(&last_proposed_block_hash)?;
 
             // If validator's latest block is genesis, it's not proposed any block yet and hence allowed to propose once.

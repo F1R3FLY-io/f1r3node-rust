@@ -45,6 +45,12 @@ A declared parent must carry the block's signed finalized floor.
 The receiver still does not require equality with its local preferred frontier.
 Frozen justifications remain independent vote and authority inputs.
 
+Protocol 6 also makes restore-horizon handling identity-based. The canonical
+genesis hash can remain in a silent validator's exact slot when a restored node
+does not retain the genesis body. The node retains the slot and frozen stake.
+Any other missing latest-message body remains a dependency error. Node-local
+heldness cannot change a certified context.
+
 ### 4.1 Adversarial surface of the phase-1 mechanism
 
 Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the history that produces those losses. Principle P4 is unchanged because fork choice does not read the count. The count reaches only the three merge adjudication sites.

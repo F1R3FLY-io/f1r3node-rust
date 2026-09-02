@@ -371,6 +371,9 @@ pub fn to_latest_message(
 ) -> Result<std::collections::HashMap<Validator, BlockMetadata>, KvStoreError> {
     let mut latest_messages = std::collections::HashMap::new();
     for justification in justifications {
+        if dag.canonical_genesis_hash() == Some(&justification.latest_block_hash) {
+            continue;
+        }
         let block_metadata = dag.lookup(&justification.latest_block_hash)?;
         match block_metadata {
             Some(block_metadata) => {
@@ -588,7 +591,10 @@ pub fn unseen_block_hashes(
     justifications: &Vec<Justification>,
     current_block_hash: Option<&BlockHash>,
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
-    let dags_latest_messages = dag.latest_messages()?;
+    let mut dags_latest_messages = dag.latest_messages()?;
+    if let Some(genesis_hash) = dag.canonical_genesis_hash() {
+        dags_latest_messages.retain(|_, metadata| metadata.block_hash != *genesis_hash);
+    }
     let blocks_latest_messages = to_latest_message(justifications, dag)?;
 
     // From input block perspective we want to find what latest messages are not seen
@@ -856,6 +862,7 @@ mod fork_choice_b1_repro_tests {
         }
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -881,6 +888,59 @@ mod fork_choice_b1_repro_tests {
                 ),
             )),
         }
+    }
+
+    #[test]
+    fn latest_message_reporting_is_invariant_when_genesis_body_is_omitted() {
+        let genesis_hash = h(0);
+        let live_hash = h(1);
+        let live_validator = v(1);
+        let silent_validator = v(2);
+        let mut full = dag_with(vec![
+            md(genesis_hash.clone(), vec![], 0, &silent_validator),
+            md(live_hash.clone(), vec![], 1, &live_validator),
+        ]);
+        full.canonical_genesis_hash = Some(genesis_hash.clone());
+        full.latest_messages_map
+            .insert(live_validator.clone(), live_hash.clone());
+        full.latest_messages_map
+            .insert(silent_validator.clone(), genesis_hash.clone());
+        let mut restored = full.clone();
+        restored.dag_set.remove(&genesis_hash);
+        restored.block_number_map.remove(&genesis_hash);
+        let justifications = vec![
+            Justification {
+                validator: live_validator,
+                latest_block_hash: live_hash,
+            },
+            Justification {
+                validator: silent_validator,
+                latest_block_hash: genesis_hash,
+            },
+        ];
+
+        assert_eq!(
+            to_latest_message(&justifications, &full).unwrap(),
+            to_latest_message(&justifications, &restored).unwrap()
+        );
+        assert_eq!(
+            unseen_block_hashes(&full, &justifications, None).unwrap(),
+            unseen_block_hashes(&restored, &justifications, None).unwrap()
+        );
+    }
+
+    #[test]
+    fn latest_message_reporting_fails_for_noncanonical_missing_body() {
+        let validator = v(3);
+        let missing = h(9);
+        let dag = dag_with(Vec::new());
+        let justifications = vec![Justification {
+            validator,
+            latest_block_hash: missing,
+        }];
+
+        assert!(to_latest_message(&justifications, &dag).is_err());
+        assert!(unseen_block_hashes(&dag, &justifications, None).is_err());
     }
 
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held

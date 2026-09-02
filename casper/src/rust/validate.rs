@@ -922,6 +922,11 @@ impl Validate {
     pub fn sequence_number(b: &BlockMessage, s: &mut CasperSnapshot) -> ValidBlockProcessing {
         let creator_justification_seq_number =
             match proto_util::creator_justification_block_message(b) {
+                Some(justification)
+                    if s.dag.canonical_genesis_hash() == Some(&justification.latest_block_hash) =>
+                {
+                    0
+                }
                 Some(justification) => match s.dag.lookup(&justification.latest_block_hash) {
                     Ok(Some(block_metadata)) => block_metadata.sequence_number as i64,
                     Ok(None) => {
@@ -1132,6 +1137,9 @@ impl Validate {
 
             // Validator has previous blocks - check progress requirement
             Some(prev_block_hash) => {
+                if s.dag.canonical_genesis_hash() == Some(&prev_block_hash) {
+                    return Either::Right(ValidBlock::Valid);
+                }
                 // Get previous block metadata
                 let prev_block_meta = match s.dag.lookup(&prev_block_hash) {
                     Ok(Some(meta)) => meta,
@@ -1368,6 +1376,9 @@ impl Validate {
         let Some(creator_justification) = proto_util::creator_justification_block_message(b) else {
             return Either::Right(ValidBlock::Valid);
         };
+        if s.dag.canonical_genesis_hash() == Some(&creator_justification.latest_block_hash) {
+            return Either::Right(ValidBlock::Valid);
+        }
         match s.dag.lookup(&creator_justification.latest_block_hash) {
             Ok(None) => Either::Left(BlockError::BlockException(CasperError::from(
                 KvStoreError::KeyNotFound(format!(

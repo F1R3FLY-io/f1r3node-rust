@@ -456,8 +456,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let mut latest_metas: HashMap<Validator, models::rust::block_metadata::BlockMetadata> =
         HashMap::with_capacity(validator_capacity);
     for (validator, hash) in latest_msgs_hashes.iter() {
-        let metadata = dag.lookup_unsafe(hash)?;
-        latest_metas.insert(validator.clone(), metadata);
+        match dag.lookup(hash)? {
+            Some(metadata) => {
+                latest_metas.insert(validator.clone(), metadata);
+            }
+            None if dag.canonical_genesis_hash() == Some(hash) => {}
+            None => {
+                return Err(CasperError::BlockNotHeld(hash.clone()));
+            }
+        }
     }
     let consensus_context =
         crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(

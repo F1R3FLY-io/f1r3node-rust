@@ -476,7 +476,7 @@ fn dag_storage_should_be_able_to_lookup_a_stored_block() {
       });
 
       assert_eq!(latest_message_hashes.len(), block_elements.len() + 1);
-      assert_eq!(latest_messages.len(), block_elements.len() + 1);
+      assert_eq!(latest_messages.len(), block_elements.len());
     });
 }
 
@@ -1490,17 +1490,41 @@ fn startup_reconciliation_repairs_missing_slots_and_removes_unregistered_slots()
                 .latest_message_hash(&unregistered),
             Some(legacy.block_hash.clone())
         );
+        let stale_missing = Bytes::from(vec![0xb3; models::rust::block_hash::LENGTH]);
         dag_storage
-            .delete_latest_message_for_test(new_validator.clone())
+            .put_latest_message_for_test(new_validator.clone(), stale_missing.clone())
             .unwrap();
+        assert!(matches!(
+            dag_storage
+                .get_representation()
+                .unwrap()
+                .validate_latest_message_materialization(),
+            Err(KvStoreError::MissingBlock { hash, .. }) if hash == stale_missing
+        ));
 
         dag_storage.reconcile_latest_messages(&block_store).unwrap();
         let dag = dag_storage.get_representation().unwrap();
+        assert_eq!(
+            dag.canonical_genesis_hash(),
+            Some(&genesis.block_hash),
+            "the immutable restored genesis identity must enter every DAG representation"
+        );
         assert_eq!(
             dag.latest_message_hash(&new_validator),
             Some(genesis.block_hash)
         );
         assert_eq!(dag.latest_message_hash(&unregistered), None);
+        dag.validate_latest_message_materialization().unwrap();
+
+        let repaired_latest = dag.latest_message_hashes();
+        dag_storage.reconcile_latest_messages(&block_store).unwrap();
+        assert_eq!(
+            dag_storage
+                .get_representation()
+                .unwrap()
+                .latest_message_hashes(),
+            repaired_latest
+        );
     });
 }
 
@@ -3208,5 +3232,7 @@ fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
                 .map(|h| hex::encode(&h)),
             hex::encode(&bonding_block.block_hash),
         );
+        assert!(dag.latest_message(&new_validator).unwrap().is_none());
+        assert!(!dag.latest_messages().unwrap().contains_key(&new_validator));
     });
 }

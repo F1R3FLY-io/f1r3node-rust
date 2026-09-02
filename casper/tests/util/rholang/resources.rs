@@ -532,6 +532,7 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
 
     KeyValueDagRepresentation {
         dag_set: imbl::HashSet::new(),
+        canonical_genesis_hash: None,
         latest_messages_map: imbl::HashMap::new(),
         child_map: imbl::HashMap::new(),
         height_map: imbl::OrdMap::new(),

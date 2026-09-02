@@ -174,6 +174,7 @@ From FinalizedFloor Require Import GuardBridge.
 From FinalizedFloor Require Import CliqueOracle.
 From FinalizedFloor Require Import BondGenerationLifecycle.
 From FinalizedFloor Require Import CausalFinalityProjection.
+From FinalizedFloor Require Import RestoreHorizonCertifiedContext.
 From FinalizedFloor Require Import CertifiedObjectiveEquivocation.
 From FinalizedFloor Require Import CertifiedCausalAdmission.
 From FinalizedFloor Require Import ProposalFloorReadiness.
@@ -236,6 +237,15 @@ Print Assumptions finalized_floor_worker_retry_correct.
 Print Assumptions finalized_floor_proposal_readiness_correct.
 Print Assumptions finalized_floor_recovery_cursors_correct.
 Print Assumptions finalized_floor_genesis_approval_trust_correct.
+Print Assumptions genesis_placeholder_classification_is_heldness_independent.
+Print Assumptions missing_noncanonical_latest_fails_closed.
+Print Assumptions full_and_restored_projections_are_identical.
+Print Assumptions full_and_restored_costs_are_identical.
+Print Assumptions finalized_floor_restore_reconciliation_stale_index_correct.
+Print Assumptions finalized_floor_restore_reconciliation_materialization_correct.
+Print Assumptions finalized_floor_restore_certificate_support_correct.
+Print Assumptions finalized_floor_restore_first_proposal_correct.
+Print Assumptions finalized_floor_restore_sequence_correct.
 Print Assumptions lifecycle_generation_monotone.
 Print Assumptions exhausted_generation_rejects_fresh_bond.
 Print Assumptions lifecycle_step_preserves_value.
@@ -762,6 +772,46 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       pass "TLA+ certified-context control reproduces ${context_description}"
     else
       fail "TLA+ certified-context control failed for the wrong reason (see $context_log)"
+    fi
+  done
+  if tlc_run "$(tlc_metadir ff_restore_horizon_context)" "$TLA_DIR/MC_RestoreHorizonCertifiedContext.cfg" "$TLA_DIR/RestoreHorizonCertifiedContext.tla" >"$LOG_DIR/ff_tlc_restore_horizon_context.log" 2>&1; then
+    pass "TLA+ full-history and restored replicas preserve exact slots, stake, projections, replay state, and cost state"
+  else
+    fail "TLA+ restore-horizon certified-context model failed (see $LOG_DIR/ff_tlc_restore_horizon_context.log)"
+  fi
+  for restore_control in \
+      'drop_slot_unsafe:ExactSlotsComplete:deleting an unheld exact latest-message slot' \
+      'drop_stake_unsafe:AuthorityStakeRetained:removing a silent validator from the authority denominator' \
+      'heldness_unsafe:ReadyContextsAgree:classifying a canonical placeholder from node-local heldness' \
+      'abstain_all_unsafe:MissingLiveFailsClosed:treating an arbitrary missing live dependency as an abstention'; do
+    IFS=: read -r restore_suffix restore_invariant restore_description <<<"$restore_control"
+    restore_log="$LOG_DIR/ff_tlc_restore_horizon_${restore_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_restore_horizon_${restore_suffix}")" "$TLA_DIR/MC_RestoreHorizonCertifiedContext_${restore_suffix}.cfg" "$TLA_DIR/RestoreHorizonCertifiedContext.tla" >"$restore_log" 2>&1; then
+      fail "TLA+ restore-horizon control should reproduce ${restore_description} but passed"
+    elif grep -Eq "The invariant of ${restore_invariant} is equal to FALSE|Invariant ${restore_invariant} is violated" "$restore_log"; then
+      pass "TLA+ restore-horizon control reproduces ${restore_description}"
+    else
+      fail "TLA+ restore-horizon control failed for the wrong reason (see $restore_log)"
+    fi
+  done
+  if tlc_run "$(tlc_metadir ff_restore_horizon_startup)" "$TLA_DIR/MC_RestoreHorizonStartup.cfg" "$TLA_DIR/RestoreHorizonStartup.tla" >"$LOG_DIR/ff_tlc_restore_horizon_startup.log" 2>&1; then
+    pass "TLA+ restore startup reconciles exact slots before concurrent consensus readers run"
+  else
+    fail "TLA+ restore-horizon startup model failed (see $LOG_DIR/ff_tlc_restore_horizon_startup.log)"
+  fi
+  for startup_control in \
+      'skip_reconcile_unsafe:ReconciliationEliminatesStale:entering startup with a stale raw latest-message index' \
+      'generation_unsafe:MonotonicIncarnationSequence:selecting a stale lower validator sequence across generations' \
+      'support_unsafe:CanonicalSupportRetained:dropping canonical genesis from certificate support' \
+      'proposal_unsafe:CapturedContextsAgree:using node-local heldness for first-proposal admission'; do
+    IFS=: read -r startup_suffix startup_invariant startup_description <<<"$startup_control"
+    startup_log="$LOG_DIR/ff_tlc_restore_horizon_startup_${startup_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_restore_horizon_startup_${startup_suffix}")" "$TLA_DIR/MC_RestoreHorizonStartup_${startup_suffix}.cfg" "$TLA_DIR/RestoreHorizonStartup.tla" >"$startup_log" 2>&1; then
+      fail "TLA+ restore-startup control should reproduce ${startup_description} but passed"
+    elif grep -Eq "The invariant of ${startup_invariant} is equal to FALSE|Invariant ${startup_invariant} is violated" "$startup_log"; then
+      pass "TLA+ restore-startup control reproduces ${startup_description}"
+    else
+      fail "TLA+ restore-startup control failed for the wrong reason (see $startup_log)"
     fi
   done
   if tlc_run "$(tlc_metadir ff_finalization_closure_availability)" "$TLA_DIR/MC_FinalizationClosureAvailability.cfg" "$TLA_DIR/FinalizationClosureAvailability.tla" >"$LOG_DIR/ff_tlc_finalization_closure_availability.log" 2>&1; then
@@ -1803,6 +1853,44 @@ if command -v apalache-mc >/dev/null 2>&1; then
       fail "Apalache certified-context control did not reproduce ${context_description} (see $context_log)"
     fi
   done
+  restore_horizon_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/restore-horizon-safe" check --config=MC_RestoreHorizonCertifiedContextApalache.cfg --length=5 RestoreHorizonCertifiedContext.tla 2>&1)"
+  restore_horizon_rc=$?
+  printf '%s\n' "$restore_horizon_output" >"$LOG_DIR/ff_apalache_restore_horizon_context.log"
+  if [[ $restore_horizon_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_restore_horizon_context.log"; then
+    pass "Apalache restore-horizon certified-context invariants through bound 5"
+  else
+    fail "Apalache restore-horizon certified-context model failed (see $LOG_DIR/ff_apalache_restore_horizon_context.log)"
+  fi
+  restore_horizon_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/restore-horizon-abstain-all" check --config=MC_RestoreHorizonCertifiedContext_abstain_all_unsafe_Apalache.cfg --length=3 RestoreHorizonCertifiedContext.tla 2>&1)"
+  restore_horizon_unsafe_rc=$?
+  printf '%s\n' "$restore_horizon_unsafe_output" >"$LOG_DIR/ff_apalache_restore_horizon_abstain_all.log"
+  if [[ $restore_horizon_unsafe_rc -ne 0 ]] \
+       && grep -Fq 'Using inv predicate(s) MissingLiveFailsClosed' "$LOG_DIR/ff_apalache_restore_horizon_abstain_all.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_restore_horizon_abstain_all.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_restore_horizon_abstain_all.log"; then
+    pass "Apalache restore-horizon control rejects arbitrary missing live dependencies by bound 3"
+  else
+    fail "Apalache restore-horizon control did not reproduce unsafe blanket abstention (see $LOG_DIR/ff_apalache_restore_horizon_abstain_all.log)"
+  fi
+  restore_startup_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/restore-startup-safe" check --config=MC_RestoreHorizonStartupApalache.cfg --length=7 RestoreHorizonStartup.tla 2>&1)"
+  restore_startup_rc=$?
+  printf '%s\n' "$restore_startup_output" >"$LOG_DIR/ff_apalache_restore_horizon_startup.log"
+  if [[ $restore_startup_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_restore_horizon_startup.log"; then
+    pass "Apalache restore-startup invariants through bound 7"
+  else
+    fail "Apalache restore-startup model failed (see $LOG_DIR/ff_apalache_restore_horizon_startup.log)"
+  fi
+  restore_startup_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/restore-startup-skip" check --config=MC_RestoreHorizonStartup_skip_reconcile_unsafe_Apalache.cfg --length=3 RestoreHorizonStartup.tla 2>&1)"
+  restore_startup_unsafe_rc=$?
+  printf '%s\n' "$restore_startup_unsafe_output" >"$LOG_DIR/ff_apalache_restore_horizon_startup_skip.log"
+  if [[ $restore_startup_unsafe_rc -ne 0 ]] \
+       && grep -Fq 'Using inv predicate(s) ReconciliationEliminatesStale' "$LOG_DIR/ff_apalache_restore_horizon_startup_skip.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_restore_horizon_startup_skip.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_restore_horizon_startup_skip.log"; then
+    pass "Apalache restore-startup control rejects stale raw latest-message indexes by bound 3"
+  else
+    fail "Apalache restore-startup control did not reproduce skipped reconciliation (see $LOG_DIR/ff_apalache_restore_horizon_startup_skip.log)"
+  fi
   finalization_closure_safe_length="${FINALIZATION_CLOSURE_APALACHE_SAFE_LENGTH:-6}"
   finalization_closure_unsafe_length="${FINALIZATION_CLOSURE_APALACHE_UNSAFE_LENGTH:-4}"
   finalization_closure_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalization-closure-safe" check --config=MC_FinalizationClosureAvailabilityApalache.cfg --length="$finalization_closure_safe_length" FinalizationClosureAvailability.tla 2>&1)"

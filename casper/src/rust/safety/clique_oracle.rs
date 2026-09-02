@@ -546,9 +546,13 @@ impl CliqueOracle {
             // at one height and every join derivation refuses forever (the
             // ucc 00e6a2e3 consensus halt). Matches the Scala reference
             // (CliqueOracle.scala `dag.isInMainChain(targetMsg, ...)`).
-            latest_messages
-                .get(validator)
-                .map_or(Ok(false), |hash| dag.is_in_main_chain(message, hash))
+            let Some(hash) = latest_messages.get(validator) else {
+                return Ok(false);
+            };
+            if hash != message && dag.canonical_genesis_hash() == Some(hash) {
+                return Ok(false);
+            }
+            dag.is_in_main_chain(message, hash)
         }
 
         let mut agreeing_map = HashMap::new();

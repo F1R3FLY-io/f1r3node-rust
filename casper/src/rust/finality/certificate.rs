@@ -184,6 +184,12 @@ fn effective_parent_floor(
     dag: &KeyValueDagRepresentation,
     approved_genesis: &BlockMessage,
 ) -> Result<(BlockHash, BlockHash), FinalizationCertificateError> {
+    if *parent == approved_genesis.block_hash {
+        return Ok((
+            approved_genesis.block_hash.clone(),
+            approved_genesis.body.state.post_state_hash.clone(),
+        ));
+    }
     let metadata = required_metadata(dag, parent)?;
     if !metadata.is_accepted() {
         return Err(invalid("candidate parent was not admitted"));
@@ -201,13 +207,21 @@ fn effective_parent_floor(
         .as_ref()
         .ok_or_else(|| invalid("candidate parent has no durable finalized-floor commitment"))?;
     commitment.validate_shape().map_err(invalid)?;
-    let floor_metadata = required_metadata(dag, &commitment.floor_hash)?;
-    if !floor_metadata.is_accepted()
-        || floor_metadata.post_state_hash != commitment.floor_post_state_hash
-    {
-        return Err(invalid(
-            "candidate parent finalized-floor commitment does not bind admitted state",
-        ));
+    if commitment.floor_hash == approved_genesis.block_hash {
+        if commitment.floor_post_state_hash != approved_genesis.body.state.post_state_hash {
+            return Err(invalid(
+                "candidate parent finalized-floor commitment does not bind admitted state",
+            ));
+        }
+    } else {
+        let floor_metadata = required_metadata(dag, &commitment.floor_hash)?;
+        if !floor_metadata.is_accepted()
+            || floor_metadata.post_state_hash != commitment.floor_post_state_hash
+        {
+            return Err(invalid(
+                "candidate parent finalized-floor commitment does not bind admitted state",
+            ));
+        }
     }
     Ok((
         commitment.floor_hash.clone(),
@@ -246,6 +260,9 @@ fn state_is_preserved(
     predecessor: &BlockHash,
     target: &BlockHash,
 ) -> Result<bool, CasperError> {
+    if predecessor == target {
+        return Ok(true);
+    }
     let predecessor_metadata = dag
         .lookup(predecessor)?
         .ok_or_else(|| CasperError::BlockNotHeld(predecessor.clone()))?;
@@ -280,13 +297,21 @@ pub(crate) fn validate_candidate_parent_frontier(
     if parents.is_empty() {
         return Err(invalid("certified non-genesis block has no causal parent"));
     }
-    let committed_floor_metadata = required_metadata(dag, &commitment.floor_hash)?;
-    if !committed_floor_metadata.is_accepted()
-        || committed_floor_metadata.post_state_hash != commitment.floor_post_state_hash
-    {
-        return Err(invalid(
-            "candidate finalized-floor commitment does not bind admitted state",
-        ));
+    if commitment.floor_hash == approved_genesis.block_hash {
+        if commitment.floor_post_state_hash != approved_genesis.body.state.post_state_hash {
+            return Err(invalid(
+                "candidate finalized-floor commitment does not bind admitted state",
+            ));
+        }
+    } else {
+        let committed_floor_metadata = required_metadata(dag, &commitment.floor_hash)?;
+        if !committed_floor_metadata.is_accepted()
+            || committed_floor_metadata.post_state_hash != commitment.floor_post_state_hash
+        {
+            return Err(invalid(
+                "candidate finalized-floor commitment does not bind admitted state",
+            ));
+        }
     }
 
     let mut parent_floors = Vec::with_capacity(parents.len());
@@ -331,6 +356,9 @@ pub(crate) fn select_predecessor_certificate_carrier(
 ) -> Result<Option<PredecessorCertificateCarrier>, FinalizationCertificateError> {
     for block_hash in support {
         if block_hash.0 == *target {
+            continue;
+        }
+        if block_hash.0 == approved_genesis.block_hash {
             continue;
         }
         let metadata = required_metadata(dag, &block_hash.0)?;
@@ -905,6 +933,7 @@ mod tests {
             dag_set: imbl::HashSet::from_iter(
                 std::iter::once(genesis.block_hash.clone()).chain(carrier_hashes.iter().cloned()),
             ),
+            canonical_genesis_hash: Some(genesis.block_hash.clone()),
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1120,6 +1149,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(target, None);
+
+        let mut restored = dag.clone();
+        restored.dag_set.remove(&genesis.block_hash);
+        let restored_supported = select_predecessor_certificate_carrier(
+            &BTreeSet::from([
+                BlockHashSerde(genesis.block_hash.clone()),
+                BlockHashSerde(rank(1)),
+            ]),
+            &rank(2),
+            &genesis.block_hash,
+            &genesis.body.state.post_state_hash,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            &restored,
+            &block_store(),
+            &genesis,
+        )
+        .unwrap();
+        assert_eq!(
+            restored_supported,
+            Some(PredecessorCertificateCarrier {
+                block_hash: rank(1),
+                certificate_digest: digest,
+            })
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub enum VoteExclusion {
     SenderMismatch,
     ObjectiveEquivocation,
     DoesNotDescendFromFloor,
+    GenesisPlaceholder,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub enum CausalParentExclusion {
     IntrinsicallyInvalid,
     SenderMismatch,
     ObjectiveEquivocation,
+    GenesisPlaceholder,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,7 +163,9 @@ impl CertifiedConsensusContext {
         let incoming_finalized_floor = incoming_finalized_floor(dag, parents)?;
         let closure_roots = std::iter::once(&incoming_finalized_floor)
             .chain(parents.iter())
-            .chain(exact_latest_messages.values())
+            .chain(exact_latest_messages.values().filter(|block_hash| {
+                !is_canonical_genesis_placeholder(dag, &incoming_finalized_floor, block_hash)
+            }))
             .cloned()
             .collect::<Vec<_>>();
         Self::from_authority_floor(
@@ -178,7 +182,18 @@ impl CertifiedConsensusContext {
         exact_latest_messages: &BTreeMap<Validator, BlockHash>,
     ) -> Result<Self, CasperError> {
         let closure_roots = std::iter::once(incoming_finalized_floor.clone())
-            .chain(exact_latest_messages.values().cloned())
+            .chain(
+                exact_latest_messages
+                    .values()
+                    .filter(|block_hash| {
+                        !is_canonical_genesis_placeholder(
+                            dag,
+                            &incoming_finalized_floor,
+                            block_hash,
+                        )
+                    })
+                    .cloned(),
+            )
             .collect::<Vec<_>>();
         Self::from_authority_floor(
             dag,
@@ -228,7 +243,9 @@ impl CertifiedConsensusContext {
         .await?;
         let closure_roots = std::iter::once(&floor.hash)
             .chain(parents.iter())
-            .chain(exact_latest_messages.values())
+            .chain(exact_latest_messages.values().filter(|block_hash| {
+                !is_canonical_genesis_placeholder(dag, &floor.hash, block_hash)
+            }))
             .cloned()
             .collect::<Vec<_>>();
         Self::from_authority_floor(
@@ -442,7 +459,7 @@ impl CertifiedConsensusContext {
 
     fn compute_digest(&self) -> BlockHash {
         let mut bytes = Vec::new();
-        append_bytes(&mut bytes, b"f1r3fly-certified-consensus-context-v2");
+        append_bytes(&mut bytes, b"f1r3fly-certified-consensus-context-v3");
         append_bytes(&mut bytes, &self.incoming_finalized_floor);
         append_bytes(&mut bytes, &self.incoming_finalized_floor_post_state_hash);
         append_len(&mut bytes, self.active_validators.len());
@@ -541,6 +558,7 @@ impl VoteExclusion {
             Self::SenderMismatch => 6,
             Self::ObjectiveEquivocation => 7,
             Self::DoesNotDescendFromFloor => 8,
+            Self::GenesisPlaceholder => 9,
         }
     }
 }
@@ -556,6 +574,7 @@ impl CausalParentExclusion {
             Self::IntrinsicallyInvalid => 5,
             Self::SenderMismatch => 6,
             Self::ObjectiveEquivocation => 7,
+            Self::GenesisPlaceholder => 8,
         }
     }
 }
@@ -619,6 +638,9 @@ fn derive_consensus_projections(
             Some(stake) if *stake <= 0 => Some(CausalParentExclusion::NonPositiveStake),
             Some(_) => match authority_generations.get(validator).copied() {
                 None => Some(CausalParentExclusion::AbsentAuthorityGeneration),
+                Some(_) if is_canonical_genesis_placeholder(dag, authority_floor, block_hash) => {
+                    Some(CausalParentExclusion::GenesisPlaceholder)
+                }
                 Some(authority_generation) => {
                     let metadata = dag
                         .lookup(block_hash)?
@@ -683,6 +705,14 @@ fn derive_consensus_projections(
     ))
 }
 
+fn is_canonical_genesis_placeholder(
+    dag: &KeyValueDagRepresentation,
+    authority_floor: &BlockHash,
+    block_hash: &BlockHash,
+) -> bool {
+    block_hash != authority_floor && dag.canonical_genesis_hash() == Some(block_hash)
+}
+
 impl From<CausalParentExclusion> for VoteExclusion {
     fn from(value: CausalParentExclusion) -> Self {
         match value {
@@ -694,6 +724,7 @@ impl From<CausalParentExclusion> for VoteExclusion {
             CausalParentExclusion::IntrinsicallyInvalid => Self::IntrinsicallyInvalid,
             CausalParentExclusion::SenderMismatch => Self::SenderMismatch,
             CausalParentExclusion::ObjectiveEquivocation => Self::ObjectiveEquivocation,
+            CausalParentExclusion::GenesisPlaceholder => Self::GenesisPlaceholder,
         }
     }
 }
@@ -870,9 +901,11 @@ fn causal_evidence_closure(
         if !visited.insert(hash.clone()) {
             continue;
         }
-        let metadata = dag
-            .lookup(&hash)?
-            .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))?;
+        let metadata = match dag.lookup(&hash)? {
+            Some(metadata) => metadata,
+            None if dag.canonical_genesis_hash() == Some(&hash) => continue,
+            None => return Err(CasperError::BlockNotHeld(hash)),
+        };
         if metadata.is_accepted() {
             for evidence in &metadata.objective_equivocation_evidence_delta {
                 if !evidence_fact_is_sound(evidence, dag)? {
@@ -1103,6 +1136,7 @@ mod tests {
         }
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1609,6 +1643,108 @@ mod tests {
             restored.vote_projection().eligible_latest_messages(),
             &exact
         );
+    }
+
+    #[test]
+    fn canonical_genesis_placeholder_preserves_certified_context_across_restore_horizon() {
+        let live = validator(47);
+        let silent = validator(48);
+        let genesis = hash(104);
+        let floor = hash(105);
+        let live_vote = hash(106);
+        let stakes = BTreeMap::from([(live.clone(), 7), (silent.clone(), 3)]);
+        let exact = BTreeMap::from([
+            (live.clone(), live_vote.clone()),
+            (silent.clone(), genesis.clone()),
+        ]);
+        let floor_metadata = metadata(
+            floor.clone(),
+            vec![genesis.clone()],
+            1,
+            live.clone(),
+            stakes.clone(),
+        );
+        let live_metadata = metadata(
+            live_vote.clone(),
+            vec![floor.clone()],
+            2,
+            live.clone(),
+            BTreeMap::new(),
+        );
+
+        let mut full = dag(vec![
+            metadata(
+                genesis.clone(),
+                Vec::new(),
+                0,
+                silent.clone(),
+                BTreeMap::new(),
+            ),
+            floor_metadata.clone(),
+            live_metadata.clone(),
+        ]);
+        full.canonical_genesis_hash = Some(genesis.clone());
+        let mut restored = dag(vec![floor_metadata, live_metadata]);
+        restored.canonical_genesis_hash = Some(genesis);
+        let full_context =
+            CertifiedConsensusContext::for_frozen_floor(&full, floor.clone(), &exact).unwrap();
+        let restored_context =
+            CertifiedConsensusContext::for_frozen_floor(&restored, floor, &exact).unwrap();
+
+        assert_eq!(full_context, restored_context);
+        assert!(restored_context.has_complete_latest_message_slots());
+        assert_eq!(
+            restored_context.authority_stakes().values().sum::<i64>(),
+            10
+        );
+        assert_eq!(
+            restored_context
+                .causal_parent_projection()
+                .exclusions()
+                .get(&silent),
+            Some(&CausalParentExclusion::GenesisPlaceholder)
+        );
+        assert_eq!(
+            restored_context.vote_projection().exclusions().get(&silent),
+            Some(&VoteExclusion::GenesisPlaceholder)
+        );
+        assert_eq!(
+            restored_context
+                .causal_parent_projection()
+                .eligible_latest_messages()
+                .get(&live),
+            Some(&live_vote)
+        );
+    }
+
+    #[test]
+    fn missing_noncanonical_latest_message_cannot_use_genesis_abstention() {
+        let signer = validator(49);
+        let genesis = hash(108);
+        let floor = hash(109);
+        let missing = hash(110);
+        let mut restored = dag(vec![metadata(
+            floor.clone(),
+            Vec::new(),
+            1,
+            signer.clone(),
+            BTreeMap::new(),
+        )]);
+        restored.canonical_genesis_hash = Some(genesis);
+
+        let result = derive_consensus_projections(
+            &restored,
+            &floor,
+            &BTreeMap::from([(signer.clone(), missing.clone())]),
+            BTreeSet::new(),
+            &BTreeMap::from([(signer.clone(), 10)]),
+            &BTreeMap::from([(signer, BondGeneration::GENESIS)]),
+        );
+
+        assert!(matches!(
+            result,
+            Err(CasperError::BlockNotHeld(found)) if found == missing
+        ));
     }
 
     #[test]
@@ -2431,6 +2567,79 @@ mod tests {
                 .eligible_latest_messages()
                 .keys()
                 .all(|candidate| causal.eligible_latest_messages().contains_key(candidate)));
+        }
+
+        #[test]
+        fn restore_horizon_classification_depends_on_identity_not_local_heldness(
+            genesis_held in any::<bool>(),
+            live_held in any::<bool>(),
+        ) {
+            let live = validator(50);
+            let silent = validator(51);
+            let genesis = hash(111);
+            let floor = hash(112);
+            let vote = hash(113);
+            let mut blocks = vec![metadata(
+                floor.clone(),
+                vec![genesis.clone()],
+                1,
+                live.clone(),
+                BTreeMap::new(),
+            )];
+            if genesis_held {
+                blocks.push(metadata(
+                    genesis.clone(),
+                    Vec::new(),
+                    0,
+                    silent.clone(),
+                    BTreeMap::new(),
+                ));
+            }
+            if live_held {
+                blocks.push(metadata(
+                    vote.clone(),
+                    vec![floor.clone()],
+                    2,
+                    live.clone(),
+                    BTreeMap::new(),
+                ));
+            }
+            let mut restored = dag(blocks);
+            restored.canonical_genesis_hash = Some(genesis.clone());
+            let exact = BTreeMap::from([
+                (live.clone(), vote.clone()),
+                (silent.clone(), genesis),
+            ]);
+            let result = derive_consensus_projections(
+                &restored,
+                &floor,
+                &exact,
+                BTreeSet::new(),
+                &BTreeMap::from([(live.clone(), 7), (silent.clone(), 3)]),
+                &BTreeMap::from([
+                    (live.clone(), BondGeneration::GENESIS),
+                    (silent.clone(), BondGeneration::GENESIS),
+                ]),
+            );
+
+            if live_held {
+                let (causal, votes) = result.unwrap();
+                prop_assert_eq!(
+                    causal.exclusions().get(&silent),
+                    Some(&CausalParentExclusion::GenesisPlaceholder)
+                );
+                prop_assert_eq!(
+                    votes.exclusions().get(&silent),
+                    Some(&VoteExclusion::GenesisPlaceholder)
+                );
+                prop_assert_eq!(votes.exact_latest_messages(), &exact);
+                prop_assert_eq!(causal.eligible_latest_messages().get(&live), Some(&vote));
+            } else {
+                prop_assert!(matches!(
+                    result,
+                    Err(CasperError::BlockNotHeld(found)) if found == vote
+                ));
+            }
         }
 
         #[test]

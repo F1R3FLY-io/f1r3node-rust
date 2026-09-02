@@ -108,10 +108,27 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   locally validated shard DAG, even while asynchronous delivery means that DAG
   is a proper subgraph of another honest node's view. It MUST use every latest
   message present in the frozen local view and the candidate's complete bonded
-  stake map. An absent latest message contributes no agreement; it MUST NOT
-  shrink the committee denominator. The implementation MUST NOT select an
+  stake map. Each active validator MUST retain one exact slot. A canonical
+  genesis placeholder contributes no agreement, but its validator's stake MUST
+  remain in the committee denominator. The implementation MUST NOT select an
   arbitrary branch, connected component, or validator subset and finalize it
   independently.
+- **R-FINALIZER-RESTORE-HORIZON.** Full-history and restored nodes MUST classify
+  a canonical genesis placeholder from its immutable identity, not local
+  heldness. Both nodes MUST derive the same certified projection and context
+  digest. A different missing latest-message body MUST make finalization
+  inconclusive and preserve its exact dependency hash.
+- **R-RESTORE-STARTUP.** Startup MUST reconcile durable latest-message slots
+  before Casper enters the running state. Each resulting slot MUST contain the
+  canonical genesis identity or held certified metadata. Reconciliation and
+  snapshot capture MUST use one storage synchronization boundary.
+- **R-RESTORE-SEQUENCE.** Reconciliation MUST select the greatest certified
+  sequence for each retained validator key. Equal sequences MUST select the
+  least block hash. A bond-generation change MUST NOT reset the per-key
+  sequence. Evidence identity MUST retain the bond generation.
+- **R-RESTORE-SUPPORT.** A certificate support manifest MUST retain the canonical
+  genesis identity. Carrier selection and support traversal MUST NOT require its
+  omitted body. Every other missing support block MUST fail closed.
 - **R-FINALIZATION-CLOSURE.** The candidate that passes R-FINALIZER-ORDER is the
   one **directly finalized** block and the next shard LFB. Recording that decision
   MUST mark every previously unfinalized all-parent DAG ancestor indirectly
@@ -1106,6 +1123,7 @@ authorization for an in-place protocol upgrade.
 | **S42** | An honest node permanently parks because an admitted predecessor carrier commits a different honest local witness digest for the same floor/state; accepts the same floor with a different state; or splices a carrier block and foreign digest (violates R-CARRIER-EQUIVALENCE/R-CARRIER-PAIR/R-CARRIER-WAKE). |
 | **S43** | Certified validation erases a missing block hash or replay-state root, requests the wrong artifact type, drops the inconclusive block, leaks ready-path request ownership, releases a child from the wrong recovery, duplicates same-artifact requests, or globally serializes independent validators (violates R-LOCAL-FAULT-DEFER/R-RECOVERY-ARTIFACT-IDENTITY/R-RECOVERY-HISTORY-GUARD/R-RECOVERY-DEDUPLICATION). |
 | **S44** | A candidate's declared parents omit all ancestry of its signed finalized floor, or receiver-local fork choice rejects an otherwise replay-safe parent subset (violates R-PARENT-FLOOR). |
+| **S45** | Restore-horizon handling deletes an exact slot, removes its stake, changes a certified context from local heldness, drops a live cost effect, or treats an arbitrary missing dependency as an abstention (violates R-FINALIZER-RESTORE-HORIZON). |
 
 ## 7. Liveness invariants — MUST eventually happen
 

@@ -70,6 +70,19 @@ The implementation MUST NOT use `V` as the proposal's complete state-dependency 
 doing so can drop an accepted sibling merely because the finalized floor advanced on
 another branch.
 
+### R-RESTORE-HORIZON
+
+Each active validator MUST retain one exact latest-message slot and its frozen
+stake. A slot MAY cite the canonical genesis hash for a validator that has not
+produced a later block. The certified projection MUST classify that identity as
+the genesis placeholder on both full-history and restored nodes.
+
+A restored node MAY omit the canonical genesis body after it persists the
+immutable genesis hash. This omission MUST NOT change the exact slots, stake
+denominator, projection, context digest, replay state, or cost state. A missing
+noncanonical latest-message body MUST return a typed dependency error. The node
+MUST NOT convert an arbitrary unheld hash into an abstention.
+
 ## 3. LMD-GHOST rule
 
 ### R-LCA
@@ -225,6 +238,9 @@ error. It MUST NOT panic and MUST NOT silently produce a parentless ordinary blo
 
 - Missing metadata for a context-cited message, LCA, scored ancestor, or declared
   parent MUST produce a typed error rather than silently shrinking the calculation.
+  The canonical genesis placeholder is the only body-absence exception.
+- The certificate support manifest MUST include each noncanonical exact latest
+  message. A restored node MUST materialize that block before context derivation.
 - Every score addition and parent-count conversion MUST be checked.
 - Parallel score traversal MUST not mutate the DAG or the certified context.
 - Parallel or asynchronous frontier traversal MUST converge to the same exact,

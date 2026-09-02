@@ -1441,11 +1441,17 @@ fn collect_self_chain_deploy_sigs(
     let Some(mut current_hash) = current_hash_from_justifications.or(current_hash_from_dag) else {
         return Ok(HashSet::new());
     };
+    if casper_snapshot.dag.canonical_genesis_hash() == Some(&current_hash) {
+        return Ok(HashSet::new());
+    }
 
     let mut deploy_sigs: HashSet<DeployLookupId> = HashSet::new();
     let max_depth = std::cmp::max(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan, 1);
 
     for _ in 0..(max_depth as usize) {
+        if casper_snapshot.dag.canonical_genesis_hash() == Some(&current_hash) {
+            break;
+        }
         let block = block_store.get(&current_hash)?.ok_or_else(|| {
             missing_block_error("collecting self-chain deploy signatures", &current_hash)
         })?;
@@ -1483,6 +1489,9 @@ fn self_chain_has_unfinalized_user_deploys(
     let Some(mut current_hash) = current_hash_from_dag.or(current_hash_from_justifications) else {
         return Ok(false);
     };
+    if casper_snapshot.dag.canonical_genesis_hash() == Some(&current_hash) {
+        return Ok(false);
+    }
 
     let last_finalized_block_number = block_store
         .get(&casper_snapshot.last_finalized_block)?
@@ -1498,6 +1507,9 @@ fn self_chain_has_unfinalized_user_deploys(
     let max_depth = std::cmp::max(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan, 1);
 
     for _ in 0..(max_depth as usize) {
+        if casper_snapshot.dag.canonical_genesis_hash() == Some(&current_hash) {
+            break;
+        }
         if current_hash == casper_snapshot.last_finalized_block
             || casper_snapshot.dag.is_finalized(&current_hash)
         {

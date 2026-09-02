@@ -195,6 +195,7 @@ fn empty_dag() -> KeyValueDagRepresentation {
     let frontier_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
     KeyValueDagRepresentation {
         dag_set: imbl::HashSet::new(),
+        canonical_genesis_hash: None,
         latest_messages_map: imbl::HashMap::new(),
         child_map: imbl::HashMap::new(),
         height_map: imbl::OrdMap::new(),

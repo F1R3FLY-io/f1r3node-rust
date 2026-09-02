@@ -168,6 +168,7 @@ fn dag_with_finalized_sibling(
 
     KeyValueDagRepresentation {
         dag_set,
+        canonical_genesis_hash: None,
         latest_messages_map: imbl::HashMap::new(),
         child_map,
         height_map,

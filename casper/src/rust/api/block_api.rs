@@ -26,6 +26,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::trace::event::{Event as RspaceEvent, IOEvent};
+use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::ByteString;
 
 use crate::rust::blocks::proposer::propose_result::{
@@ -37,7 +38,7 @@ use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
 use crate::rust::genesis::contracts::standard_deploys;
 use crate::rust::reporting_proto_transformer::ReportingProtoTransformer;
-use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle};
+use crate::rust::safety_oracle::{CliqueOracleImpl, SafetyOracle, MIN_FAULT_TOLERANCE};
 use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
@@ -1205,10 +1206,19 @@ impl BlockAPI {
 
             let mut block_infos_at_height_acc = Vec::new();
             for block_hashes_at_height in topo_sort_dag {
-                let blocks_at_height: Vec<_> = block_hashes_at_height
-                    .iter()
-                    .map(|block_hash| casper.block_store().get_unsafe(block_hash))
-                    .collect();
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let mut blocks_at_height: Vec<BlockMessage> =
+                    Vec::with_capacity(block_hashes_at_height.len());
+                for block_hash in block_hashes_at_height.iter() {
+                    match casper.block_store().get(block_hash)? {
+                        Some(block) => blocks_at_height.push(block),
+                        None => tracing::debug!(
+                            "get-blocks-by-heights skipping unheld block {}",
+                            PrettyPrinter::build_string_bytes(block_hash)
+                        ),
+                    }
+                }
 
                 for block in blocks_at_height {
                     let block_info =
@@ -1306,26 +1316,23 @@ impl BlockAPI {
         max_depth_limit: i32,
     ) -> ApiErr<String> {
         let do_it = |(_casper, topo_sort): (&dyn MultiParentCasper, Vec<Vec<BlockHash>>)| -> ApiErr<String> {
-            // case (_, topoSort) => ...
-            let fetch_parents = |block_hash: &BlockHash| -> Vec<BlockHash> {
-                let block = _casper.block_store().get_unsafe(block_hash);
-                block.header.parents_hash_list.clone()
-            };
-
-            //string will be converted to an ApiErr<String>
-            let result = topo_sort
-                .into_iter()
-                .flat_map(|block_hashes| {
-                    block_hashes.into_iter().flat_map(|block_hash| {
-                        let block_hash_str = PrettyPrinter::build_string_bytes(&block_hash);
-                        fetch_parents(&block_hash).into_iter().map(move |parent_hash| {
-                            format!("{} {}", block_hash_str, PrettyPrinter::build_string_bytes(&parent_hash))
-                        })
-                    })
-                })
-                .collect::<Vec<String>>()
-                .join("\n");
-            Ok(result)
+            let mut edges = Vec::new();
+            for block_hashes in topo_sort {
+                for block_hash in block_hashes {
+                    let Some(block) = _casper.block_store().get(&block_hash)? else {
+                        continue;
+                    };
+                    let block_hash_text = PrettyPrinter::build_string_bytes(&block_hash);
+                    for parent_hash in block.header.parents_hash_list {
+                        edges.push(format!(
+                            "{} {}",
+                            block_hash_text,
+                            PrettyPrinter::build_string_bytes(&parent_hash)
+                        ));
+                    }
+                }
+            }
+            Ok(edges.join("\n"))
         };
 
         BlockAPI::toposort_dag(engine_cell, depth, max_depth_limit, do_it).await
@@ -1352,7 +1359,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1390,7 +1405,15 @@ impl BlockAPI {
         let mut block_infos_acc = Vec::new();
         for block_hashes_at_height in topo_sort {
             for block_hash in block_hashes_at_height {
-                let block = casper.block_store().get_unsafe(&block_hash);
+                // A height window can name blocks this node does not hold
+                // (an LFS restore horizon); serve the held ones.
+                let Some(block) = casper.block_store().get(&block_hash)? else {
+                    tracing::debug!(
+                        "get-blocks-full skipping unheld block {}",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                };
                 let block_info = BlockAPI::get_block_info_with_dag(
                     casper.as_ref(),
                     &dag,
@@ -1654,16 +1677,10 @@ impl BlockAPI {
             if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
                 meta.fault_tolerance_value
             } else {
-                let safety_oracle = CliqueOracleImpl;
-                safety_oracle
-                    .normalized_fault_tolerance(dag, &block.block_hash)
-                    .await?
+                Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
             }
         } else {
-            let safety_oracle = CliqueOracleImpl;
-            safety_oracle
-                .normalized_fault_tolerance(dag, &block.block_hash)
-                .await?
+            Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
         };
 
         let initial_fault = casper.normalized_initial_fault(&block.block_hash)?;
@@ -1671,6 +1688,32 @@ impl BlockAPI {
 
         let block_info = constructor(block, fault_tolerance, is_finalized);
         Ok(block_info)
+    }
+
+    /// An oracle walk that reaches history this node does not hold (an LFS
+    /// restore horizon) reads as unknown fault tolerance, never as an API
+    /// failure.
+    async fn fault_tolerance_or_unknown(
+        dag: &KeyValueDagRepresentation,
+        block_hash: &BlockHash,
+    ) -> ApiErr<f32> {
+        let safety_oracle = CliqueOracleImpl;
+        match safety_oracle
+            .normalized_fault_tolerance(dag, block_hash)
+            .await
+        {
+            Ok(ft) => Ok(ft),
+            Err(KvStoreError::MissingBlock { hash, .. }) => {
+                tracing::debug!(
+                    "fault tolerance unknown for {}: history below the restore \
+                     horizon ({})",
+                    PrettyPrinter::build_string_bytes(block_hash),
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
+                Ok(MIN_FAULT_TOLERANCE)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn get_block_info<M: MultiParentCasper + ?Sized, A: Sized + Send>(

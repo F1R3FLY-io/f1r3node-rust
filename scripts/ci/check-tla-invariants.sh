@@ -101,6 +101,8 @@ POST_FIX_CONFIGS=(
     'finalized_floor/MC_RecoveryCommitteeTransition|RecoveryCommitteeTransition'
     'finalized_floor/MC_ObjectiveEquivocation|ObjectiveEquivocation'
     'finalized_floor/MC_ObjectiveEvidenceAuthorization|ObjectiveEvidenceAuthorization'
+    'finalized_floor/MC_RestoreHorizonCertifiedContext|RestoreHorizonCertifiedContext'
+    'finalized_floor/MC_RestoreHorizonStartup|RestoreHorizonStartup'
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then

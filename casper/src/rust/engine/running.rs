@@ -69,7 +69,8 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
     // Check if we have casper
     if let Some(casper) = engine.with_casper() {
         // Get latest messages from block dag
-        let latest_messages = casper.block_dag().await?.latest_message_hashes();
+        let dag = casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -78,6 +79,9 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
         // Check if any latest message is recent
         let mut has_recent_latest_message = false;
         for (_, block_hash) in latest_messages.iter() {
+            if dag.canonical_genesis_hash() == Some(block_hash) {
+                continue;
+            }
             if let Ok(Some(block)) = casper.block_store().get(block_hash) {
                 let block_timestamp = block.header.timestamp;
                 if (now - block_timestamp) < delay_threshold.as_millis() as i64 {
@@ -422,6 +426,10 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
                 return Ok(false);
             }
         };
+        if dag.canonical_genesis_hash() == Some(&latest_hash) {
+            self.casper.set_recovery_sync_active(false);
+            return Ok(false);
+        }
         if latest_hash == dag.last_finalized_block() {
             self.casper.set_recovery_sync_active(false);
             return Ok(false);
@@ -622,13 +630,18 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
      */
     pub async fn handle_fork_choice_tip_request(&self, peer: PeerNode) -> Result<(), CasperError> {
         tracing::info!("Received ForkChoiceTipRequest from {}", peer.endpoint.host);
-        let latest_messages = self.casper.block_dag().await?.latest_message_hashes();
-        let tips: Vec<BlockHash> = latest_messages
-            .iter()
-            .map(|(_, hash)| hash.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let dag = self.casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
+        let mut tips = Vec::new();
+        for tip in latest_messages.values().cloned().collect::<HashSet<_>>() {
+            if dag.canonical_genesis_hash() == Some(&tip) {
+                continue;
+            }
+            if !dag.contains(&tip) {
+                return Err(CasperError::BlockNotHeld(tip));
+            }
+            tips.push(tip);
+        }
         tracing::info!(
             "Sending tips {} to {}",
             tips.iter()

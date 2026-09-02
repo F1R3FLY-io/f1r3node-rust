@@ -303,8 +303,12 @@ fn common_strict_main_chain_ancestors(
     // Validators sharing the same latest message (common on a healthy,
     // synchronized chain) would otherwise seed the frontier with that same
     // lineage once per validator instead of once total.
-    let latest_messages: HashSet<BlockHash> =
-        dag.latest_message_hashes().values().cloned().collect();
+    let latest_messages: HashSet<BlockHash> = dag
+        .latest_message_hashes()
+        .values()
+        .filter(|hash| dag.canonical_genesis_hash() != Some(*hash))
+        .cloned()
+        .collect();
 
     // Main-parent chains are linear, so the intersection of N strict-ancestor
     // paths is just the path below their deepest common point. Finding that
@@ -835,6 +839,7 @@ mod tests {
 
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map,
             child_map,
             height_map,
@@ -934,6 +939,26 @@ mod tests {
             is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
             "block 5 is 5 below the floor at 10, past the 4-block allowance, so \
              no merge can still need it and holding it forever leaks",
+        );
+    }
+
+    #[test]
+    fn canonical_genesis_placeholder_does_not_change_reclamation_frontier() {
+        let mut full = linear_chain_dag();
+        full.canonical_genesis_hash = Some(hash(0));
+        full.latest_messages_map
+            .insert(Bytes::from(vec![0xAB; 65]), hash(0));
+        let mut restored = full.clone();
+        restored.dag_set.remove(&hash(0));
+        restored.block_number_map.remove(&hash(0));
+
+        assert_eq!(
+            common_strict_main_chain_ancestors(&full, 5),
+            common_strict_main_chain_ancestors(&restored, 5)
+        );
+        assert!(
+            is_safe_to_delete_at_floor(&restored, &hash(5), &floor_at(10), &conf())
+                .expect("restored safety check")
         );
     }
 
@@ -1071,6 +1096,7 @@ mod tests {
 
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map,
             child_map,
             height_map,

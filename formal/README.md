@@ -66,6 +66,22 @@ and the implementation-level interleavings are in
 The local entry point is
 [`scripts/check-finalized-floor-ALL.sh`](../scripts/check-finalized-floor-ALL.sh).
 
+[`tlaplus/finalized_floor/RestoreHorizonCertifiedContext.tla`](tlaplus/finalized_floor/RestoreHorizonCertifiedContext.tla)
+interleaves full-history and restored-node context capture. It preserves exact
+validator slots, frozen stake, projections, context digest, replay state, and
+cost state. Four controls delete a slot, delete stake, use node-local heldness,
+or abstain an arbitrary missing live dependency. The unbounded identity and
+projection refinement is in
+[`rocq/finalized_floor/theories/RestoreHorizonCertifiedContext.v`](rocq/finalized_floor/theories/RestoreHorizonCertifiedContext.v).
+
+[`tlaplus/finalized_floor/RestoreHorizonStartup.tla`](tlaplus/finalized_floor/RestoreHorizonStartup.tla)
+interleaves restart reconciliation and consensus readers on full-history and
+restored nodes. It requires materialized running slots, greatest-sequence
+selection across bond generations, canonical support retention, and equal
+first-proposal behavior. Four controls skip reconciliation, select an older
+sequence, drop canonical support, or use node-local heldness. Loom checks atomic
+publication to concurrent readers.
+
 Protocol-6 finalized-floor evidence is split into four refinement boundaries.
 [`tlaplus/finalized_floor/CertifiedFloorCommitment.tla`](tlaplus/finalized_floor/CertifiedFloorCommitment.tla)
 checks target-bound signed commitment and receiver admission. Its causal-input

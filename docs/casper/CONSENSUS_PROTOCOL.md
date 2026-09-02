@@ -184,7 +184,7 @@ recovery therefore keeps its round open and retries on a later tick.
    truncated. `number-of-active-validators + 1` is sufficient worst-case
    provisioning, not a startup admission rule. If no causal tip exists, the
    captured finalized floor is the parent.
-5. **Compute LCA** (Lowest Common Ancestor) of selected parents — bounds the [merge scope](#6-state-merging-multi-parent)
+5. **Compute LCA** (Lowest Common Ancestor) of selected parents for fork-choice scoring.
 6. **Build justifications**: the exact positive finalized-floor authority set,
    using each member's registered latest-message hash, including invalid latest
    evidence needed by slashing
@@ -361,6 +361,38 @@ state machine and implementation mapping are in
 5. **Rank recursively**: Starting from LCA, greedily pick the highest-scored child. Repeat until no higher-scored descendants exist.
 6. **Apply depth filter**: Main parent (rank 1) always included. Secondary parents filtered to within `max_parent_depth` of main parent.
 
+### Restore-horizon latest messages
+
+The exact latest-message map retains one slot for each active validator. A
+new validator key starts with the canonical genesis hash in its slot. This
+identity contributes no agreement. The validator stake stays in the finality
+denominator.
+
+A validator key keeps one monotonic sequence across bond generations. A rebond
+does not reset that sequence. The generation remains part of signed authority
+and equivocation evidence.
+
+A restored node can omit the canonical genesis body after it persists the
+immutable genesis hash. Full-history and restored nodes still derive the same
+certified context, fork choice, replay state, and cost state. Any different
+missing latest-message body is a typed dependency error. The node does not
+convert that error into an abstention.
+
+Each noncanonical exact hash belongs to the certificate support manifest. A
+restore must fetch and verify that block before certified-context materialization.
+
+Startup reconciles the durable latest-message index before Casper enters the
+running state. Reconciliation uses certified DAG metadata and the canonical
+genesis identity. It removes stale validator slots.
+
+For each retained validator key, reconciliation selects the greatest sequence.
+An equal sequence selects the least block hash. This rule is independent of
+metadata arrival order and bond-generation boundaries.
+
+One storage write lock covers reconciliation and DAG snapshot capture. A
+concurrent reader sees either the old startup phase or one complete reconciled
+state. It cannot see a running state with a partial index.
+
 ### Why LMD GHOST?
 
 - Selects by **weight** (stake), not longest chain — a validator with 51% stake immediately wins fork choice
@@ -382,8 +414,8 @@ In a multi-parent DAG, different validators may have included different deploys 
 1. **Derive the finalized floor**: From the parents' inherited floors and the
    highest state-safe clique-certified frontier in the block's frozen
    justification snapshot.
-2. **Identify visible blocks**: All blocks in the floor-bounded parent closure
-   (exclusive of the floor, inclusive of the parents).
+2. **Identify visible blocks**: Use `closure(parents) \\ closure(floor)`.
+   This set contains each parent-reachable block above the finalized floor.
 3. **Collect deploys**: Extract user deploys from all visible blocks
 4. **Detect conflicts**: Branches conflict if they contain the **same user deploy ID** (not content — just the deploy signature)
 5. **Resolve**: `ConflictSetMerger` selects the highest-value subset
@@ -421,10 +453,12 @@ block. The finalized floor, not a locally observed LFB, bounds the scope.
 ### Performance Bounds
 
 - Merge cost: O(visible_blocks^2 x deploys^2) for conflict resolution
-- The finalized-floor distance is a deterministic work bound.
-- **Backstop**: If the floor distance exceeds the configured cap, proposal parks
-  and validation fails deterministically. The node never substitutes one parent's
-  post-state or silently drops co-parent effects.
+- The finalized-floor distance is the deterministic work bound.
+- **Delta backstop**: The merge stops when `num(maxParent) - num(floor)` exceeds
+  `MAX_FLOOR_DISTANCE_BLOCKS` (256). Proposal parks, and validation rejects the
+  block deterministically. The merge does not substitute one parent state.
+- `MAX_PARENT_MERGE_SCOPE_BLOCKS` (512) controls an advisory metric only.
+  Branch width is not node-deterministic and cannot control admission.
 
 ### System Deploys
 

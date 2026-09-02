@@ -78,6 +78,7 @@ theories/BondGenerationLifecycle.v
 theories/CertifiedObjectiveEquivocation.v
 theories/CertifiedCausalAdmission.v
 theories/CausalFinalityProjection.v
+theories/RestoreHorizonCertifiedContext.v
 theories/HeartbeatFinalityBackpressure.v
 theories/TargetDeployTerminality.v
 theories/NodeLocalProductLifting.v

@@ -13,6 +13,8 @@ and the proof and execution evidence is cataloged in
 |---|---|
 | `FinalizedFloor.tla` | deterministic floor walk, merge cap, and no lost parent write |
 | `FinalizedFloorScan.tla` | complete parent-band scan |
+| `RestoreHorizonCertifiedContext.tla` | full-history/restored context equivalence and fail-closed missing live dependencies |
+| `RestoreHorizonStartup.tla` | restart reconciliation, monotonic per-key sequence selection, atomic running-state publication, and support identity retention |
 | `FinalizerProgress.tla` | complete candidate search and restart-safe progress |
 | `AccountableFinality.tla` | exact weighted asynchronous certificate support and accountable conflicts |
 | `StateLineageFinality.tla` | causal certificate, state certificate, and committed-effect lineage |
