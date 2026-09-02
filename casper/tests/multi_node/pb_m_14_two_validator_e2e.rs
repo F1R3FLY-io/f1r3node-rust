@@ -1371,3 +1371,197 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
          post-replay — fs_read is read-only, no mutation expected"
     );
 }
+
+/// Phase 5 coverage-review addendum (2026-09-02): **multi-node
+/// divergence for a mutating-op-adjacent path**.  Companion to
+/// `pb_m_14_divergent_follower_read_causes_block_rejection` — same
+/// mechanism (tamper follower's on-disk state, block replay
+/// diverges) but the deploy shape includes an fs_write BEFORE the
+/// divergent fs_read.  The intent per the coverage review's N-3
+/// concern: exercise the WAL's cost-accounting path with a Write
+/// entry in the mix, not just a single-op read.
+///
+/// Coverage this adds beyond the read-only canary:
+///   - Multi-op WAL flow (Stat + Write + Read) end-to-end through
+///     block validation.
+///   - fs_write's D2 mechanism (bytes from deploy source): the
+///     follower's re-executed write produces the SAME bytes as the
+///     leader's, and the resulting on-disk state has the payload
+///     at the write's cursor position, with the tampered tail
+///     preserved beyond that cursor.  The subsequent read spans
+///     into the tampered tail → different bytes vs cached → verify
+///     fires.
+///   - Confirms that a divergence detected DOWNSTREAM of a
+///     successful write still rejects the block; a subtle
+///     regression in cost accounting that gave the block-rejection
+///     path a different offramp for multi-op deploys would surface
+///     here.
+///
+/// Write mechanics (design note): sequential writeByteArray writes
+/// PAYLOAD bytes starting at fd cursor position 0; the fd cursor
+/// advances to PAYLOAD.len() (11).  Subsequent readN(30) reads
+/// 30 bytes starting at cursor position 11, spanning bytes 11..41
+/// of the file.  Since the operator stage is only 30 bytes wide,
+/// the read returns bytes 11..30 (19 bytes) then hits EOF.
+/// The read reply carries whatever bytes are at positions 11..30.
+/// Under D3 both sides seed with SEED_TAIL_LEADER; between
+/// evaluate we overwrite follower's file with SEED_TAIL_FOLLOWER.
+/// Follower's re-executed write puts PAYLOAD at 0..11 (same as
+/// leader) but positions 11..30 retain SEED_TAIL_FOLLOWER (differ
+/// from leader's SEED_TAIL_LEADER).  Read reply diverges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn pb_m_14_divergent_follower_write_then_read_causes_block_rejection() {
+    // 30-byte seed content (11 bytes will be overwritten by
+    // writeByteArray; the remaining 19 bytes are the divergence
+    // surface for the subsequent readN).
+    const SEED_LEADER: &[u8] = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const SEED_FOLLOWER: &[u8] = b"AAAAAAAAAABBBBBBBBBBBBBBBBBBBB";
+    const READ_N: usize = 30;
+
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_file = stage_dir.path().join("target");
+    std::fs::write(&stage_file, SEED_LEADER).expect("seed stage source");
+    let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon_path.clone(),
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Consensus,
+    )
+    .expect("bundle entry construction");
+    let bundle = vec![entry];
+
+    let genesis = GenesisBuilder::new()
+        .with_fs_bundle(bundle.clone())
+        .with_consensus_fs_snapshot_cadence(Some(1))
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("build genesis with fs bundle");
+
+    let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
+    let projections =
+        project_bundle_per_validator(&bundle, 2, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
+    let leader_subdir = projections[0].subdir.clone();
+    let follower_subdir = projections[1].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
+
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
+            .await
+            .expect("two-validator network with fs provisioning");
+
+    // Sanity check both subdirs.
+    assert_eq!(
+        std::fs::read(leader_subdir.join("target")).unwrap(),
+        SEED_LEADER
+    );
+    assert_eq!(
+        std::fs::read(follower_subdir.join("target")).unwrap(),
+        SEED_LEADER
+    );
+
+    // Deploy: openFile("rw") → writeByteArray(PAYLOAD) → readN(30).
+    // The read spans into the tail bytes that the write did NOT
+    // overwrite — those tail bytes are the divergence surface once
+    // we tamper the follower's file below.
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let deploy_src = format!(
+        r#"
+new rl(`rho:registry:lookup`), fsCh, ackCh in {{
+  rl!(`{fs_uri}`, *fsCh) |
+  for (@(_, fs) <- fsCh) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for (@[true, _n] <- @file!?("writeByteArray", "{payload_hex}".hexToBytes())) {{
+        for (@reply <- @file!?("readN", {n})) {{
+          ackCh!(reply)
+        }}
+      }}
+    }}
+  }}
+}}
+"#,
+        fs_uri = fs_uri,
+        payload_hex = PAYLOAD_HEX,
+        n = READ_N,
+    );
+
+    let deploy = construct_deploy::source_deploy_now(deploy_src, None, None, Some(shard_id))
+        .expect("sign fs-write-then-read deploy");
+
+    let block = nodes[0]
+        .add_block_from_deploys(&[deploy])
+        .await
+        .expect("node 0 (validator A) creates + adds write-then-read block");
+
+    // Sanity: leader's file after play holds PAYLOAD at 0..11 and
+    // SEED_LEADER at 11..30.
+    let leader_target = leader_subdir.join("target");
+    let leader_after_play = std::fs::read(&leader_target).expect("read leader target");
+    assert_eq!(&leader_after_play[..PAYLOAD.len()], PAYLOAD);
+    assert_eq!(
+        &leader_after_play[PAYLOAD.len()..],
+        &SEED_LEADER[PAYLOAD.len()..]
+    );
+
+    // Divergence injection: replace follower's target with the
+    // "B"-tail variant.  When the follower re-executes the deploy,
+    // its write puts PAYLOAD at 0..11 (same as leader) but positions
+    // 11..30 retain the B-tail — different from leader's cached
+    // read reply.
+    std::fs::write(follower_subdir.join("target"), SEED_FOLLOWER)
+        .expect("tamper follower's target");
+
+    // Process on B: expect block rejection.
+    let (_left, right) = nodes.split_at_mut(1);
+    let result = right[0].process_block(block.clone()).await;
+
+    match result {
+        Ok(rspace_plus_plus::rspace::history::Either::Left(err)) => {
+            eprintln!(
+                "PB-M-14 write-then-read divergence canary: block rejected as \
+                 expected with BlockError: {err:?}"
+            );
+        }
+        Ok(rspace_plus_plus::rspace::history::Either::Right(valid)) => panic!(
+            "Phase 5 coverage-addendum REGRESSION: divergent follower state must \
+             reject the block.  Follower re-executed openFile + writeByteArray + \
+             readN against tampered subdir; the read should have produced \
+             different bytes at cursor 11..30 but the block was ACCEPTED as \
+             {valid:?}.  This means either the Write path's D2 mechanism didn't \
+             fire, the subsequent Read's verify was skipped, or the cost-\
+             accounting path for multi-op deploys has a different offramp that \
+             lets divergence through."
+        ),
+        Err(casper_err) => panic!(
+            "Phase 5 canary got infrastructure error instead of BlockError.Invalid: \
+             {casper_err:?}"
+        ),
+    }
+
+    // Sanity: follower's file post-replay should have PAYLOAD at 0..11
+    // (from re-executed write) and B-tail at 11..30 (untouched by
+    // the write, tampered before replay).
+    let follower_after_replay =
+        std::fs::read(follower_subdir.join("target")).expect("read follower target post-replay");
+    assert_eq!(
+        &follower_after_replay[..PAYLOAD.len()],
+        PAYLOAD,
+        "Phase 5 SANITY: follower's re-executed write must have put PAYLOAD at \
+         0..{n} (D2 mechanism, bytes from deploy source)",
+        n = PAYLOAD.len()
+    );
+    assert_eq!(
+        &follower_after_replay[PAYLOAD.len()..],
+        &SEED_FOLLOWER[PAYLOAD.len()..],
+        "Phase 5 SANITY: follower's tail bytes 11..30 must remain the tampered \
+         'B'-content — writeByteArray only affected positions 0..11"
+    );
+}

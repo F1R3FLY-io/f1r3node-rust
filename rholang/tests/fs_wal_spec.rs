@@ -1591,6 +1591,77 @@ mod tests {
         );
     }
 
+    /// Phase 5 coverage-review addendum (2026-09-02): **fs_stat
+    /// symmetric syscall error**.  Attempt fs_stat on a non-existent
+    /// path on both sides → both see ENOENT → FSERR_NOT_FOUND →
+    /// verify OK → both finalize identically, NOT
+    /// CONSENSUS_DIVERGENCE.  Parity with fs_chmod / fs_remove_file
+    /// / fs_rename / fs_copy_file / fs_remove_dir symmetric-error
+    /// pins; extends the triad convention to observation ops.
+    ///
+    /// Coverage gap this closes: a regression that spuriously fired
+    /// CONSENSUS_DIVERGENCE on symmetric ENOENT (e.g., verify
+    /// erroneously comparing hashes of two error replies with
+    /// different msg bytes but identical code) would slip past all
+    /// existing observation-op pins without this test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_stat_symmetric_syscall_error_finalizes_to_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // No file at "missing.bin".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsStat(`rho:io:fs:native:1.0.0/stat`), ackCh in {{
+              fsStat!("{root}", "missing.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[130; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_stat symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_stat symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 5 fs_stat symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_NOT_FOUND would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
     /// **fs_size positive path**.  Mirrors the Phase-1 fs_stat
     /// pattern but on a fd-based observation op: leader opens a
@@ -1813,6 +1884,76 @@ mod tests {
              RSpace rig verification — got Ok, which would silently accept a \
              leader lie."
         );
+    }
+
+    /// Phase 5 coverage-review addendum (2026-09-02): **fs_size
+    /// symmetric syscall error**.  Both sides call fs_size on the
+    /// same bogus fd (999, never opened) → both look up in the fd
+    /// table, both get None → FSERR_CLOSED symmetrically → verify
+    /// OK → both finalize identically, NOT CONSENSUS_DIVERGENCE.
+    ///
+    /// fs_size is fd-based, so the natural symmetric-error scenario
+    /// is a lookup miss rather than a path miss.  A bogus fd literal
+    /// avoids any test-harness fd-allocation determinism concerns:
+    /// no fs_open call means no fd was ever allocated, so 999 is
+    /// safely unassigned on both leader and follower.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_size_symmetric_syscall_error_finalizes_to_failure() {
+        let _dir = tempfile::tempdir().unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Bogus fd — no fs_open → nothing in the fd table.  Both
+        // sides return FSERR_CLOSED symmetrically.
+        let term = r#"
+            new fsSize(`rho:io:fs:native:1.0.0/size`), ackCh in {
+              fsSize!(999, *ackCh) |
+              for (@_ <- ackCh) { Nil }
+            }
+        "#;
+        let r = Blake2b512Random::create_from_bytes(&[131; 32]);
+
+        leader
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_size symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_size symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        // fd-lookup-miss produces no WAL entry (jmode is None →
+        // journal_state_read skips).  Both sides observe the same
+        // "no WAL" state.
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 5 fs_size symmetric-error: WALs must be byte-identical. \
+             A regression that journaled on fd-lookup-miss (or spuriously \
+             fired CONSENSUS_DIVERGENCE on the symmetric FSERR_CLOSED) \
+             would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
     }
 
     /// Phase 2 regression pin (fd-release fix, 2026-09-01):
@@ -2774,6 +2915,70 @@ mod tests {
             "Phase 2 D1 enforcement: divergent fs_entries reply Par should trip \
              RSpace rig verification"
         );
+    }
+
+    /// Phase 5 coverage-review addendum (2026-09-02): **fs_entries
+    /// symmetric syscall error**.  Attempt fs_entries on a
+    /// non-existent directory on both sides → both see ENOENT →
+    /// FSERR_NOT_FOUND → verify OK → both finalize identically,
+    /// NOT CONSENSUS_DIVERGENCE.  Parity with the fs_stat symmetric-
+    /// error pin.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_entries_symmetric_syscall_error_finalizes_to_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // No subdirectory at "missing_dir".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsEntries(`rho:io:fs:native:1.0.0/entries`), ackCh in {{
+              fsEntries!("{root}", "missing_dir", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[132; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_entries symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_entries symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 5 fs_entries symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_NOT_FOUND would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
     }
 
     /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
