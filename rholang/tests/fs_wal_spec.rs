@@ -3467,6 +3467,477 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_write positive path with load-bearing on-disk check**.
+    /// Under Phase 0 tautological replay, the follower's is_replay
+    /// branch consumed the leader's cached reply and NEVER fired
+    /// `libc::write` on the follower's own fd — the follower's
+    /// subdir file (or shared tempdir file, in this test) stayed
+    /// unmutated by the follower's play run.  Under Phase 3, the
+    /// follower's Consensus re-execute does a real `libc::write` via
+    /// its shadow's real fd (installed by fs_open's Phase-2 real-
+    /// open) using the same bytes the reducer re-evaluates from the
+    /// deploy source (D2).
+    ///
+    /// Uses the same test-harness pattern as fs_truncate's positive
+    /// pin: same term on both sides (RSpace rig hashes produce
+    /// contents including arg values — different paths would fail
+    /// rig at the fs_open produce comparator).  Restore file to
+    /// empty between leader + follower evaluate so the follower's
+    /// real libc::write has to re-do the leader's work.  Load-
+    /// bearing post-follower on-disk check: file contains PAYLOAD.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_write_reexecute_writes_to_follower_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"").unwrap();
+
+        let payload = b"phase-3-fs_write-payload";
+        let payload_hex = hex::encode(payload);
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, wc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "{payload_hex}".hexToBytes(), *wc) |
+                for (@_ <- wc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[91; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_write positive");
+
+        // Leader's file contains PAYLOAD post-play.
+        let leader_bytes = std::fs::read(&target).unwrap();
+        assert_eq!(
+            leader_bytes, payload,
+            "leader's fs_write must have written PAYLOAD"
+        );
+
+        // Restore file to empty pre-play state.  Under D3 per-
+        // validator subdirs (production), the follower's own subdir
+        // is at pre-play state naturally; this restore emulates
+        // that under the shared-tempdir test harness.  See
+        // fs_truncate's positive pin for the same pattern.
+        std::fs::write(&target, b"").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_write positive");
+
+        // LOAD-BEARING Phase-3 assertion: post-restore, the file was
+        // empty; if the follower's fs_write re-execute fires, the
+        // file contains PAYLOAD.  A regression to Phase-0 tautological
+        // (no real libc::write on the follower) would leave the file
+        // empty → this assertion fails.
+        let follower_post = std::fs::read(&target).unwrap();
+        assert_eq!(
+            follower_post,
+            payload,
+            "Phase 3 REGRESSION: follower's fs_write did NOT fire — the file \
+             (restored to empty pre-follower-evaluate) is still empty.  Either \
+             the fresh-syscall path is not engaged (Phase-0 tautological came \
+             back), or fs_open's Phase-2 real-open failed to install a real fd \
+             on the follower.  Expected {} bytes; got {} bytes.",
+            payload.len(),
+            follower_post.len(),
+        );
+
+        // WAL byte-identity across both sides.
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 3: WAL entry {i} differs on fs_write positive: \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical write state");
+    }
+
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_write divergence-detection path**.  Same shape as the
+    /// fs_truncate divergence pin — chmod file to 0o444 between
+    /// leader and follower.  fs_open on follower fails EACCES →
+    /// shadow file: None → fs_write's write_impl returns FSERR_CLOSED
+    /// → verify hash-mismatch vs cached `[true, n]` → finalize flips
+    /// the pre-append Write entry to Failure { FSERR_CODE_CONSENSUS_
+    /// DIVERGENCE } + check_replay_data Err.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_write_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, wc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "68656c6c6f".hexToBytes(), *wc) |
+                for (@_ <- wc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[92; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_write divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::Write && e.outcome == WalOutcome::Success),
+            "leader must have journaled a successful Write entry"
+        );
+
+        // Force divergence: restore, then chmod ro.
+        std::fs::write(&target, b"").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        // Restore permissions for cleanup.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644));
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 3 D1 enforcement: divergent state (ro-file on follower's \
+             fs_open) must trip RSpace rig verification"
+        );
+
+        let follower_write = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Write)
+            .expect("follower must have a pre-appended Write entry (unconditional)");
+        match follower_write.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 3: Write divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 3 REGRESSION: follower's Write WAL entry stayed at Success \
+                 despite fs drift.  Either fresh-syscall path not engaged or \
+                 verify broken.  Write entry: {follower_write:?}"
+            ),
+        }
+    }
+
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **fs_write symmetric syscall error**.  Analog of the
+    /// fs_truncate symmetric-error pin.  Open file "r" (read-only)
+    /// under a Consensus cap, then attempt fs_write.  Both leader
+    /// and follower's `libc::write` on a read-only fd returns
+    /// EBADF → the handler maps that to `FSERR_IO` (via
+    /// `io_err_code`).  Same fresh reply on both sides:
+    ///   - Pre-append fires (bytes.len() <= MAX_WRITE_BYTES).
+    ///   - Fresh reply is `[false, FSERR_IO, msg]` on both.
+    ///   - verify_reply_hash_matches_cached returns Ok (same Par).
+    ///   - Both sides finalize to `Failure { FSERR_CODE_IO }` via
+    ///     the H-6 finalize_failure_journal path — NOT
+    ///     CONSENSUS_DIVERGENCE.
+    ///   - WAL byte-identity holds.
+    ///
+    /// Proves the Phase-3 verify-OK branch uses the fresh syscall's
+    /// error code — a regression that spuriously fired
+    /// CONSENSUS_DIVERGENCE on symmetric errors would fail here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_write_symmetric_syscall_error_finalizes_to_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"initial-content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Open the file read-only, then attempt fs_write.  libc::write
+        // on a read-only fd returns EBADF; io_err_code maps other-
+        // kind errors to FSERR_IO.  Both leader and follower agree on
+        // this error → verify OK → finalize to Failure { FSERR_CODE_IO }.
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsWrite(`rho:io:fs:native:1.0.0/write`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, wc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsWrite!(fd, "68656c6c6f".hexToBytes(), *wc) |
+                for (@_ <- wc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[93; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_write symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_write = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Write)
+            .expect("leader must journal a Write entry (pre-append fires)");
+        match leader_write.outcome {
+            WalOutcome::Failure { code } => assert_ne!(
+                code, 0,
+                "leader's Write entry must be finalized to Failure with a \
+                 valid FSERR code (not UNKNOWN=0) — H-6 finalize_failure_journal \
+                 should map the EBADF from libc::write on a read-only fd.  Got \
+                 code {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's Write entry stayed at Success despite EBADF from \
+                 libc::write on a read-only fd.  H-6 finalize_failure_journal \
+                 path is broken.  Write entry: {leader_write:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_write symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 3 symmetric-error: WALs must be byte-identical.  A regression \
+             that spuriously fired CONSENSUS_DIVERGENCE on the symmetric error \
+             (both sides agreed on FSERR_IO) would fail here — the Consensus \
+             re-execute's verify-OK branch MUST use the fresh syscall's error \
+             code, not CONSENSUS_DIVERGENCE."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
+    /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
+    /// **Dedicated fs_seek Consensus real-lseek prerequisite pin**.
+    /// Under Phase 3, follower's fs_seek is_replay Consensus branch
+    /// must call `libc::lseek` on the shadow's real fd — not just
+    /// update the shadow position tracker — so that subsequent
+    /// Phase-2/3 fd ops (fs_read / fs_write) find the OS-fd
+    /// position where the leader left it.
+    ///
+    /// Test shape: open a Consensus cap on a 16-byte file with
+    /// known content ("0123456789abcdef"), fs_seek(offset=8, SET),
+    /// fs_read(4 bytes).  Leader reads "89ab" at OS-fd position 8.
+    /// Follower's fs_seek Phase-3 real-lseek moves the follower's
+    /// OS-fd position to 8; follower's fs_read Phase-2 re-execute
+    /// reads "89ab" from position 8.  verify OK → WAL byte-identity.
+    ///
+    /// A regression that dropped the fs_seek real-lseek (kept only
+    /// the shadow-position update) would leave follower's OS-fd
+    /// position at 0 → fs_read reads "0123" instead of "89ab" →
+    /// verify hash-mismatch → CONSENSUS_DIVERGENCE.  This pin fails
+    /// at the byte-identity check, pointing directly at the fs_seek
+    /// site (Read entry's payload_ref would differ).
+    ///
+    /// Coverage complement to `wal_position_stays_in_sync_on_leader_
+    /// and_follower` (indirect multi-op test): this pin isolates the
+    /// fs_seek OS-fd-position mutation specifically.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_seek_reexecute_moves_follower_os_fd_position() {
+        let dir = tempfile::tempdir().unwrap();
+        // Known 16-byte content: bytes at position 8..12 are
+        // "89ab" (ASCII 0x38 0x39 0x61 0x62).
+        std::fs::write(dir.path().join("data.bin"), b"0123456789abcdef").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsSeek(`rho:io:fs:native:1.0.0/seek`),
+                fsRead(`rho:io:fs:native:1.0.0/read`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, sc, rc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsSeek!(fd, 8, "set", *sc) |
+                for (@_ <- sc) {{
+                  fsRead!(fd, 4, *rc) |
+                  for (@_ <- rc) {{
+                    fsClose!(fd, *cc) |
+                    for (@_ <- cc) {{ Nil }}
+                  }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[94; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_seek dedicated");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_read = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Read)
+            .expect("leader must have journaled a Read entry");
+        assert_eq!(
+            leader_read.offset,
+            Some(8),
+            "leader's Read WAL entry must record offset=8 (post-seek shadow \
+             position)"
+        );
+        assert_eq!(leader_read.length, Some(4));
+        assert_eq!(leader_read.outcome, WalOutcome::Success);
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_seek dedicated");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        // Load-bearing: WAL byte-identity across all entries.  The
+        // Read entry's payload_ref = Hash(bytes-read).  If the
+        // follower's OS-fd position hadn't been moved by the
+        // real-lseek fix, follower's libc::read from position 0
+        // returns "0123" → Hash("0123") differs from leader's
+        // Hash("89ab") → assertion fails at the Read entry.
+        assert_eq!(
+            leader_wal.len(),
+            follower_wal.len(),
+            "Phase 3 fs_seek dedicated: leader/follower WAL count differs — \
+             likely the follower's Read Consensus branch diverged after \
+             fs_seek failed to move the OS-fd position"
+        );
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 3 fs_seek REGRESSION: WAL entry {i} differs between \
+                 leader and follower.  Most likely fs_seek's Consensus is_replay \
+                 branch stopped calling libc::lseek on the shadow's real fd \
+                 (only updated the shadow-position tracker) — the follower's \
+                 subsequent fs_read reads from OS-fd position 0 instead of the \
+                 seeked position, returning wrong bytes and tripping \
+                 CONSENSUS_DIVERGENCE.  leader={l:?} follower={f:?}"
+            );
+        }
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match — fs_seek's real-lseek fires");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression

@@ -291,34 +291,28 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     );
 
     // ---- assertion 2: on-disk bytes (Shape A per-validator) ---------
-    // Leader wrote through the play path — its own copy at
-    // `<leader_subdir>/target` holds PAYLOAD.  Follower's on-disk
-    // file MIXED-STATE per-op split as of Phase 1 (2026-09-01):
+    // Both leader and follower write PAYLOAD to their OWN subdir
+    // copy of `target`:
     //
-    //   - The openFileImpl `statCheck` on the follower NOW does a
-    //     real fs_stat re-execute against `<follower_subdir>/target`
-    //     (its own copy of the 0-byte projection-seeded file) and
-    //     verifies the hash matches the leader's cached statCheck
-    //     reply (also 0 bytes at leader-statCheck time, since
-    //     statCheck runs BEFORE the write).  Both replies agree →
-    //     Success.  See `fs_stat_reexecute_detects_divergence` in
-    //     `rholang/tests/fs_wal_spec.rs` for the divergence-side pin.
+    //   - Leader wrote through the play path — its `<leader_subdir>/
+    //     target` holds PAYLOAD.
+    //   - Follower's fs_open is_replay Consensus branch (Phase 2)
+    //     opens a real fd against `<follower_subdir>/target`; its
+    //     fs_stat is_replay Consensus branch (Phase 1) re-executes
+    //     statCheck; its fs_write is_replay Consensus branch
+    //     (Phase 3, 2026-09-01) does a real libc::write of PAYLOAD.
+    //     Result: `<follower_subdir>/target` also holds PAYLOAD.
     //
-    //   - The `fsWrite` on the follower still consumes the leader's
-    //     cached reply and skips the actual `libc::write` syscall
-    //     (Phase 3's fs_write re-execute is a separate slice per
-    //     D2 = deploy source re-evaluation for bytes — reducer bytes
-    //     plumbing is out of scope for Phase 1).  So the follower's
-    //     own copy of `target` stays at the projection-seeded empty
-    //     bytes.
+    // This assertion flip from `== b""` to `== PAYLOAD` is Phase 3's
+    // completion signal for the fs_write handler.  Phase 3's
+    // remaining work is fs_write_at (positional variant); its
+    // completion doesn't require another Canary-1 change since
+    // Canary-1's deploy uses sequential writeByteArray → fs_write,
+    // not writeAt.
     //
-    // When Phase 3 lands the follower's fs_write re-execute, this
-    // assertion flips to `== PAYLOAD` (the follower will run
-    // `libc::write(bytes)` against its own subdir and produce a
-    // Success verification).  Until then, the "== b\"\"" assertion
-    // pins the current per-op split and will surface any accidental
-    // Phase-3-adjacent scope creep.  The operator's stage source is
-    // untouched (projection was a copy).
+    // The operator's stage source is untouched (projection was a
+    // copy) — both validators wrote to their own subdirs, not back
+    // to the stage.
     let leader_target = leader_subdir.join("target");
     let leader_on_disk = std::fs::read(&leader_target).expect("read leader's own target");
     assert_eq!(
@@ -328,14 +322,16 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     let follower_target = follower_subdir.join("target");
     let follower_on_disk = std::fs::read(&follower_target)
-        .expect("read follower's own target (empty until Phase 3 fs_write re-execute lands)");
+        .expect("read follower's own target (must contain PAYLOAD post-Phase-3)");
     assert_eq!(
-        follower_on_disk, b"",
-        "Phase-1-through-Phase-2 EXPECTATION: follower's fs_stat is_replay \
-         branch NOW re-executes + verifies (statCheck agrees, Success), but \
-         fs_write is_replay still consumes cached reply (no `libc::write` \
-         re-execute yet).  Phase 3's fs_write re-execute will flip this to \
-         `== PAYLOAD`; the flip is the completion signal for that phase."
+        follower_on_disk, PAYLOAD,
+        "Phase 3 completion signal: follower's fs_write is_replay Consensus \
+         branch re-executes libc::write against `<follower_subdir>/target` \
+         (via fs_open Phase-2 real-open + D2 reducer-provided bytes).  A \
+         regression to Phase-0 tautological (no real libc::write on follower) \
+         would leave this at b\"\" — failure here means fs_write re-execute \
+         didn't fire.  Load-bearing pin for the whole Phase-3 D2 mechanism at \
+         the multi-validator layer."
     );
 
     let stage_source = std::fs::read(&canon_path).expect("operator stage source stays untouched");

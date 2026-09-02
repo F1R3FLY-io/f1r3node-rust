@@ -1751,12 +1751,24 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
-            // Slice 30c M-29-3: on the follower, extract the
-            // leader's cached `n` and finalize the WAL entry with
-            // the actual bytes on partial writes.  Full-length
-            // writes leave the pre-syscall placeholder in place
-            // (already correct).
+        // Phase 3 (Consensus re-execute + verify, 2026-09-01):
+        // Under D2 (deploy source re-evaluation for bytes), the
+        // follower's `parsed` bytes are byte-identical to leader's
+        // — same Rholang deploy term, same GByteArray arg.  The
+        // Consensus follower re-executes the real `libc::write` via
+        // its shadow's real fd (installed by fs_open's Phase-2
+        // real-open), verifies the fresh reply's stable_hash matches
+        // leader's cached, and finalizes the WAL entry from the
+        // fresh reply on match (byte-identical to leader's finalize
+        // by construction) or flips to Failure { CONSENSUS_DIVERGENCE }
+        // on mismatch.  Oracular follower is unchanged from Phase-0
+        // H-6 tautological finalize path.
+        let jmode: Option<ConsensusMode> = match &parsed {
+            Some((fd, _)) => self.handles.with_mut(*fd, |h| h.cmode).await,
+            None => None,
+        };
+        if is_replay && jmode != Some(ConsensusMode::Consensus) {
+            // Oracular / no-shadow follower — Phase-0 H-6 shape.
             if let (Some((fd, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
                 if n < bytes.len() as u64 {
                     self.finalize_write_journal(bytes, n, ack);
@@ -1786,48 +1798,106 @@ impl FsProcesses {
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed.clone() {
+        // Fresh syscall — leader (always) or Consensus follower
+        // (Phase 3 re-execute).  Real `libc::write` via the shadow's
+        // real raw_fd.  On the follower under D3 per-validator
+        // subdirs, this writes to the follower's OWN subdir file
+        // (making the file bytes match the leader's — the load-
+        // bearing outcome for Canary 1's Phase-3 completion signal).
+        let fresh_reply = match parsed.clone() {
             Some((fd, bytes)) => self.write_impl(fd, bytes, None).await,
             None => err(FSERR_BAD_ARG, "expected (u64, ByteArray)"),
         };
-        // Slice 30c M-29-3: on the leader, extract the actual `n`
-        // from the reply and finalize the WAL entry with the
-        // actual bytes on partial writes.
-        if let (Some((fd, bytes)), Some(n)) =
-            (&parsed, extract_ok_u64(std::slice::from_ref(&reply)))
-        {
-            if n < bytes.len() as u64 {
-                tracing::warn!(
-                    target: "f1r3fly.fs_wal",
-                    fd = fd,
-                    requested = bytes.len(),
-                    actual = n,
-                    "partial write on Consensus cap; finalizing WAL entry with actual bytes"
-                );
-                self.finalize_write_journal(bytes, n, ack);
+        if is_replay {
+            // Consensus follower — Phase 3 verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    // Match — reply is byte-identical to cached, so
+                    // the fresh finalize is symmetric with what the
+                    // leader did.  Finalize partial-write / failure
+                    // from FRESH; advance shadow by FRESH n.  WAL
+                    // byte-identity preserved by construction of
+                    // verify OK (Pars byte-identical → same n → same
+                    // finalize_write_journal update).
+                    if let (Some((fd, bytes)), Some(n)) =
+                        (&parsed, extract_ok_u64(std::slice::from_ref(&fresh_reply)))
+                    {
+                        if n < bytes.len() as u64 {
+                            self.finalize_write_journal(bytes, n, ack);
+                        }
+                        let fd_copy = *fd;
+                        let _ = self
+                            .handles
+                            .with_mut(fd_copy, |h| h.position = h.position.saturating_add(n))
+                            .await;
+                    }
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    // Divergence — flip pre-appended Success
+                    // placeholder to Failure { CONSENSUS_DIVERGENCE }.
+                    // Advance shadow by FRESH n (if the fresh syscall
+                    // did write some bytes) to keep shadow-vs-OS
+                    // position in sync on the follower — same
+                    // rationale as fs_read's divergence-path shadow
+                    // advance.  Deploy fails via RSpace rig regardless,
+                    // so subsequent ops are moot; sync is for
+                    // invariant cleanliness.
+                    if let (Some((fd, _)), Some(m)) =
+                        (&parsed, extract_ok_u64(std::slice::from_ref(&fresh_reply)))
+                    {
+                        let fd_copy = *fd;
+                        let _ = self
+                            .handles
+                            .with_mut(fd_copy, |h| h.position = h.position.saturating_add(m))
+                            .await;
+                    }
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_write follower re-execute diverges from leader: \
+                             {reason}",
+                        ),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
             }
-            // Position-follow-up (2026-08-26): advance shadow
-            // position by ACTUAL bytes written.  See is_replay
-            // branch for the follower-mirror rationale.
-            let fd_copy = *fd;
-            let _ = self
-                .handles
-                .with_mut(fd_copy, |h| h.position = h.position.saturating_add(n))
-                .await;
+        } else {
+            // Leader path.  Slice 30c M-29-3 + H-6 finalize.
+            if let (Some((fd, bytes)), Some(n)) =
+                (&parsed, extract_ok_u64(std::slice::from_ref(&fresh_reply)))
+            {
+                if n < bytes.len() as u64 {
+                    tracing::warn!(
+                        target: "f1r3fly.fs_wal",
+                        fd = fd,
+                        requested = bytes.len(),
+                        actual = n,
+                        "partial write on Consensus cap; finalizing WAL entry with actual bytes"
+                    );
+                    self.finalize_write_journal(bytes, n, ack);
+                }
+                let fd_copy = *fd;
+                let _ = self
+                    .handles
+                    .with_mut(fd_copy, |h| h.position = h.position.saturating_add(n))
+                    .await;
+            }
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        // H-6 fix (2026-08-06): if the syscall returned an error
-        // reply, flip the WAL placeholder to Failure { code }.
-        // Followers reading a Failure entry MUST NOT apply the
-        // write to reconstructed state — the leader never wrote
-        // anything to disk.  Without this the follower would
-        // apply a Write against the failed leader's state and
-        // diverge.
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
-        }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
@@ -1998,6 +2068,50 @@ impl FsProcesses {
             // ok_u64(new_pos) on success; error replies leave
             // position unchanged, mirroring POSIX lseek's
             // failure-doesn't-move-position semantics).
+            //
+            // Phase 3 prerequisite (Consensus re-execute + verify,
+            // 2026-09-01): under Consensus, the follower's shadow
+            // fd is now backed by a REAL OS fd (installed by
+            // fs_open's Phase-2 real-open).  Phase 3's fs_write
+            // re-execute advances that OS-fd position via real
+            // libc::write; Phase 2's fs_read re-execute reads from
+            // it.  For the OS-fd position to track the leader's
+            // seek movements, the Consensus follower must ALSO
+            // call libc::lseek on the real fd — not just update
+            // the shadow tracker.  Otherwise OS position drifts
+            // from shadow, and subsequent fs_read re-executes hit
+            // wrong offsets and trip spurious CONSENSUS_DIVERGENCE.
+            //
+            // Oracular follower keeps the shadow-only path
+            // (Oracle-mode fd is metadata-only shadow, no real OS
+            // fd to seek).  jmode lookup below dispatches.
+            if let Some(fd) = RhoNumber::unapply(fd_par) {
+                let fd_u = fd as u64;
+                let cmode_opt = self.handles.with_mut(fd_u, |h| h.cmode).await;
+                if cmode_opt == Some(ConsensusMode::Consensus) {
+                    // Real lseek on the shadow's OS fd to keep OS
+                    // position tracking leader's play.  Re-execute
+                    // the same syscall the leader made — args are
+                    // deterministic from the same Rholang deploy.
+                    if let (Some(off), Some(w)) =
+                        (RhoNumber::unapply(off_par), RhoString::unapply(whence_par))
+                    {
+                        let whence_code = match w.as_str() {
+                            "set" if off >= 0 => Some(libc::SEEK_SET),
+                            "cur" => Some(libc::SEEK_CUR),
+                            "end" => Some(libc::SEEK_END),
+                            _ => None,
+                        };
+                        if let (Some(whence), Some(raw_fd)) =
+                            (whence_code, self.handles.raw_fd(fd_u).await)
+                        {
+                            let _ =
+                                spawn_blocking(move || unsafe { libc::lseek(raw_fd, off, whence) })
+                                    .await;
+                        }
+                    }
+                }
+            }
             if let (Some(fd), Some(new_pos)) =
                 (RhoNumber::unapply(fd_par), extract_ok_u64(&previous))
             {
