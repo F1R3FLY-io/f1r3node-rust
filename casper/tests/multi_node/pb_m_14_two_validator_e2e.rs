@@ -300,15 +300,14 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
     //     opens a real fd against `<follower_subdir>/target`; its
     //     fs_stat is_replay Consensus branch (Phase 1) re-executes
     //     statCheck; its fs_write is_replay Consensus branch
-    //     (Phase 3, 2026-09-01) does a real libc::write of PAYLOAD.
-    //     Result: `<follower_subdir>/target` also holds PAYLOAD.
+    //     (Phase 3) does a real libc::write of PAYLOAD.  Result:
+    //     `<follower_subdir>/target` also holds PAYLOAD.
     //
-    // This assertion flip from `== b""` to `== PAYLOAD` is Phase 3's
-    // completion signal for the fs_write handler.  Phase 3's
-    // remaining work is fs_write_at (positional variant); its
-    // completion doesn't require another Canary-1 change since
-    // Canary-1's deploy uses sequential writeByteArray → fs_write,
-    // not writeAt.
+    // The `follower_on_disk == PAYLOAD` assertion is a load-bearing
+    // pin for the whole Phase-3 D2 mechanism (deploy-source-provided
+    // bytes) at the multi-validator layer.  A regression to Phase-0
+    // tautological (no real libc::write on follower) would leave
+    // this at b"" and fail.
     //
     // The operator's stage source is untouched (projection was a
     // copy) — both validators wrote to their own subdirs, not back
@@ -322,16 +321,15 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     let follower_target = follower_subdir.join("target");
     let follower_on_disk = std::fs::read(&follower_target)
-        .expect("read follower's own target (must contain PAYLOAD post-Phase-3)");
+        .expect("read follower's own target (must contain PAYLOAD post-replay)");
     assert_eq!(
         follower_on_disk, PAYLOAD,
-        "Phase 3 completion signal: follower's fs_write is_replay Consensus \
-         branch re-executes libc::write against `<follower_subdir>/target` \
-         (via fs_open Phase-2 real-open + D2 reducer-provided bytes).  A \
-         regression to Phase-0 tautological (no real libc::write on follower) \
-         would leave this at b\"\" — failure here means fs_write re-execute \
-         didn't fire.  Load-bearing pin for the whole Phase-3 D2 mechanism at \
-         the multi-validator layer."
+        "Phase 3 D2 mechanism: follower's fs_write is_replay Consensus branch \
+         re-executes libc::write against `<follower_subdir>/target` (via \
+         fs_open Phase-2 real-open + D2 reducer-provided bytes).  A regression \
+         to Phase-0 tautological (no real libc::write on follower) would leave \
+         this at b\"\" — failure here means fs_write re-execute didn't fire. \
+         Load-bearing pin for the D2 mechanism at the multi-validator layer."
     );
 
     let stage_source = std::fs::read(&canon_path).expect("operator stage source stays untouched");

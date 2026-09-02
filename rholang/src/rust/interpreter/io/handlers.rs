@@ -3602,17 +3602,16 @@ impl FsProcesses {
         };
         if is_replay {
             // Phase 4 (Consensus re-execute + verify, 2026-09-02):
-            // Non-recursive Consensus follower re-executes the
-            // unlinkat(AT_REMOVEDIR) syscall against its own subdir
-            // via the Shape A resolver, then verifies fresh vs
-            // cached.  Same pattern as fs_chmod / fs_remove_file /
-            // fs_rename / fs_copy_file.  Recursive Consensus keeps
-            // the existing manifest-mirror-from-cached behavior —
-            // recursive re-execute belongs in a separate Phase 4
-            // slice (R5: walkdir path canonicalization for byte-
-            // identity across leader/follower under Shape A per-
-            // validator subdirs).  Non-recursive Oracular keeps the
-            // H-6 tautological finalize path.
+            // Both non-recursive AND recursive Consensus followers
+            // re-execute against their own subdir via the Shape A
+            // resolver and verify fresh vs cached — non-recursive
+            // via a single unlinkat(AT_REMOVEDIR), recursive via
+            // R5(b) collect_recursive_manifest returning relative
+            // paths so both sides walk their own subdirs and
+            // produce byte-identical WAL + reply manifests.
+            // Non-recursive Oracular keeps the H-6 tautological
+            // finalize path.  Recursive Oracular walks locally
+            // (no WAL journaling) — unchanged.
             if let Some((root, rel, recursive)) = &parsed {
                 if !recursive && cmode == ConsensusMode::Consensus {
                     // Phase 4 non-recursive Consensus re-execute.
@@ -3965,20 +3964,19 @@ impl FsProcesses {
                             );
                         }
                     }
-                    // Task 0.4 / Shape A (2026-08-31): recursive
-                    // manifest emission below still walks the on-disk
-                    // tree via `collect_recursive_manifest(&canon_target)`
-                    // where canon_target must be a real path.  The
-                    // walker returns absolute on-disk children which
-                    // flow into WAL entries — that's a residual Shape
-                    // A gap (leader emits absolute per-validator paths
-                    // in the recursive Consensus manifest, follower
-                    // mirrors from the leader's cached reply so
-                    // there's no leader/follower divergence, but a
-                    // joiner-side applier would not resolve them via
-                    // the registry).  Deferred to Phase 4 (path-based
-                    // mutations); PB-M-14 canaries don't exercise
-                    // recursive Consensus RemoveDir today.
+                    // Task 0.4 / Shape A + R5(b) (2026-09-02):
+                    // recursive manifest emission below walks the
+                    // on-disk tree via
+                    // `collect_recursive_manifest(&canon_target)`
+                    // where canon_target is the on-disk absolute
+                    // path.  The walker returns RELATIVE paths
+                    // (relative to canon_target); callers apply
+                    // `canon_wal_target.join(rel)` for bundle-
+                    // relative WAL entries and `canon_target.join(rel)`
+                    // for on-disk syscalls.  This closes the pre-
+                    // R5(b) Shape A gap where absolute per-validator
+                    // paths in the recursive manifest wouldn't
+                    // resolve on a joiner via the registry.
                     let canon_target =
                         canonicalize_lexical(&on_disk_root_pb.to_string_lossy(), &rel);
                     if !recursive {

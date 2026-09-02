@@ -7493,12 +7493,15 @@ mod tests {
         // files that leader already mutated.  Restore pre-play
         // state so follower's re-executes succeed symmetrically:
         //   - fs_chmod: idempotent (re-chmoding to the same mode
-        //     succeeds regardless of current mode).
-        //   - fs_copy_file: still Phase-0 tautological on follower
-        //     — no restore needed for h.bin.  When that slice lands
-        //     this test will need to delete h.bin so follower's
-        //     real copy can recreate it (or accept idempotency of
-        //     O_CREAT|O_TRUNC re-writing the same bytes).
+        //     succeeds regardless of current mode); no restore
+        //     needed.
+        //   - fs_copy_file: real re-execute (Phase 4) opens dest
+        //     with O_CREAT|O_TRUNC and rewrites bytes from source.
+        //     h.bin's post-restore state (below) gives the follower
+        //     the same source-of-truth as the leader had; the
+        //     O_TRUNC semantics mean the presence/absence of h.bin
+        //     pre-follower doesn't matter for this op, but restore
+        //     below covers the fs_rename step's precondition.
         //   - fs_rename: leader moved h.bin → i.bin.  Follower's
         //     renameat needs h.bin present and i.bin absent.
         //   - fs_remove_file: leader removed g.bin.  Follower's
@@ -7527,12 +7530,15 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // H-29-3 lift, slice 2 (2026-08-26).  fs_remove_dir Consensus
-    // support — non-recursive emits one RemoveDir entry; recursive
-    // emits a granular sorted-post-order manifest of RemoveFile /
-    // RemoveDir entries and packs the deletion manifest into the
-    // reply so a rig-based follower can journal symmetrically on
-    // `is_replay` without a live filesystem walk.
+    // H-29-3 lift, slice 2 (2026-08-26) + Phase 4 R5(b) (2026-09-02).
+    // fs_remove_dir Consensus support:
+    //   - Non-recursive: emits one RemoveDir entry.  Phase 4 added
+    //     follower re-execute + verify against its own subdir.
+    //   - Recursive: emits a granular sorted-post-order manifest of
+    //     RemoveFile / RemoveDir entries.  R5(b) shifted the reply
+    //     manifest from absolute per-validator paths to relative
+    //     paths so both leader and follower walk their OWN subdirs
+    //     and produce byte-identical WAL + reply.
     // ---------------------------------------------------------------
 
     /// Non-recursive Consensus removeDir emits a single RemoveDir
@@ -8380,59 +8386,22 @@ mod tests {
         );
     }
 
-    /// **PB-M-14 two-validator E2E scaffold (2026-08-26).**  Ignored
-    /// pending the harness gap documented in the Deferred items
-    /// catalog: `TestNode::create_node` in
-    /// `casper/tests/helper/test_node.rs` does not accept per-node
-    /// fs provisioning (bundle entries, consensus_static paths).
-    /// To exercise the PB-M-14 property described at
-    /// implementation-plan.md:397 ("mutate a consensus file on
-    /// validator A; bring validator B online from genesis + WAL only;
-    /// assert byte-identical file contents") the harness needs the
-    /// following additions:
-    ///
-    ///   1. `TestNode::create_node` gains a `fs_config:
-    ///      Option<FsProvisioningConfig>` parameter, threaded through
-    ///      `RuntimeManager::spawn_runtime` into the composed
-    ///      FsGenesis-source-inject site.
-    ///   2. `GenesisBuilder` gains a helper to build a validator's
-    ///      genesis with a specific fs bundle attached so validator A
-    ///      and B can share the same fs-generator PK but different
-    ///      per-node bundle contents (or same bundle contents at
-    ///      identical canon-paths).
-    ///   3. `TestNode` gains a way to observe on-disk file contents
-    ///      after a block finalizes — either via a filesystem hook or
-    ///      by resolving the fs cap and issuing a read-back deploy.
-    ///
-    /// Once those land, this test drives:
-    ///   1. Two-node network (A + B).
-    ///   2. A mutates a consensus-static file (data.bin) via three
-    ///      write deploys.
-    ///   3. Blocks propagate; A finalizes them, WAL committed.
-    ///   4. B (which started with the same fs bundle at the same
-    ///      canon-path but empty file contents) reconstructs the
-    ///      file state from WAL replay.
-    ///   5. Assertion: `std::fs::read(B_bundle_path)` byte-matches
-    ///      `std::fs::read(A_bundle_path)`.
-    ///
-    /// Interim coverage: the multi-deploy WAL-replay pin above
-    /// verifies the WAL-BYTE-IDENTITY half of the PB-M-14 property
-    /// (validators produce identical WAL sequences for identical
-    /// deploys under the shared-store rig pattern).  The still-
-    /// missing half is FILE-STATE-IDENTITY via replay from WAL
-    /// against a fresh store.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "blocked on TestNode per-node fs provisioning + \
-                observation hooks; see docstring above and Deferred \
-                items catalog entry `Two-validator PB-M-14 end-to-end \
-                test`"]
-    async fn pb_m_14_two_validator_scaffold() {
-        panic!(
-            "pb_m_14_two_validator_scaffold is a documentation-only \
-             scaffold — remove the #[ignore] attribute AND implement \
-             the harness prerequisites listed in the docstring before \
-             running.  See implementation-plan.md:397 for the \
-             invariant this test targets."
-        );
-    }
+    // NOTE: pre-Phase-0 documentation-only scaffold
+    // `pb_m_14_two_validator_scaffold` removed 2026-09-02.  All three
+    // harness prerequisites it requested (per-node fs provisioning,
+    // per-validator genesis with fs bundle, on-disk observation
+    // hooks) landed as part of the Phase 0 Stage 2 harness rework.
+    // The PB-M-14 property is now exercised by the real two-
+    // validator canaries in
+    // `casper/tests/multi_node/pb_m_14_two_validator_e2e.rs`:
+    //   - pb_m_14_two_validator_wal_and_file_byte_identity: WAL +
+    //     on-disk byte-identity for a Consensus write.
+    //   - pb_m_14_leader_pending_wal_slice_publishes_consensus_write:
+    //     play-side WAL aggregation.
+    //   - pb_m_14_option2_leader_records_and_reproduces_via_scratch_replay:
+    //     scratch replay from WAL.
+    //   - pb_m_14_pseudo_joiner_boots_via_peer_fetch_tier:
+    //     joiner-bootstrap via peer-fetch.
+    //   - pb_m_14_divergent_follower_read_causes_block_rejection:
+    //     Phase 5 divergence-detection end-to-end.
 }
