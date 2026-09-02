@@ -1544,7 +1544,7 @@ mod tests {
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
         // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
-        const EXPECTED: &str = "e172310924b99c112af1c9c8d332a6d4a325e514d67eb65c26c1dcebb7749ac7";
+        const EXPECTED: &str = "69e2bc42d3ccbcb4bba983685de0c9bd0b600374ac29755842566f4d8e286274";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

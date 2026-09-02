@@ -8718,6 +8718,141 @@ async fn file_read_line_into_utf8_chained_after_truncation() {
     assert!(!tr3);
 }
 
+// -- NB-readLineInto slice smoke checks (2026-09-02) -------------------
+//
+// arity-N+1 wait-variants for readLineInto / readLinesInto.  Behavioral
+// coverage of the fill loop is already exhausted by the arity-N tests
+// above; these pins verify the dispatch layer (options extraction +
+// sequential-lock acquire + delegation + release chain).
+
+/// readLineInto(buf, {"wait": true}) dispatches and returns a
+/// well-formed success reply.  Mirrors the shape of
+/// `file_read_into_arity_2_wait_true_dispatches`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_line_into_arity_2_wait_true_dispatches() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray",
+            ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
+                  for (@r <- @f!?("readLineInto", buf, {"wait": true})) {
+                    @"out"!(r)
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "readLineInto arity-2 with wait:true must succeed");
+}
+
+/// readLineInto(buf, {"wait": false}) dispatches identically to
+/// wait:true when there's no conflict — the flag only matters on
+/// conflict.  Verifies the wait-extraction path handles Bool false
+/// correctly (not just Nil default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_line_into_arity_2_wait_false_dispatches() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray",
+            ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
+                  for (@r <- @f!?("readLineInto", buf, {"wait": false})) {
+                    @"out"!(r)
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "readLineInto arity-2 with wait:false must succeed");
+}
+
+/// readLineInto(buf, {"wait": <non-Bool>}) returns FSERR_BAD_ARG at
+/// dispatch time — the wait-extractor rejects Int/String/etc. before
+/// touching any lock or lease.  Same rejection shape as the sibling
+/// arity-N+1 methods.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_line_into_arity_2_bad_wait_arg_returns_bad_arg() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@alloc <- Allocator!?()) {
+            for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
+              for (@r <- @f!?("readLineInto", buf, {"wait": 42})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "non-Bool wait must be rejected");
+    assert_eq!(
+        code, "FSERR_BAD_ARG",
+        "non-Bool wait must return FSERR_BAD_ARG"
+    );
+}
+
+/// readLinesInto(rows, {"wait": true}) dispatches and returns a
+/// well-formed success reply.  Symmetric with the readLineInto
+/// arity-2 smoke check.  Uses a 2-row inner buffer (rows.capacityRows
+/// = 2 with per-inner-buffer capacity = 10) matching the arity-1
+/// readLinesInto test pattern.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_read_lines_into_arity_2_wait_true_dispatches() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@_ <- @f!?("writeByteArray",
+            ["ab".toUtf8Bytes(), "0a".hexToBytes(),
+             "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
+            for (@_ <- @f!?("seek", 0, "set")) {
+              for (@alloc <- Allocator!?()) {
+                for (@[true, rows] <- @alloc!?("allocRows", 2, 10, "utf8")) {
+                  for (@r <- @f!?("readLinesInto", rows, {"wait": true})) {
+                    @"out"!(r)
+                  }
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "readLinesInto arity-2 with wait:true must succeed");
+}
+
 /// M-2 documentation: readLine's underlying CharStream reads chunks of
 /// up to 4096 bytes.  When the caller only drains part of the line and
 /// walks away without hitting EOS, the fd cursor is left at the end of

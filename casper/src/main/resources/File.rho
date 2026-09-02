@@ -7188,6 +7188,92 @@ in {
       }
     } |
 
+    // -- readLineInto(buf, options) — NB-readLineInto slice (2026-09-02)
+    //
+    // Arity-2 wait-variant, per spec §978 "line-based [buffer-fill]
+    // methods hold the whole-file cursor.  All five accept the
+    // optional `{"wait": true}` options-map argument."  Mirrors the
+    // arity-1 `readLine(options)` pattern: acquires the whole-file
+    // sequential lock via `acquireSequentialForStream!` with the
+    // caller-supplied `wait` flag, then delegates to arity-1
+    // `readLineInto` for the actual fill, then releases the lock
+    // on every exit path.
+    //
+    // Options-map shape:
+    //   {"wait": Bool}   — Nil / missing / false → immediate BUSY
+    //                      on conflict; true → parks until admitted
+    //                      by the sequential-lock waiter queue.
+    //
+    // Rejection: any non-Bool / non-Nil value at "wait" returns
+    // FSERR_BAD_ARG (parity with `readInto(buf, options)`).
+    //
+    // Backward compatibility: arity-1 `readLineInto(buf)` is
+    // unchanged (does NOT acquire the sequential lock — pre-existing
+    // spec-noncompliance vs. §978, tracked as a separate slice).
+    // Callers wanting the spec's "hold the whole-file cursor"
+    // semantic MUST use this arity-2 variant.
+    method readLineInto(@buf, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lockOut, acqRet in {
+                            acquireSequentialForStream!(fd, *this, cmode, w, *lockOut, *acqRet) |
+                            for (@acqReply <- acqRet) {
+                              match acqReply {
+                                [true] => {
+                                  for (@lid <- lockOut) {
+                                    new innerRet in {
+                                      @(*this)!(*innerRet, "readLineInto", buf) |
+                                      for (@reply <- innerRet) {
+                                        new relCh in {
+                                          fsReleaseLock!(lid, *relCh) |  // reply discarded — see LockToken §Release-reply discards
+                                          for (@_r <- relCh) {
+                                            return!(reply)
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!(acqReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG",
+          "options.get(\"wait\") must be Bool or Nil"])
+      }
+    } |
+
     // -- readLinesInto(rows) ---------------------------------------
     //
     // Fill each inner buffer of `rows` with one line from the file,
@@ -7285,6 +7371,86 @@ in {
             return!([false, "FSERR_CLOSED", "file state unrecognized"])
           }
         }
+      }
+    } |
+
+    // -- readLinesInto(rows, options) — NB-readLineInto slice (2026-09-02)
+    //
+    // Arity-2 wait-variant, symmetric with `readLineInto(buf, options)`.
+    // Per spec §978, `readLinesInto` is line-based and holds the
+    // whole-file cursor; accepts `{"wait": true}`.  Same
+    // acquire-delegate-release shape: acquire the sequential lock
+    // via `acquireSequentialForStream!`, delegate to arity-1
+    // `readLinesInto(rows)` for the fill loop, release on every
+    // exit path.
+    //
+    // Note: arity-1 `readLinesInto(rows)` internally calls
+    // `readLineInto(inner)` in a loop.  Under arity-2 those inner
+    // calls happen while we hold the whole-file sequential lock —
+    // they see no conflict from arity-1's internal fsRead/fsSeek
+    // (no lock acquisitions there) and produce their usual replies.
+    // The outer sequential lock is what §978 requires; the inner
+    // arity-1 calls' spec-noncompliance re: not-acquiring-a-lock
+    // is the pre-existing gap tracked separately.
+    method readLinesInto(@rows, @options) {
+      match options.get("wait") {
+        wOpt /\ (Nil \/ Bool) => {
+          new waitCh in {
+            match wOpt {
+              Nil        => waitCh!(false)
+              bb /\ Bool => waitCh!(bb)
+            } |
+            for (@w <- waitCh) {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    @[*private, *stateP]!("open") |
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (fd, _root, _rel, _mode) => {
+                          new lockOut, acqRet in {
+                            acquireSequentialForStream!(fd, *this, cmode, w, *lockOut, *acqRet) |
+                            for (@acqReply <- acqRet) {
+                              match acqReply {
+                                [true] => {
+                                  for (@lid <- lockOut) {
+                                    new innerRet in {
+                                      @(*this)!(*innerRet, "readLinesInto", rows) |
+                                      for (@reply <- innerRet) {
+                                        new relCh in {
+                                          fsReleaseLock!(lid, *relCh) |  // reply discarded — see LockToken §Release-reply discards
+                                          for (@_r <- relCh) {
+                                            return!(reply)
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => return!(acqReply)
+                              }
+                            }
+                          }
+                        }
+                        _ => return!([false, "FSERR_IO", "fd params malformed"])
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "FSERR_BAD_ARG",
+          "options.get(\"wait\") must be Bool or Nil"])
       }
     } |
 
