@@ -204,7 +204,14 @@ env:
   # review remediations) WITH the dev-merge that cured the stale base, on
   # top of main's current harness. Verified: descends from 8b4da0f
   # (merge-base --is-ancestor), per the rule above.
-  SYSTEM_INTEGRATION_REF: 5858f2a26096376f4c2ac6c1636ec45959613782
+  # 2026-09-02: 5858f2a -> af0ab83 (SI PR #134 branch, cut from main —
+  # descends per the rule above): the bridge-lock test gates starvation
+  # exactly and tolerates bounded merge contention (floor 10 of 12,
+  # accounting reconciled to the locks that landed) — run 33548073107's
+  # 1-of-12 contention expiry, budget exonerated. Verified: SI CI green
+  # on af0ab83; test green locally on this branch's image. Re-pin to the
+  # merged main SHA once #134 lands.
+  SYSTEM_INTEGRATION_REF: af0ab8370266b0f44dd5a45464ee987a3e62007c
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
