@@ -224,7 +224,11 @@ env:
   # 1-of-12 contention expiry, budget exonerated. Verified: SI CI green
   # on af0ab83; test green locally on this branch's image. Re-pin to the
   # merged main SHA once #134 lands.
-  SYSTEM_INTEGRATION_REF: af0ab8370266b0f44dd5a45464ee987a3e62007c
+  # 2026-09-02: af0ab83 -> 0fb6337 (system-integration MAIN — the #134 merge
+  # commit; the branch pin's content, now immutable on main). Verified:
+  # descends from af0ab83 (merge-base --is-ancestor), and this PR's CI ran
+  # full green on the af0ab83 content.
+  SYSTEM_INTEGRATION_REF: 0fb633729a22f600d2c2de4c8fdc3b1f57e9ecb6
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
