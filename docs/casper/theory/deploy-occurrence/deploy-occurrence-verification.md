@@ -27,11 +27,123 @@
 | Terminalization preserves exact history while it removes open hot state | Rocq `terminalization_preserves_exact_archive`, `terminalization_is_atomic_across_occurrence_and_lifecycle_state` | compaction, LMDB reopen, and terminal integration tests |
 | Concurrent insertion, lookup, and compaction preserve one canonical view | TLA⁺ `Inv_ReplicaConvergence`; Rocq `canonical_rank_is_permutation_invariant` | property tests and Loom occurrence-store tests |
 | Equal bytes in the legacy-signature and v6-commitment domains remain distinct throughout recovery | TLA⁺ `DeployIdentitySeparation`, including the raw-key control; Rocq `equal_payload_cross_domain_ids_are_distinct` and both rejection-preservation theorems | `recovery_projection_keeps_legacy_and_v6_identity_domains_disjoint` and `concurrent_legacy_and_v6_dispositions_do_not_alias` |
+| Carrier-index absence refines the exact repeat-deploy scan without changing its verdict | TLA⁺ `CarrierIndexSoundness` and its four unsafe controls. `DeployIdentitySeparation` supplies the typed-key obligation. | carrier-index watermark, rollback, scope, pruning, missing-block, and typed exact-scan tests |
 
 The Rocq capstone is checked with `Print Assumptions` and `coqchk`. The TLA⁺
 post-fix models must exhaust their bounded state spaces without violation. Each
 pre-fix configuration is successful only when it reproduces its named
 counterexample.
+
+## Carrier-index refinement
+
+The repeat-deploy carrier index is a node-local materialization of block-body
+membership. It does not add consensus evidence. It can only avoid work when a
+complete index proves absence.
+
+The index key is a protocol-tagged deploy lookup identity. A pre-v6 block uses
+the legacy-signature domain. A protocol-v6 block uses the envelope-commitment
+domain. The exact scan decodes the same tagged identity from each stored block.
+
+This tag is necessary. Equal bytes can be valid payloads in both domains.
+[`DeployIdentitySeparation.tla`](../../../../formal/tlaplus/deploy_recovery/DeployIdentitySeparation.tla)
+shows that an untagged key can suppress the wrong deploy. Its safe configuration
+preserves both deploys under either rejection order.
+[`DeployIdentitySeparation.v`](../../../../formal/rocq/finalized_floor/theories/DeployIdentitySeparation.v)
+proves the same result for arbitrary equal payloads.
+
+[`CarrierIndexSoundness.tla`](../../../../formal/tlaplus/deploy_recovery/CarrierIndexSoundness.tla)
+composes that key rule with the fast path. It models two validators with
+independent block observations. Admission, cache population, body loss,
+watermark initialization, and pruning can interleave. The model includes atomic
+v6 admission and carrier-first legacy staging.
+
+The safe model proves typed scan equivalence and sound index absence. It also
+proves watermark coverage, safe pruning, and agreement between decisive
+validators. Four controls isolate raw keys, metadata-first publication, a
+missing pruning gate, and trust in a stale cache entry.
+
+### Persistent state and visibility
+
+The `carrier-index` store maps each deploy lookup identity to carrier entries.
+Each entry contains a block height and block hash. The `carrier-index-meta`
+store holds the write-once watermark and the pruning cursor.
+
+Insertion includes valid, invalid, approved, and settled-history blocks. A
+redelivery of the same identity and block hash is idempotent.
+
+The persistent carrier mutation occurs before in-memory DAG visibility.
+Protocol-v6 admission commits all applicable carrier, metadata, occurrence, and
+lifecycle rows in one strict transaction. The in-memory metadata index changes
+only after that transaction commits.
+
+Legacy admission applies carrier mutations before persistent metadata. A crash
+can therefore leave an extra legacy carrier row. Such a row is a false-positive
+hint only. Every hit still receives the exact scope scan.
+
+### Watermark and pruning
+
+The watermark is the first height for which every insertion used this path. An
+empty database records height zero. A populated database records one height
+above its stored maximum. This rule avoids an unverified backfill marker.
+
+Validation uses absence only when the scan-window start is at or above the
+watermark. A missing watermark disables the fast path. A watermark read failure
+also disables the fast path for that block.
+
+Finalized-floor adoption prunes carriers below the expiration cutoff. The
+cutoff is the adopted floor height minus `deploy_lifespan`. A 64-block stride
+limits full-store walks. The stride can retain old entries, but it cannot remove
+an entry at or above the active cutoff.
+
+### Exact-scan fallback
+
+The following algorithm states the refinement boundary. The index can remove
+only identities for which it proves a complete absence.
+
+```text
+scan_set := candidate deploy lookup identities
+
+if watermark is readable and window_start >= watermark:
+    for each deploy identity in scan_set:
+        if the carrier index proves absence:
+            remove the deploy identity from scan_set
+        if the carrier-index read fails:
+            keep the deploy identity in scan_set
+
+for each parent-scope ancestor inside the window:
+    load its metadata and stored block body
+    decode protocol-tagged deploy lookup identities
+    if a dependency is missing:
+        fail validation
+    if an identity in scan_set appears:
+        reject the candidate as a repeat
+
+accept the repeat-deploy check
+```
+
+An index hit does not reject a block. It keeps the deploy identity in
+`scan_set`. The exact scan then checks both the expiration window and parent
+scope. This rule prevents an unrelated fork from poisoning a legal inclusion.
+
+A missing metadata row or block body is a missing dependency. The scan fails
+closed with a storage or `BlockNotHeld` error. It never converts missing data
+into an absence result.
+
+### Cache scope
+
+The persistent carrier index is the only cache that can prove absence. It uses
+dedicated keyspaces and survives restart.
+
+The exact scan has a separate process-local decoded-identity cache. The cache
+belongs to `KeyValueBlockStore`, and cloned stores share it. It holds at most
+1,024 block entries and evicts the oldest inserted key.
+
+Each strict lookup confirms that the block body remains in storage. A cached
+identity cannot replace a missing body. The process-local cache cannot prove
+cross-block completeness.
+
+The cache only avoids repeat decoding of a held block body. Eviction and
+restart can change runtime cost, but they cannot change the validation result.
 
 ## Why the earlier verification missed the defect
 

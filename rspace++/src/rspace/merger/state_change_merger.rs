@@ -1093,3 +1093,355 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod branch_tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use super::*;
+    use crate::rspace::history::history_reader::HistoryReaderBase;
+    use crate::rspace::internal::{Datum, WaitingContinuation};
+    use crate::rspace::merger::merging_logic::MergeType;
+
+    struct MapHistoryReader {
+        data_map: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+        cont_map: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+        joins_map: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+    }
+
+    struct EmptyBase;
+
+    impl HistoryReaderBase<(), (), (), ()> for EmptyBase {
+        fn get_data_proj(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
+
+        fn get_continuations_proj(&self, _key: &Vec<()>) -> Vec<WaitingContinuation<(), ()>> {
+            vec![]
+        }
+
+        fn get_joins_proj(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
+    }
+
+    impl HistoryReader<Blake2b256Hash, (), (), (), ()> for MapHistoryReader {
+        fn root(&self) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![0xff; 32]) }
+
+        fn get_data_proj(&self, _key: &Blake2b256Hash) -> Result<Vec<Datum<()>>, HistoryError> {
+            Ok(vec![])
+        }
+
+        fn get_data_proj_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
+            Ok(self.data_map.get(key).cloned().unwrap_or_default())
+        }
+
+        fn get_continuations_proj(
+            &self,
+            _key: &Blake2b256Hash,
+        ) -> Result<Vec<WaitingContinuation<(), ()>>, HistoryError> {
+            Ok(vec![])
+        }
+
+        fn get_continuations_proj_binary(
+            &self,
+            key: &Blake2b256Hash,
+        ) -> Result<Vec<Vec<u8>>, HistoryError> {
+            Ok(self.cont_map.get(key).cloned().unwrap_or_default())
+        }
+
+        fn get_joins_proj(&self, _key: &Blake2b256Hash) -> Result<Vec<Vec<()>>, HistoryError> {
+            Ok(vec![])
+        }
+
+        fn get_joins_proj_binary(
+            &self,
+            key: &Blake2b256Hash,
+        ) -> Result<Vec<Vec<u8>>, HistoryError> {
+            Ok(self.joins_map.get(key).cloned().unwrap_or_default())
+        }
+
+        fn base(&self) -> Box<dyn HistoryReaderBase<(), (), (), ()>> { Box::new(EmptyBase) }
+
+        fn get_data_proj_generic(&self, _key: &()) -> Vec<Datum<()>> { vec![] }
+
+        fn get_continuations_proj_generic(
+            &self,
+            _key: &Vec<()>,
+        ) -> Vec<WaitingContinuation<(), ()>> {
+            vec![]
+        }
+
+        fn get_joins_proj_generic(&self, _key: &()) -> Vec<Vec<()>> { vec![] }
+    }
+
+    fn mk_hash(byte: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![byte; 32]) }
+
+    fn reader(
+        data_map: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+        cont_map: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+        joins_map: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+    ) -> Box<dyn HistoryReader<Blake2b256Hash, (), (), (), ()>> {
+        Box::new(MapHistoryReader {
+            data_map,
+            cont_map,
+            joins_map,
+        })
+    }
+
+    fn cont_state_change(
+        channel: &Blake2b256Hash,
+        added: Vec<Vec<u8>>,
+        removed: Vec<Vec<u8>>,
+        join_value: Option<Vec<u8>>,
+    ) -> StateChange {
+        StateChange::from_parts(
+            HashMap::new(),
+            HashMap::from([(vec![channel.clone()], ChannelChange { added, removed })]),
+            join_value
+                .map(|value| HashMap::from([(vec![channel.clone()], value)]))
+                .unwrap_or_default(),
+        )
+    }
+
+    fn datum_state_change(
+        channel: &Blake2b256Hash,
+        added: Vec<Vec<u8>>,
+        removed: Vec<Vec<u8>>,
+    ) -> StateChange {
+        StateChange::from_parts(
+            HashMap::from([(channel.clone(), ChannelChange { added, removed })]),
+            HashMap::new(),
+            HashMap::new(),
+        )
+    }
+
+    fn no_override(
+        _: &Blake2b256Hash,
+        _: &ChannelChange<Vec<u8>>,
+        _: &NumberChannelsDiff,
+    ) -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+        Ok(None)
+    }
+
+    #[test]
+    fn cont_added_on_empty_base_inserts_consume_and_adds_join() {
+        let channel = mk_hash(0x10);
+        let pointer = stable_hash_provider::hash_from_hashes(&vec![channel.clone()]);
+        let kont = vec![0xc1; 16];
+        let join_bytes = vec![0x1a; 8];
+
+        let changes =
+            cont_state_change(&channel, vec![kont.clone()], vec![], Some(join_bytes.clone()));
+        let base = reader(HashMap::new(), HashMap::new(), HashMap::new());
+
+        let actions = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override).unwrap();
+
+        assert_eq!(actions.len(), 2);
+        match &actions[0] {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(
+                insert,
+            )) => {
+                assert_eq!(insert.hash, pointer);
+                assert_eq!(insert.continuations, vec![kont]);
+            }
+            other => panic!("expected TrieInsertBinaryConsume, got {:?}", other),
+        }
+        match &actions[1] {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(
+                insert,
+            )) => {
+                assert_eq!(insert.hash, channel);
+                assert_eq!(insert.joins, vec![join_bytes]);
+            }
+            other => panic!("expected TrieInsertBinaryJoins, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_base_konts_removed_deletes_consume_and_removes_join() {
+        let channel = mk_hash(0x11);
+        let pointer = stable_hash_provider::hash_from_hashes(&vec![channel.clone()]);
+        let kont = vec![0xc2; 16];
+        let join_bytes = vec![0x2a; 8];
+
+        let changes =
+            cont_state_change(&channel, vec![], vec![kont.clone()], Some(join_bytes.clone()));
+        let base = reader(
+            HashMap::new(),
+            HashMap::from([(pointer.clone(), vec![kont])]),
+            HashMap::from([(channel.clone(), vec![join_bytes])]),
+        );
+
+        let actions = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override).unwrap();
+
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(
+            &actions[0],
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
+                TrieDeleteConsume { hash },
+            )) if *hash == pointer
+        ));
+        assert!(matches!(
+            &actions[1],
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(
+                TrieDeleteJoins { hash },
+            )) if *hash == channel
+        ));
+    }
+
+    #[test]
+    fn removed_join_keeps_remaining_base_joins_as_insert() {
+        let channel = mk_hash(0x12);
+        let pointer = stable_hash_provider::hash_from_hashes(&vec![channel.clone()]);
+        let kont = vec![0xc3; 16];
+        let removed_join = vec![0x3a; 8];
+        let surviving_join = vec![0x3b; 8];
+
+        let changes =
+            cont_state_change(&channel, vec![], vec![kont.clone()], Some(removed_join.clone()));
+        let base = reader(
+            HashMap::new(),
+            HashMap::from([(pointer, vec![kont])]),
+            HashMap::from([(channel.clone(), vec![removed_join, surviving_join.clone()])]),
+        );
+
+        let actions = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override).unwrap();
+
+        assert_eq!(actions.len(), 2);
+        match &actions[1] {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(
+                insert,
+            )) => {
+                assert_eq!(insert.hash, channel);
+                assert_eq!(insert.joins, vec![surviving_join]);
+            }
+            other => panic!("expected TrieInsertBinaryJoins, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn kont_update_with_consume_still_present_emits_insert_without_join_change() {
+        let channel = mk_hash(0x13);
+        let pointer = stable_hash_provider::hash_from_hashes(&vec![channel.clone()]);
+        let old_kont = vec![0xc4; 16];
+        let new_kont = vec![0xc5; 16];
+
+        let changes =
+            cont_state_change(&channel, vec![new_kont.clone()], vec![old_kont.clone()], None);
+        let base = reader(
+            HashMap::new(),
+            HashMap::from([(pointer.clone(), vec![old_kont])]),
+            HashMap::new(),
+        );
+
+        let actions = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(
+                insert,
+            )) => {
+                assert_eq!(insert.hash, pointer);
+                assert_eq!(insert.continuations, vec![new_kont]);
+            }
+            other => panic!("expected TrieInsertBinaryConsume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cont_change_that_claims_content_but_produces_no_delta_is_an_error() {
+        let channel = mk_hash(0x14);
+        let pointer = stable_hash_provider::hash_from_hashes(&vec![channel.clone()]);
+        let kont = vec![0xc6; 16];
+
+        let changes = cont_state_change(&channel, vec![kont.clone()], vec![kont.clone()], None);
+        let base = reader(HashMap::new(), HashMap::from([(pointer, vec![kont])]), HashMap::new());
+
+        let result = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override);
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("empty consume change"), "{message}");
+    }
+
+    #[test]
+    fn missing_serialized_join_for_join_action_is_an_error() {
+        let channel = mk_hash(0x15);
+        let kont = vec![0xc7; 16];
+
+        let changes = cont_state_change(&channel, vec![kont], vec![], None);
+        let base = reader(HashMap::new(), HashMap::new(), HashMap::new());
+
+        let result = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override);
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("No ByteVector value for join"), "{message}");
+    }
+
+    #[test]
+    fn all_base_datums_removed_deletes_produce() {
+        let channel = mk_hash(0x16);
+        let datum = vec![0xd1; 16];
+
+        let changes = datum_state_change(&channel, vec![], vec![datum.clone()]);
+        let base =
+            reader(HashMap::from([(channel.clone(), vec![datum])]), HashMap::new(), HashMap::new());
+
+        let actions = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(
+            &actions[0],
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(
+                TrieDeleteProduce { hash },
+            )) if *hash == channel
+        ));
+    }
+
+    #[test]
+    fn datum_change_that_claims_content_but_produces_no_delta_is_an_error() {
+        let channel = mk_hash(0x17);
+        let datum = vec![0xd2; 16];
+
+        let changes = datum_state_change(&channel, vec![datum.clone()], vec![datum.clone()]);
+        let base =
+            reader(HashMap::from([(channel.clone(), vec![datum])]), HashMap::new(), HashMap::new());
+
+        let result = compute_trie_actions(&changes, &base, &BTreeMap::new(), no_override);
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("empty channel change for produce or join"), "{message}");
+    }
+
+    #[test]
+    fn number_channel_override_replaces_datum_fold() {
+        let channel = mk_hash(0x18);
+        let override_data = vec![vec![0x99; 8]];
+
+        let changes = datum_state_change(&channel, vec![], vec![]);
+        let base = reader(HashMap::new(), HashMap::new(), HashMap::new());
+        let mut mergeable_chs: NumberChannelsDiff = BTreeMap::new();
+        mergeable_chs.insert(channel.clone(), (1, MergeType::IntegerAdd));
+
+        let expected_data = override_data.clone();
+        let with_override =
+            move |hash: &Blake2b256Hash,
+                  _: &ChannelChange<Vec<u8>>,
+                  chs: &NumberChannelsDiff|
+                  -> Result<Option<HotStoreTrieAction<(), (), (), ()>>, HistoryError> {
+                assert!(chs.contains_key(hash));
+                Ok(Some(HotStoreTrieAction::TrieInsertAction(
+                    TrieInsertAction::TrieInsertBinaryProduce(TrieInsertBinaryProduce {
+                        hash: hash.clone(),
+                        data: expected_data.clone(),
+                    }),
+                )))
+            };
+
+        let actions = compute_trie_actions(&changes, &base, &mergeable_chs, with_override).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(
+                insert,
+            )) => {
+                assert_eq!(insert.hash, channel);
+                assert_eq!(insert.data, override_data);
+            }
+            other => panic!("expected override TrieInsertBinaryProduce, got {:?}", other),
+        }
+    }
+}

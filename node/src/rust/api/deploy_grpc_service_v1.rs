@@ -1159,6 +1159,21 @@ fn deploy_state_to_proto(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use casper::rust::engine::engine_cell::EngineCell;
+    use casper::rust::report_store::ReportStore;
+    use casper::rust::safety_oracle::CliqueOracleImpl;
+    use comm::rust::peer_node::{NodeIdentifier, PeerNode};
+    use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use crypto::rust::signatures::signed::{Cosigned, Cosigner};
+    use models::rust::casper::protocol::casper_message::DeployData as DeployDataMessage;
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use tokio_stream::StreamExt;
+
     use super::*;
 
     #[test]
@@ -1178,5 +1193,401 @@ mod tests {
             }
             other => panic!("expected protocol-v6 preview error, got {other:?}"),
         }
+    }
+
+    struct StubNodeDiscovery;
+
+    #[async_trait::async_trait]
+    impl NodeDiscovery for StubNodeDiscovery {
+        async fn discover(&self) -> Result<(), comm::rust::errors::CommError> { Ok(()) }
+
+        fn peers(&self) -> Result<Vec<PeerNode>, comm::rust::errors::CommError> { Ok(vec![]) }
+
+        fn remove_peer(&self, _peer: &PeerNode) -> Result<(), comm::rust::errors::CommError> {
+            Ok(())
+        }
+    }
+
+    fn service() -> DeployGrpcServiceV1Impl {
+        let local = PeerNode::new(
+            NodeIdentifier::new("0a0b0c".to_string()),
+            "localhost".to_string(),
+            40400,
+            40404,
+        );
+        DeployGrpcServiceV1Impl::new(
+            10,
+            None,
+            false,
+            "testnet".to_string(),
+            "root".to_string(),
+            1,
+            "F1R3".to_string(),
+            "F1R3".to_string(),
+            8,
+            true,
+            EngineCell::init(),
+            BlockReportAPI::new(
+                casper::rust::reporting_casper::noop(),
+                ReportStore::new(Arc::new(InMemoryKeyValueStore::new())),
+                EngineCell::init(),
+                KeyValueBlockStore::new(
+                    Arc::new(InMemoryKeyValueStore::new()),
+                    Arc::new(InMemoryKeyValueStore::new()),
+                ),
+                CliqueOracleImpl,
+                false,
+            ),
+            models::rhoapi::Par::default(),
+            KeyValueBlockStore::new(
+                Arc::new(InMemoryKeyValueStore::new()),
+                Arc::new(InMemoryKeyValueStore::new()),
+            ),
+            RPConfCell::new(RPConf::new(
+                local,
+                "testnet".to_string(),
+                None,
+                Duration::from_secs(1),
+                8,
+                2,
+            )),
+            ConnectionsCell::new(),
+            Arc::new(StubNodeDiscovery),
+            100,
+            Arc::new(AtomicBool::new(true)),
+        )
+    }
+
+    fn signed_deploy_proto() -> DeployDataProto {
+        let algorithm = Secp256k1;
+        let (private_key, public_key) = algorithm.new_key_pair();
+        let deploy_data = DeployDataMessage {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let mut signers = vec![Cosigner {
+            pk: public_key,
+            sig: prost::bytes::Bytes::new(),
+            sig_algorithm: Box::new(algorithm.clone()),
+        }];
+        let signing_hash = Cosigned::<DeployDataMessage>::envelope_signing_hash_for_presence(
+            &deploy_data,
+            &signers,
+            1,
+            &[1],
+            "secp256k1",
+        )
+        .unwrap();
+        signers[0].sig = algorithm.sign(&signing_hash, &private_key.bytes).into();
+        let envelope =
+            Cosigned::from_envelope_signed_data_threshold(deploy_data, signers, 1).unwrap();
+        DeployDataMessage::to_proto_cosigned(&envelope)
+    }
+
+    #[tokio::test]
+    async fn status_reports_node_identity_without_casper() {
+        let response = service().status(tonic::Request::new(())).await.unwrap();
+        match response.into_inner().message.unwrap() {
+            models::casper::v1::status_response::Message::Status(status) => {
+                assert_eq!(status.network_id, "testnet");
+                assert_eq!(status.shard_id, "root");
+                assert!(status.is_read_only);
+                assert!(status.is_ready);
+                assert!(!status.is_validator);
+                assert_eq!(status.last_finalized_block_number, -1);
+                assert_eq!(status.current_epoch, 0);
+            }
+            other => panic!("expected Status, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_private_names_rejects_unsigned_protocol_v6_requests() {
+        let response = service()
+            .preview_private_names(tonic::Request::new(PrivateNamePreviewQuery {
+                user: vec![1u8; 32].into(),
+                timestamp: 1,
+                name_qty: 2,
+            }))
+            .await
+            .unwrap();
+        match response.into_inner().message.unwrap() {
+            models::casper::v1::private_name_preview_response::Message::Error(error) => {
+                assert!(error
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("authenticated deploy envelope")));
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn do_deploy_rejects_unsigned_proto_with_service_error() {
+        let response = service()
+            .do_deploy(tonic::Request::new(DeployDataProto::default()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            response.into_inner().message.unwrap(),
+            models::casper::v1::deploy_response::Message::Error(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn do_deploy_without_casper_answers_service_error_not_transport_error() {
+        let response = service()
+            .do_deploy(tonic::Request::new(signed_deploy_proto()))
+            .await
+            .unwrap();
+        match response.into_inner().message.unwrap() {
+            models::casper::v1::deploy_response::Message::Error(error) => {
+                assert!(!error.messages.is_empty());
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn unary_block_queries_answer_service_errors_without_casper() {
+        let service = service();
+
+        let get_block = service
+            .get_block(tonic::Request::new(BlockQuery {
+                hash: "aabbccddeeff".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            get_block.into_inner().message.unwrap(),
+            models::casper::v1::block_response::Message::Error(_)
+        ));
+
+        let lfb = service
+            .last_finalized_block(tonic::Request::new(LastFinalizedBlockQuery {}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            lfb.into_inner().message.unwrap(),
+            models::casper::v1::last_finalized_block_response::Message::Error(_)
+        ));
+
+        let is_finalized = service
+            .is_finalized(tonic::Request::new(IsFinalizedQuery {
+                hash: "aabbccddeeff".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            is_finalized.into_inner().message.unwrap(),
+            models::casper::v1::is_finalized_response::Message::Error(_)
+        ));
+
+        let machine_dag = service
+            .machine_verifiable_dag(tonic::Request::new(MachineVerifyQuery {}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            machine_dag.into_inner().message.unwrap(),
+            models::casper::v1::machine_verify_response::Message::Error(_)
+        ));
+
+        let find_deploy = service
+            .find_deploy(tonic::Request::new(FindDeployQuery {
+                deploy_id: vec![1u8, 2].into(),
+            }))
+            .await
+            .unwrap();
+        let find_deploy = find_deploy.into_inner();
+        assert!(matches!(
+            find_deploy.message.unwrap(),
+            models::casper::v1::find_deploy_response::Message::Error(_)
+        ));
+        assert_eq!(find_deploy.finalization_state, 0);
+    }
+
+    #[tokio::test]
+    async fn deploy_status_and_data_queries_answer_service_errors_without_casper() {
+        let service = service();
+
+        let finalization = service
+            .deploy_finalization_status(tonic::Request::new(DeployFinalizationStatusQuery {
+                deploy_sig: vec![1u8, 2].into(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            finalization.into_inner().message.unwrap(),
+            models::casper::v1::deploy_finalization_status_response::Message::Error(_)
+        ));
+
+        let pending = service
+            .get_pending_deploys(tonic::Request::new(PendingDeploysQuery {
+                deployer_pubkey: prost::bytes::Bytes::new(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            pending.into_inner().message.unwrap(),
+            models::casper::v1::pending_deploys_response::Message::Error(_)
+        ));
+
+        let data_at_name = service
+            .get_data_at_name(tonic::Request::new(DataAtNameByBlockQuery::default()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            data_at_name.into_inner().message.unwrap(),
+            models::casper::v1::rho_data_response::Message::Error(_)
+        ));
+
+        let continuation = service
+            .listen_for_continuation_at_name(
+                tonic::Request::new(ContinuationAtNameQuery::default()),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            continuation.into_inner().message.unwrap(),
+            models::casper::v1::continuation_at_name_response::Message::Error(_)
+        ));
+
+        let exploratory = service
+            .exploratory_deploy(tonic::Request::new(ExploratoryDeployQuery {
+                term: "Nil".to_string(),
+                block_hash: String::new(),
+                use_pre_state_hash: false,
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            exploratory.into_inner().message.unwrap(),
+            models::casper::v1::exploratory_deploy_response::Message::Error(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn bond_status_validates_public_key_before_touching_casper() {
+        let service = service();
+
+        let invalid = service
+            .bond_status(tonic::Request::new(BondStatusQuery {
+                public_key: vec![1u8, 2].into(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            invalid.into_inner().message.unwrap(),
+            models::casper::v1::bond_status_response::Message::Error(_)
+        ));
+
+        let (_sk, pk) = Secp256k1.new_key_pair();
+        let valid_key_no_casper = service
+            .bond_status(tonic::Request::new(BondStatusQuery {
+                public_key: pk.bytes.clone(),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            valid_key_no_casper.into_inner().message.unwrap(),
+            models::casper::v1::bond_status_response::Message::Error(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_event_by_hash_rejects_invalid_hex_and_missing_block() {
+        let service = service();
+
+        let invalid_hex = service
+            .get_event_by_hash(tonic::Request::new(ReportQuery {
+                hash: "not-hex".to_string(),
+                force_replay: false,
+            }))
+            .await
+            .unwrap();
+        match invalid_hex.into_inner().message.unwrap() {
+            models::casper::v1::event_info_response::Message::Error(error) => {
+                assert!(error.messages[0].contains("not valid hex"));
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+
+        let missing_block = service
+            .get_event_by_hash(tonic::Request::new(ReportQuery {
+                hash: "aabb".to_string(),
+                force_replay: false,
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            missing_block.into_inner().message.unwrap(),
+            models::casper::v1::event_info_response::Message::Error(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn streaming_queries_surface_engine_errors_or_end_cleanly() {
+        let service = service();
+
+        let mut get_blocks = service
+            .get_blocks(tonic::Request::new(BlocksQuery { depth: 3 }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(get_blocks.next().await.unwrap().is_err());
+
+        let mut by_heights = service
+            .get_blocks_by_heights(tonic::Request::new(BlocksQueryByHeight {
+                start_block_number: 0,
+                end_block_number: 2,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(by_heights.next().await.unwrap().is_err());
+
+        let mut main_chain = service
+            .show_main_chain(tonic::Request::new(BlocksQuery { depth: 3 }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(main_chain.next().await.is_none());
+
+        let mut visualize = service
+            .visualize_dag(tonic::Request::new(VisualizeDagQuery {
+                depth: 0,
+                show_justification_lines: false,
+                start_block_number: 0,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(visualize.next().await.unwrap().is_err());
+    }
+
+    #[test]
+    fn deploy_state_to_proto_maps_every_state() {
+        use casper::rust::api::deploy_finalization_status::DeployFinalizationState as S;
+        assert_eq!(
+            deploy_state_to_proto(S::Finalized),
+            DeployFinalizationStateProto::DeployStateFinalized
+        );
+        assert_eq!(
+            deploy_state_to_proto(S::Failed),
+            DeployFinalizationStateProto::DeployStateFailed
+        );
+        assert_eq!(
+            deploy_state_to_proto(S::Pending),
+            DeployFinalizationStateProto::DeployStatePending
+        );
+        assert_eq!(
+            deploy_state_to_proto(S::Expired),
+            DeployFinalizationStateProto::DeployStateExpired
+        );
     }
 }

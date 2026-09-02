@@ -149,6 +149,13 @@ classifier in
 and three memory-order refinements live in
 [`loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs`](loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs).
 
+[`tlaplus/deploy_recovery/CarrierIndexSoundness.tla`](tlaplus/deploy_recovery/CarrierIndexSoundness.tla)
+models the repeat-deploy fast path under concurrent validator actions.
+It proves typed identity matching, carrier-first visibility, write-once watermark
+selection over all stored blocks, safe pruning, missing-body abstention, and exact-scan equivalence.
+Four controls refute raw keys, metadata-first writes, unsafe pruning, and stale
+cache trust. A fifth control refutes a watermark derived only from valid blocks.
+
 [`tlaplus/deploy_occurrence/DeployOccurrenceStorage.tla`](tlaplus/deploy_occurrence/DeployOccurrenceStorage.tla)
 models strict fresh-v6 activation, atomic admission, crashes, terminal compaction,
 late validator observations, and concurrent reads. The non-atomic and permissive-

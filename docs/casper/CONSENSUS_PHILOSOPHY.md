@@ -83,6 +83,52 @@ A future benchmark must use a 256-block floor distance and a 512-block visible s
 
 No executable benchmark currently enforces this budget. Treat it as an open release criterion. Node-local timing must never control block validity or consensus admission.
 
+### 4.4 Repeat-deploy scan and the carrier-index fast path
+
+The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block.
+Under sustained load, this scan is the residual cost of issue #24. The remedy
+is the [repeat-deploy carrier index](GLOSSARY.md#repeat-deploy-carrier-index).
+
+The index records carrier blocks by protocol-tagged deploy identity. A legacy
+identity contains a signature. A protocol-v6 identity contains an envelope
+commitment. Equal payload bytes in these domains remain different keys.
+
+The fast path preserves the ratified predicate. An in-window absence skips the
+scan for that deploy identity. A hit always routes to exact window and
+parent-scope verification. A fork-only carrier cannot invalidate a legal
+re-inclusion.
+
+An index read failure routes to the same exact scan. Missing metadata or a
+missing block body then fails validation. Unreadable history is no information,
+not proof of absence. This rule follows the `BlockNotHeld` precedent in section
+4.1.
+
+Completeness requires crash-safe write ordering. Each insert records carrier
+rows before the block becomes visible in the in-memory DAG. Protocol-v6
+admission atomically commits all applicable carrier, metadata, occurrence, and
+lifecycle rows.
+Legacy admission writes carrier rows before metadata visibility.
+
+A persisted watermark records the first complete index height. The fast path
+engages only when the scan window starts at or above that watermark. Existing
+databases therefore need no backfill or forgeable backfill-completion marker.
+
+Finalized-floor advances prune rows below the expiration cutoff. Strided
+pruning can retain old rows, but it cannot remove rows in the active window.
+
+The persistent carrier index uses a dedicated store. It must not share a
+keyspace with rows keyed by unverified wire data. The exact scan uses a bounded,
+in-process decoded-identity cache. One block-store instance owns the cache, and
+its clones share the cache. That cache does not supply consensus authority.
+
+The verdict-equivalence obligation is testable. Index-served and scan-served
+verdicts must agree for every block. One test must also prove that the absence
+fast path skipped the exact scan.
+
+The formal basis is
+[`DeployIdentitySeparation`](theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement).
+That model prohibits legacy and v6 key aliasing after wire decoding.
+
 ## 5. The remedy ladder for base-bias starvation
 
 The options are ordered by guarantee strength and by risk. The axes are fairness strength, consensus-layer stability, and coordination cost. Coordination cost separates node-local policy from a lockstep upgrade.
@@ -221,6 +267,7 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
 | 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
+| 2026-09-01 | The repeat-deploy carrier index is a consensus-complete cache over valid, invalid, and approved blocks. Keys retain the protocol-tagged deploy identity. An in-window absence skips the ancestor scan. A hit or read failure routes to the exact scan. | Proposed in the issue #24 fast-path PR. Pending ratification. |
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).

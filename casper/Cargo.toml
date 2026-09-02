@@ -44,7 +44,6 @@ tonic = { workspace = true }
 eyre = { workspace = true }
 metrics = { workspace = true }
 parking_lot = "0.12"
-tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 casper = { path = ".", features = ["test-utils"] }
@@ -77,15 +76,11 @@ harness = false
 
 [features]
 default = []
-# Exposes test utilities (TestNode, mocks, genesis helpers) to other workspace members.
-# Guarded with #[cfg(feature = "test-utils")] so it is never compiled in production.
-#
-# Phase 11 (visibility hardening): the casper `test_utils` module constructs
-# `BlockDagKeyValueStorage` directly from in-memory stores and grabs raw write
-# guards on the metadata / deploy indices. Those entry points now live behind
-# block-storage's `test-internals` feature, so enabling casper's `test-utils`
-# transitively enables it. Production builds keep both features off.
-test-utils = ["tempfile", "block-storage/test-internals"]
+# Exposes test-only items gated in production-adjacent modules to integration
+# tests and other workspace members' tests: the well-known DEFAULT_SEC/PUB
+# deploy keys and the default-key fallback in util/construct_deploy.rs.
+# Production builds keep it off, so those keys are never compiled in.
+test-utils = []
 schnorr_secp256k1_experimental = [
     "crypto/schnorr_secp256k1_experimental",
     "models/schnorr_secp256k1_experimental",

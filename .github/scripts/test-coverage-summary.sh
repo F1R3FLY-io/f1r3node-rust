@@ -28,38 +28,70 @@ mkjson() { # crate lines covered
 		>"$tmp/coverage-$1.json"
 }
 
-# Two crates report, one does not.
 mkjson crypto 100 80
 mkjson models 100 50
 
-out="$("$SCRIPT" "$tmp" crypto models graphz)"
+if out="$("$SCRIPT" "$tmp" crypto models graphz 2>&1)"; then
+	printf '::error::expected low or missing coverage to fail\n%s\n' "$out"
+	fail=1
+fi
 check "| Crate | Lines | Covered | Line coverage |" "$out"
 check "| crypto | 100 | 80 | 80.0% |" "$out"
 check "| models | 100 | 50 | 50.0% |" "$out"
 check "| graphz | — | — | missing |" "$out"
 check "| **All** | 200 | 130 | 65.0% |" "$out"
 check "Some crates did not report coverage" "$out"
+check "models line coverage is below 80%" "$out"
+check "workspace line coverage is below 80%" "$out"
 
-# Every crate reports: weighted overall, no missing note.
-mkjson graphz 50 50
-out="$("$SCRIPT" "$tmp" crypto models graphz)"
-check "| **All** | 250 | 180 | 72.0% |" "$out"
+mkjson models 100 90
+mkjson graphz 50 40
+if ! out="$("$SCRIPT" "$tmp" crypto models graphz 2>&1)"; then
+	printf '::error::expected sufficient coverage to pass\n%s\n' "$out"
+	fail=1
+fi
+check "| **All** | 250 | 210 | 84.0% |" "$out"
+check "Coverage gate passed" "$out"
 check_absent "missing" "$out"
 
-# Malformed and incomplete files read as missing instead of aborting the report.
+mkjson crypto 100 100
+mkjson models 100 70
+mkjson graphz 50 50
+if out="$("$SCRIPT" "$tmp" crypto models graphz 2>&1)"; then
+	printf '::error::expected one low crate to fail\n%s\n' "$out"
+	fail=1
+fi
+check "| **All** | 250 | 220 | 88.0% |" "$out"
+check "models line coverage is below 80%" "$out"
+check_absent "workspace line coverage is below 80%" "$out"
+
 echo "not json" >"$tmp/coverage-shared.json"
-out="$("$SCRIPT" "$tmp" shared)"
+if out="$("$SCRIPT" "$tmp" shared 2>&1)"; then
+	printf '::error::expected malformed coverage to fail\n%s\n' "$out"
+	fail=1
+fi
 check "| shared | — | — | missing |" "$out"
 check "| **All** | 0 | 0 | n/a |" "$out"
 
 jq -n '{data:[{totals:{lines:{count:10,covered:null,percent:null}}}]}' \
 	>"$tmp/coverage-node.json"
-out="$("$SCRIPT" "$tmp" node)"
+if out="$("$SCRIPT" "$tmp" node 2>&1)"; then
+	printf '::error::expected incomplete coverage to fail\n%s\n' "$out"
+	fail=1
+fi
 check "| node | — | — | missing |" "$out"
 check "| **All** | 0 | 0 | n/a |" "$out"
 
-# The default crate list covers every crate in the ci.yml coverage matrix.
-out="$("$SCRIPT" "$tmp")"
+if out="$(COVERAGE_MINIMUM=invalid "$SCRIPT" "$tmp" crypto 2>&1)"; then
+	printf '::error::expected an invalid minimum to fail\n%s\n' "$out"
+	fail=1
+fi
+check "Coverage minimum must be a number from 0 through 100." "$out"
+
+if out="$("$SCRIPT" "$tmp" 2>&1)"; then
+	printf '::error::expected incomplete default coverage to fail\n%s\n' "$out"
+	fail=1
+fi
 for crate in rspace_plus_plus rholang shared node models crypto block-storage comm graphz casper; do
 	check "| $crate |" "$out"
 done
@@ -67,4 +99,4 @@ done
 if [ "$fail" -ne 0 ]; then
 	exit 1
 fi
-echo "ok: coverage-summary.sh renders rows, overall, and missing states"
+echo "ok: coverage-summary.sh enforces per-crate and workspace coverage"

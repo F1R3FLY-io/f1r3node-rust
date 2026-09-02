@@ -55,6 +55,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use prost::Message;
@@ -570,14 +571,21 @@ impl Validate {
             }
         }
 
-        let mut block_sigs = HashSet::new();
-        if block
-            .body
-            .deploys
-            .iter()
-            .any(|deploy| !block_sigs.insert(deploy.deploy_id().clone()))
-        {
-            return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+        let mut block_deploy_ids = Vec::with_capacity(block.body.deploys.len());
+        let mut unique_deploy_ids = HashSet::with_capacity(block.body.deploys.len());
+        for deploy in &block.body.deploys {
+            let deploy_id = match deploy.deploy_id_for_protocol(block.header.version) {
+                Ok(deploy_id) => deploy_id,
+                Err(error) => {
+                    return Either::Left(BlockError::BlockException(CasperError::RuntimeError(
+                        error,
+                    )))
+                }
+            };
+            if !unique_deploy_ids.insert(deploy_id.clone()) {
+                return Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy));
+            }
+            block_deploy_ids.push(deploy_id);
         }
 
         let block_metadata = BlockMetadata::from_block(block, None, None);
@@ -598,27 +606,14 @@ impl Validate {
                 Ok(sigs) => sigs,
                 Err(error) => return Either::Left(BlockError::BlockException(error)),
             };
-            for processed_deploy in &block.body.deploys {
-                let deploy_id = match processed_deploy.deploy_id_for_protocol(block.header.version)
-                {
-                    Ok(deploy_id) => deploy_id,
-                    Err(error) => {
-                        return Either::Left(BlockError::BlockException(CasperError::RuntimeError(
-                            error,
-                        )))
-                    }
-                };
-                if !rejected.contains(&deploy_id) {
+            for deploy_id in &block_deploy_ids {
+                if !rejected.contains(deploy_id) {
                     continue;
                 }
-                match context.retry_gate_open(
-                    &s.dag,
-                    block_store,
-                    earliest_block_number,
-                    &deploy_id,
-                ) {
+                match context.retry_gate_open(&s.dag, block_store, earliest_block_number, deploy_id)
+                {
                     Ok(true) => {
-                        exempt.insert(processed_deploy.deploy_id().clone());
+                        exempt.insert(deploy_id.clone());
                     }
                     Ok(false) => {
                         return Either::Left(BlockError::Invalid(
@@ -630,17 +625,66 @@ impl Validate {
             }
         }
 
-        let deploy_key_set: HashSet<Vec<u8>> = block
-            .body
-            .deploys
-            .iter()
-            .filter(|processed_deploy| !exempt.contains(processed_deploy.deploy_id()))
-            .map(|pd| pd.deploy_id().to_vec())
+        let deploy_key_set: HashSet<DeployLookupId> = block_deploy_ids
+            .into_iter()
+            .filter(|deploy_id| !exempt.contains(deploy_id))
             .collect();
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
         }
 
+        // Repeat-deploy carrier-index fast path (CONSENSUS_PHILOSOPHY
+        // §4.4). The index records every carrier from the watermark W
+        // onward, so it engages only when the scan window starts at or
+        // above W (`w <= max(earliest, 0)` — heights below zero do not
+        // exist, so W = 0 means complete over every existing block).
+        // Behind that gate, an index absence proves the deploy identity has no
+        // in-window carrier, so it cannot be a repeat and skips the scan.
+        // An index hit is NOT a verdict — the sig stays in the exact scan,
+        // which is the window and parent-scope verification (a fork-only
+        // carrier must not poison this block). Any read failure keeps the
+        // deploy identity in the scan: unreadable index state is no information, never
+        // an absence proof.
+        let deploy_key_set: HashSet<DeployLookupId> = match s.dag.carrier_index_watermark() {
+            Ok(Some(w)) if w <= earliest_block_number.max(0) => {
+                let mut probe_failed = false;
+                let scan_set: HashSet<DeployLookupId> = deploy_key_set
+                    .into_iter()
+                    .filter(|deploy_id| {
+                        if probe_failed {
+                            return true;
+                        }
+                        match s.dag.carrier_index_proves_absence(deploy_id) {
+                            Ok(absent) => !absent,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "repeat-deploy carrier-index probe failed for block {}; \
+                                     falling back to the ancestor scan: {}",
+                                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                                    e,
+                                );
+                                probe_failed = true;
+                                true
+                            }
+                        }
+                    })
+                    .collect();
+                scan_set
+            }
+            Ok(_) => deploy_key_set,
+            Err(e) => {
+                tracing::warn!(
+                    "repeat-deploy carrier-index watermark read failed for block {}; \
+                     falling back to the ancestor scan: {}",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    e,
+                );
+                deploy_key_set
+            }
+        };
+        if deploy_key_set.is_empty() {
+            return Either::Right(ValidBlock::Valid);
+        }
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         let maybe_duplicated_block_metadata = match dag_ops::try_bf_traverse_find(
             init_parents,
@@ -653,17 +697,27 @@ impl Validate {
             },
             |block_metadata| {
                 block_store
-                    .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
+                    .has_any_deploy_id_strict(&block_metadata.block_hash, &deploy_key_set)
                     .map_err(CasperError::from)
             },
         ) {
             Ok(found) => found,
-            Err(error) => return Either::Left(BlockError::BlockException(error)),
+            Err(error) => return Either::Left(BlockError::from_validation_error(error)),
         };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
         let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
+      let duplicated_block = match block_store.get(&duplicated_block_metadata.block_hash) {
+        Ok(Some(block)) => block,
+        Ok(None) => {
+          return BlockError::from_validation_error(CasperError::BlockNotHeld(
+            duplicated_block_metadata.block_hash.clone(),
+          ));
+        }
+        Err(error) => {
+          return BlockError::from_validation_error(CasperError::from(error));
+        }
+      };
       let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
       let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
 
@@ -689,7 +743,7 @@ impl Validate {
             )));
           }
         };
-        if deploy_key_set.contains(deploy_id.as_bytes()) {
+        if deploy_key_set.contains(&deploy_id) {
           matching_deploy = Some(&processed_deploy.deploy);
           break;
         }

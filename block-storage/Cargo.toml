@@ -38,6 +38,8 @@ default = []
 test-internals = []
 
 [dev-dependencies]
+async-trait = { workspace = true }
+heed = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 # Exhaustive thread-interleaving model checker for the

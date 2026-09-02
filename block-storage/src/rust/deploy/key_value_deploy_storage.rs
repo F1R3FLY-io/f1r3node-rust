@@ -206,6 +206,7 @@ mod tests {
     use models::rust::casper::protocol::casper_message::ProcessedDeploy;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
         Db, LmdbDirStoreManager, LmdbEnvConfig,
@@ -276,6 +277,12 @@ mod tests {
         .unwrap()
     }
 
+    fn deploy(time_stamp: i64) -> Signed<DeployData> {
+        let mut data = deploy_data();
+        data.time_stamp = time_stamp;
+        Signed::create(data, Box::new(Secp256k1), PrivateKey::from_bytes(&[1; 32])).unwrap()
+    }
+
     fn lmdb_manager(path: PathBuf) -> impl KeyValueStoreManager {
         let config = LmdbEnvConfig::new("deploy-env".to_string(), 16 << 20).with_max_dbs(4);
         LmdbDirStoreManager::new(
@@ -300,6 +307,44 @@ mod tests {
             .prefix(prefix)
             .tempdir_in(scratch)
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn storage_round_trips_add_contains_read_and_remove() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        assert!(!storage.non_empty().unwrap());
+
+        let (d1, d2) = (deploy(1), deploy(2));
+        storage.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        assert!(storage.non_empty().unwrap());
+        assert!(storage.contains_sig(&d1.sig).unwrap());
+        assert!(!storage.contains_sig(&[0u8; 64]).unwrap());
+        assert_eq!(
+            storage.read_all().unwrap(),
+            HashSet::from([d1.clone(), d2.clone()])
+        );
+
+        assert!(storage.any(|d| Ok(d.data.time_stamp == 2)).unwrap());
+        assert!(!storage.any(|d| Ok(d.data.time_stamp == 99)).unwrap());
+
+        storage.remove(vec![d2]).unwrap();
+        assert_eq!(storage.read_all().unwrap(), HashSet::from([d1.clone()]));
+
+        assert!(storage.remove_by_sig(&d1.sig).unwrap());
+        assert!(!storage.remove_by_sig(&d1.sig).unwrap());
+        assert!(!storage.non_empty().unwrap());
+    }
+
+    #[tokio::test]
+    async fn add_if_absent_reports_the_duplicate() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let d1 = deploy(1);
+        assert!(storage.add_if_absent(d1.clone()).unwrap());
+        assert!(!storage.add_if_absent(d1).unwrap());
+        assert_eq!(storage.read_all().unwrap().len(), 1);
     }
 
     #[test]

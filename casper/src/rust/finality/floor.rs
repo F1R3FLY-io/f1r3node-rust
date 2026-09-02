@@ -1209,6 +1209,9 @@ mod frontier_determinism_tests {
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
             )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+            )),
         };
         (dag, v, (g, b1, b2, b3))
     }
@@ -1277,6 +1280,9 @@ mod frontier_determinism_tests {
             lifecycle: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         };
         (dag, absent, held)
@@ -1582,6 +1588,9 @@ mod frontier_determinism_tests {
             lifecycle: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(
                 ),
+            )),
+            carrier_index: Arc::new(parking_lot::RwLock::new(
+                block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
     }

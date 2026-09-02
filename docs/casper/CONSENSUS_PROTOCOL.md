@@ -334,6 +334,17 @@ state machine and implementation mapping are in
 
 ### Step 8: Deploy & State Validation
 - Deploys are within scope, not duplicated
+  - The duplicate check scans parent-scope ancestors inside the `deploy_lifespan` window without a validity qualifier
+  - A deploy identity in an invalid ancestor is still a repeat
+  - A rejected in-scope deploy identity is exempt when its retry gate is open
+  - A closed retry gate returns `PrematureDeployRetry`
+  - The [repeat-deploy carrier index](GLOSSARY.md#repeat-deploy-carrier-index) can prove an in-window absence only above its persisted watermark
+  - The index keys each carrier with a legacy-signature or v6-commitment protocol tag
+  - An absence skips the exact ancestor scan for that deploy identity
+  - A hit or index read failure routes to the exact window and parent-scope scan
+  - A missing scan dependency fails validation and does not become an absence
+  - Carrier rows precede DAG visibility, and protocol-v6 admission commits all related rows atomically
+- Phlogiston price meets minimum
 - State-bound funding evidence, realized compute/storage/byte costs, RevVault
   settlement, and replay witnesses agree exactly
 - The serialized bond cache equals the PoS bonds recomputed from the replayed

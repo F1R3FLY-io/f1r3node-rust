@@ -826,3 +826,84 @@ mod tests {
         assert_eq!(in_progress.load(Ordering::SeqCst), 0);
     }
 }
+
+#[cfg(test)]
+mod service_tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::test_instances::create_rp_conf_ask;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    fn noop_handlers() -> MessageHandlers {
+        (
+            Arc::new(
+                |_send: CommSend| -> Pin<Box<dyn Future<Output = Result<(), CommError>> + Send>> {
+                    Box::pin(async { Ok(()) })
+                },
+            ),
+            Arc::new(
+                |_stream: StreamMessage| -> Pin<
+                    Box<dyn Future<Output = Result<(), CommError>> + Send>,
+                > { Box::pin(async { Ok(()) }) },
+            ),
+        )
+    }
+
+    fn service(
+        buffers_map: Arc<Mutex<HashMap<PeerNode, PeerBufferSlot>>>,
+    ) -> TransportLayerService {
+        TransportLayerService::new(
+            "test".to_string(),
+            create_rp_conf_ask(peer("local"), None, None),
+            1024,
+            buffers_map,
+            noop_handlers(),
+            PayloadBudget::new("test", 1024, 1).unwrap(),
+            1,
+        )
+    }
+
+    #[test]
+    fn internal_server_error_response_carries_message() {
+        let buffers_map = Arc::new(Mutex::new(HashMap::new()));
+        let service = service(buffers_map);
+        let response = service.create_internal_server_error_response("boom".to_string());
+        match response.payload {
+            Some(models::routing::tl_response::Payload::InternalServerError(err)) => {
+                assert_eq!(err.error, prost::bytes::Bytes::from("boom"));
+            }
+            other => panic!("unexpected payload: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_peer_buffers_are_evicted() {
+        let buffers_map = Arc::new(Mutex::new(HashMap::new()));
+        let service = service(buffers_map.clone());
+
+        {
+            let mut map = buffers_map.lock().await;
+            map.insert(peer("stale"), PeerBufferSlot {
+                once_cell: Arc::new(OnceCell::new()),
+                last_seen_ms: 0,
+                in_progress: Arc::new(AtomicUsize::new(0)),
+            });
+        }
+
+        for _ in 0..(PEER_BUFFER_CLEANUP_EVERY_REQUESTS + 1) {
+            service.maybe_cleanup_stale_peer_buffers().await;
+        }
+
+        assert!(buffers_map.lock().await.is_empty());
+    }
+}

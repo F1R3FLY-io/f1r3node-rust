@@ -589,4 +589,254 @@ mod tests {
         let roundtrip: SystemDeployDataProto = serde.into();
         assert_eq!(roundtrip, wrapped);
     }
+
+    fn sample_par() -> Par {
+        Par {
+            exprs: vec![models::rhoapi::Expr {
+                expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(7)),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn sample_produce() -> ReportProduceProto {
+        ReportProduceProto {
+            channel: Some(sample_par()),
+            data: Some(ListParWithRandom {
+                pars: vec![sample_par()],
+                random_state: vec![9, 9].into(),
+                cost_authority: None,
+                cost_stack: None,
+            }),
+        }
+    }
+
+    fn sample_consume() -> ReportConsumeProto {
+        ReportConsumeProto {
+            channels: vec![sample_par()],
+            patterns: vec![BindPattern::default()],
+            peeks: vec![PeekProto { channel_index: 3 }],
+        }
+    }
+
+    #[test]
+    fn bond_info_roundtrips() {
+        let proto = BondInfo {
+            validator: "validator-key".to_string(),
+            stake: 500,
+        };
+        let serde: BondInfoSerde = proto.clone().into();
+        assert_eq!(serde.stake, 500);
+        let back: BondInfo = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn justification_info_roundtrips() {
+        let proto = JustificationInfo {
+            validator: "validator-key".to_string(),
+            latest_block_hash: "abcd".to_string(),
+        };
+        let serde: JustificationInfoSerde = proto.clone().into();
+        let json = serde_json::to_value(&serde).unwrap();
+        assert_eq!(json["latestBlockHash"], "abcd");
+        let back: JustificationInfo = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn rejected_deploy_info_roundtrips() {
+        let proto = RejectedDeployInfo {
+            sig: "cafe".to_string(),
+            source_block_hash: String::new(),
+            reason: String::new(),
+        };
+        let serde: RejectedDeployInfoSerde = proto.clone().into();
+        let back: RejectedDeployInfo = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn system_deploy_data_slash_variant_roundtrips() {
+        let proto = SystemDeployDataProto {
+            system_deploy: Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
+                    SlashSystemDeployDataProto {
+                        invalid_block_hash: vec![1].into(),
+                        equivocation_block_hash: Vec::new().into(),
+                        issuer_public_key: vec![2].into(),
+                        target_activation_epoch: 3,
+                        target_bond_generation: None,
+                    },
+                ),
+            ),
+        };
+        let serde: SystemDeployDataSerde = proto.clone().into();
+        assert!(matches!(serde, SystemDeployDataSerde::SlashSystemDeploy(_)));
+        let back: SystemDeployDataProto = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn system_deploy_data_close_block_variant_roundtrips() {
+        let proto = SystemDeployDataProto {
+            system_deploy: Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(
+                    CloseBlockSystemDeployDataProto {},
+                ),
+            ),
+        };
+        let serde: SystemDeployDataSerde = proto.clone().into();
+        assert!(matches!(
+            serde,
+            SystemDeployDataSerde::CloseBlockSystemDeploy(_)
+        ));
+        let back: SystemDeployDataProto = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn system_deploy_data_none_falls_back_to_close_block() {
+        let proto = SystemDeployDataProto {
+            system_deploy: None,
+        };
+        let serde: SystemDeployDataSerde = proto.into();
+        assert!(matches!(
+            serde,
+            SystemDeployDataSerde::CloseBlockSystemDeploy(_)
+        ));
+    }
+
+    #[test]
+    fn report_proto_produce_variant_roundtrips() {
+        let proto = ReportProto {
+            report: Some(models::casper::report_proto::Report::Produce(
+                sample_produce(),
+            )),
+        };
+        let serde: ReportProtoSerde = proto.clone().into();
+        assert!(matches!(serde, ReportProtoSerde::Produce(_)));
+        let back: ReportProto = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn report_proto_consume_variant_roundtrips() {
+        let proto = ReportProto {
+            report: Some(models::casper::report_proto::Report::Consume(
+                sample_consume(),
+            )),
+        };
+        let serde: ReportProtoSerde = proto.clone().into();
+        match &serde {
+            ReportProtoSerde::Consume(consume) => {
+                assert_eq!(consume.peeks.len(), 1);
+                assert_eq!(consume.peeks[0].channel_index, 3);
+            }
+            other => panic!("expected Consume variant, got {:?}", other),
+        }
+        let back: ReportProto = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn report_proto_comm_variant_roundtrips() {
+        let proto = ReportProto {
+            report: Some(models::casper::report_proto::Report::Comm(
+                ReportCommProto {
+                    consume: Some(sample_consume()),
+                    produces: vec![sample_produce()],
+                },
+            )),
+        };
+        let serde: ReportProtoSerde = proto.clone().into();
+        assert!(matches!(serde, ReportProtoSerde::Comm(_)));
+        let back: ReportProto = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn report_proto_none_falls_back_to_empty_produce() {
+        let proto = ReportProto { report: None };
+        let serde: ReportProtoSerde = proto.into();
+        match serde {
+            ReportProtoSerde::Produce(produce) => {
+                assert!(produce.channel.is_none());
+                assert!(produce.data.is_none());
+            }
+            other => panic!("expected Produce fallback, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn report_phase_roundtrips_through_i32() {
+        use models::casper::ReportPhase as P;
+        for (phase, raw) in [
+            (ReportPhaseSerde::Unspecified, P::Unspecified as i32),
+            (ReportPhaseSerde::Precharge, P::Precharge as i32),
+            (ReportPhaseSerde::User, P::User as i32),
+            (ReportPhaseSerde::Refund, P::Refund as i32),
+        ] {
+            assert_eq!(ReportPhaseSerde::from(raw), phase);
+            assert_eq!(i32::from(phase), raw);
+        }
+    }
+
+    #[test]
+    fn report_phase_unknown_discriminant_decodes_as_unspecified() {
+        assert_eq!(ReportPhaseSerde::from(9999), ReportPhaseSerde::Unspecified);
+    }
+
+    #[test]
+    fn report_phase_json_names_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&ReportPhaseSerde::Precharge).unwrap(),
+            "\"REPORT_PHASE_PRECHARGE\""
+        );
+        let parsed: ReportPhaseSerde = serde_json::from_str("\"REPORT_PHASE_REFUND\"").unwrap();
+        assert_eq!(parsed, ReportPhaseSerde::Refund);
+    }
+
+    #[test]
+    fn single_report_missing_phase_defaults_to_unspecified() {
+        let json = r#"{"events":[]}"#;
+        let serde: SingleReportSerde = serde_json::from_str(json).unwrap();
+        assert_eq!(serde.phase, ReportPhaseSerde::Unspecified);
+    }
+
+    #[test]
+    fn system_deploy_info_with_event_roundtrips() {
+        let proto = SystemDeployInfoWithEventData {
+            system_deploy: Some(SystemDeployDataProto {
+                system_deploy: Some(
+                    models::casper::system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
+                        SlashSystemDeployDataProto {
+                            invalid_block_hash: vec![7].into(),
+                            equivocation_block_hash: Vec::new().into(),
+                            issuer_public_key: vec![8].into(),
+                            target_activation_epoch: 1,
+                            target_bond_generation: None,
+                        },
+                    ),
+                ),
+            }),
+            report: vec![SingleReport {
+                events: vec![ReportProto {
+                    report: Some(models::casper::report_proto::Report::Produce(
+                        sample_produce(),
+                    )),
+                }],
+                phase: models::casper::ReportPhase::User as i32,
+            }],
+        };
+
+        let serde: SystemDeployInfoWithEventSerde = proto.clone().into();
+        assert_eq!(serde.report.len(), 1);
+        assert_eq!(serde.report[0].phase, ReportPhaseSerde::User);
+
+        let json = serde_json::to_string(&serde).unwrap();
+        let parsed: SystemDeployInfoWithEventSerde = serde_json::from_str(&json).unwrap();
+        let back: SystemDeployInfoWithEventData = parsed.into();
+        assert_eq!(back, proto);
+    }
 }

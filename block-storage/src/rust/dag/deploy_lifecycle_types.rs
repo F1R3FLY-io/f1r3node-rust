@@ -116,13 +116,20 @@ impl DeployLifecycleTables {
         Ok(results.into_iter().next().flatten())
     }
 
-    /// The sig's most recent canonical appearance — the latest INCLUSION
-    /// event by (height, hash), or the terminal record's frozen display
-    /// block once the row is pruned. A rejection record's block holds the
-    /// record, not the deploy, so record-only rows have no appearance.
+    /// The deploy's most recent canonical appearance is the latest inclusion
+    /// event by (height, hash) whose block `is_visible` accepts, or the
+    /// terminal record's frozen display block once the row is pruned. A
+    /// rejection record's block holds the record, not the deploy, so
+    /// record-only rows have no appearance. The visibility filter guards
+    /// against orphan events from a crash inside `insert`'s ingest-first
+    /// window: an event whose block never became DAG-visible must not
+    /// resolve as an appearance. The terminal path needs no filter — the
+    /// finality evaluator writes terminals from DAG facts (floor-closure
+    /// guarded), so the frozen block was visible at the write.
     pub fn canonical_appearance(
         &self,
         deploy_id: &DeployLookupId,
+        is_visible: &dyn Fn(&[u8]) -> bool,
     ) -> Result<Option<ByteString>, KvStoreError> {
         if let Some(terminal) = self.get_terminal(deploy_id)? {
             if terminal.latest_block_hash.is_empty() {
@@ -137,6 +144,7 @@ impl DeployLifecycleTables {
             .events
             .iter()
             .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
+            .filter(|e| is_visible(&e.block_hash))
             .max_by(|a, b| {
                 a.height
                     .cmp(&b.height)
@@ -172,6 +180,27 @@ impl DeployLifecycleTables {
     /// sigs, not history.
     pub fn open_sigs(&self) -> Result<Vec<DeployLookupId>, KvStoreError> {
         self.events.to_map().map(|m| m.into_keys().collect())
+    }
+
+    /// Redelivery-idempotent append is a no-op when the row already holds an
+    /// event for the same block with the same kind of testimony, so a
+    /// crash-then-redelivery re-run never duplicates an event.
+    pub fn append_event_once(
+        &self,
+        deploy_id: &DeployLookupId,
+        valid_after: Option<i64>,
+        event: LifecycleEvent,
+    ) -> Result<(), KvStoreError> {
+        if let Some(row) = self.get_events(deploy_id)? {
+            let duplicate = row.events.iter().any(|e| {
+                e.block_hash == event.block_hash
+                    && std::mem::discriminant(&e.kind) == std::mem::discriminant(&event.kind)
+            });
+            if duplicate {
+                return Ok(());
+            }
+        }
+        self.append_events(deploy_id, valid_after, vec![event])
     }
 
     pub fn get_terminal(
@@ -273,6 +302,26 @@ mod tests {
             tables.open_sigs().expect("open").is_empty(),
             "a terminal sig is no longer open"
         );
+    }
+
+    #[test]
+    fn append_event_once_is_idempotent_per_block_and_kind() {
+        let tables = DeployLifecycleTables::in_memory();
+        let deploy_id = deploy_id();
+        let event = included(2, false);
+        tables
+            .append_events(&deploy_id, Some(1), vec![event.clone()])
+            .expect("insert-path append");
+        tables
+            .append_event_once(&deploy_id, Some(1), event.clone())
+            .expect("backfill re-append");
+        let row = tables.get_events(&deploy_id).expect("read").expect("row");
+        assert_eq!(row.events.len(), 1, "backfill must not duplicate events");
+        tables
+            .append_event_once(&deploy_id, Some(1), included(5, false))
+            .expect("distinct block appends");
+        let row = tables.get_events(&deploy_id).expect("read").expect("row");
+        assert_eq!(row.events.len(), 2);
     }
 
     #[test]

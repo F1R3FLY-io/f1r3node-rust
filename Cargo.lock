@@ -612,9 +612,11 @@ dependencies = [
 name = "block-storage"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bincode",
  "crypto",
  "dashmap",
+ "heed",
  "hex",
  "imbl",
  "loom 0.7.2",

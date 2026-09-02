@@ -88,6 +88,7 @@ POST_FIX_CONFIGS=(
     deploy_occurrence/MC_DeployOccurrence
     'deploy_occurrence/MC_DeployOccurrenceStorage|MC_DeployOccurrenceStorage'
     deploy_recovery/MC_DeployRecovery
+    'deploy_recovery/MC_CarrierIndexSoundness|CarrierIndexSoundness'
     deploy_recovery/MC_MergeRecoveryCoherence
     deploy_recovery/MC_RejectionReasonConfluence
     deploy_recovery/MC_ProtocolActivationCoherence

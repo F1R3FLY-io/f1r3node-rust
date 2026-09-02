@@ -128,6 +128,9 @@ fn restored_dag(
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
+        carrier_index: Arc::new(RwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     }
 }
 

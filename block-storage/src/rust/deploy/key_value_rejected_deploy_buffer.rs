@@ -98,3 +98,86 @@ impl KeyValueRejectedDeployBuffer {
 
     pub fn non_empty(&self) -> Result<bool, KvStoreError> { self.store.non_empty() }
 }
+
+#[cfg(test)]
+mod tests {
+    use crypto::rust::private_key::PrivateKey;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::casper::protocol::casper_message::DeployData;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
+
+    fn deploy(time_stamp: i64) -> PendingDeploy {
+        let signed = Signed::create(
+            DeployData {
+                term: "Nil".to_string(),
+                language: "rholang".to_string(),
+                time_stamp,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+                authority_presentations: Vec::new(),
+            },
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        PendingDeploy::from_legacy(signed).unwrap()
+    }
+
+    async fn buffer() -> KeyValueRejectedDeployBuffer {
+        let mut kvm = InMemoryStoreManager::new();
+        KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_read_all_and_non_empty() {
+        let mut buffer = buffer().await;
+        assert!(!buffer.non_empty().unwrap());
+
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        assert!(buffer.non_empty().unwrap());
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([d1, d2]));
+    }
+
+    #[tokio::test]
+    async fn contains_and_get_by_typed_id() {
+        let mut buffer = buffer().await;
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone()]).unwrap();
+        let d1_id = d1.typed_deploy_id().clone();
+        let d2_id = d2.typed_deploy_id().clone();
+
+        assert!(buffer.contains_id(&d1_id).unwrap());
+        assert!(!buffer.contains_id(&d2_id).unwrap());
+        assert_eq!(buffer.get_by_id(&d1_id).unwrap(), Some(d1));
+        assert_eq!(buffer.get_by_id(&d2_id).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_listed_deploys() {
+        let mut buffer = buffer().await;
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        buffer.remove(vec![d2]).unwrap();
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([d1]));
+    }
+
+    #[tokio::test]
+    async fn remove_by_typed_id_reports_presence() {
+        let mut buffer = buffer().await;
+        let d1 = deploy(1);
+        let deploy_id = d1.typed_deploy_id().clone();
+        buffer.add(vec![d1.clone()]).unwrap();
+
+        assert!(buffer.remove_by_id(&deploy_id).unwrap());
+        assert!(!buffer.remove_by_id(&deploy_id).unwrap());
+        assert!(!buffer.contains_id(&deploy_id).unwrap());
+        assert!(!buffer.non_empty().unwrap());
+    }
+}

@@ -483,16 +483,19 @@ content ordering is the tie-break that loss-aware adjudication subordinates.
 ### Prior-rejection count
 
 The prior-rejection count is the number of
-[kept rejection records](#kept-rejection-record) for a deploy signature that a
+[kept rejection records](#kept-rejection-record) for a deploy identity that a
 merge can see. The view contains the [merge scope](#merge-scope) and the
 base-lineage window. The count is on-chain data, so every validator derives
 the same value for the same merge. A dependency chain uses the maximum count
-among its member signatures.
+among its member deploy identities.
 
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
 *Distinguish from* the lifecycle `rejection_count`, which is a node-local
-observability value that includes duplicate records.
+observability value that includes duplicate records. The
+[repeat-deploy carrier index](#repeat-deploy-carrier-index) is the one
+node-local materialized structure with a consensus-reading role. It holds
+that role only under its completeness invariant.
 *Avoid*: "loss count" without qualification.
 
 ### Loss-aware adjudication
@@ -512,14 +515,14 @@ decides when prior-rejection counts are equal.
 ### Kept rejection record
 
 A kept rejection record is a rejection record without the duplicate flag. It
-disputes a standing win of its deploy signature. It is the only record class
+disputes a standing win of its deploy identity. It is the only record class
 that counts toward the [prior-rejection count](#prior-rejection-count) and
 that drives the retry disposition.
 
 **Preferred usage.** Use when record provenance matters, such as priority
 counting or [retry gate](#retry-gate) disposition.
 *Distinguish from* a duplicate-flagged record, which testifies that the
-effect of the signature is already present and disputes nothing.
+effect of the deploy identity is already present and disputes nothing.
 *Avoid*: "valid record", because duplicate records are also valid consensus
 content.
 
@@ -551,13 +554,29 @@ which bounds proposer deferral, not deploy validity.
 *Avoid*: "timeout" and "TTL", because the window uses block height, not
 wall-clock time.
 
+### Deploy lookup identity
+
+A deploy lookup identity is the protocol-tagged key for one deploy. A legacy
+key contains the deploy signature. A protocol-v6 key contains the envelope
+commitment.
+
+The protocol tag is part of the key. Equal payload bytes in the two protocol
+domains identify different deploys. Storage and validation must preserve the
+tag after wire decoding.
+
+**Preferred usage.** Use for keys shared by lifecycle, recovery, and
+repeat-deploy validation.
+*Distinguish from* a raw signature or commitment, which does not identify its
+protocol domain.
+*Avoid*: "signature" when the statement also applies to protocol v6.
+
 ### Deploy lifecycle
 
-The deploy lifecycle is the per-signature progression a node records for
+The deploy lifecycle is the per-deploy-identity progression a node records for
 each deploy: open event rows (inclusions and rejections projected from
 block bodies) and a WRITE-ONCE terminal record (`Finalized`, `Expired`,
 or `Failed`). Event rows are pruned at the terminal write, so the events
-table holds open signatures only. The status API reads these tables as
+table holds open deploy identities only. The status API reads these tables as
 lookups.
 
 **Preferred usage.** Use for the recorded progression and its storage
@@ -585,7 +604,7 @@ floor closure; finalized is the oracle's property of a block.
 ### Retry gate
 
 The retry gate is the rule that makes a retry legal only after the latest
-[kept rejection record](#kept-rejection-record) of the signature settles
+[kept rejection record](#kept-rejection-record) of the deploy identity settles
 inside the frozen [finalized floor](#finalized-floor) closure. The gate is a
 pure function of the block, so
 every validator computes the same verdict (`PrematureDeployRetry`).
@@ -595,6 +614,56 @@ every validator computes the same verdict (`PrematureDeployRetry`).
 a lower bound on when a retry may appear, not a selection policy.
 *Avoid*: "retry timer" and "cooldown", because the gate keys on floor
 settlement, not on wall-clock time.
+
+### Repeat-deploy carrier index
+
+The repeat-deploy carrier index records carrier blocks by
+[deploy lookup identity](#deploy-lookup-identity). The index uses a dedicated
+persistent store. It covers valid, invalid, and approved blocks.
+
+Each persistent insert records carrier rows before the block becomes visible
+in the in-memory directed acyclic graph (DAG). Protocol-v6 admission commits
+all applicable carrier, metadata, occurrence, and lifecycle rows in one strict
+transaction.
+Legacy admission writes the carrier row before metadata visibility.
+
+A write-once height watermark identifies the first complete index height.
+An empty database starts at height zero. A populated database starts at one
+height above its stored maximum, so startup requires no backfill.
+
+An absence is usable only when the scan window starts at or above the
+watermark. In that scope, absence skips the ancestor scan for that deploy
+identity. A hit always routes to the exact window and parent-scope scan.
+
+An index read failure also routes to the exact scan. Missing DAG metadata or
+a missing block body fails that scan. Validation never treats missing storage
+as proof of absence.
+
+Finalized-floor advances prune entries below the expiration cutoff. Pruning
+uses a stride and can retain older rows. It never removes a row at or above
+the current cutoff.
+
+The persistent index is a deterministic materialization of block bodies. The
+exact scan also uses a bounded, in-process block-body identity cache. One
+block-store instance owns the cache, and its clones share the cache. The cache
+is an optimization and is not consensus authority.
+
+Both paths preserve the protocol tag. Equal legacy-signature and v6-commitment
+bytes remain different keys. See
+[`DeployIdentitySeparation`](theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement).
+
+The served predicate is unchanged: the same deploy identity appears in a
+parent-scope ancestor inside the expiration window. The dedicated store must
+not share a keyspace with rows keyed by unverified wire data.
+
+**Preferred usage.** Use for the validation-side fast path of
+`Validate::repeat_deploy`.
+*Distinguish from* the [deploy lifecycle](#deploy-lifecycle) tables,
+which are node-local observability with terminal pruning and never
+decide a verdict.
+*Avoid*: "deploy index" without qualification, because the removed
+last-write-wins `lookup_by_deploy_id` index resolved display carriers,
+not validity.
 
 ### Retry frontier lease
 

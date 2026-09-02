@@ -608,7 +608,7 @@ mod tests {
     /// Stub WebApi that returns sample DeployResponse for testing.
     struct StubWebApi;
 
-    fn sample_deploy_response(view: ViewMode) -> DeployResponse {
+    pub(super) fn sample_deploy_response(view: ViewMode) -> DeployResponse {
         let is_full = view == ViewMode::Full;
         DeployResponse {
             deploy_id: "abc123def".to_string(),
@@ -973,5 +973,544 @@ mod tests {
         assert_eq!(json["deploys"].as_array().unwrap().len(), 1);
         assert_eq!(json["totalAvailable"], 1);
         assert_eq!(json["deploys"][0]["deployer"], "0487def456");
+    }
+}
+
+#[cfg(test)]
+mod router_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use casper::rust::api::block_api::InvalidHashError;
+    use casper::rust::api::block_report_api::BlockReportAPI;
+    use casper::rust::engine::engine_cell::EngineCell;
+    use casper::rust::report_store::ReportStore;
+    use casper::rust::safety_oracle::CliqueOracleImpl;
+    use comm::rust::peer_node::{NodeIdentifier, PeerNode};
+    use comm::rust::rp::connect::ConnectionsCell;
+    use comm::rust::rp::rp_conf::{RPConf, RPConfCell};
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+    use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::rust::api::admin_web_api::AdminWebApi;
+    use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
+    use crate::rust::api::web_api::{
+        ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
+        DeployRequest, DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
+        PendingDeploysJson, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
+        ValidatorStatusResponse, ValidatorsResponse, VersionInfo, ViewMode, WebApi,
+    };
+
+    struct StubAdminWebApi;
+
+    #[async_trait::async_trait]
+    impl AdminWebApi for StubAdminWebApi {
+        async fn propose(&self) -> eyre::Result<String> { Ok("proposed".to_string()) }
+
+        async fn propose_result(&self) -> eyre::Result<String> { Ok("result".to_string()) }
+    }
+
+    struct StubNodeDiscovery;
+
+    #[async_trait::async_trait]
+    impl comm::rust::discovery::node_discovery::NodeDiscovery for StubNodeDiscovery {
+        async fn discover(&self) -> Result<(), comm::rust::errors::CommError> { Ok(()) }
+
+        fn peers(&self) -> Result<Vec<PeerNode>, comm::rust::errors::CommError> { Ok(vec![]) }
+
+        fn remove_peer(&self, _peer: &PeerNode) -> Result<(), comm::rust::errors::CommError> {
+            Ok(())
+        }
+    }
+
+    fn light_block() -> LightBlockInfoSerde {
+        LightBlockInfoSerde::from(models::casper::LightBlockInfo::default())
+    }
+
+    fn rho_data_response() -> RhoDataResponse {
+        RhoDataResponse {
+            expr: vec![RhoExpr::ExprInt { data: 11 }],
+            block: light_block(),
+            cost: 7,
+        }
+    }
+
+    fn block_info() -> BlockInfoSerde { BlockInfoSerde::from(models::casper::BlockInfo::default()) }
+
+    struct CannedWebApi;
+
+    #[async_trait::async_trait]
+    impl WebApi for CannedWebApi {
+        async fn status(&self) -> eyre::Result<ApiStatus> {
+            Ok(ApiStatus {
+                version: VersionInfo {
+                    api: "1".to_string(),
+                    node: "test-node".to_string(),
+                },
+                address: "f1r3fly://node".to_string(),
+                network_id: "testnet".to_string(),
+                shard_id: "root".to_string(),
+                peers: 1,
+                nodes: 2,
+                min_phlo_price: 1,
+                peer_list: vec![],
+                native_token_name: "F1R3".to_string(),
+                native_token_symbol: "F1R3".to_string(),
+                native_token_decimals: 8,
+                last_finalized_block_number: 5,
+                is_validator: false,
+                is_read_only: true,
+                is_ready: true,
+                current_epoch: 0,
+                epoch_length: 100,
+            })
+        }
+
+        async fn prepare_deploy(
+            &self,
+            request: Option<crate::rust::api::web_api::PrepareRequest>,
+        ) -> eyre::Result<PrepareResponse> {
+            Ok(PrepareResponse {
+                names: request.map(|r| vec![r.deployer]).unwrap_or_default(),
+                seq_number: 9,
+            })
+        }
+
+        async fn deploy(&self, _: DeployRequest) -> eyre::Result<String> {
+            Ok("deploy-accepted".to_string())
+        }
+
+        async fn get_data_at_par(
+            &self,
+            _: DataAtNameByBlockHashRequest,
+        ) -> eyre::Result<RhoDataResponse> {
+            Ok(rho_data_response())
+        }
+
+        async fn last_finalized_block(&self, _: ViewMode) -> eyre::Result<BlockInfoSerde> {
+            Ok(block_info())
+        }
+
+        async fn get_block(&self, _: String, _: ViewMode) -> eyre::Result<BlockInfoSerde> {
+            Ok(block_info())
+        }
+
+        async fn get_blocks(&self, depth: i32, _: ViewMode) -> eyre::Result<Vec<BlockInfoSerde>> {
+            Ok((0..depth.min(3)).map(|_| block_info()).collect())
+        }
+
+        async fn find_deploy(
+            &self,
+            _: String,
+            view: ViewMode,
+        ) -> eyre::Result<crate::rust::api::web_api::DeployResponse> {
+            Ok(super::tests::sample_deploy_response(view))
+        }
+
+        async fn exploratory_deploy(
+            &self,
+            _: String,
+            _: Option<String>,
+            _: bool,
+        ) -> eyre::Result<RhoDataResponse> {
+            Ok(rho_data_response())
+        }
+
+        async fn get_blocks_by_heights(
+            &self,
+            _: i64,
+            _: i64,
+            _: ViewMode,
+        ) -> eyre::Result<Vec<BlockInfoSerde>> {
+            Ok(vec![block_info()])
+        }
+
+        async fn is_finalized(&self, _: String) -> eyre::Result<bool> { Ok(true) }
+
+        async fn deploy_finalization_status(
+            &self,
+            _: String,
+        ) -> eyre::Result<DeployFinalizationStatusJson> {
+            Ok(DeployFinalizationStatusJson {
+                state: "Finalized".to_string(),
+                rejection_count: 0,
+                latest_block_hash: Some("aa".to_string()),
+            })
+        }
+
+        async fn get_pending_deploys(&self, _: Option<String>) -> eyre::Result<PendingDeploysJson> {
+            Ok(PendingDeploysJson {
+                deploys: vec![],
+                total_available: 0,
+            })
+        }
+
+        async fn get_balance(
+            &self,
+            address: String,
+            _: Option<String>,
+        ) -> eyre::Result<BalanceResponse> {
+            if address == "boom" {
+                return Err(eyre::Report::new(InvalidHashError(
+                    "bad block hash".to_string(),
+                )));
+            }
+            Ok(BalanceResponse {
+                address,
+                balance: 1000,
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_registry(
+            &self,
+            uri: String,
+            _: Option<String>,
+        ) -> eyre::Result<RegistryResponse> {
+            Ok(RegistryResponse {
+                uri,
+                data: vec![RhoExpr::ExprString {
+                    data: "registered".to_string(),
+                }],
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_validators(&self, _: Option<String>) -> eyre::Result<ValidatorsResponse> {
+            Ok(ValidatorsResponse {
+                validators: vec![ValidatorInfo {
+                    public_key: "vk".to_string(),
+                    stake: 10,
+                }],
+                total_stake: 10,
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_epoch(&self, _: Option<String>) -> eyre::Result<EpochResponse> {
+            Ok(EpochResponse {
+                current_epoch: 1,
+                epoch_length: 100,
+                quarantine_length: 50,
+                blocks_until_next_epoch: 42,
+                last_finalized_block_number: 158,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn estimate_cost(
+            &self,
+            _: String,
+            _: Option<String>,
+            deployer: Option<String>,
+        ) -> eyre::Result<EstimateCostResponse> {
+            Ok(EstimateCostResponse {
+                cost: 55,
+                block_number: 5,
+                block_hash: "aa".to_string(),
+                deployer_identity: if deployer.is_some() {
+                    DeployerIdentity::Provided
+                } else {
+                    DeployerIdentity::Ephemeral
+                },
+            })
+        }
+
+        async fn get_epoch_rewards(&self, _: Option<String>) -> eyre::Result<EpochRewardsResponse> {
+            Ok(EpochRewardsResponse {
+                rewards: RhoExpr::ExprInt { data: 3 },
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_validator(
+            &self,
+            pubkey: String,
+            _: Option<String>,
+        ) -> eyre::Result<ValidatorStatusResponse> {
+            Ok(ValidatorStatusResponse {
+                public_key: pubkey,
+                is_bonded: true,
+                stake: Some(10),
+                block_number: 5,
+                block_hash: "aa".to_string(),
+            })
+        }
+
+        async fn get_bond_status(&self, pubkey: String) -> eyre::Result<BondStatusResponse> {
+            Ok(BondStatusResponse {
+                public_key: pubkey,
+                is_bonded: false,
+            })
+        }
+    }
+
+    fn app_state() -> AppState {
+        let engine_cell = EngineCell::init();
+        let block_report_api = BlockReportAPI::new(
+            casper::rust::reporting_casper::noop(),
+            ReportStore::new(Arc::new(InMemoryKeyValueStore::new())),
+            engine_cell,
+            block_storage::rust::key_value_block_store::KeyValueBlockStore::new(
+                Arc::new(InMemoryKeyValueStore::new()),
+                Arc::new(InMemoryKeyValueStore::new()),
+            ),
+            CliqueOracleImpl,
+            false,
+        );
+
+        let local = PeerNode::new(
+            NodeIdentifier::new("0a0b0c".to_string()),
+            "localhost".to_string(),
+            40400,
+            40404,
+        );
+        let rp_conf = RPConf::new(
+            local,
+            "testnet".to_string(),
+            None,
+            Duration::from_secs(1),
+            8,
+            2,
+        );
+
+        let events = F1r3flyEvents::new();
+        let startup_events = events.startup_buffer();
+
+        AppState::new(
+            Arc::new(StubAdminWebApi),
+            Arc::new(CannedWebApi),
+            Arc::new(block_report_api),
+            RPConfCell::new(rp_conf),
+            Arc::new(ConnectionsCell::new()),
+            Arc::new(StubNodeDiscovery),
+            Arc::new(events.consume()),
+            startup_events,
+        )
+    }
+
+    fn router() -> Router { WebApiRoutes::create_router().with_state(app_state()) }
+
+    async fn get_response(uri: &str) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    async fn post_response(uri: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let response = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_route_reports_node_identity() {
+        let (status, json) = get_response("/status").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["networkId"], "testnet");
+        assert_eq!(json["shardId"], "root");
+        assert_eq!(json["isReady"], true);
+        assert_eq!(json["lastFinalizedBlockNumber"], 5);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_deploy_routes_answer_for_get_and_post() {
+        let (status, json) = get_response("/prepare-deploy").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["seqNumber"], 9);
+        assert!(json["names"].as_array().unwrap().is_empty());
+
+        let (status, json) = post_response(
+            "/prepare-deploy",
+            r#"{"deployer":"04aa","timestamp":1,"nameQty":1}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["names"][0], "04aa");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn prepare_deploy_post_rejects_malformed_body() {
+        let (status, json) = post_response("/prepare-deploy", r#"{"deployer": 42}"#).await;
+        assert!(status.is_client_error());
+        assert_eq!(json["error"], "invalid_request_body");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deploy_and_explore_deploy_routes_answer() {
+        let deploy_body = serde_json::json!({
+            "data": {
+                "term": "Nil",
+                "timestamp": 1,
+                "phloPrice": 1,
+                "phloLimit": 100,
+                "validAfterBlockNumber": 0,
+                "shardId": "root",
+            },
+            "deployer": "04aa",
+            "signature": "bb",
+            "sigAlgorithm": "secp256k1",
+        });
+        let (status, json) = post_response("/deploy", &deploy_body.to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json, serde_json::json!("deploy-accepted"));
+
+        let (status, json) = post_response("/explore-deploy", r#"{"term":"Nil"}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["cost"], 7);
+
+        let (status, json) = post_response(
+            "/explore-deploy-by-block-hash",
+            r#"{"term":"Nil","blockHash":"aabb"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["cost"], 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explore_deploy_by_block_hash_requires_block_hash() {
+        let (status, json) = post_response(
+            "/explore-deploy-by-block-hash",
+            r#"{"term":"Nil","blockHash":"  "}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "invalid_hash");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn data_at_name_by_block_hash_route_answers() {
+        let (status, json) = post_response(
+            "/data-at-name-by-block-hash",
+            r#"{"name":{"UnforgPrivate":{"data":"0102"}},"blockHash":"aabb"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["cost"], 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn block_routes_answer_in_both_views() {
+        let (status, json) = get_response("/last-finalized-block").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json.get("blockInfo").is_some());
+
+        let (status, _) = get_response("/last-finalized-block?view=summary").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _) = get_response("/block/aabbccddeeff").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, json) = get_response("/blocks").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 1);
+
+        let (status, json) = get_response("/blocks/3?view=full").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 3);
+
+        let (status, json) = get_response("/blocks/1/5").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blocks_route_rejects_non_integer_depth() {
+        let (status, json) = get_response("/blocks/not-a-number").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "invalid_path_parameter");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deploy_lookup_routes_answer() {
+        let (status, json) = get_response("/deploy/abc123def?view=summary").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["deployId"], "abc123def");
+        assert!(json.get("term").is_none());
+
+        let (status, json) = get_response("/is-finalized/aabb").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json, serde_json::json!(true));
+
+        let (status, json) = get_response("/deploy-finalization-status/ccdd").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["state"], "Finalized");
+
+        let (status, json) = get_response("/pending-deploys?deployer=04aa").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["totalAvailable"], 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn query_routes_answer() {
+        let (status, json) = get_response("/balance/wallet-address").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["balance"], 1000);
+
+        let (status, json) = get_response("/registry/rho:id:abc").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["uri"], "rho:id:abc");
+
+        let (status, json) = get_response("/validators").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["totalStake"], 10);
+
+        let (status, json) = get_response("/validator/04aa").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["isBonded"], true);
+
+        let (status, json) = get_response("/epoch").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["currentEpoch"], 1);
+
+        let (status, json) = get_response("/epoch/rewards").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["rewards"]["ExprInt"]["data"], 3);
+
+        let (status, json) = get_response("/bond-status/04aa").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["isBonded"], false);
+
+        let (status, json) =
+            post_response("/estimate-cost?block_hash=aa", r#"{"term":"Nil"}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["cost"], 55);
+        assert_eq!(json["deployerIdentity"], "ephemeral");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handler_errors_are_classified_json_responses() {
+        let (status, json) = get_response("/balance/boom").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"], "invalid_hash");
+        assert_eq!(json["message"], "bad block hash");
     }
 }

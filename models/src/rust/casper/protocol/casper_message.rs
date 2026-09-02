@@ -5050,6 +5050,46 @@ mod tests {
              ceremony's signed payload"
         );
     }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::TestRunner;
+
+    use super::*;
+    use crate::rust::block_implicits::{get_random_block_default, signed_deploy_data_gen};
+
+    type Bytes = prost::bytes::Bytes;
+
+    fn signed_deploy() -> Signed<DeployData> {
+        signed_deploy_data_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current()
+    }
+
+    fn produce_event() -> ProduceEvent {
+        ProduceEvent {
+            channels_hash: Bytes::from_static(b"chan"),
+            hash: Bytes::from_static(b"produce"),
+            persistent: true,
+            times_repeated: 2,
+            is_deterministic: false,
+            output_value: vec![Bytes::from_static(b"out")],
+            failed: true,
+        }
+    }
+
+    fn consume_event() -> ConsumeEvent {
+        ConsumeEvent {
+            channels_hashes: vec![Bytes::from_static(b"c1"), Bytes::from_static(b"c2")],
+            hash: Bytes::from_static(b"consume"),
+            persistent: false,
+        }
+    }
+
+    fn hash32(fill: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![fill; 32]) }
 
     #[test]
     fn rejected_deploy_decodes_legacy_wire_format() {
@@ -5060,5 +5100,432 @@ mod tests {
         assert_eq!(record.deploy_id(), b"sig");
         assert!(!record.is_duplicate());
         assert!(record.source_block_hash.is_empty());
+    }
+
+    #[test]
+    fn hash_addressed_messages_round_trip() {
+        let has_block = HasBlock {
+            hash: Bytes::from_static(b"h1"),
+        };
+        assert_eq!(
+            HasBlock::from_proto(has_block.clone().to_proto()),
+            has_block
+        );
+
+        let has_block_request = HasBlockRequest {
+            hash: Bytes::from_static(b"h2"),
+        };
+        assert_eq!(
+            HasBlockRequest::from_proto(has_block_request.clone().to_proto()),
+            has_block_request
+        );
+
+        let block_request = BlockRequest {
+            hash: Bytes::from_static(b"h3"),
+        };
+        assert_eq!(
+            BlockRequest::from_proto(block_request.clone().to_proto()),
+            block_request
+        );
+
+        let mergeable_request = MergeableEntryRequest {
+            block_hash: Bytes::from_static(b"h4"),
+        };
+        assert_eq!(
+            MergeableEntryRequest::from_proto(mergeable_request.clone().to_proto()),
+            mergeable_request
+        );
+
+        let mergeable_response = MergeableEntryResponse {
+            block_hash: Bytes::from_static(b"h5"),
+            serialized_entry: Bytes::from_static(b"entry"),
+        };
+        assert_eq!(
+            MergeableEntryResponse::from_proto(mergeable_response.clone().to_proto()),
+            mergeable_response
+        );
+    }
+
+    #[test]
+    fn identifier_messages_round_trip() {
+        let block_hash_message = BlockHashMessage {
+            block_hash: Bytes::from_static(b"hash"),
+            block_creator: Bytes::from_static(b"creator"),
+        };
+        assert_eq!(
+            BlockHashMessage::from_proto(block_hash_message.clone().to_proto()),
+            block_hash_message
+        );
+
+        let no_approved = NoApprovedBlockAvailable {
+            identifier: "id".to_string(),
+            node_identifier: "node".to_string(),
+        };
+        assert_eq!(
+            NoApprovedBlockAvailable::from_proto(no_approved.clone().to_proto()),
+            no_approved
+        );
+
+        let approved_request = ApprovedBlockRequest {
+            identifier: "id".to_string(),
+            trim_state: true,
+        };
+        assert_eq!(
+            ApprovedBlockRequest::from_proto(approved_request.clone().to_proto()),
+            approved_request
+        );
+
+        assert_eq!(
+            ForkChoiceTipRequest.to_proto(),
+            ForkChoiceTipRequestProto {}
+        );
+    }
+
+    #[test]
+    fn block_message_round_trips_through_proto() {
+        let block = get_random_block_default();
+        let round_tripped = BlockMessage::from_proto(block.to_proto()).unwrap();
+        assert_eq!(round_tripped, block);
+    }
+
+    #[test]
+    fn block_message_from_proto_requires_header_and_body() {
+        let block = get_random_block_default();
+
+        let mut missing_header = block.to_proto();
+        missing_header.header = None;
+        assert_eq!(
+            BlockMessage::from_proto(missing_header),
+            Err("Missing header field".to_string())
+        );
+
+        let mut missing_body = block.to_proto();
+        missing_body.body = None;
+        assert_eq!(
+            BlockMessage::from_proto(missing_body),
+            Err("Missing body field".to_string())
+        );
+    }
+
+    #[test]
+    fn block_message_to_string_pretty_prints() {
+        let block = get_random_block_default();
+        let rendered = block.clone().to_string();
+        assert!(rendered.contains(&format!("#{}", block.body.state.block_number)));
+    }
+
+    #[test]
+    fn unapproved_block_and_block_approval_round_trip() {
+        let block = get_random_block_default();
+        let candidate = ApprovedBlockCandidate {
+            block,
+            required_sigs: 3,
+        };
+
+        let unapproved = UnapprovedBlock {
+            candidate: candidate.clone(),
+            timestamp: 11,
+            duration: 22,
+        };
+        assert_eq!(
+            UnapprovedBlock::from_proto(unapproved.clone().to_proto()).unwrap(),
+            unapproved
+        );
+
+        let approval = BlockApproval {
+            candidate: candidate.clone(),
+            sig: Signature {
+                public_key: Bytes::from_static(b"pk"),
+                algorithm: "secp256k1".to_string(),
+                sig: Bytes::from_static(b"sig"),
+            },
+        };
+        assert_eq!(
+            BlockApproval::from_proto(approval.clone().to_proto()).unwrap(),
+            approval
+        );
+
+        assert_eq!(
+            BlockApproval::from_proto(BlockApprovalProto {
+                candidate: None,
+                sig: None,
+            }),
+            Err("Missing candidate field".to_string())
+        );
+        assert_eq!(
+            UnapprovedBlock::from_proto(UnapprovedBlockProto {
+                candidate: None,
+                timestamp: 0,
+                duration: 0,
+            }),
+            Err("Missing candidate field".to_string())
+        );
+    }
+
+    #[test]
+    fn events_round_trip_through_proto() {
+        let produce = Event::Produce(produce_event());
+        assert_eq!(Event::from_proto(produce.to_proto()).unwrap(), produce);
+
+        let consume = Event::Consume(consume_event());
+        assert_eq!(Event::from_proto(consume.to_proto()).unwrap(), consume);
+
+        let comm = Event::Comm(CommEvent {
+            consume: consume_event(),
+            produces: vec![produce_event()],
+            peeks: vec![Peek { channel_index: 4 }],
+        });
+        assert_eq!(Event::from_proto(comm.to_proto()).unwrap(), comm);
+    }
+
+    #[test]
+    fn empty_event_proto_is_rejected() {
+        assert_eq!(
+            Event::from_proto(EventProto {
+                event_instance: None,
+            }),
+            Err("Received malformed Event: None".to_string())
+        );
+    }
+
+    #[test]
+    fn processed_deploy_round_trips_and_derives_values() {
+        let deploy = signed_deploy();
+        let mut processed = ProcessedDeploy::empty(deploy.clone());
+        processed.cost = PCost { cost: 100 };
+        processed.deploy_log = vec![Event::Produce(produce_event())];
+        processed.is_failed = true;
+        processed.system_deploy_error = Some("boom".to_string());
+        assert_eq!(
+            ProcessedDeploy::from_proto(processed.clone().to_proto()).unwrap(),
+            processed
+        );
+
+        let empty = ProcessedDeploy::empty(deploy.clone());
+        assert_eq!(empty.cost, PCost { cost: 0 });
+        assert!(!empty.is_failed);
+        assert_eq!(empty.system_deploy_error, None);
+        assert_eq!(
+            ProcessedDeploy::from_proto(empty.clone().to_proto()).unwrap(),
+            empty
+        );
+
+        let info = processed.clone().to_deploy_info();
+        assert_eq!(info.term, deploy.data.term);
+        assert_eq!(info.cost, 100);
+        assert!(info.errored);
+        assert_eq!(info.system_deploy_error, "boom".to_string());
+        assert_eq!(info.sig, hex::encode(&deploy.sig));
+    }
+
+    #[test]
+    fn system_deploy_data_round_trips_all_variants() {
+        let slash = SystemDeployData::create_slash(
+            Bytes::from_static(b"invalid-block"),
+            PublicKey::from_bytes(b"issuer"),
+            5,
+            BondGeneration::new(2).unwrap(),
+        );
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(slash.clone())).unwrap(),
+            slash
+        );
+
+        let close = SystemDeployData::create_close();
+        assert_eq!(close, SystemDeployData::CloseBlockSystemDeployData);
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(close.clone())).unwrap(),
+            close
+        );
+
+        assert_eq!(
+            SystemDeployData::from_proto(SystemDeployData::to_proto(SystemDeployData::Empty)),
+            Err("Missing system deploy field".to_string())
+        );
+    }
+
+    #[test]
+    fn processed_system_deploy_round_trips_and_folds() {
+        let succeeded = ProcessedSystemDeploy::Succeeded {
+            event_list: vec![Event::Consume(consume_event())],
+            system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+            pre_state_hash: Bytes::from_static(b"before"),
+            post_state_hash: Bytes::from_static(b"after"),
+        };
+        assert_eq!(
+            ProcessedSystemDeploy::from_proto(succeeded.clone().to_proto()).unwrap(),
+            succeeded
+        );
+        assert!(!succeeded.clone().failed());
+        assert_eq!(succeeded.fold(|events| events.len(), |_, _| 999), 1);
+
+        let failed = ProcessedSystemDeploy::Failed {
+            event_list: vec![],
+            error_msg: "went wrong".to_string(),
+            pre_state_hash: Bytes::from_static(b"before"),
+            post_state_hash: Bytes::from_static(b"after"),
+        };
+        assert_eq!(
+            ProcessedSystemDeploy::from_proto(failed.clone().to_proto()).unwrap(),
+            failed
+        );
+        assert!(failed.clone().failed());
+        assert_eq!(
+            failed.fold(|_| "ok".to_string(), |_, msg| msg),
+            "went wrong".to_string()
+        );
+    }
+
+    #[test]
+    fn deploy_data_legacy_encoding_round_trips_compatibility_projection() {
+        let with_expiration = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 4,
+            shard_id: "root".to_string(),
+            expiration_timestamp: Some(500),
+            authority_presentations: Vec::new(),
+        };
+        let mut expected_with_expiration = with_expiration.clone();
+        expected_with_expiration.language.clear();
+        assert_eq!(
+            DeployData::decode(DeployData::encode(with_expiration.clone())).unwrap(),
+            expected_with_expiration
+        );
+
+        let without_expiration = DeployData {
+            expiration_timestamp: None,
+            ..with_expiration.clone()
+        };
+        let mut expected_without_expiration = without_expiration.clone();
+        expected_without_expiration.language.clear();
+        assert_eq!(
+            DeployData::decode(DeployData::encode(without_expiration.clone())).unwrap(),
+            expected_without_expiration
+        );
+
+        assert!(DeployData::decode(vec![0xff, 0xff, 0xff]).is_err());
+    }
+
+    #[test]
+    fn deploy_data_expiration_helpers() {
+        let mut deploy = DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        assert!(!deploy.has_expiration());
+        assert!(!deploy.is_expired_at(i64::MAX));
+
+        deploy.expiration_timestamp = Some(100);
+        assert!(deploy.has_expiration());
+        assert!(!deploy.is_expired_at(100));
+        assert!(deploy.is_expired_at(101));
+    }
+
+    #[test]
+    fn signed_deploy_data_survives_proto_round_trip() {
+        let signed = signed_deploy();
+        let round_tripped = DeployData::from_proto(DeployData::to_proto_ref(&signed)).unwrap();
+        assert_eq!(round_tripped.data, signed.data);
+        assert_eq!(round_tripped.sig, signed.sig);
+        assert_eq!(round_tripped.pk, signed.pk);
+    }
+
+    #[test]
+    fn deploy_data_from_proto_rejects_unknown_algorithm_and_bad_signature() {
+        let signed = signed_deploy();
+
+        let mut unknown_alg = DeployData::to_proto_ref(&signed);
+        unknown_alg.sig_algorithm = "no-such-alg".to_string();
+        assert!(DeployData::from_proto(unknown_alg)
+            .unwrap_err()
+            .contains("Unknown signature algorithm"));
+
+        let mut tampered = DeployData::to_proto_ref(&signed);
+        tampered.term = format!("{} ", tampered.term);
+        assert!(DeployData::from_proto(tampered).is_err());
+    }
+
+    #[test]
+    fn store_node_key_round_trips_with_and_without_index() {
+        let with_index = (hash32(1), Some(7u8));
+        assert_eq!(
+            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&with_index)),
+            with_index
+        );
+
+        let without_index = (hash32(2), None);
+        assert_eq!(
+            StoreNodeKey::from_proto(StoreNodeKey::to_proto(&without_index)),
+            without_index
+        );
+    }
+
+    #[test]
+    fn store_items_messages_round_trip() {
+        let request = StoreItemsMessageRequest {
+            start_path: vec![(hash32(1), Some(0)), (hash32(2), None)],
+            skip: 5,
+            take: 10,
+        };
+        assert_eq!(
+            StoreItemsMessageRequest::from_proto(request.clone().to_proto()),
+            request
+        );
+
+        let message = StoreItemsMessage {
+            start_path: vec![(hash32(1), None)],
+            last_path: vec![(hash32(2), Some(3))],
+            history_items: vec![(hash32(3), Bytes::from_static(b"history"))],
+            data_items: vec![(hash32(4), Bytes::from_static(b"data"))],
+        };
+        assert_eq!(
+            StoreItemsMessage::from_proto(message.clone().to_proto()),
+            message
+        );
+
+        let pretty = message.pretty();
+        assert!(pretty.starts_with("StoreItemsMessage(history: 1, data: 1"));
+    }
+
+    #[test]
+    fn casper_message_wrappers_tag_the_right_variant() {
+        let hash = Bytes::from_static(b"h");
+        assert_eq!(
+            CasperMessage::from_has_block(HasBlockProto { hash: hash.clone() }),
+            CasperMessage::HasBlock(HasBlock { hash: hash.clone() })
+        );
+        assert_eq!(
+            CasperMessage::from_has_block_request(HasBlockRequestProto { hash: hash.clone() }),
+            CasperMessage::HasBlockRequest(HasBlockRequest { hash: hash.clone() })
+        );
+        assert_eq!(
+            CasperMessage::from_block_request(BlockRequestProto { hash: hash.clone() }),
+            CasperMessage::BlockRequest(BlockRequest { hash: hash.clone() })
+        );
+        assert_eq!(
+            CasperMessage::from_fork_choice_tip_request(ForkChoiceTipRequestProto {}),
+            CasperMessage::ForkChoiceTipRequest(ForkChoiceTipRequest)
+        );
+
+        let block = get_random_block_default();
+        assert_eq!(
+            CasperMessage::from_block_message(block.to_proto()).unwrap(),
+            CasperMessage::BlockMessage(block)
+        );
+
+        let request = FloorCacheRequest {
+            hashes: vec![hash.clone()],
+        };
+        assert_eq!(
+            CasperMessage::from_floor_cache_request(request.clone().to_proto()),
+            CasperMessage::FloorCacheRequest(request)
+        );
     }
 }

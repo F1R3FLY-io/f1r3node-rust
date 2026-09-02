@@ -210,4 +210,110 @@ mod tests {
             "logs/ subdirectory should have been created inside data_dir"
         );
     }
+
+    #[test]
+    fn default_config_is_info_json_to_stdout_without_rotation() {
+        let cfg = LoggingConfig::default();
+        assert_eq!(cfg.filter, "info");
+        assert!(matches!(cfg.format, LogFormat::Json));
+        assert!(matches!(cfg.sink, LogSink::Stdout));
+        assert!(matches!(cfg.file.rotation, LogRotation::Never));
+        assert_eq!(cfg.file.retention, 0);
+    }
+
+    #[test]
+    fn config_enums_deserialize_from_lowercase_names() {
+        assert!(matches!(
+            serde_json::from_str::<LogFormat>("\"pretty\"").unwrap(),
+            LogFormat::Pretty
+        ));
+        assert!(matches!(
+            serde_json::from_str::<LogSink>("\"both\"").unwrap(),
+            LogSink::Both
+        ));
+        assert!(matches!(
+            serde_json::from_str::<LogRotation>("\"minutely\"").unwrap(),
+            LogRotation::Minutely
+        ));
+        assert!(serde_json::from_str::<LogFormat>("\"Pretty\"").is_err());
+
+        assert_eq!(serde_json::to_string(&LogSink::File).unwrap(), "\"file\"");
+        assert_eq!(
+            serde_json::to_string(&LogRotation::Daily).unwrap(),
+            "\"daily\""
+        );
+    }
+
+    #[test]
+    fn config_round_trips_through_json() {
+        let cfg = LoggingConfig {
+            filter: "debug,hyper=warn".to_string(),
+            format: LogFormat::Pretty,
+            sink: LogSink::Both,
+            file: LogFileConfig {
+                rotation: LogRotation::Hourly,
+                retention: 5,
+            },
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let decoded: LoggingConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.filter, cfg.filter);
+        assert!(matches!(decoded.format, LogFormat::Pretty));
+        assert!(matches!(decoded.sink, LogSink::Both));
+        assert!(matches!(decoded.file.rotation, LogRotation::Hourly));
+        assert_eq!(decoded.file.retention, 5);
+    }
+
+    #[test]
+    fn make_file_writer_supports_every_rotation_and_retention() {
+        for rotation in [
+            LogRotation::Never,
+            LogRotation::Minutely,
+            LogRotation::Hourly,
+            LogRotation::Daily,
+        ] {
+            let data_dir = tempdir().expect("tempdir");
+            let cfg = LogFileConfig {
+                rotation,
+                retention: 3,
+            };
+            let (_writer, _guard) =
+                make_file_writer(data_dir.path(), &cfg).expect("make_file_writer");
+            assert!(data_dir.path().join("logs").is_dir(), "{rotation:?}");
+        }
+    }
+
+    #[test]
+    fn init_with_file_sink_requires_a_data_dir() {
+        let cfg = LoggingConfig {
+            sink: LogSink::File,
+            ..LoggingConfig::default()
+        };
+        let err = match init(&cfg, None) {
+            Ok(_) => panic!("init without data_dir should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("no data directory"), "{err}");
+    }
+
+    // The global subscriber can be installed only once per process, so every
+    // interaction with it stays inside this single test.
+    #[test]
+    fn init_installs_subscriber_once_and_init_for_tests_is_idempotent() {
+        let data_dir = tempdir().expect("tempdir");
+        let cfg = LoggingConfig {
+            sink: LogSink::Both,
+            format: LogFormat::Pretty,
+            ..LoggingConfig::default()
+        };
+
+        let _guards = init(&cfg, Some(data_dir.path())).expect("first init");
+        assert!(data_dir.path().join("logs").is_dir());
+        tracing::info!("subscriber installed");
+
+        assert!(init(&cfg, Some(data_dir.path())).is_err());
+
+        init_for_tests();
+        init_for_tests();
+    }
 }

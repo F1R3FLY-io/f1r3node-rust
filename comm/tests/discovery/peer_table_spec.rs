@@ -448,3 +448,157 @@ mod tests {
         assert_eq!(final_peers[0], peer1_updated);
     }
 }
+
+/// Test implementation of KademliaRPC whose pings always fail
+struct KademliaRPCFailingStub;
+
+#[async_trait]
+impl KademliaRPC for KademliaRPCFailingStub {
+    async fn ping(&self, _peer: &PeerNode) -> Result<bool, CommError> { Ok(false) }
+
+    async fn lookup(&self, _key: &[u8], _peer: &PeerNode) -> Result<Vec<PeerNode>, CommError> {
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn create_peer_with_id(id: &[u8]) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(id.to_vec()),
+            },
+            endpoint: endpoint(),
+        }
+    }
+
+    #[test]
+    fn alpha_returns_concurrency_factor() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0u8]),
+            None,
+            Some(5),
+            Arc::new(KademliaRPCStub),
+        );
+        assert_eq!(table.alpha(), 5);
+
+        let default_table = PeerTable::new(
+            Bytes::from(vec![0u8]),
+            None,
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+        assert_eq!(default_table.alpha(), 3);
+    }
+
+    #[test]
+    fn distance_returns_none_for_mismatched_key_width() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0u8]),
+            None,
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+        assert_eq!(table.distance_other_key(&Bytes::from(vec![0u8, 1u8])), None);
+    }
+
+    #[test]
+    fn lookup_with_mismatched_key_width_returns_empty() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0u8]),
+            None,
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+        let result = table.lookup(&Bytes::from(vec![0u8, 1u8])).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lookup_scans_closer_buckets_when_far_ones_lack_peers() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0b00000000u8]),
+            Some(20),
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+
+        let far_peer = create_peer_with_id(&[0b10000000u8]);
+        let near_peer = create_peer_with_id(&[0b00000010u8]);
+        table.update_last_seen(&far_peer).await.unwrap();
+        table.update_last_seen(&near_peer).await.unwrap();
+
+        let lookup_key = Bytes::from(vec![0b00010000u8]);
+        let result = table.lookup(&lookup_key).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&far_peer));
+        assert!(result.contains(&near_peer));
+    }
+
+    #[tokio::test]
+    async fn full_bucket_keeps_old_peer_when_ping_succeeds() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0b00000000u8]),
+            Some(1),
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+
+        let old_peer = create_peer_with_id(&[0b10000001u8]);
+        let new_peer = create_peer_with_id(&[0b10000010u8]);
+        table.update_last_seen(&old_peer).await.unwrap();
+        table.update_last_seen(&new_peer).await.unwrap();
+
+        let peers = table.peers().unwrap();
+        assert_eq!(peers, vec![old_peer]);
+    }
+
+    #[tokio::test]
+    async fn full_bucket_replaces_old_peer_when_ping_fails() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0b00000000u8]),
+            Some(1),
+            None,
+            Arc::new(KademliaRPCFailingStub),
+        );
+
+        let old_peer = create_peer_with_id(&[0b10000001u8]);
+        let new_peer = create_peer_with_id(&[0b10000010u8]);
+        table.update_last_seen(&old_peer).await.unwrap();
+        table.update_last_seen(&new_peer).await.unwrap();
+
+        let peers = table.peers().unwrap();
+        assert_eq!(peers, vec![new_peer]);
+    }
+
+    #[tokio::test]
+    async fn remove_with_mismatched_key_width_is_a_noop() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0u8]),
+            None,
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+        let peer = create_peer_with_id(&[0b10000001u8]);
+        table.update_last_seen(&peer).await.unwrap();
+
+        table.remove(&Bytes::from(vec![0u8, 1u8])).unwrap();
+        assert_eq!(table.peers().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn find_with_mismatched_key_width_returns_none() {
+        let table = PeerTable::new(
+            Bytes::from(vec![0u8]),
+            None,
+            None,
+            Arc::new(KademliaRPCStub),
+        );
+        assert!(table.find(&Bytes::from(vec![0u8, 1u8])).unwrap().is_none());
+    }
+}

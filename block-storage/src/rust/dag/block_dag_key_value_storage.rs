@@ -67,6 +67,7 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use super::block_metadata_store::BlockMetadataStore;
+use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
@@ -249,6 +250,10 @@ pub struct KeyValueDagRepresentation {
     /// these — Pending/Finalized/Expired/Failed are lookups, never
     /// computations.
     pub lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// The repeat-deploy carrier index (see `carrier_index`): per-sig
+    /// carrier records over valid, invalid, and settled blocks, plus the
+    /// engagement watermark. Fed by `insert` before DAG visibility.
+    pub carrier_index: Arc<PlRwLock<CarrierIndex>>,
 }
 
 impl KeyValueDagRepresentation {
@@ -517,10 +522,38 @@ impl KeyValueDagRepresentation {
         self.lifecycle.read().open_sigs()
     }
 
+    /// Repeat-deploy carrier index: the height since which every insert
+    /// has recorded carriers on this database. The fast path engages only
+    /// for scan windows starting at or above this watermark; `None` means
+    /// the index was never initialized and the fast path stays off.
+    pub fn carrier_index_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().watermark()
+    }
+
+    /// Repeat-deploy carrier index: true when the index holds NO carrier
+    /// for the sig. Sound as an absence proof only when the scan window
+    /// starts at or above the watermark. A `false` is not a verdict — it
+    /// routes the sig to the exact ancestor scan.
+    pub fn carrier_index_proves_absence(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<bool, KvStoreError> {
+        self.carrier_index.read().proves_absence(deploy_id)
+    }
+
+    /// Repeat-deploy carrier index: drop entries below the cutoff (below
+    /// every future scan window). The finality register drives this on
+    /// floor advances.
+    pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
+        self.carrier_index.write().prune_below(cutoff)
+    }
+
     /// The sig's most recent canonical appearance — the latest lifecycle
     /// event by (height, hash), or the terminal record's frozen display
     /// block once the row is pruned. A pure function of the DAG's bodies,
-    /// so the answer never depends on node-local insertion order.
+    /// so the answer never depends on node-local insertion order. Events
+    /// whose block is not in this representation's `dag_set` are orphans
+    /// from a crash inside the ingest-first window and never resolve.
     pub fn deploy_canonical_appearance(
         &self,
         deploy_id: &DeployLookupId,
@@ -528,7 +561,9 @@ impl KeyValueDagRepresentation {
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(deploy_id)?
+            .canonical_appearance(deploy_id, &|h| {
+                self.dag_set.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
     }
 
@@ -1318,6 +1353,8 @@ pub struct BlockDagKeyValueStorage {
     >,
     pub(crate) finalization_ledger: FinalizationLedger,
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
+    pub(crate) carrier_index: Arc<PlRwLock<CarrierIndex>>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
@@ -1398,16 +1435,64 @@ fn predecessor_certificate_carrier_digest(
 impl BlockDagKeyValueStorage {
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
-    /// than a representation.
+    /// than a representation. Lock order: `block_metadata_index` before
+    /// `lifecycle` (the DAG-visibility filter reads the metadata state).
     pub fn deploy_canonical_appearance(
         &self,
         deploy_id: &DeployLookupId,
     ) -> Result<Option<BlockHash>, KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(deploy_id)?
+            .canonical_appearance(deploy_id, &|h| {
+                metadata_guard.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
+    }
+
+    /// First-boot carrier-index initialization (startup, next to the
+    /// LFB-migration precedent). Writes the watermark W once: 0 on an
+    /// empty database (complete from the first insert), else the current
+    /// maximum stored block number + 1 (complete from the next insert). Blocks below W are
+    /// never claimed — the fast path engages only for scan windows that
+    /// start at or above W — so no backfill walk exists and there is no
+    /// walk-completeness state to certify or to forge. Returns the
+    /// effective watermark.
+    pub fn ensure_carrier_watermark(&self) -> Result<i64, KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let next_height = {
+            let metadata_guard = self.block_metadata_index.read();
+            let dag_state_guard = metadata_guard.dag_state().read();
+            dag_state_guard
+                .block_number_map
+                .values()
+                .copied()
+                .max()
+                .map_or(Ok(0), |height| {
+                    height.checked_add(1).ok_or_else(|| {
+                        KvStoreError::InvalidArgument(
+                            "carrier watermark height exceeds i64".to_string(),
+                        )
+                    })
+                })?
+        };
+        self.carrier_index
+            .write()
+            .set_watermark_if_absent(next_height)
+    }
+
+    /// Test-only corruption helper (P2-16-style escape hatch): deletes the
+    /// PERSISTED metadata row for a block while the in-memory DAG state
+    /// still lists it, simulating a crash between the lifecycle ingest and
+    /// the metadata add.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn remove_block_metadata_row_for_tests(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
+        metadata_guard.delete_kv_row_for_tests(hash)
     }
 
     pub async fn new(kvm: &mut (impl KeyValueStoreManager + ?Sized)) -> Result<Self, KvStoreError> {
@@ -1433,6 +1518,12 @@ impl BlockDagKeyValueStorage {
         let lifecycle_events_kv_store = kvm.store("deploy-lifecycle-events".to_string()).await?;
         let lifecycle_terminal_kv_store =
             kvm.store("deploy-lifecycle-terminal".to_string()).await?;
+        let carrier_index_kv_store = kvm.store("carrier-index".to_string()).await?;
+        let carrier_index_meta_kv_store = kvm.store("carrier-index-meta".to_string()).await?;
+        let carrier_index_tables = CarrierIndex::new(
+            carrier_index_kv_store.clone(),
+            carrier_index_meta_kv_store.clone(),
+        );
 
         let schema_key = "casper-v6".to_string();
         match admission_schema_db.get_one(&schema_key)? {
@@ -1460,6 +1551,8 @@ impl BlockDagKeyValueStorage {
                     ),
                     ("deploy-lifecycle-events", &lifecycle_events_kv_store),
                     ("deploy-lifecycle-terminal", &lifecycle_terminal_kv_store),
+                    ("carrier-index", &carrier_index_kv_store),
+                    ("carrier-index-meta", &carrier_index_meta_kv_store),
                 ];
                 for (name, store) in existing_indices {
                     if store.non_empty()? {
@@ -1559,6 +1652,7 @@ impl BlockDagKeyValueStorage {
             equivocation_evidence_index: equivocation_evidence_db,
             finalization_ledger,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
+            carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
@@ -1889,6 +1983,7 @@ impl BlockDagKeyValueStorage {
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
+            carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             dag_generation,
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
@@ -2024,6 +2119,7 @@ impl BlockDagKeyValueStorage {
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
             lifecycle: self.lifecycle.clone(),
+            carrier_index: self.carrier_index.clone(),
         })
     }
 
@@ -2491,12 +2587,40 @@ impl BlockDagKeyValueStorage {
             let (key, value) = metadata_guard.encode_add(&block_metadata)?;
             (key, value, metadata_guard.raw_store().clone())
         };
+        let carrier_guard = self.carrier_index.write();
+        let carrier_ids = block
+            .body
+            .deploys
+            .iter()
+            .map(|deploy| {
+                deploy
+                    .deploy_id_for_protocol(block.header.version)
+                    .map_err(KvStoreError::InvalidArgument)
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
         let mut owned_mutations: Vec<(Arc<dyn KeyValueStore>, Vec<u8>, AtomicStoreOperation)> =
-            vec![(
-                metadata_store,
-                metadata_key,
-                AtomicStoreOperation::PutIfAbsentOrEqual(metadata_value),
-            )];
+            Vec::new();
+        for deploy_id in carrier_ids {
+            if let Some((key, expected, replacement)) = carrier_guard.prepare_record_once(
+                &deploy_id,
+                block.body.state.block_number,
+                block.block_hash.to_vec(),
+            )? {
+                owned_mutations.push((
+                    carrier_guard.raw_store().clone(),
+                    key,
+                    AtomicStoreOperation::CompareAndSwap {
+                        expected,
+                        replacement: Some(replacement),
+                    },
+                ));
+            }
+        }
+        owned_mutations.push((
+            metadata_store,
+            metadata_key,
+            AtomicStoreOperation::PutIfAbsentOrEqual(metadata_value),
+        ));
 
         if !invalid {
             let source_block_hash: [u8; 32] =
@@ -2736,6 +2860,7 @@ impl BlockDagKeyValueStorage {
                 .collect::<Vec<_>>();
             commit_admission_mutations(block.header.version, &mutations)?;
         }
+        drop(carrier_guard);
 
         if !block_exists {
             self.block_metadata_index
@@ -3414,6 +3539,95 @@ fn commit_admission_mutations(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod admission_commit_tests {
+    use models::rust::deploy_id::{DeployLookupId, LegacyDeploySignature};
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    use super::*;
+
+    #[test]
+    fn legacy_carrier_first_failure_routes_conservatively_and_retry_is_duplicate_free() {
+        let carrier_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let carrier_meta: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let metadata_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let lifecycle_store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let index = CarrierIndex::new(carrier_store.clone(), carrier_meta);
+        let deploy_id =
+            DeployLookupId::Legacy(LegacyDeploySignature::new(b"legacy-deploy".to_vec()));
+        let metadata_key = b"legacy-block-metadata".to_vec();
+        let lifecycle_key = b"legacy-deploy-lifecycle".to_vec();
+        metadata_store
+            .put_one(metadata_key.clone(), b"injected-conflict".to_vec())
+            .unwrap();
+        let (carrier_key, carrier_expected, carrier_replacement) = index
+            .prepare_record_once(&deploy_id, 7, vec![0x41; 32])
+            .unwrap()
+            .unwrap();
+        let mutations = [
+            AtomicStoreMutation {
+                store: carrier_store.as_ref(),
+                key: carrier_key,
+                operation: AtomicStoreOperation::CompareAndSwap {
+                    expected: carrier_expected,
+                    replacement: Some(carrier_replacement),
+                },
+            },
+            AtomicStoreMutation {
+                store: metadata_store.as_ref(),
+                key: metadata_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"metadata".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: lifecycle_store.as_ref(),
+                key: lifecycle_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"lifecycle".to_vec()),
+            },
+        ];
+
+        assert!(matches!(
+            commit_admission_mutations(5, &mutations),
+            Err(KvStoreError::TransactionConflict(_))
+        ));
+        assert!(!index.proves_absence(&deploy_id).unwrap());
+        assert_eq!(
+            metadata_store.get_one(&metadata_key).unwrap(),
+            Some(b"injected-conflict".to_vec())
+        );
+        assert_eq!(lifecycle_store.get_one(&lifecycle_key).unwrap(), None);
+
+        metadata_store.delete(vec![metadata_key.clone()]).unwrap();
+        assert!(index
+            .prepare_record_once(&deploy_id, 7, vec![0x41; 32])
+            .unwrap()
+            .is_none());
+        let retry = [
+            AtomicStoreMutation {
+                store: metadata_store.as_ref(),
+                key: metadata_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"metadata".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: lifecycle_store.as_ref(),
+                key: lifecycle_key.clone(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"lifecycle".to_vec()),
+            },
+        ];
+        commit_admission_mutations(5, &retry).unwrap();
+
+        assert_eq!(
+            metadata_store.get_one(&metadata_key).unwrap(),
+            Some(b"metadata".to_vec())
+        );
+        assert_eq!(
+            lifecycle_store.get_one(&lifecycle_key).unwrap(),
+            Some(b"lifecycle".to_vec())
+        );
+        assert_eq!(index.prune_below(8).unwrap(), 1);
+        assert!(index.proves_absence(&deploy_id).unwrap());
+    }
 }
 
 #[cfg(test)]

@@ -195,6 +195,9 @@ fn dag_with_finalized_sibling(
         floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
+        carrier_index: Arc::new(PlRwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     }
 }
 

@@ -487,6 +487,15 @@ impl DeployLifecycle {
                 hash: adopted_hash,
                 block_number: adopted_number,
             });
+            // Carrier-index retention: entries below the adopted floor
+            // minus the lifespan sit below every future scan window
+            // (earliest = maxParent + 1 − lifespan, and parents sit above
+            // the floor). The prune is strided inside the index, so most
+            // advances no-op. A failure must not affect the verdict path —
+            // retention is an optimization, never consensus input.
+            if let Err(e) = dag.prune_carriers_below(adopted_number - deploy_lifespan) {
+                tracing::warn!("carrier-index prune failed (retention only): {}", e);
+            }
         }
 
         // Due: crossed thresholds plus the block's own touched sigs.
@@ -693,7 +702,20 @@ fn evaluate(
     Ok(())
 }
 
-pub(crate) fn lifecycle_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
+/// Display fields for a terminal record, frozen from the event row it
+/// prunes: every distinct record block counts toward `rejection_count`, and
+/// the latest DAG-VISIBLE inclusion event names the sig's most recent
+/// canonical appearance. The visibility filter matters here because the
+/// terminal record outlives the row: an orphan event from a crash inside
+/// the ingest-first insert window must not freeze into a write-once
+/// record that `canonical_appearance` then returns unfiltered forever.
+/// A rejection record's block does not carry the deploy — a
+/// record-carrier here sends every consumer that fetches the named block
+/// looking for a deploy that is not in it.
+fn frozen_display(
+    row: &LifecycleEvents,
+    is_visible: &dyn Fn(&[u8]) -> bool,
+) -> (u32, i64, Vec<u8>) {
     let rejection_count = row
         .events
         .iter()
@@ -707,7 +729,9 @@ pub(crate) fn lifecycle_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
         .events
         .iter()
         .filter_map(|event| match &event.kind {
-            LifecycleEventKind::Rejected { carrier, .. } if !carrier.is_empty() => {
+            LifecycleEventKind::Rejected { carrier, .. }
+                if !carrier.is_empty() && is_visible(&event.block_hash) =>
+            {
                 Some(carrier.as_slice())
             }
             _ => None,
@@ -720,6 +744,7 @@ pub(crate) fn lifecycle_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
             matches!(event.kind, LifecycleEventKind::Included { .. })
                 && !rejected_carriers.contains(event.block_hash.as_slice())
         })
+        .filter(|e| is_visible(&e.block_hash))
         .max_by(|a, b| {
             a.height
                 .cmp(&b.height)
@@ -730,7 +755,9 @@ pub(crate) fn lifecycle_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
     (rejection_count, latest_height, latest_block_hash)
 }
 
-fn frozen_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) { lifecycle_display(row) }
+pub(crate) fn lifecycle_display(row: &LifecycleEvents) -> (u32, i64, Vec<u8>) {
+    frozen_display(row, &|_| true)
+}
 
 fn write_terminal(
     dag: &KeyValueDagRepresentation,
@@ -742,7 +769,9 @@ fn write_terminal(
     finalization_revision: u64,
     terminalized: &mut Vec<DeployLookupId>,
 ) -> Result<(), CasperError> {
-    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row);
+    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row, &|hash| {
+        dag.contains(&prost::bytes::Bytes::copy_from_slice(hash))
+    });
     let record = TerminalRecord {
         state,
         rejection_count,
@@ -1136,7 +1165,15 @@ mod tests {
             ],
         };
 
-        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row);
+        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row, &|_| true);
+        assert_eq!(rejection_count, 1);
+
+        let (_, orphan_height, orphan_hash) = frozen_display(&row, &|_| false);
+        assert_eq!(
+            (orphan_height, orphan_hash),
+            (0, Vec::new()),
+            "a never-DAG-visible inclusion must not freeze into the display"
+        );
         assert_eq!(rejection_count, 1);
         assert_eq!(
             (latest_height, latest_block_hash),
@@ -1144,6 +1181,37 @@ mod tests {
             "the height-20 record event must not displace the inclusion \
              carrier from the frozen display"
         );
+    }
+
+    #[test]
+    fn orphan_rejection_does_not_hide_a_visible_inclusion() {
+        use block_storage::rust::dag::deploy_lifecycle_types::{
+            LifecycleEvent, LifecycleEventKind, LifecycleEvents,
+        };
+
+        let inclusion = vec![0x41u8; 32];
+        let orphan_record = vec![0x42u8; 32];
+        let row = LifecycleEvents {
+            valid_after: Some(1),
+            events: vec![
+                LifecycleEvent {
+                    height: 10,
+                    block_hash: inclusion.clone(),
+                    kind: LifecycleEventKind::Included { is_failed: false },
+                },
+                LifecycleEvent {
+                    height: 11,
+                    block_hash: orphan_record,
+                    kind: LifecycleEventKind::Rejected {
+                        duplicate: false,
+                        carrier: inclusion.clone(),
+                    },
+                },
+            ],
+        };
+
+        let display = frozen_display(&row, &|hash| hash == inclusion.as_slice());
+        assert_eq!(display, (1, 10, inclusion));
     }
 
     #[test]
@@ -1187,7 +1255,7 @@ mod tests {
             ],
         };
 
-        assert_eq!(frozen_display(&row), (1, 10, surviving));
+        assert_eq!(lifecycle_display(&row), (1, 10, surviving));
     }
 
     /// genesis(0) <- a(1, fresh sig_a) <- m(2, base=a, applied sig_b):

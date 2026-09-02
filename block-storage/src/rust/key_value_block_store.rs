@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use models::casper::{ApprovedBlockProto, BlockMessageProto, FinalizationCertificateProto};
 use models::rust::block_hash::BlockHash;
@@ -10,7 +10,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, FinalizationCertificate,
 };
-use models::rust::deploy_id::DeployIdV6;
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use prost::Message;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
@@ -21,6 +21,7 @@ pub struct KeyValueBlockStore {
     store_approved_block: Arc<dyn KeyValueStore>,
     store_finalization_certificates: Option<Arc<dyn KeyValueStore>>,
     verified_finalization_certificates: Arc<Mutex<(HashSet<BlockHash>, VecDeque<BlockHash>)>>,
+    deploy_id_cache: Arc<Mutex<DeployIdCache>>,
     approved_block_key: [u8; 1],
 }
 
@@ -34,7 +35,7 @@ impl KeyValueBlockStore {
     // long-lived memory retention from repeatedly decoding block payloads.
     const DECOMPRESS_BUFFER_RETAIN_BYTES: usize = 65_536;
     const MAX_STORED_BLOCK_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
-    const DEPLOY_SIG_CACHE_MAX_ENTRIES: usize = 1_024;
+    const DEPLOY_ID_CACHE_MAX_ENTRIES: usize = 1_024;
     const DEPLOY_ID_PROTOCOL_VERSION: i64 = 6;
     const MIN_LEGACY_DEPLOY_SIG_BYTES: usize = 32;
 
@@ -58,6 +59,7 @@ impl KeyValueBlockStore {
                 HashSet::new(),
                 VecDeque::new(),
             ))),
+            deploy_id_cache: Arc::new(Mutex::new(DeployIdCache::default())),
             approved_block_key: [42],
         }
     }
@@ -75,6 +77,7 @@ impl KeyValueBlockStore {
                 HashSet::new(),
                 VecDeque::new(),
             ))),
+            deploy_id_cache: Arc::new(Mutex::new(DeployIdCache::default())),
             approved_block_key: [42],
         })
     }
@@ -131,6 +134,7 @@ impl KeyValueBlockStore {
     /// Fast path used by deploy scans to avoid full BlockMessage conversion.
     /// A block that is not stored reports `false` — callers that cannot treat
     /// an unread block as an answer want `has_any_deploy_sig_strict`.
+    #[cfg(any(test, feature = "test-internals"))]
     pub fn has_any_deploy_sig(
         &self,
         block_hash: &BlockHash,
@@ -147,6 +151,7 @@ impl KeyValueBlockStore {
     /// carry the sig", so conflating the two admits the repeat it exists to
     /// reject — and after an LFS restore the DAG legitimately knows about
     /// blocks whose bodies were never downloaded.
+    #[cfg(any(test, feature = "test-internals"))]
     pub fn has_any_deploy_sig_strict(
         &self,
         block_hash: &BlockHash,
@@ -162,6 +167,7 @@ impl KeyValueBlockStore {
     }
 
     /// `None` when the block is not in the store; `Some(has_any)` otherwise.
+    #[cfg(any(test, feature = "test-internals"))]
     fn has_any_deploy_sig_opt(
         &self,
         block_hash: &BlockHash,
@@ -170,36 +176,39 @@ impl KeyValueBlockStore {
         if deploy_sigs.is_empty() {
             return Ok(Some(false));
         }
-        let key = block_hash.to_vec();
-        if let Some(has_any) = Self::cached_has_any_deploy_sig(&key, deploy_sigs) {
-            return Ok(Some(has_any));
+        Ok(self.deploy_ids_opt(block_hash)?.map(|block_deploy_ids| {
+            block_deploy_ids
+                .iter()
+                .any(|deploy_id| deploy_sigs.contains(deploy_id.as_bytes()))
+        }))
+    }
+
+    pub fn has_any_deploy_id_strict(
+        &self,
+        block_hash: &BlockHash,
+        deploy_ids: &HashSet<DeployLookupId>,
+    ) -> Result<bool, KvStoreError> {
+        if deploy_ids.is_empty() {
+            return Ok(false);
         }
-
-        let bytes = match self.store.get_one(&key)? {
-            Some(bytes) => bytes,
-            None => return Ok(None),
-        };
-
-        let (protocol_version, body) = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        let mut has_any = false;
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
+        if !self.contains_key(block_hash)? {
+            return Err(KvStoreError::KeyNotFound(format!(
+                "BlockStore is missing hash: {}",
+                PrettyPrinter::build_string_bytes(block_hash),
+            )));
+        }
+        self.deploy_ids_opt(block_hash)?
+            .map(|block_deploy_ids| {
+                block_deploy_ids
+                    .iter()
+                    .any(|deploy_id| deploy_ids.contains(deploy_id))
+            })
+            .ok_or_else(|| {
+                KvStoreError::KeyNotFound(format!(
+                    "BlockStore is missing hash: {}",
+                    PrettyPrinter::build_string_bytes(block_hash),
                 ))
-            })?;
-            let deploy_id = Self::wire_deploy_id(protocol_version, deploy).map_err(|cause| {
-                KvStoreError::SerializationError(Self::error_block(block_hash.clone(), cause))
-            })?;
-            if deploy_sigs.contains(&deploy_id) {
-                has_any = true;
-            }
-            block_deploy_sigs.push(deploy_id);
-        }
-        Self::cache_deploy_sigs(key, block_deploy_sigs);
-        Ok(Some(has_any))
+            })
     }
 
     /// Fetch kept rejected-deploy identities without decoding a full block.
@@ -208,6 +217,7 @@ impl KeyValueBlockStore {
     /// redundant copy and does not dispute the identity's standing win, so
     /// disposition readers skip it. Most blocks have none; only multi-parent
     /// merge blocks that dropped a conflicting deploy populate this list.
+    #[cfg(any(test, feature = "test-internals"))]
     pub fn rejected_deploy_sigs(
         &self,
         block_hash: &BlockHash,
@@ -232,39 +242,50 @@ impl KeyValueBlockStore {
     }
 
     /// Fetch protocol-selected deploy identities without decoding a full block.
-    /// Uses the same bounded shared cache as `has_any_deploy_sig`.
+    /// Uses the same bounded shared cache as the typed deploy lookup.
+    #[cfg(any(test, feature = "test-internals"))]
     pub fn deploy_sigs(
         &self,
         block_hash: &BlockHash,
     ) -> Result<Option<Vec<Vec<u8>>>, KvStoreError> {
+        Ok(self.deploy_ids_opt(block_hash)?.map(|deploy_ids| {
+            deploy_ids
+                .into_iter()
+                .map(|deploy_id| deploy_id.as_bytes().to_vec())
+                .collect()
+        }))
+    }
+
+    fn deploy_ids_opt(
+        &self,
+        block_hash: &BlockHash,
+    ) -> Result<Option<Vec<DeployLookupId>>, KvStoreError> {
         let key = block_hash.to_vec();
-        if let Some(cached) = Self::cached_deploy_sigs(&key) {
+        if let Some(cached) = self.cached_deploy_ids(&key) {
             return Ok(Some(cached));
         }
-
         let bytes = match self.store.get_one(&key)? {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
-
         let (protocol_version, body) = Self::decode_block_deploy_sigs(&bytes)?;
-        let mut block_deploy_sigs = Vec::with_capacity(body.deploys.len());
-        for processed_deploy in body.deploys {
-            let deploy = processed_deploy.deploy.ok_or_else(|| {
-                KvStoreError::SerializationError(Self::error_block(
-                    block_hash.clone(),
-                    "Missing deploy field".to_string(),
-                ))
-            })?;
-            block_deploy_sigs.push(Self::wire_deploy_id(protocol_version, deploy).map_err(
-                |cause| {
+        let deploy_ids = body
+            .deploys
+            .into_iter()
+            .map(|processed_deploy| {
+                let deploy = processed_deploy.deploy.ok_or_else(|| {
+                    KvStoreError::SerializationError(Self::error_block(
+                        block_hash.clone(),
+                        "Missing deploy field".to_string(),
+                    ))
+                })?;
+                Self::wire_deploy_lookup_id(protocol_version, deploy).map_err(|cause| {
                     KvStoreError::SerializationError(Self::error_block(block_hash.clone(), cause))
-                },
-            )?);
-        }
-
-        Self::cache_deploy_sigs(key, block_deploy_sigs.clone());
-        Ok(Some(block_deploy_sigs))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.cache_deploy_ids(key, deploy_ids.clone());
+        Ok(Some(deploy_ids))
     }
 
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
@@ -495,6 +516,20 @@ impl KeyValueBlockStore {
             .unwrap_or(false))
     }
 
+    #[cfg(any(test, feature = "test-internals"))]
+    #[doc(hidden)]
+    pub fn remove_block_for_tests(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        let key = block_hash.to_vec();
+        let removed = self.store.delete(vec![key.clone()])? > 0;
+        let mut cache = self
+            .deploy_id_cache
+            .lock()
+            .map_err(|error| KvStoreError::LockError(error.to_string()))?;
+        cache.entries.remove(&key);
+        cache.order.retain(|cached| cached != &key);
+        Ok(removed)
+    }
+
     fn error_approved_block(cause: String) -> String {
         format!("Approved block decoding error. Cause: {}", cause)
     }
@@ -665,6 +700,21 @@ impl KeyValueBlockStore {
         }
     }
 
+    fn wire_deploy_lookup_id(
+        protocol_version: i64,
+        deploy: BlockDeploySigsDeploy,
+    ) -> Result<DeployLookupId, String> {
+        let raw = Self::wire_deploy_id(protocol_version, deploy)?;
+        if protocol_version >= Self::DEPLOY_ID_PROTOCOL_VERSION {
+            DeployIdV6::try_from(raw.as_slice())
+                .map(DeployLookupId::V6)
+                .map_err(|error| error.to_string())
+        } else {
+            Ok(DeployLookupId::Legacy(LegacyDeploySignature::new(raw)))
+        }
+    }
+
+    #[cfg(any(test, feature = "test-internals"))]
     fn wire_rejected_deploy_id(
         protocol_version: i64,
         rejected: BlockDeploySigsRejectedDeploy,
@@ -701,28 +751,17 @@ impl KeyValueBlockStore {
         Self::compress_bytes(&block_proto.encode_to_vec())
     }
 
-    fn cached_has_any_deploy_sig(
-        block_hash: &[u8],
-        deploy_sigs: &HashSet<Vec<u8>>,
-    ) -> Option<bool> {
-        let cache = Self::deploy_sig_cache().lock().ok()?;
-        cache
-            .entries
-            .get(block_hash)
-            .map(|cached_sigs| cached_sigs.iter().any(|sig| deploy_sigs.contains(sig)))
-    }
-
-    fn cached_deploy_sigs(block_hash: &[u8]) -> Option<Vec<Vec<u8>>> {
-        let cache = Self::deploy_sig_cache().lock().ok()?;
+    fn cached_deploy_ids(&self, block_hash: &[u8]) -> Option<Vec<DeployLookupId>> {
+        let cache = self.deploy_id_cache.lock().ok()?;
         cache.entries.get(block_hash).cloned()
     }
 
-    fn cache_deploy_sigs(block_hash: Vec<u8>, deploy_sigs: Vec<Vec<u8>>) {
-        let max_entries = Self::max_deploy_sig_cache_entries();
+    fn cache_deploy_ids(&self, block_hash: Vec<u8>, deploy_ids: Vec<DeployLookupId>) {
+        let max_entries = Self::max_deploy_id_cache_entries();
         if max_entries == 0 {
             return;
         }
-        if let Ok(mut cache) = Self::deploy_sig_cache().lock() {
+        if let Ok(mut cache) = self.deploy_id_cache.lock() {
             if !cache.entries.contains_key(&block_hash) {
                 cache.order.push_back(block_hash.clone());
                 while cache.order.len() > max_entries {
@@ -731,18 +770,13 @@ impl KeyValueBlockStore {
                     }
                 }
             }
-            cache.entries.insert(block_hash, deploy_sigs);
+            cache.entries.insert(block_hash, deploy_ids);
         }
-    }
-
-    fn deploy_sig_cache() -> &'static Mutex<DeploySigCache> {
-        static CACHE: OnceLock<Mutex<DeploySigCache>> = OnceLock::new();
-        CACHE.get_or_init(|| Mutex::new(DeploySigCache::default()))
     }
 
     fn decode_buffer_retain_bytes() -> usize { Self::DECOMPRESS_BUFFER_RETAIN_BYTES }
 
-    fn max_deploy_sig_cache_entries() -> usize { Self::DEPLOY_SIG_CACHE_MAX_ENTRIES }
+    fn max_deploy_id_cache_entries() -> usize { Self::DEPLOY_ID_CACHE_MAX_ENTRIES }
 
     #[cfg(test)]
     fn block_proto_decode_buffer_capacity_for_test() -> usize {
@@ -764,8 +798,8 @@ impl KeyValueBlockStore {
 }
 
 #[derive(Default)]
-struct DeploySigCache {
-    entries: HashMap<Vec<u8>, Vec<Vec<u8>>>,
+struct DeployIdCache {
+    entries: HashMap<Vec<u8>, Vec<DeployLookupId>>,
     order: VecDeque<Vec<u8>>,
 }
 
@@ -1452,6 +1486,14 @@ mod tests {
         assert!(bs
             .has_any_deploy_sig(&block.block_hash, &HashSet::from([deploy_id.clone()]))
             .unwrap());
+        let v6_lookup = DeployLookupId::V6(DeployIdV6::try_from(deploy_id.as_slice()).unwrap());
+        let legacy_alias = DeployLookupId::Legacy(LegacyDeploySignature::new(deploy_id.clone()));
+        assert!(bs
+            .has_any_deploy_id_strict(&block.block_hash, &HashSet::from([v6_lookup]))
+            .unwrap());
+        assert!(!bs
+            .has_any_deploy_id_strict(&block.block_hash, &HashSet::from([legacy_alias]))
+            .unwrap());
         assert_eq!(
             bs.deploy_sigs(&block.block_hash).unwrap(),
             Some(vec![deploy_id])
@@ -1529,11 +1571,26 @@ mod tests {
                 prop_assert_eq!(
                     identity,
                     if protocol_version >= KeyValueBlockStore::DEPLOY_ID_PROTOCOL_VERSION {
-                        envelope
+                        envelope.clone()
                     } else {
-                        legacy
+                        legacy.clone()
                     }
                 );
+            }
+            let typed = KeyValueBlockStore::wire_deploy_lookup_id(
+                protocol_version,
+                BlockDeploySigsDeploy {
+                    sig: legacy.clone(),
+                    deploy_id: envelope.clone(),
+                },
+            );
+            prop_assert_eq!(typed.is_ok(), expected);
+            if let Ok(identity) = typed {
+                if protocol_version >= KeyValueBlockStore::DEPLOY_ID_PROTOCOL_VERSION {
+                    prop_assert!(matches!(identity, DeployLookupId::V6(_)));
+                } else {
+                    prop_assert!(matches!(identity, DeployLookupId::Legacy(_)));
+                }
             }
         }
 
@@ -1668,6 +1725,189 @@ mod tests {
         );
     }
 
+    fn random_block() -> BlockMessage {
+        block_element_gen(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current()
+    }
+
+    #[tokio::test]
+    async fn create_from_kvm_round_trips_blocks_and_approved_block() {
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let bs = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let block = random_block();
+
+        assert!(!bs.contains(&block.block_hash).unwrap());
+        assert!(!bs.contains_key(&block.block_hash).unwrap());
+
+        bs.put_block_message(&block).unwrap();
+        assert!(bs.contains(&block.block_hash).unwrap());
+        assert!(bs.contains_key(&block.block_hash).unwrap());
+        assert_eq!(bs.get(&block.block_hash).unwrap(), Some(block.clone()));
+        assert_eq!(bs.get_unsafe(&block.block_hash), block);
+
+        assert_eq!(bs.get_approved_block().unwrap(), None);
+        let approved = to_approved_block(block);
+        bs.put_approved_block(&approved).unwrap();
+        assert_eq!(bs.get_approved_block().unwrap(), Some(approved));
+    }
+
+    #[tokio::test]
+    async fn strict_typed_lookup_rejects_a_cached_block_whose_body_disappears() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let mut block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(5),
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        block.header.version = 5;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let bs = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        bs.put_block_message(&block).unwrap();
+        let deploy_id =
+            DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.deploy.sig.to_vec()));
+        let deploy_ids = HashSet::from([deploy_id]);
+
+        assert!(bs
+            .has_any_deploy_id_strict(&block.block_hash, &deploy_ids)
+            .unwrap());
+        assert_eq!(bs.store.delete(vec![block.block_hash.to_vec()]).unwrap(), 1);
+        assert!(matches!(
+            bs.has_any_deploy_id_strict(&block.block_hash, &deploy_ids),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn get_reports_a_serialization_error_for_corrupt_stored_bytes() {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(100, &mut bytes);
+        bytes.extend_from_slice(&[0xFF, 0x00, 0xAB]);
+        let kv = MockKeyValueStore::new(Some(bytes));
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        let result = bs.get(&BlockHash::from(vec![0xD1; 32]));
+        assert!(matches!(result, Err(KvStoreError::SerializationError(_))));
+    }
+
+    #[test]
+    fn get_approved_block_reports_a_serialization_error_for_corrupt_bytes() {
+        let kv = MockKeyValueStore::new(Some(vec![0xFF; 8]));
+        let bs = KeyValueBlockStore::new(Arc::new(NotImplementedKV), Arc::new(kv));
+
+        let result = bs.get_approved_block();
+        assert!(matches!(result, Err(KvStoreError::SerializationError(_))));
+    }
+
+    #[test]
+    fn has_any_deploy_sig_with_an_empty_sig_set_never_touches_the_store() {
+        let bs = KeyValueBlockStore::new(Arc::new(NotImplementedKV), Arc::new(NotImplementedKV));
+        let hash = BlockHash::from(vec![0xD2; 32]);
+
+        assert!(!bs.has_any_deploy_sig(&hash, &HashSet::new()).unwrap());
+        assert!(!bs
+            .has_any_deploy_sig_strict(&hash, &HashSet::new())
+            .unwrap());
+    }
+
+    #[test]
+    fn a_missing_block_is_false_for_lenient_and_an_error_for_strict() {
+        let sigs = HashSet::from([vec![1u8; 64]]);
+        let hash = BlockHash::from(vec![0xD3; 32]);
+
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(None)),
+            Arc::new(NotImplementedKV),
+        );
+        assert!(!bs.has_any_deploy_sig(&hash, &sigs).unwrap());
+
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(None)),
+            Arc::new(NotImplementedKV),
+        );
+        assert!(matches!(
+            bs.has_any_deploy_sig_strict(&hash, &sigs),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn deploy_sigs_returns_the_block_sigs_and_caches_them() {
+        let deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        let mut block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        block.header.version = 5;
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let kv = MockKeyValueStore::new(Some(block_bytes));
+        let input_keys = Arc::clone(&kv.input_keys);
+        let bs = KeyValueBlockStore::new(Arc::new(kv), Arc::new(NotImplementedKV));
+
+        let sigs = bs.deploy_sigs(&block.block_hash).unwrap();
+        assert_eq!(sigs, Some(vec![deploy.deploy.sig.to_vec()]));
+
+        let cached = bs.deploy_sigs(&block.block_hash).unwrap();
+        assert_eq!(cached, Some(vec![deploy.deploy.sig.to_vec()]));
+        assert_eq!(
+            input_keys.lock().unwrap().len(),
+            1,
+            "the second lookup must be served from the cache"
+        );
+
+        let missing_store = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(None)),
+            Arc::new(NotImplementedKV),
+        );
+        assert_eq!(missing_store.deploy_sigs(&block.block_hash).unwrap(), None);
+        let lookup = DeployLookupId::Legacy(LegacyDeploySignature::new(deploy.deploy.sig.to_vec()));
+        assert!(matches!(
+            missing_store.has_any_deploy_id_strict(&block.block_hash, &HashSet::from([lookup])),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
     #[test]
     fn deploy_signature_index_length_is_rejected_before_decompression_allocation() {
         let mut bytes = Vec::new();
@@ -1677,5 +1917,101 @@ mod tests {
         );
         let error = KeyValueBlockStore::decode_block_deploy_sigs(&bytes).unwrap_err();
         assert!(error.to_string().contains("exceeding the protocol limit"));
+    }
+
+    #[test]
+    fn rejected_deploy_sigs_keeps_only_non_duplicate_records() {
+        use models::rust::casper::protocol::casper_message::{
+            RejectedDeploy, RejectedDeployReason,
+        };
+        use models::rust::deploy_id::LegacyDeploySignature;
+
+        let mut block = random_block();
+        block.header.version = 5;
+        let kept_sig = vec![0xAA; 70];
+        let duplicate_sig = vec![0xBB; 70];
+        let carrier = BlockHash::from(vec![0xCC; 32]);
+        block.body.rejected_deploys = vec![
+            RejectedDeploy::occurrence_legacy(
+                LegacyDeploySignature::new(kept_sig.clone()),
+                carrier.clone(),
+                RejectedDeployReason::MergeConflict,
+            ),
+            RejectedDeploy::occurrence_legacy(
+                LegacyDeploySignature::new(duplicate_sig),
+                carrier,
+                RejectedDeployReason::DuplicateOccurrence,
+            ),
+        ];
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(Some(block_bytes))),
+            Arc::new(NotImplementedKV),
+        );
+
+        assert_eq!(
+            bs.rejected_deploy_sigs(&block.block_hash).unwrap(),
+            Some(vec![kept_sig])
+        );
+
+        let missing_store = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(None)),
+            Arc::new(NotImplementedKV),
+        );
+        assert_eq!(
+            missing_store
+                .rejected_deploy_sigs(&BlockHash::from(vec![0xD5; 32]))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_short_deploy_sig_is_a_serialization_error() {
+        let mut deploy = processed_deploy_gen()
+            .new_tree(&mut TestRunner::default())
+            .unwrap()
+            .current();
+        deploy.deploy.sig = prost::bytes::Bytes::from(vec![1u8; 4]);
+        let mut block = block_element_gen(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+        )
+        .new_tree(&mut TestRunner::default())
+        .unwrap()
+        .current();
+        block.header.version = 5;
+        let block_bytes = KeyValueBlockStore::block_proto_to_bytes(&block.to_proto());
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(Some(block_bytes.clone()))),
+            Arc::new(NotImplementedKV),
+        );
+
+        let sigs = HashSet::from([vec![9u8; 64]]);
+        assert!(matches!(
+            bs.has_any_deploy_sig(&block.block_hash, &sigs),
+            Err(KvStoreError::SerializationError(_))
+        ));
+
+        let bs = KeyValueBlockStore::new(
+            Arc::new(MockKeyValueStore::new(Some(block_bytes))),
+            Arc::new(NotImplementedKV),
+        );
+        assert!(matches!(
+            bs.deploy_sigs(&block.block_hash),
+            Err(KvStoreError::SerializationError(_))
+        ));
     }
 }

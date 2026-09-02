@@ -193,6 +193,48 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "raw-byte identity failed for the wrong reason (see $LOG_DIR/deploy_identity_tlc_unsafe.log)"
   fi
+  if tlc_run "$(tlc_metadir carrier_index_post_gate)" "$RECOVERY_TLA_DIR/MC_CarrierIndexSoundness.cfg" "$RECOVERY_TLA_DIR/CarrierIndexSoundness.tla" >"$LOG_DIR/carrier_index_tlc_post.log" 2>&1; then
+    pass "TLA+ carrier index preserves typed, atomic, pruned, and cached scan semantics"
+    rm -f "$LOG_DIR/carrier_index_tlc_post.log"
+  else
+    fail "TLA+ carrier-index soundness did NOT pass (see $LOG_DIR/carrier_index_tlc_post.log)"
+  fi
+
+  carrier_index_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/CarrierIndexSoundness.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_raw_key_unsafe \
+    "Inv_ExactScanUsesTypedIdentity is violated" \
+    "raw-key exact scan"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_non_atomic_unsafe \
+    "Inv_WatermarkCoverage is violated" \
+    "metadata-first carrier publication"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_prune_gate_unsafe \
+    "Inv_FastPathIsSound is violated" \
+    "pruned-window fast-path admission"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_cached_missing_body_unsafe \
+    "Inv_MissingBodyIsUnknown is violated" \
+    "cached identity without a stored block body"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_valid_height_watermark_unsafe \
+    "Inv_WatermarkCoversPreexistingDomain is violated" \
+    "valid-only carrier watermark domain"
   if tlc_run "$(tlc_metadir protocol_deploy_ingress_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_tlc.log" 2>&1; then
     pass "TLA+ deploy ingress preserves protocol domains and captured-tip window soundness"
     rm -f "$LOG_DIR/protocol_deploy_ingress_tlc.log"
@@ -728,6 +770,69 @@ if command -v apalache-mc >/dev/null 2>&1; then
   else
     fail "raw-byte deploy identity failed for the wrong reason under Apalache (see $deploy_identity_unsafe_log)"
   fi
+
+  carrier_index_safe_log="$LOG_DIR/carrier_index_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/carrier-index-safe" \
+      check \
+      --config=MC_CarrierIndexSoundness.cfg \
+      --length=4 \
+      CarrierIndexSoundness.tla) >"$carrier_index_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$carrier_index_safe_log"; then
+    pass "Apalache carrier-index refinement is safe through length 4"
+    rm -f "$carrier_index_safe_log"
+  else
+    fail "Apalache carrier-index refinement failed (see $carrier_index_safe_log)"
+  fi
+
+  carrier_index_apalache_negative_control() {
+    local config="$1"
+    local length="$2"
+    local invariant="$3"
+    local label="$4"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length="$length" \
+        CarrierIndexSoundness.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q "$invariant" "$log" \
+        && grep -q 'state invariant 0 violated' "$log" \
+        && grep -q 'The outcome is: Error' "$log"; then
+      pass "$label reproduces its Apalache counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_raw_key_unsafe \
+    1 \
+    Inv_ExactScanUsesTypedIdentity \
+    "raw-key exact scan"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_non_atomic_unsafe \
+    3 \
+    Inv_WatermarkCoverage \
+    "metadata-first carrier publication"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_prune_gate_unsafe \
+    5 \
+    Inv_FastPathIsSound \
+    "pruned-window fast-path admission"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_cached_missing_body_unsafe \
+    2 \
+    Inv_MissingBodyIsUnknown \
+    "cached identity without a stored block body"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_valid_height_watermark_unsafe \
+    2 \
+    Inv_WatermarkCoversPreexistingDomain \
+    "valid-only carrier watermark domain"
   rm -rf "$apalache_out"
 else
   skip "no apalache-mc on PATH"

@@ -225,6 +225,9 @@ fn empty_dag() -> KeyValueDagRepresentation {
         floor_index: floor_store,
         frontier_index: frontier_store,
         lifecycle: Arc::new(RwLock::new(DeployLifecycleTables::in_memory())),
+        carrier_index: Arc::new(RwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     }
 }
 

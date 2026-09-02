@@ -73,10 +73,42 @@ and proves that the equal-payload identity in the other domain remains active.
 The raw-key control removes the protocol tag and reproduces cross-domain
 erasure in one transition.
 
+The repeat-deploy carrier index and its exact-scan fallback are consumers of
+this result. Both paths must retain the protocol tag after block-body decoding.
+An index or scan that compares only payload bytes implements the unsafe control.
+
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
 | `MC_DeployIdentitySeparation.cfg` | pass | protocol-tagged identities isolate equal byte payloads under either rejection order |
 | `MC_DeployIdentitySeparation_raw_key_unsafe.cfg` | violate `Inv_CrossDomainRejectionIsolation` | an untagged byte key lets a legacy rejection erase v6 state, or the reverse |
+
+`CarrierIndexSoundness.tla` composes typed identity with carrier completeness.
+Two validators initialize one watermark and cache block identities in
+independent orders. The model also interleaves admission, body loss, cache population, and
+pruning. Protocol-v6 admission is atomic. Legacy admission can stop after its
+carrier-first staging step without publishing metadata.
+The initial database contains a valid block and a higher invalid block.
+The watermark uses all stored block numbers because both blocks are carriers.
+
+The safe model checks these obligations:
+
+- Published blocks above the watermark and pruning cutoff have carrier rows.
+- The watermark exceeds each stored block that predates the index.
+- An index absence above both gates implies truth-level absence.
+- A decisive fast-path result equals the exact result.
+- A missing body produces `unknown`, not `fresh`.
+- A cached identity does not replace a missing stored body.
+- Parallel validators agree whenever both validators have decisive results.
+- Cached identities are authentic and retain their protocol tags.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_CarrierIndexSoundness.cfg` | pass | typed, atomic, watermark-gated, and pruning-gated fast-path refinement |
+| `MC_CarrierIndexSoundness_raw_key_unsafe.cfg` | violate `Inv_ExactScanUsesTypedIdentity` | equal legacy and v6 payload bytes alias in the exact scan |
+| `MC_CarrierIndexSoundness_non_atomic_unsafe.cfg` | violate `Inv_WatermarkCoverage` | metadata publication can precede its carrier row |
+| `MC_CarrierIndexSoundness_prune_gate_unsafe.cfg` | violate `Inv_FastPathIsSound` | a scan below the pruning cutoff can treat a removed carrier as absent |
+| `MC_CarrierIndexSoundness_cached_missing_body_unsafe.cfg` | violate `Inv_MissingBodyIsUnknown` | a stale decoded-identity cache substitutes for a missing stored block body |
+| `MC_CarrierIndexSoundness_valid_height_watermark_unsafe.cfg` | violate `Inv_WatermarkCoversPreexistingDomain` | a valid-only maximum skips a higher invalid carrier that predates the index |
 
 `ProtocolDeployIngress.tla` closes the pending-pool boundary. Protocol v6
 admits only authenticated envelope identities. Pre-v6 protocols admit only

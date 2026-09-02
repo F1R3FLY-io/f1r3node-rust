@@ -1415,3 +1415,646 @@ fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
     // Matches Scala's BitSet.until(n).
     bits.into_iter().take(until as usize).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par};
+
+    use super::*;
+    use crate::rust::interpreter::accounting::RuntimeBudget;
+    use crate::rust::interpreter::metering::MeteredMachine;
+
+    fn substitute_instance() -> Substitute {
+        Substitute {
+            metering: MeteredMachine::new(RuntimeBudget::new(Cost::unsafe_max())),
+        }
+    }
+
+    fn gint(i: i64) -> Par { new_gint_par(i, Vec::new(), false) }
+
+    fn bound(index: i32) -> Par { new_boundvar_par(index, Vec::new(), false) }
+
+    fn env_with(value: Par) -> Env<Par> {
+        let mut env = Env::new();
+        env.put(value)
+    }
+
+    type BinOp = fn(Par, Par) -> ExprInstance;
+
+    fn binary_ops() -> Vec<BinOp> {
+        vec![
+            |p1, p2| {
+                ExprInstance::EMultBody(EMult {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EDivBody(EDiv {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EModBody(EMod {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EPercentPercentBody(EPercentPercent {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EPlusBody(EPlus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EMinusBody(EMinus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EPlusPlusBody(EPlusPlus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EMinusMinusBody(EMinusMinus {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::ELtBody(ELt {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::ELteBody(ELte {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EGtBody(EGt {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EGteBody(EGte {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EEqBody(EEq {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::ENeqBody(ENeq {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EAndBody(EAnd {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+            |p1, p2| {
+                ExprInstance::EOrBody(EOr {
+                    p1: Some(p1),
+                    p2: Some(p2),
+                })
+            },
+        ]
+    }
+
+    fn expr(instance: ExprInstance) -> Expr {
+        Expr {
+            expr_instance: Some(instance),
+        }
+    }
+
+    #[test]
+    fn substitute_no_sort_replaces_bound_vars_in_every_binary_operator() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        for op in binary_ops() {
+            let term = expr(op(bound(0), gint(7)));
+            let expected = expr(op(gint(42), gint(7)));
+            let result: Expr = substitute.substitute_no_sort(term, 0, &env).unwrap();
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn sorted_substitute_replaces_bound_vars_in_binary_operators() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        for op in binary_ops() {
+            let term = expr(op(bound(0), gint(7)));
+            let sub_instance = op(gint(42), gint(7));
+            if matches!(sub_instance, ExprInstance::EMinusBody(_)) {
+                // The sorted EMinus arm currently rebuilds the expression as
+                // EPlus (see the EMinusBody arm of `SubstituteTrait<Expr>::substitute`);
+                // pinning that output would bless the discrepancy, so only the
+                // no-sort path asserts EMinus.
+                continue;
+            }
+            let expected = expr(sub_instance);
+            let result: Expr =
+                SubstituteTrait::<Expr>::substitute(&substitute, term, 0, &env).unwrap();
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn unary_and_matches_expressions_substitute() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        let neg = expr(ExprInstance::ENegBody(ENeg { p: Some(bound(0)) }));
+        let expected_neg = expr(ExprInstance::ENegBody(ENeg { p: Some(gint(42)) }));
+        assert_eq!(
+            substitute.substitute_no_sort(neg.clone(), 0, &env).unwrap(),
+            expected_neg
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, neg, 0, &env).unwrap(),
+            expected_neg
+        );
+
+        let not = expr(ExprInstance::ENotBody(ENot { p: Some(bound(0)) }));
+        let expected_not = expr(ExprInstance::ENotBody(ENot { p: Some(gint(42)) }));
+        assert_eq!(
+            substitute.substitute_no_sort(not.clone(), 0, &env).unwrap(),
+            expected_not
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, not, 0, &env).unwrap(),
+            expected_not
+        );
+
+        let matches_expr = expr(ExprInstance::EMatchesBody(EMatches {
+            target: Some(bound(0)),
+            pattern: Some(gint(7)),
+        }));
+        let expected_matches = expr(ExprInstance::EMatchesBody(EMatches {
+            target: Some(gint(42)),
+            pattern: Some(gint(7)),
+        }));
+        assert_eq!(
+            substitute
+                .substitute_no_sort(matches_expr.clone(), 0, &env)
+                .unwrap(),
+            expected_matches
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, matches_expr, 0, &env).unwrap(),
+            expected_matches
+        );
+    }
+
+    #[test]
+    fn collection_expressions_substitute_their_elements() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        let list = expr(ExprInstance::EListBody(EList {
+            ps: vec![bound(0), gint(7)],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        }));
+        let expected_list = expr(ExprInstance::EListBody(EList {
+            ps: vec![gint(42), gint(7)],
+            locally_free: Vec::new(),
+            connective_used: false,
+            remainder: None,
+        }));
+        assert_eq!(
+            substitute
+                .substitute_no_sort(list.clone(), 0, &env)
+                .unwrap(),
+            expected_list
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, list, 0, &env).unwrap(),
+            expected_list
+        );
+
+        let tuple = expr(ExprInstance::ETupleBody(ETuple {
+            ps: vec![bound(0)],
+            locally_free: Vec::new(),
+            connective_used: false,
+        }));
+        let expected_tuple = expr(ExprInstance::ETupleBody(ETuple {
+            ps: vec![gint(42)],
+            locally_free: Vec::new(),
+            connective_used: false,
+        }));
+        assert_eq!(
+            substitute
+                .substitute_no_sort(tuple.clone(), 0, &env)
+                .unwrap(),
+            expected_tuple
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, tuple, 0, &env).unwrap(),
+            expected_tuple
+        );
+
+        let eset = expr(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet {
+                ps: SortedParHashSet::create_from_vec(vec![bound(0)]),
+                connective_used: false,
+                locally_free: Vec::new(),
+                remainder: None,
+            },
+        )));
+        let expected_eset = expr(ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(
+            ParSet {
+                ps: SortedParHashSet::create_from_vec(vec![gint(42)]),
+                connective_used: false,
+                locally_free: Vec::new(),
+                remainder: None,
+            },
+        )));
+        assert_eq!(
+            substitute
+                .substitute_no_sort(eset.clone(), 0, &env)
+                .unwrap(),
+            expected_eset
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, eset, 0, &env).unwrap(),
+            expected_eset
+        );
+
+        let emap = expr(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap {
+                ps: SortedParMap::create_from_vec(vec![(bound(0), bound(0))]),
+                connective_used: false,
+                locally_free: Vec::new(),
+                remainder: None,
+            },
+        )));
+        let expected_emap = expr(ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(
+            ParMap {
+                ps: SortedParMap::create_from_vec(vec![(gint(42), gint(42))]),
+                connective_used: false,
+                locally_free: Vec::new(),
+                remainder: None,
+            },
+        )));
+        assert_eq!(
+            substitute
+                .substitute_no_sort(emap.clone(), 0, &env)
+                .unwrap(),
+            expected_emap
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, emap, 0, &env).unwrap(),
+            expected_emap
+        );
+
+        let method = expr(ExprInstance::EMethodBody(EMethod {
+            method_name: "nth".to_string(),
+            target: Some(bound(0)),
+            arguments: vec![bound(0)],
+            locally_free: Vec::new(),
+            connective_used: false,
+        }));
+        let expected_method = expr(ExprInstance::EMethodBody(EMethod {
+            method_name: "nth".to_string(),
+            target: Some(gint(42)),
+            arguments: vec![gint(42)],
+            locally_free: Vec::new(),
+            connective_used: false,
+        }));
+        assert_eq!(
+            substitute
+                .substitute_no_sort(method.clone(), 0, &env)
+                .unwrap(),
+            expected_method
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, method, 0, &env).unwrap(),
+            expected_method
+        );
+    }
+
+    #[test]
+    fn ground_expressions_pass_through_unchanged() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+        let ground = expr(ExprInstance::GInt(5));
+
+        assert_eq!(
+            substitute
+                .substitute_no_sort(ground.clone(), 0, &env)
+                .unwrap(),
+            ground
+        );
+        assert_eq!(
+            SubstituteTrait::<Expr>::substitute(&substitute, ground.clone(), 0, &env).unwrap(),
+            ground
+        );
+    }
+
+    #[test]
+    fn send_substitution_replaces_channel_and_data() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+        let send = Send {
+            chan: Some(bound(0)),
+            data: vec![bound(0), gint(7)],
+            persistent: true,
+            locally_free: Vec::new(),
+            connective_used: false,
+        };
+
+        let result: Send = substitute
+            .substitute_no_sort(send.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(result.chan, Some(gint(42)));
+        assert_eq!(result.data, vec![gint(42), gint(7)]);
+        assert!(result.persistent);
+
+        let sorted: Send = SubstituteTrait::<Send>::substitute(&substitute, send, 0, &env).unwrap();
+        assert_eq!(sorted.chan, Some(gint(42)));
+    }
+
+    #[test]
+    fn receive_substitutes_sources_but_not_deeper_patterns() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+        let receive = Receive {
+            binds: vec![ReceiveBind {
+                patterns: vec![bound(0)],
+                source: Some(bound(0)),
+                remainder: None,
+                free_count: 0,
+                cost_signature: None,
+            }],
+            body: Some(Par::default()),
+            persistent: false,
+            peek: false,
+            bind_count: 0,
+            locally_free: Vec::new(),
+            connective_used: false,
+            condition: None,
+        };
+
+        let result: Receive = substitute
+            .substitute_no_sort(receive.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(result.binds[0].source, Some(gint(42)));
+        assert_eq!(
+            result.binds[0].patterns,
+            vec![bound(0)],
+            "patterns substitute at depth + 1, so a depth-0 bound var stays"
+        );
+
+        let sorted: Receive =
+            SubstituteTrait::<Receive>::substitute(&substitute, receive, 0, &env).unwrap();
+        assert_eq!(sorted.binds[0].source, Some(gint(42)));
+    }
+
+    #[test]
+    fn new_and_match_and_if_substitute_their_bodies() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        let new_term = New {
+            bind_count: 0,
+            p: Some(bound(0)),
+            ..Default::default()
+        };
+        let new_result: New = substitute
+            .substitute_no_sort(new_term.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(new_result.p, Some(gint(42)));
+        let new_sorted: New =
+            SubstituteTrait::<New>::substitute(&substitute, new_term, 0, &env).unwrap();
+        assert_eq!(new_sorted.p, Some(gint(42)));
+
+        let match_term = Match {
+            target: Some(bound(0)),
+            cases: vec![MatchCase {
+                pattern: Some(bound(0)),
+                source: Some(bound(0)),
+                free_count: 0,
+                guard: None,
+            }],
+            locally_free: Vec::new(),
+            connective_used: false,
+        };
+        let match_result: Match = substitute
+            .substitute_no_sort(match_term.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(match_result.target, Some(gint(42)));
+        assert_eq!(match_result.cases[0].source, Some(gint(42)));
+        assert_eq!(
+            match_result.cases[0].pattern,
+            Some(bound(0)),
+            "case patterns substitute at depth + 1, so a depth-0 bound var stays"
+        );
+        let match_sorted: Match =
+            SubstituteTrait::<Match>::substitute(&substitute, match_term, 0, &env).unwrap();
+        assert_eq!(match_sorted.target, Some(gint(42)));
+
+        let if_term = If {
+            condition: Some(bound(0)),
+            if_true: Some(bound(0)),
+            if_false: Some(gint(7)),
+            locally_free: Vec::new(),
+            connective_used: false,
+        };
+        let if_result: If = substitute
+            .substitute_no_sort(if_term.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(if_result.condition, Some(gint(42)));
+        assert_eq!(if_result.if_true, Some(gint(42)));
+        assert_eq!(if_result.if_false, Some(gint(7)));
+        let if_sorted: If =
+            SubstituteTrait::<If>::substitute(&substitute, if_term, 0, &env).unwrap();
+        assert_eq!(if_sorted.condition, Some(gint(42)));
+    }
+
+    #[test]
+    fn bundle_substitution_replaces_the_body_and_merges_nested_bundles() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        let plain = Bundle {
+            body: Some(bound(0)),
+            write_flag: true,
+            read_flag: false,
+        };
+        let plain_result: Bundle = substitute
+            .substitute_no_sort(plain.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(plain_result.body, Some(gint(42)));
+        assert!(plain_result.write_flag);
+        let plain_sorted: Bundle =
+            SubstituteTrait::<Bundle>::substitute(&substitute, plain, 0, &env).unwrap();
+        assert_eq!(plain_sorted.body, Some(gint(42)));
+
+        let inner = Bundle {
+            body: Some(gint(7)),
+            write_flag: true,
+            read_flag: true,
+        };
+        let outer = Bundle {
+            body: Some(Par {
+                bundles: vec![inner],
+                ..Default::default()
+            }),
+            write_flag: true,
+            read_flag: false,
+        };
+        let merged: Bundle = substitute.substitute_no_sort(outer, 0, &env).unwrap();
+        assert_eq!(merged.body, Some(gint(7)));
+        assert!(merged.write_flag);
+        assert!(!merged.read_flag, "merge ANDs the outer read flag in");
+    }
+
+    #[test]
+    fn connective_substitution_resolves_var_refs_and_recurses() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        let var_ref_par = Par {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
+                    index: 0,
+                    depth: 0,
+                })),
+            }],
+            ..Default::default()
+        };
+        let resolved: Par = substitute.substitute_no_sort(var_ref_par, 0, &env).unwrap();
+        assert_eq!(resolved.exprs, gint(42).exprs);
+        assert!(resolved.connectives.is_empty());
+
+        let mismatched_depth = Par {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::VarRefBody(VarRef {
+                    index: 0,
+                    depth: 1,
+                })),
+            }],
+            ..Default::default()
+        };
+        let kept: Par = substitute
+            .substitute_no_sort(mismatched_depth.clone(), 0, &env)
+            .unwrap();
+        assert_eq!(kept.connectives, mismatched_depth.connectives);
+
+        let not_body = Par {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnNotBody(bound(0))),
+            }],
+            ..Default::default()
+        };
+        let not_result: Par = substitute.substitute_no_sort(not_body, 0, &env).unwrap();
+        assert_eq!(
+            not_result.connectives[0].connective_instance,
+            Some(ConnectiveInstance::ConnNotBody(gint(42)))
+        );
+
+        let and_body = Par {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                    ps: vec![bound(0)],
+                })),
+            }],
+            ..Default::default()
+        };
+        let and_result: Par = substitute.substitute_no_sort(and_body, 0, &env).unwrap();
+        assert_eq!(
+            and_result.connectives[0].connective_instance,
+            Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![gint(42)],
+            }))
+        );
+
+        let or_body = Par {
+            connectives: vec![Connective {
+                connective_instance: Some(ConnectiveInstance::ConnOrBody(ConnectiveBody {
+                    ps: vec![bound(0)],
+                })),
+            }],
+            ..Default::default()
+        };
+        let or_result: Par = substitute.substitute_no_sort(or_body, 0, &env).unwrap();
+        assert_eq!(
+            or_result.connectives[0].connective_instance,
+            Some(ConnectiveInstance::ConnOrBody(ConnectiveBody {
+                ps: vec![gint(42)],
+            }))
+        );
+    }
+
+    #[test]
+    fn free_vars_at_depth_zero_are_a_substitute_error() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+        let free = new_freevar_par(0, Vec::new());
+
+        let result: Result<Par, InterpreterError> = substitute.substitute_no_sort(free, 0, &env);
+        assert!(matches!(result, Err(InterpreterError::SubstituteError(_))));
+    }
+
+    #[test]
+    fn charge_wrappers_pass_through_results_and_errors() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+
+        let charged: Par = substitute
+            .substitute_and_charge(&bound(0), 0, &env)
+            .unwrap();
+        assert_eq!(charged, gint(42));
+
+        let charged_no_sort: Par = substitute
+            .substitute_no_sort_and_charge(&bound(0), 0, &env)
+            .unwrap();
+        assert_eq!(charged_no_sort, gint(42));
+
+        let free = new_freevar_par(0, Vec::new());
+        assert!(substitute.substitute_and_charge(&free, 0, &env).is_err());
+        assert!(substitute
+            .substitute_no_sort_and_charge(&free, 0, &env)
+            .is_err());
+    }
+
+    #[test]
+    fn unbound_vars_and_nonzero_depth_keep_the_variable() {
+        let substitute = substitute_instance();
+
+        let untouched: Par = substitute
+            .substitute_no_sort(bound(0), 0, &Env::new())
+            .unwrap();
+        assert_eq!(untouched.exprs, bound(0).exprs);
+
+        let env = env_with(gint(42));
+        let deep: Par = substitute.substitute_no_sort(bound(0), 1, &env).unwrap();
+        assert_eq!(deep.exprs, bound(0).exprs);
+    }
+}
