@@ -38,13 +38,14 @@
 //! | [`t11_a_byte_equal_state_replacement_still_invalidates_old_tickets`] | freshness is state identity, not byte equality, so checkpoint/reset cannot create ABA |
 //! | [`t12_an_unrelated_group_change_does_not_invalidate_the_ticket`] | freshness is scoped to the named continuation group rather than one global generation |
 //! | [`t13_two_concurrent_firings_of_one_ticket_have_exactly_one_winner`] | duplicate speculative firings cannot double-consume one datum or publish two COMMs |
+//! | [`tlrs_prop_05_exact_live_selection_not_catalog_generation_controls_freshness`] | an unrelated same-channel catalog change preserves a ticket whose exact occurrence remains live; exhausting that occurrence refuses it atomically |
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Barrier};
 
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
-use rspace_plus_plus::rspace::internal::ProduceCandidate;
+use rspace_plus_plus::rspace::internal::{Datum, DatumAddress, ProduceCandidate};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::ReplayRSpace;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -969,6 +970,149 @@ async fn t13_two_concurrent_firings_of_one_ticket_have_exactly_one_winner() {
         .filter(|event| matches!(event, rspace_plus_plus::rspace::trace::event::Event::Comm(_)))
         .count();
     assert_eq!(comms, 1, "only the accepted ticket may publish a COMM");
+}
+
+/// TLRS-PROP-05 — freshness is the exact selected authority at commit time.
+///
+/// The first arm is the causal control against a whole-catalog generation
+/// gate: inserting an unrelated identity on the same exact channel changes the
+/// current candidate catalog, but must not reject a ticket whose selected
+/// occurrence remains live. The second arm exhausts that exact stored path and
+/// must therefore refuse the held ticket without mutating any other hot-store
+/// observation or emitting a COMM. The bounded corpus varies the selected
+/// multiplicity so the proof is about Bag demand, not singleton set behavior.
+#[tokio::test]
+async fn tlrs_prop_05_exact_live_selection_not_catalog_generation_controls_freshness() {
+    for selected_multiplicity in 1..=4 {
+        let channel = format!("catalog-freshness-{selected_multiplicity}");
+        let selected_value = format!("{}", 100 + selected_multiplicity);
+        let unrelated_value = format!("{}", 900 + selected_multiplicity);
+        let channels = vec![channel.clone()];
+
+        let live = play_space().await;
+        for _ in 0..selected_multiplicity {
+            live.get_store()
+                .put_datum(&channel, Datum::create(&channel, selected_value.clone(), false));
+        }
+        live.get_store().put_continuation(
+            &channels,
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &channels,
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::unguarded("live-selection"),
+                false,
+                BTreeSet::new(),
+            ),
+        );
+        live.get_store().put_join(&channel, &channels);
+
+        let ticket = live
+            .enabled_rendezvous()
+            .into_iter()
+            .next()
+            .expect("the exact selected occurrence is enabled");
+        let issued_pool = live.get_store().get_candidate_pool(&channel);
+        let issued_observation = (0..issued_pool.len())
+            .map(|position| {
+                issued_pool
+                    .candidate(position)
+                    .map(|(datum, address)| (datum.a.clone(), address))
+            })
+            .collect::<Vec<_>>();
+
+        live.get_store()
+            .put_datum(&channel, Datum::create(&channel, unrelated_value.clone(), false));
+        let fresh_pool = live.get_store().get_candidate_pool(&channel);
+        assert_eq!(
+            (0..issued_pool.len())
+                .map(|position| {
+                    issued_pool
+                        .candidate(position)
+                        .map(|(datum, address)| (datum.a.clone(), address))
+                })
+                .collect::<Vec<_>>(),
+            issued_observation,
+            "an issued candidate pool is an immutable snapshot"
+        );
+        assert!(
+            (0..fresh_pool.len()).any(|position| {
+                fresh_pool
+                    .candidate(position)
+                    .is_some_and(|(datum, _)| datum.a.as_ref() == &unrelated_value)
+            }),
+            "a newly issued pool observes the unrelated same-channel insertion"
+        );
+
+        let _ = live.take_event_log().await;
+        assert!(
+            live.process_match_found(ticket).is_some(),
+            "catalog churn cannot reject an exact selection that remains live"
+        );
+        let remaining = resting_ints(&live.get_store().snapshot(), &channel);
+        assert_eq!(
+            remaining
+                .iter()
+                .filter(|&&value| value == 100 + selected_multiplicity)
+                .count(),
+            selected_multiplicity as usize - 1
+        );
+        assert!(remaining.contains(&(900 + selected_multiplicity)));
+        assert_eq!(
+            live.take_event_log()
+                .await
+                .into_iter()
+                .filter(|event| matches!(
+                    event,
+                    rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+                ))
+                .count(),
+            1
+        );
+
+        let stale = play_space().await;
+        for _ in 0..selected_multiplicity {
+            stale
+                .get_store()
+                .put_datum(&channel, Datum::create(&channel, selected_value.clone(), false));
+        }
+        stale.get_store().put_continuation(
+            &channels,
+            rspace_plus_plus::rspace::internal::WaitingContinuation::create(
+                &channels,
+                &vec![Pattern::Wildcard],
+                &GuardedContinuation::unguarded("exhausted-selection"),
+                false,
+                BTreeSet::new(),
+            ),
+        );
+        stale.get_store().put_join(&channel, &channels);
+        let stale_ticket = stale
+            .enabled_rendezvous()
+            .into_iter()
+            .next()
+            .expect("the pre-interference occurrence is enabled");
+        let selected_path = match &stale_ticket.data_candidates()[0].address {
+            DatumAddress::Stored(path) => Arc::clone(path),
+            DatumAddress::Fresh => panic!("enabled_rendezvous never returns a fresh address"),
+        };
+        for _ in 0..selected_multiplicity {
+            stale
+                .get_store()
+                .remove_datum_path(&selected_path)
+                .expect("each generated occurrence is present before exhaustion");
+        }
+        let before_refusal = stale.get_store().snapshot();
+        let _ = stale.take_event_log().await;
+        assert!(
+            stale.process_match_found(stale_ticket).is_none(),
+            "an exhausted exact selection must be stale"
+        );
+        assert_same_hot_state(&stale.get_store().snapshot(), &before_refusal);
+        assert!(
+            stale.take_event_log().await.is_empty(),
+            "exact-authority refusal cannot publish a COMM"
+        );
+    }
 }
 
 // ───────────────────────────────────────────────────────────────────────────

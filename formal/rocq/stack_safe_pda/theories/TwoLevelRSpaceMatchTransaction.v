@@ -38,22 +38,23 @@ Definition MatchStoreState : Type :=
 
 Record MatchRequest : Type := MatchRequestState {
   request_channel : Path;
+  (** Snapshot identities are diagnostic provenance only.  Production commits
+      do not reject a still-live exact selection merely because an unrelated
+      datum changed the same channel's candidate catalog. *)
   request_catalog_identity : nat;
   request_catalog_authority_identity : nat;
   request_match_program : Entry -> @tree matcher_label;
   request_additions : list Entry
 }.
 
-Definition catalog_gate (before : MatchStoreState) (request : MatchRequest)
-    : option MatchCatalog :=
-  match store_catalogs before (request_channel request) with
-  | None => None
-  | Some current =>
-      if Nat.eqb (request_catalog_identity request)
-          (match_catalog_identity current) &&
-         Nat.eqb (request_catalog_authority_identity request)
-          (match_catalog_authority_identity current)
-      then Some current else None
+Definition selected_authority_gate
+    (before : MatchStoreState) (request : MatchRequest) (selected : Entry)
+    : bool :=
+  match lookup_channel (request_channel request) (store_authority before) with
+  | None => false
+  | Some contents =>
+      N.leb 1%N
+        (lookup_multiplicity_in_bag (entry_path selected) contents)
   end.
 
 Definition candidate_match_result
@@ -210,8 +211,11 @@ Record PreparedMatch
   prepared_match_bindings : free_map;
   prepared_match_continuation : path_continuation;
   prepared_match_checkpoint : path_checkpoint;
-  prepared_match_catalog_is_current :
-    catalog_gate before request = Some prepared_match_catalog;
+  prepared_match_pool_was_issued :
+    In (match_catalog_pool prepared_match_catalog)
+      (store_external_snapshots before);
+  prepared_match_selection_is_live :
+    selected_authority_gate before request prepared_match_selected = true;
   prepared_match_exact_outer_lookup :
     lookup_channel (request_channel request) (store_authority before) =
       Some prepared_match_inner;
@@ -306,41 +310,44 @@ Inductive match_transaction_transition
       (MatchOutcomeState MatchPublished (publish_prepared_match prepared)
         (Some (prepared_match_selected prepared)) 1).
 
-Theorem current_catalog_gate_rejects_missing_catalog : forall before request,
-  store_catalogs before (request_channel request) = None ->
-  catalog_gate before request = None.
-Proof. intros. unfold catalog_gate. now rewrite H. Qed.
+Theorem selected_authority_gate_rejects_unloaded_channel : forall
+    before request selected,
+  lookup_channel (request_channel request) (store_authority before) = None ->
+  selected_authority_gate before request selected = false.
+Proof. intros. unfold selected_authority_gate. now rewrite H. Qed.
 
-Theorem current_catalog_gate_rejects_changed_catalog_identity : forall
-    before request current,
-  store_catalogs before (request_channel request) = Some current ->
-  request_catalog_identity request <> match_catalog_identity current ->
-  catalog_gate before request = None.
+Theorem selected_authority_gate_rejects_absent_or_exhausted_identity : forall
+    before request selected contents,
+  lookup_channel (request_channel request) (store_authority before) =
+    Some contents ->
+  lookup_multiplicity_in_bag (entry_path selected) contents = 0%N ->
+  selected_authority_gate before request selected = false.
 Proof.
-  intros before request current Hcurrent Hchanged.
-  unfold catalog_gate. rewrite Hcurrent.
-  apply Nat.eqb_neq in Hchanged. now rewrite Hchanged.
+  intros before request selected contents Hchannel Hexhausted.
+  unfold selected_authority_gate. rewrite Hchannel, Hexhausted. reflexivity.
 Qed.
 
-Theorem current_catalog_gate_rejects_changed_authority_identity : forall
-    before request current,
-  store_catalogs before (request_channel request) = Some current ->
-  request_catalog_authority_identity request <>
-    match_catalog_authority_identity current ->
-  catalog_gate before request = None.
+Theorem stale_selection_authority_cannot_prepare_a_match : forall
+    before request selected,
+  selected_authority_gate before request selected = false ->
+  forall prepared : PreparedMatch before request,
+    prepared_match_selected prepared = selected -> False.
 Proof.
-  intros before request current Hcurrent Hchanged.
-  unfold catalog_gate. rewrite Hcurrent.
-  apply Nat.eqb_neq in Hchanged. rewrite Hchanged, andb_false_r. reflexivity.
+  intros before request selected Hstale prepared Hselected.
+  pose proof (prepared_match_selection_is_live prepared) as Hlive.
+  rewrite Hselected in Hlive. rewrite Hstale in Hlive. discriminate.
 Qed.
 
-Theorem stale_catalog_cannot_prepare_a_match : forall before request,
-  catalog_gate before request = None -> PreparedMatch before request -> False.
-Proof.
-  intros before request Hstale prepared.
-  pose proof (prepared_match_catalog_is_current prepared) as Hcurrent.
-  rewrite Hstale in Hcurrent. discriminate.
-Qed.
+Theorem unrelated_catalog_identity_changes_do_not_reject_a_live_selection : forall
+    before request selected,
+  selected_authority_gate before request selected = true ->
+  forall catalog_identity authority_identity,
+    selected_authority_gate before
+      (MatchRequestState
+        (request_channel request) catalog_identity authority_identity
+        (request_match_program request) (request_additions request))
+      selected = true.
+Proof. intros. exact H. Qed.
 
 Theorem prepared_match_selected_candidate_is_authoritative : forall
     before request (prepared : PreparedMatch before request),
@@ -470,19 +477,14 @@ Proof.
   apply upsert_preserves_every_other_exact_channel. exact Hdifferent.
 Qed.
 
-Theorem accepted_match_invalidates_the_authorizing_catalog : forall
+Theorem accepted_match_invalidates_the_formal_conservative_catalog : forall
     (before : MatchStoreState) request (prepared : PreparedMatch before request),
-  store_catalogs (publish_prepared_match prepared) (request_channel request) = None /\
-  catalog_gate (publish_prepared_match prepared) request = None.
+  store_catalogs (publish_prepared_match prepared) (request_channel request) = None.
 Proof.
-  intros before request prepared. split.
-  - unfold publish_prepared_match.
-    apply successful_publication_invalidates_every_touched_catalog.
-    apply prepared_match_batch_touches_exact_channel.
-  - apply current_catalog_gate_rejects_missing_catalog.
-    unfold publish_prepared_match.
-    apply successful_publication_invalidates_every_touched_catalog.
-    apply prepared_match_batch_touches_exact_channel.
+  intros before request prepared.
+  unfold publish_prepared_match.
+  apply successful_publication_invalidates_every_touched_catalog.
+  apply prepared_match_batch_touches_exact_channel.
 Qed.
 
 Theorem accepted_match_preserves_every_untouched_catalog_identity : forall
@@ -500,7 +502,7 @@ Qed.
 Inductive match_transaction_invariant_id : Type :=
 | MatchInvExactOuterLookup | MatchInvCanonicalCandidateOrder
 | MatchInvPdaMatcherAuthority | MatchInvPositiveMultiplicity
-| MatchInvSelectedBagDelta | MatchInvCatalogFreshness
+| MatchInvSelectedBagDelta | MatchInvSelectedAuthorityFreshness
 | MatchInvTouchedCatalogInvalidation | MatchInvUntouchedChannelIsolation
 | MatchInvUntouchedCatalogIsolation | MatchInvIssuedPoolPreservation
 | MatchInvExactlyOnePublication | MatchInvRefusalAtomicity
@@ -510,7 +512,7 @@ Definition match_transaction_invariant_catalog :
     list match_transaction_invariant_id :=
   [MatchInvExactOuterLookup; MatchInvCanonicalCandidateOrder;
    MatchInvPdaMatcherAuthority; MatchInvPositiveMultiplicity;
-   MatchInvSelectedBagDelta; MatchInvCatalogFreshness;
+   MatchInvSelectedBagDelta; MatchInvSelectedAuthorityFreshness;
    MatchInvTouchedCatalogInvalidation; MatchInvUntouchedChannelIsolation;
    MatchInvUntouchedCatalogIsolation; MatchInvIssuedPoolPreservation;
    MatchInvExactlyOnePublication; MatchInvRefusalAtomicity;
@@ -525,7 +527,9 @@ Print Assumptions candidate_scan_transitions_preserve_exact_observation.
 Print Assumptions prepared_match_selected_candidate_is_authoritative.
 Print Assumptions accepted_match_transaction_capstone.
 Print Assumptions refused_match_transaction_is_strongly_atomic.
-Print Assumptions accepted_match_invalidates_the_authorizing_catalog.
+Print Assumptions selected_authority_gate_rejects_absent_or_exhausted_identity.
+Print Assumptions unrelated_catalog_identity_changes_do_not_reject_a_live_selection.
+Print Assumptions accepted_match_invalidates_the_formal_conservative_catalog.
 Print Assumptions match_transaction_invariant_catalog_is_duplicate_free_and_exact.
 
 End TwoLevelRSpaceMatchTransaction.

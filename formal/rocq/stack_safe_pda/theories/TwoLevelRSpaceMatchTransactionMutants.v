@@ -40,9 +40,6 @@ Definition fixture_request : MatchRequest :=
 Definition fixture_rejecting_request : MatchRequest :=
   MatchRequestState [9] 11 7 rejecting_program [].
 
-Definition fixture_stale_request : MatchRequest :=
-  MatchRequestState [9] 12 7 accepting_program [].
-
 Definition fixture_query_authority : candidate_authority :=
   CandidateAuthority 7
     (CandidateProductPathContinuation.Node (Some tt) [])
@@ -68,6 +65,15 @@ Definition fixture_catalogs (channel : Path) : option MatchCatalog :=
 
 Definition fixture_store : MatchStoreState :=
   TransactionalStoreState fixture_authority 3 fixture_catalogs [fixture_pool] 4.
+
+Definition fixture_exhausted_authority : TwoLevelAuthority :=
+  [([9], [fixture_second]);
+   ([9; 1], fixture_other_inner);
+   ([10], fixture_inner)].
+
+Definition fixture_exhausted_store : MatchStoreState :=
+  TransactionalStoreState
+    fixture_exhausted_authority 3 fixture_catalogs [fixture_pool] 4.
 
 (** 1. Prefix acceptance at the outer level confuses a loaded ancestor with
     an unloaded exact descendant. *)
@@ -139,16 +145,19 @@ Example selected_delta_rejects_remove_all_mutant :
     Some [fixture_second].
 Proof. repeat split; reflexivity. Qed.
 
-(** 6. Returning the cached entry without checking immutable identities lets a
-    stale catalog authorize work. *)
-Definition mutant_catalog_gate_ignores_identities
-    (before : MatchStoreState) (request : MatchRequest) : option MatchCatalog :=
-  store_catalogs before (request_channel request).
+(** 6. Trusting an issued candidate snapshot without checking its exact live
+    multiplicity lets an exhausted selection authorize work.  Catalog identity
+    changes are intentionally not the gate: unrelated same-channel changes may
+    leave this exact selection valid. *)
+Definition mutant_selected_authority_gate_ignores_live_multiplicity
+    (_ : MatchStoreState) (_ : MatchRequest) (_ : Entry) : bool := true.
 
-Example catalog_freshness_rejects_identity_bypass_mutant :
-  catalog_gate fixture_store fixture_stale_request = None /\
-  mutant_catalog_gate_ignores_identities fixture_store fixture_stale_request =
-    Some fixture_catalog.
+Example selected_authority_freshness_rejects_snapshot_only_mutant :
+  selected_authority_gate fixture_store fixture_request fixture_first = true /\
+  selected_authority_gate
+    fixture_exhausted_store fixture_request fixture_first = false /\
+  mutant_selected_authority_gate_ignores_live_multiplicity
+    fixture_exhausted_store fixture_request fixture_first = true.
 Proof. repeat split; reflexivity. Qed.
 
 (** 7. Keeping the touched catalog after authority mutation leaves stale
@@ -243,7 +252,7 @@ Proof. repeat split; reflexivity. Qed.
 Inductive match_transaction_mutant_id : Type :=
 | MutantPrefixOuterLookup | MutantReverseOrder | MutantBypassMatcher
 | MutantZeroMultiplicity | MutantRemoveAllMultiplicity
-| MutantStaleCatalog | MutantKeepTouchedCatalog | MutantPrefixUpdate
+| MutantStaleSelectionAuthority | MutantKeepTouchedCatalog | MutantPrefixUpdate
 | MutantInvalidateAllCatalogs | MutantDropIssuedPools
 | MutantDoublePublication | MutantMutatingRefusal
 | MutantUnloadEmpty | MutantStationaryScan.
@@ -251,7 +260,8 @@ Inductive match_transaction_mutant_id : Type :=
 Definition match_transaction_mutant_catalog :
     list match_transaction_mutant_id :=
   [MutantPrefixOuterLookup; MutantReverseOrder; MutantBypassMatcher;
-   MutantZeroMultiplicity; MutantRemoveAllMultiplicity; MutantStaleCatalog;
+   MutantZeroMultiplicity; MutantRemoveAllMultiplicity;
+   MutantStaleSelectionAuthority;
    MutantKeepTouchedCatalog; MutantPrefixUpdate; MutantInvalidateAllCatalogs;
    MutantDropIssuedPools; MutantDoublePublication; MutantMutatingRefusal;
    MutantUnloadEmpty; MutantStationaryScan].
@@ -269,7 +279,7 @@ Qed.
 
 Print Assumptions exact_outer_lookup_rejects_prefix_lookup_mutant.
 Print Assumptions selected_delta_rejects_remove_all_mutant.
-Print Assumptions catalog_freshness_rejects_identity_bypass_mutant.
+Print Assumptions selected_authority_freshness_rejects_snapshot_only_mutant.
 Print Assumptions exact_channel_isolation_rejects_prefix_update_mutant.
 Print Assumptions match_transaction_mutant_catalog_is_duplicate_free_and_exact.
 

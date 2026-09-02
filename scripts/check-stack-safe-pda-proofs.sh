@@ -231,7 +231,7 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceCheckpointMutants.v 3 \
   "the RBA1 codec, streaming, and compatibility causal controls"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchTransaction.v 6 \
+  theories/TwoLevelRSpaceMatchTransaction.v 8 \
   "the exact two-level RSpace accepted-match authority"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchTransactionMutants.v 5 \

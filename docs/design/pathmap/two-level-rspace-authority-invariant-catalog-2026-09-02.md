@@ -40,7 +40,7 @@ The corresponding mutant companions provide formal causal witnesses. They do not
 
 ### TLRS-PROP-01 — Exact channel and loaded-empty semantics
 
-Status: **PARTIAL**
+Status: **VERIFIED for the in-memory semantic boundary**
 
 Formal owner set:
 
@@ -123,13 +123,13 @@ Formal owner set:
 
 - Authority and Operations: touched-channel locality, exact touched invalidation, untouched preservation, and issued snapshot preservation.
 - Delta: every touched catalog invalidated or updated consistently.
-- Match: catalog freshness, touched invalidation, untouched channel/catalog isolation, and issued-pool preservation.
+- Match: exact selected-authority freshness, touched invalidation, untouched channel/catalog isolation, and issued-pool preservation.
 
 Production surface: `RSpaceDataStore::candidate_catalogs`, incremental catalog metadata transitions, `needs_refresh`, immutable `CandidatePool` snapshots, and copy-on-write catalog updates.
 
-Current executable evidence: candidate availability sharing, incremental catalog updates, target-only invalidation, old-pool validity, replay filtering, issued-pool immutability, and successful/refused multi-channel delta catalog observations.
+Current executable evidence: candidate availability sharing, incremental catalog updates, target-only invalidation, old-pool validity, replay filtering, issued-pool immutability, and successful/refused multi-channel delta catalog observations. `tlrs_prop_05_exact_live_selection_not_catalog_generation_controls_freshness` drives the production enumeration-to-commit path across multiplicities one through four. Its positive arm changes the same exact channel's catalog with an unrelated identity and proves the held exact selection still commits; its causal negative arm exhausts the selected stored path and proves refusal preserves the complete hot-store snapshot and emits no COMM.
 
-Open implementation obligation: the formal match theory uses explicit authority identity and generation freshness, while current Rust exposes `needs_refresh` rather than a store/catalog generation gate. Either implement the generation relation and property-test stale-catalog rejection or narrow the formal refinement claim to the actual identity/refresh protocol. A registry test naming the generation theorem is not semantic coverage.
+Formal correction: `TwoLevelRSpaceMatchTransaction.v` now treats request catalog identities as diagnostic provenance and gates preparation on positive live multiplicity for the exact selected path. `TwoLevelRSpaceMatchTransactionMutants.v` proves that trusting an issued snapshot after the selected occurrence is exhausted violates the invariant. This matches the production optimistic protocol under the hot-store write lock and deliberately rejects a whole-catalog generation gate: unrelated same-channel changes must not invalidate an otherwise live exact selection. Both modules verify axiom-free. Catalog rebuild counts and pointer identity remain optimization measurements, not semantic freshness requirements.
 
 ### TLRS-PROP-06 — Authoritative stack-safe match transaction
 
@@ -139,7 +139,7 @@ Formal owner set: all 14 MatchTransaction invariants. Exact lookup and loaded-em
 
 Current executable evidence: candidate continuation, reservation, catalog, and delta tests exercise components independently. They do not prove the formal transaction capstone against one production entry point.
 
-Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Add a stale-catalog red control when TLRS-PROP-05 has a concrete freshness authority.
+Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 
 ### TLRS-PROP-07 — Copy-on-write and guarded lifecycle
 
@@ -196,13 +196,12 @@ Open implementation and executable obligation: exact-subject mutation matrix, in
 
 ## Current production gaps
 
-The committed formal family is ahead of `RSpaceDataIndex` in five material respects:
+The committed formal family is ahead of `RSpaceDataIndex` in four material respects:
 
 1. no production RBA1 codec, streaming writer/reader, compatibility adapter, or recovery/readmission path exists;
-2. no explicit store/catalog generation gate refines formal stale-catalog rejection;
-3. no single Rust transaction API currently exposes the complete authoritative-match composition proved in Rocq;
-4. exactly-one publication is optional instrumentation rather than a continuously asserted production invariant;
-5. most exact-once disposer, barrier, abort, and fail-stop ownership obligations lack executable event-ledger controls.
+2. no single Rust transaction API currently exposes the complete matcher-to-authoritative-commit composition proved in Rocq;
+3. exactly-one publication is optional instrumentation rather than a continuously asserted production invariant;
+4. most exact-once disposer, barrier, abort, and fail-stop ownership obligations lack executable event-ledger controls.
 
 The private exact `u128` aggregate is exercised from the crate-private child property module so the saturated `u64` API cannot conceal the boundary case.
 
@@ -214,7 +213,7 @@ The in-memory production checkpoint requires all of the following additions:
 2. TLRS-PROP-02 aggregate-metadata oracle, including exact `u128` and saturated `u64` boundary evidence — **implemented for current operation generators**;
 3. TLRS-PROP-03 combined canonical candidate-order/identity property — **implemented**, with combined lazy-decode instrumentation still open;
 4. TLRS-PROP-04 publication-count and strong-failure-atomicity property — **root-identity and failure behavior implemented; exact transient publication-event counting remains open**;
-5. TLRS-PROP-05 concrete stale-authority test after generation semantics are implemented or the formal claim is narrowed;
+5. TLRS-PROP-05 exact selected-authority freshness model, positive same-channel interference control, exhausted-selection refusal control, and immutable issued-pool evidence — **implemented**;
 6. TLRS-PROP-06 end-to-end accepted/refused authoritative match property;
 7. TLRS-PROP-07 lifecycle ledger and bounded-stack fault-injection properties.
 
