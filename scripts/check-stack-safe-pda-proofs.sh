@@ -234,6 +234,9 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthority.v 10 \
   "the exact two-level RSpace continuation and join authority"
 rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 11 \
+  "the continuation and join authority causal controls"
+rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchTransaction.v 8 \
   "the exact two-level RSpace accepted-match authority"
 rocq_compile_with_closed_count \
@@ -261,6 +264,7 @@ rocq_reject_placeholders \
   theories/TwoLevelRSpaceGuardedOwnershipMutants.v \
   theories/TwoLevelRSpaceCheckpointMutants.v \
   theories/TwoLevelRSpaceContinuationAuthority.v \
+  theories/TwoLevelRSpaceContinuationAuthorityMutants.v \
   theories/TwoLevelRSpaceMatchTransaction.v \
   theories/TwoLevelRSpaceMatchTransactionMutants.v \
   theories/TwoLevelRSpaceCheckpointRecovery.v \
@@ -281,6 +285,7 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceGuardedOwnershipMutants \
   StackSafePDA.TwoLevelRSpaceCheckpointMutants \
   StackSafePDA.TwoLevelRSpaceContinuationAuthority \
+  StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants \
   StackSafePDA.TwoLevelRSpaceMatchTransaction \
   StackSafePDA.TwoLevelRSpaceMatchTransactionMutants \
   StackSafePDA.TwoLevelRSpaceCheckpointRecovery \
