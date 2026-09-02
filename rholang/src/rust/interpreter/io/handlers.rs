@@ -3735,35 +3735,145 @@ impl FsProcesses {
                         self.finalize_failure_journal(fserr_to_code(&code_str), ack);
                     }
                 } else if cmode == ConsensusMode::Consensus {
-                    // Recursive Consensus: walk the reply-manifest.
-                    // Each entry produces a fresh WAL append; each
-                    // append gets a UNIQUE ack_hash derived from the
-                    // ack channel + entry path so per-entry finalize
-                    // (if we ever need it) can uniquely address the
-                    // entry.  For now we don't emit per-entry
-                    // Failure — the leader only manifests SUCCESSFUL
-                    // unlinks, so every replayed entry is Success.
-                    for (canon_path, kind) in extract_removedir_manifest(&previous) {
-                        let op = match kind {
-                            RemoveKind::File => WalOp::RemoveFile,
-                            RemoveKind::Dir => WalOp::RemoveDir,
+                    // R5(b) recursive Consensus re-execute (2026-09-02).
+                    // Follower walks its OWN per-validator subdir via
+                    // Shape A resolver + safe_descend_verified, does
+                    // real per-entry unlinks, journals per-entry WAL
+                    // with bundle-relative paths, and produces its own
+                    // reply with the relative-path manifest.  Both
+                    // leader and follower produce byte-identical WAL
+                    // + reply when their subdirs contain the same
+                    // tree (Shape A / D3 discipline).  Divergence
+                    // surfaces via verify_reply_hash_matches_cached
+                    // → CONSENSUS_DIVERGENCE reply → RSpace rig
+                    // catches at check_replay_data.
+                    //
+                    // On divergence we do NOT flip the per-entry WAL
+                    // placeholders to Failure { CONSENSUS_DIVERGENCE }
+                    // because they reflect follower's ACTUAL syscalls
+                    // (which may have succeeded on the follower's own
+                    // subdir).  The reply-hash divergence is the
+                    // canonical divergence signal; downstream
+                    // consumers hash the reply, not the WAL.
+                    let raw_root_pb = PathBuf::from(root);
+                    let (on_disk_root_pb, expected_root_id) =
+                        self.handles.root_registry.resolve_or_identity(&raw_root_pb);
+                    let canon_wal_target = canonicalize_lexical(root, rel);
+                    let rel_owned = rel.to_string();
+                    let lock_registry = self.handles.lock_registry.clone();
+                    let wal_handle = self.handles.wal.clone();
+                    let ack_clone = ack.clone();
+                    let fresh_reply = spawn_blocking(move || -> Par {
+                        let parent = match safe_descend_verified(
+                            &on_disk_root_pb,
+                            &rel_owned,
+                            expected_root_id,
+                        ) {
+                            Ok(p) => p,
+                            Err(qe) => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                return err(c, m);
+                            }
                         };
-                        let per_entry_ack = per_entry_ack_seed(ack, &canon_path);
-                        let _ = self.handles.wal.append_with_ack(
-                            WalEntry {
-                                op,
-                                path: canon_path,
-                                extra_path: None,
-                                offset: None,
-                                length: None,
-                                payload_ref: None,
-                                mode_bits: None,
-                                owner: None,
-                                group: None,
-                                outcome: WalOutcome::Success,
-                            },
-                            per_entry_ack,
-                        );
+                        let target_dev_inode = target_dev_inode_at(&parent);
+                        let target_is_locked = target_dev_inode
+                            .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                            .unwrap_or(false);
+                        if target_is_locked {
+                            return err(
+                                FSERR_BUSY,
+                                "cannot remove: lock held on target (dev, inode)",
+                            );
+                        }
+                        let canon_target =
+                            canonicalize_lexical(&on_disk_root_pb.to_string_lossy(), &rel_owned);
+                        let manifest = match collect_recursive_manifest(&canon_target) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                return err(io_err_code(&e), io_msg_scrub(&e));
+                            }
+                        };
+                        let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
+                        for (rel_path, kind) in manifest {
+                            let wal_path = canon_wal_target.join(&rel_path);
+                            let unlink_path = canon_target.join(&rel_path);
+                            let op = match kind {
+                                RemoveKind::File => WalOp::RemoveFile,
+                                RemoveKind::Dir => WalOp::RemoveDir,
+                            };
+                            let per_entry_ack = per_entry_ack_seed(&ack_clone, &wal_path);
+                            if wal_handle
+                                .append_with_ack(
+                                    WalEntry {
+                                        op,
+                                        path: wal_path,
+                                        extra_path: None,
+                                        offset: None,
+                                        length: None,
+                                        payload_ref: None,
+                                        mode_bits: None,
+                                        owner: None,
+                                        group: None,
+                                        outcome: WalOutcome::Success,
+                                    },
+                                    per_entry_ack,
+                                )
+                                .is_err()
+                            {
+                                return err_with_manifest(
+                                    FSERR_QUOTA_EXCEEDED,
+                                    "WAL cap exceeded during recursive removeDir",
+                                    &deleted,
+                                );
+                            }
+                            let unlink_rc = match kind {
+                                RemoveKind::File => unsafe { libc_unlink(&unlink_path, false) },
+                                RemoveKind::Dir => unsafe { libc_unlink(&unlink_path, true) },
+                            };
+                            match unlink_rc {
+                                Ok(()) => {
+                                    deleted.push((rel_path, kind));
+                                }
+                                Err(e) => {
+                                    let code_u32 = io_err_code_u32(&e);
+                                    let _ = wal_handle.update_outcome_by_ack_hash(
+                                        per_entry_ack,
+                                        WalOutcome::Failure { code: code_u32 },
+                                    );
+                                    return err_with_manifest(
+                                        io_err_code(&e),
+                                        io_msg_scrub(&e),
+                                        &deleted,
+                                    );
+                                }
+                            }
+                        }
+                        ok_recursive_manifest(&deleted)
+                    })
+                    .await
+                    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"));
+                    let supp_n = fs_remove_dir_supplement_count(&parsed, cmode, &fresh_reply);
+                    self.metering.reserve_incremental_primitive(
+                        costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
+                    )?;
+                    match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                        Ok(()) => {
+                            let out = vec![fresh_reply];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
+                        Err(reason) => {
+                            let divergence_reply = err(
+                                FSERR_CONSENSUS_DIVERGENCE,
+                                format!(
+                                    "fs_remove_dir recursive follower re-execute \
+                                     diverges from leader: {reason}",
+                                ),
+                            );
+                            let out = vec![divergence_reply];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
                     }
                 }
             }
@@ -3775,6 +3885,12 @@ impl FsProcesses {
             // non-recursive and Oracular cases.  Same helper as
             // the leader path below; keeps the D3 event log
             // byte-identical.
+            //
+            // R5(b) note (2026-09-02): the recursive Consensus branch
+            // returns from its own arm above (with cost supplement
+            // computed from fresh reply).  This fall-through path
+            // covers non-recursive Oracular + recursive Oracular +
+            // any None-parsed cases.
             let supp_n = fs_remove_dir_supplement_count_from_previous(&parsed, cmode, &previous);
             self.metering.reserve_incremental_primitive(
                 costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
@@ -3922,9 +4038,15 @@ impl FsProcesses {
                             Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
                         }
                     } else {
-                        // Consensus + recursive: sorted-post-order walk,
+                        // Consensus + recursive: sorted-post-order walk
+                        // yielding RELATIVE paths (R5(b), 2026-09-02),
                         // per-entry journal + unlink, reply carries
-                        // manifest of successfully-deleted entries.
+                        // manifest of successfully-deleted entries as
+                        // relative paths.  Under Shape A, both leader
+                        // and follower walk their OWN per-validator
+                        // subdir → byte-identical relative manifests
+                        // → byte-identical WAL (via canon_wal_target
+                        // .join(rel)) → byte-identical replies.
                         let manifest = match collect_recursive_manifest(&canon_target) {
                             Ok(m) => m,
                             Err(e) => {
@@ -3932,20 +4054,40 @@ impl FsProcesses {
                             }
                         };
                         let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
-                        for (path, kind) in manifest {
-                            // Journal (unique ack_hash per entry so
-                            // symmetric append on follower via
-                            // per_entry_ack_seed).
+                        for (rel_path, kind) in manifest {
+                            // wal_path is bundle-relative (Shape A
+                            // invariant) for cross-validator WAL byte-
+                            // identity; unlink_path is the on-disk
+                            // absolute for the actual syscall.  Empty
+                            // rel_path marks the target root itself
+                            // (final post-order entry); Path::join
+                            // with an empty component appends a
+                            // trailing separator, so special-case
+                            // that to preserve the target's path
+                            // spelling in the WAL.
+                            let wal_path = if rel_path.as_os_str().is_empty() {
+                                canon_wal_target.clone()
+                            } else {
+                                canon_wal_target.join(&rel_path)
+                            };
+                            let unlink_path = if rel_path.as_os_str().is_empty() {
+                                canon_target.clone()
+                            } else {
+                                canon_target.join(&rel_path)
+                            };
                             let op = match kind {
                                 RemoveKind::File => WalOp::RemoveFile,
                                 RemoveKind::Dir => WalOp::RemoveDir,
                             };
-                            let per_entry_ack = per_entry_ack_seed(&ack_clone, &path);
+                            // per_entry_ack seeded on WAL path
+                            // (bundle-relative) so leader + follower
+                            // produce identical per-entry ack hashes.
+                            let per_entry_ack = per_entry_ack_seed(&ack_clone, &wal_path);
                             if wal
                                 .append_with_ack(
                                     WalEntry {
                                         op,
-                                        path: path.clone(),
+                                        path: wal_path,
                                         extra_path: None,
                                         offset: None,
                                         length: None,
@@ -3966,12 +4108,12 @@ impl FsProcesses {
                                 );
                             }
                             let unlink_rc = match kind {
-                                RemoveKind::File => unsafe { libc_unlink(&path, false) },
-                                RemoveKind::Dir => unsafe { libc_unlink(&path, true) },
+                                RemoveKind::File => unsafe { libc_unlink(&unlink_path, false) },
+                                RemoveKind::Dir => unsafe { libc_unlink(&unlink_path, true) },
                             };
                             match unlink_rc {
                                 Ok(()) => {
-                                    deleted.push((path, kind));
+                                    deleted.push((rel_path, kind));
                                 }
                                 Err(e) => {
                                     let code_u32 = io_err_code_u32(&e);
@@ -5537,30 +5679,37 @@ impl RemoveKind {
     }
 }
 
-/// H-29-3 lift slice 2 (2026-08-26): sorted post-order walk that
-/// collects (canon_path, kind) tuples for a recursive Consensus
-/// removeDir.  The manifest drives both leader-side WAL journaling
-/// AND follower-side re-journaling (via the reply-manifest passed
-/// through `previous`).  Both leader and follower observe an
-/// identical filesystem walk order (sorted lexicographically per
-/// directory), so the manifest and its resulting WAL entries are
-/// byte-identical across the leader/follower split.
+/// H-29-3 lift slice 2 (2026-08-26) + R5(b) update (2026-09-02):
+/// sorted post-order walk that collects (relative_path, kind)
+/// tuples for a recursive Consensus removeDir.  Both leader and
+/// follower re-execute this walk on their OWN per-validator
+/// subdirs; the paths returned are relative to `target_root` so
+/// leader and follower produce byte-identical manifests +
+/// byte-identical WAL entries when their subdirs contain the
+/// same tree (which they must under Shape A / D3 discipline).
 ///
-/// Uses `std::fs::read_dir` because consensus trees reject symlinks
-/// at boot; the lexical-sort requirement makes std::fs the ergonomic
-/// choice over raw readdir.  If a symlink or non-file/non-dir entry
-/// is encountered here, returns Unsupported — same failure mode as
-/// boot-time validation.
+/// The final entry represents `target_root` itself, encoded as
+/// `PathBuf::new()` (empty relative path).  Callers apply it via
+/// `canon_wal_target.join(rel)` which returns `canon_wal_target`
+/// unchanged when `rel` is empty (`Path::join` semantics), so the
+/// target dir's WAL entry carries the requested removeDir path
+/// (bundle-relative under Shape A, absolute under identity
+/// resolution).
+///
+/// Uses `std::fs::read_dir` because consensus trees reject
+/// symlinks at boot; the lexical-sort requirement makes std::fs
+/// the ergonomic choice over raw readdir.  If a symlink or
+/// non-file/non-dir entry is encountered here, returns Unsupported
+/// — same failure mode as boot-time validation.
 ///
 /// Ordering: children first, then the containing directory itself
 /// (post-order).  Sibling entries are sorted by `file_name()`.
-/// `target_root` is included as the final entry (a `Dir`) so the
-/// applier's last unlink removes the top-level.
 fn collect_recursive_manifest(
     target_root: &std::path::Path,
 ) -> std::io::Result<Vec<(std::path::PathBuf, RemoveKind)>> {
     fn walk(
         dir: &std::path::Path,
+        rel_base: &std::path::Path,
         out: &mut Vec<(std::path::PathBuf, RemoveKind)>,
     ) -> std::io::Result<()> {
         let mut entries: Vec<(std::ffi::OsString, std::path::PathBuf, std::fs::FileType)> =
@@ -5568,12 +5717,13 @@ fn collect_recursive_manifest(
                 .map(|r| r.and_then(|e| e.file_type().map(|ft| (e.file_name(), e.path(), ft))))
                 .collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_name, path, ft) in entries {
+        for (name, path, ft) in entries {
+            let rel = rel_base.join(&name);
             if ft.is_dir() {
-                walk(&path, out)?;
-                out.push((path, RemoveKind::Dir));
+                walk(&path, &rel, out)?;
+                out.push((rel, RemoveKind::Dir));
             } else if ft.is_file() {
-                out.push((path, RemoveKind::File));
+                out.push((rel, RemoveKind::File));
             } else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
@@ -5584,8 +5734,11 @@ fn collect_recursive_manifest(
         Ok(())
     }
     let mut out = Vec::new();
-    walk(target_root, &mut out)?;
-    out.push((target_root.to_path_buf(), RemoveKind::Dir));
+    walk(target_root, std::path::Path::new(""), &mut out)?;
+    // Final entry: target_root itself, represented by an empty
+    // relative path.  Callers do canon_wal_target.join(rel) which
+    // returns canon_wal_target unchanged for an empty rel.
+    out.push((std::path::PathBuf::new(), RemoveKind::Dir));
     Ok(out)
 }
 

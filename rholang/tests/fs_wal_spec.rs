@@ -5620,6 +5620,242 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 4 R5(b) pin (Consensus recursive re-execute + verify,
+    /// 2026-09-02): **fs_remove_dir recursive positive re-execute**.
+    /// Leader recursively removes a top/nested tree (4 granular WAL
+    /// entries).  Restore pre-play tree between leader + follower
+    /// evaluate so follower's own real walk yields the same
+    /// manifest.  Post-follower: tree is gone.  Load-bearing:
+    /// follower's WAL has 4 entries with byte-identical paths, and
+    /// on-disk verification (`!top.exists()`) proves the follower
+    /// really unlinked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_recursive_reexecute_removes_follower_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("top");
+        let seed_tree = |base: &std::path::Path| {
+            std::fs::create_dir(base.join("top")).unwrap();
+            std::fs::write(base.join("top/a.txt"), b"a").unwrap();
+            std::fs::create_dir(base.join("top/nested")).unwrap();
+            std::fs::write(base.join("top/nested/b.txt"), b"b").unwrap();
+        };
+        seed_tree(dir.path());
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ackCh in {{
+              fsRemoveDir!("{root}", "top", true, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[123; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_dir recursive positive");
+        assert!(
+            !target.exists(),
+            "leader's recursive removeDir must delete tree"
+        );
+        assert_eq!(leader.fs_handles.wal.snapshot().len(), 4);
+
+        // Restore pre-play tree — proves follower's own walk +
+        // unlinks re-executed the deletion under R5(b).
+        seed_tree(dir.path());
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_remove_dir recursive positive");
+
+        // LOAD-BEARING: tree gone post-follower.  Regression to
+        // the pre-R5(b) mirror-from-cached behavior leaves the
+        // tree intact — follower didn't actually run unlink.
+        assert!(
+            !target.exists(),
+            "Phase 4 R5(b) REGRESSION: follower's recursive removeDir did NOT \
+             fire — tree still exists after follower.evaluate.  Either \
+             fresh-syscall path not engaged (pre-R5(b) mirror-from-cached \
+             came back) or Shape A resolver failed to route."
+        );
+
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 R5(b): recursive removeDir WAL must be byte-identical \
+             under identical trees on both sides"
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical recursive removeDir");
+    }
+
+    /// Phase 4 R5(b) pin (2026-09-02): **fs_remove_dir recursive
+    /// divergence-detection**.  Leader recursively removes tree.
+    /// Between evaluate, seed the follower's tempdir with a DIFFERENT
+    /// tree (one extra file).  Follower's walk yields a different
+    /// manifest → different reply → verify hash-mismatch →
+    /// CONSENSUS_DIVERGENCE fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_recursive_reexecute_detects_divergence() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("top")).unwrap();
+        std::fs::write(dir.path().join("top/a.txt"), b"a").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ackCh in {{
+              fsRemoveDir!("{root}", "top", true, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[124; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_dir recursive divergence setup");
+
+        // Seed a DIFFERENT tree for the follower — extra file
+        // means the follower's walk produces a longer manifest
+        // than the leader's cached reply.
+        std::fs::create_dir(dir.path().join("top")).unwrap();
+        std::fs::write(dir.path().join("top/a.txt"), b"a").unwrap();
+        std::fs::write(dir.path().join("top/EXTRA.txt"), b"extra").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 4 R5(b): follower's fresh manifest with extra entry \
+             must trip RSpace rig verification"
+        );
+
+        // The follower's WAL should reflect ITS actual walk
+        // (including the EXTRA.txt unlink), giving a different
+        // length from the leader's snapshot — proves the follower
+        // ran its own walk under R5(b) rather than mirroring
+        // leader's cached manifest.
+        let leader_wal_len = leader.fs_handles.wal.snapshot().len();
+        let follower_wal_len = follower.fs_handles.wal.snapshot().len();
+        assert_ne!(
+            leader_wal_len, follower_wal_len,
+            "Phase 4 R5(b): follower's WAL length must differ from leader's \
+             — leader={leader_wal_len}, follower={follower_wal_len}.  A \
+             regression to pre-R5(b) mirror-from-cached would produce \
+             identical lengths and no divergence signal."
+        );
+    }
+
+    /// Phase 4 R5(b) pin (2026-09-02): **fs_remove_dir recursive
+    /// symmetric syscall error**.  Attempt recursive removeDir on
+    /// a non-existent target on both sides → both fail identically
+    /// at safe_descend_verified → same fresh reply → verify OK →
+    /// no CONSENSUS_DIVERGENCE.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_recursive_symmetric_syscall_error_finalizes_to_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // No directory at "missing-tree".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ackCh in {{
+              fsRemoveDir!("{root}", "missing-tree", true, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[125; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_dir recursive symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_remove_dir recursive symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 R5(b) recursive symmetric-error: WALs must be \
+             byte-identical when both sides see the same ENOENT on \
+             safe_descend_verified"
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression
@@ -7457,15 +7693,24 @@ mod tests {
     }
 
     /// Leader/follower WAL byte-identity for recursive Consensus
-    /// removeDir.  Follower's is_replay branch reads the reply
-    /// manifest and re-journals the same granular entries.
+    /// removeDir.  Under R5(b) (2026-09-02) the follower does REAL
+    /// per-entry syscalls against its own subdir (rather than
+    /// mirroring the leader's cached manifest), so the shared-
+    /// tempdir test-harness needs to restore the tree between
+    /// leader + follower evaluate to give the follower an
+    /// equivalent walk.  The invariant proved is: given identical
+    /// on-disk trees, leader and follower produce byte-identical
+    /// WAL entries via the relative-path manifest.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn recursive_remove_dir_wal_is_byte_identical_on_leader_and_follower() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("top")).unwrap();
-        std::fs::write(dir.path().join("top/a.txt"), b"a").unwrap();
-        std::fs::create_dir(dir.path().join("top/nested")).unwrap();
-        std::fs::write(dir.path().join("top/nested/b.txt"), b"b").unwrap();
+        let seed_tree = |base: &std::path::Path| {
+            std::fs::create_dir(base.join("top")).unwrap();
+            std::fs::write(base.join("top/a.txt"), b"a").unwrap();
+            std::fs::create_dir(base.join("top/nested")).unwrap();
+            std::fs::write(base.join("top/nested/b.txt"), b"b").unwrap();
+        };
+        seed_tree(dir.path());
         let (mut leader, mut follower) = create_leader_and_follower().await;
         let term = format!(
             r#"
@@ -7488,6 +7733,9 @@ mod tests {
             .unwrap();
         let l = leader.fs_handles.wal.snapshot();
         assert_eq!(l.len(), 4, "leader produced 4 granular entries");
+        // R5(b): restore pre-play state so follower's real walk
+        // yields the same manifest the leader produced.
+        seed_tree(dir.path());
         let checkpoint = leader.create_checkpoint().await;
         follower.reset(&checkpoint.root).await.unwrap();
         follower.rig(checkpoint.log).await.unwrap();
@@ -7503,7 +7751,8 @@ mod tests {
         let f = follower.fs_handles.wal.snapshot();
         assert_eq!(
             l, f,
-            "leader/follower recursive-removeDir WAL byte-identity via reply manifest"
+            "leader/follower recursive-removeDir WAL byte-identity via \
+             R5(b) relative-path manifest"
         );
         follower.check_replay_data().await.unwrap();
     }
