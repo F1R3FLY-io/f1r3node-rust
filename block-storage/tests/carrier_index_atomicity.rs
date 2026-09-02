@@ -5,10 +5,15 @@ use std::sync::{Arc, Barrier, RwLock};
 use std::thread;
 
 use async_trait::async_trait;
-use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, InsertMode,
+};
+use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rust::block_implicits::{get_random_block, protocol_v6_processed_deploy_gen};
 use models::rust::bond_generation::BondGeneration;
-use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::{
+    BlockMessage, FinalizedFloorCommitment, ProcessedDeploy,
+};
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
@@ -197,10 +202,42 @@ fn block(
     );
     block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
     block.body.state.bond_generations.clear();
+    if let Some(floor_hash) = block.header.parents_hash_list.first().cloned() {
+        let floor_post_state_hash = block.body.state.pre_state_hash.clone();
+        let mut context = b"f1r3fly-carrier-index-atomicity-context-v1".to_vec();
+        context.extend_from_slice(&floor_hash);
+        context.extend_from_slice(&floor_post_state_hash);
+        let mut certificate = b"f1r3fly-carrier-index-atomicity-certificate-v1".to_vec();
+        certificate.extend_from_slice(&floor_hash);
+        block.header.finalized_floor = Some(FinalizedFloorCommitment {
+            floor_hash,
+            floor_post_state_hash,
+            certificate_digest: Blake2b256::hash(certificate).into(),
+            authority_context_digest: Blake2b256::hash(context).into(),
+        });
+    }
     block
 }
 
 fn genesis() -> BlockMessage { block(6, 0, vec![], vec![]) }
+
+fn accepted_admission(
+    block: &BlockMessage,
+) -> (CertifiedSenderAuthority, CertifiedAdmissionOutcome) {
+    let generation = block.header.sender_bond_generation.unwrap();
+    let commitment = block.header.finalized_floor.as_ref().unwrap();
+    let authority = CertifiedSenderAuthority::new(
+        block,
+        commitment.floor_hash.clone(),
+        commitment.floor_post_state_hash.clone(),
+        commitment.authority_context_digest.clone(),
+        generation,
+        1,
+    )
+    .unwrap();
+    let outcome = CertifiedAdmissionOutcome::accepted(block, &authority).unwrap();
+    (authority, outcome)
+}
 
 #[tokio::test]
 async fn v6_late_atomic_admission_failure_has_no_partial_projection_and_exact_retry() {
@@ -214,10 +251,11 @@ async fn v6_late_atomic_admission_failure_has_no_partial_projection_and_exact_re
     let deploy_id =
         DeployLookupId::V6(DeployIdV6::try_from(deploy.envelope_commitment.as_ref()).unwrap());
     let candidate = block(6, 1, vec![genesis.block_hash.to_vec()], vec![deploy]);
+    let (authority, outcome) = accepted_admission(&candidate);
 
     faults.fail_next_atomic_commit_late();
     assert!(matches!(
-        storage.insert(&candidate, InsertMode::Normal),
+        storage.insert_certified(&candidate, InsertMode::Normal, &authority, &outcome),
         Err(KvStoreError::TransactionConflict(_))
     ));
 
@@ -239,7 +277,9 @@ async fn v6_late_atomic_admission_failure_has_no_partial_projection_and_exact_re
         .unwrap()
         .is_none());
 
-    storage.insert(&candidate, InsertMode::Normal).unwrap();
+    storage
+        .insert_certified(&candidate, InsertMode::Normal, &authority, &outcome)
+        .unwrap();
     let retried = storage.get_representation().unwrap();
     assert!(retried.contains(&candidate.block_hash));
     assert!(retried
@@ -277,6 +317,7 @@ async fn concurrent_insert_and_prune_preserve_a_carrier_at_the_cutoff() {
     let deploy_id =
         DeployLookupId::V6(DeployIdV6::try_from(deploy.envelope_commitment.as_ref()).unwrap());
     let candidate = block(6, 100, vec![genesis.block_hash.to_vec()], vec![deploy]);
+    let (authority, outcome) = accepted_admission(&candidate);
     let representation = storage.get_representation().unwrap();
     let barrier = Arc::new(Barrier::new(2));
 
@@ -285,7 +326,7 @@ async fn concurrent_insert_and_prune_preserve_a_carrier_at_the_cutoff() {
     let insert_candidate = candidate.clone();
     let insert = thread::spawn(move || {
         insert_barrier.wait();
-        insert_storage.insert(&insert_candidate, InsertMode::Normal)
+        insert_storage.insert_certified(&insert_candidate, InsertMode::Normal, &authority, &outcome)
     });
     let prune_barrier = Arc::clone(&barrier);
     let prune = thread::spawn(move || {

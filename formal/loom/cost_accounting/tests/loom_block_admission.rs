@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::sync::{Arc, Mutex};
 use loom::thread;
@@ -10,6 +12,26 @@ struct Budget {
 struct Reservation {
     budget: Arc<Budget>,
     bytes: usize,
+}
+
+struct IdentityTracker {
+    capacity: usize,
+    hashes: Mutex<BTreeSet<u8>>,
+}
+
+impl IdentityTracker {
+    fn try_track(&self, hash: u8) -> bool {
+        let mut hashes = self.hashes.lock().unwrap();
+        if hashes.contains(&hash) {
+            true
+        } else if hashes.len() == self.capacity {
+            false
+        } else {
+            hashes.insert(hash)
+        }
+    }
+
+    fn release(&self, hash: u8) -> bool { self.hashes.lock().unwrap().remove(&hash) }
 }
 
 impl Drop for Reservation {
@@ -200,6 +222,53 @@ fn untracked_deferral_preserves_both_caps_and_remains_readmittable() {
         }
         assert_eq!(budget.used.load(Ordering::Acquire), 0);
         assert_eq!(*tracker.used.lock().unwrap(), 0);
+    });
+}
+
+#[test]
+fn full_tracker_preserves_existing_identity_under_concurrent_admission() {
+    loom::model(|| {
+        let tracker = Arc::new(IdentityTracker {
+            capacity: 1,
+            hashes: Mutex::new(BTreeSet::from([1])),
+        });
+        let handles = [2, 3].map(|hash| {
+            let tracker = tracker.clone();
+            thread::spawn(move || tracker.try_track(hash))
+        });
+
+        for handle in handles {
+            assert!(!handle.join().unwrap());
+        }
+
+        assert_eq!(*tracker.hashes.lock().unwrap(), BTreeSet::from([1]));
+    });
+}
+
+#[test]
+fn release_and_readmission_preserve_capacity_and_identity() {
+    loom::model(|| {
+        let tracker = Arc::new(IdentityTracker {
+            capacity: 1,
+            hashes: Mutex::new(BTreeSet::from([1])),
+        });
+        let release = {
+            let tracker = tracker.clone();
+            thread::spawn(move || tracker.release(1))
+        };
+        let admission = {
+            let tracker = tracker.clone();
+            thread::spawn(move || tracker.try_track(2))
+        };
+
+        assert!(release.join().unwrap());
+        if !admission.join().unwrap() {
+            assert!(tracker.try_track(2));
+        }
+
+        let hashes = tracker.hashes.lock().unwrap();
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains(&2));
     });
 }
 

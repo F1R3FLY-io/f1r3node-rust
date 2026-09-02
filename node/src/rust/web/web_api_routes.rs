@@ -1368,11 +1368,11 @@ mod router_tests {
         let deploy_body = serde_json::json!({
             "data": {
                 "term": "Nil",
+                "language": "rholang",
                 "timestamp": 1,
-                "phloPrice": 1,
-                "phloLimit": 100,
                 "validAfterBlockNumber": 0,
                 "shardId": "root",
+                "authorityPresentations": [],
             },
             "deployer": "04aa",
             "signature": "bb",

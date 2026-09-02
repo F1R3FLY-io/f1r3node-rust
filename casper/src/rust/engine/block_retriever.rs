@@ -926,8 +926,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     let sent_to_casper = requested.in_casper_buffer;
                     let stale_lifetime = current_time.saturating_sub(requested.initial_timestamp);
                     // Only apply lifetime-based eviction to entries already marked as received.
-                    // Unresolved requests must remain tracked until retry-budget/bounds logic
-                    // decides eviction, otherwise dependency chains can be dropped prematurely.
+                    // Unresolved requests remain tracked until retry-budget exhaustion. Capacity
+                    // defers new hashes at admission instead of evicting existing work.
                     let should_evict_stale = received && stale_lifetime > stale_request_lifetime_ms;
 
                     if !received {
@@ -996,7 +996,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             }
 
             // Remove expired entries that are already received.
-            // Unresolved entries are governed by retry-budget and requested-blocks bounds.
+            // Retry-budget exhaustion governs unresolved entries.
             if (received && expired) || should_evict_stale {
                 let mut state = self.requested_blocks.lock().map_err(|_| {
                     CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
@@ -1677,7 +1677,7 @@ mod tests {
             .expect("state lookup should succeed");
         assert!(
             state.is_some(),
-            "unresolved request must remain tracked; only retry-budget/bounds may evict it"
+            "unresolved request must remain tracked; only retry-budget exhaustion may evict it"
         );
     }
 
@@ -2429,7 +2429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requested_blocks_bound_evicts_oldest_unresolved_entries_first() {
+    async fn request_all_rejects_injected_overcapacity_without_evicting_unresolved_work() {
         let (block_retriever, _transport) = retriever(vec![]);
         let now = BlockRetriever::<TransportLayerStub>::current_millis();
 
@@ -2454,23 +2454,28 @@ mod tests {
             2049
         );
 
-        block_retriever
+        let error = block_retriever
             .request_all(Duration::from_secs(3_600))
             .await
-            .unwrap();
+            .expect_err("maintenance must reject an impossible over-capacity state");
+        assert!(matches!(
+            error,
+            CasperError::RuntimeError(message)
+                if message.contains("requested block tracker invariant violated: 2049 > 2048")
+        ));
 
         assert_eq!(
             block_retriever.get_requested_blocks_count().await.unwrap(),
-            2048,
-            "the bound holds after maintenance"
+            2049,
+            "maintenance must not conceal corruption by discarding unresolved work"
         );
         assert!(
             block_retriever
                 .get_request_state_for_test(&oldest)
                 .await
                 .unwrap()
-                .is_none(),
-            "the oldest unresolved entry is the eviction candidate"
+                .is_some(),
+            "maintenance must preserve the existing unresolved identity"
         );
     }
 }

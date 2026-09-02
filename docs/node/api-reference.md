@@ -229,6 +229,7 @@ the deploy when its block-height lifespan is closed in that view.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `data.term` | string | yes | Rholang source code |
+| `data.language` | string | yes | Deploy language. Protocol v6.1 requires `rholang` |
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
@@ -244,6 +245,7 @@ curl -X POST http://localhost:40413/api/deploy \
   -d '{
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
+      "language": "rholang",
       "timestamp": 1700000000000,
       "validAfterBlockNumber": 0,
       "shardId": "root",
