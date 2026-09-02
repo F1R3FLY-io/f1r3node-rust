@@ -4829,6 +4829,270 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_rename positive re-execute**.  Leader renames a.bin →
+    /// b.bin (success).  Restore the pre-play state between leader
+    /// and follower evaluate (delete b.bin, recreate a.bin) so
+    /// follower's own renameat can succeed against its own file.
+    /// Post-follower-evaluate: b.bin exists, a.bin does not.
+    /// Regression to Phase-0 tautological leaves a.bin present +
+    /// b.bin absent (follower never fired the syscall).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_rename_reexecute_renames_follower_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.bin");
+        let dst = dir.path().join("b.bin");
+        std::fs::write(&src, b"content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRename(`rho:io:fs:native:1.0.0/rename`), ackCh in {{
+              fsRename!("{root}", "a.bin", "{root}", "b.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[114; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_rename positive");
+        assert!(!src.exists(), "leader's renameat must remove source");
+        assert!(dst.exists(), "leader's renameat must create dest");
+
+        // Restore pre-play state — proves follower's own real
+        // renameat re-did the operation.
+        std::fs::remove_file(&dst).unwrap();
+        std::fs::write(&src, b"content").unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_rename positive");
+
+        // LOAD-BEARING: source gone + dest present post-follower.
+        // Regression to Phase-0 tautological leaves src present + dst absent.
+        assert!(
+            !src.exists(),
+            "Phase 4 REGRESSION: follower's fs_rename did NOT fire — source \
+             still exists after follower.evaluate.  Either fresh-syscall path \
+             not engaged (Phase-0 tautological came back) or Shape A resolver \
+             failed to route."
+        );
+        assert!(
+            dst.exists(),
+            "Phase 4 REGRESSION: follower's fs_rename did NOT fire — dest \
+             not present after follower.evaluate."
+        );
+
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 4: WAL entry {i} differs on fs_rename positive: \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        let rn_entry = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Rename)
+            .expect("leader must journal a Rename entry");
+        assert_eq!(rn_entry.outcome, WalOutcome::Success);
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs_rename");
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_rename divergence-detection**.  Leader renames a.bin →
+    /// b.bin successfully; do NOT restore between evaluate.  Follower's
+    /// renameat sees ENOENT (source already moved by leader) → fresh
+    /// err vs cached [true] → CONSENSUS_DIVERGENCE fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_rename_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"content").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRename(`rho:io:fs:native:1.0.0/rename`), ackCh in {{
+              fsRename!("{root}", "a.bin", "{root}", "b.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[115; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_rename divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::Rename && e.outcome == WalOutcome::Success),
+            "leader must journal a successful Rename entry"
+        );
+
+        // DO NOT restore — follower sees leader's post-play state
+        // (a.bin gone, b.bin present).  Follower's fresh renameat
+        // returns ENOENT → CONSENSUS_DIVERGENCE.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 4 D1 enforcement: follower's fresh ENOENT vs leader's cached \
+             [true] must trip RSpace rig verification"
+        );
+
+        let follower_rn = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Rename)
+            .expect("follower must have a pre-appended Rename entry");
+        match follower_rn.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 4: Rename divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 4 REGRESSION: follower's Rename entry stayed at \
+                 Success despite fs drift.  Entry: {follower_rn:?}"
+            ),
+        }
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_rename symmetric syscall error**.  Attempt renameat on
+    /// a non-existent source on both sides → both see ENOENT →
+    /// FSERR_NOT_FOUND → verify OK → both finalize to Failure {
+    /// FSERR_CODE_NOT_FOUND }, NOT CONSENSUS_DIVERGENCE.  Parity
+    /// with fs_chmod / fs_remove_file symmetric-error pins.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_rename_symmetric_syscall_error_finalizes_to_failure() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_NOT_FOUND;
+
+        let dir = tempfile::tempdir().unwrap();
+        // No file at "a.bin".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRename(`rho:io:fs:native:1.0.0/rename`), ackCh in {{
+              fsRename!("{root}", "a.bin", "{root}", "b.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[116; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_rename symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_rn = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Rename)
+            .expect("leader must journal a Rename entry");
+        match leader_rn.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_NOT_FOUND,
+                "leader's Rename entry must finalize to Failure with NOT_FOUND \
+                 for renameat on missing source (ENOENT); got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's Rename entry stayed at Success despite ENOENT.  \
+                 H-6 finalize broken.  Entry: {leader_rn:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_rename symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 fs_rename symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_NOT_FOUND would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression
@@ -6461,18 +6725,24 @@ mod tests {
         assert_eq!(l[1].op, WalOp::CopyFile);
         assert_eq!(l[2].op, WalOp::Rename);
         assert_eq!(l[3].op, WalOp::RemoveFile);
-        // Phase 4 (2026-09-02): under fs_remove_file re-execute, the
-        // follower's real unlinkat runs against the shared tempdir
-        // file that leader already removed.  Restore g.bin to
-        // pre-play state so follower's re-execute succeeds
-        // symmetrically.  fs_chmod (Phase 4 landed) is idempotent
-        // — re-chmoding to the same mode succeeds on either mode.
-        // fs_copy_file / fs_rename (still Phase-0 tautological on
-        // the follower — Phase 4 hasn't refactored them yet) don't
-        // do real syscalls on the follower, so no restore needed
-        // for h.bin / i.bin.  When those slices land, this test
-        // will need parallel restores for those state changes too.
+        // Phase 4 (2026-09-02): under path-mutation re-execute, the
+        // follower's real syscalls run against the shared tempdir
+        // files that leader already mutated.  Restore pre-play
+        // state so follower's re-executes succeed symmetrically:
+        //   - fs_chmod: idempotent (re-chmoding to the same mode
+        //     succeeds regardless of current mode).
+        //   - fs_copy_file: still Phase-0 tautological on follower
+        //     — no restore needed for h.bin.  When that slice lands
+        //     this test will need to delete h.bin so follower's
+        //     real copy can recreate it (or accept idempotency of
+        //     O_CREAT|O_TRUNC re-writing the same bytes).
+        //   - fs_rename: leader moved h.bin → i.bin.  Follower's
+        //     renameat needs h.bin present and i.bin absent.
+        //   - fs_remove_file: leader removed g.bin.  Follower's
+        //     unlinkat needs g.bin present.
         std::fs::write(dir.path().join("g.bin"), b"other").unwrap();
+        std::fs::remove_file(dir.path().join("i.bin")).unwrap();
+        std::fs::write(dir.path().join("h.bin"), b"payload").unwrap();
         let checkpoint = leader.create_checkpoint().await;
         follower.reset(&checkpoint.root).await.unwrap();
         follower.rig(checkpoint.log).await.unwrap();

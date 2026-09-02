@@ -3076,14 +3076,30 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
+        // Phase 4 (Consensus re-execute + verify, 2026-09-02):
+        // Path-based mutation with TWO endpoints (from + to).  Under
+        // Consensus, the follower re-executes renameat against its
+        // own subdir via the Shape A resolver applied to BOTH roots,
+        // verifies fresh vs cached, and finalizes accordingly.
+        // Oracular unchanged (H-6 tautological finalize).
+        //
+        // Atomicity under D3: renameat is POSIX-atomic within a
+        // filesystem; under per-validator subdirs each side operates
+        // on its own copy of the from/to pair, so atomicity holds
+        // per-side.  Cross-device rename (EXDEV) is symmetric across
+        // sides because per-validator subdirs live on the same FS
+        // as the source bundle (D3 constructs them via std::fs
+        // operations on the same mount).
+        if is_replay && cmode != ConsensusMode::Consensus {
+            // Oracular follower — Phase-0 H-6 shape.
             if let Some(code_str) = extract_err_code(&previous) {
                 self.finalize_failure_journal(fserr_to_code(&code_str), ack);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed {
+        // Fresh syscall — leader (always) or Consensus follower.
+        let fresh_reply = match parsed {
             Some((from_root, from_rel, to_root, to_rel)) => {
                 let from_root_pb = PathBuf::from(from_root);
                 let to_root_pb = PathBuf::from(to_root);
@@ -3135,12 +3151,37 @@ impl FsProcesses {
             }
             None => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        if is_replay {
+            // Consensus follower — Phase 4 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!("fs_rename follower re-execute diverges from leader: {reason}",),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — H-6 finalize on syscall error.
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
