@@ -37,13 +37,6 @@ pub enum LifecycleEventKind {
         /// rather than re-inferring it from ancestry and a distance bound.
         carrier: ByteString,
     },
-    /// The sig was carried by an INVALID block's body. Never a canonical
-    /// appearance and never a lifecycle outcome — recorded solely so the
-    /// repeat-deploy signature index covers the same block universe the
-    /// ancestor scan reads (valid, invalid, and approved carriers). Appended
-    /// after the original variants so rows written before this variant
-    /// existed still decode.
-    CarriedInvalid,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,11 +83,6 @@ pub struct DeployLifecycleTables {
 }
 
 impl DeployLifecycleTables {
-    /// Reserved 25-byte key recording that the carrier-index backfill ran.
-    /// Real deploy sigs are >= 64 bytes (ed25519) so the marker cannot
-    /// collide; `open_sigs` filters it out.
-    const CARRIER_INDEX_COMPLETE_MARKER: &'static [u8] = b"__carrier-index-complete\0";
-
     pub fn new(events_kv: Arc<dyn KeyValueStore>, terminal_kv: Arc<dyn KeyValueStore>) -> Self {
         Self {
             events: KeyValueTypedStoreImpl::new(events_kv),
@@ -179,45 +167,12 @@ impl DeployLifecycleTables {
     /// Rows are pruned at the terminal write, so this enumerates OPEN
     /// sigs, not history.
     pub fn open_sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
-        self.events.to_map().map(|m| {
-            m.into_keys()
-                .filter(|k| k.as_slice() != Self::CARRIER_INDEX_COMPLETE_MARKER)
-                .collect()
-        })
+        self.events.to_map().map(|m| m.into_keys().collect())
     }
 
-    /// True when the tables can PROVE the sig has no carrier anywhere in
-    /// the DAG: no terminal record (rows are pruned at the terminal write,
-    /// so a terminal sig's carriers are no longer enumerable here) and no
-    /// event row. Sound only while the carrier-index completeness
-    /// invariant holds — the caller gates on `carrier_index_complete`.
-    pub fn proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
-        if self.get_terminal(sig)?.is_some() {
-            return Ok(false);
-        }
-        Ok(self.get_events(sig)?.is_none())
-    }
-
-    pub fn carrier_index_complete(&self) -> Result<bool, KvStoreError> {
-        let results = self
-            .events
-            .get(&vec![Self::CARRIER_INDEX_COMPLETE_MARKER.to_vec()])?;
-        Ok(results.into_iter().next().flatten().is_some())
-    }
-
-    pub fn mark_carrier_index_complete(&self) -> Result<(), KvStoreError> {
-        self.events.put_one(
-            Self::CARRIER_INDEX_COMPLETE_MARKER.to_vec(),
-            LifecycleEvents {
-                valid_after: None,
-                events: Vec::new(),
-            },
-        )
-    }
-
-    /// Backfill-idempotent append: a no-op when the row already holds an
+    /// Redelivery-idempotent append: a no-op when the row already holds an
     /// event for the same block with the same kind of testimony, so a
-    /// restored entry never duplicates one the insert path wrote.
+    /// crash-then-redelivery re-run never duplicates an event.
     pub fn append_event_once(
         &self,
         sig: &[u8],
@@ -323,69 +278,6 @@ mod tests {
         assert!(
             tables.open_sigs().expect("open").is_empty(),
             "a terminal sig is no longer open"
-        );
-    }
-
-    #[test]
-    fn proves_absence_only_without_terminal_and_row() {
-        let tables = DeployLifecycleTables::in_memory();
-        assert!(tables.proves_absence(b"fresh").expect("probe"));
-        tables
-            .append_events(b"included", Some(1), vec![included(2, false)])
-            .expect("append");
-        assert!(!tables.proves_absence(b"included").expect("probe"));
-        tables
-            .append_events(b"carried-invalid", None, vec![LifecycleEvent {
-                height: 3,
-                block_hash: vec![3; 32],
-                kind: LifecycleEventKind::CarriedInvalid,
-            }])
-            .expect("append");
-        assert!(
-            !tables.proves_absence(b"carried-invalid").expect("probe"),
-            "an invalid carrier still routes the sig to the exact scan"
-        );
-        tables
-            .put_terminal_if_absent(b"terminal", terminal(TerminalState::Finalized))
-            .expect("terminal");
-        assert!(
-            !tables.proves_absence(b"terminal").expect("probe"),
-            "a pruned row hides its carriers, so a terminal sig is never provably absent"
-        );
-    }
-
-    #[test]
-    fn carried_invalid_is_never_a_canonical_appearance() {
-        let tables = DeployLifecycleTables::in_memory();
-        tables
-            .append_events(b"sig", None, vec![LifecycleEvent {
-                height: 4,
-                block_hash: vec![4; 32],
-                kind: LifecycleEventKind::CarriedInvalid,
-            }])
-            .expect("append");
-        assert!(
-            tables
-                .canonical_appearance(b"sig", &|_| true)
-                .expect("appearance")
-                .is_none(),
-            "an invalid block's body is not canonical history"
-        );
-    }
-
-    #[test]
-    fn completeness_marker_roundtrip_and_open_sigs_filter() {
-        let tables = DeployLifecycleTables::in_memory();
-        assert!(!tables.carrier_index_complete().expect("read"));
-        tables.mark_carrier_index_complete().expect("mark");
-        assert!(tables.carrier_index_complete().expect("read"));
-        tables
-            .append_events(b"sig", Some(1), vec![included(2, false)])
-            .expect("append");
-        assert_eq!(
-            tables.open_sigs().expect("open"),
-            vec![b"sig".to_vec()],
-            "the marker key never appears as an open sig"
         );
     }
 

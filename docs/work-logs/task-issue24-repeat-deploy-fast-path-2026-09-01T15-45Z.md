@@ -101,3 +101,37 @@ The multi-agent review returned 3 major findings. All 3 are addressed:
    `block_metadata_index` -> `lifecycle` in the same order; the order
    is now stated on `ensure_carrier_index_complete` and the storage
    appearance twin.
+
+## Maintainer review remediation (2026-09-01, spreston8 review at ba48ec5d3)
+
+Seven findings; the redesign the review sketched is adopted wholesale.
+
+1. HIGH marker forgery (CONFIRMED): the completeness marker shared the
+   events-table keyspace with rows keyed by unverified `rejected_deploys`
+   sigs. Remedied structurally: the marker is gone. The carrier index now
+   lives in dedicated stores (`carrier-index`, `carrier-index-meta`) and
+   ingests ONLY decode-verified `body.deploys` sigs.
+2. Immortal CarriedInvalid rows (CONFIRMED): `CarriedInvalid` is removed
+   from the lifecycle enum entirely. Carrier testimony moved to the
+   dedicated `CarrierIndex` (block-storage/src/rust/dag/carrier_index.rs)
+   with height-based pruning driven by the finality register on floor
+   advances (strided full-table walk).
+3. #374 re-land (user decision): deliberate, per the branch owner.
+4. Lock-order violation in the backfill (CONFIRMED): moot — the backfill
+   is deleted. The watermark replaces it: W = height since which every
+   insert records carriers; the fast path engages only when the scan
+   window starts at or above W (`w <= max(earliest, 0)`).
+5. Test helpers pub in production (CONFIRMED): now
+   `#[cfg(any(test, feature = "test-internals"))]`, matching the P2-16
+   escape hatches. The crash-retry test stages state through the public
+   fixture handles instead (a crate cannot dev-depend on itself).
+6. No engagement pin (CONFIRMED): new test
+   `repeat_deploy_certified_index_engagement_skips_the_scan` — unreadable
+   ancestry makes the scan fail (control asserts it), so the certified
+   Valid is reachable only through the skip.
+7. frozen_display orphan freeze (CONFIRMED): the visibility predicate now
+   applies inside `frozen_display`; a never-DAG-visible inclusion cannot
+   freeze into a write-once terminal record.
+
+Docs updated to the watermark design: CONSENSUS_PHILOSOPHY 4.4,
+cbc-repair-plan claims, GLOSSARY signature-index entry.

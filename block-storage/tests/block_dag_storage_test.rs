@@ -1318,13 +1318,13 @@ fn canonical_appearance_is_the_latest_inclusion_never_a_record_carrier() {
     });
 }
 
-/// The lifecycle event ingest rides `insert`'s body pass: a valid block's
-/// executions and records project into per-sig rows; an invalid block's
-/// body projects `CarriedInvalid` testimony — never canonical history,
-/// but visible to the repeat-deploy signature index, which must cover the
-/// same block universe the ancestor scan reads.
+/// The ingest rides `insert`'s body pass: a valid block's executions and
+/// records project into per-sig lifecycle rows, an invalid block's body
+/// contributes no lifecycle events, and EVERY block's body sigs — valid
+/// and invalid alike — land in the repeat-deploy carrier index, which
+/// must cover the same block universe the ancestor scan reads.
 #[test]
-fn insert_projects_lifecycle_events_including_invalid_carriers() {
+fn insert_projects_lifecycle_events_and_carrier_entries() {
     use models::rust::block_implicits::processed_deploy_gen;
     use models::rust::casper::protocol::casper_message::RejectedDeploy;
     use proptest::strategy::{Strategy, ValueTree};
@@ -1441,24 +1441,11 @@ fn insert_projects_lifecycle_events_including_invalid_carriers() {
             rejected_row.events
         );
 
-        let invalid_row = dag
-            .deploy_lifecycle_events(&invalid_deploy.deploy.sig)
-            .expect("read row")
-            .expect("an invalid carrier's sig has a carrier-index row");
-        assert_eq!(
-            invalid_row.valid_after, None,
-            "CarriedInvalid is testimony, not an inclusion — the row stays record-only"
-        );
         assert!(
-            matches!(
-                invalid_row.events.as_slice(),
-                [block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
-                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::CarriedInvalid,
-                    ..
-                }]
-            ),
-            "one CarriedInvalid event; got {:?}",
-            invalid_row.events
+            dag.deploy_lifecycle_events(&invalid_deploy.deploy.sig)
+                .expect("read row")
+                .is_none(),
+            "an invalid block's body contributes no lifecycle events"
         );
         assert!(
             dag.deploy_canonical_appearance(&invalid_deploy.deploy.sig)
@@ -1469,231 +1456,79 @@ fn insert_projects_lifecycle_events_including_invalid_carriers() {
         assert!(
             !dag.carrier_index_proves_absence(&invalid_deploy.deploy.sig)
                 .expect("probe"),
-            "an invalid carrier must route its sig to the exact scan"
+            "an invalid carrier is in the carrier index and routes to the exact scan"
         );
-    });
-}
-
-/// The carrier-index backfill restores rows a legacy database is missing
-/// (valid inclusions and invalid carriers alike), certifies completeness
-/// with the marker ONLY when every DAG-visible body was readable, and
-/// never duplicates events the insert path already wrote.
-#[test]
-fn carrier_index_backfill_restores_missing_rows_and_certifies() {
-    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
-    use block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind;
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use models::rust::block_implicits::processed_deploy_gen;
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
-    init_logger();
-    let rt = Runtime::new().unwrap();
-    rt.block_on(async {
-        let genesis = genesis_block();
-        let mut kvm = InMemoryStoreManager::new();
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
-        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
-
-        let mut runner = TestRunner::default();
-        let valid_deploy = processed_deploy_gen()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        let invalid_deploy = processed_deploy_gen()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        let valid_block = get_random_block(
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(vec![genesis.block_hash.clone()]),
-            None,
-            Some(vec![valid_deploy.clone()]),
-            None,
-            Some(vec![]),
-            None,
-            None,
-        );
-        let invalid_block = get_random_block(
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(vec![genesis.block_hash.clone()]),
-            None,
-            Some(vec![invalid_deploy.clone()]),
-            None,
-            Some(vec![]),
-            None,
-            None,
-        );
-        dag_storage
-            .insert(&valid_block, InsertMode::Normal)
-            .unwrap();
-        dag_storage
-            .insert(&invalid_block, InsertMode::Invalid)
-            .unwrap();
-
-        let block_store = KeyValueBlockStore::new(
-            kvm.store("blocks".to_string()).await.unwrap(),
-            kvm.store("blocks-approved".to_string()).await.unwrap(),
-        );
-        block_store
-            .put(genesis.block_hash.clone(), &genesis)
-            .unwrap();
-        block_store
-            .put(valid_block.block_hash.clone(), &valid_block)
-            .unwrap();
-
-        // Simulate a database from before the invariant: the insert-path
-        // rows for both sigs are raw-deleted underneath the tables.
-        let events_kv = kvm
-            .store("deploy-lifecycle-events".to_string())
-            .await
-            .unwrap();
-        events_kv
-            .delete(vec![
-                valid_deploy.deploy.sig.to_vec(),
-                invalid_deploy.deploy.sig.to_vec(),
-            ])
-            .unwrap();
-
-        // The invalid block's body is not in the store yet: the walk
-        // restores what it can read and refuses certification.
-        let certified = dag_storage
-            .ensure_carrier_index_complete(&block_store)
-            .unwrap();
         assert!(
-            !certified,
-            "an unreadable DAG-visible body must leave the marker unwritten"
+            !dag.carrier_index_proves_absence(&executed.deploy.sig)
+                .expect("probe"),
+            "a valid carrier is in the carrier index"
         );
-        let dag = dag_storage.get_representation().unwrap();
-        assert!(!dag.carrier_index_complete().unwrap());
-        let restored = dag
-            .deploy_lifecycle_events(&valid_deploy.deploy.sig)
-            .unwrap()
-            .expect("the readable valid carrier is restored");
-        assert_eq!(restored.events.len(), 1);
-
-        // With the body present the walk certifies, restores the invalid
-        // carrier, and duplicates nothing on the re-walk.
-        block_store
-            .put(invalid_block.block_hash.clone(), &invalid_block)
-            .unwrap();
-        let certified = dag_storage
-            .ensure_carrier_index_complete(&block_store)
-            .unwrap();
-        assert!(certified);
-        let dag = dag_storage.get_representation().unwrap();
-        assert!(dag.carrier_index_complete().unwrap());
-        let invalid_row = dag
-            .deploy_lifecycle_events(&invalid_deploy.deploy.sig)
-            .unwrap()
-            .expect("the invalid carrier is restored");
-        assert!(matches!(invalid_row.events.as_slice(), [
-            block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
-                kind: LifecycleEventKind::CarriedInvalid,
-                ..
-            }
-        ]));
-        let restored = dag
-            .deploy_lifecycle_events(&valid_deploy.deploy.sig)
-            .unwrap()
-            .expect("row survives");
-        assert_eq!(restored.events.len(), 1, "the re-walk must not duplicate");
-
-        // The marker short-circuits the next start.
-        assert!(dag_storage
-            .ensure_carrier_index_complete(&block_store)
-            .unwrap());
+        assert!(
+            dag.carrier_index_proves_absence(b"never-carried-sig")
+                .expect("probe"),
+            "a fresh sig has no carrier"
+        );
     });
 }
 
-/// Fail-closed on DAG/metadata inconsistency: a hash the DAG set lists but
-/// the metadata store cannot resolve must leave the completeness marker
-/// unwritten — absence proofs over state the node could not read would
-/// claim more than the node can see.
+/// The watermark is written once per database: 0 on an empty DAG
+/// (complete from the first insert), the next height above the current
+/// max on an existing DAG, and never overwritten on a later start.
 #[test]
-fn carrier_index_backfill_refuses_certification_on_missing_metadata() {
+fn carrier_watermark_initializes_once_per_database() {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
-    use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-    use models::rust::block_implicits::processed_deploy_gen;
-    use proptest::strategy::{Strategy, ValueTree};
-    use proptest::test_runner::TestRunner;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
     init_logger();
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let genesis = genesis_block();
         let mut kvm = InMemoryStoreManager::new();
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
-        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
-
-        let mut runner = TestRunner::default();
-        let deploy = processed_deploy_gen()
-            .new_tree(&mut runner)
-            .unwrap()
-            .current();
-        let block = get_random_block(
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(vec![genesis.block_hash.clone()]),
-            None,
-            Some(vec![deploy.clone()]),
-            None,
-            Some(vec![]),
-            None,
-            None,
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            0,
+            "an empty database is complete from the first insert"
         );
+
+        let genesis = genesis_block();
+        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let block = chain_block(1, vec![genesis.block_hash.clone()]);
         dag_storage.insert(&block, InsertMode::Normal).unwrap();
-
-        let block_store = KeyValueBlockStore::new(
-            kvm.store("blocks".to_string()).await.unwrap(),
-            kvm.store("blocks-approved".to_string()).await.unwrap(),
+        assert_eq!(
+            dag_storage.ensure_carrier_watermark().unwrap(),
+            0,
+            "the watermark is write-once"
         );
-        block_store
-            .put(genesis.block_hash.clone(), &genesis)
-            .unwrap();
-        block_store.put(block.block_hash.clone(), &block).unwrap();
 
-        dag_storage
-            .remove_block_metadata_row_for_tests(&block.block_hash)
+        // A database that predates the index gets max height + 1: the
+        // fast path stays off until the scan window clears the heights
+        // the index never saw.
+        let mut kvm2 = InMemoryStoreManager::new();
+        let pre_existing = BlockDagKeyValueStorage::new(&mut kvm2).await.unwrap();
+        let genesis2 = genesis_block();
+        pre_existing
+            .insert(&genesis2, InsertMode::Approved)
             .unwrap();
-
-        let certified = dag_storage
-            .ensure_carrier_index_complete(&block_store)
-            .unwrap();
-        assert!(
-            !certified,
-            "a DAG-listed hash with no metadata record must refuse certification"
-        );
-        let dag = dag_storage.get_representation().unwrap();
-        assert!(!dag.carrier_index_complete().unwrap());
+        let b1 = chain_block(1, vec![genesis2.block_hash.clone()]);
+        pre_existing.insert(&b1, InsertMode::Normal).unwrap();
+        let dag = pre_existing.get_representation().unwrap();
+        assert_eq!(dag.carrier_index_watermark().unwrap(), None);
+        assert_eq!(pre_existing.ensure_carrier_watermark().unwrap(), 2);
+        let dag = pre_existing.get_representation().unwrap();
+        assert_eq!(dag.carrier_index_watermark().unwrap(), Some(2));
     });
 }
 
-/// Crash-retry idempotence for the ingest-first window: lifecycle rows
-/// written, metadata add lost (simulated crash), block redelivered to a
-/// restarted storage — the re-run must not duplicate events.
+/// Crash-retry idempotence for the ingest-first window: the ingest half
+/// of an insert ran (lifecycle rows and carrier entries written), the
+/// metadata add was lost, and the block is redelivered — the re-run must
+/// not duplicate lifecycle events or carrier entries. The pre-crash
+/// state is staged through the public fixture handles, because the
+/// cfg-gated corruption helpers are unreachable from this crate's own
+/// integration tests (a crate cannot dev-depend on itself).
 #[test]
 fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvent, LifecycleEventKind};
     use models::rust::block_implicits::processed_deploy_gen;
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
@@ -1727,17 +1562,32 @@ fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
             None,
             None,
         );
+
+        // Stage the crash: the ingest half ran, the metadata add did not.
+        let dag = dag_storage.get_representation().unwrap();
+        dag.carrier_index
+            .write()
+            .record_once(&deploy.deploy.sig, 1, block.block_hash.to_vec())
+            .unwrap();
+        dag.lifecycle
+            .write()
+            .append_event_once(
+                &deploy.deploy.sig,
+                Some(deploy.deploy.data.valid_after_block_number),
+                LifecycleEvent {
+                    height: 1,
+                    block_hash: block.block_hash.to_vec(),
+                    kind: LifecycleEventKind::Included {
+                        is_failed: deploy.is_failed,
+                    },
+                },
+            )
+            .unwrap();
+
+        // Redelivery: the block arrives again and inserts normally.
         dag_storage.insert(&block, InsertMode::Normal).unwrap();
 
-        // Simulate the crash: the lifecycle write survived, the metadata
-        // add did not. A restart rebuilds DAG state without the block.
-        dag_storage
-            .remove_block_metadata_row_for_tests(&block.block_hash)
-            .unwrap();
-        let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
-        restarted.insert(&block, InsertMode::Normal).unwrap();
-
-        let dag = restarted.get_representation().unwrap();
+        let dag = dag_storage.get_representation().unwrap();
         let row = dag
             .deploy_lifecycle_events(&deploy.deploy.sig)
             .unwrap()
@@ -1746,6 +1596,11 @@ fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
             row.events.len(),
             1,
             "the redelivery re-run must not duplicate the Included event"
+        );
+        assert!(
+            !dag.carrier_index_proves_absence(&deploy.deploy.sig)
+                .unwrap(),
+            "the carrier entry stands"
         );
         assert_eq!(
             dag.deploy_canonical_appearance(&deploy.deploy.sig).unwrap(),
@@ -1773,6 +1628,10 @@ fn orphan_lifecycle_event_is_not_a_canonical_appearance() {
 
         let dag = dag_storage.get_representation().unwrap();
         let phantom_block: Vec<u8> = vec![0xEE; 32];
+        dag.carrier_index
+            .write()
+            .record_once(b"orphan-sig", 1, phantom_block.clone())
+            .unwrap();
         dag.lifecycle
             .write()
             .append_events(b"orphan-sig", Some(0), vec![LifecycleEvent {
@@ -1790,7 +1649,7 @@ fn orphan_lifecycle_event_is_not_a_canonical_appearance() {
         );
         assert!(
             !dag.carrier_index_proves_absence(b"orphan-sig").unwrap(),
-            "the orphan row still routes the sig to the exact scan"
+            "the orphan carrier entry still routes the sig to the exact scan"
         );
     });
 }

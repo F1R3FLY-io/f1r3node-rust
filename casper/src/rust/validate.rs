@@ -689,16 +689,20 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
-        // Repeat-deploy signature index fast path (CONSENSUS_PHILOSOPHY
-        // §4.4). Behind the completeness gate, an index absence proves the
-        // sig has no carrier anywhere in the DAG, so it cannot be a repeat
-        // and skips the scan. An index hit is NOT a verdict — the sig stays
-        // in the exact scan, which is the window and parent-scope
-        // verification (a fork-only carrier must not poison this block).
-        // Any read failure keeps the sig in the scan: unreadable index
-        // state is no information, never an absence proof.
-        let deploy_key_set: HashSet<Vec<u8>> = match s.dag.carrier_index_complete() {
-            Ok(true) => {
+        // Repeat-deploy carrier-index fast path (CONSENSUS_PHILOSOPHY
+        // §4.4). The index records every carrier from the watermark W
+        // onward, so it engages only when the scan window starts at or
+        // above W (`w <= max(earliest, 0)` — heights below zero do not
+        // exist, so W = 0 means complete over every existing block).
+        // Behind that gate, an index absence proves the sig has no
+        // in-window carrier, so it cannot be a repeat and skips the scan.
+        // An index hit is NOT a verdict — the sig stays in the exact scan,
+        // which is the window and parent-scope verification (a fork-only
+        // carrier must not poison this block). Any read failure keeps the
+        // sig in the scan: unreadable index state is no information, never
+        // an absence proof.
+        let deploy_key_set: HashSet<Vec<u8>> = match s.dag.carrier_index_watermark() {
+            Ok(Some(w)) if w <= earliest_block_number.max(0) => {
                 let mut probe_failed = false;
                 let scan_set: HashSet<Vec<u8>> = deploy_key_set
                     .into_iter()
@@ -723,10 +727,10 @@ impl Validate {
                     .collect();
                 scan_set
             }
-            Ok(false) => deploy_key_set,
+            Ok(_) => deploy_key_set,
             Err(e) => {
                 tracing::warn!(
-                    "repeat-deploy carrier-index completeness read failed for block {}; \
+                    "repeat-deploy carrier-index watermark read failed for block {}; \
                      falling back to the ancestor scan: {}",
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     e,

@@ -79,11 +79,11 @@ Each occurrence must have one canonical disposition in one merge scope.
 
 A terminal rejection must not become executable because local state later changes.
 
-The repeat-deploy signature index must record every carrier of a block, over valid, invalid, and approved blocks, before the block becomes DAG-visible.
+The repeat-deploy carrier index must record every carrier of a block, over valid, invalid, and approved blocks, before the block becomes DAG-visible. The index must live in a dedicated store that no unverified wire data can key.
 
-An index absence inside the expiration window is an absence proof only under the completeness invariant. An index read failure must fall back to the ancestor scan.
+An index absence is an absence proof only for scan windows that start at or above the persisted watermark. An index read failure must fall back to the ancestor scan.
 
-Index-served repeat-deploy verdicts must equal ancestor-scan verdicts for every block.
+Index-served repeat-deploy verdicts must equal ancestor-scan verdicts for every block. Index retention must never drop an entry at or above any future scan window's start.
 
 ### Replay
 

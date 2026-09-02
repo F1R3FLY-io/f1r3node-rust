@@ -141,12 +141,14 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         BlockDagKeyValueStorage::new(&mut rnode_store_manager).await?
     };
 
-    // One-time repeat-deploy carrier-index backfill (same pattern as the
-    // LFB migration above): certifies the completeness invariant that the
-    // repeat-deploy fast path's absence proofs rely on.
-    let carrier_index_certified = block_dag_storage.ensure_carrier_index_complete(&block_store)?;
+    // First-boot repeat-deploy carrier-index watermark (same pattern as
+    // the LFB migration above): records the height since which every
+    // insert records carriers, which gates the fast path's absence
+    // proofs. No backfill walk exists — blocks below the watermark are
+    // never claimed.
+    let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
     info!(
-        carrier_index_certified,
+        carrier_index_watermark,
         "repeat-deploy carrier index checked"
     );
 
