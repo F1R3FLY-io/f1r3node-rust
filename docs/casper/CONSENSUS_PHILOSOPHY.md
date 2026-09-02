@@ -94,7 +94,7 @@ The fork-choice tie-break is the stake score, then the ascending block hash. The
 
 ### Option B1 — merged-frontier retry packaging (recommended next step)
 
-The owner packages a gated retry only when its own tip already merges every same-key contender that the owner can see. The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
+The owner packages a gated retry only when one selected parent covers all valid latest messages (the canonical predicate — see the glossary entry [Merged-frontier retry packaging](./GLOSSARY.md#merged-frontier-retry-packaging), which matches the implemented gate in `block_creator.rs`). The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
 
 - **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
 - **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
