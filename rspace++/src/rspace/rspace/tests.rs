@@ -35,7 +35,7 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
 fn order(step: u64) -> OperationOrder {
     OperationOrder {
         session: [9; 32],
-        path: vec![(step, 0)],
+        path: vec![(step, 0)].into(),
     }
 }
 

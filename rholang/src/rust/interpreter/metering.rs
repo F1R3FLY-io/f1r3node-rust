@@ -68,6 +68,9 @@ impl MeteredMachine {
     pub fn budget(&self) -> RuntimeBudget { self.budget.clone() }
 
     pub fn child(&self, component: u32) -> Self {
+        if self.budget.is_unmetered() {
+            return self.clone();
+        }
         let mut source_path = self.source_path.0.clone();
         source_path.push(component);
         Self {
@@ -139,6 +142,9 @@ impl MeteredMachine {
                 "Billable metering cost must be positive for {}",
                 amount.operation
             )));
+        }
+        if self.budget.is_unmetered() {
+            return Ok(());
         }
 
         let local_index = self.next_local_index.fetch_add(1, Ordering::AcqRel);
@@ -316,6 +322,54 @@ mod tests {
         assert!(budget.get_event_log().is_empty());
         assert_eq!(budget.total_cost().value, 0);
         assert_eq!(budget.cost_trace_event_count(), 0);
+    }
+
+    #[test]
+    fn unmetered_reservations_preserve_the_next_metered_identity() {
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
+        let machine = MeteredMachine::new(budget.clone());
+
+        {
+            let _scope = budget.enter_unmetered_scope();
+            machine
+                .reserve_comm(Cost::create(1, "system execution"))
+                .unwrap();
+        }
+        machine
+            .reserve_comm(Cost::create(1, "user execution"))
+            .unwrap();
+
+        let events = budget.get_canonical_event_log();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].local_index, 0);
+        assert_eq!(events[0].source_path, SourcePath(vec![0]));
+    }
+
+    #[test]
+    fn unmetered_children_preserve_the_parent_identity_state() {
+        let budget = RuntimeBudget::new(Cost::create(1, "test"));
+        let machine = MeteredMachine::new(budget.clone());
+
+        {
+            let _scope = budget.enter_unmetered_scope();
+            let mut descendant = machine.clone();
+            for component in 0..32_768 {
+                descendant = descendant.child(component);
+            }
+            assert_eq!(descendant.source_path, SourcePath(Vec::new()));
+            assert!(Arc::ptr_eq(
+                &descendant.next_local_index,
+                &machine.next_local_index
+            ));
+        }
+
+        machine
+            .reserve_comm(Cost::create(1, "user execution"))
+            .unwrap();
+        let events = budget.get_canonical_event_log();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].local_index, 0);
+        assert_eq!(events[0].source_path, SourcePath(vec![0]));
     }
 
     #[test]

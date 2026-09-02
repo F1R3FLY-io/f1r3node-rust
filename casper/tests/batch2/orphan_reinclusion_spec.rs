@@ -84,17 +84,19 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
         Some(shard_id.clone()),
     )
     .expect("build orphan deploy");
-    let orphan_sig: Bytes = orphan_deploy.sig.clone();
+    let orphan_id = nodes[0]
+        .canonical_deploy_id(&orphan_deploy)
+        .expect("orphan deploy identity");
     let block_x = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&orphan_deploy))
         .await
         .expect("validator 1 proposes the carrier X");
     assert!(
-        block_x
-            .body
-            .deploys
-            .iter()
-            .any(|pd| pd.deploy.sig == orphan_sig && !pd.is_failed),
+        block_x.body.deploys.iter().any(|pd| {
+            pd.deploy_id_for_protocol(block_x.header.version)
+                .is_ok_and(|deploy_id| deploy_id == orphan_id)
+                && !pd.is_failed
+        }),
         "X must carry d cleanly"
     );
 
@@ -231,11 +233,10 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             .collect::<Vec<_>>()
     );
     assert!(
-        !reinclude_block
-            .body
-            .deploys
-            .iter()
-            .any(|pd| pd.deploy.sig == orphan_sig),
+        !reinclude_block.body.deploys.iter().any(|pd| {
+            pd.deploy_id_for_protocol(reinclude_block.header.version)
+                .is_ok_and(|deploy_id| deploy_id == orphan_id)
+        }),
         "with X merged, d is already in the parents' ancestry, so the \
          ordinary in-scope filter must suppress a second copy — \
          re-proposing it here would duplicate work the merge already \
@@ -244,7 +245,7 @@ async fn own_unmerged_carrier_is_merged_back_never_orphaned() {
             .body
             .deploys
             .iter()
-            .map(|pd| hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]))
+            .map(|pd| hex::encode(pd.deploy_id()))
             .collect::<Vec<_>>()
     );
 }
@@ -302,7 +303,9 @@ async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
         Some(shard_id.clone()),
     )
     .expect("build orphan deploy");
-    let orphan_sig: Bytes = orphan_deploy.sig.clone();
+    let orphan_id = nodes[0]
+        .canonical_deploy_id(&orphan_deploy)
+        .expect("orphan deploy identity");
     let block_x = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&orphan_deploy))
         .await
@@ -385,11 +388,11 @@ async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
             .collect::<Vec<_>>()
     );
     assert!(
-        reproposal
-            .body
-            .deploys
-            .iter()
-            .any(|pd| pd.deploy.sig == orphan_sig && !pd.is_failed),
+        reproposal.body.deploys.iter().any(|pd| {
+            pd.deploy_id_for_protocol(reproposal.header.version)
+                .is_ok_and(|deploy_id| deploy_id == orphan_id)
+                && !pd.is_failed
+        }),
         "the owner must re-propose d from its pool: the carrier left every \
          cone, so the pool copy is the last route back for the work \
          (body sigs: {:?})",
@@ -397,7 +400,7 @@ async fn foreign_orphaned_work_returns_by_owner_pool_reproposal() {
             .body
             .deploys
             .iter()
-            .map(|pd| hex::encode(&pd.deploy.sig[..8.min(pd.deploy.sig.len())]))
+            .map(|pd| hex::encode(pd.deploy_id()))
             .collect::<Vec<_>>()
     );
 

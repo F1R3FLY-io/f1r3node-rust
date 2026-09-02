@@ -32,7 +32,7 @@ become channels, tokens become messages on those channels, and signed
 processes must consume fuel before they can communicate.
 
 This article presents a machine-checked proof of that claim, mechanized
-in **Rocq 9.1.1** across 120 modules and 43,925 lines of development, and
+in **Rocq 9.1.1** across 120 modules and 44,466 lines of development, and
 complements it with a **TLA+** finite-state model verified by TLC. The required
 aggregate gate also cross-checks symbolic N-ary authority, the typed threat and
 search-frontier models, and replay-root materialization with Apalache. The
@@ -54,7 +54,7 @@ axiom-free forward weak-barb propagation from a replicated body to both
 the primitive replicator and Meredith's reflective replication encoding
 (`preplicate_bang_encoding_body_barbs_sound`,
 `replication_encoding_forward_barb_sound`).
-All 1,841 `Qed.`/`Defined.` proof terms are discharged without any
+All 1,865 `Qed.`/`Defined.` proof terms are discharged without any
 `Admitted`, `admit`, or `Axiom`; the trust base consists of the
 Rocq 9.1.1 kernel, the Rocq Stdlib, and one `hash_process`
 encoding parameter with three explicit section hypotheses (Section 12.1).
@@ -137,7 +137,7 @@ This article proves that claim. Concretely, we contribute:
    calculus, its compositional translation back into pure rho, and the
    infrastructure (`Split`, `Join`, persistent mediators) required to
    discharge the paper's five reduction rules (Section 5). The
-   development spans 120 modules and 43,925 lines, with 1,841 `Qed.` or
+   development spans 120 modules and 44,466 lines, with 1,865 `Qed.` or
    `Defined.` proof obligations and zero `Admitted` / `admit` /
    `Axiom` declarations.
 
@@ -303,8 +303,8 @@ the proof context.
 | Metric                                           | Value                                                      |
 |--------------------------------------------------|------------------------------------------------------------|
 | Rocq source files                                | 120 modules                                                |
-| Total lines of Rocq                              | 43,925                                                     |
-| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,841                                                      |
+| Total lines of Rocq                              | 44,466                                                     |
+| Proven lemmas and theorems (`Qed.` / `Defined.`) | 1,865                                                      |
 | `Admitted` / `admit`                             | **0**                                                      |
 | Named `Axiom` declarations                       | **0**                                                      |
 | Proof assistant                                  | Rocq (Coq) 9.1.1 (also typechecks under 9.1.0)             |
@@ -3586,7 +3586,7 @@ Lean and Rocq, and named by a `validator_contract_*` clause in
 | S2 | Acceptance correctness (`Σ_s ≥ Δ_s`, pre-exec) | §7.6  | `LinearLogicResources.funding_decidable`                        | `admission_decision_schedule_independent`; Lean E2 |
 | S3 | Linear no-double-spend / reject-both     | §7.7         | `LinearLogicResources.ll_no_double_spend_single_witness`        | committed-prefix; Lean E2 |
 | S4 | For-comprehension = atomic funded txn    | §7.1         | `StepDeterminism.ca_step_deterministic`, `core_token_demand`    | single-COMM fire; Lean E3 |
-| P1 | Slash-authorization soundness            | DR-12        | `MainTheorem.main_T9_12_stale_evidence_not_authorized`          | `AuthorizedSlashFlow`; Lean E4 |
+| P1 | Slash-authorization soundness            | DR-12        | `MainTheorem.main_T9_12_stale_generation_evidence_not_authorized` | `AuthorizedSlashFlow`; Lean E4 |
 | P2 | Finalization safety                      | DR-12        | `MainTheorem.main_T10_fork_choice_exclusion`                    | `EquivocationDetector`; Lean E6.5 |
 | P3 | Determinism / replay-equivalence         | DR-12        | `StepDeterminism.ca_step_deterministic`                         | `ConsumedAndVerdictScheduleIndependent`; Lean E4 |
 
@@ -3791,6 +3791,8 @@ the digest is consensus.
 | Fuel cannot be synthesized in source reductions | `translation_fuel_bound_soundness`, `no_phantom_fuel` | Mechanized for `ca_reachable` |
 | Split/Join do not add source cost | Rules 3/5 consume one source token; Rules 2/4 consume two | Mechanized in source calculus; runtime must bill source-token events, not raw translated COMM count |
 | Bounded-memory `TokenBudget` coalesces the nested token stack | `RuntimeBudgetRefinement.v`: `rb_total_remaining_conservation`, `rb_successful_weight_refines_unit_count`, `rb_reserve_oop_commits_limit`, `rb_reset_from_token_conservation` | Implemented as `RuntimeBudget` reset from `SignedProcess::metered(..., Token::Count ...)`; tested against finite unit-token expansion, OOP boundary commitment, reset semantics, and canonical event logs |
+| Unmetered work preserves the next metered event identity | `rb_meter_identity_unmetered_reserve_many_preserves_state`, `rb_meter_identity_metered_reserve_uses_next_identity`, `rb_meter_identity_scoped_unmetered_work_preserves_next_metered_identity`, `rb_meter_identity_scoped_unmetered_children_preserve_next_metered_identity` | `MeteredMachine` returns before it allocates a local index or extends an unused source path; the unmetered reservation and child-context tests check the concrete boundary |
+| Persistent causal paths refine canonical sequence order | `persistent_path_append_projection`, `persistent_child_path_projection`, `persistent_path_append_allocates_one_node`, `persistent_path_order_refines_sequence_order`, `equal_path_projections_preserve_all_comparisons` | `OperationOrder` uses an immutable causal tree with binary-lifted ancestor indexes; property tests compare equality, sorting, shared-prefix ordering, and append projection with `Vec`; the 32,768-step recursion regression detects the former quadratic retained-path growth and comparison cost |
 | Weighted primitive/parser/substitution work is billed consistently | `rb_admitted_success_has_admissible_event`, `rb_zero_weight_admission_rejection_preserves_trace` | Implemented as deterministic positive bounded `BillableTokenEvent` reservations; zero-weight or malformed billable events are rejected before trace or fuel mutation |
 | Canonical OOP boundary is schedule-independent | `fuel_events_consumed_perm`, `ca_cost_deterministic` | Mechanized multiset/cost basis; Rust records insufficient-fuel boundaries by canonical source-event descriptor |
 | RevVault settlement charges authenticated cost without reintroducing runtime metering | `refund_le_reservation`, `debit_plus_refund_eq_reservation`, `post_evaluation_settlement_no_mint`, `byte_trace_settlement_conserves_rev` | Mechanized as component-wise post-evaluation arithmetic in `Settlement.v` and `VaultBackedByteAccounting.v`; protocol 4 reserves physical authority, canonical transfer bytes, and the fee before evaluation, then burns/transfers realized components and refunds the exact residual |
@@ -3824,6 +3826,22 @@ successful `MeteredMachine` reservation must correspond to the finite
 unit-token expansion covered by the token-count theorems, and every
 failed reservation must expose the same canonical source-event
 descriptor on every validator.
+
+`MeteredMachine` checks unmetered mode before it allocates a local event
+index or extends a source path. Thus, unmetered system work cannot create
+a hidden gap in later metered descriptors or retain unused identity paths.
+
+The deterministic reducer stores causal paths in an immutable causal tree.
+Each node shares its prefix and stores binary-lifted ancestor indexes. Rocq
+proves that persistent append and child construction project to the original
+segment sequence. Rocq also proves that the representation keeps all
+sequence-order comparisons. Rust property tests compare the concrete tree
+equality, sorting, shared-prefix order, and append behavior with `Vec`.
+
+The 32,768-step recursion fixture uses a scoped unmetered budget. It detects the
+former quadratic retained-path growth and prefix-comparison cost. The separate
+stack-safety branch owns pushdown-automata conversion. Dedicated metering tests
+verify event identity, cost, and trace behavior.
 
 `Settlement.v` is intentionally outside the reduction relation. It proves
 that post-evaluation RevVault reservation settlement is deterministic and
@@ -4440,7 +4458,9 @@ not slash evidence against a remote validator.
 | TLA+ | `VaultBackedByteAccounting.tla` | canonical introduction and COMM byte tariffs, distinct execution and physical-authority quantities, fixed RevVault reservation, top-up isolation, settlement, and replay agree; eight unsafe controls exercise the excluded defects |
 | TLA+ | `AccountingScopeLifetime.tla` | accounting remains active while any overlapping evaluation owns a scope; the unsafe boolean control demonstrates premature deactivation |
 | TLA+ | `deterministic_parallel_reduction/DeterministicParallelReduction.tla` | complete-frontier commitment, canonical conflicting order, transitive channel/join/authority components, retained disjoint parallelism, causal terminal state, and quiescent checkpointing; five controls isolate arrival, order, checkpoint, global-serialization, and shared-purse defects |
-| TLA+ | `deterministic_parallel_reduction/EvaluationBoundary.tla` | cancellation retains the evaluation permit for detached children; the unsafe control checkpoints while child mutations remain live |
+| TLA+ | `deterministic_parallel_reduction/ReductionDriverLifecycle.tla` | each complete frontier has one driver; the driver releases ownership before result delivery starts a new frontier |
+| TLA+ | `deterministic_parallel_reduction/SingleParticipantFastPath.tla` | direct execution starts only with one live participant and refines the scheduled singleton result |
+| TLA+ | `deterministic_parallel_reduction/EvaluationBoundary.tla` | structured cancellation aborts child tasks before the evaluation permit allows a checkpoint |
 | TLA+ | `ConcurrentEvaluationTransactionIsolation.tla` | independently scheduled parser, capture, reset, execution, checkpoint, validation, crash, restart, acceptance, and rejection transitions preserve transaction-local roots and evidence; eight unsafe controls isolate cross-transaction authority and rollback defects |
 | TLA+ | `StateBoundAdmission.tla` | exact state-bound evidence, finite capacity, replay, and settlement agree |
 | TLA+ | `StateBoundValidatorConvergence.tla` | independent validators agree across arrival and reducer schedules |
@@ -4449,7 +4469,7 @@ not slash evidence against a remote validator.
 | TLA+ / Apalache | `OslfLocatedTyping.tla` plus five unsafe configurations | separating surfaces, exact modal spend/post-state, local sufficiency, and authenticated funding hold; contraction, weakening, aliasing, upper-bound-as-exact, and candidate-credit alternatives each violate their named invariant |
 | Rocq | `AtomicCommAccounting.v` | atomic COMM cost is trigger-symmetric, join-arity independent, and rejection preserving |
 | Rocq | `RuntimeAuthorityScope.v` | Unit has zero demand, is neutral under nesting, and either overlapping-scope exit order retains the remaining owner |
-| Rocq | `DeterministicParallelReduction.v` | disjoint operations commute, compound authority overlap is order-independent, canonical conflicting execution has one result, causal path segments are monotone, and cancelled-root checkpoint exclusion lasts through detached-child completion |
+| Rocq | `DeterministicParallelReduction.v` | disjoint operations commute, compound authority overlap is order-independent, canonical conflicting execution has one result, direct singleton execution refines scheduled execution, causal path segments are monotone, and structured cancellation preserves checkpoint exclusion |
 | Rocq | `EvaluationTransactionIsolation.v` and `MultiShardConcurrency.v` | failure projections are transaction-atomic; arbitrary shard/action traces frame foreign state, conserve each shard, preserve exact semantic-ledger, recorded-root, and charge updates, and retain bounded unique workers |
 | Rust production refinement | `casper/tests/util/rholang/multi_shard_runtime_isolation_test.rs` | independently stored `RuntimeManager` and SystemVault instances retain distinct roots and balances under concurrent mint, burn, underfunded rejection, and top-up even for the same public purse address |
 | Rocq | `EndToEndAuthority.v` | authority, evidence, replay, and exact settlement compose without minting or double debit |

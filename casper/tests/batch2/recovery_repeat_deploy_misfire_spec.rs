@@ -79,10 +79,10 @@ fn mk_casper_snapshot(
     snapshot
 }
 
-/// A rejection record above the finalized floor cannot grant a recovery
-/// exemption. The gate rejects the retry until the record becomes settled.
+/// A forged rejection above the finalized floor cannot override a finalized
+/// win. The ordinary repeat check rejects the duplicate occurrence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn repeat_deploy_rejects_parent_record_above_finalized_floor() {
+async fn finalized_win_dominates_parent_rejection_for_repeat_check() {
     crate::init_logger();
 
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -177,6 +177,13 @@ async fn repeat_deploy_rejects_parent_record_above_finalized_floor() {
         .await
         .expect("derive finalized floor");
         assert_eq!(floor_context.floor.hash, genesis.block_hash);
+        assert!(
+            !floor_context
+                .rejected_sigs(&block_store, 0)
+                .expect("derive floor-relative rejected deploys")
+                .contains(&crate::current_deploy_id(&deploy_sig)),
+            "the finalized winning source must dominate the forged visible rejection"
+        );
 
         let result = Validate::repeat_deploy_at_floor(
             &block_w,
@@ -188,8 +195,8 @@ async fn repeat_deploy_rejects_parent_record_above_finalized_floor() {
 
         assert_eq!(
             result,
-            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
-            "a rejection record above the finalized floor must not grant a recovery exemption; got {:?}",
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "the finalized win must retain the ordinary repeat-deploy rejection; got {:?}",
             result
         );
     })

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use dashmap::DashMap;
 use hex::ToHex;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
@@ -1285,6 +1285,17 @@ impl RuntimeManager {
         let runtime = self.spawn_runtime().await;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.capture_results(start, deploy).await?;
+        Ok(computed)
+    }
+
+    pub async fn capture_results_cosigned(
+        &self,
+        start: &StateHash,
+        deploy: &Cosigned<DeployData>,
+    ) -> Result<Vec<Par>, CasperError> {
+        let runtime = self.spawn_runtime().await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        let computed = runtime_ops.capture_results_cosigned(start, deploy).await?;
         Ok(computed)
     }
 

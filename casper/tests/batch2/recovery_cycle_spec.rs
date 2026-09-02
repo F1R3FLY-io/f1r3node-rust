@@ -543,7 +543,6 @@ pub(super) struct D3VaultConflictFixture {
 
 pub(super) struct D3VaultMergeOutcome {
     pub(super) merge_block: BlockMessage,
-    pub(super) winning_block: BlockMessage,
     pub(super) rejected_sig: Bytes,
     pub(super) surviving_sigs: [Bytes; 2],
     pub(super) recovery_validator_index: usize,
@@ -778,7 +777,6 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
 
     D3VaultMergeOutcome {
         merge_block,
-        winning_block: fixture.siblings[recovery_validator_index].clone(),
         rejected_sig,
         surviving_sigs,
         recovery_validator_index,
@@ -811,8 +809,9 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
 ///          ╲   │    ╱
 ///        merge_block           proposed by the fourth validator
 ///             │
-///       recovery_block         proposed by the finalized-view recovery leader
-///                              must resurface in body.deploys
+///       deferred_block         ordinary work progresses while retry waits
+///             │
+///       recovery_block         retry follows rejection finalization
 ///
 /// Recovery pipeline (consensus-critical, D3-independent):
 ///   1. multi-parent merge → `dag_merger::merge` returns the rejected sig;
@@ -820,11 +819,9 @@ pub(super) async fn propose_d3_vault_rejecting_merge(
 ///      `Pending`) to the buffer.
 ///   2. the rejected carrier owner validates merge_block →
 ///      `validate_block_checkpoint` populates its `KeyValueRejectedDeployBuffer`.
-///   3. that owner proposes recovery_block → `prepare_user_deploys` pulls the
-///      buffered sig, and `canonical_won_sigs` exempts it (its highest-block
-///      disposition is the REJECTION at merge_block height 2, which overrides the
-///      WIN in block_0 at height 1) so it survives the self-chain dedup filter
-///      and reaches `body.deploys`.
+///   3. the owner keeps custody until the rejection reaches the frozen floor;
+///   4. after finalization, `prepare_user_deploys` selects the retry and the
+///      self-chain filter preserves that authorized selection.
 ///
 /// Determinism: all three transfers are economically identical and signed by
 /// `DEFAULT_SEC`. Consensus deterministically selects one exact rejected source
@@ -920,9 +917,6 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
         "exact merge tombstone must make the rejected source canonically rejected"
     );
 
-    // Recovery: the rejected carrier owner proposes recovery_block. `prepare_user_deploys`
-    // pulls the buffered sig and the `canonical_won_sigs` exemption lets it past
-    // the self-chain dedup filter into body.deploys.
     let marker_2 = {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(
@@ -932,10 +926,125 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
         )
         .expect("build recovery marker")
     };
-    let recovery_block = nodes[recovery_owner_index]
+    let marker_2_id = nodes[recovery_owner_index]
+        .canonical_deploy_id(&marker_2)
+        .expect("recovery marker identity");
+    let deferred_block = nodes[recovery_owner_index]
         .add_block_from_deploys(&[marker_2])
         .await
-        .expect("rejected carrier owner proposes recovery_block");
+        .expect("rejected carrier owner proposes while retry gate is closed");
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if index != recovery_owner_index {
+            let status = node
+                .process_block(deferred_block.clone())
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("validator {index} replays deferred block: {error}")
+                });
+            assert!(
+                matches!(status, Either::Right(_)),
+                "validator {index} rejected deferred block: {status:?}"
+            );
+        }
+    }
+    let deferred_ids = deferred_block
+        .body
+        .deploys
+        .iter()
+        .map(|deploy| {
+            deploy
+                .deploy_id_for_protocol(deferred_block.header.version)
+                .expect("deferred deploy identity")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        deferred_ids.contains(&marker_2_id),
+        "ordinary marker must progress while the retry gate is closed"
+    );
+    assert!(
+        !deferred_ids
+            .iter()
+            .any(|deploy_id| deploy_id.as_bytes() == rejected_sig.as_ref()),
+        "a rejection above the frozen floor must not retry immediately"
+    );
+
+    for (index, node) in nodes.iter().enumerate() {
+        let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
+        let has_retry_custody = buffer_guard
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .expect("buffer.contains_sig");
+        assert_eq!(
+            has_retry_custody,
+            index == recovery_owner_index,
+            "owner custody for {} changed while the retry gate was closed",
+            hex::encode(&rejected_sig),
+        );
+    }
+
+    let pre_settlement_snapshot = nodes[recovery_owner_index]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("pre-settlement snapshot");
+    assert!(
+        pre_settlement_snapshot.last_finalized_block != merge_block.block_hash
+            && !pre_settlement_snapshot
+                .dag
+                .is_dag_ancestor(
+                    &merge_block.block_hash,
+                    &pre_settlement_snapshot.last_finalized_block,
+                )
+                .expect("pre-settlement floor ancestry"),
+        "retry gate must remain closed while the rejection is above the frozen floor"
+    );
+
+    let settlement_validators = (0..nodes.len())
+        .filter(|index| *index != recovery_owner_index)
+        .collect::<Vec<_>>();
+    let mut gate_open = false;
+    for round in 0..40usize {
+        let proposer = settlement_validators[round % settlement_validators.len()];
+        let support = nodes[proposer]
+            .add_block_from_deploys(&[])
+            .await
+            .expect("settlement support block");
+        for (index, node) in nodes.iter_mut().enumerate() {
+            if index != proposer {
+                let status = node
+                    .process_block(support.clone())
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("validator {index} replays settlement support: {error}")
+                    });
+                assert!(
+                    matches!(status, Either::Right(_)),
+                    "validator {index} rejected settlement support: {status:?}"
+                );
+            }
+        }
+        let snapshot = nodes[recovery_owner_index]
+            .casper
+            .get_snapshot()
+            .await
+            .expect("settlement snapshot");
+        gate_open = snapshot.last_finalized_block == merge_block.block_hash
+            || snapshot
+                .dag
+                .is_dag_ancestor(&merge_block.block_hash, &snapshot.last_finalized_block)
+                .expect("settlement floor ancestry");
+        if gate_open {
+            break;
+        }
+    }
+    assert!(
+        gate_open,
+        "the synchronized settlement rounds must finalize the rejection record"
+    );
+
+    let recovery_block = nodes[recovery_owner_index]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("owner proposes recovery after floor settlement");
     for (index, node) in nodes.iter_mut().enumerate() {
         if index != recovery_owner_index {
             let status = node
@@ -950,48 +1059,36 @@ async fn d3_vault_draining_transfers_reject_at_merge_and_recover() {
             );
         }
     }
-    let recovery_sigs: Vec<Bytes> = recovery_block
+    let recovery_ids = recovery_block
         .body
         .deploys
         .iter()
-        .map(|pd| Bytes::copy_from_slice(pd.deploy_id()))
-        .collect();
+        .map(|deploy| {
+            deploy
+                .deploy_id_for_protocol(recovery_block.header.version)
+                .expect("recovery deploy identity")
+        })
+        .collect::<Vec<_>>();
     assert!(
-        recovery_sigs
+        recovery_ids
             .iter()
-            .any(|deploy_id| deploy_id == &rejected_sig),
-        "recovery_block.body.deploys must re-include the merge-rejected transfer \
-         {} pulled from the rejected-deploy buffer; got body.deploys sigs = {:?}. \
-         If this fires, check that `prepare_user_deploys` and the self-chain dedup \
-         filter both exempt `rejected_in_scope` sigs",
-        hex::encode(&rejected_sig),
-        recovery_sigs.iter().map(hex::encode).collect::<Vec<_>>()
+            .any(|deploy_id| deploy_id.as_bytes() == rejected_sig.as_ref()),
+        "floor settlement must authorize the owner's canonical retry"
     );
 
-    // Packaging the replay must NOT drain the buffer entry (ported from dev's
-    // retry test; this is the invariant behind the disabled finalization-time
-    // purge): the recovery block is not yet canonical — it could be orphaned —
-    // and the buffer holds the only re-proposable copy. The entry is purged only
-    // once the replay is finalized-WON (proposer-side terminal purge in
-    // `prepare_user_deploys_with_policy`).
-    {
-        for (index, node) in nodes.iter().enumerate() {
-            let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
-            let has_retry_custody = buffer_guard
-                .contains_id(&crate::current_deploy_id(&rejected_sig))
-                .expect("buffer.contains_sig");
-            assert_eq!(
-                has_retry_custody,
-                index == recovery_owner_index,
-                "owner custody for {} changed before finalized-WON",
-                hex::encode(&rejected_sig),
-            );
-        }
+    for (index, node) in nodes.iter().enumerate() {
+        let buffer_guard = node.rejected_deploy_buffer.lock().expect("buffer lock");
+        let has_retry_custody = buffer_guard
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
+            .expect("buffer.contains_sig");
+        assert_eq!(
+            has_retry_custody,
+            index == recovery_owner_index,
+            "owner custody for {} changed before the retry became floor-settled",
+            hex::encode(&rejected_sig),
+        );
     }
 
-    // A recovery block must never list one of its own accepted deploys as
-    // rejected (ported from dev's retry test: accept/reject overlap would be an
-    // InvalidRejectedDeploy-class self-contradiction).
     let recovery_body_sigs: std::collections::HashSet<Bytes> = recovery_block
         .body
         .deploys

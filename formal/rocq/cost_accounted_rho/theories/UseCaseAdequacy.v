@@ -1474,11 +1474,31 @@ Theorem uc_ca_061_system_mode_cannot_leak_into_user_metering :
     rb_last_oop (rb_set_unmetered (rb_set_unmetered b true) false) =
       rb_last_oop b /\
     rb_unmetered (rb_set_unmetered (rb_set_unmetered b true) false) =
-      false).
+      false) /\
+  (forall count s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_reserve_many count
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false)) /\
+  (forall components s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_child_many components
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false)).
 Proof.
   split.
   - exact rb_unmetered_reserve_preserves_trace.
-  - exact rb_set_unmetered_restores_metered_observables.
+  - split.
+    + exact rb_set_unmetered_restores_metered_observables.
+    + split.
+      * exact rb_meter_identity_scoped_unmetered_work_preserves_next_metered_identity.
+      * exact rb_meter_identity_scoped_unmetered_children_preserve_next_metered_identity.
 Qed.
 
 (* UC-CA-062: block-authentication payloads change whenever the embedded

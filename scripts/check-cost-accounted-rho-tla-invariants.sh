@@ -591,6 +591,80 @@ if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
         fi
     done
 
+    driver_module="$REDUCTION_TLA_DIR/ReductionDriverLifecycle.tla"
+    for driver_mode in async inline; do
+        if [[ "$driver_mode" == "async" ]]; then
+            driver_config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle.cfg"
+        else
+            driver_config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle_inline.cfg"
+        fi
+        printf "  %-40s " "ReductionDriverLifecycle_${driver_mode}"
+        driver_output=$(tlc_run "$METADIR_ROOT/ReductionDriverLifecycle_${driver_mode}" \
+            "$driver_config" "$driver_module" -deadlock 2>&1 || true)
+        if grep -q "Model checking completed. No error has been found" <<<"$driver_output"; then
+            echo "PASS"
+            passes=$((passes + 1))
+        else
+            echo "FAIL"
+            failures=$((failures + 1))
+            failed_specs+=("ReductionDriverLifecycle_${driver_mode}")
+            echo "$driver_output" | tail -10 | sed 's/^/    /'
+        fi
+    done
+
+    declare -A DRIVER_UNSAFE_INVARIANTS=(
+        [claim]="Inv_ReadyHasDriver"
+        [transfer]="Inv_PendingInlineIsTransferable"
+        [reentry]="Inv_InternalExecutionNeverResubmits"
+    )
+    for control in claim transfer reentry; do
+        invariant="${DRIVER_UNSAFE_INVARIANTS[$control]}"
+        config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle_${control}_unsafe.cfg"
+        printf "  %-40s " "ReductionDriverLifecycle_${control} (expected refutation)"
+        driver_output=$(tlc_run "$METADIR_ROOT/ReductionDriverLifecycle_${control}" \
+            "$config" "$driver_module" -deadlock 2>&1 || true)
+        if grep -Fq "Invariant ${invariant} is violated" <<<"$driver_output"; then
+            echo "PASS (refuted ${invariant})"
+            passes=$((passes + 1))
+            expected_refutations=$((expected_refutations + 1))
+        else
+            echo "FAIL (expected ${invariant} counterexample)"
+            failures=$((failures + 1))
+            failed_specs+=("ReductionDriverLifecycle_${control}(expected-refutation)")
+            echo "$driver_output" | tail -10 | sed 's/^/    /'
+        fi
+    done
+
+    singleton_module="$REDUCTION_TLA_DIR/SingleParticipantFastPath.tla"
+    singleton_safe="$REDUCTION_TLA_DIR/MC_SingleParticipantFastPath.cfg"
+    printf "  %-40s " "SingleParticipantFastPath"
+    singleton_output=$(tlc_run "$METADIR_ROOT/SingleParticipantFastPath" \
+        "$singleton_safe" "$singleton_module" -deadlock 2>&1 || true)
+    if grep -q "Model checking completed. No error has been found" <<<"$singleton_output"; then
+        echo "PASS"
+        passes=$((passes + 1))
+    else
+        echo "FAIL"
+        failures=$((failures + 1))
+        failed_specs+=("SingleParticipantFastPath")
+        echo "$singleton_output" | tail -10 | sed 's/^/    /'
+    fi
+
+    singleton_unsafe="$REDUCTION_TLA_DIR/MC_SingleParticipantFastPath_unsafe.cfg"
+    printf "  %-40s " "SingleParticipantFastPath_unsafe (expected refutation)"
+    singleton_output=$(tlc_run "$METADIR_ROOT/SingleParticipantFastPath_unsafe" \
+        "$singleton_unsafe" "$singleton_module" -deadlock 2>&1 || true)
+    if grep -Fq "Invariant Inv_DirectOwnerRequiresSingleton is violated" <<<"$singleton_output"; then
+        echo "PASS (refuted Inv_DirectOwnerRequiresSingleton)"
+        passes=$((passes + 1))
+        expected_refutations=$((expected_refutations + 1))
+    else
+        echo "FAIL (expected Inv_DirectOwnerRequiresSingleton counterexample)"
+        failures=$((failures + 1))
+        failed_specs+=("SingleParticipantFastPath_unsafe(expected-refutation)")
+        echo "$singleton_output" | tail -10 | sed 's/^/    /'
+    fi
+
     boundary_module="$REDUCTION_TLA_DIR/EvaluationBoundary.tla"
     boundary_safe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary.cfg"
     printf "  %-40s " "EvaluationBoundary"

@@ -2295,6 +2295,28 @@ impl RuntimeOps {
         Ok(data)
     }
 
+    pub async fn capture_results_cosigned(
+        &mut self,
+        start: &StateHash,
+        deploy: &Cosigned<DeployData>,
+    ) -> Result<Vec<Par>, CasperError> {
+        let mut rand = Tools::user_deploy_rng(deploy);
+        let return_name = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                id: rand.next().into_iter().map(|b| b as u8).collect(),
+            })),
+        }]);
+
+        self.runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(start))
+            .await?;
+        let eval_res = self.evaluate_cosigned(deploy).await?;
+        if !eval_res.errors.is_empty() {
+            return Err(CasperError::InterpreterError(eval_res.errors[0].clone()));
+        }
+        Ok(self.get_data_par(&return_name).await)
+    }
+
     pub async fn capture_results_with_name(
         &mut self,
         start: &StateHash,

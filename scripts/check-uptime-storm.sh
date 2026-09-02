@@ -70,7 +70,22 @@ profile_constants() {
     (.constants.INITIAL_QUEUE >= 0 and .constants.INITIAL_QUEUE <= .constants.QUEUE_CAP) and
     (.constants.INITIAL_LAG >= 0 and .constants.INITIAL_LAG <= .constants.LAG_CAP) and
     (.constants.INITIAL_MEMORY >= 0 and .constants.INITIAL_MEMORY <= .constants.MEMORY_CAP) and
-    (.constants.HORIZON_HOURS > 0)
+    (.constants.HORIZON_HOURS > 0) and
+    ([
+      .constants.VALIDATOR_FAILURE_RATE,
+      .constants.VALIDATOR_REPAIR_RATE,
+      .constants.COMMON_FAILURE_RATE,
+      .constants.COMMON_REPAIR_RATE,
+      .constants.STORAGE_FAILURE_RATE,
+      .constants.STORAGE_REPAIR_RATE,
+      .constants.ARRIVAL_RATE,
+      .constants.SERVICE_RATE,
+      .constants.LAG_GROWTH_RATE,
+      .constants.LAG_DRAIN_RATE,
+      .constants.MEMORY_BACKGROUND_GROWTH_RATE,
+      .constants.MEMORY_WORK_GROWTH_RATE,
+      .constants.MEMORY_RECLAIM_RATE
+    ] | all(. >= 0))
   ' "$profile" >/dev/null
   jq -r '.constants | to_entries | map("\(.key)=\(.value|tostring)") | join(",")' "$profile"
 }

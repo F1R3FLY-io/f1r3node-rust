@@ -1,6 +1,7 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperMergeSpec.scala
 
 use casper::rust::block_status::ValidBlock;
+use casper::rust::casper::DeployError;
 use casper::rust::util::{construct_deploy, rspace_util};
 use rspace_plus_plus::rspace::history::Either;
 
@@ -46,6 +47,9 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).unwrap();
 
     let deploys = [deploy_data0, deploy_data1, deploy_data2];
+    let deploy2_id = nodes[0]
+        .canonical_deploy_id(&deploys[2])
+        .expect("deploy2 identity");
 
     let block0 = nodes[0]
         .add_block_from_deploys(&[deploys[0].clone()])
@@ -133,20 +137,28 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
     // which validator leads is hash-order dependent. Drive bounded proposal
     // rounds (deploy2 queued on both nodes) until the leader includes it, then
     // assert its effect at that block's post-state.
-    let mut deploy2_block = if multiparent_block
-        .body
-        .deploys
-        .iter()
-        .any(|pd| pd.deploy.sig == deploys[2].sig)
-    {
+    let mut deploy2_block = if multiparent_block.body.deploys.iter().any(|pd| {
+        pd.deploy_id_for_protocol(multiparent_block.header.version)
+            .is_ok_and(|deploy_id| deploy_id == deploy2_id)
+    }) {
         Some(multiparent_block.clone())
     } else {
         None
     };
     if deploy2_block.is_none() {
-        nodes[1].submit_deploy(deploys[2].clone()).ok();
-        for round in 0..6 {
-            let proposer = round % 2;
+        for node in &nodes {
+            match node
+                .submit_deploy(deploys[2].clone())
+                .expect("submit deploy2 to validator")
+            {
+                Either::Right(_) => {}
+                Either::Left(DeployError::DuplicateDeploy(deploy_id))
+                    if deploy_id.as_slice() == deploy2_id.as_bytes() => {}
+                Either::Left(error) => panic!("deploy2 submission failed: {error:?}"),
+            }
+        }
+        for round in 0..nodes.len() * 2 {
+            let proposer = round % nodes.len();
             let block = {
                 let (before, rest) = nodes.split_at_mut(proposer);
                 let (current, after) = rest.split_at_mut(1);
@@ -154,12 +166,10 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
                     before.iter_mut().chain(after.iter_mut()).collect();
                 current[0].propagate_block(&[], &mut others).await.unwrap()
             };
-            if block
-                .body
-                .deploys
-                .iter()
-                .any(|pd| pd.deploy.sig == deploys[2].sig)
-            {
+            if block.body.deploys.iter().any(|pd| {
+                pd.deploy_id_for_protocol(block.header.version)
+                    .is_ok_and(|deploy_id| deploy_id == deploy2_id)
+            }) {
                 deploy2_block = Some(block);
                 break;
             }

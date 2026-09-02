@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::Poll;
 
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -11,7 +12,7 @@ use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
-use rspace_plus_plus::rspace::operation_context::{self, OperationOrder};
+use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
 use rspace_plus_plus::rspace::reporting_rspace::ReportPhase;
 use rspace_plus_plus::rspace::rspace_interface::{
     ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
@@ -19,14 +20,16 @@ use rspace_plus_plus::rspace::rspace_interface::{
 use rspace_plus_plus::rspace::trace::event::Produce;
 use rspace_plus_plus::rspace::trace::Log;
 use tokio::sync::{oneshot, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::task::JoinHandle;
 
 use super::accounting::RuntimeBudget;
 use super::rho_runtime::RhoISpace;
 
-type ParticipantId = Vec<(u64, u64)>;
+type ParticipantId = CausalPath;
 
 tokio::task_local! {
     static REDUCTION_CONTEXT: ReductionContext;
+    static INTERNAL_REDUCTION: ();
 }
 
 #[derive(Clone, Default)]
@@ -57,7 +60,7 @@ impl ReductionContext {
         Self {
             session,
             session_id,
-            participant: Vec::new(),
+            participant: CausalPath::new(),
             next_step: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -65,7 +68,7 @@ impl ReductionContext {
     fn next_operation(&self) -> OperationOrder {
         let step = self.next_step.fetch_add(1, Ordering::Relaxed);
         let mut path = self.participant.clone();
-        path.push((step, 0));
+        path.push_back((step, 0));
         OperationOrder {
             session: self.session_id,
             path,
@@ -77,11 +80,12 @@ impl ReductionContext {
             return Vec::new();
         }
         let step = self.next_step.fetch_add(1, Ordering::Relaxed);
+        let mut split_prefix = self.participant.clone();
+        split_prefix.push_back((step, 1));
         let children = (0..count)
             .map(|index| {
-                let mut participant = self.participant.clone();
-                participant.push((step, 1));
-                participant.push((index as u64, 0));
+                let mut participant = split_prefix.clone();
+                participant.push_back((index as u64, 0));
                 Self {
                     session: self.session.clone(),
                     session_id: self.session_id,
@@ -103,10 +107,61 @@ impl ReductionContext {
     pub fn rejoin(&self) { self.session.rejoin(self.participant.clone()); }
 }
 
-pub fn current() -> Option<ReductionContext> { REDUCTION_CONTEXT.try_with(Clone::clone).ok() }
+pub fn current() -> Option<ReductionContext> {
+    if INTERNAL_REDUCTION.try_with(|_| ()).is_ok() {
+        None
+    } else {
+        REDUCTION_CONTEXT.try_with(Clone::clone).ok()
+    }
+}
 
 pub async fn scope<T>(context: ReductionContext, future: impl Future<Output = T>) -> T {
     REDUCTION_CONTEXT.scope(context, future).await
+}
+
+async fn internal_scope<T>(future: impl Future<Output = T>) -> T {
+    INTERNAL_REDUCTION.scope((), future).await
+}
+
+pub(crate) struct ScopedJoinHandle<T> {
+    inner: JoinHandle<T>,
+}
+
+impl<T> ScopedJoinHandle<T> {
+    pub(crate) fn new(inner: JoinHandle<T>) -> Self { Self { inner } }
+}
+
+impl<T> Future for ScopedJoinHandle<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.inner).poll(context)
+    }
+}
+
+impl<T> Drop for ScopedJoinHandle<T> {
+    fn drop(&mut self) { self.inner.abort(); }
+}
+
+struct DirectExecutionGuard {
+    session: Arc<ReductionSession>,
+    participant: ParticipantId,
+}
+
+impl DirectExecutionGuard {
+    fn new(session: Arc<ReductionSession>, participant: ParticipantId) -> Self {
+        Self {
+            session,
+            participant,
+        }
+    }
+}
+
+impl Drop for DirectExecutionGuard {
+    fn drop(&mut self) { self.session.finish_direct(&self.participant); }
 }
 
 pub async fn root<T>(
@@ -122,8 +177,8 @@ pub async fn root<T>(
     let evaluation_guard = coordinator.enter_evaluation().await;
     let session = Arc::new(ReductionSession::new(space, budget, evaluation_guard));
     let context = ReductionContext::root(session.clone(), session_id);
-    session.register(Vec::new());
-    let guard = ParticipantGuard::new(session, Vec::new());
+    session.register(CausalPath::new());
+    let guard = ParticipantGuard::new(session, CausalPath::new());
     let result = scope(context, future).await;
     drop(guard);
     result
@@ -151,9 +206,32 @@ impl Drop for ParticipantGuard {
     fn drop(&mut self) { self.session.complete(&self.participant); }
 }
 
+#[derive(Debug)]
 enum ParticipantState {
     Running,
+    ExecutingDirect,
     Waiting(OperationOrder),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum DriverPoll {
+    CompletedInline,
+    Transferred,
+}
+
+async fn poll_driver_once(future: impl Future<Output = ()> + Send + 'static) -> DriverPoll {
+    let mut future = Some(Box::pin(future));
+    std::future::poll_fn(|context| {
+        let mut driver = future.take().expect("driver must be polled once");
+        match driver.as_mut().poll(context) {
+            Poll::Ready(()) => Poll::Ready(DriverPoll::CompletedInline),
+            Poll::Pending => {
+                tokio::spawn(driver);
+                Poll::Ready(DriverPoll::Transferred)
+            }
+        }
+    })
+    .await
 }
 
 struct SessionState {
@@ -287,6 +365,54 @@ impl ReductionSession {
             .insert(participant, ParticipantState::Running);
     }
 
+    fn claim_direct_state(state: &mut SessionState, participant: &ParticipantId) -> bool {
+        if state.driving || !state.intents.is_empty() || state.participants.len() != 1 {
+            return false;
+        }
+        let Some(participant_state) = state.participants.get_mut(participant) else {
+            return false;
+        };
+        if !matches!(participant_state, ParticipantState::Running) {
+            return false;
+        }
+        *participant_state = ParticipantState::ExecutingDirect;
+        true
+    }
+
+    fn claim_direct(&self, participant: &ParticipantId) -> bool {
+        Self::claim_direct_state(
+            &mut self.state.lock().expect("reduction session lock"),
+            participant,
+        )
+    }
+
+    fn finish_direct(&self, participant: &ParticipantId) {
+        let mut state = self.state.lock().expect("reduction session lock");
+        if matches!(
+            state.participants.get(participant),
+            Some(ParticipantState::ExecutingDirect)
+        ) {
+            state
+                .participants
+                .insert(participant.clone(), ParticipantState::Running);
+        }
+    }
+
+    fn release_frontier(state: &mut SessionState, orders: &[OperationOrder]) {
+        assert!(
+            state.intents.is_empty(),
+            "driver received a new intent before it released the completed frontier"
+        );
+        for order in orders {
+            for participant in state.participants.values_mut() {
+                if matches!(participant, ParticipantState::Waiting(waiting) if waiting == order) {
+                    *participant = ParticipantState::Running;
+                }
+            }
+        }
+        state.driving = false;
+    }
+
     fn split(&self, parent: &ParticipantId, children: Vec<ParticipantId>) {
         let mut state = self.state.lock().expect("reduction session lock");
         state.participants.remove(parent);
@@ -310,7 +436,7 @@ impl ReductionSession {
                 state.intents.remove(&order);
             }
             (
-                Self::ready_to_drive(&state),
+                Self::claim_driver(&mut state),
                 state.participants.is_empty() && state.intents.is_empty() && !state.driving,
             )
         };
@@ -318,33 +444,29 @@ impl ReductionSession {
             self.release_evaluation_guard();
         }
         if start {
-            self.start_driver();
+            self.spawn_driver();
         }
     }
 
-    fn ready_to_drive(state: &SessionState) -> bool {
-        !state.driving
-            && !state.intents.is_empty()
+    fn frontier_ready(state: &SessionState) -> bool {
+        !state.intents.is_empty()
             && state
                 .participants
                 .values()
                 .all(|participant| matches!(participant, ParticipantState::Waiting(_)))
     }
 
-    fn start_driver(self: &Arc<Self>) {
-        let should_start = {
-            let mut state = self.state.lock().expect("reduction session lock");
-            if !Self::ready_to_drive(&state) {
-                false
-            } else {
-                state.driving = true;
-                true
-            }
-        };
-        if should_start {
-            let session = self.clone();
-            tokio::spawn(async move { session.drive().await });
+    fn claim_driver(state: &mut SessionState) -> bool {
+        if state.driving || !Self::frontier_ready(state) {
+            return false;
         }
+        state.driving = true;
+        true
+    }
+
+    fn spawn_driver(self: &Arc<Self>) {
+        let session = self.clone();
+        tokio::spawn(internal_scope(async move { session.drive().await }));
     }
 
     async fn submit_produce(
@@ -358,13 +480,24 @@ impl ReductionSession {
         RSpaceError,
     > {
         let order = context.next_operation();
+        if self.claim_direct(&context.participant) {
+            let _direct = DirectExecutionGuard::new(self.clone(), context.participant.clone());
+            return internal_scope(operation_context::scope(
+                order,
+                self.space.produce(channel, data, persistent),
+            ))
+            .await;
+        }
         let (response, receive) = oneshot::channel();
-        self.submit(&context.participant, order, Intent::Produce {
+        let drive = self.submit(&context.participant, order, Intent::Produce {
             channel,
             data,
             persistent,
             response,
         });
+        if drive {
+            let _ = poll_driver_once(internal_scope(self.clone().drive())).await;
+        }
         receive.await.map_err(|_| {
             RSpaceError::BugFoundError("deterministic produce was cancelled".to_string())
         })?
@@ -383,8 +516,17 @@ impl ReductionSession {
         RSpaceError,
     > {
         let order = context.next_operation();
+        if self.claim_direct(&context.participant) {
+            let _direct = DirectExecutionGuard::new(self.clone(), context.participant.clone());
+            return internal_scope(operation_context::scope(
+                order,
+                self.space
+                    .consume(channels, patterns, continuation, persistent, peeks),
+            ))
+            .await;
+        }
         let (response, receive) = oneshot::channel();
-        self.submit(&context.participant, order, Intent::Consume {
+        let drive = self.submit(&context.participant, order, Intent::Consume {
             channels,
             patterns,
             continuation,
@@ -392,6 +534,9 @@ impl ReductionSession {
             peeks,
             response,
         });
+        if drive {
+            let _ = poll_driver_once(internal_scope(self.clone().drive())).await;
+        }
         receive.await.map_err(|_| {
             RSpaceError::BugFoundError("deterministic consume was cancelled".to_string())
         })?
@@ -402,18 +547,19 @@ impl ReductionSession {
         participant: &ParticipantId,
         order: OperationOrder,
         intent: Intent,
-    ) {
-        {
-            let mut state = self.state.lock().expect("reduction session lock");
-            let participant_state = state
-                .participants
-                .get_mut(participant)
-                .expect("reduction participant must be registered");
-            assert!(matches!(participant_state, ParticipantState::Running));
-            *participant_state = ParticipantState::Waiting(order.clone());
-            assert!(state.intents.insert(order, intent).is_none());
-        }
-        self.start_driver();
+    ) -> bool {
+        let mut state = self.state.lock().expect("reduction session lock");
+        let participant_state = state
+            .participants
+            .get_mut(participant)
+            .expect("reduction participant must be registered");
+        assert!(
+            matches!(participant_state, ParticipantState::Running),
+            "participant {participant:?} submitted {order:?} while {participant_state:?}"
+        );
+        *participant_state = ParticipantState::Waiting(order.clone());
+        assert!(state.intents.insert(order, intent).is_none());
+        Self::claim_driver(&mut state)
     }
 
     async fn prepare(&self, order: OperationOrder, intent: Intent) -> PreparedIntent {
@@ -521,31 +667,21 @@ impl ReductionSession {
         completions.sort_by(|left, right| left.order().cmp(right.order()));
         {
             let mut state = self.state.lock().expect("reduction session lock");
-            for completion in &completions {
-                for participant in state.participants.values_mut() {
-                    if matches!(participant, ParticipantState::Waiting(order) if order == completion.order())
-                    {
-                        *participant = ParticipantState::Running;
-                    }
-                }
-            }
+            let orders = completions
+                .iter()
+                .map(|completion| completion.order().clone())
+                .collect::<Vec<_>>();
+            Self::release_frontier(&mut state, &orders);
         }
         for completion in completions {
             completion.send();
         }
-        let (restart, quiescent) = {
-            let mut state = self.state.lock().expect("reduction session lock");
-            state.driving = false;
-            (
-                Self::ready_to_drive(&state),
-                state.participants.is_empty() && state.intents.is_empty(),
-            )
+        let quiescent = {
+            let state = self.state.lock().expect("reduction session lock");
+            state.participants.is_empty() && state.intents.is_empty() && !state.driving
         };
         if quiescent {
             self.release_evaluation_guard();
-        }
-        if restart {
-            self.start_driver();
         }
     }
 }
@@ -820,6 +956,7 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
     use models::rhoapi::{CostAuthority, CostRegion};
@@ -836,7 +973,7 @@ mod tests {
         PreparedIntent {
             order: OperationOrder {
                 session: [7; 32],
-                path: vec![(order, 0)],
+                path: vec![(order, 0)].into(),
             },
             footprint: keys.iter().map(|key| vec![*key]).collect(),
             intent: Intent::Produce {
@@ -854,12 +991,41 @@ mod tests {
             .map(|component| {
                 component
                     .into_iter()
-                    .map(|intent| intent.order.path[0].0)
+                    .map(|intent| intent.order.path.to_vec()[0].0)
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
         components.sort();
         components
+    }
+
+    fn lifecycle_state(live: usize, waiting: usize) -> SessionState {
+        let mut participants = BTreeMap::new();
+        let mut intents = BTreeMap::new();
+        for index in 0..live {
+            let participant = CausalPath::from(vec![(index as u64, 0)]);
+            if index < waiting {
+                let order = OperationOrder {
+                    session: [11; 32],
+                    path: CausalPath::from(vec![(index as u64, 1)]),
+                };
+                participants.insert(participant, ParticipantState::Waiting(order.clone()));
+                let (response, _receive) = oneshot::channel();
+                intents.insert(order, Intent::Produce {
+                    channel: Par::default(),
+                    data: ListParWithRandom::default(),
+                    persistent: false,
+                    response,
+                });
+            } else {
+                participants.insert(participant, ParticipantState::Running);
+            }
+        }
+        SessionState {
+            participants,
+            intents,
+            driving: false,
+        }
     }
 
     #[test]
@@ -922,18 +1088,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_root_keeps_checkpoint_boundary_closed_until_detached_children_finish() {
+    async fn ready_driver_completes_in_the_callers_poll() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran_driver = ran.clone();
+        let result = poll_driver_once(async move {
+            ran_driver.store(true, Ordering::Relaxed);
+        })
+        .await;
+        assert_eq!(result, DriverPoll::CompletedInline);
+        assert!(ran.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn pending_driver_transfers_before_the_caller_can_yield() {
+        let release = Arc::new(Notify::new());
+        let finished = Arc::new(Notify::new());
+        let result = {
+            let release = release.clone();
+            let finished = finished.clone();
+            poll_driver_once(async move {
+                release.notified().await;
+                finished.notify_one();
+            })
+            .await
+        };
+        assert_eq!(result, DriverPoll::Transferred);
+        release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), finished.notified())
+            .await
+            .expect("transferred driver did not complete");
+    }
+
+    #[tokio::test]
+    async fn internal_driver_scope_cannot_submit_an_external_intent() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        root(
+            reducer.space.clone(),
+            RuntimeBudget::new(Cost::create(100, "internal driver scope")),
+            ReductionCoordinator::default(),
+            async {
+                assert!(current().is_some());
+                internal_scope(async { assert!(current().is_none()) }).await;
+                assert!(current().is_some());
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_root_aborts_children_before_checkpoint_boundary_opens() {
         let (_, reducer) =
             create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
                 .await;
         let coordinator = ReductionCoordinator::default();
         let child_started = Arc::new(Notify::new());
         let release_child = Arc::new(Notify::new());
+        let child_mutated = Arc::new(AtomicBool::new(false));
         let evaluation = {
             let coordinator = coordinator.clone();
             let space = reducer.space.clone();
             let child_started = child_started.clone();
             let release_child = release_child.clone();
+            let child_mutated = child_mutated.clone();
             tokio::spawn(async move {
                 root(
                     space,
@@ -942,12 +1160,15 @@ mod tests {
                     async move {
                         let parent = current().expect("root reduction context");
                         let child = parent.split(1).pop().expect("child context");
-                        tokio::spawn(scope(child.clone(), async move {
-                            let _guard = ParticipantGuard::for_context(&child);
-                            child_started.notify_one();
-                            release_child.notified().await;
-                        }));
+                        let child_handle =
+                            ScopedJoinHandle::new(tokio::spawn(scope(child.clone(), async move {
+                                let _guard = ParticipantGuard::for_context(&child);
+                                child_started.notify_one();
+                                release_child.notified().await;
+                                child_mutated.store(true, Ordering::Relaxed);
+                            })));
                         std::future::pending::<()>().await;
+                        drop(child_handle);
                     },
                 )
                 .await;
@@ -961,13 +1182,13 @@ mod tests {
             let coordinator = coordinator.clone();
             tokio::spawn(async move { coordinator.enter_boundary().await })
         };
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(!boundary.is_finished());
-        release_child.notify_one();
         tokio::time::timeout(Duration::from_secs(1), boundary)
             .await
             .expect("checkpoint boundary remained blocked")
             .expect("checkpoint boundary task failed");
+        release_child.notify_one();
+        tokio::task::yield_now().await;
+        assert!(!child_mutated.load(Ordering::Relaxed));
     }
 
     proptest! {
@@ -987,6 +1208,63 @@ mod tests {
                 .map(|(order, key)| prepared(order as u64, &[*key]))
                 .collect::<Vec<_>>();
             prop_assert_eq!(signature(forward), signature(reverse));
+        }
+
+        #[test]
+        fn exactly_one_driver_claims_each_complete_frontier(
+            live in 1_usize..16,
+            waiting_seed in 0_usize..64,
+        ) {
+            let waiting = waiting_seed % (live + 1);
+            let mut state = lifecycle_state(live, waiting);
+            let expected = waiting == live;
+            prop_assert_eq!(ReductionSession::claim_driver(&mut state), expected);
+            prop_assert_eq!(state.driving, expected);
+            prop_assert!(!ReductionSession::claim_driver(&mut state));
+        }
+
+        #[test]
+        fn direct_execution_claims_only_a_single_running_participant(
+            live in 1_usize..16,
+            waiting_seed in 0_usize..64,
+        ) {
+            let waiting = waiting_seed % (live + 1);
+            let mut state = lifecycle_state(live, waiting);
+            let participant = CausalPath::from(vec![(0, 0)]);
+            let expected = live == 1 && waiting == 0;
+            prop_assert_eq!(
+                ReductionSession::claim_direct_state(&mut state, &participant),
+                expected,
+            );
+            prop_assert!(!ReductionSession::claim_direct_state(&mut state, &participant));
+        }
+
+        #[test]
+        fn completed_frontier_releases_driver_before_participants_resume(
+            live in 1_usize..16,
+        ) {
+            let mut state = lifecycle_state(live, live);
+            let orders = state
+                .participants
+                .values()
+                .filter_map(|participant| match participant {
+                    ParticipantState::Waiting(order) => Some(order.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            state.intents.clear();
+            state.driving = true;
+            ReductionSession::release_frontier(&mut state, &orders);
+            prop_assert!(!state.driving);
+            prop_assert!(state
+                .participants
+                .values()
+                .all(|participant| matches!(participant, ParticipantState::Running)));
+            let first = CausalPath::from(vec![(0, 0)]);
+            prop_assert_eq!(
+                ReductionSession::claim_direct_state(&mut state, &first),
+                live == 1,
+            );
         }
     }
 }

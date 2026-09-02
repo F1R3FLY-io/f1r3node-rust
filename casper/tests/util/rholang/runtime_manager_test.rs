@@ -27,7 +27,7 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rhoapi::{CostSignature, CostStack, ListParWithRandom, PCost, Par};
 use models::rust::block::state_hash::StateHash;
 use models::rust::bond_generation::BondGeneration;
@@ -62,6 +62,18 @@ enum SystemDeployReplayResult<A> {
     ReplayFailed {
         system_deploy_error: SystemDeployUserError,
     },
+}
+
+fn protocol_v6_envelope(
+    deploy: Signed<DeployData>,
+    private_key: PrivateKey,
+) -> Cosigned<DeployData> {
+    let mut data = deploy.data;
+    if data.shard_id.is_empty() {
+        data.shard_id = "root".to_string();
+    }
+    Cosigned::create_single_envelope(data, deploy.sig_algorithm, private_key)
+        .expect("protocol-v6 test envelope")
 }
 
 async fn system_vault_balance(
@@ -7262,7 +7274,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
+        compute_deploys_checkpoint_cosigned, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
@@ -7368,8 +7380,10 @@ async fn bridge_query_survives_multi_parent_merge() {
     .expect("Failed to read bridge.rho");
 
     // --- Block A: bridge deploy from genesis ---
-    let bridge_deploy =
-        construct_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap();
+    let bridge_deploy = protocol_v6_envelope(
+        construct_deploy::source_deploy_now_full(bridge_rho, None, None, None, None, None).unwrap(),
+        construct_deploy::DEFAULT_SEC.clone(),
+    );
 
     let block_a_raw = block_implicits::get_random_block(
         Some(1),
@@ -7381,7 +7395,7 @@ async fn bridge_query_survives_multi_parent_merge() {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(bridge_deploy)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&bridge_deploy)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -7389,15 +7403,11 @@ async fn bridge_query_survives_multi_parent_merge() {
     );
 
     let parents_a = vec![genesis_block.clone()];
-    let deploys_a = proto_util::deploys(&block_a_raw)
-        .into_iter()
-        .map(|d| d.deploy)
-        .collect();
     let snapshot_a = mk_snapshot(&genesis_hash);
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         parents_a,
-        deploys_a,
+        vec![bridge_deploy],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_a,
         &rm,
@@ -7431,7 +7441,7 @@ async fn bridge_query_survives_multi_parent_merge() {
     let bridge_data = rm
         .get_data(
             post_state_a.clone(),
-            &make_deploy_id_par(&pd_a[0].deploy.sig),
+            &make_deploy_id_par(pd_a[0].deploy_id()),
         )
         .await
         .unwrap();
@@ -7479,7 +7489,7 @@ async fn bridge_query_survives_multi_parent_merge() {
 
     let parents_b = vec![genesis_block.clone()];
     let snapshot_b = mk_snapshot(&genesis_hash);
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         parents_b,
         Vec::new(),
@@ -7552,9 +7562,11 @@ in {{
         query_uri
     );
 
-    let query_deploy =
+    let query_deploy = protocol_v6_envelope(
         construct_deploy::source_deploy_now_full(get_nonce_rho, None, None, None, None, None)
-            .unwrap();
+            .unwrap(),
+        construct_deploy::DEFAULT_SEC.clone(),
+    );
 
     let query_block_raw = block_implicits::get_random_block(
         Some(2),
@@ -7566,7 +7578,7 @@ in {{
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone(), block_b.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(query_deploy)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&query_deploy)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
@@ -7574,15 +7586,11 @@ in {{
     );
 
     let parents_q = vec![block_a.clone(), block_b.clone()];
-    let deploys_q = proto_util::deploys(&query_block_raw)
-        .into_iter()
-        .map(|d| d.deploy)
-        .collect();
     let snapshot_q = mk_snapshot(&genesis_hash);
-    let (_, post_state_q, pd_q, _, _, _) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_q, pd_q, _, _, _) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         parents_q,
-        deploys_q,
+        vec![query_deploy],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &snapshot_q,
         &rm,
@@ -7600,7 +7608,7 @@ in {{
     );
 
     let query_data = rm
-        .get_data(post_state_q, &make_deploy_id_par(&pd_q[0].deploy.sig))
+        .get_data(post_state_q, &make_deploy_id_par(pd_q[0].deploy_id()))
         .await
         .unwrap();
 
@@ -8457,7 +8465,7 @@ async fn stale_diff_application_corrupts_merged_state() {
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
+        compute_deploys_checkpoint_cosigned, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
@@ -8568,15 +8576,18 @@ new deployId(`rho:system:deployId`) in {
     .to_string();
 
     // ── Block A: bridge deployed by key_a, parent = genesis ──
-    let deploy_a = construct_deploy::source_deploy_now_full(
-        bridge_rho.clone(),
-        None,
-        None,
-        Some(key_a.clone()),
-        None,
-        None,
-    )
-    .unwrap();
+    let deploy_a = protocol_v6_envelope(
+        construct_deploy::source_deploy_now_full(
+            bridge_rho.clone(),
+            None,
+            None,
+            Some(key_a.clone()),
+            None,
+            None,
+        )
+        .unwrap(),
+        key_a.clone(),
+    );
     let block_a_raw = block_implicits::get_random_block(
         Some(1),
         Some(1),
@@ -8587,19 +8598,16 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_a)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_a)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_a_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![deploy_a],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
@@ -8625,15 +8633,18 @@ new deployId(`rho:system:deployId`) in {
         .expect("dag A");
 
     // ── Block B: bridge deployed by key_b, parent = genesis (sibling of A) ──
-    let deploy_b = construct_deploy::source_deploy_now_full(
-        bridge_rho,
-        None,
-        None,
-        Some(key_b.clone()),
-        None,
-        None,
-    )
-    .unwrap();
+    let deploy_b = protocol_v6_envelope(
+        construct_deploy::source_deploy_now_full(
+            bridge_rho,
+            None,
+            None,
+            Some(key_b.clone()),
+            None,
+            None,
+        )
+        .unwrap(),
+        key_b.clone(),
+    );
     let block_b_raw = block_implicits::get_random_block(
         Some(1),
         Some(2),
@@ -8644,19 +8655,16 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_b)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_b)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_b_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![deploy_b],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
@@ -8682,15 +8690,18 @@ new deployId(`rho:system:deployId`) in {
         .expect("dag B");
 
     // ── Block C: trivial deploy by key_a, parent = A ──
-    let deploy_c = construct_deploy::source_deploy_now_full(
-        trivial_rho.clone(),
-        None,
-        None,
-        Some(key_a),
-        None,
-        None,
-    )
-    .unwrap();
+    let deploy_c = protocol_v6_envelope(
+        construct_deploy::source_deploy_now_full(
+            trivial_rho.clone(),
+            None,
+            None,
+            Some(key_a.clone()),
+            None,
+            None,
+        )
+        .unwrap(),
+        key_a,
+    );
     let block_c_raw = block_implicits::get_random_block(
         Some(2),
         Some(3),
@@ -8701,19 +8712,16 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![block_a.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_c)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_c)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_c, pd_c, _, sys_pd_c, bonds_c) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_c, pd_c, _, sys_pd_c, bonds_c) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![block_a.clone()],
-        proto_util::deploys(&block_c_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![deploy_c],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
@@ -8739,9 +8747,18 @@ new deployId(`rho:system:deployId`) in {
         .expect("dag C");
 
     // ── Block D: trivial deploy by key_b, parent = B ──
-    let deploy_d =
-        construct_deploy::source_deploy_now_full(trivial_rho, None, None, Some(key_b), None, None)
-            .unwrap();
+    let deploy_d = protocol_v6_envelope(
+        construct_deploy::source_deploy_now_full(
+            trivial_rho,
+            None,
+            None,
+            Some(key_b.clone()),
+            None,
+            None,
+        )
+        .unwrap(),
+        key_b,
+    );
     let block_d_raw = block_implicits::get_random_block(
         Some(2),
         Some(4),
@@ -8752,19 +8769,16 @@ new deployId(`rho:system:deployId`) in {
         Some(now_millis()),
         Some(vec![block_b.block_hash.clone()]),
         Some(Vec::new()),
-        Some(vec![ProcessedDeploy::empty(deploy_d)]),
+        Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_d)]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let (_, post_state_d, pd_d, _, sys_pd_d, bonds_d) = compute_deploys_checkpoint_legacy_signer(
+    let (_, post_state_d, pd_d, _, sys_pd_d, bonds_d) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![block_b.clone()],
-        proto_util::deploys(&block_d_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![deploy_d],
         Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,

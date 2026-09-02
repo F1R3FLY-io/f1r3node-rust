@@ -159,6 +159,27 @@ offence versus the component that detects it.
 *Avoid*: "double-signing" (Ethereum vocabulary; correct informally but not
 canonical here).
 
+### Bond generation
+
+A bond generation is the monotonic identity counter for one validator key.
+A completed withdrawal followed by a new bond advances the counter.
+Epoch changes, slash actions, and redemption do not advance the counter.
+
+**Preferred usage.** Use this term to bind evidence and effects to one
+[validator lifetime](#validator-lifetime). *Distinguish from* an activation
+epoch, which limits evidence eligibility but does not identify a lifetime.
+*Avoid*: bond epoch.
+
+### Validator lifetime
+
+A validator lifetime is the pair of a validator public key and its
+[bond generation](#bond-generation). One lifetime can cross ordinary epoch
+boundaries.
+
+**Preferred usage.** Use this term for validator identity across consensus,
+evidence, and slashing. *Distinguish from* an activation epoch and a public
+key without a bond generation. *Avoid*: validator epoch.
+
 ### Equivocation detector
 
 The equivocation detector is the detection-pipeline component that returns an

@@ -640,7 +640,7 @@ observations are diagnostic only and cannot authorize a deploy.
 `authorized_slash_candidate` (evidence/target epoch = current ∧ positive
 canonical pre-state bond) via `execute_unknown_evidence_noop`,
 `main_T9_13_unknown_slash_evidence_noop`, and
-`canonical_pre_state_authorizes_when_ambient_zero`; the **full seven-rule
+`canonical_pre_state_authorizes_when_ambient_differs`; the **full seven-rule
 receive gate** (FV audit #3) adds Rule 1 issuer==sender
 (`main_T9_13_issuer_mismatch_rejected`) and Rule 7 block-level
 `(offender, generation)` NoDup at the production boundary, refining the

@@ -2,7 +2,9 @@
 EXTENDS Integers, TLC
 
 CONSTANT
+    \* @type: Int;
     MaxRevision,
+    \* @type: Bool;
     UnsafePublishStaleReader
 
 ASSUME /\ MaxRevision \in Nat \ {0}
@@ -11,16 +13,27 @@ ASSUME /\ MaxRevision \in Nat \ {0}
 Phases == {"Idle", "Projection", "Validate", "Done"}
 
 VARIABLES
+    \* @type: Int;
     ledgerHead,
+    \* @type: Int;
     projectedHead,
+    \* @type: Set(Int);
     records,
+    \* @type: Str;
     readerPhase,
+    \* @type: Int;
     readerBefore,
+    \* @type: Int;
     readerProjection,
+    \* @type: Int;
     resultRevision,
+    \* @type: Int;
     resultFloor,
+    \* @type: Int;
     resultCertificate,
+    \* @type: Int;
     retries,
+    \* @type: Bool;
     lastCaptureStale
 
 vars == <<ledgerHead, projectedHead, records, readerPhase, readerBefore,
@@ -137,7 +150,7 @@ TypeOK ==
     /\ retries \in Nat
     /\ lastCaptureStale \in BOOLEAN
 
-Inv_RecordPrefix == records = 1..ledgerHead
+Inv_RecordPrefix == records = {revision \in 1..MaxRevision : revision <= ledgerHead}
 
 Inv_ReaderResultCoherent ==
     resultRevision = -1 \/

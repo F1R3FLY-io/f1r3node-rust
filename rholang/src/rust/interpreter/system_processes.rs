@@ -1062,12 +1062,14 @@ impl SystemProcesses {
             return Err(illegal_argument_error("get_block_data"));
         };
 
-        let data = block_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
-            RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
-        ];
+        let output = {
+            let data = block_data.read().await;
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
+                RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1090,25 +1092,27 @@ impl SystemProcesses {
             ));
         };
 
-        let data = deploy_data.read().await;
-        let authority = match &data.authority {
-            DeployAuthority::Legacy(public_key) => GUnforgeable {
-                unf_instance: Some(GDeployerIdBody(GDeployerId {
-                    public_key: public_key.bytes.to_vec(),
-                })),
-            },
-            DeployAuthority::Principal(principal) => GUnforgeable {
-                unf_instance: Some(GPrincipalIdBody(principal.clone())),
-            },
-            DeployAuthority::Compound(authority) => GUnforgeable {
-                unf_instance: Some(GAuthorityIdBody(authority.clone())),
-            },
+        let output = {
+            let data = deploy_data.read().await;
+            let authority = match &data.authority {
+                DeployAuthority::Legacy(public_key) => GUnforgeable {
+                    unf_instance: Some(GDeployerIdBody(GDeployerId {
+                        public_key: public_key.bytes.to_vec(),
+                    })),
+                },
+                DeployAuthority::Principal(principal) => GUnforgeable {
+                    unf_instance: Some(GPrincipalIdBody(principal.clone())),
+                },
+                DeployAuthority::Compound(authority) => GUnforgeable {
+                    unf_instance: Some(GAuthorityIdBody(authority.clone())),
+                },
+            };
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
+                Par::default().with_unforgeables(vec![authority]),
+                RhoDeployId::create_par(data.deploy_id.clone()),
+            ]
         };
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            Par::default().with_unforgeables(vec![authority]),
-            RhoDeployId::create_par(data.deploy_id.clone()),
-        ];
 
         produce(&output, ack).await?;
         Ok(output)

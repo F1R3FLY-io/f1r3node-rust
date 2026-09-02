@@ -47,6 +47,14 @@ operation. Splitting appends `(step, 1)` and a child index. Consequently, an
 operation before a split precedes every child operation, and every child
 operation precedes the parent's first operation after the join.
 
+The runtime stores each path in an immutable causal tree. Cloning a participant
+shares its existing prefix. Appending a segment creates one logical path node
+and logarithmic ancestor-index links. Equality and ordering compare the same
+segment sequence as the former `Vec` representation. Binary lifting finds the
+first different segment without scanning a shared prefix. The fallback for
+independently built roots compares complete sequences. This change reduces
+retained storage and comparison work without changing canonical order.
+
 An **operation footprint** is the set of mutable semantic resources that an
 intent may touch at the frozen frontier. It contains:
 
@@ -179,12 +187,11 @@ participants = \varnothing
 \land \neg driverActive.
 ```
 
-This ownership is necessary because cancelling a Tokio root future detaches
-already spawned child tasks unless those children are explicitly aborted.
-Dropping only the root's permit would allow a checkpoint to publish while a
-detached child or frontier driver was still mutating RSpace. Participant guards
-remove cancelled waiters, and the session retains the permit until every
-detached child and in-flight driver is quiescent.
+Root cancellation drops each scoped child handle. Each handle aborts its child
+task before the child can outlive the evaluation. Participant guards remove
+cancelled waiters. The session retains the permit until every child and driver
+is quiescent. Thus, a checkpoint cannot publish while an evaluation can still
+mutate RSpace.
 
 Checkpoint, soft checkpoint, event-log extraction, reset, rollback, replay
 rigging, and administrative state mutation acquire the exclusive epoch permit.
@@ -195,10 +202,10 @@ disjoint components within them remain parallel.
 
 A branch that performs unbounded pure computation can delay its frontier.
 Production user execution is bounded by authenticated fuel, so such a branch
-must exhaust its finite budget or reach its next intent. Cancellation keeps the
-checkpoint boundary closed until already detached work finishes; higher-level
-evaluation rollback then restores the captured soft checkpoint if execution
-fails.
+must exhaust its finite budget or reach its next intent. Cancellation aborts
+child tasks and keeps the checkpoint boundary closed until all child tasks
+terminate. Higher-level rollback then restores the captured soft checkpoint if
+execution fails.
 
 ## Replay and consensus consequences
 
@@ -223,15 +230,18 @@ deterministic state transition rather than over scheduler-dependent roots.
 | Transitive channel and authority conflicts form one component | [`DeterministicParallelReduction.v`](../../../../formal/rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v), axiom-free compound-overlap and commutation theorems | component property test and shared-region unit regression |
 | Truly disjoint components retain parallel eligibility | safe TLA+ `Inv_DisjointWorkRemainsParallel`; global-serialization control | Loom authority-component interleavings |
 | Shared purse regions never execute as disjoint work | safe TLA+ `Inv_SharedAuthorityNeverRunsAsDisjoint`; authority-omission control | compound `{A,B}` / `{B,C}` regression |
-| Checkpoints never observe partial frontiers or detached children | [`EvaluationBoundary.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla), checkpoint and cancellation controls; Rocq epoch theorems | Loom checkpoint/cancellation schedules and cancelled-root production test |
+| Driver ownership ends before result delivery starts the next frontier | [`ReductionDriverLifecycle.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla), operation-conservation and ownership invariants | driver release property and recursion regressions |
+| Direct execution requires exactly one live participant | [`SingleParticipantFastPath.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla), safe and unsafe controls; Rocq singleton refinement | singleton-claim property and release-mode recursion regressions |
+| Checkpoints never observe partial frontiers or cancelled child tasks | [`EvaluationBoundary.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla), checkpoint and structured-cancellation controls; Rocq epoch theorems | Loom checkpoint/cancellation schedules and cancelled-root production test |
 | Event logs use causal rather than arrival order | canonical terminal/log TLA+ state | reversed-arrival log, soft-checkpoint/revert, and external metadata-update tests |
+| Immutable causal-tree storage preserves exact sequence semantics | Rocq persistent-path projection, node-growth, and order-refinement theorems | `Vec` equality/sort/shared-prefix/append property tests and the 32,768-step recursion regression |
 | Existing RSpace constructs refine the same scheduler contract | disjoint-commutation theorem plus legacy operation semantics | joins, persistence, peek, guards, and textual ACI permutation tests |
 | Play and replay agree exactly | canonical frontier and causal-segment theorems | interacting-body cost, event-consumption, and post-root equality test |
 
 The safe TLC models and every unsafe counterexample run from
 `scripts/check-cost-accounted-rho-tla-invariants.sh`. Apalache independently
-checks the safe ten-step reduction horizon, the safe four-step evaluation
-boundary, and one exact symbolic counterexample for each defect through
+checks the reduction, driver, singleton, and evaluation horizons. It also
+finds one exact symbolic counterexample for each defect through
 `scripts/check-cost-accounted-rho-apalache.sh --filter deterministic`. The Rocq module is part of
 the aggregate axiom and assumption gate. Loom runs from
 `scripts/check-cost-accounted-rho-loom.sh`. Rust tests are ordinary workspace

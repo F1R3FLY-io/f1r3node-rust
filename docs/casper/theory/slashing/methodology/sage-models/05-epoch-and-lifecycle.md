@@ -51,7 +51,7 @@ exercised by Bug #13's regression.
 
 | Witness shape                                 | Rocq theorem                        | TLA⁺ model                                                 | Rust regression                                               |
 |-----------------------------------------------|-------------------------------------|------------------------------------------------------------|---------------------------------------------------------------|
-| Stale evidence after rebond                   | T-9.11                              | `AuthorizedSlashFlow.tla` `Inv_RebondRejectsStaleEvidence` | `epoch_evidence_rollover.rs`, `rebonded_identity_boundary.rs` |
+| Stale evidence after rebond                   | T-9.11                              | `AuthorizedSlashFlow.tla` `Inv_StaleGenerationCannotSlashRebondedKey` | `epoch_evidence_rollover.rs`, `rebonded_identity_boundary.rs` |
 | Current-epoch filter on slash candidates      | T-9.8                               | `AuthorizedSlashFlow.tla` `Inv_SlashOnlyIfAuthorized`      | `prop_t_9_8_unbonded_proposer.rs`, `prop_t_auth_check.rs`     |
 | Pending-slash carryover across epoch boundary | (informal; documented in design/06) | (model-checked finite)                                     | `stale_evidence_filtered.rs`                                  |
 

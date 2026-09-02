@@ -189,6 +189,14 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#liveness-configurati
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#equivocation).
 
+### Bond generation
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#bond-generation).
+
+### Validator lifetime
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#validator-lifetime).
+
 ### Equivocation detector
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#equivocation-detector).

@@ -23,7 +23,7 @@ use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
 use serial_test::serial;
 
-use super::staging::mint_on_parents;
+use super::staging::{mint_on_expected_snapshot, mint_on_parents, ExpectedParents};
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -158,9 +158,9 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         }
     }
 
-    let first_merge = mint_on_parents(
+    let first_merge = mint_on_expected_snapshot(
         &mut nodes[2],
-        vec![neutral_sibling.clone(), starved_sibling, contender_sibling],
+        ExpectedParents::members(&[&neutral_sibling, &starved_sibling, &contender_sibling]),
         "first neutral-base merge",
     )
     .await;
@@ -254,13 +254,13 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
         }
     }
 
-    let second_merge = mint_on_parents(
+    let second_merge = mint_on_expected_snapshot(
         &mut nodes[2],
-        vec![
-            second_neutral_sibling.clone(),
-            retry_sibling,
-            second_contender_sibling,
-        ],
+        ExpectedParents::members(&[
+            &second_neutral_sibling,
+            &retry_sibling,
+            &second_contender_sibling,
+        ]),
         "second neutral-base merge",
     )
     .await;

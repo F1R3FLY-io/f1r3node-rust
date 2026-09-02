@@ -192,22 +192,29 @@ fn shared_compound_authority_regions_form_one_component_for_every_submission_ord
 }
 
 #[test]
-fn cancelled_parent_cannot_open_checkpoint_boundary_while_a_child_is_live() {
+fn cancelled_parent_aborts_children_before_checkpoint_boundary_opens() {
     loom::model(|| {
         #[derive(Default)]
         struct Epoch {
-            participants: usize,
+            root_active: bool,
+            child_active: bool,
+            child_cancel_requested: bool,
             mutations: usize,
             checkpoint: Option<usize>,
         }
         let epoch = Arc::new(Mutex::new(Epoch {
-            participants: 2,
+            root_active: true,
+            child_active: true,
             ..Epoch::default()
         }));
         let root = {
             let epoch = epoch.clone();
             thread::spawn(move || {
-                epoch.lock().unwrap().participants -= 1;
+                let mut epoch = epoch.lock().unwrap();
+                epoch.root_active = false;
+                if epoch.child_active {
+                    epoch.child_cancel_requested = true;
+                }
             })
         };
         let child = {
@@ -215,15 +222,18 @@ fn cancelled_parent_cannot_open_checkpoint_boundary_while_a_child_is_live() {
             thread::spawn(move || {
                 thread::yield_now();
                 let mut epoch = epoch.lock().unwrap();
-                epoch.mutations += 1;
-                epoch.participants -= 1;
+                if !epoch.child_cancel_requested {
+                    epoch.mutations += 1;
+                }
+                epoch.child_active = false;
+                epoch.child_cancel_requested = false;
             })
         };
         let checkpoint = {
             let epoch = epoch.clone();
             thread::spawn(move || {
                 let mut epoch = epoch.lock().unwrap();
-                if epoch.participants == 0 {
+                if !epoch.root_active && !epoch.child_active {
                     epoch.checkpoint = Some(epoch.mutations);
                 }
             })
@@ -235,7 +245,10 @@ fn cancelled_parent_cannot_open_checkpoint_boundary_while_a_child_is_live() {
         if epoch.checkpoint.is_none() {
             epoch.checkpoint = Some(epoch.mutations);
         }
-        assert_eq!(epoch.participants, 0);
-        assert_eq!(epoch.checkpoint, Some(1));
+        assert!(!epoch.root_active);
+        assert!(!epoch.child_active);
+        assert!(!epoch.child_cancel_requested);
+        assert_eq!(epoch.checkpoint, Some(epoch.mutations));
+        assert!(epoch.mutations <= 1);
     });
 }

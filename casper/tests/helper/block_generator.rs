@@ -11,7 +11,7 @@ use casper::rust::casper::CasperSnapshot;
 use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::{Estimator, ForkChoice};
-use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint_legacy_signer;
+use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint_cosigned;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::block::state_hash::StateHash;
@@ -194,11 +194,11 @@ async fn compute_block_checkpoint(
     let parents = proto_util::get_parents(block_store, block);
     let deploys = proto_util::deploys(block)
         .into_iter()
-        .map(|d| d.deploy)
-        .collect();
+        .map(|deploy| deploy.to_cosigned().map_err(CasperError::RuntimeError))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let (pre_state_hash, post_state_hash, processed_deploys, _, processed_system_deploys, _) =
-        compute_deploys_checkpoint_legacy_signer(
+        compute_deploys_checkpoint_cosigned(
             block_store,
             parents,
             deploys,

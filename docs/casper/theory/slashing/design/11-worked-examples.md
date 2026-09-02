@@ -542,7 +542,7 @@ B.replay(b)
   ⟶ deploy ignored; (K, g₂) retains bond
 ```
 
-**Theorems exercised.** T-9.12 (`main_T9_12_stale_evidence_not_authorized`).
+**Theorems exercised.** T-9.12 (`main_T9_12_stale_generation_evidence_not_authorized`).
 TLA+ `Inv_StaleGenerationCannotSlashRebondedKey`. Rust
 `stale_invalid_evidence_is_not_an_authorized_slash_candidate`.
 **Diagram.** Extends Diagram 06 (validator lifecycle) with generation and

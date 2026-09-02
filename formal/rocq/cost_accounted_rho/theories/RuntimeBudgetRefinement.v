@@ -2037,6 +2037,171 @@ Proof.
   repeat split; reflexivity.
 Qed.
 
+Record rb_meter_identity_state := {
+  rb_meter_identity_unmetered : bool;
+  rb_meter_identity_next_local_index : nat;
+  rb_meter_identity_recorded_local_indices : list nat;
+  rb_meter_identity_source_path : list nat
+}.
+
+Definition rb_meter_identity_set_unmetered
+  (s : rb_meter_identity_state)
+  (unmetered : bool)
+  : rb_meter_identity_state :=
+  {|
+    rb_meter_identity_unmetered := unmetered;
+    rb_meter_identity_next_local_index := rb_meter_identity_next_local_index s;
+    rb_meter_identity_recorded_local_indices :=
+      rb_meter_identity_recorded_local_indices s;
+    rb_meter_identity_source_path := rb_meter_identity_source_path s
+  |}.
+
+Definition rb_meter_identity_reserve
+  (s : rb_meter_identity_state)
+  : rb_meter_identity_state :=
+  if rb_meter_identity_unmetered s then s
+  else
+    {|
+      rb_meter_identity_unmetered := false;
+      rb_meter_identity_next_local_index :=
+        S (rb_meter_identity_next_local_index s);
+      rb_meter_identity_recorded_local_indices :=
+        rb_meter_identity_recorded_local_indices s ++
+          [rb_meter_identity_next_local_index s];
+      rb_meter_identity_source_path := rb_meter_identity_source_path s
+    |}.
+
+Definition rb_meter_identity_child
+  (s : rb_meter_identity_state)
+  (component : nat)
+  : rb_meter_identity_state :=
+  if rb_meter_identity_unmetered s then s
+  else
+    {|
+      rb_meter_identity_unmetered := false;
+      rb_meter_identity_next_local_index := 0;
+      rb_meter_identity_recorded_local_indices :=
+        rb_meter_identity_recorded_local_indices s;
+      rb_meter_identity_source_path :=
+        rb_meter_identity_source_path s ++ [component]
+    |}.
+
+Fixpoint rb_meter_identity_child_many
+  (components : list nat)
+  (s : rb_meter_identity_state)
+  : rb_meter_identity_state :=
+  match components with
+  | [] => s
+  | component :: rest =>
+      rb_meter_identity_child_many rest
+        (rb_meter_identity_child s component)
+  end.
+
+Fixpoint rb_meter_identity_reserve_many
+  (count : nat)
+  (s : rb_meter_identity_state)
+  : rb_meter_identity_state :=
+  match count with
+  | 0 => s
+  | S rest =>
+      rb_meter_identity_reserve_many rest (rb_meter_identity_reserve s)
+  end.
+
+Theorem rb_meter_identity_unmetered_reserve_preserves_state :
+  forall s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_reserve s = s.
+Proof.
+  intros s Hunmetered.
+  unfold rb_meter_identity_reserve.
+  rewrite Hunmetered.
+  reflexivity.
+Qed.
+
+Theorem rb_meter_identity_unmetered_reserve_many_preserves_state :
+  forall count s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_reserve_many count s = s.
+Proof.
+  induction count as [| count IH]; intros s Hunmetered.
+  - reflexivity.
+  - simpl.
+    rewrite rb_meter_identity_unmetered_reserve_preserves_state by exact Hunmetered.
+    apply IH.
+    exact Hunmetered.
+Qed.
+
+Theorem rb_meter_identity_unmetered_child_preserves_state :
+  forall component s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_child s component = s.
+Proof.
+  intros component s Hunmetered.
+  unfold rb_meter_identity_child.
+  rewrite Hunmetered.
+  reflexivity.
+Qed.
+
+Theorem rb_meter_identity_unmetered_child_many_preserves_state :
+  forall components s,
+    rb_meter_identity_unmetered s = true ->
+    rb_meter_identity_child_many components s = s.
+Proof.
+  induction components as [| component rest IH]; intros s Hunmetered.
+  - reflexivity.
+  - simpl.
+    rewrite rb_meter_identity_unmetered_child_preserves_state by exact Hunmetered.
+    apply IH.
+    exact Hunmetered.
+Qed.
+
+Theorem rb_meter_identity_metered_reserve_uses_next_identity :
+  forall s,
+    rb_meter_identity_unmetered s = false ->
+    rb_meter_identity_next_local_index (rb_meter_identity_reserve s) =
+      S (rb_meter_identity_next_local_index s) /\
+    rb_meter_identity_recorded_local_indices (rb_meter_identity_reserve s) =
+      rb_meter_identity_recorded_local_indices s ++
+        [rb_meter_identity_next_local_index s].
+Proof.
+  intros s Hmetered.
+  unfold rb_meter_identity_reserve.
+  rewrite Hmetered.
+  split; reflexivity.
+Qed.
+
+Theorem rb_meter_identity_scoped_unmetered_work_preserves_next_metered_identity :
+  forall count s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_reserve_many count
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false).
+Proof.
+  intros count s.
+  rewrite rb_meter_identity_unmetered_reserve_many_preserves_state.
+  - reflexivity.
+  - reflexivity.
+Qed.
+
+Theorem rb_meter_identity_scoped_unmetered_children_preserve_next_metered_identity :
+  forall components s,
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered
+        (rb_meter_identity_child_many components
+          (rb_meter_identity_set_unmetered s true))
+        false) =
+    rb_meter_identity_reserve
+      (rb_meter_identity_set_unmetered s false).
+Proof.
+  intros components s.
+  rewrite rb_meter_identity_unmetered_child_many_preserves_state.
+  - reflexivity.
+  - reflexivity.
+Qed.
+
 Theorem rb_reserve_isolated_from_other_budget :
   forall b1 b1' b2 e r,
     rb_reserve b1 e = (b1', r) ->

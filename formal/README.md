@@ -202,14 +202,18 @@ independently remove the complete frontier, canonical order, checkpoint
 quiescence, disjoint parallelism, or authority-region conflicts.
 
 [`tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla`](tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla)
-models cancellation ownership separately: a shared evaluation permit remains
-owned while detached children are live, and checkpoint requires the exclusive
-permit. The unsafe configuration releases ownership with the cancelled root
-and checkpoints before child mutations complete.
+models structured cancellation separately. Root cancellation aborts all child
+tasks. A shared evaluation permit remains owned until all children terminate.
+The unsafe configuration detaches the children and checkpoints before their
+mutations complete.
 
-TLC exhausts both finite state spaces. Apalache independently checks the
-complete ten-step reduction horizon and four-step evaluation horizon and
-reproduces all six targeted defect traces.
+[`tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla`](tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla)
+models one driver per complete frontier and release before result delivery.
+[`tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla`](tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla)
+models direct execution after exactly one live participant remains.
+
+TLC exhausts all finite state spaces. Apalache independently checks each
+bounded horizon and reproduces the targeted defect traces.
 
 The unbounded algebraic refinement is
 [`rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v`](rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v).

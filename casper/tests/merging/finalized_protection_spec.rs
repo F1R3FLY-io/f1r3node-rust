@@ -112,7 +112,7 @@ fn chain_from(
 ) -> DeployChainIndex {
     let mut deploys = HashSet::new();
     deploys.insert(DeployIdWithCost {
-        deploy_id: Bytes::from(vec![deploy_byte]),
+        deploy_id: Bytes::from(vec![deploy_byte; 32]),
         cost,
     });
     DeployChainIndex::from_parts(

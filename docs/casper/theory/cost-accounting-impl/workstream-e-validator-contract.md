@@ -90,13 +90,14 @@ partial admission).
 
 ### Platform obligations (P1–P3, labeled out-of-spec per DR-12)
 
-**P1 — Slash-authorization soundness.** A block is slashed for a slash deployment only if on-chain evidence
-authorizes it; stale or rebonded-key evidence cannot slash.
+**P1 — Slash-authorization soundness.** A slash requires authorized on-chain evidence.
+The evidence generation must match the current bond generation.
+An epoch boundary does not change the bond generation.
 - Rocq: `BugFixSlashAuthorization.v`; `MainTheorem.v` (T9.12 stale-evidence-not-authorized, T7, T9).
 - TLA+: `AuthorizedSlashFlow.tla` (`Inv_OnlyAuthorizedSlashCanBePending`,
   `Inv_StaleEvidenceCannotSlashRebondedKey`, `Inv_BondsZeroAfterSlash`).
 - Lean (E4): mirror the taxonomy core (`bm_slash_lookup`, `bm_slash_idempotent_lookup`,
-  `stale_evidence_not_authorized`).
+  `stale_generation_evidence_not_authorized`).
 - Custom duty: **inherit** — slash-authorization stays in the Rust shell (DR-12); a custom validator does not
   re-implement P1.
 

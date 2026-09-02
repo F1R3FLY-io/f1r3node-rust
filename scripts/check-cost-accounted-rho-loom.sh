@@ -33,7 +33,7 @@
 #     (↔ MultiShardResourceIsolation).
 #   - complete deterministic reduction frontiers, canonical competing-COMM
 #     order, compound-authority conflict components, and checkpoint exclusion
-#     while a frontier or detached child is in flight
+#     while a frontier or structured child cancellation is in flight
 #     (↔ DeterministicParallelReduction).
 #
 # Fail-soft: absent cargo is reported and skipped (exit 0). A loom run that

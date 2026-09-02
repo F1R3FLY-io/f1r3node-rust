@@ -83,9 +83,9 @@ region, so `{A, B}` conflicts with `{B, C}` on `B`.
 RSpace logs scheduled I/O and COMM events by causal operation order and drains
 them in that order at checkpoint. An evaluation owns a shared epoch permit
 until every participant and frontier driver is quiescent. Checkpoint, reset,
-rollback, and replay setup require the exclusive permit. Cancelling a root
-future therefore cannot expose a partial state while detached children still
-run. The complete algorithm, proof boundary, and regression matrix are in
+rollback, and replay setup require the exclusive permit. Root cancellation
+aborts each scoped child task before the epoch permit can open the boundary.
+The complete algorithm, proof boundary, and regression matrix are in
 [Deterministic Parallel Reduction and Checkpoint Ownership](deterministic-parallel-reduction.md).
 
 ## Required execution transaction

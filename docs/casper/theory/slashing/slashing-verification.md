@@ -2034,7 +2034,7 @@ the authorization-rejection branch has identity post-image on
 
 #### 9.13.2 Theorem 9.13′ (Canonical merged-pre-state authorization and origin parity)
 
-**Statement.** *(`positive_canonical_bond_authorizes_matching_candidate`,
+**Statement.** *(`matching_generation_current_window_positive_bond_authorized`,
 `zero_canonical_bond_not_authorized_candidate`,
 `proposer_receiver_authorization_parity`, and
 `same_pre_state_root_same_authorization`; also the corresponding
@@ -2657,7 +2657,7 @@ confirming the fix.
 | `Inv_CanonicalRecordKeyInjective`                                                    | `canonical_key_pair_injective`                                            | yes            |
 | `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | `bm_slash_many_order_independent` / `bm_slash_many_abort_order_dependent` | yes            |
 | `Inv_ProposerFairnessForBoundedLiveness`                                             | `proposer_fairness_boundary_requires_review`                              | yes            |
-| `Inv_AuthorizationUsesCanonicalPreState` / `Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth` / `Inv_CanonicalZeroRejectsEvenAmbientPositive` / `Inv_ProposerReceiverAuthorizationParity` | `ambient_bonds_do_not_affect_authorization`; `canonical_pre_state_authorizes_when_ambient_zero`; `canonical_zero_rejects_even_if_ambient_positive`; `proposer_receiver_authorization_parity`; `same_pre_state_root_same_authorization` | yes |
+| `Inv_AuthorizationUsesCanonicalPreState` / `Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth` / `Inv_CanonicalZeroRejectsEvenAmbientPositive` / `Inv_ProposerReceiverAuthorizationParity` | `ambient_bonds_do_not_affect_authorization`; `canonical_pre_state_authorizes_when_ambient_differs`; `canonical_zero_rejects_even_if_ambient_positive`; `proposer_receiver_authorization_parity`; `same_pre_state_root_same_authorization` | yes |
 | `Inv_MergeRejectedSlashCoveredByCanonicalScan` / `Inv_MergeRejectedSlashCannotAuthorizeZeroBond` / `Inv_PendingSlashTargetUnique` | `merge_rejected_hint_subsumed_by_authorized_scan`; `zero_bond_candidate_not_selected`; `selected_target_keys_nodup` | yes |
 | `Inv_PendingSlashCompleteForCurrentPreState` | `authorized_candidate_selected`; `merge_rejected_hint_subsumed_by_authorized_scan` | yes |
 | `Inv_SlashedGenerationNeverExceedsCurrent` | `stale_generation_slash_is_noninterfering`; `generation_scoped_slash_stale_noop` | yes |

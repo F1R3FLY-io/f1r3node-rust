@@ -51,6 +51,8 @@ KANI_HARNESSES=(
     received_authorization_requires_invalid_evidence_on_bounded_domain
     received_authorization_requires_current_epoch_on_bounded_domain
     received_authorization_requires_evidence_epoch_on_bounded_domain
+    received_authorization_requires_matching_evidence_generation
+    received_authorization_requires_matching_canonical_generation
     slash_target_key_collides_matches_pair_equality
 )
 FUZZ_TARGETS=(

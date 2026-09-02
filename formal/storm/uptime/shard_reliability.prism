@@ -38,16 +38,16 @@ module shard
   lag : [0..LAG_CAP] init INITIAL_LAG;
   resident : [0..MEMORY_CAP] init INITIAL_MEMORY;
 
-  [] eligible > 0 -> eligible * VALIDATOR_FAILURE_RATE : (eligible' = eligible - 1);
-  [] eligible < VALIDATORS -> (VALIDATORS - eligible) * VALIDATOR_REPAIR_RATE : (eligible' = eligible + 1);
-  [] !common_down -> COMMON_FAILURE_RATE : (common_down' = true);
-  [] common_down -> COMMON_REPAIR_RATE : (common_down' = false);
-  [] storage_writable -> STORAGE_FAILURE_RATE : (storage_writable' = false);
-  [] !storage_writable -> STORAGE_REPAIR_RATE : (storage_writable' = true);
-  [] queued < QUEUE_CAP -> ARRIVAL_RATE : (queued' = queued + 1);
-  [] protocol_ready & queued > 0 -> SERVICE_RATE : (queued' = queued - 1);
-  [] lag < LAG_CAP -> LAG_GROWTH_RATE : (lag' = lag + 1);
-  [] protocol_ready & lag > 0 -> LAG_DRAIN_RATE : (lag' = lag - 1);
+  [] VALIDATOR_FAILURE_RATE > 0 & eligible > 0 -> eligible * VALIDATOR_FAILURE_RATE : (eligible' = eligible - 1);
+  [] VALIDATOR_REPAIR_RATE > 0 & eligible < VALIDATORS -> (VALIDATORS - eligible) * VALIDATOR_REPAIR_RATE : (eligible' = eligible + 1);
+  [] COMMON_FAILURE_RATE > 0 & !common_down -> COMMON_FAILURE_RATE : (common_down' = true);
+  [] COMMON_REPAIR_RATE > 0 & common_down -> COMMON_REPAIR_RATE : (common_down' = false);
+  [] STORAGE_FAILURE_RATE > 0 & storage_writable -> STORAGE_FAILURE_RATE : (storage_writable' = false);
+  [] STORAGE_REPAIR_RATE > 0 & !storage_writable -> STORAGE_REPAIR_RATE : (storage_writable' = true);
+  [] ARRIVAL_RATE > 0 & queued < QUEUE_CAP -> ARRIVAL_RATE : (queued' = queued + 1);
+  [] SERVICE_RATE > 0 & protocol_ready & queued > 0 -> SERVICE_RATE : (queued' = queued - 1);
+  [] LAG_GROWTH_RATE > 0 & lag < LAG_CAP -> LAG_GROWTH_RATE : (lag' = lag + 1);
+  [] LAG_DRAIN_RATE > 0 & protocol_ready & lag > 0 -> LAG_DRAIN_RATE : (lag' = lag - 1);
   [] MEMORY_BACKGROUND_GROWTH_RATE > 0 & resident < MEMORY_CAP -> MEMORY_BACKGROUND_GROWTH_RATE : (resident' = resident + 1);
   [] MEMORY_WORK_GROWTH_RATE > 0 & (queued > 0 | lag > 0) & resident < MEMORY_CAP -> MEMORY_WORK_GROWTH_RATE : (resident' = resident + 1);
   [] MEMORY_RECLAIM_RATE > 0 & protocol_ready & resident > 0 -> MEMORY_RECLAIM_RATE : (resident' = resident - 1);

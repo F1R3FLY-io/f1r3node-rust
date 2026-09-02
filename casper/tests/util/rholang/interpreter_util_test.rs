@@ -12,7 +12,7 @@ use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use dashmap::DashSet;
 use models::rhoapi::PCost;
 use models::rust::block::state_hash::StateHash;
@@ -91,31 +91,30 @@ impl TestContext {
     // Helper function to create deploys from Rholang source code without timestamp
     // Note: Wraps ConstructDeploy.sourceDeployNow(source, sec) where sec defaults to DEFAULT_SEC if None
     // Scala: def sourceDeployNow(source: String, sec: PrivateKey = defaultSec, ...)
-    fn create_deploys_now(sources: Vec<&str>, sec: Option<PrivateKey>) -> Vec<Signed<DeployData>> {
+    fn create_deploys_now(
+        &self,
+        sources: Vec<&str>,
+        sec: Option<PrivateKey>,
+    ) -> Vec<Cosigned<DeployData>> {
         sources
             .into_iter()
             .map(|source| {
-                construct_deploy::source_deploy_now(
+                let private_key = sec
+                    .clone()
+                    .unwrap_or_else(|| construct_deploy::DEFAULT_SEC.clone());
+                let deploy = construct_deploy::source_deploy_now(
                     source.to_string(),
-                    Some(
-                        sec.clone()
-                            .unwrap_or_else(|| construct_deploy::DEFAULT_SEC.clone()),
-                    ),
+                    Some(private_key.clone()),
                     None,
-                    None,
+                    Some(self.genesis_context.genesis_block.shard_id.clone()),
                 )
-                .unwrap()
+                .unwrap();
+                construct_deploy::envelope_from_deploy_data(deploy.data, Some(private_key))
+                    .expect("protocol-v6 deploy envelope")
             })
             .collect()
     }
 
-    // Like `create_deploys_now`, but threads the genesis shard identifier
-    // through to each deploy. Required by tests that submit the deploys to
-    // the full block-production/validation path (`add_block_from_deploys`),
-    // which rejects blocks whose deploys do not carry the shard's root
-    // identifier (`Validate::shard_identifier`, InvalidShardId). The
-    // shard-less `create_deploys_now` is fine only for tests that feed the
-    // interpreter checkpoint directly (which does not run shard validation).
     fn create_deploys_now_with_shard(
         sources: Vec<&str>,
         sec: Option<PrivateKey>,
@@ -148,20 +147,16 @@ impl TestContext {
 
         genesis_deploys
             .into_iter()
-            .map(|d| ProcessedDeploy {
-                deploy: d,
-                envelope_commitment: Vec::<u8>::new().into(),
-                cost,
-                deploy_log: Vec::new(),
-                is_failed: false,
-                system_deploy_error: None,
-                cosigners: Vec::new(),
-                cosigner_threshold: 0,
-                pre_state_hash: Vec::<u8>::new().into(),
-                post_state_hash: Vec::<u8>::new().into(),
-                authority_funding_certificate: None,
-                authority_cost_witness: None,
-                admission_status: Default::default(),
+            .map(|deploy| {
+                let mut data = deploy.data;
+                if data.shard_id.is_empty() {
+                    data.shard_id = "root".to_string();
+                }
+                let envelope = construct_deploy::envelope_from_deploy_data(data, None)
+                    .expect("protocol-v6 test envelope");
+                let mut processed = ProcessedDeploy::empty_from_cosigned(&envelope);
+                processed.cost = cost;
+                processed
             })
             .collect()
     }
@@ -1016,7 +1011,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
     with_genesis(
         ctx.genesis_context.clone(),
         |mut block_store, mut block_dag_storage, runtime_manager| async move {
-            let deploys = TestContext::create_deploys_now(
+            let deploys = ctx.create_deploys_now(
                 vec![
                     "@1!(1)",
                     "@2!(1)",
@@ -1049,7 +1044,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1128,7 +1123,7 @@ async fn validate_block_checkpoint_should_pass_linked_list_test() {
     with_genesis(
         ctx.genesis_context.clone(),
         |mut block_store, mut block_dag_storage, runtime_manager| async move {
-            let deploys = TestContext::create_deploys_now(
+            let deploys = ctx.create_deploys_now(
                 vec![
                     r#"
 contract @"recursionTest"(@list) = {
@@ -1176,7 +1171,7 @@ contract @"recursionTest"(@list) = {
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1255,7 +1250,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
     with_genesis(
         ctx.genesis_context.clone(),
         |mut block_store, mut block_dag_storage, runtime_manager| async move {
-            let deploys = TestContext::create_deploys_now(
+            let deploys = ctx.create_deploys_now(
                 vec![
                     r#"new x, y, delay in {
               contract delay(@n) = {
@@ -1307,7 +1302,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1385,7 +1380,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_primitives() {
     with_genesis(
         ctx.genesis_context.clone(),
         |mut block_store, mut block_dag_storage, runtime_manager| async move {
-            let deploys = TestContext::create_deploys_now(
+            let deploys = ctx.create_deploys_now(
                 vec![
                     r#"
 new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
@@ -1433,7 +1428,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1512,7 +1507,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
         ctx.genesis_context.clone(),
         |mut block_store, mut block_dag_storage, runtime_manager| async move {
             for i in 0..=10 {
-                let deploys = TestContext::create_deploys_now(
+                let deploys = ctx.create_deploys_now(
                     vec![
                         r#"
  contract @"loop"(@xs) = {
@@ -1551,20 +1546,19 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     seq_num: (i + 1),
                 };
 
-                let deploys_checkpoint =
-                    interpreter_util::compute_deploys_checkpoint_legacy_signer(
-                        &mut block_store,
-                        vec![genesis.clone()],
-                        deploys,
-                        Vec::<SystemDeployEnum>::new(),
-                        &casper_snapshot,
-                        &runtime_manager,
-                        block_data,
-                        HashMap::new(),
-                        None,
-                    )
-                    .await
-                    .expect("Failed to compute deploys checkpoint");
+                let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
+                    &mut block_store,
+                    vec![genesis.clone()],
+                    deploys,
+                    Vec::<SystemDeployEnum>::new(),
+                    &casper_snapshot,
+                    &runtime_manager,
+                    block_data,
+                    HashMap::new(),
+                    None,
+                )
+                .await
+                .expect("Failed to compute deploys checkpoint");
 
                 let (
                     pre_state_hash,
@@ -1639,7 +1633,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 .map(|i| format!("for(_ <- @{}){{{ } Nil }} | @{}!({})", i, "", i, i))
                 .collect();
             let deploys =
-                TestContext::create_deploys_now(sources.iter().map(|s| s.as_str()).collect(), None);
+                ctx.create_deploys_now(sources.iter().map(|s| s.as_str()).collect(), None);
 
             let dag1 = block_dag_storage
                 .get_representation()
@@ -1660,7 +1654,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 seq_num: 1,
             };
 
-            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_legacy_signer(
+            let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
                 &mut block_store,
                 vec![genesis.clone()],
                 deploys,
@@ -1696,10 +1690,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
             bad_processed_deploy.deploy_log.extend(extra_events);
 
             let creator = ctx.genesis_context.validator_pks()[0].bytes.clone();
-            let deploys_for_block = vec![
-                bad_processed_deploy,
-                processed_deploys.last().unwrap().clone(),
-            ];
+            let deploys_for_block = vec![bad_processed_deploy];
             let block = block_generator::create_block_with_system_deploys_at(
                 &mut block_store,
                 &mut block_dag_storage,
@@ -1761,7 +1752,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
             let genesis = ctx.genesis_context.genesis_block.clone();
 
             for i in 0..=10 {
-                let deploys = TestContext::create_deploys_now(
+                let deploys = ctx.create_deploys_now(
                     vec![
                         r#"
  @"mapStore"!({}) |
@@ -1800,20 +1791,19 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     seq_num: (i + 1),
                 };
 
-                let deploys_checkpoint =
-                    interpreter_util::compute_deploys_checkpoint_legacy_signer(
-                        &mut block_store,
-                        vec![genesis.clone()],
-                        deploys,
-                        Vec::<SystemDeployEnum>::new(),
-                        &casper_snapshot,
-                        &runtime_manager,
-                        block_data,
-                        HashMap::new(),
-                        None,
-                    )
-                    .await
-                    .expect("Failed to compute deploys checkpoint");
+                let deploys_checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned(
+                    &mut block_store,
+                    vec![genesis.clone()],
+                    deploys,
+                    Vec::<SystemDeployEnum>::new(),
+                    &casper_snapshot,
+                    &runtime_manager,
+                    block_data,
+                    HashMap::new(),
+                    None,
+                )
+                .await
+                .expect("Failed to compute deploys checkpoint");
 
                 let (
                     pre_state_hash,

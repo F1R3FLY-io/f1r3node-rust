@@ -560,11 +560,33 @@ run_expected_violation deterministic-parallel-reduction-authority-unsafe \
   "classifying operations with an overlapping purse region as disjoint is independently refuted" \
   Inv_SharedAuthorityNeverRunsAsDisjoint \
   --config=../deterministic_parallel_reduction/MC_DeterministicParallelReduction_authority_unsafe_Apalache.cfg --length=7 ../deterministic_parallel_reduction/DeterministicParallelReduction.tla || overall=1
+run_check deterministic-reduction-driver-lifecycle \
+  "an inline first poll transfers pending work before cancellation and preserves exact driver ownership" \
+  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_Apalache.cfg --length=6 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
+run_expected_violation deterministic-reduction-driver-claim-unsafe \
+  "separating frontier submission from driver ownership creates an unowned ready frontier" \
+  Inv_ReadyHasDriver \
+  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_claim_unsafe_Apalache.cfg --length=3 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
+run_expected_violation deterministic-reduction-driver-transfer-unsafe \
+  "yielding inline work without transferring driver ownership leaves a cancellation-sensitive frontier" \
+  Inv_PendingInlineIsTransferable \
+  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_transfer_unsafe_Apalache.cfg --length=3 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
+run_expected_violation deterministic-reduction-driver-reentry-unsafe \
+  "executing an internal RSpace commit through the external scheduler is independently refuted" \
+  Inv_InternalExecutionNeverResubmits \
+  --config=../deterministic_parallel_reduction/MC_ReductionDriverLifecycle_reentry_unsafe_Apalache.cfg --length=4 ../deterministic_parallel_reduction/ReductionDriverLifecycle.tla || overall=1
+run_check deterministic-single-participant-fast-path \
+  "direct execution refines scheduled commitment only after one live participant remains" \
+  --config=../deterministic_parallel_reduction/MC_SingleParticipantFastPath_Apalache.cfg --length=4 ../deterministic_parallel_reduction/SingleParticipantFastPath.tla || overall=1
+run_expected_violation deterministic-single-participant-fast-path-unsafe \
+  "direct ownership with two live participants is independently refuted" \
+  Inv_DirectOwnerRequiresSingleton \
+  --config=../deterministic_parallel_reduction/MC_SingleParticipantFastPath_unsafe_Apalache.cfg --length=1 ../deterministic_parallel_reduction/SingleParticipantFastPath.tla || overall=1
 run_check deterministic-evaluation-boundary \
-  "the evaluation epoch permit covers detached children and excludes partial checkpoints" \
-  --config=../deterministic_parallel_reduction/MC_EvaluationBoundary.cfg --length=4 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
+  "structured cancellation aborts child tasks before the evaluation permit permits a checkpoint" \
+  --config=../deterministic_parallel_reduction/MC_EvaluationBoundary_Apalache.cfg --length=4 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
 run_expected_violation deterministic-evaluation-boundary-cancel-unsafe \
-  "releasing the evaluation permit when only the root future is cancelled is independently refuted" \
+  "detaching child tasks and releasing the evaluation permit is independently refuted" \
   Inv_CheckpointAtEvaluationQuiescence \
   --config=../deterministic_parallel_reduction/MC_EvaluationBoundary_cancel_unsafe_Apalache.cfg --length=2 ../deterministic_parallel_reduction/EvaluationBoundary.tla || overall=1
 run_check block-heap-lifecycle \

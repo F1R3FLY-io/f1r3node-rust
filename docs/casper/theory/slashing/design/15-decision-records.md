@@ -112,7 +112,7 @@ formal claim (verification §9 / MainTheorem.v).
 
 | DR   | Bug    | Headline theorem                                                | Rocq alias                                  |
 |------|--------|-----------------------------------------------------------------|---------------------------------------------|
-| DR-1 | #13    | T-9.12 — Stale evidence cannot slash a same-key rebond         | `main_T9_12_stale_evidence_not_authorized`  |
+| DR-1 | #13    | T-9.12 — Stale evidence cannot slash a same-key rebond         | `main_T9_12_stale_generation_evidence_not_authorized`  |
 | DR-2 | #14    | T-LivenessGap — Authorized invalid-block evidence index path   | `deploy_epoch_matches_target`               |
 | DR-3 | #12    | T-9.13 — Unknown / unauthorized slash deploys are no-ops       | `main_T9_13_unknown_slash_evidence_noop`    |
 | DR-3 | (corollary) | T-Auth — Auth-token check rejects invalid tokens          | `main_TAuth_invalid_token_noop`, `main_TAuth_valid_token_equiv` |

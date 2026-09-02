@@ -35,6 +35,10 @@ rates because its detailed artifact expired and each iteration rebuilt the
 shard. `scripts/check-uptime-storm.sh` fails closed when release projection is
 requested without a current, complete calibrated profile.
 
+Each rate must be a nonnegative number. A zero rate disables the related
+transition. Positive-rate guards let Storm represent a terminal state as an
+absorbing state.
+
 The exact field-by-field relationship between the historical observations and
 the current model is recorded in
 [`docs/casper/theory/uptime/verification.md`](../../../docs/casper/theory/uptime/verification.md#historical-evidence-mapping-to-the-current-model).

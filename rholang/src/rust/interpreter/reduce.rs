@@ -54,7 +54,7 @@ use super::accounting::costs::{
 };
 use super::accounting::RuntimeBudget;
 use super::deterministic_reduction::{
-    self, DeterministicRSpace, ParticipantGuard, ReductionCoordinator,
+    self, DeterministicRSpace, ParticipantGuard, ReductionCoordinator, ScopedJoinHandle,
 };
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
@@ -335,11 +335,13 @@ impl DebruijnInterpreter {
                 // parallelism and gives deeply recursive branches an independent
                 // task stack while still reporting errors in source order below.
                 let guard = ParticipantGuard::for_context(&child_context);
-                let handle =
-                    tokio::spawn(deterministic_reduction::scope(child_context, async move {
+                let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
+                    child_context,
+                    async move {
                         let _guard = guard;
                         fut.await
-                    }));
+                    },
+                )));
                 unordered.push(async move { (index, handle.await) });
             }
 
@@ -902,10 +904,13 @@ impl DebruijnInterpreter {
             // Persistent/peek continuations must progress independently; spawning
             // preserves parallel execution and isolates deep recursive branches.
             let guard = ParticipantGuard::for_context(&child_context);
-            let handle = tokio::spawn(deterministic_reduction::scope(child_context, async move {
-                let _guard = guard;
-                fut.await
-            }));
+            let handle = ScopedJoinHandle::new(tokio::spawn(deterministic_reduction::scope(
+                child_context,
+                async move {
+                    let _guard = guard;
+                    fut.await
+                },
+            )));
             unordered.push(async move { (index, handle.await) });
         }
 
