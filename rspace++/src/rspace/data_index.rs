@@ -1,10 +1,9 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use pathmap::PathMap;
 use pathmap::utils::{ByteMask, ByteMaskIter};
 use serde::Serialize;
 
@@ -29,6 +28,9 @@ pub enum DataIndexError {
     EncodedCardinalityOverflow(u128),
     EncodedLengthOverflow(u128),
     AllocationFailure(usize),
+    LoadedChannelCountOverflow,
+    AggregateDistinctCountOverflow,
+    AggregateCardinalityOverflow { current: u128, added: u128 },
     DuplicateDatumIdentity,
     IndexOutOfBounds { index: i32, cardinality: u128 },
 }
@@ -51,6 +53,15 @@ impl fmt::Display for DataIndexError {
             }
             Self::AllocationFailure(requested) => {
                 write!(f, "unable to reserve requested capacity {requested}")
+            }
+            Self::LoadedChannelCountOverflow => {
+                f.write_str("loaded channel count exceeds usize::MAX")
+            }
+            Self::AggregateDistinctCountOverflow => {
+                f.write_str("RSpace distinct datum count exceeds usize::MAX")
+            }
+            Self::AggregateCardinalityOverflow { current, added } => {
+                write!(f, "RSpace aggregate cardinality overflow: {current} + {added}")
             }
             Self::DuplicateDatumIdentity => f.write_str(
                 "one canonical datum identity is stored under multiple derived RhoPaths",
@@ -301,9 +312,10 @@ impl fmt::Debug for CandidatePositionMap {
 
 #[derive(Debug, Clone)]
 struct CandidateCatalog<A: Clone> {
-    /// Independently allocated channel-relative PathMap authority.  This is
-    /// rebuilt during the existing encoded catalog pass: it never owns a raw
-    /// header focused into the RSpace store's compressed physical trie.
+    /// Copy-on-write clone of the selected channel's authoritative Bag.  A
+    /// catalog build and every incremental catalog transition preserve the
+    /// inner guarded root, so candidate matching never rebuilds a second
+    /// channel-relative trie merely to obtain an owned lifetime.
     availability: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
     positions: CandidatePositionMap,
@@ -354,7 +366,7 @@ impl<A: Clone> CandidateCatalog<A> {
 
     fn needs_refresh(&self) -> bool { self.active_distinct_len != self.ordered.len() }
 
-    fn record_transition(
+    fn record_transition_metadata(
         &mut self,
         relative_path: &[u8],
         previous: Option<Multiplicity>,
@@ -374,20 +386,19 @@ impl<A: Clone> CandidateCatalog<A> {
             (Some(_), None) => self.active_distinct_len -= 1,
             _ => {}
         }
-        self.availability.set_count(relative_path, current);
         true
     }
 
-    fn record_insert(&mut self, relative_path: &[u8], multiplicity: Multiplicity) -> bool {
+    fn record_insert_metadata(&mut self, relative_path: &[u8], multiplicity: Multiplicity) -> bool {
         let previous = (multiplicity != Multiplicity::ONE)
             .then(|| Multiplicity::new(multiplicity.get() - 1).expect("positive predecessor"));
-        self.record_transition(relative_path, previous, Some(multiplicity))
+        self.record_transition_metadata(relative_path, previous, Some(multiplicity))
     }
 
-    fn record_remove(&mut self, relative_path: &[u8], previous: Multiplicity) {
+    fn record_remove_metadata(&mut self, relative_path: &[u8], previous: Multiplicity) {
         let current = (previous != Multiplicity::ONE)
             .then(|| Multiplicity::new(previous.get() - 1).expect("positive remainder"));
-        let retained = self.record_transition(relative_path, Some(previous), current);
+        let retained = self.record_transition_metadata(relative_path, Some(previous), current);
         debug_assert!(retained, "removal cannot introduce an unknown catalog identity");
     }
 }
@@ -1271,32 +1282,217 @@ impl<A: Clone> CandidatePool<A> {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone)]
+enum ChannelSlot {
+    Real(Bag),
+    SyntheticBarrier,
+}
+
+impl ChannelSlot {
+    fn real(&self) -> &Bag {
+        match self {
+            Self::Real(bag) => bag,
+            Self::SyntheticBarrier => {
+                unreachable!("a synthetic outer barrier is never observable")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ChannelSlotDisposer;
+
+impl DisposeValue<ChannelSlot> for ChannelSlotDisposer {
+    fn dispose(&self, value: ChannelSlot) {
+        match value {
+            ChannelSlot::Real(bag) => drop(bag),
+            ChannelSlot::SyntheticBarrier => std::process::abort(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ChannelSlotBarrier;
+
+impl TeardownBarrier<ChannelSlot> for ChannelSlotBarrier {
+    fn make_barrier() -> ChannelSlot { ChannelSlot::SyntheticBarrier }
+
+    fn discard_barrier(barrier: ChannelSlot) {
+        if !matches!(barrier, ChannelSlot::SyntheticBarrier) {
+            std::process::abort();
+        }
+    }
+}
+
+type GuardedChannelMap = GuardedPathMap<ChannelSlot, ChannelSlotDisposer, ChannelSlotBarrier>;
+
+#[derive(Clone)]
 pub struct RSpaceDataIndex {
-    bag: Bag,
+    channels: GuardedChannelMap,
+    loaded_channel_count: usize,
+    distinct_len: usize,
+    exact_cardinality: u128,
+}
+
+impl Default for RSpaceDataIndex {
+    fn default() -> Self {
+        Self {
+            channels: GuardedPathMap::new_with_barrier(ChannelSlotDisposer),
+            loaded_channel_count: 0,
+            distinct_len: 0,
+            exact_cardinality: 0,
+        }
+    }
 }
 
 impl RSpaceDataIndex {
     pub fn new() -> Self { Self::default() }
 
-    pub fn from_bag(bag: Bag) -> Self { Self { bag } }
+    pub const fn loaded_channel_count(&self) -> usize { self.loaded_channel_count }
 
-    pub fn as_bag(&self) -> &Bag { &self.bag }
+    pub const fn distinct_len(&self) -> usize { self.distinct_len }
 
-    pub fn into_bag(self) -> Bag { self.bag }
+    pub const fn cardinality(&self) -> u64 {
+        if self.exact_cardinality > u64::MAX as u128 {
+            u64::MAX
+        } else {
+            self.exact_cardinality as u64
+        }
+    }
 
-    pub fn distinct_len(&self) -> usize { self.bag.distinct_len() }
+    pub fn is_empty(&self) -> bool { self.distinct_len == 0 }
 
-    pub fn cardinality(&self) -> u64 { self.bag.cardinality() }
+    fn channel_bag_at_marker(&self, marker: &[u8]) -> Option<&Bag> {
+        self.channels.get(marker).map(ChannelSlot::real)
+    }
 
-    pub fn is_empty(&self) -> bool { self.bag.is_empty() }
+    fn is_loaded_marker(&self, marker: &[u8]) -> bool { self.channels.contains(marker) }
 
-    fn has_values_at_prefix(&self, prefix: &[u8]) -> bool {
-        self.bag.prefix_value_count(prefix) != 0
+    fn preflight_new_channel(&self, marker: &[u8]) -> Result<(), DataIndexError> {
+        if !self.is_loaded_marker(marker) && self.loaded_channel_count == usize::MAX {
+            return Err(DataIndexError::LoadedChannelCountOverflow);
+        }
+        Ok(())
+    }
+
+    fn replace_channel_at_marker(
+        &mut self,
+        marker: &[u8],
+        prepared: Bag,
+    ) -> Result<bool, DataIndexError> {
+        let previous = self.channel_bag_at_marker(marker);
+        let previous_distinct = previous.map_or(0, Bag::distinct_len);
+        let previous_exact = previous.map_or(0, Bag::exact_cardinality);
+        let was_loaded = previous.is_some();
+        let retained_distinct = self
+            .distinct_len
+            .checked_sub(previous_distinct)
+            .expect("one channel contributes its distinct endpoints to the aggregate");
+        let retained_exact = self
+            .exact_cardinality
+            .checked_sub(previous_exact)
+            .expect("one channel contributes its cardinality to the aggregate");
+        let next_distinct = retained_distinct
+            .checked_add(prepared.distinct_len())
+            .ok_or(DataIndexError::AggregateDistinctCountOverflow)?;
+        let next_exact = retained_exact
+            .checked_add(prepared.exact_cardinality())
+            .ok_or(DataIndexError::AggregateCardinalityOverflow {
+                current: retained_exact,
+                added: prepared.exact_cardinality(),
+            })?;
+        let next_loaded = if was_loaded {
+            self.loaded_channel_count
+        } else {
+            self.loaded_channel_count
+                .checked_add(1)
+                .ok_or(DataIndexError::LoadedChannelCountOverflow)?
+        };
+
+        let replaced = self
+            .channels
+            .set_val_at(marker, ChannelSlot::Real(prepared));
+        debug_assert_eq!(replaced, was_loaded);
+        self.loaded_channel_count = next_loaded;
+        self.distinct_len = next_distinct;
+        self.exact_cardinality = next_exact;
+        Ok(was_loaded)
+    }
+
+    /// Publish a precomputed set of exact channel replacements as one outer
+    /// copy-on-write authority transition.
+    ///
+    /// Aggregate metadata is preflighted over the final state before the first
+    /// outer-trie mutation.  This avoids both partial publication and false
+    /// overflow caused by an arbitrary order of growing and shrinking
+    /// channels in one logical delta.
+    fn replace_channels_at_markers(
+        &mut self,
+        replacements: &BTreeMap<Vec<u8>, Bag>,
+    ) -> Result<(), DataIndexError> {
+        if replacements.is_empty() {
+            return Ok(());
+        }
+
+        let mut retained_distinct = self.distinct_len;
+        let mut retained_exact = self.exact_cardinality;
+        let mut added_loaded = 0usize;
+        for marker in replacements.keys() {
+            match self.channel_bag_at_marker(marker) {
+                Some(previous) => {
+                    retained_distinct = retained_distinct
+                        .checked_sub(previous.distinct_len())
+                        .expect("a resident channel contributes its distinct endpoints");
+                    retained_exact = retained_exact
+                        .checked_sub(previous.exact_cardinality())
+                        .expect("a resident channel contributes its exact cardinality");
+                }
+                None => {
+                    added_loaded = added_loaded
+                        .checked_add(1)
+                        .ok_or(DataIndexError::LoadedChannelCountOverflow)?;
+                }
+            }
+        }
+
+        let mut next_distinct = retained_distinct;
+        let mut next_exact = retained_exact;
+        for prepared in replacements.values() {
+            next_distinct = next_distinct
+                .checked_add(prepared.distinct_len())
+                .ok_or(DataIndexError::AggregateDistinctCountOverflow)?;
+            next_exact = next_exact.checked_add(prepared.exact_cardinality()).ok_or(
+                DataIndexError::AggregateCardinalityOverflow {
+                    current: next_exact,
+                    added: prepared.exact_cardinality(),
+                },
+            )?;
+        }
+        let next_loaded = self
+            .loaded_channel_count
+            .checked_add(added_loaded)
+            .ok_or(DataIndexError::LoadedChannelCountOverflow)?;
+
+        for (marker, prepared) in replacements {
+            self.channels
+                .set_val_at(marker, ChannelSlot::Real(prepared.clone()));
+        }
+        self.loaded_channel_count = next_loaded;
+        self.distinct_len = next_distinct;
+        self.exact_cardinality = next_exact;
+        Ok(())
     }
 
     pub fn clear_channel<C: RhoPathEncode>(&mut self, channel: &C) -> (usize, u64) {
-        self.bag.remove_prefix(&RhoPathV1::datum_prefix(channel))
+        let marker = RhoPathV1::datum_prefix(channel);
+        let Some(previous) = self.channel_bag_at_marker(&marker) else {
+            return (0, 0);
+        };
+        let removed_distinct = previous.distinct_len();
+        let removed_cardinality = previous.cardinality();
+        self.replace_channel_at_marker(&marker, Bag::new())
+            .expect("replacing one channel with the empty Bag reduces aggregate metrics");
+        (removed_distinct, removed_cardinality)
     }
 
     pub fn datum_path<C, A>(channel: &C, datum: &Datum<A>) -> Vec<u8>
@@ -1334,8 +1530,17 @@ impl RSpaceDataIndex {
         C: RhoPathEncode,
         A: Clone + Serialize + RhoPathEncode,
     {
-        let path = Self::datum_path(channel, datum);
-        let multiplicity = self.bag.insert(&path)?;
+        let marker = RhoPathV1::datum_prefix(channel);
+        let relative = Self::relative_datum_path(datum);
+        let mut path = Vec::with_capacity(marker.len() + relative.len());
+        path.extend_from_slice(&marker);
+        path.extend_from_slice(&relative);
+        let mut bag = self
+            .channel_bag_at_marker(&marker)
+            .cloned()
+            .unwrap_or_default();
+        let multiplicity = bag.insert(&relative)?;
+        self.replace_channel_at_marker(&marker, bag)?;
         Ok((path, multiplicity))
     }
 
@@ -1344,20 +1549,40 @@ impl RSpaceDataIndex {
         C: RhoPathEncode,
         A: Clone + Serialize + RhoPathEncode,
     {
-        self.bag.count(&Self::datum_path(channel, datum))
+        let marker = RhoPathV1::datum_prefix(channel);
+        self.channel_bag_at_marker(&marker)
+            .map_or(0, |bag| bag.count(&Self::relative_datum_path(datum)))
     }
 
-    pub fn count_path(&self, path: &[u8]) -> u64 { self.bag.count(path) }
+    pub fn count_path(&self, path: &[u8]) -> u64 {
+        let Ok(view) = RhoPathV1::parse_datum(path) else {
+            return 0;
+        };
+        let (marker, relative) = path.split_at(view.channel_prefix_len());
+        self.channel_bag_at_marker(marker)
+            .map_or(0, |bag| bag.count(relative))
+    }
 
-    pub fn remove_path(&mut self, path: &[u8]) -> Option<Multiplicity> { self.bag.remove(path) }
+    pub fn remove_path(&mut self, path: &[u8]) -> Option<Multiplicity> {
+        let view = RhoPathV1::parse_datum(path).ok()?;
+        let (marker, relative) = path.split_at(view.channel_prefix_len());
+        let mut bag = self.channel_bag_at_marker(marker)?.clone();
+        let next = bag.remove(relative);
+        self.replace_channel_at_marker(marker, bag)
+            .expect("removing one resident occurrence reduces aggregate metrics");
+        next
+    }
 
     pub fn channel_entries<C, A>(&self, channel: &C) -> Result<Vec<IndexedDatum<A>>, DataIndexError>
     where
         C: RhoPathEncode,
         A: Clone + ColdStoreDecode,
     {
-        let prefix = RhoPathV1::datum_prefix(channel);
-        self.entries_at_prefix(&prefix)
+        let marker = RhoPathV1::datum_prefix(channel);
+        let Some(bag) = self.channel_bag_at_marker(&marker) else {
+            return Ok(Vec::new());
+        };
+        self.entries_at_relative_prefix(&marker, bag, b"")
     }
 
     pub fn structure_prefix_entries<C, A>(
@@ -1369,8 +1594,12 @@ impl RSpaceDataIndex {
         C: RhoPathEncode,
         A: Clone + ColdStoreDecode,
     {
-        let prefix = RhoPathV1::datum_structure_prefix(channel, structure_prefix);
-        self.entries_at_prefix(&prefix)
+        let marker = RhoPathV1::datum_prefix(channel);
+        let Some(bag) = self.channel_bag_at_marker(&marker) else {
+            return Ok(Vec::new());
+        };
+        let relative_prefix = RhoPathV1::relative_datum_structure_prefix(structure_prefix);
+        self.entries_at_relative_prefix(&marker, bag, &relative_prefix)
     }
 
     pub fn ordered_channel_entries<C, A>(
@@ -1381,8 +1610,8 @@ impl RSpaceDataIndex {
         C: RhoPathEncode,
         A: Clone + ColdStoreDecode,
     {
-        let prefix = RhoPathV1::datum_prefix(channel);
-        self.ordered_encoded_channel_entries(&prefix)?
+        let marker = RhoPathV1::datum_prefix(channel);
+        self.ordered_encoded_channel_entries(&marker)?
             .into_iter()
             .map(|entry| {
                 let datum = decode_datum(&entry.path[entry.identity_offset..])?;
@@ -1400,40 +1629,33 @@ impl RSpaceDataIndex {
         C: RhoPathEncode,
         A: Clone + ColdStoreDecode,
     {
-        let prefix = RhoPathV1::datum_prefix(channel);
-        let catalog = self.candidate_catalog::<A>(&prefix)?;
+        let marker = RhoPathV1::datum_prefix(channel);
+        let catalog = self.candidate_catalog::<A>(&marker)?;
         self.candidate_pool_from_catalog(&catalog)
     }
 
     fn candidate_catalog<A>(&self, prefix: &[u8]) -> Result<CandidateCatalog<A>, DataIndexError>
     where A: Clone + ColdStoreDecode {
-        // The source Bag visits one channel prefix in strictly ascending trie
-        // order. Build the independent relative authority through one moving
-        // write zipper during that same pass, while retaining only the
-        // lightweight descriptors needed for consensus candidate order.
+        let empty = Bag::new();
+        let availability = self.channel_bag_at_marker(prefix).unwrap_or(&empty);
         let mut decorated = Vec::new();
-        let availability = Bag::try_from_sorted_unique(|writer| {
-            self.bag.try_visit_prefix(prefix, |path, multiplicity| {
-                let view = RhoPathV1::parse_datum(path)?;
-                let identity_offset = path.len() - view.datum_identity().len();
-                writer
-                    .push(&path[prefix.len()..], multiplicity)
-                    .expect("resident trie order is strictly ascending and unique");
-                decorated.push((
-                    datum_identity_digest(view.datum_identity()),
-                    EncodedIndexedDatum {
-                        path: path.to_vec(),
-                        identity_offset,
-                        multiplicity,
-                    },
-                ));
-                Ok::<(), DataIndexError>(())
-            })
+        availability.try_visit_relative_prefix(b"", |relative, multiplicity| {
+            let identity = RhoPathV1::relative_datum_identity(relative)?;
+            let mut path = Vec::with_capacity(prefix.len() + relative.len());
+            path.extend_from_slice(prefix);
+            path.extend_from_slice(relative);
+            let identity_offset = path.len() - identity.len();
+            decorated.push((datum_identity_digest(identity), EncodedIndexedDatum {
+                path,
+                identity_offset,
+                multiplicity,
+            }));
+            Ok::<(), DataIndexError>(())
         })?;
         sort_encoded_candidates(&mut decorated);
         validate_unique_candidate_identities(&decorated)?;
         let ordered = decorated.into_iter().map(|(_, entry)| entry).collect();
-        Ok(CandidateCatalog::from_encoded_entries(availability, prefix.len(), ordered))
+        Ok(CandidateCatalog::from_encoded_entries(availability.clone(), prefix.len(), ordered))
     }
 
     fn candidate_pool_from_catalog<A>(
@@ -1452,11 +1674,17 @@ impl RSpaceDataIndex {
         prefix: &[u8],
     ) -> Result<Vec<EncodedIndexedDatum>, DataIndexError> {
         let mut decorated = Vec::new();
-        self.bag.try_visit_prefix(prefix, |path, multiplicity| {
-            let view = RhoPathV1::parse_datum(path)?;
-            let identity_offset = path.len() - view.datum_identity().len();
-            decorated.push((datum_identity_digest(view.datum_identity()), EncodedIndexedDatum {
-                path: path.to_vec(),
+        let Some(bag) = self.channel_bag_at_marker(prefix) else {
+            return Ok(Vec::new());
+        };
+        bag.try_visit_relative_prefix(b"", |relative, multiplicity| {
+            let identity = RhoPathV1::relative_datum_identity(relative)?;
+            let mut path = Vec::with_capacity(prefix.len() + relative.len());
+            path.extend_from_slice(prefix);
+            path.extend_from_slice(relative);
+            let identity_offset = path.len() - identity.len();
+            decorated.push((datum_identity_digest(identity), EncodedIndexedDatum {
+                path,
                 identity_offset,
                 multiplicity,
             }));
@@ -1467,16 +1695,28 @@ impl RSpaceDataIndex {
         Ok(decorated.into_iter().map(|(_, entry)| entry).collect())
     }
 
-    fn entries_at_prefix<A>(&self, prefix: &[u8]) -> Result<Vec<IndexedDatum<A>>, DataIndexError>
-    where A: Clone + ColdStoreDecode {
+    fn entries_at_relative_prefix<A>(
+        &self,
+        marker: &[u8],
+        bag: &Bag,
+        relative_prefix: &[u8],
+    ) -> Result<Vec<IndexedDatum<A>>, DataIndexError>
+    where
+        A: Clone + ColdStoreDecode,
+    {
         let mut entries = Vec::new();
-        self.bag.try_visit_prefix(prefix, |path, multiplicity| {
-            let datum = RhoPathV1::parse_datum(path)
-                .map_err(DataIndexError::from)
-                .and_then(|view| decode_datum(view.datum_identity()).map_err(DataIndexError::from));
+        bag.try_visit_relative_prefix(relative_prefix, |relative_suffix, multiplicity| {
+            let mut relative = Vec::with_capacity(relative_prefix.len() + relative_suffix.len());
+            relative.extend_from_slice(relative_prefix);
+            relative.extend_from_slice(relative_suffix);
+            let identity = RhoPathV1::relative_datum_identity(&relative)?;
+            let datum = decode_datum(identity)?;
+            let mut path = Vec::with_capacity(marker.len() + relative.len());
+            path.extend_from_slice(marker);
+            path.extend_from_slice(&relative);
             entries.push(IndexedDatum {
-                path: path.to_vec(),
-                datum: datum?,
+                path,
+                datum,
                 multiplicity,
             });
             Ok::<(), DataIndexError>(())
@@ -1493,37 +1733,33 @@ impl RSpaceDataIndex {
     /// distinct endpoint, sorts those exact bytes, and expands multiplicity
     /// directly into the final bincode image. It never constructs `Datum<A>`
     /// values or a `Vec<Vec<u8>>` shadow.
-    fn encode_canonical_persisted_data_at_prefix(
-        &self,
-        prefix: &[u8],
-    ) -> Result<(Vec<u8>, u64), DataIndexError> {
+    fn encode_canonical_persisted_data(&self, bag: &Bag) -> Result<(Vec<u8>, u64), DataIndexError> {
         let mut identities = Vec::new();
         let mut descriptors = Vec::new();
-        self.bag
-            .try_visit_relative_prefix(prefix, |path, multiplicity| {
-                let identity = RhoPathV1::relative_datum_identity(path)?;
-                let start = identities.len();
-                let identity_capacity = start
-                    .checked_add(identity.len())
-                    .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
-                identities
-                    .try_reserve(identity.len())
-                    .map_err(|_| DataIndexError::AllocationFailure(identity_capacity))?;
-                let descriptor_capacity = descriptors
-                    .len()
-                    .checked_add(1)
-                    .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
-                descriptors
-                    .try_reserve(1)
-                    .map_err(|_| DataIndexError::AllocationFailure(descriptor_capacity))?;
-                identities.extend_from_slice(identity);
-                descriptors.push(DatumIdentityDescriptor {
-                    start,
-                    len: identity.len(),
-                    multiplicity,
-                });
-                Ok::<(), DataIndexError>(())
-            })?;
+        bag.try_visit_relative_prefix(b"", |path, multiplicity| {
+            let identity = RhoPathV1::relative_datum_identity(path)?;
+            let start = identities.len();
+            let identity_capacity = start
+                .checked_add(identity.len())
+                .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+            identities
+                .try_reserve(identity.len())
+                .map_err(|_| DataIndexError::AllocationFailure(identity_capacity))?;
+            let descriptor_capacity = descriptors
+                .len()
+                .checked_add(1)
+                .ok_or(DataIndexError::EncodedLengthOverflow(u128::MAX))?;
+            descriptors
+                .try_reserve(1)
+                .map_err(|_| DataIndexError::AllocationFailure(descriptor_capacity))?;
+            identities.extend_from_slice(identity);
+            descriptors.push(DatumIdentityDescriptor {
+                start,
+                len: identity.len(),
+                multiplicity,
+            });
+            Ok::<(), DataIndexError>(())
+        })?;
         descriptors.sort_unstable_by(|left, right| {
             left.identity(&identities).cmp(right.identity(&identities))
         });
@@ -1576,12 +1812,80 @@ impl RSpaceDataIndex {
         debug_assert_eq!(output.len(), capacity);
         Ok((output, datum_count_u64))
     }
+
+    fn try_visit_channels<E>(
+        &self,
+        mut visitor: impl FnMut(&[u8], &Bag) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.channels.with_read_cursor(|mut cursor| {
+            if let Some(slot) = cursor.val() {
+                visitor(cursor.path(), slot.real())?;
+            }
+            while cursor.to_next_val() {
+                let slot = cursor
+                    .val()
+                    .expect("a successful value step stops at an outer endpoint");
+                visitor(cursor.path(), slot.real())?;
+            }
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    fn outer_anchor_identity(&self) -> usize { self.channels.anchor_identity() }
+
+    #[cfg(test)]
+    fn channel_bag_anchor_identity(&self, marker: &[u8]) -> Option<usize> {
+        self.channel_bag_at_marker(marker).map(Bag::anchor_identity)
+    }
+
+    #[cfg(test)]
+    fn from_channel_bag_for_test(marker: &[u8], bag: Bag) -> Self {
+        let mut index = Self::new();
+        index
+            .replace_channel_at_marker(marker, bag)
+            .expect("a test channel Bag fits aggregate metrics");
+        index
+    }
 }
+
+impl fmt::Debug for RSpaceDataIndex {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RSpaceDataIndex")
+            .field("loaded_channel_count", &self.loaded_channel_count)
+            .field("distinct_len", &self.distinct_len)
+            .field("cardinality", &self.cardinality())
+            .finish()
+    }
+}
+
+impl PartialEq for RSpaceDataIndex {
+    fn eq(&self, other: &Self) -> bool {
+        if self.loaded_channel_count != other.loaded_channel_count ||
+            self.distinct_len != other.distinct_len ||
+            self.exact_cardinality != other.exact_cardinality
+        {
+            return false;
+        }
+        let mut equal = true;
+        let result = self.try_visit_channels(|marker, bag| {
+            if other.channel_bag_at_marker(marker) != Some(bag) {
+                equal = false;
+            }
+            Ok::<(), std::convert::Infallible>(())
+        });
+        match result {
+            Ok(()) => equal,
+            Err(error) => match error {},
+        }
+    }
+}
+
+impl Eq for RSpaceDataIndex {}
 
 pub struct RSpaceDataStore<C, A: Clone> {
     index: RSpaceDataIndex,
-    loaded_channels: PathMap<()>,
-    loaded_channel_count: usize,
     candidate_catalogs: RwLock<HashMap<Vec<u8>, Arc<CandidateCatalog<A>>>>,
     marker: PhantomData<fn() -> (C, A)>,
 }
@@ -1590,8 +1894,6 @@ impl<C, A: Clone> Clone for RSpaceDataStore<C, A> {
     fn clone(&self) -> Self {
         Self {
             index: self.index.clone(),
-            loaded_channels: self.loaded_channels.clone(),
-            loaded_channel_count: self.loaded_channel_count,
             candidate_catalogs: RwLock::new(
                 self.candidate_catalogs
                     .read()
@@ -1607,8 +1909,6 @@ impl<C, A: Clone> Default for RSpaceDataStore<C, A> {
     fn default() -> Self {
         Self {
             index: RSpaceDataIndex::new(),
-            loaded_channels: PathMap::new(),
-            loaded_channel_count: 0,
             candidate_catalogs: RwLock::new(HashMap::new()),
             marker: PhantomData,
         }
@@ -1620,28 +1920,28 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     pub fn index(&self) -> &RSpaceDataIndex { &self.index }
 
-    pub fn loaded_channel_count(&self) -> usize { self.loaded_channel_count }
+    pub fn loaded_channel_count(&self) -> usize { self.index.loaded_channel_count() }
 
     pub fn distinct_len(&self) -> usize { self.index.distinct_len() }
 
     pub fn cardinality(&self) -> u64 { self.index.cardinality() }
 
-    pub fn is_empty(&self) -> bool { self.loaded_channel_count == 0 }
+    pub fn is_empty(&self) -> bool { self.index.loaded_channel_count() == 0 }
 
     pub fn clear(&mut self) {
-        self.index = RSpaceDataIndex::new();
-        self.loaded_channels = PathMap::new();
-        self.loaded_channel_count = 0;
-        self.candidate_catalogs
+        let catalogs = self
+            .candidate_catalogs
             .get_mut()
-            .expect("candidate catalog write lock")
-            .clear();
+            .expect("candidate catalog write lock");
+        let empty = RSpaceDataIndex::new();
+        self.index = empty;
+        catalogs.clear();
     }
 
     pub fn is_loaded(&self, channel: &C) -> bool
     where C: RhoPathEncode {
-        self.loaded_channels
-            .contains(RhoPathV1::datum_prefix(channel))
+        self.index
+            .is_loaded_marker(&RhoPathV1::datum_prefix(channel))
     }
 
     pub fn set_channel(
@@ -1654,28 +1954,13 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         A: Clone + Serialize + RhoPathEncode,
     {
         let marker = RhoPathV1::datum_prefix(&channel);
-        let was_loaded = self.loaded_channels.contains(&marker);
-        let next_loaded_channel_count = if was_loaded {
-            self.loaded_channel_count
-        } else {
-            self.loaded_channel_count
-                .checked_add(1)
-                .expect("loaded channel count fits usize")
-        };
+        self.index.preflight_new_channel(&marker)?;
         let prepared = RSpaceDataIndex::prepare_channel_replacement(datums)?;
         let catalogs = self
             .candidate_catalogs
             .get_mut()
             .expect("candidate catalog write lock");
-
-        self.index
-            .bag
-            .replace_prefix_with_relative(&marker, &prepared, was_loaded);
-        if !was_loaded {
-            let previous = self.loaded_channels.insert(&marker, ());
-            debug_assert!(previous.is_none());
-            self.loaded_channel_count = next_loaded_channel_count;
-        }
+        self.index.replace_channel_at_marker(&marker, prepared)?;
         catalogs.remove(&marker);
         Ok(())
     }
@@ -1685,22 +1970,27 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         C: RhoPathEncode,
         A: Clone + Serialize + RhoPathEncode,
     {
-        let (path, multiplicity) = self.index.insert(channel, datum)?;
         let marker = RhoPathV1::datum_prefix(channel);
-        let relative_path = path
-            .strip_prefix(marker.as_slice())
-            .expect("an inserted datum path must begin with its channel prefix");
+        self.index.preflight_new_channel(&marker)?;
         let catalogs = self
             .candidate_catalogs
             .get_mut()
             .expect("candidate catalog write lock");
-        if catalogs.get_mut(&marker).is_some_and(|catalog| {
-            !Arc::make_mut(catalog).record_insert(relative_path, multiplicity)
-        }) {
-            catalogs.remove(&marker);
-        }
-        if self.loaded_channels.insert(&marker, ()).is_none() {
-            self.loaded_channel_count += 1;
+        let (path, multiplicity) = self.index.insert(channel, datum)?;
+        let relative_path = path
+            .strip_prefix(marker.as_slice())
+            .expect("an inserted datum path must begin with its channel prefix");
+        if let Some(catalog) = catalogs.get_mut(&marker) {
+            let catalog = Arc::make_mut(catalog);
+            if catalog.record_insert_metadata(relative_path, multiplicity) {
+                catalog.availability = self
+                    .index
+                    .channel_bag_at_marker(&marker)
+                    .expect("an inserted channel is loaded")
+                    .clone();
+            } else {
+                catalogs.remove(&marker);
+            }
         }
         #[cfg(feature = "accepted-match-transition-instrumentation")]
         crate::rspace::hot_store::accepted_match_transition_experiment::record_pathmap_root_publication();
@@ -1709,40 +1999,59 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     /// Atomically apply exact datum-identity multiplicity changes.
     ///
-    /// Every changed path is validated before one BagDelta-owned PathMap COW
-    /// root is published under the hot-store write lock. The data store does
-    /// not wrap that atomic replacement in a redundant second root clone, and
-    /// already-built candidate catalogs are advanced from the same exact
-    /// before/after multiplicities rather than rebuilt speculatively.
+    /// Every absolute path is validated and partitioned at its schema-defined
+    /// exact channel boundary. Each channel-local delta is applied to a
+    /// copy-on-write inner Bag, aggregate metadata and candidate catalogs are
+    /// staged, and then one outer authority is published under the hot-store
+    /// write lock. Failure leaves every live authority and cache unchanged.
     pub fn apply_delta(&mut self, delta: &BagDelta) -> Result<(), DataIndexError> {
         if delta.is_empty() {
             return Ok(());
         }
 
-        for changes in [delta.additions(), delta.removals()] {
-            changes.try_visit_prefix(b"", |path, _| {
-                RhoPathV1::parse_datum(path)?;
+        let mut channel_deltas = BTreeMap::<Vec<u8>, BagDelta>::new();
+        for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
+            changes.try_visit_prefix(b"", |path, amount| {
+                let view = RhoPathV1::parse_datum(path)?;
+                let (marker, relative) = path.split_at(view.channel_prefix_len());
+                let channel_delta = channel_deltas.entry(marker.to_vec()).or_default();
+                if is_addition {
+                    channel_delta.record_addition(relative, amount)?;
+                } else {
+                    channel_delta.record_removal(relative, amount)?;
+                }
                 Ok::<(), DataIndexError>(())
             })?;
         }
 
-        delta.apply_to(&mut self.index.bag)?;
-        #[cfg(feature = "accepted-match-transition-instrumentation")]
-        crate::rspace::hot_store::accepted_match_transition_experiment::record_pathmap_root_publication();
-        let bag = &self.index.bag;
-        let loaded_channels = &mut self.loaded_channels;
-        let loaded_channel_count = &mut self.loaded_channel_count;
+        let mut replacements = BTreeMap::new();
+        for (marker, channel_delta) in &channel_deltas {
+            let mut prepared = self
+                .index
+                .channel_bag_at_marker(marker)
+                .cloned()
+                .unwrap_or_default();
+            channel_delta.apply_to(&mut prepared)?;
+            replacements.insert(marker.clone(), prepared);
+        }
+
+        let mut candidate_index = self.index.clone();
+        candidate_index.replace_channels_at_markers(&replacements)?;
         let catalogs = self
             .candidate_catalogs
             .get_mut()
             .expect("candidate catalog write lock");
+        let mut candidate_catalogs = channel_deltas
+            .keys()
+            .map(|marker| (marker.clone(), catalogs.get(marker).cloned()))
+            .collect::<BTreeMap<_, _>>();
         for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
             changes.visit_prefix(b"", |path, amount| {
                 let view = RhoPathV1::parse_datum(path)
                     .expect("a BagDelta datum path was validated before mutation");
                 let marker = &path[..view.channel_prefix_len()];
                 let relative_path = &path[view.channel_prefix_len()..];
-                let current_count = bag.count(path);
+                let current_count = candidate_index.count_path(path);
                 let previous_count = if is_addition {
                     current_count
                         .checked_sub(amount.get())
@@ -1755,17 +2064,48 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
                 let previous = Multiplicity::new(previous_count).ok();
                 let current = Multiplicity::new(current_count).ok();
 
-                if is_addition && loaded_channels.insert(marker, ()).is_none() {
-                    *loaded_channel_count += 1;
-                }
-                let invalidate = catalogs.get_mut(marker).is_some_and(|catalog| {
-                    !Arc::make_mut(catalog).record_transition(relative_path, previous, current)
-                });
+                let invalidate = candidate_catalogs
+                    .get_mut(marker)
+                    .and_then(Option::as_mut)
+                    .is_some_and(|catalog| {
+                        !Arc::make_mut(catalog).record_transition_metadata(
+                            relative_path,
+                            previous,
+                            current,
+                        )
+                    });
                 if invalidate {
-                    catalogs.remove(marker);
+                    *candidate_catalogs
+                        .get_mut(marker)
+                        .expect("every validated delta path has a staged channel") = None;
                 }
             });
         }
+        for marker in channel_deltas.keys() {
+            if let Some(catalog) = candidate_catalogs
+                .get_mut(marker.as_slice())
+                .and_then(Option::as_mut)
+            {
+                Arc::make_mut(catalog).availability = candidate_index
+                    .channel_bag_at_marker(marker)
+                    .expect("a successfully changed channel is loaded")
+                    .clone();
+            }
+        }
+
+        self.index = candidate_index;
+        for (marker, catalog) in candidate_catalogs {
+            match catalog {
+                Some(catalog) => {
+                    catalogs.insert(marker, catalog);
+                }
+                None => {
+                    catalogs.remove(&marker);
+                }
+            }
+        }
+        #[cfg(feature = "accepted-match-transition-instrumentation")]
+        crate::rspace::hot_store::accepted_match_transition_experiment::record_pathmap_root_publication();
         Ok(())
     }
 
@@ -1800,7 +2140,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         A: Clone + ColdStoreDecode,
     {
         let prefix = RhoPathV1::datum_prefix(channel);
-        if self.loaded_channels.contains(&prefix) {
+        if self.index.is_loaded_marker(&prefix) {
             let cached = self
                 .candidate_catalogs
                 .read()
@@ -1843,17 +2183,24 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         let Some(previous) = Multiplicity::new(self.index.count_path(path)).ok() else {
             return false;
         };
+        let Ok(view) = RhoPathV1::parse_datum(path) else {
+            return false;
+        };
+        let marker = &path[..view.channel_prefix_len()];
+        let relative_path = &path[view.channel_prefix_len()..];
+        let catalogs = self
+            .candidate_catalogs
+            .get_mut()
+            .expect("candidate catalog write lock");
         self.index.remove_path(path);
-        if let Ok(view) = RhoPathV1::parse_datum(path) {
-            let relative_path = &path[view.channel_prefix_len()..];
-            if let Some(catalog) = self
-                .candidate_catalogs
-                .get_mut()
-                .expect("candidate catalog write lock")
-                .get_mut(&path[..view.channel_prefix_len()])
-            {
-                Arc::make_mut(catalog).record_remove(relative_path, previous);
-            }
+        if let Some(catalog) = catalogs.get_mut(marker) {
+            let catalog = Arc::make_mut(catalog);
+            catalog.record_remove_metadata(relative_path, previous);
+            catalog.availability = self
+                .index
+                .channel_bag_at_marker(marker)
+                .expect("removal preserves the loaded channel endpoint")
+                .clone();
         }
         true
     }
@@ -1884,14 +2231,15 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
     {
         let mut records = Vec::new();
         records
-            .try_reserve_exact(self.loaded_channel_count)
-            .map_err(|_| DataIndexError::AllocationFailure(self.loaded_channel_count))?;
-        for (path, _) in self.loaded_channels.iter() {
-            let view = RhoPathV1::parse_datum_prefix(&path)?;
+            .try_reserve_exact(self.loaded_channel_count())
+            .map_err(|_| DataIndexError::AllocationFailure(self.loaded_channel_count()))?;
+        self.index.try_visit_channels(|path, _| {
+            let view = RhoPathV1::parse_datum_prefix(path)?;
             let channel = C::cold_decode(&view.channel_identity())?;
             let datums = self.channel_data(&channel)?.unwrap_or_default();
             records.push((channel, datums));
-        }
+            Ok::<(), DataIndexError>(())
+        })?;
         Ok(records)
     }
 
@@ -1903,23 +2251,16 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         C: Clone + ColdStoreDecode + RhoPathEncode,
         A: Clone + ColdStoreDecode,
     {
-        for (path, _) in self.loaded_channels.iter() {
-            let view = RhoPathV1::parse_datum_prefix(&path)?;
+        self.index.try_visit_channels(|path, _| {
+            let view = RhoPathV1::parse_datum_prefix(path)?;
             let channel = C::cold_decode(&view.channel_identity())?;
             let datums = self.channel_data(&channel)?.unwrap_or_default();
             visitor(channel, datums)?;
-        }
-        Ok(())
+            Ok::<(), DataIndexError>(())
+        })
     }
 
-    pub(crate) fn has_nonempty_loaded_channel(&self) -> bool {
-        for (prefix, _) in self.loaded_channels.iter() {
-            if self.index.has_values_at_prefix(&prefix) {
-                return true;
-            }
-        }
-        false
-    }
+    pub(crate) fn has_nonempty_loaded_channel(&self) -> bool { self.index.distinct_len() != 0 }
 
     /// Return checkpoint-ready DATA records without decoding resident datum
     /// identities back into typed values.
@@ -1927,26 +2268,25 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         &self,
         mut visitor: impl FnMut(CanonicalDataRecord) -> Result<(), DataIndexError>,
     ) -> Result<(), DataIndexError> {
-        for (prefix, _) in self.loaded_channels.iter() {
-            let view = RhoPathV1::parse_datum_prefix(&prefix)?;
+        self.index.try_visit_channels(|prefix, bag| {
+            let view = RhoPathV1::parse_datum_prefix(prefix)?;
             let channel_hash = Blake2b256Hash::new(&view.channel_identity());
-            let (encoded_persisted_data, datum_count) = self
-                .index
-                .encode_canonical_persisted_data_at_prefix(&prefix)?;
+            let (encoded_persisted_data, datum_count) =
+                self.index.encode_canonical_persisted_data(bag)?;
             visitor(CanonicalDataRecord {
                 channel_hash,
                 encoded_persisted_data,
                 datum_count,
             })?;
-        }
-        Ok(())
+            Ok::<(), DataIndexError>(())
+        })
     }
 }
 
 impl<C, A: Clone> fmt::Debug for RSpaceDataStore<C, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RSpaceDataStore")
-            .field("loaded_channel_count", &self.loaded_channel_count)
+            .field("loaded_channel_count", &self.loaded_channel_count())
             .field("distinct_len", &self.distinct_len())
             .field("cardinality", &self.cardinality())
             .finish()
@@ -1954,13 +2294,7 @@ impl<C, A: Clone> fmt::Debug for RSpaceDataStore<C, A> {
 }
 
 impl<C, A: Clone> PartialEq for RSpaceDataStore<C, A> {
-    fn eq(&self, other: &Self) -> bool {
-        self.index == other.index &&
-            self.loaded_channel_count == other.loaded_channel_count &&
-            self.loaded_channels
-                .iter()
-                .all(|(path, _)| other.loaded_channels.contains(&path))
-    }
+    fn eq(&self, other: &Self) -> bool { self.index == other.index }
 }
 
 impl<C, A: Clone> Eq for RSpaceDataStore<C, A> {}
@@ -2064,9 +2398,56 @@ mod candidate_identity_order_tests {
     }
 
     #[test]
-    fn set_channel_reuses_the_unique_authoritative_bag_anchor() {
+    fn malformed_two_level_index_refuses_one_identity_under_two_structural_paths() {
+        let channel = "channel".to_owned();
+        let marker = RhoPathV1::datum_prefix(&channel);
+        let value = Datum {
+            a: Arc::new("same datum".to_owned()),
+            persist: false,
+            source: crate::rspace::trace::event::Produce::new(
+                Blake2b256Hash::new(b"produce"),
+                Blake2b256Hash::new(b"produce-sequence"),
+                false,
+            ),
+        };
+        let identity = encode_datum(&value);
+        let left = RhoPathV1::relative_datum_key(b"a-derived-structure", &identity);
+        let right = RhoPathV1::relative_datum_key(b"z-derived-structure", &identity);
+        assert_ne!(left, right, "the malformed fixture needs two exact trie paths");
+
+        let mut bag = Bag::new();
+        bag.insert(&left).unwrap();
+        bag.insert(&right).unwrap();
+        let index = RSpaceDataIndex::from_channel_bag_for_test(&marker, bag);
+        assert_eq!(index.distinct_len(), 2);
+        assert_eq!(
+            index.ordered_channel_entries::<_, String>(&channel),
+            Err(DataIndexError::DuplicateDatumIdentity),
+        );
+        assert!(matches!(
+            index.candidate_pool::<_, String>(&channel),
+            Err(DataIndexError::DuplicateDatumIdentity)
+        ));
+    }
+
+    #[test]
+    fn malformed_relative_index_keys_fail_at_the_selected_channel() {
+        let channel = "channel".to_owned();
+        let marker = RhoPathV1::datum_prefix(&channel);
+        let mut bag = Bag::new();
+        bag.insert(&[0, 2]).unwrap();
+        let index = RSpaceDataIndex::from_channel_bag_for_test(&marker, bag);
+
+        assert!(matches!(
+            index.channel_entries::<_, String>(&channel),
+            Err(DataIndexError::Path(_))
+        ));
+    }
+
+    #[test]
+    fn set_channel_reuses_the_unique_outer_authority_anchor() {
         let mut store = RSpaceDataStore::<String, String>::new();
-        let before = store.index.bag.anchor_identity();
+        let before = store.index.outer_anchor_identity();
         store
             .set_channel("one".to_owned(), [Datum {
                 a: Arc::new("payload".to_owned()),
@@ -2082,7 +2463,7 @@ mod candidate_identity_order_tests {
             .set_channel("empty".to_owned(), [])
             .expect("loaded-empty replacement");
         assert_eq!(
-            store.index.bag.anchor_identity(),
+            store.index.outer_anchor_identity(),
             before,
             "set_channel must not manufacture a full-store COW version"
         );
@@ -2116,6 +2497,10 @@ mod candidate_pool_reservation_tests;
 #[cfg(test)]
 #[path = "../../tests/data_index/channel_prefix_replacement_properties.rs"]
 mod channel_prefix_replacement_properties;
+
+#[cfg(test)]
+#[path = "../../tests/data_index/two_level_channel_authority.rs"]
+mod two_level_channel_authority_tests;
 
 #[cfg(test)]
 #[path = "../../tests/data_index/digest_collision_replay.rs"]

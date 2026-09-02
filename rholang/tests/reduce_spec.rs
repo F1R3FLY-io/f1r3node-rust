@@ -6399,9 +6399,9 @@ fn assert_guarded_offer_data_store_publication_preserves_sibling(
             .set_channel(channel.clone(), [by_amount[&survivor].clone()])
             .unwrap();
         assert_eq!(
-            store.index().as_bag().compact_bytes(),
-            expected.index().as_bag().compact_bytes(),
-            "the candidate root must publish the canonical ACT image"
+            store.index(),
+            expected.index(),
+            "the candidate root must publish the canonical two-level authority"
         );
     };
     let assert_source = |store: &RSpaceDataStore<Par, ListParWithRandom>| {

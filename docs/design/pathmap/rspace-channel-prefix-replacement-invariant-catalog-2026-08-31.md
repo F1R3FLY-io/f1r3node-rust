@@ -2,18 +2,23 @@
 
 ## Status and scope
 
-This living engineering report is the traceability boundary for
-`RSpaceDataStore::set_channel`. It covers replacement of one channel's resident datum multiset
-inside the global `PathMap<Multiplicity>` authority. Here:
+This living engineering report records the channel-replacement proof and measurements that
+preceded selection of the two-level RSpace authority. Its semantic invariants remain active
+regression obligations for `RSpaceDataStore::set_channel`, but its former physical mechanism — a
+prefix-rooted replacement inside one global `PathMap<Multiplicity>` — was superseded on
+2026-09-02 by an exact outer `PathMap<ChannelSlot>` whose real endpoints own independent
+channel-relative `Bag` values. The selected implementation is traced by the two-level authority
+formal family and its current invariant catalog; the measurements below remain historical evidence
+for why whole-store cloning was rejected. Here:
 
 - **Bag** means the prefix-compressed multiset wrapper whose endpoint values are checked
   `Multiplicity(u64)` values;
-- **marker** means the canonical `RhoPathV1` byte prefix identifying one channel's datum subtrie;
+- **marker** means the canonical `RhoPathV1` byte key identifying one exact outer channel endpoint;
 - **relative suffix** means the canonical datum path after that marker;
 - **candidate catalog** means a derived immutable `Arc`-owned ordering/decoding index for one
   channel; and
-- **publication** means the first mutation of the authoritative resident Bag, loaded-marker trie,
-  loaded count, or catalog map.
+- **publication** means replacement of one exact outer endpoint after its private relative Bag and
+  aggregate metadata have been fully preflighted.
 
 The required refinement order was followed:
 
@@ -30,8 +35,10 @@ PathMap prefix compression, CoW roots, and zipper mutation.
 
 ## Transaction refinement
 
-The selected algorithm is written in literate pseudocode below. The two blocks are deliberately
-separated: a failure in **prepare** cannot have acquired authority to execute **publish**.
+The algorithm below is the dated single-trie implementation proved and measured by this packet.
+It is retained as a semantic reference, not as a description of current production topology. The
+current two-level implementation prepares a private relative Bag and replaces exactly one outer
+endpoint; multi-channel deltas prepare every touched Bag before publishing one new outer root.
 
 ```text
 ⟨Prepare one channel-relative replacement⟩ ≡
@@ -82,38 +89,39 @@ name.
 | ID | Formal invariant | Principal theorem | Executable property family | Required observation |
 |---|---|---|---|---|
 | CR-01 | `StrongFailureAtomicityInvariant` | `every_preparation_failure_preserves_the_entire_public_state` | `preparation_faults_are_strongly_atomic` | structure and datum-serialization faults publish no state |
-| CR-02 | `ExactTargetPrefixInvariant` | `successful_publication_exactly_replaces_target_prefix` | `set_channel_matches_frozen_legacy_success_oracle` | target prefix equals only the aggregated replacement |
-| CR-03 | `NonTargetKeyPreservationInvariant` | `successful_publication_preserves_every_non_target_key` | frozen legacy-success oracle | every non-target endpoint and multiplicity remains exact |
+| CR-02 | `ExactTargetPrefixInvariant` | `successful_publication_exactly_replaces_target_prefix` | `set_channel_matches_independent_channel_bag_reference` | target prefix equals only the aggregated replacement |
+| CR-03 | `NonTargetKeyPreservationInvariant` | `successful_publication_preserves_every_non_target_key` | independent channel-Bag reference | every non-target endpoint and multiplicity remains exact |
 | CR-04 | `IndependentChannelPreservationInvariant` | `successful_publication_preserves_independent_prefix` | `channel_replacement_preserves_other_channels_and_loaded_empty_authority` | adjacent framed channels cannot overlap or disappear |
 | CR-05 | `PrefixSuffixCompositionInvariant` | `strip_prefix_composed_path` | `relative_prefix_publication_matches_an_independent_bag_rebuild` | absolute key is exactly marker followed by relative suffix |
 | CR-06 | `ReusableBufferRestorationInvariant` | `reusable_buffer_is_at_marker_after_whole_replay` | `prefix_rooted_writer_cannot_escape_or_address_a_sibling_as_relative` | PathMap's rooted cursor restores relative addressing at its immutable marker |
 | CR-07 | `LoadedSetInvariant` | `target_is_loaded_even_when_replacement_is_empty` | `data_store_distinguishes_unloaded_from_loaded_empty_channels` | an empty replacement still publishes loaded authority |
-| CR-08 | `LoadedCountInvariant` | `publication_loaded_count_matches_loaded_set` | frozen legacy-success oracle | count equals the exact loaded-marker population |
+| CR-08 | `LoadedCountInvariant` | `publication_loaded_count_matches_loaded_set` | independent channel-Bag reference | count equals the exact loaded-marker population |
 | CR-09 | `EmptyLoadedChannelInvariant` | `target_is_loaded_even_when_replacement_is_empty` | loaded-empty replacement property | loaded-empty remains distinguishable from unloaded |
 | CR-10 | `TargetCatalogInvalidationInvariant` | `target_catalog_is_invalidated_exactly` | `channel_replacement_invalidates_only_the_target_catalog_and_keeps_old_pools_valid` | target derived catalog is absent after publication |
-| CR-11 | `NonTargetCatalogIdentityInvariant` | `non_target_catalog_identity_is_preserved` | frozen legacy-success oracle | sibling catalog retains exact `Arc` identity |
+| CR-11 | `NonTargetCatalogIdentityInvariant` | `non_target_catalog_identity_is_preserved` | independent channel-Bag reference | sibling catalog retains exact `Arc` identity |
 | CR-12 | `ExternalCatalogSnapshotInvariant` | `externally_held_catalog_snapshots_remain_valid_immutable_values` | old-pool validity property | an already lent catalog remains immutable and usable |
-| CR-13 | `DistinctCountFormulaInvariant` | `publication_preserves_distinct_count_formula` | frozen legacy-success oracle | old target distinct count is subtracted and prepared distinct count added once |
-| CR-14 | `CardinalityFormulaInvariant` | `publication_preserves_cardinality_formula` | frozen legacy-success oracle | exact `u128` cardinality follows the replacement equation |
-| CR-15 | `MultiplicityPreservationInvariant` | `published_target_multiplicity_is_exact` | frozen legacy-success oracle | duplicate identities remain one endpoint with exact multiplicity |
-| CR-16 | `LegacySuccessEquivalenceInvariant` | `prepare_then_publish_equals_legacy_success_semantics` | frozen legacy-success oracle | complete successful result equals clone-clear-insert-publish semantics |
+| CR-13 | `DistinctCountFormulaInvariant` | `publication_preserves_distinct_count_formula` | independent channel-Bag reference | old target distinct count is subtracted and prepared distinct count added once |
+| CR-14 | `CardinalityFormulaInvariant` | `publication_preserves_cardinality_formula` | independent channel-Bag reference | exact `u128` cardinality follows the replacement equation |
+| CR-15 | `MultiplicityPreservationInvariant` | `published_target_multiplicity_is_exact` | independent channel-Bag reference | duplicate identities remain one endpoint with exact multiplicity |
+| CR-16 | `LegacySuccessEquivalenceInvariant` | `prepare_then_publish_equals_legacy_success_semantics` | independent channel-Bag reference | complete successful result equals the independent channel-relative Bag semantics |
 | CR-17 | `PreparedBagWellFormedInvariant` | `publication_preserves_prepared_input_aggregation` | `multiplicity_rejects_zero_and_detects_overflow` | prepared keys are unique and multiplicities positive |
 | CR-18 | `CheckedU64MultiplicityInvariant` | `publication_preserves_checked_u64_multiplicities` | multiplicity boundary property | zero and endpoint overflow are rejected atomically |
-| CR-19 | `ResultWellFormedInvariant` | `publication_preserves_authoritative_well_formedness` | frozen legacy-success oracle | resulting Bag agrees with independently built valid state |
+| CR-19 | `ResultWellFormedInvariant` | `publication_preserves_authoritative_well_formedness` | independent channel-Bag reference | resulting Bag agrees with independently built valid state |
 | CR-20 | `PrefixRootedCursorInvariant` | `prefix_rooted_cursor_publication_equals_prefix_replacement` | `prefix_publication_uses_one_restricted_cursor_without_projection` | production uses exactly one restricted prefix writer |
 | CR-21 | `RelativeCursorNoEscapeInvariant` | `prefix_rooted_cursor_cannot_change_non_target_lookup` | prefix-rooted sibling-escape property | no relative path can address a sibling |
 | CR-22 | `SingleCursorReplayInvariant` | `prefix_rooted_cursor_replay_is_exact_suffix_lifting` | single-cursor source-capability property | no `Vec`, entry projection, raw PathMap, clone, or `make_map` appears in publication |
 | CR-23 | `LoadedCapacityInvariant` | `publication_respects_preflighted_loaded_capacity` | `loaded_count_overflow_preflight_precedes_iterator_consumption` | checked count failure occurs before iterator consumption or mutation |
-| CR-24 | `LoadedSetUniquenessInvariant` | `publication_preserves_loaded_set_uniqueness` | frozen legacy-success oracle | replacing an already loaded channel never duplicates or increments its marker |
+| CR-24 | `LoadedSetUniquenessInvariant` | `publication_preserves_loaded_set_uniqueness` | independent channel-Bag reference | replacing an already loaded channel never duplicates or increments its marker |
 | CR-25 | `PreparationFailurePrecedenceInvariant` | `every_preparation_failure_has_precedence_over_publication` | `preparation_faults_are_strongly_atomic`; `catalog_lock_poison_precedes_authoritative_publication` | encoder, iterator, count, and catalog-authority faults precede publication |
-| CR-26 | `CatalogInvariantPreservationInvariant` | `publication_preserves_catalog_invariant` | frozen legacy-success oracle | every retained catalog still denotes its unchanged channel state |
-| CR-27 | `PreparedAggregationRefinementInvariant` | `publication_preserves_prepared_input_aggregation` | frozen legacy-success oracle | repeated input identities aggregate without occurrence expansion or flattening |
+| CR-26 | `CatalogInvariantPreservationInvariant` | `publication_preserves_catalog_invariant` | independent channel-Bag reference | every retained catalog still denotes its unchanged channel state |
+| CR-27 | `PreparedAggregationRefinementInvariant` | `publication_preserves_prepared_input_aggregation` | independent channel-Bag reference | repeated input identities aggregate without occurrence expansion or flattening |
 
-The frozen oracle is test-only. It deliberately reconstructs the predecessor's successful result so
-the production code does not need to retain the quadratic transaction. Proptest varies whether the
-target was loaded, duplicate target identities, empty replacements, persistent flags, sibling
-contents, and shared framed channel prefixes. Every generated case compares the complete Bag,
-metrics, marker/count state, target invalidation, and sibling catalog `Arc` identity.
+The independent reference is test-only. It builds a private channel-relative Bag from semantic
+inputs and publishes it through the exact outer endpoint; it does not reconstruct the retired flat
+physical topology. Proptest varies whether the target was loaded, duplicate target identities,
+empty replacements, persistent flags, sibling contents, and shared framed channel prefixes. Every
+generated case compares the complete two-level authority, metrics, marker/count state, target
+invalidation, and sibling catalog `Arc` identity.
 
 ## Causal mutant registry
 
@@ -149,9 +157,9 @@ controls; none is compiled into production.
 
 ## Executable and resource evidence
 
-The seven focused formal-to-property tests pass under a 6 GiB resident hard cap, disabled swap, and
-an eight-core quota. They include the randomized legacy-success oracle, two encoder fault sites,
-catalog-lock poison, checked-count preflight, key recomposition, cursor capability inspection, and
+The eight focused formal-to-property tests pass under an 8 GiB resident hard cap, disabled swap, and
+an eight-core quota. They include the randomized independent channel-Bag reference, two encoder fault sites,
+catalog-lock poison for replacement and clear, checked-count preflight, key recomposition, cursor capability inspection, and
 the exact 27/20 manifest binding. The surrounding gates pass:
 
 - `rspace_plus_plus --lib`: 499/499, including this seven-test family and the `u64::MAX`
@@ -173,9 +181,9 @@ This checkpoint is acceptable only while all of the following remain true:
   the 20-mutant theorem remains exact;
 - the mechanical test continues to bind exactly 27 formal invariants and 20 mutants;
 - every bound executable property name resolves to a live source target;
-- successful randomized results agree with the frozen legacy oracle;
+- successful randomized results agree with the independent channel-Bag reference;
 - all preparation and prepublication authority failures leave the complete state unchanged;
-- prefix publication uses one guarded relative cursor and no flattened projection;
+- publication uses exact outer endpoints and channel-relative guarded Bags without a flattened projection;
 - the exact 20,000-bind and geometric scaling gates remain green;
 - the separate final-root teardown task remains visible until its allocation mechanism is repaired;
   and

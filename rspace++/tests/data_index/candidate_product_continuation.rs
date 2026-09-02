@@ -4,6 +4,7 @@
 //! Kept outside `src/` so the frozen legacy zipper-clone oracle cannot be
 //! mistaken for a production implementation.
 
+use pathmap::PathMap;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 

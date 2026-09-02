@@ -307,48 +307,6 @@ fn repeated_exact_identity_is_one_ordered_position_with_reservable_multiplicity(
 }
 
 #[test]
-fn public_index_refuses_one_identity_stored_under_two_derived_paths() {
-    use rspace_plus_plus::rspace::bag::Bag;
-    use rspace_plus_plus::rspace::rho_path::RhoPathV1;
-
-    let channel = "channel".to_string();
-    let value = datum("same datum", false, 7);
-    let identity = encode_datum(&value);
-    let left = RhoPathV1::datum_key(&channel, b"a-derived-structure", &identity);
-    let right = RhoPathV1::datum_key(&channel, b"z-derived-structure", &identity);
-    assert_ne!(left, right, "the malformed fixture needs two exact trie paths");
-
-    let mut bag = Bag::new();
-    bag.insert(&left).unwrap();
-    bag.insert(&right).unwrap();
-    let index = RSpaceDataIndex::from_bag(bag);
-    assert_eq!(index.distinct_len(), 2, "the public Bag constructor makes the edge case real");
-
-    assert_eq!(
-        index.ordered_channel_entries::<_, String>(&channel),
-        Err(DataIndexError::DuplicateDatumIdentity),
-        "the decoded ordering boundary must reject a non-total identity catalog"
-    );
-    assert!(matches!(
-        index.candidate_pool::<_, String>(&channel),
-        Err(DataIndexError::DuplicateDatumIdentity)
-    ));
-}
-
-#[test]
-fn malformed_index_keys_fail_locally() {
-    use rspace_plus_plus::rspace::bag::Bag;
-
-    let channel = "channel".to_string();
-    let mut bag = Bag::new();
-    let mut malformed = rspace_plus_plus::rspace::rho_path::RhoPathV1::datum_prefix(&channel);
-    malformed.extend_from_slice(&[0, 2]);
-    bag.insert(&malformed).unwrap();
-    let index = RSpaceDataIndex::from_bag(bag);
-    assert!(matches!(index.channel_entries::<_, String>(&channel), Err(DataIndexError::Path(_))));
-}
-
-#[test]
 fn data_store_distinguishes_unloaded_from_loaded_empty_channels() {
     let channel = "channel".to_string();
     let mut store = RSpaceDataStore::<String, String>::new();

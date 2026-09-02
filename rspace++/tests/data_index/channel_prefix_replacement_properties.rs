@@ -6,7 +6,7 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 use serde::Serialize;
 
-use super::{RSpaceDataIndex, RSpaceDataStore};
+use super::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use crate::rspace::bag::{Bag, Multiplicity};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
@@ -31,7 +31,7 @@ enum ChannelInvariant {
     DistinctCountFormula,
     CardinalityFormula,
     MultiplicityPreservation,
-    LegacySuccessEquivalence,
+    ReferenceSuccessEquivalence,
     PreparedBagWellFormed,
     CheckedU64Multiplicity,
     ResultWellFormed,
@@ -114,7 +114,7 @@ const INVARIANT_BINDINGS: &[InvariantBinding] = &[
     },
     InvariantBinding {
         id: "CR-16",
-        invariant: ChannelInvariant::LegacySuccessEquivalence,
+        invariant: ChannelInvariant::ReferenceSuccessEquivalence,
     },
     InvariantBinding {
         id: "CR-17",
@@ -264,28 +264,65 @@ fn datum(label: u8, persist: bool) -> Datum<String> {
     }
 }
 
-fn frozen_legacy_set_channel(
+fn reference_set_channel(
     mut store: RSpaceDataStore<String, String>,
     channel: String,
     datums: &[Datum<String>],
 ) -> RSpaceDataStore<String, String> {
     let marker = RhoPathV1::datum_prefix(&channel);
-    let was_loaded = store.loaded_channels.contains(&marker);
-    store.index.clear_channel(&channel);
+    let mut prepared = Bag::new();
     for value in datums {
-        store.index.insert(&channel, value).unwrap();
+        prepared
+            .insert(&RSpaceDataIndex::relative_datum_path(value))
+            .unwrap();
     }
-    if !was_loaded {
-        assert!(store.loaded_channels.insert(&marker, ()).is_none());
-        store.loaded_channel_count += 1;
-    }
+    store
+        .index
+        .replace_channel_at_marker(&marker, prepared)
+        .unwrap();
     store.candidate_catalogs.get_mut().unwrap().remove(&marker);
     store
 }
 
+fn physical_channel_count(index: &RSpaceDataIndex) -> usize {
+    let mut count = 0;
+    index
+        .try_visit_channels(|_, _| {
+            count += 1;
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+    count
+}
+
+fn assert_store_coherent(
+    invariant: ChannelInvariant,
+    phase: &str,
+    store: &RSpaceDataStore<String, String>,
+) {
+    let mut physical_distinct = 0usize;
+    let mut physical_cardinality = 0u128;
+    store
+        .index
+        .try_visit_channels(|_, bag| {
+            assert_eq!(
+                bag.iter().count(),
+                bag.distinct_len(),
+                "{invariant:?}: inner trie and distinct metadata diverged {phase}",
+            );
+            physical_distinct += bag.distinct_len();
+            physical_cardinality += bag.exact_cardinality();
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap();
+    assert_eq!(physical_channel_count(&store.index), store.loaded_channel_count());
+    assert_eq!(physical_distinct, store.distinct_len());
+    assert_eq!(physical_cardinality, store.index.exact_cardinality);
+}
+
 proptest! {
     #[test]
-    fn set_channel_matches_frozen_legacy_success_oracle(
+    fn set_channel_matches_independent_channel_bag_reference(
         target_preloaded in any::<bool>(),
         old_entries in vec((0u8..8, any::<bool>()), 0..32),
         replacement_entries in vec((0u8..8, any::<bool>()), 0..32),
@@ -319,11 +356,10 @@ proptest! {
         );
 
         let mut actual = before.clone();
-        let expected = frozen_legacy_set_channel(before, target.clone(), &replacement);
+        let expected = reference_set_channel(before, target.clone(), &replacement);
         actual.set_channel(target, replacement).unwrap();
 
         prop_assert_eq!(&actual, &expected);
-        prop_assert_eq!(actual.index.as_bag(), expected.index.as_bag());
         prop_assert_eq!(actual.distinct_len(), expected.distinct_len());
         prop_assert_eq!(actual.cardinality(), expected.cardinality());
         prop_assert_eq!(actual.loaded_channel_count(), expected.loaded_channel_count());
@@ -382,7 +418,7 @@ fn preparation_faults_are_strongly_atomic() {
         }));
         assert!(outcome.is_err());
         assert_eq!(store, before);
-        assert_eq!(store.index.as_bag(), before.index.as_bag());
+        assert_eq!(store.index, before.index);
     }
 }
 
@@ -402,8 +438,7 @@ fn catalog_lock_poison_precedes_authoritative_publication() {
     let target_marker = RhoPathV1::datum_prefix(&target);
     let sibling_marker = RhoPathV1::datum_prefix(&sibling);
     let before_index = store.index.clone();
-    let before_loaded = store.loaded_channels.clone();
-    let before_count = store.loaded_channel_count;
+    let before_count = store.loaded_channel_count();
     let before_target_catalog = Arc::clone(
         store
             .candidate_catalogs
@@ -433,32 +468,53 @@ fn catalog_lock_poison_precedes_authoritative_publication() {
     store.candidate_catalogs.clear_poison();
 
     assert_eq!(store.index, before_index);
-    assert_eq!(store.loaded_channels.iter().count(), before_loaded.iter().count());
-    assert_eq!(store.loaded_channel_count, before_count);
+    assert_eq!(physical_channel_count(&store.index), before_count);
+    assert_eq!(store.loaded_channel_count(), before_count);
     let catalogs = store.candidate_catalogs.read().unwrap();
     assert!(Arc::ptr_eq(catalogs.get(&target_marker).unwrap(), &before_target_catalog));
     assert!(Arc::ptr_eq(catalogs.get(&sibling_marker).unwrap(), &before_sibling_catalog));
 }
 
 #[test]
+fn catalog_lock_poison_precedes_clear_publication() {
+    let channel = "loaded".to_owned();
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [datum(1, false)])
+        .unwrap();
+    let _ = store.channel_pool(&channel).unwrap().unwrap();
+    let before = store.clone();
+
+    let poisoned = catch_unwind(AssertUnwindSafe(|| {
+        let _guard = store.candidate_catalogs.write().unwrap();
+        panic!("synthetic catalog lock poison");
+    }));
+    assert!(poisoned.is_err());
+    let outcome = catch_unwind(AssertUnwindSafe(|| store.clear()));
+    assert!(outcome.is_err());
+    store.candidate_catalogs.clear_poison();
+
+    assert_eq!(store, before);
+    assert_eq!(store.channel_data(&channel).unwrap(), before.channel_data(&channel).unwrap());
+}
+
+#[test]
 fn loaded_count_overflow_preflight_precedes_iterator_consumption() {
     let mut store = RSpaceDataStore::<String, String>::new();
-    store.loaded_channel_count = usize::MAX;
+    store.index.loaded_channel_count = usize::MAX;
     let before_index = store.index.clone();
     let consumed = std::cell::Cell::new(false);
-    let datums = std::iter::from_fn(|| {
+    let datums = std::iter::once_with(|| {
         consumed.set(true);
-        Some(datum(1, false))
+        datum(1, false)
     });
 
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let _ = store.set_channel("new-target".to_owned(), datums);
-    }));
-    assert!(outcome.is_err());
+    let outcome = store.set_channel("new-target".to_owned(), datums);
+    assert_eq!(outcome, Err(DataIndexError::LoadedChannelCountOverflow));
     assert!(!consumed.get());
     assert_eq!(store.index, before_index);
-    assert_eq!(store.loaded_channel_count, usize::MAX);
-    assert_eq!(store.loaded_channels.iter().count(), 0);
+    assert_eq!(store.loaded_channel_count(), usize::MAX);
+    assert_eq!(physical_channel_count(&store.index), 0);
 }
 
 fn assert_channel_invariant(invariant: ChannelInvariant) {
@@ -516,13 +572,6 @@ fn assert_channel_invariant(invariant: ChannelInvariant) {
     ];
 
     let mut before = RSpaceDataStore::new();
-    let assert_coherent = |phase: &str, store: &RSpaceDataStore<String, String>| {
-        assert_eq!(
-            store.index.as_bag().iter().count(),
-            store.index.as_bag().distinct_len(),
-            "{invariant:?}: authoritative trie and distinct metadata diverged {phase}",
-        );
-    };
     before
         .set_channel(target.clone(), [
             old_repeated.clone(),
@@ -533,13 +582,13 @@ fn assert_channel_invariant(invariant: ChannelInvariant) {
     before
         .set_channel(sibling.clone(), [sibling_value.clone()])
         .unwrap();
-    assert_coherent("after initial channel publication", &before);
+    assert_store_coherent(invariant, "after initial channel publication", &before);
     let target_marker = RhoPathV1::datum_prefix(&target);
     let sibling_marker = RhoPathV1::datum_prefix(&sibling);
     let old_target_pool = before.channel_pool(&target).unwrap().unwrap();
-    assert_coherent("after target candidate-pool snapshot", &before);
+    assert_store_coherent(invariant, "after target candidate-pool snapshot", &before);
     let _ = before.channel_pool(&sibling).unwrap().unwrap();
-    assert_coherent("after sibling candidate-pool snapshot", &before);
+    assert_store_coherent(invariant, "after sibling candidate-pool snapshot", &before);
     let sibling_catalog = Arc::clone(
         before
             .candidate_catalogs
@@ -556,12 +605,12 @@ fn assert_channel_invariant(invariant: ChannelInvariant) {
         .unwrap()
         .len();
     let old_target_cardinality = before.channel_data(&target).unwrap().unwrap().len() as u64;
-    let expected = frozen_legacy_set_channel(before.clone(), target.clone(), &replacement);
-    assert_coherent("after legacy-oracle construction", &before);
-    assert_coherent("inside the legacy-oracle image", &expected);
+    let expected = reference_set_channel(before.clone(), target.clone(), &replacement);
+    assert_store_coherent(invariant, "after reference construction", &before);
+    assert_store_coherent(invariant, "inside the reference image", &expected);
     let mut actual = before;
     actual.set_channel(target.clone(), replacement).unwrap();
-    assert_coherent("after production replacement", &actual);
+    assert_store_coherent(invariant, "after production replacement", &actual);
 
     let repeated_path = RSpaceDataIndex::datum_path(&target, &replacement_repeated);
     let second_path = RSpaceDataIndex::datum_path(&target, &replacement_second);
@@ -590,7 +639,7 @@ fn assert_channel_invariant(invariant: ChannelInvariant) {
         }
         ChannelInvariant::LoadedSet => assert!(actual.is_loaded(&target)),
         ChannelInvariant::LoadedCount | ChannelInvariant::LoadedSetUniqueness => {
-            assert_eq!(actual.loaded_channel_count, actual.loaded_channels.iter().count());
+            assert_eq!(actual.loaded_channel_count(), physical_channel_count(&actual.index));
         }
         ChannelInvariant::TargetCatalogInvalidation => {
             assert!(
@@ -627,48 +676,49 @@ fn assert_channel_invariant(invariant: ChannelInvariant) {
             assert_eq!(actual.index.count_path(&repeated_path), 2);
             assert_eq!(actual.index.count_path(&second_path), 1);
         }
-        ChannelInvariant::LegacySuccessEquivalence |
+        ChannelInvariant::ReferenceSuccessEquivalence |
         ChannelInvariant::PrefixRootedCursor |
         ChannelInvariant::SingleCursorReplay => {
             assert_eq!(actual, expected);
         }
         ChannelInvariant::PreparedBagWellFormed | ChannelInvariant::ResultWellFormed => {
-            let expected_entries = actual
+            actual
                 .index
-                .as_bag()
-                .iter()
-                .map(|(path, multiplicity)| (path, multiplicity.get()))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                expected_entries.len(),
-                actual.index.as_bag().distinct_len(),
-                "{invariant:?}: authoritative trie and distinct metadata diverged before encoding",
-            );
-            let bytes = actual.index.as_bag().compact_bytes();
-            let decoded = Bag::from_compact_bytes(&bytes).unwrap();
-            let observed_after_decode = actual
-                .index
-                .as_bag()
-                .iter()
-                .map(|(path, multiplicity)| (path, multiplicity.get()))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                observed_after_decode, expected_entries,
-                "{invariant:?}: decoding an independent byte image changed the authority",
-            );
-            assert_eq!(
-                decoded
-                    .iter()
-                    .map(|(path, multiplicity)| (path, multiplicity.get()))
-                    .collect::<Vec<_>>(),
-                expected_entries,
-                "{invariant:?}: compact decode changed canonical endpoints",
-            );
-            assert!(
-                decoded
-                    .iter()
-                    .all(|(_, multiplicity)| multiplicity.get() > 0)
-            );
+                .try_visit_channels(|_, bag| {
+                    let expected_entries = bag
+                        .iter()
+                        .map(|(path, multiplicity)| (path, multiplicity.get()))
+                        .collect::<Vec<_>>();
+                    assert_eq!(
+                        expected_entries.len(),
+                        bag.distinct_len(),
+                        "{invariant:?}: inner trie and distinct metadata diverged before encoding",
+                    );
+                    let bytes = bag.compact_bytes();
+                    let decoded = Bag::from_compact_bytes(&bytes).unwrap();
+                    assert_eq!(
+                        bag.iter()
+                            .map(|(path, multiplicity)| (path, multiplicity.get()))
+                            .collect::<Vec<_>>(),
+                        expected_entries,
+                        "{invariant:?}: decoding an independent byte image changed the authority",
+                    );
+                    assert_eq!(
+                        decoded
+                            .iter()
+                            .map(|(path, multiplicity)| (path, multiplicity.get()))
+                            .collect::<Vec<_>>(),
+                        expected_entries,
+                        "{invariant:?}: compact decode changed canonical endpoints",
+                    );
+                    assert!(
+                        decoded
+                            .iter()
+                            .all(|(_, multiplicity)| multiplicity.get() > 0)
+                    );
+                    Ok::<(), std::convert::Infallible>(())
+                })
+                .unwrap();
         }
         ChannelInvariant::CatalogInvariantPreservation => {
             let catalogs = actual.candidate_catalogs.read().unwrap();
@@ -826,8 +876,8 @@ fn formal_invariants_and_causal_mutants_have_executable_witnesses() {
 }
 
 #[test]
-fn legacy_equivalence_teardown_preserves_the_next_fresh_bag_authority() {
-    assert_channel_invariant(ChannelInvariant::LegacySuccessEquivalence);
+fn reference_equivalence_teardown_preserves_the_next_fresh_bag_authority() {
+    assert_channel_invariant(ChannelInvariant::ReferenceSuccessEquivalence);
     assert_channel_invariant(ChannelInvariant::PreparedBagWellFormed);
 }
 

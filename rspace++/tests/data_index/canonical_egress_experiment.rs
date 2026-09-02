@@ -409,17 +409,17 @@ fn build_identity_order_index(
     channel_prefix: &[u8],
 ) -> Result<IdentityOrderIndex, DataIndexError> {
     let mut identity_order = IdentityOrderIndex::new();
-    store
-        .index
-        .as_bag()
-        .try_visit_relative_prefix(channel_prefix, |path, multiplicity| {
-            let identity = RhoPathV1::relative_datum_identity(path)?;
-            if identity_order.bag.contains(identity) {
-                return Err(DataIndexError::DuplicateDatumIdentity);
-            }
-            identity_order.insert_many(identity, multiplicity)?;
-            Ok(())
-        })?;
+    let Some(channel_bag) = store.index.channel_bag_at_marker(channel_prefix) else {
+        return Ok(identity_order);
+    };
+    channel_bag.try_visit_relative_prefix(b"", |path, multiplicity| {
+        let identity = RhoPathV1::relative_datum_identity(path)?;
+        if identity_order.bag.contains(identity) {
+            return Err(DataIndexError::DuplicateDatumIdentity);
+        }
+        identity_order.insert_many(identity, multiplicity)?;
+        Ok(())
+    })?;
     Ok(identity_order)
 }
 
@@ -428,10 +428,11 @@ fn structural_and_identity_orders_differ(
     channel_prefix: &[u8],
 ) -> bool {
     let mut structural_order = Vec::new();
-    store
-        .index
-        .as_bag()
-        .try_visit_relative_prefix(channel_prefix, |path, _| {
+    let Some(channel_bag) = store.index.channel_bag_at_marker(channel_prefix) else {
+        return false;
+    };
+    channel_bag
+        .try_visit_relative_prefix(b"", |path, _| {
             structural_order.push(RhoPathV1::relative_datum_identity(path)?.to_vec());
             Ok::<(), DataIndexError>(())
         })
