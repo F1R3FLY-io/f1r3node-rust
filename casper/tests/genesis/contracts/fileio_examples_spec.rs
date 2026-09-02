@@ -794,29 +794,32 @@ in {{
 /// Slice 10a-6: canonical example `fileio_buffer_loop.rho`.
 ///
 /// Bounded-memory line-by-line read via `readLineInto(buf)` in a
-/// tail-recursive loop.  E2E test-side verification is
-/// **deferred**: the Allocator agent is compiled into the FsGenesis
-/// composed source but not published to user deploys — only Fs is
-/// exported via `insertSigned` (see `fs_genesis.rs` MVP note §6).
-/// User deploys cannot obtain a Buffer until the future Powerbox
-/// slice PB-B-5 publishes an Allocator delegation at
-/// `rho:lang:buffer:1.0.0`.
+/// tail-recursive loop.  PB-B-5 (2026-09-02) shipped the Allocator
+/// publication at `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:buffer:1.0.0`,
+/// so user deploys can now obtain a Buffer via `lookupVersion` +
+/// `alloc!?("allocBytes", n)`.  E2E resolution + minting is pinned
+/// by `buffer_cap_is_resolvable_via_versioned_registry_uri` in
+/// `fileio_fs_spec.rs`.
 ///
-/// The `.rho` example is a documentation artifact that describes
-/// the expected user surface; this test's body is a placeholder
-/// that will be filled in once the publication lands.  Until then
-/// it is `#[ignore]`-d so `cargo test` remains green.
+/// This test's body is still a placeholder — filling it in requires
+/// composing a bundled test file + a RhoSpec source that runs the
+/// buffer-loop end-to-end.  Left `#[ignore]`d until that
+/// follow-up slice writes the body; the ignore reason updated
+/// 2026-09-02 to reflect the PB-B-5 unblock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on PB-B-5: Allocator not yet published to user deploys"]
+#[ignore = "PB-B-5 unblocked 2026-09-02; test body still to write \
+            (compose bundle + RhoSpec harness for the buffer-loop example)"]
 async fn fileio_buffer_loop_bounded_read() {
     // See rholang/examples/fileio_buffer_loop.rho for the intended
-    // user code.  Once PB-B-5 publishes the Allocator, this test
-    // should:
+    // user code.  With PB-B-5 landed, this test should:
     //   - Bundle a "target" file pre-populated with N lines.
-    //   - Compose a RhoSpec source that runs the buffer-loop.
-    //   - Assert every line is echoed via stdout in order.
-    //   - Assert the loop terminates on eof=true.
-    unimplemented!("blocked on PB-B-5: Allocator publication at rho:lang:buffer:1.0.0")
+    //   - Compose a RhoSpec source that (a) `lookupVersion`s the
+    //     Allocator at the buffer versioned URN, (b) opens the file
+    //     via Fs, (c) runs the readLineInto loop, (d) accumulates
+    //     lines and checks each in order, (e) asserts eof=true.
+    //   - `buffer_cap_is_resolvable_via_versioned_registry_uri` is
+    //     the reference for the Allocator lookup pattern.
+    unimplemented!("PB-B-5 unblocked 2026-09-02; test body still to write")
 }
 
 /// Slice 10a-8 (partial): sanity check that `Fs.stdin` and
@@ -1160,20 +1163,22 @@ in {{
 /// Slice 10a-7: canonical example `fileio_rows.rho`.
 ///
 /// Buffer-of-buffers via `alloc.allocRows(128, 8192, "utf8")` +
-/// `file.readLinesInto(rows)`.  Same PB-B-5 block as slice 10a-6 —
-/// the `.rho` example ships as documentation; this test's body is a
-/// placeholder that will be filled in once the Allocator publication
-/// lands.
+/// `file.readLinesInto(rows)`.  PB-B-5 unblocked 2026-09-02 (see
+/// `fileio_buffer_loop_bounded_read` docstring for the reference
+/// pattern); test body still to write.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on PB-B-5: Allocator not yet published to user deploys"]
+#[ignore = "PB-B-5 unblocked 2026-09-02; test body still to write \
+            (compose bundle + RhoSpec harness for the rows example)"]
 async fn fileio_rows_readlinesinto() {
     // See rholang/examples/fileio_rows.rho for the intended user
-    // code.  Once PB-B-5 publishes the Allocator, this test should:
+    // code.  With PB-B-5 landed, this test should:
     //   - Bundle a "target" file with N > 128 lines.
-    //   - Run allocRows(128, 8192, "utf8") + readLinesInto.
+    //   - `lookupVersion` the Allocator + Fs at their versioned URNs.
+    //   - Run `alloc!?("allocRows", 128, 8192, "utf8")` +
+    //     `file!?("readLinesInto", rows)`.
     //   - Assert reply is [true, [128, {"eof": false, ...}]] (fills
     //     to buffer-of-buffers capacity).
     //   - Iterate rows.getAt(i) and assert each inner line matches
     //     the source file's i-th line.
-    unimplemented!("blocked on PB-B-5: Allocator publication at rho:lang:buffer:1.0.0")
+    unimplemented!("PB-B-5 unblocked 2026-09-02; test body still to write")
 }

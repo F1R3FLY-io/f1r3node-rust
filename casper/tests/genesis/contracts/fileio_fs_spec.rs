@@ -538,3 +538,81 @@ in {{
         .await
         .expect("fs versioned lookup spec failed");
 }
+
+/// PB-B-5 E2E (2026-09-02): `lookupVersion` on the buffer versioned
+/// URN via `rho:registry:v1:internal` returns the Allocator cap, and
+/// `allocBytes(128)` on the retrieved cap returns `[true, buf]` —
+/// proving the Allocator is minted at genesis, published under the
+/// serve namespace, and functionally reachable from a user deploy.
+///
+/// Mirrors `fs_cap_is_resolvable_via_versioned_registry_uri`
+/// (PB-B-3): same lookup mechanism, same [true, cap] shape assertion.
+///
+/// ## Regression envelope
+///
+/// A regression that drops the `insertVersion` call for `alloc`
+/// from the composed source (or drops the `for(@_ <-
+/// allocInsertVerRet)` await, letting fs_generator terminate before
+/// the store commit) breaks this test at the lookup step: the
+/// nested `for(@alloc <- allocCh)` never fires, RhoSpec times out.
+/// Source-scan pin `compose_fs_genesis_source_calls_insert_version_
+/// for_buffer` in `fs_genesis.rs::tests` catches the call-site drop
+/// even before this test runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_cap_is_resolvable_via_versioned_registry_uri() {
+    let params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let pk_hex = hex::encode(standard_deploys::FS_GENERATOR_PUB_KEY.bytes.clone());
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  v1Api(`rho:registry:v1:internal`),
+  RhoSpecCh,
+  allocCh,
+  test_versioned_uri
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("PB-B-5 allocator lookup", *test_versioned_uri)])
+  }} |
+
+  v1Api!("lookupVersion",
+    "rho:serve:1.0.0:{pk_hex}:buffer:1.0.0", Nil, *allocCh) |
+  for(@alloc <- allocCh) {{
+    contract test_versioned_uri(rhoSpec, _, ackCh) = {{
+      // alloc is the Allocator cap.  Call allocBytes(128) and
+      // verify [true, buf] is returned — proves the cap is
+      // functional (not Nil / stripped / wrongly-typed).
+      for (@r <- @alloc!?("allocBytes", 128)) {{
+        match r {{
+          [true, _buf] => {{
+            rhoSpec!("assert", (true, "==", true),
+              "buffer versioned URN resolves to a functional Allocator cap",
+              *ackCh)
+          }}
+          _ => {{
+            rhoSpec!("assert", (r, "==", "[true, _]"),
+              "Allocator.allocBytes via versioned URN must return [true, buf]",
+              *ackCh)
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "BufferVersionedRegistryLookupSpec".to_string(),
+    )
+    .expect("compile buffer versioned lookup spec");
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("buffer versioned lookup spec failed");
+}

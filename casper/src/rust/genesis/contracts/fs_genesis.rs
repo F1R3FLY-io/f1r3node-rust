@@ -84,16 +84,22 @@
 //!    genesis via `insertSigned`, which enforces sandbox / mode-cap /
 //!    bundle checks.
 //!
-//! 6. **`Buffer` / `Allocator` compiled but unreachable.**  The composed
-//!    source splices in Buffer.rho's body (agent definitions live at
-//!    module scope alongside Fs, File, Dir, etc.) but does NOT publish
-//!    the `Allocator` cap — only Fs is exported via `rs!(...)`.  Storage
-//!    cost is incurred (contracts persist in the tuplespace) with zero
-//!    user reach.  Consequence: File.rho's Buffer-taking methods
-//!    (`readInto` / `writeFrom` / `readLineInto` / `readLinesInto`) are
-//!    functionally dead until PB-B-5 lands the per-principal Allocator
-//!    delegation at `rho:lang:buffer:1.0.0`.  Deploys cannot obtain a
-//!    Buffer without that publication.
+//! 6. **`Buffer` / `Allocator` published under the serve namespace
+//!    (PB-B-5, 2026-09-02).**  The composed source splices in
+//!    Buffer.rho's body AND mints one shared `Allocator` instance
+//!    at genesis, publishing it via `insertVersion("serve", "buffer",
+//!    "1.0.0", alloc, ...)` alongside the Fs cap's insertVersion.
+//!    Callers resolve the Allocator via `lookupVersion` on
+//!    `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:buffer:1.0.0` and
+//!    invoke `allocBytes(n)` / `allocRows(m, innerN, unit)` to mint
+//!    Buffer / Rows instances.  This unblocks the buffer-taking File
+//!    methods (`readInto` / `writeFrom` / `readLineInto` /
+//!    `readLinesInto` + their arity-N+1 variants) for user deploys.
+//!    Per-principal Allocator delegation via the real Powerbox is a
+//!    future slice (mirrors the PB-B-3 → PB-B-5 relationship).
+//!    Spec §Table 4's aspirational `rho:lang:buffer:1.0.0` shape
+//!    awaits the same URN-parser extension slice that would add
+//!    `rho:io:fs:1.0.0` aliasing.
 //!
 //! 7. **`ConsensusMode` per-cap plumbing (Phase 7 slice 26).**  Each
 //!    bundle entry carries a `consensus_mode` (`Oracular` / `Consensus`)
@@ -844,7 +850,7 @@ new
   // before edge between the mutator and any subsequent lookup in
   // the same deploy; genesis is the sole registrant under this
   // pk_hex/proj pair by construction so it cannot collide.
-  v1Api(`rho:registry:v1:internal`), insertVerRet
+  v1Api(`rho:registry:v1:internal`), insertVerRet, allocInsertVerRet
 in {{
   {file_body}
   |
@@ -905,6 +911,27 @@ in {{
     // `casper/tests/genesis/contracts/fileio_fs_spec.rs`.
     v1Api!("insertVersion", "serve", "fs", "1.0.0", fs, *insertVerRet) |
     for (@_ <- insertVerRet) {{ Nil }}
+  }} |
+  // PB-B-5 (2026-09-02): mint one shared Allocator instance and
+  // publish it at `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:buffer:1.0.0`
+  // so user deploys can obtain Buffer / Rows caps.  Same delegation
+  // shape as the fs cap above (single shared instance per node via
+  // insertVersion under the serve namespace).  Per-principal
+  // delegation via the real Powerbox is a future slice (mirrors PB-B-3
+  // → PB-B-5 relationship: same authenticated-caller discipline,
+  // deferred to when the Powerbox FIP lands).
+  //
+  // No `insertSigned` counterpart — legacy `rho:id:<hash>` publication
+  // was a compatibility affordance for the Fs cap; Allocator ships
+  // fresh so callers use the serve-URN form exclusively.
+  //
+  // Runs in parallel with the Fs mint/publish block above; both
+  // Allocator!?() and Fs!?(...) are independent no-arg / arg-list
+  // constructors on module-scope agents already lexically in the
+  // outer `new` binding, so no ordering constraint between them.
+  for (@alloc <- Allocator!?()) {{
+    v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc, *allocInsertVerRet) |
+    for (@_ <- allocInsertVerRet) {{ Nil }}
   }}
 }}
 "#
@@ -976,6 +1003,39 @@ pub fn fs_versioned_uri(pk: &PublicKey) -> String {
     format!("rho:serve:1.0.0:{pk_hex}:fs:1.0.0")
 }
 
+/// PB-B-5 (2026-09-02): the Versioned Registry URN at which the
+/// FsGenesis deploy publishes the shared `Allocator` cap via
+/// `insertVersion`.  Mirrors `fs_versioned_uri` — same serve
+/// namespace, same authenticated-caller discipline (only holders of
+/// `FS_GENERATOR_PK` can register under this projection), same
+/// wildcard-lookup support (`rho:serve:1.0.0:<hex>:buffer:1.*` via
+/// the resolver's semver matching).
+///
+/// URN shape: `rho:serve:1.0.0:<FS_GENERATOR_PUB_KEY_HEX>:buffer:1.0.0`.
+///
+/// Callers resolve via `lookupVersion` on `rho:registry:1.0.0` and
+/// obtain an Allocator cap, which they invoke with `allocBytes(n)` /
+/// `allocRows(m, innerN, unit)` etc. to mint `Buffer` and `Rows`
+/// instances.  This unblocks the buffer-taking File methods
+/// (`readInto` / `writeFrom` / `readLineInto` / `readLinesInto` and
+/// their arity-N+1 variants) for user deploys.
+///
+/// Unlike `fs_versioned_uri`, there is NO `insertSigned` counterpart
+/// for the Allocator — the legacy `rho:id:<hash>` publication was a
+/// compatibility affordance for the Fs cap.  Allocator ships fresh
+/// under PB-B-5, so callers use the serve-URN form exclusively.
+///
+/// The FIP spec §Table 4 lists the shorter `rho:lang:buffer:1.0.0`
+/// aspirational form.  Same URN-parser-extension constraint as
+/// `rho:io:fs:1.0.0`: the current parser recognizes only `rho:lib:*`
+/// / `rho:serve:*` / `rho:registry:*`.  Adding a `lang` namespace
+/// alias is the same URN-parser extension slice that would add `io`
+/// aliasing; both are deferred together.
+pub fn buffer_versioned_uri(pk: &PublicKey) -> String {
+    let pk_hex = hex::encode(pk.bytes.clone());
+    format!("rho:serve:1.0.0:{pk_hex}:buffer:1.0.0")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1005,6 +1065,40 @@ mod tests {
             "composed source must bind `v1Api` to `rho:registry:v1:internal` \
              so the insertVersion send routes to VersionedRegistry.rho's \
              persistent contract."
+        );
+    }
+
+    /// PB-B-5 pin: the composed FsGenesis source must invoke
+    /// `insertVersion("serve", "buffer", "1.0.0", alloc, ...)` on
+    /// the versioned-registry `v1Api` channel.  A regression that
+    /// silently drops the call would leave
+    /// `rho:serve:1.0.0:<pk>:buffer:1.0.0` unresolvable, keeping
+    /// the Buffer / Rows / Allocator surface functionally dead for
+    /// user deploys (see fs_genesis.rs docstring §MVP simplification
+    /// #6, updated as part of PB-B-5).
+    #[test]
+    fn compose_fs_genesis_source_calls_insert_version_for_buffer() {
+        let src = compose_fs_genesis_source("00", "00", &[], None);
+        assert!(
+            src.contains(r#"v1Api!("insertVersion", "serve", "buffer", "1.0.0", alloc,"#),
+            "composed source must invoke insertVersion for the Allocator \
+             cap under (serve, buffer, 1.0.0); a missing call site drops \
+             PB-B-5 coverage silently.  Rebind pattern: \
+             v1Api!(\"insertVersion\", \"serve\", \"buffer\", \"1.0.0\", \
+             alloc, *allocInsertVerRet)"
+        );
+        assert!(
+            src.contains("for (@alloc <- Allocator!?())"),
+            "composed source must mint the Allocator via Allocator!?() \
+             before publishing.  A missing mint site leaves the \
+             insertVersion call attempting to store an unbound name."
+        );
+        assert!(
+            src.contains("allocInsertVerRet"),
+            "composed source must bind `allocInsertVerRet` in the outer \
+             new-clause so the insertVersion send has a distinct reply \
+             channel; sharing insertVerRet with the fs publish would \
+             race the two drains."
         );
     }
 
@@ -1544,7 +1638,7 @@ mod tests {
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
         // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
-        const EXPECTED: &str = "69e2bc42d3ccbcb4bba983685de0c9bd0b600374ac29755842566f4d8e286274";
+        const EXPECTED: &str = "477d6ccab56eb7d53072891f67e2913c6087a84081d5a3e0c70b75b28023af41";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
