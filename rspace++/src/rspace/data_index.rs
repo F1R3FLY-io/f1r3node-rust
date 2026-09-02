@@ -301,6 +301,10 @@ impl fmt::Debug for CandidatePositionMap {
 
 #[derive(Debug, Clone)]
 struct CandidateCatalog<A: Clone> {
+    /// Independently allocated channel-relative PathMap authority.  This is
+    /// rebuilt during the existing encoded catalog pass: it never owns a raw
+    /// header focused into the RSpace store's compressed physical trie.
+    availability: Bag,
     ordered: Arc<[CandidatePoolEntry<A>]>,
     positions: CandidatePositionMap,
     active_distinct_len: usize,
@@ -308,8 +312,14 @@ struct CandidateCatalog<A: Clone> {
 }
 
 impl<A: Clone> CandidateCatalog<A> {
-    fn from_encoded_entries(prefix_len: usize, entries: Vec<EncodedIndexedDatum>) -> Self
-    where A: ColdStoreDecode {
+    fn from_encoded_entries(
+        availability: Bag,
+        prefix_len: usize,
+        entries: Vec<EncodedIndexedDatum>,
+    ) -> Self
+    where
+        A: ColdStoreDecode,
+    {
         let active_distinct_len = entries.len();
         let cardinality = entries
             .iter()
@@ -320,8 +330,9 @@ impl<A: Clone> CandidateCatalog<A> {
             .into_iter()
             .enumerate()
             .map(|(position, entry)| {
-                let replaced = positions
-                    .insert(&entry.path[prefix_len..], CandidatePosition::from_index(position));
+                let relative_path = &entry.path[prefix_len..];
+                let replaced =
+                    positions.insert(relative_path, CandidatePosition::from_index(position));
                 debug_assert!(!replaced, "candidate paths are distinct");
                 CandidatePoolEntry {
                     storage_path: Arc::from(entry.path),
@@ -333,6 +344,7 @@ impl<A: Clone> CandidateCatalog<A> {
             .collect::<Vec<_>>()
             .into();
         Self {
+            availability,
             ordered,
             positions,
             active_distinct_len,
@@ -348,20 +360,21 @@ impl<A: Clone> CandidateCatalog<A> {
         previous: Option<Multiplicity>,
         current: Option<Multiplicity>,
     ) -> bool {
+        if previous.is_none() && current.is_some() && !self.positions.contains(relative_path) {
+            return false;
+        }
         let previous_count = previous.map_or(0, Multiplicity::get);
         let current_count = current.map_or(0, Multiplicity::get);
         self.cardinality =
             self.cardinality - u128::from(previous_count) + u128::from(current_count);
         match (previous, current) {
             (None, Some(_)) => {
-                if !self.positions.contains(relative_path) {
-                    return false;
-                }
                 self.active_distinct_len += 1;
             }
             (Some(_), None) => self.active_distinct_len -= 1,
             _ => {}
         }
+        self.availability.set_count(relative_path, current);
         true
     }
 
@@ -381,9 +394,12 @@ impl<A: Clone> CandidateCatalog<A> {
 
 #[derive(Debug, Clone)]
 pub struct CandidatePool<A: Clone> {
-    /// Authoritative stored multiplicities after any replay preselection
-    /// filter. Candidate search never mutates this PathMap-backed Bag.
+    /// Immutable channel-relative multiplicities owned by the candidate
+    /// catalog. Candidate search never mutates this PathMap-backed Bag.
     authority: Bag,
+    /// Replay exclusions are a pool-local overlay.  The immutable catalog
+    /// authority is never rewritten merely to filter one speculative search.
+    excluded: Bag,
     /// Speculative, non-persistent demand placed against `authority`.
     /// Repeated-channel joins share one pool, so multiplicity is reserved once
     /// per selected occurrence without copying or rewriting the authority trie.
@@ -947,6 +963,7 @@ mod candidate_product_test_metrics {
 impl<A: Clone + PartialEq> PartialEq for CandidatePool<A> {
     fn eq(&self, other: &Self) -> bool {
         self.authority == other.authority &&
+            self.excluded == other.excluded &&
             self.reserved == other.reserved &&
             self.ordered == other.ordered &&
             self.fresh == other.fresh &&
@@ -961,6 +978,7 @@ impl<A: Clone> CandidatePool<A> {
     where A: ColdStoreDecode {
         Self {
             authority,
+            excluded: Bag::new(),
             reserved: Bag::new(),
             ordered: Arc::clone(&catalog.ordered),
             positions: catalog.positions.clone(),
@@ -983,7 +1001,8 @@ impl<A: Clone> CandidatePool<A> {
 
     pub fn is_empty(&self) -> bool {
         !self.fresh_available &&
-            self.authority.exact_cardinality() == self.reserved.exact_cardinality()
+            self.authority.exact_cardinality() ==
+                self.reserved.exact_cardinality() + self.excluded.exact_cardinality()
     }
 
     /// Authoritative multiplicities for the stored (non-fresh) candidates.
@@ -1126,6 +1145,7 @@ impl<A: Clone> CandidatePool<A> {
             };
             return Self::reserve_stored(
                 &self.authority,
+                &self.excluded,
                 &mut self.reserved,
                 entry.relative_path(),
             );
@@ -1133,7 +1153,12 @@ impl<A: Clone> CandidatePool<A> {
         let Some(entry) = self.ordered.get(position) else {
             return false;
         };
-        Self::reserve_stored(&self.authority, &mut self.reserved, entry.relative_path())
+        Self::reserve_stored(
+            &self.authority,
+            &self.excluded,
+            &mut self.reserved,
+            entry.relative_path(),
+        )
     }
 
     /// Release one successful speculative reservation.
@@ -1178,7 +1203,11 @@ impl<A: Clone> CandidatePool<A> {
         }
         for entry in self.ordered.iter() {
             if !predicate(entry.datum(self.decode)) {
-                self.authority.set_count(entry.relative_path(), None);
+                let multiplicity = self.authority.count(entry.relative_path());
+                let multiplicity = Multiplicity::new(multiplicity)
+                    .expect("every catalog entry has positive authoritative multiplicity");
+                self.excluded
+                    .set_count(entry.relative_path(), Some(multiplicity));
             }
         }
         true
@@ -1202,12 +1231,22 @@ impl<A: Clone> CandidatePool<A> {
     fn unreserved_count(&self, entry: &CandidatePoolEntry<A>) -> u64 {
         self.authority
             .count(entry.relative_path())
+            .checked_sub(self.excluded.count(entry.relative_path()))
+            .expect("candidate exclusions must remain a subset of authority")
             .checked_sub(self.reserved.count(entry.relative_path()))
             .expect("candidate reservations must remain a subset of authority")
     }
 
-    fn reserve_stored(authority: &Bag, reservations: &mut Bag, path: &[u8]) -> bool {
-        let authoritative = authority.count(path);
+    fn reserve_stored(
+        authority: &Bag,
+        exclusions: &Bag,
+        reservations: &mut Bag,
+        path: &[u8],
+    ) -> bool {
+        let authoritative = authority
+            .count(path)
+            .checked_sub(exclusions.count(path))
+            .expect("candidate exclusions must remain a subset of authority");
         let reserved = reservations.count(path);
         if reserved >= authoritative {
             return false;
@@ -1363,30 +1402,48 @@ impl RSpaceDataIndex {
     {
         let prefix = RhoPathV1::datum_prefix(channel);
         let catalog = self.candidate_catalog::<A>(&prefix)?;
-        self.candidate_pool_from_catalog(&prefix, &catalog)
+        self.candidate_pool_from_catalog(&catalog)
     }
 
     fn candidate_catalog<A>(&self, prefix: &[u8]) -> Result<CandidateCatalog<A>, DataIndexError>
     where A: Clone + ColdStoreDecode {
-        self.ordered_encoded_channel_entries(prefix)
-            .map(|entries| CandidateCatalog::from_encoded_entries(prefix.len(), entries))
+        // The source Bag visits one channel prefix in strictly ascending trie
+        // order. Build the independent relative authority through one moving
+        // write zipper during that same pass, while retaining only the
+        // lightweight descriptors needed for consensus candidate order.
+        let mut decorated = Vec::new();
+        let availability = Bag::try_from_sorted_unique(|writer| {
+            self.bag.try_visit_prefix(prefix, |path, multiplicity| {
+                let view = RhoPathV1::parse_datum(path)?;
+                let identity_offset = path.len() - view.datum_identity().len();
+                writer
+                    .push(&path[prefix.len()..], multiplicity)
+                    .expect("resident trie order is strictly ascending and unique");
+                decorated.push((
+                    datum_identity_digest(view.datum_identity()),
+                    EncodedIndexedDatum {
+                        path: path.to_vec(),
+                        identity_offset,
+                        multiplicity,
+                    },
+                ));
+                Ok::<(), DataIndexError>(())
+            })
+        })?;
+        sort_encoded_candidates(&mut decorated);
+        validate_unique_candidate_identities(&decorated)?;
+        let ordered = decorated.into_iter().map(|(_, entry)| entry).collect();
+        Ok(CandidateCatalog::from_encoded_entries(availability, prefix.len(), ordered))
     }
 
     fn candidate_pool_from_catalog<A>(
         &self,
-        prefix: &[u8],
         catalog: &CandidateCatalog<A>,
     ) -> Result<CandidatePool<A>, DataIndexError>
     where
         A: Clone + ColdStoreDecode,
     {
-        let availability = self.bag.with_read_cursor_at(prefix, |cursor| {
-            Bag::from_guarded_with_metrics(
-                cursor.guarded_focus_snapshot(),
-                catalog.active_distinct_len,
-                catalog.cardinality,
-            )
-        });
+        let availability = catalog.availability.clone();
         Ok(CandidatePool::from_catalog(availability, catalog))
     }
 
@@ -1775,7 +1832,7 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
                 }
             };
             self.index
-                .candidate_pool_from_catalog(&prefix, catalog.as_ref())
+                .candidate_pool_from_catalog(catalog.as_ref())
                 .map(Some)
         } else {
             Ok(None)

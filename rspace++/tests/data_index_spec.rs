@@ -578,6 +578,56 @@ fn candidate_pool_keeps_multiplicity_in_the_subtrie() {
 }
 
 #[test]
+fn replay_filter_and_pool_drop_preserve_every_resident_sibling() {
+    let channel = "channel".to_string();
+    let selected = datum("selected", false, 1);
+    let sibling = datum("sibling", false, 2);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [selected.clone(), sibling.clone()])
+        .unwrap();
+
+    {
+        let mut pool = store.channel_pool(&channel).unwrap().unwrap();
+        assert!(pool.retain_before_selection(|candidate| candidate == &selected));
+        assert_eq!(
+            (0..pool.len())
+                .filter_map(|position| pool.candidate(position).map(|(datum, _)| datum.clone()))
+                .collect::<Vec<_>>(),
+            vec![selected.clone()]
+        );
+    }
+
+    assert_eq!(store.index().count(&channel, &selected), 1);
+    assert_eq!(store.index().count(&channel, &sibling), 1);
+    assert_eq!(store.channel_data(&channel).unwrap().unwrap().len(), 2);
+}
+
+#[test]
+fn issued_candidate_pool_is_immutable_across_store_catalog_invalidation() {
+    let channel = "channel".to_string();
+    let first = datum("first", false, 1);
+    let second = datum("second", false, 2);
+    let later = datum("later", false, 3);
+    let mut store = RSpaceDataStore::new();
+    store
+        .set_channel(channel.clone(), [first.clone(), second.clone()])
+        .unwrap();
+    let old_pool = store.channel_pool(&channel).unwrap().unwrap();
+
+    store.insert(&channel, &later).unwrap();
+    let new_pool = store.channel_pool(&channel).unwrap().unwrap();
+
+    assert_eq!(old_pool.len(), 2);
+    assert_eq!(new_pool.len(), 3);
+    assert!(store.index().count(&channel, &later) == 1);
+    drop(old_pool);
+    assert_eq!(store.index().count(&channel, &first), 1);
+    assert_eq!(store.index().count(&channel, &second), 1);
+    assert_eq!(store.index().count(&channel, &later), 1);
+}
+
+#[test]
 fn candidate_pool_addresses_remove_exact_path_multiplicity() {
     let channel = "channel".to_string();
     let repeated = datum("repeated", false, 1);

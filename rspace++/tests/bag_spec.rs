@@ -301,6 +301,125 @@ fn transaction_delta_application_is_atomic_on_underflow_and_overflow() {
 }
 
 #[test]
+fn singleton_delta_failure_is_byte_identical_and_metric_identical() {
+    let mut underflow_target = bag(&[(b"alpha", 1), (b"sibling", 7)]);
+    let underflow_bytes = underflow_target.compact_bytes();
+    let underflow_metrics = (
+        underflow_target.distinct_len(),
+        underflow_target.cardinality(),
+        underflow_target.cardinality_is_saturated(),
+    );
+    let mut underflow = BagDelta::new();
+    underflow
+        .record_removal(b"alpha", Multiplicity::new(2).unwrap())
+        .unwrap();
+    assert_eq!(
+        underflow.apply_to(&mut underflow_target),
+        Err(BagError::InsufficientMultiplicity {
+            available: 1,
+            requested: 2,
+        })
+    );
+    assert_eq!(underflow_target.compact_bytes(), underflow_bytes);
+    assert_eq!(
+        (
+            underflow_target.distinct_len(),
+            underflow_target.cardinality(),
+            underflow_target.cardinality_is_saturated(),
+        ),
+        underflow_metrics
+    );
+
+    let mut overflow_target = bag(&[(b"alpha", u64::MAX), (b"sibling", 7)]);
+    let overflow_bytes = overflow_target.compact_bytes();
+    let overflow_metrics = (
+        overflow_target.distinct_len(),
+        overflow_target.cardinality(),
+        overflow_target.cardinality_is_saturated(),
+    );
+    let mut overflow = BagDelta::new();
+    overflow
+        .record_addition(b"alpha", Multiplicity::ONE)
+        .unwrap();
+    assert_eq!(
+        overflow.apply_to(&mut overflow_target),
+        Err(BagError::MultiplicityOverflow {
+            current: u64::MAX,
+            added: 1,
+        })
+    );
+    assert_eq!(overflow_target.compact_bytes(), overflow_bytes);
+    assert_eq!(
+        (
+            overflow_target.distinct_len(),
+            overflow_target.cardinality(),
+            overflow_target.cardinality_is_saturated(),
+        ),
+        overflow_metrics
+    );
+}
+
+#[test]
+fn singleton_delta_preserves_realistic_same_prefix_sibling_and_cow_snapshot() {
+    for drop_snapshot_first in [false, true] {
+        let mut selected = vec![0xA5; 939];
+        let mut sibling = selected.clone();
+        selected[203] = 0x11;
+        sibling[203] = 0x22;
+        assert_eq!(
+            selected
+                .iter()
+                .zip(&sibling)
+                .take_while(|(a, b)| a == b)
+                .count(),
+            203
+        );
+
+        let mut target = Bag::new();
+        target.insert(&selected).unwrap();
+        target.insert(&sibling).unwrap();
+        let snapshot = target.clone();
+        let mut delta = BagDelta::new();
+        delta.record_removal(&selected, Multiplicity::ONE).unwrap();
+
+        delta.apply_to(&mut target).unwrap();
+        assert_eq!(target.count(&selected), 0);
+        assert_eq!(target.count(&sibling), 1);
+        assert_eq!(target.distinct_len(), 1);
+        assert_eq!(target.cardinality(), 1);
+        assert!(!target.cardinality_is_saturated());
+        assert_eq!(snapshot.count(&selected), 1);
+        assert_eq!(snapshot.count(&sibling), 1);
+
+        if drop_snapshot_first {
+            drop(snapshot);
+            assert_eq!(target.count(&sibling), 1);
+        } else {
+            drop(target);
+            assert_eq!(snapshot.count(&selected), 1);
+            assert_eq!(snapshot.count(&sibling), 1);
+        }
+    }
+}
+
+#[test]
+fn singleton_final_removal_returns_a_canonical_write_ready_empty_bag() {
+    let mut target = bag(&[(b"only", 1)]);
+    let mut delta = BagDelta::new();
+    delta.record_removal(b"only", Multiplicity::ONE).unwrap();
+
+    delta.apply_to(&mut target).unwrap();
+    assert!(target.is_empty());
+    assert_eq!(target.distinct_len(), 0);
+    assert_eq!(target.cardinality(), 0);
+    assert!(!target.cardinality_is_saturated());
+    assert_eq!(target.compact_bytes(), Bag::new().compact_bytes());
+
+    target.insert(b"replacement").unwrap();
+    assert_eq!(target.count(b"replacement"), 1);
+}
+
+#[test]
 fn sum_is_additive_while_join_and_meet_are_lattice_operations() {
     let left = bag(&[(b"a", 2), (b"b", 5)]);
     let right = bag(&[(b"a", 3), (b"c", 7)]);

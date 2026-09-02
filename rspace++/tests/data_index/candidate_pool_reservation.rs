@@ -25,6 +25,7 @@ fn pool(entries: &[(&[u8], u64)]) -> CandidatePool<()> {
         .collect::<Vec<_>>();
     CandidatePool {
         authority,
+        excluded: Bag::new(),
         reserved: Bag::new(),
         ordered: ordered.into(),
         positions: CandidatePositionMap::new(),

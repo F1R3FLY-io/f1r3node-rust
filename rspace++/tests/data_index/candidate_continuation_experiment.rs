@@ -186,6 +186,7 @@ impl CandidateContinuationExperiment {
             depth,
             pool: CandidatePool {
                 authority: availability,
+                excluded: Bag::new(),
                 reserved: Bag::new(),
                 ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
                 positions,

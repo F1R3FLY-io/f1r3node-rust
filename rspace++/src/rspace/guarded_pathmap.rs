@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::Arc;
 
 use pathmap::PathMap;
@@ -15,7 +15,7 @@ use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::utils::ByteMask;
 use pathmap::zipper::{
     ReadZipperIter, ReadZipperUntracked, WriteZipperUntracked, Zipper, ZipperIteration,
-    ZipperMoving, ZipperReadOnlyIteration, ZipperSubtries, ZipperValues, ZipperWriting,
+    ZipperMoving, ZipperReadOnlyIteration, ZipperValues, ZipperWriting,
 };
 
 /// Stack-safe disposal policy for values detached from a guarded map.
@@ -38,6 +38,56 @@ pub(crate) trait TeardownBarrier<V> {
     fn make_barrier() -> V;
 
     fn discard_barrier(barrier: V) { drop(barrier); }
+}
+
+struct SyntheticBarrier<V, B>
+where B: TeardownBarrier<V>
+{
+    value: Option<V>,
+    barrier: PhantomData<fn() -> B>,
+}
+
+impl<V, B> SyntheticBarrier<V, B>
+where B: TeardownBarrier<V>
+{
+    fn new() -> Self {
+        Self {
+            value: Some(B::make_barrier()),
+            barrier: PhantomData,
+        }
+    }
+
+    fn into_value(mut self) -> V {
+        self.value
+            .take()
+            .expect("a synthetic PathMap barrier is installed exactly once")
+    }
+
+    fn retire(value: V) { B::discard_barrier(value); }
+}
+
+impl<V, B> Drop for SyntheticBarrier<V, B>
+where B: TeardownBarrier<V>
+{
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            B::discard_barrier(value);
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ValuedLeafOrigin {
+    Real,
+    Synthetic,
+}
+
+#[derive(Default)]
+struct BarrierPruneStats {
+    real_values: usize,
+    pruned_edges: usize,
+    installed_barriers: usize,
+    retired_barriers: usize,
 }
 
 /// A copy-on-write `PathMap` version whose final owner tears it down without
@@ -70,6 +120,10 @@ where
     // `Option` is the move-out slot used by Drop.  At every other point an
     // anchor contains exactly one raw PathMap header.
     map: Option<PathMap<V>>,
+    // Exact endpoint authority maintained by every guarded mutation gateway.
+    // Final teardown consumes this certificate without invoking PathMap's
+    // depth-recursive subtree count.
+    value_count: usize,
     dispose: D,
     // Policies are types rather than stored values, so barriers cost no bytes
     // in either the guard or the anchor.
@@ -92,6 +146,7 @@ where
             // This clone is reachable only from the guard's mutation path via
             // Arc::make_mut.  Cloning a guard itself never clones this header.
             map: Some(map),
+            value_count: self.value_count,
             dispose,
             barrier: PhantomData,
         }
@@ -117,6 +172,17 @@ where
             .as_mut()
             .expect("a live PathMap anchor always contains its map")
     }
+
+    /// PathMap 0.2.2 may leave its private empty sentinel after pruning the
+    /// final edge. That representation is safe to destroy but cannot be
+    /// reopened for mutation. Cursor authority must already be closed before
+    /// this normalization replaces it with the canonical fresh live root.
+    fn normalize_live_empty(&mut self) {
+        if self.map().is_empty() {
+            debug_assert_eq!(self.value_count, 0);
+            self.map = Some(PathMap::new());
+        }
+    }
 }
 
 impl<V, D, B> Drop for AnchorRoot<V, D, B>
@@ -135,8 +201,14 @@ where
         // closed, named, and non-panicking; the boundary below is the
         // fail-stop backstop proved by PathMapReversePruneTeardown.v.
         let mut quarantined = ManuallyDrop::new(map);
+        let expected_values = self.value_count;
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            drain_pathmap::<V, B, _>(&mut quarantined, &self.dispose);
+            let removed_values = drain_pathmap::<V, B, _>(&mut quarantined, &self.dispose);
+            assert_eq!(
+                removed_values, expected_values,
+                "guarded PathMap teardown must consume its exact endpoint authority",
+            );
+            self.value_count = 0;
             // The ordinary PathMap destructor now sees no values and no
             // edges.  Keep this inside the boundary so even an impossible
             // empty-header destructor failure is terminal.
@@ -160,9 +232,11 @@ where
     pub fn new_with_barrier(dispose: D) -> Self { Self::from_map(PathMap::new(), dispose) }
 
     fn from_map(map: PathMap<V>, dispose: D) -> Self {
+        let map = if map.is_empty() { PathMap::new() } else { map };
         Self {
             anchor: Arc::new(AnchorRoot {
                 map: Some(map),
+                value_count: 0,
                 dispose,
                 barrier: PhantomData,
             }),
@@ -189,6 +263,122 @@ where
     #[inline]
     pub fn get<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { self.map().get_val_at(path) }
 
+    /// Visit the complete logical trie in canonical byte preorder without
+    /// allocating a traversal stack.  Value-free leaves are included because
+    /// they are part of PathMap's observable prefix-closed topology.
+    fn visit_topology(&self, mut visit: impl FnMut(&[u8], Option<&V>, bool)) {
+        let mut source = self.map().read_zipper();
+        loop {
+            let is_leaf = source.child_mask().iter().next().is_none();
+            visit(source.path(), source.val(), is_leaf);
+
+            if source.descend_first_byte() {
+                continue;
+            }
+            loop {
+                if source.to_next_sibling_byte() {
+                    break;
+                }
+                if source.at_root() {
+                    return;
+                }
+                let ascended = source.ascend_byte();
+                debug_assert!(ascended);
+            }
+        }
+    }
+
+    /// Count endpoints iteratively.  This is deliberately independent of
+    /// PathMap's depth-recursive subtree count and validates the guarded
+    /// endpoint authority before a rebuilt root can be published.
+    fn iterative_value_count(&self) -> usize {
+        let mut count = 0usize;
+        self.visit_topology(|_, value, _| {
+            if value.is_some() {
+                count = count
+                    .checked_add(1)
+                    .expect("PathMap endpoint count fits usize");
+            }
+        });
+        count
+    }
+
+    /// Rebuild a structurally edited version into a fresh trie allocation.
+    ///
+    /// A shallow PathMap clone is insufficient here: destructive pruning may
+    /// retain shared nodes or cloned payloads between the source and candidate.
+    /// Streaming retained endpoints and maximal value-free leaves into a fresh
+    /// map establishes disjoint node and value ownership before publication.
+    /// Removed values are never cloned.  The caller's fold runs only after the
+    /// candidate has been built and validated, against the still-immutable
+    /// source image.
+    fn rebuild_filter_fold<R, F, P>(
+        &self,
+        should_remove: P,
+        initial: R,
+        mut fold: F,
+    ) -> (Self, usize, R)
+    where
+        F: FnMut(R, &V) -> R,
+        P: Fn(&[u8]) -> bool,
+    {
+        let source_values = self.anchor.value_count;
+        let mut removed = 0usize;
+        let mut candidate = Self::new_with_barrier(self.anchor.dispose.clone());
+        candidate.with_write_cursor(|mut target| {
+            self.visit_topology(|path, value, is_leaf| {
+                if should_remove(path) {
+                    if value.is_some() {
+                        removed = removed
+                            .checked_add(1)
+                            .expect("removed PathMap endpoint count fits usize");
+                    }
+                    return;
+                }
+
+                target.move_to_path(path);
+                if let Some(value) = value {
+                    target.set_val(value.clone());
+                } else if is_leaf && !path.is_empty() {
+                    target.create_path();
+                }
+            });
+        });
+
+        let expected_retained = source_values
+            .checked_sub(removed)
+            .expect("a structural rebuild removes only resident guarded endpoints");
+        assert_eq!(
+            candidate.anchor.value_count, expected_retained,
+            "a rebuilt PathMap candidate carries exact endpoint authority",
+        );
+        assert_eq!(
+            candidate.iterative_value_count(),
+            expected_retained,
+            "an iterative candidate audit agrees with guarded endpoint authority",
+        );
+
+        let mut accumulator = Some(initial);
+        let mut folded = 0usize;
+        self.visit_topology(|path, value, _| {
+            if !should_remove(path) {
+                return;
+            }
+            if let Some(value) = value {
+                let current = accumulator
+                    .take()
+                    .expect("the structural-removal accumulator remains live");
+                accumulator = Some(fold(current, value));
+                folded = folded
+                    .checked_add(1)
+                    .expect("folded PathMap endpoint count fits usize");
+            }
+        });
+        assert_eq!(folded, removed, "every removed endpoint is folded exactly once");
+
+        (candidate, removed, accumulator.expect("the structural-removal accumulator is returned"))
+    }
+
     #[cfg(test)]
     pub(crate) fn anchor_identity(&self) -> usize { Arc::as_ptr(&self.anchor) as usize }
 
@@ -209,7 +399,7 @@ where
     ) -> R {
         operation(GuardedReadCursor {
             inner: self.map().read_zipper(),
-            dispose: &self.anchor.dispose,
+            _dispose: &self.anchor.dispose,
             barrier: PhantomData,
         })
     }
@@ -222,7 +412,7 @@ where
     ) -> R {
         operation(GuardedReadCursor {
             inner: self.map().read_zipper_at_borrowed_path(path),
-            dispose: &self.anchor.dispose,
+            _dispose: &self.anchor.dispose,
             barrier: PhantomData,
         })
     }
@@ -238,11 +428,20 @@ where
             .map
             .as_mut()
             .expect("a live PathMap anchor always contains its map");
-        operation(GuardedWriteCursor {
-            inner: map.write_zipper(),
-            dispose: &anchor.dispose,
-            barrier: PhantomData,
-        })
+        let value_count = &mut anchor.value_count;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            operation(GuardedWriteCursor {
+                inner: map.write_zipper(),
+                dispose: &anchor.dispose,
+                value_count,
+                barrier: PhantomData,
+            })
+        }));
+        anchor.normalize_live_empty();
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => resume_unwind(payload),
+        }
     }
 
     /// Prefix-rooted counterpart to [`Self::with_write_cursor`].
@@ -261,11 +460,20 @@ where
             .map
             .as_mut()
             .expect("a live PathMap anchor always contains its map");
-        operation(GuardedWriteCursor {
-            inner: map.write_zipper_at_path(path),
-            dispose: &anchor.dispose,
-            barrier: PhantomData,
-        })
+        let value_count = &mut anchor.value_count;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            operation(GuardedWriteCursor {
+                inner: map.write_zipper_at_path(path),
+                dispose: &anchor.dispose,
+                value_count,
+                barrier: PhantomData,
+            })
+        }));
+        anchor.normalize_live_empty();
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => resume_unwind(payload),
+        }
     }
 
     /// Canonical ACTree03 encoding without exposing the source zipper.
@@ -279,12 +487,23 @@ where
     /// stack-safe disposal path.  Returns whether a value was replaced.
     pub fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, value: V) -> bool {
         let anchor = self.fresh_map_mut();
-        match anchor.map_mut().set_val_at(path, value) {
+        let replaced = anchor
+            .map
+            .as_mut()
+            .expect("a live PathMap anchor always contains its map")
+            .set_val_at(path, value);
+        match replaced {
             Some(replaced) => {
                 anchor.dispose.dispose(replaced);
                 true
             }
-            None => false,
+            None => {
+                anchor.value_count = anchor
+                    .value_count
+                    .checked_add(1)
+                    .expect("guarded PathMap endpoint count fits usize");
+                false
+            }
         }
     }
 
@@ -298,21 +517,22 @@ where
     /// edge at a time.  Every detached value goes through the disposal policy.
     pub(crate) fn remove_val_at_and_prune<K: AsRef<[u8]>>(&mut self, path: K) -> bool {
         let path = path.as_ref();
-        let anchor = self.fresh_map_mut();
-        let removed = anchor.map_mut().remove_val_at(path, false);
-        let Some(removed) = removed else {
+        if self.get(path).is_none() {
             return false;
-        };
-        anchor.dispose.dispose(removed);
-        prune_dangling_path::<V, B>(anchor.map_mut(), path);
+        }
+
+        let (candidate, removed, ()) =
+            self.rebuild_filter_fold(|candidate_path| candidate_path == path, (), |(), _| ());
+        assert_eq!(removed, 1, "the preflighted exact endpoint is removed once");
+        *self = candidate;
         true
     }
 
-    /// Drain every value and edge rooted at `prefix` without detaching a raw
-    /// subtree.  `fold` observes each value immediately before its named
-    /// disposal, allowing metadata to be accumulated during the same walk.
-    /// The remaining prefix path is pruned toward the nearest live value/fork
-    /// in one-edge segments.
+    /// Remove every value and edge rooted at `prefix` by publishing a freshly
+    /// rebuilt, ownership-disjoint trie.  `fold` observes removed values on the
+    /// immutable source only after the candidate is complete and validated.
+    /// Publishing retires the old authority through the named stack-safe
+    /// disposal path once no alias retains it.
     pub(crate) fn remove_prefix_fold<K, R, F>(
         &mut self,
         prefix: K,
@@ -324,12 +544,17 @@ where
         F: FnMut(R, &V) -> R,
     {
         let prefix = prefix.as_ref();
-        let anchor = self.fresh_map_mut();
-        let map = anchor
-            .map
-            .as_mut()
-            .expect("a live PathMap anchor always contains its map");
-        drain_prefix_fold::<V, B, D, R, F>(map, prefix, &anchor.dispose, initial, fold)
+        if self.is_empty() || !self.path_exists(prefix) {
+            return (0, initial);
+        }
+
+        let (candidate, removed, accumulator) = self.rebuild_filter_fold(
+            |candidate_path| candidate_path.starts_with(prefix),
+            initial,
+            fold,
+        );
+        *self = candidate;
+        (removed, accumulator)
     }
 }
 
@@ -364,7 +589,7 @@ where
     B: TeardownBarrier<V> + 'static,
 {
     inner: ReadZipperUntracked<'map, 'path, V>,
-    dispose: &'map D,
+    _dispose: &'map D,
     barrier: PhantomData<fn() -> B>,
 }
 
@@ -411,20 +636,6 @@ where
 
     #[inline]
     pub(crate) fn to_next_get_val(&mut self) -> Option<&V> { self.inner.to_next_get_val() }
-
-    /// Snapshot the current focus directly into another guarded anchor.  The
-    /// disposer is cloned before PathMap creates the raw subtree, so a
-    /// panicking policy clone cannot strand a temporary raw owner.
-    pub(crate) fn guarded_focus_snapshot(&self) -> GuardedPathMap<V, D, B> {
-        let dispose = self.dispose.clone();
-        let root_value = self.inner.val().cloned();
-        let mut snapshot =
-            GuardedPathMap::from_map(self.inner.make_map().unwrap_or_default(), dispose);
-        if let Some(root_value) = root_value {
-            snapshot.set_val_at([], root_value);
-        }
-        snapshot
-    }
 }
 
 /// Restricted borrowed write cursor used by Bag bulk updates.
@@ -436,6 +647,7 @@ where
 {
     inner: WriteZipperUntracked<'map, 'path, V>,
     dispose: &'map D,
+    value_count: &'map mut usize,
     barrier: PhantomData<fn() -> B>,
 }
 
@@ -464,8 +676,16 @@ where
     pub(crate) fn set_val(&mut self, value: V) {
         if let Some(replaced) = self.inner.set_val(value) {
             self.dispose.dispose(replaced);
+        } else {
+            *self.value_count = self
+                .value_count
+                .checked_add(1)
+                .expect("guarded PathMap endpoint count fits usize");
         }
     }
+
+    #[inline]
+    pub(crate) fn create_path(&mut self) { self.inner.create_path(); }
 
     #[inline]
     pub(crate) fn descend_first_byte(&mut self) -> bool { self.inner.descend_first_byte() }
@@ -481,15 +701,42 @@ where
 
     /// Remove the focused value and prune only newly dangling logical edges.
     pub(crate) fn remove_val_and_prune(&mut self) -> bool {
-        let Some(removed) = self.inner.remove_val(false) else {
+        if !self.inner.is_val() {
             return false;
-        };
-        self.dispose.dispose(removed);
-        while !self.inner.at_root() && !self.inner.is_val() && self.inner.child_count() == 0 {
-            prune_one_edge::<V, B>(&mut self.inner);
         }
+        if self.inner.child_count() != 0 {
+            let removed = self
+                .inner
+                .remove_val(false)
+                .expect("a focused valued PathMap key contains its value");
+            *self.value_count = self
+                .value_count
+                .checked_sub(1)
+                .expect("a focused guarded value contributes one endpoint");
+            self.dispose.dispose(removed);
+            return true;
+        }
+        *self.value_count = self
+            .value_count
+            .checked_sub(1)
+            .expect("a focused guarded value contributes one endpoint");
+        let _ = remove_valued_leaf_and_bubble::<V, B, D>(
+            &mut self.inner,
+            ValuedLeafOrigin::Real,
+            None,
+            self.dispose,
+        );
         true
     }
+}
+
+impl<V, D, B> Drop for GuardedWriteCursor<'_, '_, V, D, B>
+where
+    V: Clone + Send + Sync + Unpin + 'static,
+    D: DisposeValue<V>,
+    B: TeardownBarrier<V> + 'static,
+{
+    fn drop(&mut self) { self.inner.reset(); }
 }
 
 impl<'a, V> Iterator for GuardedPathMapIter<'a, V>
@@ -519,20 +766,47 @@ struct NoopDrainObserver;
 
 impl DrainObserver for NoopDrainObserver {}
 
+fn advance_to_next_value<V>(zipper: &mut WriteZipperUntracked<'_, '_, V>) -> bool
+where V: Clone + Send + Sync + Unpin + 'static {
+    loop {
+        if zipper.descend_first_byte() {
+            if zipper.is_val() {
+                return true;
+            }
+            if zipper.descend_until() && zipper.is_val() {
+                return true;
+            }
+        } else {
+            loop {
+                if zipper.to_next_sibling_byte() {
+                    if zipper.is_val() {
+                        return true;
+                    }
+                    break;
+                }
+                zipper.ascend_byte();
+                if zipper.at_root() {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
 /// Empties `map` in reverse byte/postorder.  Each `prune_ascend` is bounded by
 /// a real or synthetic value at the immediate parent, so a detached physical
 /// subtrie can never span multiple logical edges.
-fn drain_pathmap<V, B, D>(map: &mut PathMap<V>, dispose: &D)
+fn drain_pathmap<V, B, D>(map: &mut PathMap<V>, dispose: &D) -> usize
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
     D: DisposeValue<V>,
 {
     let mut observer = NoopDrainObserver;
-    drain_pathmap_observed::<V, B, D, _>(map, dispose, &mut observer);
+    drain_pathmap_observed::<V, B, D, _>(map, dispose, &mut observer)
 }
 
-fn drain_pathmap_observed<V, B, D, O>(map: &mut PathMap<V>, dispose: &D, observer: &mut O)
+fn drain_pathmap_observed<V, B, D, O>(map: &mut PathMap<V>, dispose: &D, observer: &mut O) -> usize
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
@@ -540,148 +814,201 @@ where
     O: DrainObserver,
 {
     if map.is_empty() {
-        return;
+        return 0;
     }
 
+    // Phase A: visit real values in canonical byte preorder, remove only the
+    // value (never topology), and hand it to the named stack-safe disposer
+    // before the next zipper movement.  The cursor is reset and closed before
+    // Phase B is allowed to mutate topology.
+    let mut removed_values = 0usize;
     {
         let mut zipper = map.write_zipper();
         loop {
-            while zipper.descend_last_byte() {}
-
-            if let Some(value) = zipper.remove_val(false) {
+            if zipper.is_val() {
+                let removed = zipper
+                    .remove_val(false)
+                    .expect("a focused real PathMap endpoint contains its value");
+                removed_values = removed_values
+                    .checked_add(1)
+                    .expect("PathMap endpoint count fits usize");
                 observer.removed_value();
-                dispose.dispose(value);
+                dispose.dispose(removed);
             }
+            if !advance_to_next_value(&mut zipper) {
+                break;
+            }
+        }
+        zipper.reset();
+    }
+    debug_assert!(
+        map.read_zipper().into_iter().next().is_none(),
+        "Phase A must close with no remaining real value"
+    );
 
-            if zipper.at_root() {
+    if map.is_empty() {
+        return removed_values;
+    }
+
+    // Phase B: the provenance established above is value-free.  Walk topology
+    // in reverse byte/postorder and prune exactly one logical edge at a time.
+    // Synthetic barriers bound PathMap's prune_ascend without ever entering the
+    // real-value disposal policy.
+    let stats = {
+        let mut zipper = map.write_zipper();
+        let mut stats = BarrierPruneStats::default();
+        loop {
+            while zipper.descend_last_byte() {}
+            if zipper.at_root() && !zipper.is_val() && zipper.child_count() == 0 {
                 break;
             }
 
-            let child_byte = *zipper
-                .path()
-                .last()
-                .expect("a non-root zipper focus has a final path byte");
-            let ascended = zipper.ascend_byte();
-            debug_assert!(ascended);
-
-            let installed_barrier = !zipper.is_val();
-            if installed_barrier {
-                let replaced = zipper.set_val(B::make_barrier());
-                debug_assert!(replaced.is_none());
-                observer.installed_barrier();
-            }
-
-            let descended = zipper.descend_to_existing_byte(child_byte);
-            debug_assert!(descended);
-            let width = zipper.prune_ascend();
-            observer.pruned(width);
-            debug_assert_eq!(width, 1, "the parent barrier must limit pruning to one byte");
-
-            if installed_barrier {
-                let barrier = zipper
-                    .remove_val(false)
-                    .expect("the temporary teardown barrier must remain at its parent");
-                B::discard_barrier(barrier);
-                observer.removed_barrier();
-            }
+            debug_assert!(!zipper.is_val(), "Phase B starts from value-free provenance");
+            let replaced = zipper.set_val(SyntheticBarrier::<V, B>::new().into_value());
+            debug_assert!(replaced.is_none());
+            stats.installed_barriers += 1;
+            let step = remove_valued_leaf_and_bubble::<V, B, D>(
+                &mut zipper,
+                ValuedLeafOrigin::Synthetic,
+                None,
+                dispose,
+            );
+            stats.real_values += step.real_values;
+            stats.pruned_edges += step.pruned_edges;
+            stats.installed_barriers += step.installed_barriers;
+            stats.retired_barriers += step.retired_barriers;
         }
-    }
+        zipper.reset();
+        stats
+    };
 
     debug_assert!(map.is_empty());
+    debug_assert_eq!(stats.real_values, 0, "Phase B must never consume a real value");
+    for _ in 0..stats.installed_barriers {
+        observer.installed_barrier();
+    }
+    for _ in 0..stats.pruned_edges {
+        observer.pruned(1);
+    }
+    for _ in 0..stats.retired_barriers {
+        observer.removed_barrier();
+    }
+    removed_values
 }
 
-/// Remove the empty focus at `path` toward the nearest retained value or fork.
-/// A real or synthetic parent value bounds every prune to exactly one byte.
-fn prune_dangling_path<V, B>(map: &mut PathMap<V>, path: &[u8])
-where
-    V: Clone + Send + Sync + Unpin + 'static,
-    B: TeardownBarrier<V>,
-{
-    let mut zipper = map.write_zipper();
-    zipper.descend_to(path);
-    if !zipper.path_exists() || zipper.is_val() || zipper.child_count() != 0 {
-        return;
-    }
-    loop {
-        if zipper.at_root() || zipper.is_val() || zipper.child_count() != 0 {
-            break;
-        }
-        prune_one_edge::<V, B>(&mut zipper);
-    }
-}
-
-/// Drain only the subtree rooted at `prefix`, returning its real value count
-/// and the caller's single-pass metadata fold.
-fn drain_prefix_fold<V, B, D, R, F>(
-    map: &mut PathMap<V>,
-    prefix: &[u8],
+fn remove_valued_leaf_and_bubble<V, B, D>(
+    zipper: &mut WriteZipperUntracked<'_, '_, V>,
+    mut origin: ValuedLeafOrigin,
+    floor_depth: Option<usize>,
     dispose: &D,
-    mut accumulator: R,
-    mut fold: F,
-) -> (usize, R)
+) -> BarrierPruneStats
 where
     V: Clone + Send + Sync + Unpin + 'static,
     B: TeardownBarrier<V>,
     D: DisposeValue<V>,
-    F: FnMut(R, &V) -> R,
 {
-    let mut removed = 0;
-    let mut zipper = map.write_zipper();
-    zipper.descend_to(prefix);
-    if !zipper.path_exists() {
-        return (0, accumulator);
-    }
-    let prefix_depth = zipper.path().len();
+    debug_assert!(zipper.path_exists());
+    debug_assert!(zipper.is_val());
+    debug_assert_eq!(zipper.child_count(), 0);
+    let mut stats = BarrierPruneStats::default();
+
     loop {
-        while zipper.descend_last_byte() {}
-        if let Some(value) = zipper.remove_val(false) {
-            removed += 1;
-            accumulator = fold(accumulator, &value);
-            dispose.dispose(value);
-        }
-        if zipper.path().len() == prefix_depth {
+        if zipper.at_root() {
+            let removed = zipper
+                .remove_val(false)
+                .expect("the carried valued leaf remains present at the root");
+            match origin {
+                ValuedLeafOrigin::Real => {
+                    dispose.dispose(removed);
+                    stats.real_values += 1;
+                }
+                ValuedLeafOrigin::Synthetic => {
+                    SyntheticBarrier::<V, B>::retire(removed);
+                    stats.retired_barriers += 1;
+                }
+            }
             break;
         }
-        prune_one_edge::<V, B>(&mut zipper);
-    }
-    while !zipper.at_root() && !zipper.is_val() && zipper.child_count() == 0 {
-        prune_one_edge::<V, B>(&mut zipper);
-    }
-    (removed, accumulator)
-}
 
-/// Prune the empty edge at the current focus and leave the zipper at its
-/// immediate parent.  The temporary barrier prevents PathMap from recursively
-/// pruning beyond that one logical edge.
-fn prune_one_edge<V, B>(zipper: &mut WriteZipperUntracked<'_, '_, V>)
-where
-    V: Clone + Send + Sync + Unpin + 'static,
-    B: TeardownBarrier<V>,
-{
-    debug_assert!(!zipper.at_root());
-    debug_assert!(!zipper.is_val());
-    debug_assert_eq!(zipper.child_count(), 0);
-    let child_byte = *zipper
-        .path()
-        .last()
-        .expect("a non-root zipper focus has a final path byte");
-    let ascended = zipper.ascend_byte();
-    debug_assert!(ascended);
-    let installed_barrier = !zipper.is_val();
-    if installed_barrier {
-        let replaced = zipper.set_val(B::make_barrier());
-        debug_assert!(replaced.is_none());
+        let child_byte = *zipper
+            .path()
+            .last()
+            .expect("a non-root valued leaf has a final path byte");
+        let child_depth = zipper.path().len();
+        let ascended = zipper.ascend_byte();
+        debug_assert!(ascended);
+        let parent_depth = zipper.path().len();
+        debug_assert_eq!(child_depth, parent_depth + 1);
+        if let Some(floor_depth) = floor_depth {
+            debug_assert!(parent_depth >= floor_depth);
+        }
+        let reached_floor = floor_depth == Some(parent_depth);
+        let parent_had_real_value = zipper.is_val();
+        let parent_had_surviving_fork = zipper.child_count() > 1;
+        let parent_origin = if parent_had_real_value {
+            ValuedLeafOrigin::Real
+        } else {
+            let replaced = zipper.set_val(SyntheticBarrier::<V, B>::new().into_value());
+            debug_assert!(replaced.is_none());
+            stats.installed_barriers += 1;
+            ValuedLeafOrigin::Synthetic
+        };
+
+        let descended = zipper.descend_to_existing_byte(child_byte);
+        debug_assert!(descended);
+        debug_assert_eq!(zipper.path().len(), child_depth);
+        debug_assert!(zipper.is_val());
+        debug_assert_eq!(zipper.child_count(), 0);
+        match origin {
+            ValuedLeafOrigin::Real => {
+                let removed = zipper
+                    .remove_val(true)
+                    .expect("bounded real pruning starts from a valued leaf");
+                dispose.dispose(removed);
+                stats.real_values += 1;
+                if zipper.path_exists() {
+                    debug_assert!(!zipper.is_val());
+                    debug_assert_eq!(zipper.child_count(), 0);
+                    let pruned = zipper.prune_ascend();
+                    debug_assert_eq!(pruned, 1);
+                    stats.pruned_edges += pruned;
+                } else {
+                    let ascended = zipper.ascend_byte();
+                    debug_assert!(ascended);
+                    stats.pruned_edges += 1;
+                }
+            }
+            ValuedLeafOrigin::Synthetic => {
+                let removed = zipper
+                    .remove_val(false)
+                    .expect("bounded synthetic pruning starts from a valued leaf");
+                SyntheticBarrier::<V, B>::retire(removed);
+                stats.retired_barriers += 1;
+                let pruned = zipper.prune_ascend();
+                debug_assert_eq!(pruned, 1);
+                stats.pruned_edges += pruned;
+            }
+        }
+        debug_assert_eq!(zipper.path().len(), parent_depth);
+        debug_assert!(zipper.is_val());
+
+        if reached_floor || parent_had_real_value || parent_had_surviving_fork {
+            if matches!(parent_origin, ValuedLeafOrigin::Synthetic) {
+                let barrier = zipper
+                    .remove_val(false)
+                    .expect("the temporary synthetic parent remains at the stopping frame");
+                SyntheticBarrier::<V, B>::retire(barrier);
+                stats.retired_barriers += 1;
+            }
+            break;
+        }
+
+        debug_assert!(matches!(parent_origin, ValuedLeafOrigin::Synthetic));
+        debug_assert_eq!(zipper.child_count(), 0);
+        origin = ValuedLeafOrigin::Synthetic;
     }
-    let descended = zipper.descend_to_existing_byte(child_byte);
-    debug_assert!(descended);
-    let width = zipper.prune_ascend();
-    debug_assert_eq!(width, 1, "the parent barrier must limit pruning to one byte");
-    if installed_barrier {
-        let barrier = zipper
-            .remove_val(false)
-            .expect("the temporary teardown barrier must remain at its parent");
-        B::discard_barrier(barrier);
-    }
+
+    stats
 }
 
 #[cfg(test)]
@@ -846,7 +1173,210 @@ mod tests {
     }
 
     #[test]
-    fn root_and_dense_children_drain_in_exact_reverse_postorder_on_256k_stack() {
+    fn live_emptying_normalizes_to_canonical_fresh_root_and_reopens_writes() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+
+        guarded.set_val_at([0x11], Probe::tracked(1, &tracking));
+        assert!(guarded.remove_val_at_and_prune([0x11]));
+        assert!(guarded.is_empty());
+        assert_eq!(guarded.iter().count(), 0);
+        guarded.with_read_cursor(|cursor| {
+            assert_eq!(cursor.val_count(), 0);
+            assert_eq!(cursor.child_mask().iter().count(), 0);
+        });
+        let fresh = guarded_probe_map(&tracking, &order);
+        assert_eq!(
+            guarded.compact_u64_bytes(|probe| probe.id as u64),
+            fresh.compact_u64_bytes(|probe| probe.id as u64),
+            "a returned empty live root has the canonical fresh ACT image"
+        );
+
+        guarded.set_val_at([0x22, 0x33], Probe::tracked(2, &tracking));
+        assert_eq!(guarded.get([0x22, 0x33]).map(|probe| probe.id), Some(2));
+        assert!(guarded.remove_val_at_and_prune([0x22, 0x33]));
+        assert!(guarded.is_empty());
+        assert_eq!(guarded.iter().count(), 0);
+        guarded.with_read_cursor(|cursor| {
+            assert_eq!(cursor.val_count(), 0);
+            assert_eq!(
+                cursor.child_mask().iter().count(),
+                0,
+                "arbitrary empty/insert/remove cycles return a fresh live root"
+            );
+        });
+
+        guarded.set_val_at([0x44], Probe::tracked(3, &tracking));
+        assert_eq!(guarded.get([0x44]).map(|probe| probe.id), Some(3));
+    }
+
+    #[test]
+    fn unwinding_writer_resets_and_normalizes_before_resuming_the_panic() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        guarded.set_val_at([0x11], Probe::tracked(1, &tracking));
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            guarded.with_write_cursor(|mut cursor| {
+                cursor.move_to_path(&[0x11]);
+                assert!(cursor.remove_val_and_prune());
+                panic!("injected writer unwind after final removal");
+            });
+        }));
+        assert!(result.is_err());
+        assert!(guarded.is_empty());
+        guarded.with_read_cursor(|cursor| {
+            assert_eq!(cursor.val_count(), 0);
+            assert_eq!(cursor.child_mask().iter().count(), 0);
+        });
+
+        guarded.set_val_at([0x22], Probe::tracked(2, &tracking));
+        assert_eq!(guarded.get([0x22]).map(|probe| probe.id), Some(2));
+    }
+
+    #[test]
+    fn coherent_exact_removal_preserves_same_node_sibling_in_both_clone_drop_orders() {
+        for drop_snapshot_first in [false, true] {
+            let tracking = Arc::new(ProbeTracking::default());
+            let order = Arc::new(Mutex::new(Vec::new()));
+            let shared_prefix = vec![0xA5; 4_096];
+            let mut selected = shared_prefix.clone();
+            selected.push(0x11);
+            let mut sibling = shared_prefix.clone();
+            sibling.push(0x22);
+
+            let mut guarded = guarded_probe_map(&tracking, &order);
+            guarded.set_val_at(&selected, Probe::tracked(1, &tracking));
+            guarded.set_val_at(&sibling, Probe::tracked(2, &tracking));
+            let snapshot = guarded.clone();
+
+            assert!(guarded.remove_val_at_and_prune(&selected));
+            assert!(guarded.get(&selected).is_none());
+            assert_eq!(guarded.get(&sibling).map(|probe| probe.id), Some(2));
+            assert_eq!(snapshot.get(&selected).map(|probe| probe.id), Some(1));
+            assert_eq!(snapshot.get(&sibling).map(|probe| probe.id), Some(2));
+
+            if drop_snapshot_first {
+                drop(snapshot);
+                assert_eq!(guarded.get(&sibling).map(|probe| probe.id), Some(2));
+            } else {
+                drop(guarded);
+                assert_eq!(snapshot.get(&selected).map(|probe| probe.id), Some(1));
+                assert_eq!(snapshot.get(&sibling).map(|probe| probe.id), Some(2));
+            }
+        }
+    }
+
+    #[test]
+    fn exact_rholang_key_geometry_preserves_every_sibling_order_and_cow_image() {
+        for selected_is_lower in [false, true] {
+            for selected_inserted_first in [false, true] {
+                for shared in [false, true] {
+                    let drop_orders: &[bool] = if shared { &[false, true] } else { &[false] };
+                    for &drop_snapshot_first in drop_orders {
+                        let tracking = Arc::new(ProbeTracking::default());
+                        let order = Arc::new(Mutex::new(Vec::new()));
+                        let mut selected = vec![0xA5; 939];
+                        let mut sibling = selected.clone();
+                        if selected_is_lower {
+                            selected[203] = 0x11;
+                            sibling[203] = 0x22;
+                        } else {
+                            selected[203] = 0x22;
+                            sibling[203] = 0x11;
+                        }
+                        assert_eq!(
+                            selected
+                                .iter()
+                                .zip(&sibling)
+                                .take_while(|(a, b)| a == b)
+                                .count(),
+                            203
+                        );
+                        assert_eq!(selected.len() - 203, 736);
+
+                        let mut guarded = guarded_probe_map(&tracking, &order);
+                        if selected_inserted_first {
+                            guarded.set_val_at(&selected, Probe::tracked(1, &tracking));
+                            guarded.set_val_at(&sibling, Probe::tracked(2, &tracking));
+                        } else {
+                            guarded.set_val_at(&sibling, Probe::tracked(2, &tracking));
+                            guarded.set_val_at(&selected, Probe::tracked(1, &tracking));
+                        }
+                        let snapshot = shared.then(|| guarded.clone());
+
+                        assert!(guarded.remove_val_at_and_prune(&selected));
+                        assert!(!guarded.path_exists(&selected));
+                        assert_eq!(guarded.get(&sibling).map(|probe| probe.id), Some(2));
+                        if let Some(snapshot) = snapshot {
+                            assert_eq!(snapshot.get(&selected).map(|probe| probe.id), Some(1));
+                            assert_eq!(snapshot.get(&sibling).map(|probe| probe.id), Some(2));
+                            if drop_snapshot_first {
+                                drop(snapshot);
+                                assert_eq!(guarded.get(&sibling).map(|probe| probe.id), Some(2));
+                                drop(guarded);
+                            } else {
+                                drop(guarded);
+                                assert_eq!(snapshot.get(&selected).map(|probe| probe.id), Some(1));
+                                assert_eq!(snapshot.get(&sibling).map(|probe| probe.id), Some(2));
+                                drop(snapshot);
+                            }
+                        } else {
+                            drop(guarded);
+                        }
+                        assert_eq!(
+                            tracking.drops.load(Ordering::Relaxed),
+                            2 + tracking.clones.load(Ordering::Relaxed),
+                            "every real payload instance is disposed exactly once"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_removal_cleans_real_values_installed_over_explicit_topology() {
+        for selected_inserted_first in [false, true] {
+            for shared in [false, true] {
+                let tracking = Arc::new(ProbeTracking::default());
+                let order = Arc::new(Mutex::new(Vec::new()));
+                let selected = [99, 57, 210];
+                let sibling = [99, 55];
+                let mut guarded = guarded_probe_map(&tracking, &order);
+
+                if selected_inserted_first {
+                    assert!(guarded.create_path(selected));
+                    guarded.set_val_at(selected, Probe::tracked(1, &tracking));
+                    guarded.set_val_at(sibling, Probe::tracked(2, &tracking));
+                } else {
+                    guarded.set_val_at(sibling, Probe::tracked(2, &tracking));
+                    assert!(guarded.create_path(selected));
+                    guarded.set_val_at(selected, Probe::tracked(1, &tracking));
+                }
+                let snapshot = shared.then(|| guarded.clone());
+
+                assert!(guarded.remove_val_at_and_prune(selected));
+                assert!(!guarded.path_exists(selected));
+                assert_eq!(guarded.get(sibling).map(|probe| probe.id), Some(2));
+                if let Some(snapshot) = snapshot {
+                    assert_eq!(snapshot.get(selected).map(|probe| probe.id), Some(1));
+                    assert_eq!(snapshot.get(sibling).map(|probe| probe.id), Some(2));
+                    drop(snapshot);
+                }
+                drop(guarded);
+                assert_eq!(
+                    tracking.drops.load(Ordering::Relaxed),
+                    2 + tracking.clones.load(Ordering::Relaxed)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn root_and_dense_children_drain_in_exact_byte_preorder_on_256k_stack() {
         small_stack(|| {
             let tracking = Arc::new(ProbeTracking::default());
             let order = Arc::new(Mutex::new(Vec::new()));
@@ -857,8 +1387,8 @@ mod tests {
             }
             drop(guarded);
 
-            let mut expected: Vec<_> = (0..=255).rev().collect();
-            expected.push(256);
+            let mut expected = vec![256];
+            expected.extend(0..=255);
             assert_eq!(*order.lock().unwrap(), expected);
             assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
             assert_eq!(tracking.drops.load(Ordering::Relaxed), 257);
@@ -894,6 +1424,23 @@ mod tests {
     }
 
     #[test]
+    fn explicit_value_free_sibling_topology_is_pruned_one_parent_bounded_byte_at_a_time() {
+        struct UnitBarrier;
+        impl TeardownBarrier<()> for UnitBarrier {
+            fn make_barrier() {}
+        }
+
+        let mut topology = PathMap::<()>::new();
+        topology.create_path([99, 57, 210]);
+        topology.create_path([99, 55]);
+        let stats = drain_with_stats::<_, UnitBarrier, _>(&mut topology, |_| {});
+        assert_eq!(stats.values, 0);
+        assert_eq!(stats.edges, 4);
+        assert_eq!(stats.widest_prune, 1);
+        assert!(topology.is_empty());
+    }
+
+    #[test]
     fn guarded_topology_only_line_uses_final_anchor_teardown_on_256k_stack() {
         small_stack(|| {
             const DEPTH: usize = 65_536;
@@ -915,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn deep_comb_drain_is_stack_bounded_and_reverse_postorder() {
+    fn deep_comb_drain_is_stack_bounded_and_byte_preorder() {
         small_stack(|| {
             const DEPTH: usize = 4_096;
             let tracking = Arc::new(ProbeTracking::default());
@@ -931,7 +1478,7 @@ mod tests {
             guarded.set_val_at(&spine, Probe::tracked(DEPTH, &tracking));
             drop(guarded);
 
-            assert_eq!(*order.lock().unwrap(), (0..=DEPTH).collect::<Vec<_>>());
+            assert_eq!(*order.lock().unwrap(), (0..=DEPTH).rev().collect::<Vec<_>>());
             assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
             assert_eq!(tracking.drops.load(Ordering::Relaxed), DEPTH + 1);
         });
@@ -1020,11 +1567,23 @@ mod tests {
         assert!(!guarded.path_exists([1]));
         assert_eq!(guarded.get([]).map(|probe| probe.id), Some(0));
         assert_eq!(guarded.get([2]).map(|probe| probe.id), Some(3));
-        assert_eq!(*order.lock().unwrap(), vec![2, 1]);
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec![0, 1, 2, 3],
+            "publishing a disjoint candidate retires the unique source in byte preorder"
+        );
 
         drop(guarded);
-        assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
-        assert_eq!(tracking.drops.load(Ordering::Relaxed), 4);
+        assert_eq!(
+            tracking.clones.load(Ordering::Relaxed),
+            2,
+            "the two outside-prefix endpoints are cloned exactly once"
+        );
+        assert_eq!(
+            tracking.drops.load(Ordering::Relaxed),
+            4 + tracking.clones.load(Ordering::Relaxed),
+            "every original and rebuilt payload instance is disposed exactly once"
+        );
     }
 
     #[test]
@@ -1054,8 +1613,16 @@ mod tests {
             assert_eq!(guarded.get([5, 0]).map(|probe| probe.id), Some(10_001));
 
             drop(guarded);
-            assert_eq!(tracking.clones.load(Ordering::Relaxed), 0);
-            assert_eq!(tracking.drops.load(Ordering::Relaxed), DEPTH + 3);
+            assert_eq!(
+                tracking.clones.load(Ordering::Relaxed),
+                2,
+                "only the two outside-prefix endpoints are cloned"
+            );
+            assert_eq!(
+                tracking.drops.load(Ordering::Relaxed),
+                DEPTH + 3 + tracking.clones.load(Ordering::Relaxed),
+                "every original and retained payload instance is disposed exactly once"
+            );
         });
     }
 
@@ -1080,7 +1647,32 @@ mod tests {
         assert_eq!(guarded.get([4, 6]).map(|probe| probe.id), Some(5));
         assert!(!guarded.path_exists([4, 5]));
         drop(guarded);
-        assert_eq!(tracking.drops.load(Ordering::Relaxed), 5);
+        assert_eq!(
+            tracking.clones.load(Ordering::Relaxed),
+            7,
+            "each structural rebuild clones exactly its retained endpoints"
+        );
+        assert_eq!(
+            tracking.drops.load(Ordering::Relaxed),
+            5 + tracking.clones.load(Ordering::Relaxed),
+            "every original and rebuilt payload instance is disposed exactly once"
+        );
+    }
+
+    #[test]
+    fn exact_removal_of_an_internal_value_preserves_all_descendants() {
+        let tracking = Arc::new(ProbeTracking::default());
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut guarded = guarded_probe_map(&tracking, &order);
+        guarded.set_val_at([1], Probe::tracked(1, &tracking));
+        guarded.set_val_at([1, 2], Probe::tracked(2, &tracking));
+        guarded.set_val_at([1, 3, 4], Probe::tracked(3, &tracking));
+
+        assert!(guarded.remove_val_at_and_prune([1]));
+        assert!(guarded.get([1]).is_none());
+        assert!(guarded.path_exists([1]));
+        assert_eq!(guarded.get([1, 2]).map(|probe| probe.id), Some(2));
+        assert_eq!(guarded.get([1, 3, 4]).map(|probe| probe.id), Some(3));
     }
 
     #[test]
@@ -1106,6 +1698,72 @@ mod tests {
         drop(right);
         let instances = 3 + tracking.clones.load(Ordering::Relaxed);
         assert_eq!(tracking.drops.load(Ordering::Relaxed), instances);
+    }
+
+    #[test]
+    fn value_free_prefix_drain_never_holds_more_than_two_synthetic_barriers() {
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Clone)]
+        struct BarrierValue {
+            id: usize,
+            synthetic: bool,
+        }
+
+        struct PeakBarrier;
+        impl TeardownBarrier<BarrierValue> for PeakBarrier {
+            fn make_barrier() -> BarrierValue {
+                let active = ACTIVE.fetch_add(1, Ordering::SeqCst) + 1;
+                PEAK.fetch_max(active, Ordering::SeqCst);
+                BarrierValue {
+                    id: usize::MAX,
+                    synthetic: true,
+                }
+            }
+
+            fn discard_barrier(barrier: BarrierValue) {
+                assert!(barrier.synthetic);
+                assert!(ACTIVE.fetch_sub(1, Ordering::SeqCst) > 0);
+            }
+        }
+
+        ACTIVE.store(0, Ordering::SeqCst);
+        PEAK.store(0, Ordering::SeqCst);
+        let dispose = TestDisposer(|value: BarrierValue| {
+            assert!(!value.synthetic);
+            assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        });
+        let mut guarded = GuardedPathMap::<BarrierValue, _, PeakBarrier>::new_with_barrier(dispose);
+        guarded.set_val_at([3], BarrierValue {
+            id: 3,
+            synthetic: false,
+        });
+        guarded.set_val_at([4, 7], BarrierValue {
+            id: 7,
+            synthetic: false,
+        });
+        assert!(guarded.create_path([4, 9, 8]));
+        guarded.set_val_at([5], BarrierValue {
+            id: 5,
+            synthetic: false,
+        });
+
+        let (removed, ids) = guarded.remove_prefix_fold([4], Vec::new(), |mut ids, value| {
+            assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+            ids.push(value.id);
+            ids
+        });
+        assert_eq!(removed, 1);
+        assert_eq!(ids, vec![7]);
+        assert!(!guarded.path_exists([4]));
+        assert_eq!(guarded.get([3]).map(|value| value.id), Some(3));
+        assert_eq!(guarded.get([5]).map(|value| value.id), Some(5));
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        assert!(
+            PEAK.load(Ordering::SeqCst) <= 2,
+            "the explicit prefix floor permits at most a child and temporary floor barrier"
+        );
     }
 
     #[test]
@@ -1234,12 +1892,72 @@ mod tests {
         assert_eq!(events.0, vec![
             Event::Value,
             Event::Install,
-            Event::Prune(1),
-            Event::Remove,
+            Event::Install,
             Event::Install,
             Event::Prune(1),
+            Event::Prune(1),
+            Event::Remove,
+            Event::Remove,
             Event::Remove,
         ]);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn payload_and_observer_callbacks_never_run_while_a_synthetic_barrier_is_live() {
+        static ACTIVE_BARRIERS: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Clone)]
+        struct BarrierValue {
+            synthetic: bool,
+        }
+
+        struct CountingBarrier;
+        impl TeardownBarrier<BarrierValue> for CountingBarrier {
+            fn make_barrier() -> BarrierValue {
+                ACTIVE_BARRIERS.fetch_add(1, Ordering::SeqCst);
+                BarrierValue { synthetic: true }
+            }
+
+            fn discard_barrier(barrier: BarrierValue) {
+                assert!(barrier.synthetic);
+                assert!(ACTIVE_BARRIERS.fetch_sub(1, Ordering::SeqCst) > 0);
+            }
+        }
+
+        struct BarrierFreeObserver;
+        impl DrainObserver for BarrierFreeObserver {
+            fn removed_value(&mut self) {
+                assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
+            }
+
+            fn pruned(&mut self, _width: usize) {
+                assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
+            }
+
+            fn installed_barrier(&mut self) {
+                assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
+            }
+
+            fn removed_barrier(&mut self) {
+                assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
+            }
+        }
+
+        ACTIVE_BARRIERS.store(0, Ordering::SeqCst);
+        let mut map = PathMap::new();
+        map.set_val_at([1, 2], BarrierValue { synthetic: false });
+        let dispose = TestDisposer(|value: BarrierValue| {
+            assert!(!value.synthetic);
+            assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
+        });
+        let mut observer = BarrierFreeObserver;
+        drain_pathmap_observed::<BarrierValue, CountingBarrier, _, _>(
+            &mut map,
+            &dispose,
+            &mut observer,
+        );
+        assert_eq!(ACTIVE_BARRIERS.load(Ordering::SeqCst), 0);
         assert!(map.is_empty());
     }
 
@@ -1352,7 +2070,7 @@ mod tests {
                     expected_values.push(path.clone());
                 }
             }
-            expected_values.sort_by(|left, right| right.cmp(left));
+            expected_values.sort();
 
             let disposed = Arc::new(Mutex::new(Vec::new()));
             let observed = Arc::clone(&disposed);
@@ -1385,3 +2103,7 @@ mod tests {
         assert!(!bag_source.contains("entries: PathMap<"));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/guarded_pathmap/two_phase_teardown_properties.rs"]
+mod two_phase_teardown_properties;

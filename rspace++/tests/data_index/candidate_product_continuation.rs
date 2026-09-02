@@ -252,6 +252,7 @@ impl ProductFixture {
         Self {
             pool: CandidatePool {
                 authority: availability,
+                excluded: Bag::new(),
                 reserved: Bag::new(),
                 ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
                 positions,
@@ -406,6 +407,7 @@ fn terminal_endpoint_is_scanned_at_the_live_product_cursor() {
     assert!(!positions.insert(&terminator_endpoint, CandidatePosition::from_index(0)));
     let pool = CandidatePool {
         authority: availability,
+        excluded: Bag::new(),
         reserved: Bag::new(),
         ordered: Vec::<CandidatePoolEntry<()>>::new().into(),
         positions,
@@ -687,6 +689,28 @@ fn production_candidate_lane_cannot_regain_owned_subtree_checkpoints() {
         "capture_slots: &mut [Option<usize>]",
     ] {
         assert!(lane.contains(required), "missing candidate-lane invariant: {required}");
+    }
+}
+
+#[test]
+fn production_candidate_authority_cannot_own_an_interior_pathmap_focus() {
+    let index_source = include_str!("../../src/rspace/data_index.rs");
+    assert!(
+        !index_source.contains("guarded_focus_snapshot"),
+        "candidate construction must use the independently rebuilt catalog Bag"
+    );
+    let guard_source = include_str!("../../src/rspace/guarded_pathmap.rs");
+    assert!(
+        !guard_source.contains("fn guarded_focus_snapshot"),
+        "the guarded facade must not expose an owned interior PathMap header"
+    );
+    for required in
+        ["availability: Bag", "let availability = Bag::try_from_sorted_unique", "excluded: Bag"]
+    {
+        assert!(
+            index_source.contains(required),
+            "missing candidate-authority isolation invariant: {required}"
+        );
     }
 }
 

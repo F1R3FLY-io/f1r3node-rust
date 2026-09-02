@@ -16,6 +16,8 @@ pub enum BagError {
     MultiplicityOverflow { current: u64, added: u64 },
     MultiplicityProductOverflow { current: u64, factor: u64 },
     InsufficientMultiplicity { available: u64, requested: u64 },
+    DistinctCountOverflow,
+    CardinalityOverflow { current: u128, added: u64 },
 }
 
 impl fmt::Display for BagError {
@@ -35,6 +37,10 @@ impl fmt::Display for BagError {
                 f,
                 "insufficient bag multiplicity: requested {requested}, available {available}"
             ),
+            Self::DistinctCountOverflow => f.write_str("bag distinct count exceeds usize::MAX"),
+            Self::CardinalityOverflow { current, added } => {
+                write!(f, "bag cardinality overflow: {current} + {added}")
+            }
         }
     }
 }
@@ -460,14 +466,21 @@ impl Bag {
     pub fn remove_many(&mut self, path: &[u8], amount: Multiplicity) -> Option<Multiplicity> {
         let current = self.entries.get(path).copied()?;
         let removed = current.get().min(amount.get());
-        self.exact_cardinality -= u128::from(removed);
         if removed == current.get() {
-            self.entries.remove_val_at_and_prune(path);
-            self.distinct_len -= 1;
+            let mut removal = Self::new();
+            removal
+                .insert_many(
+                    path,
+                    Multiplicity::new(removed).expect("a resident Bag count removes positively"),
+                )
+                .expect("a singleton removal Bag cannot overflow");
+            *self = self.subtract(&removal);
             None
         } else {
             let next = Multiplicity(current.get() - removed);
-            self.entries.set_val_at(path, next);
+            let replaced = self.entries.set_val_at(path, next);
+            debug_assert!(replaced, "the preflighted Bag endpoint remains in the candidate");
+            self.exact_cardinality -= u128::from(removed);
             Some(next)
         }
     }
@@ -488,52 +501,120 @@ impl Bag {
                     requested: amount.get(),
                 })?;
         let next = current.checked_sub(amount)?;
-        self.exact_cardinality -= u128::from(amount.get());
-        match next {
-            Some(next) => {
-                self.entries.set_val_at(path, next);
-                Ok(Some(next))
-            }
-            None => {
-                self.entries.remove_val_at_and_prune(path);
-                self.distinct_len -= 1;
-                Ok(None)
-            }
+        if let Some(next) = next {
+            let replaced = self.entries.set_val_at(path, next);
+            debug_assert!(replaced, "the preflighted Bag endpoint remains in the candidate");
+            self.exact_cardinality -= u128::from(amount.get());
+            return Ok(Some(next));
         }
+        let mut removal = Self::new();
+        removal
+            .insert_many(path, amount)
+            .expect("a singleton removal Bag cannot overflow");
+        *self = self.subtract(&removal);
+        Ok(next)
+    }
+
+    fn rebuild_without_prefix(&self, prefix: &[u8]) -> (Self, usize, u128) {
+        let mut removed_distinct = 0usize;
+        let mut removed_cardinality = 0u128;
+        let retained = self
+            .with_read_cursor(|mut source| {
+                Self::try_from_sorted_unique(|writer| {
+                    let mut replay = |path: &[u8], multiplicity: Multiplicity| {
+                        if path.starts_with(prefix) {
+                            removed_distinct = removed_distinct
+                                .checked_add(1)
+                                .expect("a removed resident endpoint fits usize");
+                            removed_cardinality = removed_cardinality
+                                .checked_add(u128::from(multiplicity.get()))
+                                .expect(
+                                    "removed resident multiplicities fit exact u128 cardinality",
+                                );
+                            Ok(())
+                        } else {
+                            writer.push(path, multiplicity)
+                        }
+                    };
+
+                    if let Some(multiplicity) = source.val().copied() {
+                        replay(source.path(), multiplicity)?;
+                    }
+                    while let Some(multiplicity) = source.to_next_get_val().copied() {
+                        replay(source.path(), multiplicity)?;
+                    }
+                    Ok::<(), SortedUniqueBagError>(())
+                })
+            })
+            .expect("a retained canonical Bag stream remains sorted and within resident metrics");
+        (retained, removed_distinct, removed_cardinality)
     }
 
     pub fn remove_prefix(&mut self, prefix: &[u8]) -> (usize, u64) {
-        let (removed_distinct, removed_cardinality) =
-            self.entries
-                .remove_prefix_fold(prefix, 0_u128, |cardinality, multiplicity| {
-                    cardinality + u128::from(multiplicity.get())
-                });
-        if removed_distinct != 0 {
-            self.distinct_len -= removed_distinct;
-            self.exact_cardinality -= removed_cardinality;
+        if self.is_empty() || !self.entries.path_exists(prefix) {
+            return (0, 0);
         }
+
+        // Structural deletion publishes an independently owned trie.  A
+        // PathMap header clone is intentionally insufficient here: destructive
+        // pruning may traverse compressed physical nodes shared by immutable
+        // versions.  Stream the retained canonical endpoints through one
+        // moving writer zipper; no key collection or sorting pass is created.
+        let (retained, removed_distinct, removed_cardinality) = self.rebuild_without_prefix(prefix);
+        debug_assert_ne!(removed_distinct, 0);
+        *self = retained;
         (removed_distinct, Self::project_cardinality(removed_cardinality))
     }
 
     /// Replace one absolute trie prefix from a prepared channel-relative Bag.
     ///
     /// Preparation is complete before this method is entered.  Publication
-    /// therefore contains no fallible semantic step: the old channel subtrie
-    /// is drained in place, then one prefix-rooted write zipper consumes the
-    /// prepared Bag's borrowed, canonical suffix order.  Neither complete
-    /// keys nor entries are projected into an intermediate collection.
+    /// therefore contains no fallible semantic step. Structural replacement
+    /// first streams retained endpoints into one independently owned trie, then
+    /// one prefix-rooted write zipper consumes the prepared Bag's borrowed,
+    /// canonical suffix order. Neither complete keys nor entries are projected
+    /// into an intermediate collection.
     pub(crate) fn replace_prefix_with_relative(
         &mut self,
         prefix: &[u8],
         prepared: &Self,
         clear_existing: bool,
     ) {
-        let resident_metrics = self.prefix_metrics(prefix);
-        let (removed_distinct, removed_exact) = if clear_existing {
-            resident_metrics
-        } else {
-            (0, 0)
-        };
+        if !clear_existing {
+            debug_assert_eq!(
+                self.prefix_metrics(prefix).0,
+                0,
+                "an unloaded channel cannot already own resident data"
+            );
+            if !prepared.is_empty() {
+                prepared.with_read_cursor(|mut source| {
+                    self.entries.with_write_cursor_at(prefix, |mut target| {
+                        if let Some(multiplicity) = source.val().copied() {
+                            debug_assert!(target.val().is_none());
+                            target.set_val(multiplicity);
+                        }
+                        while let Some(multiplicity) = source.to_next_get_val().copied() {
+                            target.move_to_path(source.path());
+                            debug_assert!(target.val().is_none());
+                            target.set_val(multiplicity);
+                        }
+                    });
+                });
+            }
+            self.distinct_len = self
+                .distinct_len
+                .checked_add(prepared.distinct_len)
+                .expect("resident distinct endpoints fit usize");
+            self.exact_cardinality = self
+                .exact_cardinality
+                .checked_add(prepared.exact_cardinality)
+                .expect("resident endpoint multiplicities fit exact u128 cardinality");
+            return;
+        }
+
+        // Structural replacement preserves the authoritative source until a
+        // fresh candidate has been rebuilt and replayed completely.
+        let (mut candidate, removed_distinct, removed_exact) = self.rebuild_without_prefix(prefix);
         let next_distinct = self
             .distinct_len
             .checked_sub(removed_distinct)
@@ -544,35 +625,26 @@ impl Bag {
             .checked_sub(removed_exact)
             .and_then(|retained| retained.checked_add(prepared.exact_cardinality))
             .expect("resident endpoint multiplicities fit exact u128 cardinality");
-
-        if clear_existing {
-            self.remove_prefix(prefix);
-        } else {
-            debug_assert_eq!(
-                resident_metrics.0, 0,
-                "an unloaded channel cannot already own resident data"
-            );
-        }
-
-        if prepared.is_empty() {
-            return;
-        }
-
-        prepared.with_read_cursor(|mut source| {
-            self.entries.with_write_cursor_at(prefix, |mut target| {
-                if let Some(multiplicity) = source.val().copied() {
-                    debug_assert!(target.val().is_none());
-                    target.set_val(multiplicity);
-                }
-                while let Some(multiplicity) = source.to_next_get_val().copied() {
-                    target.move_to_path(source.path());
-                    debug_assert!(target.val().is_none());
-                    target.set_val(multiplicity);
-                }
+        if !prepared.is_empty() {
+            prepared.with_read_cursor(|mut source| {
+                candidate
+                    .entries
+                    .with_write_cursor_at(prefix, |mut target| {
+                        if let Some(multiplicity) = source.val().copied() {
+                            debug_assert!(target.val().is_none());
+                            target.set_val(multiplicity);
+                        }
+                        while let Some(multiplicity) = source.to_next_get_val().copied() {
+                            target.move_to_path(source.path());
+                            debug_assert!(target.val().is_none());
+                            target.set_val(multiplicity);
+                        }
+                    });
             });
-        });
-        self.distinct_len = next_distinct;
-        self.exact_cardinality = next_exact;
+        }
+        candidate.distinct_len = next_distinct;
+        candidate.exact_cardinality = next_exact;
+        *self = candidate;
     }
 
     pub fn set_count(&mut self, path: &[u8], count: Option<Multiplicity>) {
@@ -585,15 +657,24 @@ impl Bag {
                 self.exact_cardinality += u128::from(next.get());
             }
             (Some(current), None) => {
-                self.entries.remove_val_at_and_prune(path);
-                self.distinct_len -= 1;
-                self.exact_cardinality -= u128::from(current.get());
+                let removed = self.remove_many(path, current);
+                debug_assert!(removed.is_none());
             }
-            (Some(current), Some(next)) => {
-                self.entries.set_val_at(path, next);
-                self.exact_cardinality =
-                    self.exact_cardinality - u128::from(current.get()) + u128::from(next.get());
-            }
+            (Some(current), Some(next)) => match next.cmp(&current) {
+                Ordering::Less => {
+                    let amount = Multiplicity(current.get() - next.get());
+                    let remaining = self.remove_many(path, amount);
+                    debug_assert_eq!(remaining, Some(next));
+                }
+                Ordering::Greater => {
+                    let amount = Multiplicity(next.get() - current.get());
+                    let updated = self
+                        .insert_many(path, amount)
+                        .expect("the requested absolute Bag count already fits u64");
+                    debug_assert_eq!(updated, next);
+                }
+                Ordering::Equal => {}
+            },
         }
     }
 
@@ -765,16 +846,33 @@ impl Bag {
     }
 
     pub fn subtract(&self, other: &Self) -> Self {
-        let mut result = self.clone();
-        for (path, removed) in other.iter() {
-            let Some(current) = result.entries.get(&path).copied() else {
-                continue;
-            };
-            let next = (current.get() > removed.get())
-                .then(|| Multiplicity(current.get() - removed.get()));
-            result.set_count(&path, next);
-        }
-        result
+        // Bag is an exact-key finite-support function, whereas PathMap's
+        // generic subtraction is intentionally prefix-aware. Stream both
+        // already-canonical tries through one moving destination zipper so an
+        // ancestor in `other` cannot affect a descendant in `self`. No entry
+        // vector or sorting pass is materialized.
+        let mut removals = other.iter().peekable();
+        Self::try_from_sorted_unique(|writer| {
+            for (path, current) in self.iter() {
+                while removals
+                    .peek()
+                    .is_some_and(|(removed_path, _)| removed_path < &path)
+                {
+                    removals.next();
+                }
+                let next = match removals.peek() {
+                    Some((removed_path, removed)) if removed_path == &path => (current.get() >
+                        removed.get())
+                    .then(|| Multiplicity(current.get() - removed.get())),
+                    _ => Some(current),
+                };
+                if let Some(next) = next {
+                    writer.push(&path, next)?;
+                }
+            }
+            Ok::<(), SortedUniqueBagError>(())
+        })
+        .expect("ordered resident Bag endpoints form a valid sorted-unique stream")
     }
 
     pub fn is_subbag_of(&self, other: &Self) -> bool {
@@ -938,75 +1036,134 @@ impl BagDelta {
     }
 
     fn apply_parts(target: &mut Bag, additions: &Bag, removals: &Bag) -> Result<(), BagError> {
-        // There is no inter-key prefix to reuse for an empty or singleton
-        // delta. Avoid constructing a moving zipper in that case: experiment
-        // 219 measured the cursor's fixed setup cost as an 8.3% singleton
-        // regression, while the direct exact-key path is already atomic behind
-        // this private COW root.
-        match additions.distinct_len.saturating_add(removals.distinct_len) {
-            0 => return Ok(()),
-            1 => {
-                let mut updated = target.clone();
-                for (path, amount) in removals.iter() {
-                    updated.try_remove_many(&path, amount)?;
-                }
-                for (path, amount) in additions.iter() {
-                    updated.insert_many(&path, amount)?;
-                }
-                *target = updated;
-                return Ok(());
-            }
-            _ => {}
+        if additions.is_empty() && removals.is_empty() {
+            return Ok(());
         }
 
-        // Fork exactly one private COW root and retain one write zipper across
-        // the delta's lexicographically ordered paths. `move_to_path` ascends
-        // only to each consecutive pair's longest common prefix, avoiding a
-        // root-to-key replay for every exact update. A deleted leaf is pruned
-        // and the zipper ascends to the surviving prefix before continuing.
-        //
-        // Metrics remain local until the trie update succeeds. Consequently an
-        // underflow or overflow discards the private root and leaves `target`
-        // byte-for-byte unchanged.
-        let mut entries = target.entries.clone();
+        // Preflight every semantic and metadata transition against the
+        // immutable source. No mutation occurs until every error path has
+        // returned, so failure is strongly atomic.
         let mut distinct_len = target.distinct_len;
         let mut exact_cardinality = target.exact_cardinality;
-        entries.with_write_cursor(|mut cursor| -> Result<(), BagError> {
-            for (path, amount) in removals.iter() {
-                cursor.move_to_path(&path);
-                let current = cursor
-                    .val()
+        let mut has_structural_removal = false;
+        for (path, amount) in removals.iter() {
+            let current =
+                target
+                    .entries
+                    .get(&path)
                     .copied()
                     .ok_or(BagError::InsufficientMultiplicity {
                         available: 0,
                         requested: amount.get(),
                     })?;
-                match current.checked_sub(amount)? {
-                    Some(next) => {
-                        cursor.set_val(next);
-                    }
-                    None => {
-                        let removed = cursor.remove_val_and_prune();
-                        debug_assert!(removed);
-                        distinct_len -= 1;
-                    }
+            if current.checked_sub(amount)?.is_none() {
+                has_structural_removal = true;
+                distinct_len = distinct_len
+                    .checked_sub(1)
+                    .expect("a resident Bag endpoint contributes one distinct entry");
+            }
+            exact_cardinality = exact_cardinality
+                .checked_sub(u128::from(amount.get()))
+                .expect("a resident Bag endpoint contributes its exact multiplicity");
+        }
+        let mut has_structural_addition = false;
+        for (path, amount) in additions.iter() {
+            match target.entries.get(&path).copied() {
+                Some(current) => {
+                    current.checked_add(amount)?;
                 }
-                exact_cardinality -= u128::from(amount.get());
+                None => {
+                    has_structural_addition = true;
+                    distinct_len = distinct_len
+                        .checked_add(1)
+                        .ok_or(BagError::DistinctCountOverflow)?;
+                }
             }
-            for (path, amount) in additions.iter() {
-                cursor.move_to_path(&path);
-                let next = match cursor.val().copied() {
-                    Some(current) => current.checked_add(amount)?,
-                    None => {
-                        distinct_len += 1;
-                        amount
-                    }
-                };
-                cursor.set_val(next);
-                exact_cardinality += u128::from(amount.get());
-            }
-            Ok(())
-        })?;
+            exact_cardinality = exact_cardinality
+                .checked_add(u128::from(amount.get()))
+                .ok_or(BagError::CardinalityOverflow {
+                    current: exact_cardinality,
+                    added: amount.get(),
+                })?;
+        }
+
+        // A topology-preserving value update needs no speculative structural
+        // candidate after every transition has been preflighted.  Mutate the
+        // guarded authority directly: a unique Arc retains its anchor, while
+        // Arc::make_mut gives a shared authority one private anchor before the
+        // first write.  This is the ownership distinction proved by
+        // PathMapPhysicalOwnership.v.
+        if !has_structural_removal && !has_structural_addition {
+            target.entries.with_write_cursor(|mut cursor| {
+                for (path, amount) in removals.iter() {
+                    cursor.move_to_path(&path);
+                    let current = cursor
+                        .val()
+                        .copied()
+                        .expect("a preflighted value-only removal remains resident");
+                    let next = current
+                        .checked_sub(amount)
+                        .expect("BagDelta removal was preflighted")
+                        .expect("a value-only removal preserves its endpoint");
+                    cursor.set_val(next);
+                }
+                for (path, amount) in additions.iter() {
+                    cursor.move_to_path(&path);
+                    let current = cursor
+                        .val()
+                        .copied()
+                        .expect("a preflighted value-only addition remains resident");
+                    cursor.set_val(
+                        current
+                            .checked_add(amount)
+                            .expect("BagDelta addition was preflighted"),
+                    );
+                }
+            });
+            target.distinct_len = distinct_len;
+            target.exact_cardinality = exact_cardinality;
+            return Ok(());
+        }
+
+        // Exact Bag subtraction streams the authoritative trie and ordered
+        // removal trie into one clean candidate. This deliberately does not
+        // call PathMap's prefix-aware generic subtraction. One moving zipper
+        // then applies ordered additions while reusing consecutive prefixes.
+        let mut entries = if has_structural_removal {
+            target.subtract(removals).entries
+        } else {
+            target.entries.clone()
+        };
+        if !has_structural_removal && !removals.is_empty() {
+            entries.with_write_cursor(|mut cursor| {
+                for (path, amount) in removals.iter() {
+                    cursor.move_to_path(&path);
+                    let current = cursor
+                        .val()
+                        .copied()
+                        .expect("a preflighted value-only removal remains resident");
+                    let next = current
+                        .checked_sub(amount)
+                        .expect("BagDelta removal was preflighted")
+                        .expect("a value-only removal preserves its endpoint");
+                    cursor.set_val(next);
+                }
+            });
+        }
+        if !additions.is_empty() {
+            entries.with_write_cursor(|mut cursor| {
+                for (path, amount) in additions.iter() {
+                    cursor.move_to_path(&path);
+                    let next = match cursor.val().copied() {
+                        Some(current) => current
+                            .checked_add(amount)
+                            .expect("BagDelta addition was preflighted"),
+                        None => amount,
+                    };
+                    cursor.set_val(next);
+                }
+            });
+        }
         *target = Bag::from_guarded_with_metrics(entries, distinct_len, exact_cardinality);
         Ok(())
     }
@@ -1016,9 +1173,7 @@ impl PartialEq for Bag {
     fn eq(&self, other: &Self) -> bool {
         self.distinct_len == other.distinct_len &&
             self.exact_cardinality == other.exact_cardinality &&
-            self.iter().all(|(path, multiplicity)| {
-                other.entries.get(&path).copied() == Some(multiplicity)
-            })
+            self.iter().eq(other.iter())
     }
 }
 
@@ -1164,6 +1319,23 @@ mod prefix_replacement_tests {
     }
 
     #[test]
+    fn empty_replacement_publishes_metrics_and_leaves_the_live_root_write_ready() {
+        let maximum = Multiplicity::new(u64::MAX).unwrap();
+        let mut actual = Bag::new();
+        actual.insert_many(b"target/old", maximum).unwrap();
+
+        actual.replace_prefix_with_relative(b"target/", &Bag::new(), true);
+
+        assert_eq!(actual.distinct_len(), 0);
+        assert_eq!(actual.exact_cardinality(), 0);
+        assert_eq!(actual.count(b"target/old"), 0);
+        assert!(actual.insert(b"replacement").is_ok());
+        assert_eq!(actual.distinct_len(), 1);
+        assert_eq!(actual.exact_cardinality(), 1);
+        assert_eq!(actual.count(b"replacement"), 1);
+    }
+
+    #[test]
     fn prefix_replacement_preflights_exact_metrics_at_u64_boundaries() {
         let maximum = Multiplicity::new(u64::MAX).unwrap();
         let mut actual = Bag::new();
@@ -1181,3 +1353,7 @@ mod prefix_replacement_tests {
         assert_eq!(actual.count(b"target/old"), 0);
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/bag/cow_root_publication.rs"]
+mod cow_root_publication_tests;
