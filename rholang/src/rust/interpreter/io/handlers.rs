@@ -112,18 +112,112 @@ fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] {
     out
 }
 
-/// H-29-3 lift slice 2: unlink a single leaf.  `is_dir=true` uses
-/// `AT_REMOVEDIR`; else plain `unlinkat`.
+/// TOCTOU-immune unlink of a manifest entry via openat chain from
+/// a pinned `SafeParent` (2026-09-02, post-security-review S-1).
+///
+/// The recursive Consensus removeDir walker produces a manifest of
+/// `(rel_path, kind)` tuples sorted post-order (children before
+/// their containing directory).  Applying the manifest correctly
+/// requires the unlink to happen against the pinned dirfd chain
+/// obtained by descending from `parent`, not against an absolute
+/// path resolved by the kernel from cwd — otherwise a swap of any
+/// intermediate directory component between manifest-collection
+/// and unlink would land the syscall on attacker-controlled bytes.
+///
+/// This mirrors the Oracular `remove_dir_recursive`'s
+/// `openat`/`unlinkat` chained descent.  Under Shape A + D3 the
+/// caller's manifest is derived from a walk of the target subtree,
+/// so intermediate directories still exist at unlink time and the
+/// descent chain always resolves.
+///
+/// Empty `rel_path` unlinks the target itself
+/// (`unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), flags)`).
+/// Non-empty `rel_path`:
+///   1. `openat(parent.as_raw_fd(), parent.leaf_ptr(), O_DIRECTORY|
+///      O_NOFOLLOW|O_CLOEXEC)` to pin the target dirfd.
+///   2. For each intermediate component: `openat(cur_fd, component,
+///      O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)`.
+///   3. `unlinkat(last_intermediate_fd, leaf, kind_flags)`.
+///
+/// Each intermediate `OwnedFd` closes on scope exit via Drop.
 ///
 /// # Safety
-/// Uses libc directly.  The caller is responsible for supplying a
-/// path already-verified via `safe_descend_verified` (the recursive
-/// walker builds paths beneath a verified parent).
-unsafe fn libc_unlink(path: &std::path::Path, is_dir: bool) -> std::io::Result<()> {
-    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul in path"))?;
-    let flags = if is_dir { libc::AT_REMOVEDIR } else { 0 };
-    let rc = libc::unlinkat(libc::AT_FDCWD, cpath.as_ptr(), flags);
+/// Uses libc directly.  Caller supplies a `SafeParent` obtained
+/// via `safe_descend_verified` and a `rel_path` derived from a
+/// `collect_recursive_manifest` walk of the target subtree.
+unsafe fn unlink_manifest_entry(
+    parent: &SafeParent,
+    rel_path: &std::path::Path,
+    kind: RemoveKind,
+) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let flags = match kind {
+        RemoveKind::File => 0,
+        RemoveKind::Dir => libc::AT_REMOVEDIR,
+    };
+    if rel_path.as_os_str().is_empty() {
+        let rc = libc::unlinkat(parent.as_raw_fd(), parent.leaf_ptr(), flags);
+        return if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+    }
+    // Only accept Normal components — reject `.`, `..`, absolute
+    // roots, and Windows prefixes.  Defense-in-depth: the walker
+    // that feeds this function filters "." and ".." via
+    // std::fs::read_dir, but a future refactor that swapped
+    // walkers could reintroduce them; the openat chain below would
+    // then happily traverse "..".
+    let mut components: Vec<&std::ffi::OsStr> = Vec::new();
+    for c in rel_path.components() {
+        match c {
+            std::path::Component::Normal(n) => components.push(n),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("rel_path contains non-Normal component: {c:?}"),
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "rel_path yielded no components",
+        ));
+    }
+    // Pin the target dirfd.
+    let target_fd = libc::openat(
+        parent.as_raw_fd(),
+        parent.leaf_ptr(),
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+    );
+    if target_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut cur_fd = OwnedFd::from_raw_fd(target_fd);
+    // Descend through intermediate components.
+    for intermediate in &components[..components.len() - 1] {
+        let cname = std::ffi::CString::new(intermediate.as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul in path component")
+        })?;
+        let next_fd = libc::openat(
+            cur_fd.as_raw_fd(),
+            cname.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        );
+        if next_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        cur_fd = OwnedFd::from_raw_fd(next_fd);
+    }
+    // Final unlink of the leaf from the pinned parent dirfd.
+    let leaf_name = components.last().expect("components non-empty");
+    let leaf_c = std::ffi::CString::new(leaf_name.as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "nul in leaf"))?;
+    let rc = libc::unlinkat(cur_fd.as_raw_fd(), leaf_c.as_ptr(), flags);
     if rc == 0 {
         Ok(())
     } else {
@@ -3794,8 +3888,23 @@ impl FsProcesses {
                         };
                         let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
                         for (rel_path, kind) in manifest {
-                            let wal_path = canon_wal_target.join(&rel_path);
-                            let unlink_path = canon_target.join(&rel_path);
+                            // Empty rel_path marks the target root itself
+                            // (final post-order entry).  `Path::join("")`
+                            // appends a trailing separator; the resulting
+                            // PathBuf compares equal to the un-joined one
+                            // via `PathBuf::eq` (component-wise) but its
+                            // serialized bytes differ.  Follower must
+                            // special-case to match the leader's WAL
+                            // byte-for-byte (latent bug caught by
+                            // security review 2026-09-02: `assert_eq!(l,
+                            // f)` in tests uses PathBuf::eq and hid the
+                            // discrepancy, but `encode_wal_slice` byte
+                            // compare would surface it).
+                            let wal_path = if rel_path.as_os_str().is_empty() {
+                                canon_wal_target.clone()
+                            } else {
+                                canon_wal_target.join(&rel_path)
+                            };
                             let op = match kind {
                                 RemoveKind::File => WalOp::RemoveFile,
                                 RemoveKind::Dir => WalOp::RemoveDir,
@@ -3825,10 +3934,16 @@ impl FsProcesses {
                                     &deleted,
                                 );
                             }
-                            let unlink_rc = match kind {
-                                RemoveKind::File => unsafe { libc_unlink(&unlink_path, false) },
-                                RemoveKind::Dir => unsafe { libc_unlink(&unlink_path, true) },
-                            };
+                            // TOCTOU-immune unlink via pinned dirfd chain
+                            // from `parent` (post-security-review S-1,
+                            // 2026-09-02).  Prior to this fix, the
+                            // recursive Consensus branches used
+                            // libc_unlink(AT_FDCWD, absolute_path) which
+                            // resolved intermediate components from cwd
+                            // by name and lost the dirfd guarantee the
+                            // Oracular remove_dir_recursive already had.
+                            let unlink_rc =
+                                unsafe { unlink_manifest_entry(&parent, &rel_path, kind) };
                             match unlink_rc {
                                 Ok(()) => {
                                     deleted.push((rel_path, kind));
@@ -4055,23 +4170,16 @@ impl FsProcesses {
                         for (rel_path, kind) in manifest {
                             // wal_path is bundle-relative (Shape A
                             // invariant) for cross-validator WAL byte-
-                            // identity; unlink_path is the on-disk
-                            // absolute for the actual syscall.  Empty
-                            // rel_path marks the target root itself
-                            // (final post-order entry); Path::join
-                            // with an empty component appends a
-                            // trailing separator, so special-case
-                            // that to preserve the target's path
+                            // identity.  Empty rel_path marks the target
+                            // root itself (final post-order entry);
+                            // Path::join with an empty component
+                            // appends a trailing separator, so special-
+                            // case that to preserve the target's path
                             // spelling in the WAL.
                             let wal_path = if rel_path.as_os_str().is_empty() {
                                 canon_wal_target.clone()
                             } else {
                                 canon_wal_target.join(&rel_path)
-                            };
-                            let unlink_path = if rel_path.as_os_str().is_empty() {
-                                canon_target.clone()
-                            } else {
-                                canon_target.join(&rel_path)
                             };
                             let op = match kind {
                                 RemoveKind::File => WalOp::RemoveFile,
@@ -4105,10 +4213,15 @@ impl FsProcesses {
                                     &deleted,
                                 );
                             }
-                            let unlink_rc = match kind {
-                                RemoveKind::File => unsafe { libc_unlink(&unlink_path, false) },
-                                RemoveKind::Dir => unsafe { libc_unlink(&unlink_path, true) },
-                            };
+                            // TOCTOU-immune unlink via pinned dirfd chain
+                            // from `parent` (post-security-review S-1,
+                            // 2026-09-02).  Under the trust model
+                            // (Consensus mode assumes the node is the
+                            // only process on the machine) this is
+                            // defense-in-depth; also matches the
+                            // Oracular remove_dir_recursive's shape.
+                            let unlink_rc =
+                                unsafe { unlink_manifest_entry(&parent, &rel_path, kind) };
                             match unlink_rc {
                                 Ok(()) => {
                                     deleted.push((rel_path, kind));
@@ -4335,12 +4448,15 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // chown — (rootCanon, rel, owner, group, cmode) -> [true]
-    // Both Consensus and Oracular: fchownat(AT_SYMLINK_NOFOLLOW), with
-    // Consensus additionally journaling to WAL (post-2026-08-26 H-29-3
-    // lift).  Cross-node NSS-mapping is an operator responsibility:
-    // validators MUST agree on the uid/gid resolved from a given
-    // owner/group name for replay to converge on identical on-disk
-    // state.  See `WalEntry::owner` docstring.
+    // Oracular: fchownat(AT_SYMLINK_NOFOLLOW), no WAL.
+    // Consensus: BANNED with FSERR_UNSUPPORTED at handler entry
+    // (post-2026-09-02 S-2 security review).  Reason: WAL captures
+    // owner/group as caller-supplied String values, NSS-mapping to
+    // uid/gid is host-local, and two validators with different NSS
+    // configs would produce silent on-disk uid divergence that the
+    // reply-hash Consensus verify cannot catch.  Lifting the ban
+    // requires capturing resolved (uid, gid) in the WAL entry with
+    // shard-wide NSS coordination — see the in-handler ban comment.
     // -------------------------------------------------------------------
     pub async fn fs_chown(
         &self,
@@ -4369,6 +4485,44 @@ impl FsProcesses {
                 return Ok(out);
             }
         };
+        // Phase 4 ban (2026-09-02, post-security-review S-2):
+        // fs_chown with cmode=Consensus is UNSUPPORTED.  Reason:
+        // WAL captures owner/group as caller-supplied String values
+        // (e.g., "bob"), and NSS-mapping ("bob" → uid) is host-
+        // local — two validators with different /etc/passwd
+        // entries would land different uids on-disk for the same
+        // deploy without any signal to the consensus layer.  The
+        // Consensus verify pattern (compare fresh vs cached reply
+        // hash) doesn't catch this: fchownat's reply is `[true]`
+        // regardless of the uid it actually stamped.
+        //
+        // Lifting the ban requires either (a) capturing the resolved
+        // (uid, gid) in the WAL entry (not the display strings) and
+        // requiring operators to coordinate NSS mappings shard-
+        // wide, or (b) shipping fs_chown as an Oracular-only cap
+        // and blocking Consensus per this gate.  Chose (b) —
+        // matches `entriesStream* + Consensus` ban rationale
+        // (feature is unsafe under naive expectations; reject at
+        // handler entry with a specific error code).  Callers can
+        // still use fs_chown under Oracular for per-node local
+        // ownership changes.
+        //
+        // Pre-2026-09-02 the handler journaled Chown + called
+        // fchownat under Consensus with cached-reply consumption
+        // on replay — a Phase-0 tautological pattern that silently
+        // masked NSS divergence.  This gate closes that surface.
+        if cmode == ConsensusMode::Consensus {
+            let out = vec![err(
+                FSERR_UNSUPPORTED,
+                "fs_chown: Consensus mode not supported — NSS mapping (owner/group \
+                 name to uid/gid) is host-local and can differ across validators, \
+                 producing silent on-disk divergence that the reply-hash verify \
+                 cannot detect.  Use Oracular mode, or lift this ban by capturing \
+                 resolved uid/gid in the WAL entry with shard-wide NSS coordination.",
+            )];
+            produce(&out, ack).await?;
+            return Ok(out);
+        }
         // Parse args deterministically for both sides.
         let parsed = match (RhoString::unapply(root_par), RhoString::unapply(rel_par)) {
             (Some(root), Some(rel)) => Some((
@@ -4380,9 +4534,12 @@ impl FsProcesses {
             _ => None,
         };
         // Journal pre-syscall on both sides (H-29-3 lift, 2026-08-26).
-        // The WAL entry captures owner/group as-supplied String values;
-        // replay is operator-responsible for NSS-matching per
-        // `WalEntry::owner` docstring.
+        // Post-S-2 ban above, this branch is Oracular-only:
+        // `journal_path_mutation_single` returns Ok(false) for
+        // cmode != Consensus, so no WAL entry is actually appended —
+        // the call is kept for symmetry with the other path-mutation
+        // handlers and in case the ban is ever lifted with proper
+        // NSS coordination.
         if let Some((root, rel, owner_opt, group_opt)) = &parsed {
             let canon_path = canonicalize_lexical(root, rel);
             if self

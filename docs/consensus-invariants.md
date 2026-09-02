@@ -137,8 +137,15 @@ Also consensus-observable:
 Whether a given cap + cmode combination:
 
 - Triggers WAL journaling (Consensus writes; Oracular skips).
-- Is banned outright (e.g., `entriesStream* + Consensus →
-  FSERR_UNSUPPORTED` per the streaming-backing ban slice).
+- Is banned outright, returning `FSERR_UNSUPPORTED` at handler entry.
+  Currently banned under Consensus:
+    - `fs_entries_stream_open` / `entriesStreamNext` /
+      `entriesStreamClose` — readdir order is fs-dependent and not
+      stable across per-validator subdirs (D3).
+    - `fs_chown` — WAL captures owner/group as caller-supplied
+      String values; NSS mapping to uid/gid is host-local and can
+      differ across validators, producing silent on-disk uid
+      divergence that the reply-hash verify cannot detect.
 - Applies mode-differentiated gates like `Consensus + locked →
   FSERR_BUSY` on unlink / removeDir.
 

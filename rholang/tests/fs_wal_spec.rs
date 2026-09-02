@@ -7390,34 +7390,44 @@ mod tests {
         );
     }
 
-    /// H-29-3 slice 1 — Consensus fs_chown journals a Chown entry
-    /// with `owner`/`group` populated.  Uses the CURRENT USER'S name
-    /// via getlogin() so the chown syscall doesn't hit EPERM on
-    /// unprivileged CI hosts.
+    /// Phase 4 ban pin (2026-09-02, post-security-review S-2):
+    /// **fs_chown with cmode="consensus" MUST reject with
+    /// `FSERR_UNSUPPORTED`.**  See handlers.rs::fs_chown for the
+    /// design rationale: WAL captures owner/group as caller-supplied
+    /// String values (e.g., "bob"), NSS-mapping ("bob" → uid) is
+    /// host-local, and two validators with different /etc/passwd
+    /// entries would land different uids on-disk without any
+    /// signal to the consensus layer.  The Consensus verify pattern
+    /// (compare fresh vs cached reply hash) doesn't catch this
+    /// because fchownat's reply is `[true]` regardless of the uid
+    /// it actually stamped.
+    ///
+    /// Pre-2026-09-02 this test asserted the opposite — that
+    /// Consensus fs_chown journals a Chown WAL entry.  That
+    /// behavior masked NSS divergence silently under the Phase-0
+    /// tautological cached-reply consumption path.  Rewritten to
+    /// pin the ban.
+    ///
+    /// A regression that dropped the ban would let Consensus chown
+    /// through; the WAL would journal string-typed owner/group,
+    /// and two validators with divergent NSS would produce
+    /// divergent on-disk uids while their WALs stayed byte-identical.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn chown_on_consensus_appends_wal_entry() {
+    async fn chown_on_consensus_rejects_with_fserr_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.bin"), b"").unwrap();
         let runtime = create_runtime().await;
-        // Current user's name — chown to self is a no-op that
-        // succeeds on any host regardless of privilege.  If the name
-        // lookup fails, skip the assertion (unusual CI environment).
-        let current_user = match std::env::var("USER")
-            .ok()
-            .or_else(|| std::env::var("LOGNAME").ok())
-        {
-            Some(u) if !u.is_empty() => u,
-            _ => return, // no user name available; skip
-        };
+
         let term = format!(
             r#"
             new fsChown(`rho:io:fs:native:1.0.0/chown`), ret in {{
-              fsChown!("{root}", "f.bin", "{user}", Nil, "consensus", *ret) |
-              for (@_ <- ret) {{ Nil }}
+              fsChown!("{root}", "f.bin", "someuser", Nil, "consensus", *ret) |
+              for (@reply <- ret) {{
+                @"result"!(reply)
+              }}
             }}
             "#,
             root = dir.path().display(),
-            user = current_user,
         );
         runtime
             .evaluate(
@@ -7427,14 +7437,48 @@ mod tests {
                 rand(),
             )
             .await
-            .unwrap();
-        let snap = runtime.fs_handles.wal.snapshot();
-        assert_eq!(snap.len(), 1);
-        assert_eq!(snap[0].op, WalOp::Chown);
-        assert_eq!(snap[0].owner.as_deref(), Some(current_user.as_str()));
-        // group=Nil in Rholang maps to Option<String>::None in the
-        // native.  Pin that.
-        assert_eq!(snap[0].group, None);
+            .expect("evaluate Consensus fs_chown");
+
+        // Assert the reply is specifically FSERR_UNSUPPORTED.  A
+        // regression that returned FSERR_BAD_ARG / FSERR_IO / etc.
+        // would still produce no WAL entry (and the wal.is_empty()
+        // check below would still pass), so we need the code-slot
+        // check to lock the specific FSERR down.
+        use models::rhoapi::expr::ExprInstance;
+        use models::rhoapi::Expr;
+        use rholang::rust::interpreter::io::errors::FSERR_UNSUPPORTED;
+        use rholang::rust::interpreter::io::response::extract_err_code;
+        use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+        let result_channel = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString("result".to_string())),
+        }]);
+        let datums = runtime.get_data(&result_channel).await;
+        let reply_par = datums
+            .first()
+            .and_then(|d| d.a.pars.first())
+            .cloned()
+            .expect(
+                "no reply on @\"result\" — the ban's early-return produce didn't \
+                 land, or the term shape changed",
+            );
+        let code = extract_err_code(std::slice::from_ref(&reply_par)).expect(
+            "reply must be an [false, code, msg] error shape from the ban's \
+             early-return; got a non-error reply",
+        );
+        assert_eq!(
+            code, FSERR_UNSUPPORTED,
+            "Consensus fs_chown rejection must use FSERR_UNSUPPORTED specifically \
+             (see handlers.rs::fs_chown ban comment).  Got code: {code}"
+        );
+
+        // No WAL entry should be journaled since the ban fires
+        // before journal_path_mutation_single is called.
+        assert!(
+            runtime.fs_handles.wal.is_empty(),
+            "Consensus fs_chown rejection must NOT journal — the handler errored \
+             out before any WAL append.  Got WAL: {:?}",
+            runtime.fs_handles.wal.snapshot()
+        );
     }
 
     /// H-29-3 slice 1 — leader/follower WAL byte-identity for all
@@ -7447,9 +7491,10 @@ mod tests {
         std::fs::write(dir.path().join("f.bin"), b"payload").unwrap();
         std::fs::write(dir.path().join("g.bin"), b"other").unwrap();
         let (mut leader, mut follower) = create_leader_and_follower().await;
-        // Sequence: chmod → copyFile → rename → removeFile.
-        // (chown omitted here to avoid NSS-mapping requirements in
-        // the shared test; covered by chown_on_consensus_appends_wal_entry.)
+        // Sequence: chmod → copyFile → rename → removeFile.  (chown
+        // omitted: post-2026-09-02 S-2 ban, Consensus fs_chown returns
+        // FSERR_UNSUPPORTED without journaling — the ban is pinned by
+        // chown_on_consensus_rejects_with_fserr_unsupported.)
         let term = format!(
             r#"
             new fsChmod(`rho:io:fs:native:1.0.0/chmod`),
