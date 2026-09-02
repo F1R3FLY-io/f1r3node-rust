@@ -92,9 +92,9 @@ impl Blake2b512Random {
 
     pub fn create_from_bytes(init: &[u8]) -> Blake2b512Random { Self::create(init, 0, init.len()) }
 
-    pub fn split_byte(&self, index: i8) -> Blake2b512Random {
+    pub fn split_byte(&self, index: u8) -> Blake2b512Random {
         let mut split = self.copy();
-        split.add_byte(index);
+        split.add_byte(index as i8);
         split
     }
 
@@ -443,6 +443,24 @@ mod tests {
             45, 123, -46, 25, -28, -50, 30, 24, -29, -116, 6, -18, -51, -15, 112, -104, -19, 73,
             -42, 104, -112, 8, 109, 25, 84, 58, -124, -2, -120, -40, 13, 103
         ]);
+    }
+
+    #[test]
+    fn blake2b512_random_split_byte_covers_full_unsigned_range() {
+        use std::collections::BTreeSet;
+
+        let base = Blake2b512Random::create_from_bytes(&[]);
+        let mut seen = BTreeSet::new();
+        for index in 0u8..=255 {
+            let mut split = base.split_byte(index);
+            assert!(seen.insert(split.next()), "duplicate stream for index {index}");
+        }
+        assert_eq!(seen.len(), 256);
+
+        assert_eq!(
+            base.split_byte(128).next(),
+            base.split_byte((-128i8) as u8).next()
+        );
     }
 
     #[test]
