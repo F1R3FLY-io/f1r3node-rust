@@ -217,6 +217,30 @@ pub struct SequentialEntry {
 /// boundary and cannot amplify further.
 pub const MAX_RANGES_PER_FILE: usize = 1024;
 
+/// Per-`(dev, inode)` cap on parked `wait: true` acquirers (Phase 8
+/// NB-3, 2026-09-02).  Symmetric with `MAX_RANGES_PER_FILE` — bounds
+/// the `waiters: VecDeque<Waiter>` deque against a hostile deploy
+/// that spams `try_acquire_range_wait(..., WaitPolicy::Wait)` on a
+/// locked file.  Each `Waiter` allocates ~150 bytes (LockId +
+/// WaitKind + HolderId + DeployScope + oneshot::Sender pair), so at
+/// saturation with `MAX_OPEN_FDS × MAX_WAITERS_PER_FILE` the
+/// runtime-wide waiter memory tops out at ~150 MiB.
+///
+/// A hostile deploy hitting this cap gets `FSERR_QUOTA_EXCEEDED` at
+/// the native boundary — same code as the live-range cap so
+/// callers do not need to differentiate.  Pre-existing bounds
+/// (per-deploy cost budget + `cancel_all_waiters_for_deploy` on
+/// `WalDeployScope::Drop` + per-block runtime respawn) already
+/// bounded the practical worst case; this cap is defense-in-depth
+/// against future cost-tuning changes that might inadvertently
+/// lower per-call cost enough to allow massive waiter allocations.
+///
+/// **Hard-fork surface** — per `docs/consensus-invariants.md § 5
+/// byte gates` in `f1r3node-rust`.  Changing this value or the
+/// error code path in any shard-live deploy would produce divergent
+/// WAL / reply bytes vs. validators still on the pre-change value.
+pub const MAX_WAITERS_PER_FILE: usize = 1024;
+
 /// Guard threshold on the LockId counter.  With 2⁶⁴ headroom the
 /// wrap is astronomical (~584 years at 10⁹ acquires/sec), but a
 /// wrap would collide new LockIds with stale `LockToken`s still in
@@ -456,6 +480,17 @@ impl LockRegistry {
             match wait_mode {
                 WaitPolicy::Fail => return Err(LockError::Busy),
                 WaitPolicy::Wait => {
+                    // NB-3 (2026-09-02): per-file parked-waiter cap.
+                    // Prevents a hostile deploy from allocating
+                    // unbounded Waiter structs (~150 bytes each) by
+                    // spamming wait:true on a locked file.  Same
+                    // FSERR_QUOTA_EXCEEDED code as the live-range
+                    // cap above; callers do not need to differentiate.
+                    // Hard-fork surface — see MAX_WAITERS_PER_FILE
+                    // docstring.
+                    if state.waiters.len() >= MAX_WAITERS_PER_FILE {
+                        return Err(LockError::QuotaExceeded);
+                    }
                     let id = self.mint_id()?;
                     let (tx, rx) = oneshot::channel();
                     state.waiters.push_back(Waiter {
@@ -525,6 +560,15 @@ impl LockRegistry {
             match wait_mode {
                 WaitPolicy::Fail => return Err(LockError::Busy),
                 WaitPolicy::Wait => {
+                    // NB-3 (2026-09-02): symmetric per-file parked-
+                    // waiter cap.  See MAX_WAITERS_PER_FILE docstring
+                    // for the memory-bound + hard-fork rationale.
+                    // Applied to sequential-wait as well as range-
+                    // wait because both share the same
+                    // `state.waiters` deque.
+                    if state.waiters.len() >= MAX_WAITERS_PER_FILE {
+                        return Err(LockError::QuotaExceeded);
+                    }
                     let id = self.mint_id()?;
                     let (tx, rx) = oneshot::channel();
                     state.waiters.push_back(Waiter {
@@ -1698,6 +1742,164 @@ mod tests {
         // Different inode — should still admit.
         reg.try_acquire_range((1, 43), 0, 1, LockMode::Read, holder(1), deploy(1))
             .expect("cap is per-(dev, inode), not global");
+    }
+
+    // -- NB-3 (2026-09-02): MAX_WAITERS_PER_FILE cap --------------------
+    //
+    // Bounds the parked-waiter deque against a hostile deploy that
+    // spams wait:true on a locked file.  Hard-fork surface — see
+    // MAX_WAITERS_PER_FILE docstring for the memory-bound math +
+    // rationale.  Same FSERR_QUOTA_EXCEEDED code as the live-range
+    // cap so callers do not need to differentiate.
+
+    /// range-wait path: 1024 parked waiters, the 1025th trips
+    /// QuotaExceeded before allocating a Waiter struct.
+    #[test]
+    fn max_waiters_per_file_cap_enforced_on_range_wait() {
+        let reg = LockRegistry::new();
+        // Acquire the whole file so every subsequent wait:true
+        // request parks.
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("initial full-file write lock must succeed");
+        // Fill the waiter deque to capacity.  Each waiter uses a
+        // distinct holder to avoid same-holder skip-rule shortcuts.
+        for _ in 0..MAX_WAITERS_PER_FILE {
+            expect_parked(
+                reg.try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Read,
+                    holder(2),
+                    deploy(1),
+                    WaitPolicy::Wait,
+                )
+                .expect("wait park up to cap must succeed"),
+            );
+        }
+        assert_eq!(reg.parked_waiters(), MAX_WAITERS_PER_FILE);
+        // The next wait:true request must be rejected before allocating
+        // another Waiter struct.
+        let err = reg
+            .try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(0),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .expect_err("range-wait over cap must return QuotaExceeded");
+        assert_eq!(err, LockError::QuotaExceeded);
+        // Deque length unchanged — proves the cap fired BEFORE the
+        // Waiter got pushed.
+        assert_eq!(reg.parked_waiters(), MAX_WAITERS_PER_FILE);
+    }
+
+    /// sequential-wait path: symmetric with the range-wait test.  Both
+    /// acquire paths share the same `state.waiters` deque, so the cap
+    /// applies uniformly.
+    #[test]
+    fn max_waiters_per_file_cap_enforced_on_sequential_wait() {
+        let reg = LockRegistry::new();
+        // Any lock on the file makes sequential-conflicts true.
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Read, holder(1), deploy(1))
+            .expect("initial range lock must succeed");
+        for _ in 0..MAX_WAITERS_PER_FILE {
+            expect_parked(
+                reg.try_acquire_sequential_wait((1, 42), holder(2), deploy(1), WaitPolicy::Wait)
+                    .expect("sequential wait park up to cap must succeed"),
+            );
+        }
+        assert_eq!(reg.parked_waiters(), MAX_WAITERS_PER_FILE);
+        let err = reg
+            .try_acquire_sequential_wait((1, 42), holder(0), deploy(1), WaitPolicy::Wait)
+            .expect_err("sequential-wait over cap must return QuotaExceeded");
+        assert_eq!(err, LockError::QuotaExceeded);
+        assert_eq!(reg.parked_waiters(), MAX_WAITERS_PER_FILE);
+    }
+
+    /// The waiter cap is per-`(dev, inode)`, not global: filling one
+    /// file's deque doesn't block wait:true on a different inode.
+    #[test]
+    fn waiter_cap_is_per_dev_inode_not_global() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("inode A initial lock");
+        for _ in 0..MAX_WAITERS_PER_FILE {
+            expect_parked(
+                reg.try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Read,
+                    holder(2),
+                    deploy(1),
+                    WaitPolicy::Wait,
+                )
+                .unwrap(),
+            );
+        }
+        // Different inode — still admits an immediate acquire (no
+        // waiter needed) even though inode A's deque is full.
+        reg.try_acquire_range((1, 43), 0, 100, LockMode::Read, holder(1), deploy(1))
+            .expect("waiter cap is per-(dev, inode), not global");
+    }
+
+    /// After sweeping the deploy, the deque frees up and subsequent
+    /// wait:true acquires can park again.  Verifies the cap recovers
+    /// symmetrically with the sweep behavior.
+    #[test]
+    fn waiter_cap_recovers_after_deploy_sweep() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("initial lock");
+        for _ in 0..MAX_WAITERS_PER_FILE {
+            expect_parked(
+                reg.try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Read,
+                    holder(2),
+                    deploy(2),
+                    WaitPolicy::Wait,
+                )
+                .unwrap(),
+            );
+        }
+        // Cap reached — verify the guard fires.
+        assert_eq!(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(0),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect_err("must be QuotaExceeded"),
+            LockError::QuotaExceeded
+        );
+        // Sweep the waiters' deploy — cap recovers.
+        let n_cancelled = reg.cancel_all_waiters_for_deploy(&deploy(2));
+        assert_eq!(n_cancelled, MAX_WAITERS_PER_FILE);
+        assert_eq!(reg.parked_waiters(), 0);
+        // New wait:true acquires can park again.
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(0),
+                deploy(3),
+                WaitPolicy::Wait,
+            )
+            .expect("wait must park cleanly after sweep"),
+        );
     }
 
     // -- no-op sweeps ---------------------------------------------------

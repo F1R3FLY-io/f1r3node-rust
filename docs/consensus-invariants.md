@@ -112,6 +112,9 @@ at handler entry:
 | `MAX_TRUNCATE_BYTES` | 16 GiB | same |
 | `MAX_READ_BYTES` | 64 MiB | one side reads, the other returns QUOTA_EXCEEDED |
 | `MAX_ENTRIES` | 65,536 | one side succeeds, the other truncates |
+| `MAX_OPEN_FDS` | 1,024 | per-runtime; one side allocates, the other returns QUOTA_EXCEEDED |
+| `MAX_RANGES_PER_FILE` | 1,024 | per-`(dev, inode)`; one side admits an Nth range lock, the other rejects |
+| `MAX_WAITERS_PER_FILE` | 1,024 | per-`(dev, inode)`; one side parks an Nth `wait:true` acquire, the other rejects (Phase 8 NB-3, added 2026-09-02) |
 
 All caps are checked in the handler entry against argument
 values.  If a validator upgraded to a higher cap accepts an
