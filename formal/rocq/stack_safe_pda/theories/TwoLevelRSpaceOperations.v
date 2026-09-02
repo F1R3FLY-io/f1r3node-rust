@@ -596,6 +596,236 @@ Proof. reflexivity. Qed.
 
 End TransactionalPublication.
 
+Inductive two_level_operation_invariant_id : Type :=
+| OpsInvUpsertTargetExact
+| OpsInvUpsertOtherPreserved
+| OpsInvUpsertLoaded
+| OpsInvUpsertCanonical
+| OpsInvLoadedUpsertCount
+| OpsInvUnloadedUpsertCount
+| OpsInvDeleteTargetAbsent
+| OpsInvDeleteOtherPreserved
+| OpsInvDeleteCanonical
+| OpsInvAbsentDeleteIdempotent
+| OpsInvLoadedDeleteCount
+| OpsInvBatchTargetsUnique
+| OpsInvBatchCanonical
+| OpsInvBatchUntouchedChannel
+| OpsInvFailureAtomic
+| OpsInvAcceptedOnePublication
+| OpsInvTransitionDeterministic
+| OpsInvPublishedStoreWellFormed
+| OpsInvTouchedCatalogInvalidated
+| OpsInvUntouchedCatalogPreserved
+| OpsInvIssuedSnapshotsPreserved
+| OpsInvGenerationAdvancedOnce.
+
+Definition two_level_operation_invariant_catalog :
+    list two_level_operation_invariant_id :=
+  [ OpsInvUpsertTargetExact;
+    OpsInvUpsertOtherPreserved;
+    OpsInvUpsertLoaded;
+    OpsInvUpsertCanonical;
+    OpsInvLoadedUpsertCount;
+    OpsInvUnloadedUpsertCount;
+    OpsInvDeleteTargetAbsent;
+    OpsInvDeleteOtherPreserved;
+    OpsInvDeleteCanonical;
+    OpsInvAbsentDeleteIdempotent;
+    OpsInvLoadedDeleteCount;
+    OpsInvBatchTargetsUnique;
+    OpsInvBatchCanonical;
+    OpsInvBatchUntouchedChannel;
+    OpsInvFailureAtomic;
+    OpsInvAcceptedOnePublication;
+    OpsInvTransitionDeterministic;
+    OpsInvPublishedStoreWellFormed;
+    OpsInvTouchedCatalogInvalidated;
+    OpsInvUntouchedCatalogPreserved;
+    OpsInvIssuedSnapshotsPreserved;
+    OpsInvGenerationAdvancedOnce ].
+
+Definition two_level_operation_invariant_binding
+    (invariant : two_level_operation_invariant_id) : Prop :=
+  match invariant with
+  | OpsInvUpsertTargetExact =>
+      forall authority selected replacement,
+        lookup_channel selected
+          (upsert_channel_exact selected replacement authority) = Some replacement
+  | OpsInvUpsertOtherPreserved =>
+      forall authority selected replacement other,
+        other <> selected ->
+        lookup_channel other
+          (upsert_channel_exact selected replacement authority) =
+        lookup_channel other authority
+  | OpsInvUpsertLoaded =>
+      forall authority selected replacement,
+        loaded (upsert_channel_exact selected replacement authority) selected
+  | OpsInvUpsertCanonical =>
+      forall authority selected replacement,
+        canonical_channels authority ->
+        path_valid selected = true ->
+        canonical_entries replacement ->
+        canonical_channels
+          (upsert_channel_exact selected replacement authority)
+  | OpsInvLoadedUpsertCount =>
+      forall authority selected replacement old,
+        canonical_channels authority ->
+        lookup_channel selected authority = Some old ->
+        length (upsert_channel_exact selected replacement authority) =
+        length authority
+  | OpsInvUnloadedUpsertCount =>
+      forall authority selected replacement,
+        lookup_channel selected authority = None ->
+        length (upsert_channel_exact selected replacement authority) =
+        S (length authority)
+  | OpsInvDeleteTargetAbsent =>
+      forall authority selected,
+        canonical_channels authority ->
+        lookup_channel selected (delete_channel_exact selected authority) = None
+  | OpsInvDeleteOtherPreserved =>
+      forall authority selected other,
+        other <> selected ->
+        lookup_channel other (delete_channel_exact selected authority) =
+        lookup_channel other authority
+  | OpsInvDeleteCanonical =>
+      forall authority selected,
+        canonical_channels authority ->
+        canonical_channels (delete_channel_exact selected authority)
+  | OpsInvAbsentDeleteIdempotent =>
+      forall authority selected,
+        lookup_channel selected authority = None ->
+        delete_channel_exact selected authority = authority
+  | OpsInvLoadedDeleteCount =>
+      forall authority selected old,
+        canonical_channels authority ->
+        lookup_channel selected authority = Some old ->
+        S (length (delete_channel_exact selected authority)) = length authority
+  | OpsInvBatchTargetsUnique =>
+      forall batch, NoDup (touched_channels (prepared_operations batch))
+  | OpsInvBatchCanonical =>
+      forall authority operations,
+        canonical_channels authority ->
+        canonical_channels
+          (apply_prepared_channel_operations authority operations)
+  | OpsInvBatchUntouchedChannel =>
+      forall authority operations channel,
+        ~ In channel (touched_channels operations) ->
+        lookup_channel channel
+          (apply_prepared_channel_operations authority operations) =
+        lookup_channel channel authority
+  | OpsInvFailureAtomic =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots) outcome,
+        channel_batch_transition before None outcome ->
+        batch_state outcome = before /\ batch_publication_count outcome = 0%nat
+  | OpsInvAcceptedOnePublication =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots)
+        batch outcome,
+        channel_batch_transition before (Some batch) outcome ->
+        batch_state outcome = publish_prepared_channel_batch before batch /\
+        batch_publication_count outcome = 1%nat /\
+        batch_decision outcome = ChannelBatchPublished
+  | OpsInvTransitionDeterministic =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots)
+        proposal left right,
+        channel_batch_transition before proposal left ->
+        channel_batch_transition before proposal right -> left = right
+  | OpsInvPublishedStoreWellFormed =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots) batch,
+        store_state_well_formed before ->
+        store_state_well_formed (publish_prepared_channel_batch before batch)
+  | OpsInvTouchedCatalogInvalidated =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots)
+        batch channel,
+        In channel (touched_channels (prepared_operations batch)) ->
+        store_catalogs (publish_prepared_channel_batch before batch) channel = None
+  | OpsInvUntouchedCatalogPreserved =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots)
+        batch channel,
+        ~ In channel (touched_channels (prepared_operations batch)) ->
+        store_catalogs (publish_prepared_channel_batch before batch) channel =
+        store_catalogs before channel
+  | OpsInvIssuedSnapshotsPreserved =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots) batch,
+        store_external_snapshots (publish_prepared_channel_batch before batch) =
+        store_external_snapshots before
+  | OpsInvGenerationAdvancedOnce =>
+      forall (Catalog ExternalSnapshots : Type)
+        (before : @transactional_store_state Catalog ExternalSnapshots) batch,
+        store_publication_generation
+          (publish_prepared_channel_batch before batch) =
+        S (store_publication_generation before)
+  end.
+
+Theorem every_two_level_operation_invariant_is_bound : forall invariant,
+  two_level_operation_invariant_binding invariant.
+Proof.
+  intro invariant. destruct invariant; cbn.
+  - apply upsert_target_lookup_is_exact.
+  - apply upsert_preserves_every_other_exact_channel.
+  - apply upsert_makes_channel_loaded.
+  - apply canonical_upsert_is_preserved.
+  - apply upsert_loaded_length.
+  - apply upsert_unloaded_length.
+  - apply canonical_delete_removes_target_lookup.
+  - apply delete_preserves_every_other_exact_channel.
+  - apply canonical_delete_is_preserved.
+  - apply unloaded_delete_is_idempotent.
+  - apply loaded_delete_decrements_once.
+  - apply prepared_touched_channels_are_unique.
+  - apply prepared_operations_preserve_canonicality.
+  - apply untouched_channel_is_preserved_by_prepared_operations.
+  - intros Catalog ExternalSnapshots before outcome Htransition.
+    exact (@refused_batch_is_strongly_atomic
+      Catalog ExternalSnapshots before outcome Htransition).
+  - intros Catalog ExternalSnapshots before batch outcome Htransition.
+    exact (@accepted_batch_publishes_exactly_one_derived_authority
+      Catalog ExternalSnapshots before batch outcome Htransition).
+  - intros Catalog ExternalSnapshots before proposal left right Hleft Hright.
+    exact (@channel_batch_transition_is_deterministic
+      Catalog ExternalSnapshots before proposal left right Hleft Hright).
+  - intros Catalog ExternalSnapshots before batch Hwell_formed.
+    exact (@successful_publication_preserves_store_well_formedness
+      Catalog ExternalSnapshots before batch Hwell_formed).
+  - intros Catalog ExternalSnapshots before batch channel Htouched.
+    exact (@successful_publication_invalidates_every_touched_catalog
+      Catalog ExternalSnapshots before batch channel Htouched).
+  - intros Catalog ExternalSnapshots before batch channel Hnot_touched.
+    exact (@successful_publication_preserves_untouched_catalog_identity
+      Catalog ExternalSnapshots before batch channel Hnot_touched).
+  - intros Catalog ExternalSnapshots before batch.
+    exact (@successful_publication_preserves_issued_catalog_snapshots
+      Catalog ExternalSnapshots before batch).
+  - intros Catalog ExternalSnapshots before batch.
+    exact (@successful_publication_advances_generation_once
+      Catalog ExternalSnapshots before batch).
+Qed.
+
+Theorem two_level_operation_invariant_catalog_is_unique_complete_and_exact :
+  NoDup two_level_operation_invariant_catalog /\
+  Forall two_level_operation_invariant_binding
+    two_level_operation_invariant_catalog /\
+  length two_level_operation_invariant_catalog = 22%nat.
+Proof.
+  split.
+  - unfold two_level_operation_invariant_catalog.
+    repeat match goal with
+    | |- NoDup (_ :: _) => constructor; [simpl; intuition discriminate |]
+    | |- NoDup [] => constructor
+    end.
+  - split.
+    + apply Forall_forall. intros invariant _.
+      apply every_two_level_operation_invariant_is_bound.
+    + reflexivity.
+Qed.
+
 Print Assumptions canonical_upsert_is_preserved.
 Print Assumptions canonical_delete_removes_target_lookup.
 Print Assumptions prepared_operations_preserve_canonicality.
@@ -603,5 +833,6 @@ Print Assumptions untouched_channel_is_preserved_by_prepared_operations.
 Print Assumptions refused_batch_is_strongly_atomic.
 Print Assumptions successful_publication_preserves_store_well_formedness.
 Print Assumptions successful_publication_invalidates_every_touched_catalog.
+Print Assumptions two_level_operation_invariant_catalog_is_unique_complete_and_exact.
 
 End TwoLevelRSpaceOperations.
