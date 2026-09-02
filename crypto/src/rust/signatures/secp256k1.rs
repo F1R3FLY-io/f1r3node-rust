@@ -512,4 +512,73 @@ mod tests {
             "Parsing with wrong password should fail"
         );
     }
+
+    #[test]
+    fn verify_rejects_data_that_is_not_a_32_byte_hash() {
+        let secp256k1 = Secp256k1;
+        let (private_key, public_key) = secp256k1.new_key_pair();
+        let hash = Sha256::digest(b"testing");
+        let signature = secp256k1.sign(&hash, &private_key.bytes);
+
+        assert!(!secp256k1.verify(b"testing", &signature, &public_key.bytes));
+        assert!(!secp256k1.verify(&[], &signature, &public_key.bytes));
+        assert!(!secp256k1.verify(&[0u8; 31], &signature, &public_key.bytes));
+        assert!(!secp256k1.verify(&[0u8; 33], &signature, &public_key.bytes));
+    }
+
+    #[test]
+    fn parse_pem_file_fails_for_missing_file() {
+        let result = Secp256k1::parse_pem_file("/nonexistent/path/key.pem", "pw");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Failed to read PEM file"));
+    }
+
+    #[test]
+    fn parse_pem_file_fails_for_non_pem_content() {
+        use std::io::Write;
+
+        use tempfile::NamedTempFile;
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        temp_file
+            .write_all(b"this is not a pem file")
+            .expect("Failed to write");
+
+        let result = Secp256k1::parse_pem_file(temp_file.path(), "pw");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_pem_file_rejects_unencrypted_private_key() {
+        use std::io::Write;
+
+        use pkcs8::EncodePrivateKey;
+        use tempfile::NamedTempFile;
+
+        let secp256k1 = Secp256k1;
+        let (private_key, _) = secp256k1.new_key_pair();
+        let signing_key =
+            SigningKey::from_slice(&private_key.bytes).expect("Failed to create signing key");
+        let unencrypted_pem = signing_key
+            .to_pkcs8_pem(pkcs8::LineEnding::LF)
+            .expect("Failed to create PEM");
+
+        let mut temp_file = NamedTempFile::new().expect("Failed to create temp file");
+        temp_file
+            .write_all(unencrypted_pem.as_bytes())
+            .expect("Failed to write");
+
+        let err = Secp256k1::parse_pem_file(temp_file.path(), "pw").unwrap_err();
+        assert!(err.to_string().contains("Unsupported PEM tag"));
+    }
+
+    #[test]
+    fn trait_metadata_methods() {
+        let secp256k1 = Secp256k1;
+        assert_eq!(SignaturesAlg::name(&secp256k1), Secp256k1::name());
+        assert_eq!(secp256k1.sig_length(), 32);
+
+        let cloned = secp256k1.box_clone();
+        assert!(SignaturesAlg::eq(&secp256k1, cloned.as_ref()));
+    }
 }

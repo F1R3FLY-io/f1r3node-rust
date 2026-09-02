@@ -160,12 +160,20 @@ mod der_converter_tests {
         let result = CertificateHelper::encode_signature_rs_to_der(&min_signature);
         assert!(result.is_ok(), "Encoder should handle 64-byte input");
 
-        // Test with more than 64 bytes (should only use first 64)
+        // 65 bytes is the Ethereum r||s||v form; the recovery byte is dropped
+        let eth_signature = vec![0x01; 65];
+        let result = CertificateHelper::encode_signature_rs_to_der(&eth_signature);
+        assert!(
+            result.is_ok(),
+            "Encoder should accept 65-byte r||s||v input"
+        );
+
+        // Any other oversize is a non-canonical encoding and must be rejected
         let oversized_signature = vec![0x01; 128];
         let result = CertificateHelper::encode_signature_rs_to_der(&oversized_signature);
         assert!(
-            result.is_ok(),
-            "Encoder should handle oversized input by using first 64 bytes"
+            result.is_err(),
+            "Encoder should reject non-canonical oversized input"
         );
 
         // Test with less than 64 bytes (should fail)

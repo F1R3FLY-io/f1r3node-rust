@@ -453,7 +453,10 @@ among its member signatures.
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
 *Distinguish from* the lifecycle `rejection_count`, which is a node-local
-observability value that includes duplicate records.
+observability value that includes duplicate records. The
+[repeat-deploy signature index](#repeat-deploy-signature-index) is the one
+lifecycle-backed structure with a ratified consensus-reading role, and it
+holds that role only under its completeness invariant.
 *Avoid*: "loss count" without qualification.
 
 ### Loss-aware adjudication
@@ -556,6 +559,38 @@ every validator computes the same verdict (`PrematureDeployRetry`).
 a lower bound on when a retry may appear, not a selection policy.
 *Avoid*: "retry timer" and "cooldown", because the gate keys on floor
 settlement, not on wall-clock time.
+
+### Repeat-deploy signature index
+
+The repeat-deploy signature index is the per-signature carrier record in
+a dedicated store: for each body signature, the carrier blocks that hold
+it. The index covers valid blocks, invalid blocks, and approved blocks,
+because the repeat-deploy ancestor scan reads block bodies without a
+validity qualifier. Every insert records a block's carriers before the
+block becomes DAG-visible, and a persisted height watermark names the
+height since which that has held on this database. For a scan window
+that starts at or above the watermark, an index absence is a proof of no
+prior inclusion, so validation skips the ancestor scan for that
+signature. An index hit is not a verdict: the hit routes to window and
+parent-scope verification, because a fork-only inclusion must not
+invalidate a legal re-inclusion. An index read failure grants no proof,
+and validation falls back to the unchanged ancestor scan. Entries below
+the expiration window are pruned on floor advances.
+
+The index is a deterministic cache of on-chain block bodies, not a new
+consensus input. The predicate it serves is unchanged: the signature
+appears in a parent-scope ancestor inside the expiration window. The
+dedicated store is load-bearing: the index must never share a keyspace
+with rows that unverified wire data can key.
+
+**Preferred usage.** Use for the validation-side fast path of
+`Validate::repeat_deploy`.
+*Distinguish from* the [deploy lifecycle](#deploy-lifecycle) tables,
+which are node-local observability with terminal pruning and never
+decide a verdict.
+*Avoid*: "deploy index" without qualification, because the removed
+last-write-wins `lookup_by_deploy_id` index resolved display carriers,
+not validity.
 
 ### Retry frontier lease
 

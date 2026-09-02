@@ -195,6 +195,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_validate_inet_address_resolves_hostnames() {
+        let result = validate_inet_address("localhost", |addr| is_loopback_address(addr)).await;
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_helper_functions_ipv6_variants() {
+        let multicast_v6: IpAddr = "ff02::1".parse().unwrap();
+        let site_local_v6: IpAddr = "fec0::1".parse().unwrap();
+        let link_local_v6: IpAddr = "fe80::1".parse().unwrap();
+        let public_v6: IpAddr = "2001:db8::1".parse().unwrap();
+
+        assert!(is_multicast_address(&multicast_v6));
+        assert!(!is_multicast_address(&public_v6));
+        assert!(is_site_local_address(&site_local_v6));
+        assert!(!is_site_local_address(&public_v6));
+        assert!(is_link_local_address(&link_local_v6));
+        assert!(!is_link_local_address(&public_v6));
+    }
+
+    #[tokio::test]
     async fn test_validate_inet_address_with_custom_predicate() {
         // Custom predicate: only allow loopback addresses
         let result = validate_inet_address("127.0.0.1", |addr| is_loopback_address(addr)).await;

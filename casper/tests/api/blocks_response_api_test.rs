@@ -467,3 +467,99 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
         "Last block should be at height 5"
     );
 }
+
+#[tokio::test]
+async fn every_api_entry_point_reports_a_missing_casper_instance() {
+    use models::rhoapi::Par;
+
+    let engine_cell = EngineCell::init();
+
+    assert!(BlockAPI::get_blocks(&engine_cell, 10, MAX_BLOCK_LIMIT)
+        .await
+        .is_err());
+    assert!(BlockAPI::get_blocks_full(&engine_cell, 10, MAX_BLOCK_LIMIT)
+        .await
+        .is_err());
+    assert!(
+        BlockAPI::get_blocks_by_heights(&engine_cell, 0, 5, MAX_BLOCK_LIMIT)
+            .await
+            .is_err()
+    );
+    assert!(
+        BlockAPI::get_blocks_by_heights_full(&engine_cell, 0, 5, MAX_BLOCK_LIMIT)
+            .await
+            .is_err()
+    );
+    assert!(
+        BlockAPI::machine_verifiable_dag(&engine_cell, 10, MAX_BLOCK_LIMIT)
+            .await
+            .is_err()
+    );
+    assert!(BlockAPI::find_deploy(&engine_cell, &vec![1u8; 10])
+        .await
+        .is_err());
+    assert!(BlockAPI::get_block(&engine_cell, "abcdef01").await.is_err());
+    assert!(BlockAPI::last_finalized_block(&engine_cell).await.is_err());
+    assert!(BlockAPI::is_finalized(&engine_cell, "abcdef01")
+        .await
+        .is_err());
+    assert!(
+        BlockAPI::deploy_finalization_status(&engine_cell, &[1u8; 8])
+            .await
+            .is_err()
+    );
+    assert!(BlockAPI::list_pending_deploys(&engine_cell, None)
+        .await
+        .is_err());
+    assert!(BlockAPI::bond_status(&engine_cell, &vec![1u8; 33])
+        .await
+        .is_err());
+    assert!(BlockAPI::get_latest_message(&engine_cell).await.is_err());
+    assert!(BlockAPI::get_listening_name_data_response(
+        &engine_cell,
+        1,
+        Par::default(),
+        MAX_BLOCK_LIMIT
+    )
+    .await
+    .is_err());
+    assert!(BlockAPI::get_listening_name_continuation_response(
+        &engine_cell,
+        1,
+        &[Par::default()],
+        MAX_BLOCK_LIMIT
+    )
+    .await
+    .is_err());
+    assert!(
+        BlockAPI::get_data_at_par(&engine_cell, &Par::default(), "aabbcc".to_string(), false)
+            .await
+            .is_err()
+    );
+
+    let main_chain = BlockAPI::show_main_chain(&engine_cell, 10, MAX_BLOCK_LIMIT).await;
+    assert!(
+        main_chain.is_empty(),
+        "show_main_chain degrades to an empty listing without casper"
+    );
+}
+
+#[test]
+fn preview_private_names_is_deterministic_and_clamped() {
+    let deployer: Vec<u8> = vec![7u8; 33];
+
+    let first = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
+    let second = BlockAPI::preview_private_names(&deployer, 42, 3).unwrap();
+    assert_eq!(first.len(), 3);
+    assert_eq!(
+        first, second,
+        "the same deployer and timestamp must yield the same names"
+    );
+
+    let different_time = BlockAPI::preview_private_names(&deployer, 43, 3).unwrap();
+    assert_ne!(first, different_time);
+
+    assert!(BlockAPI::preview_private_names(&deployer, 42, -5)
+        .unwrap()
+        .is_empty());
+}

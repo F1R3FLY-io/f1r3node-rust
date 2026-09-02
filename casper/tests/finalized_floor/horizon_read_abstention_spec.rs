@@ -108,6 +108,9 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
         lifecycle: Arc::new(PlRwLock::new(
             block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
         )),
+        carrier_index: Arc::new(PlRwLock::new(
+            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+        )),
     };
     (dag, genesis, target)
 }
