@@ -702,3 +702,135 @@ impl GrpcTransportReceiver {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::test_instances::create_rp_conf_ask;
+
+    fn peer(name: &str) -> PeerNode {
+        PeerNode {
+            id: NodeIdentifier {
+                key: Bytes::from(name.as_bytes().to_vec()),
+            },
+            endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+        }
+    }
+
+    fn noop_handlers() -> MessageHandlers {
+        (
+            Arc::new(
+                |_send: CommSend| -> Pin<Box<dyn Future<Output = Result<(), CommError>> + Send>> {
+                    Box::pin(async { Ok(()) })
+                },
+            ),
+            Arc::new(
+                |_stream: StreamMessage| -> Pin<
+                    Box<dyn Future<Output = Result<(), CommError>> + Send>,
+                > { Box::pin(async { Ok(()) }) },
+            ),
+        )
+    }
+
+    fn service(
+        buffers_map: Arc<Mutex<HashMap<PeerNode, PeerBufferSlot>>>,
+    ) -> TransportLayerService {
+        TransportLayerService::new(
+            "test".to_string(),
+            create_rp_conf_ask(peer("local"), None, None),
+            1024,
+            buffers_map,
+            noop_handlers(),
+            Arc::new(dashmap::DashMap::new()),
+            1,
+        )
+    }
+
+    #[test]
+    fn calculate_hash_is_deterministic_and_input_sensitive() {
+        assert_eq!(calculate_hash(b"abc"), calculate_hash(b"abc"));
+        assert_ne!(calculate_hash(b"abc"), calculate_hash(b"abd"));
+    }
+
+    #[test]
+    fn internal_server_error_response_carries_message() {
+        let buffers_map = Arc::new(Mutex::new(HashMap::new()));
+        let service = service(buffers_map);
+        let response = service.create_internal_server_error_response("boom".to_string());
+        match response.payload {
+            Some(models::routing::tl_response::Payload::InternalServerError(err)) => {
+                assert_eq!(err.error, prost::bytes::Bytes::from("boom"));
+            }
+            other => panic!("unexpected payload: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn circuit_breaker_opens_on_wrong_network_and_oversize() {
+        use super::super::stream_handler::{Header as StreamHeader, Streamed};
+
+        fn stream_header(network_id: &str) -> StreamHeader {
+            StreamHeader::new(
+                PeerNode {
+                    id: NodeIdentifier {
+                        key: Bytes::from(b"sender".to_vec()),
+                    },
+                    endpoint: Endpoint::new("host".to_string(), 40400, 40404),
+                },
+                "BlockMessage".to_string(),
+                10,
+                network_id.to_string(),
+                false,
+            )
+        }
+
+        CIRCUIT_BREAKER_PARAMS.with(|params| {
+            *params.borrow_mut() = Some(("expected-net".to_string(), 100));
+        });
+
+        let mut streamed = Streamed::new("key".to_string());
+        streamed.header = Some(stream_header("other-net"));
+        assert_eq!(
+            circuit_breaker_with_params(&streamed),
+            Circuit::opened(StreamError::wrong_network_id())
+        );
+
+        streamed.header = Some(stream_header("expected-net"));
+        streamed.read_so_far = 101;
+        assert_eq!(
+            circuit_breaker_with_params(&streamed),
+            Circuit::opened(StreamError::circuit_opened())
+        );
+
+        streamed.read_so_far = 50;
+        assert_eq!(circuit_breaker_with_params(&streamed), Circuit::closed());
+
+        CIRCUIT_BREAKER_PARAMS.with(|params| {
+            *params.borrow_mut() = None;
+        });
+        assert_eq!(circuit_breaker_with_params(&streamed), Circuit::closed());
+    }
+
+    #[tokio::test]
+    async fn stale_peer_buffers_are_evicted() {
+        let buffers_map = Arc::new(Mutex::new(HashMap::new()));
+        let service = service(buffers_map.clone());
+
+        {
+            let mut map = buffers_map.lock().await;
+            map.insert(peer("stale"), PeerBufferSlot {
+                once_cell: Arc::new(OnceCell::new()),
+                last_seen_ms: 0,
+            });
+        }
+
+        for _ in 0..(PEER_BUFFER_CLEANUP_EVERY_REQUESTS + 1) {
+            service.maybe_cleanup_stale_peer_buffers().await;
+        }
+
+        assert!(buffers_map.lock().await.is_empty());
+    }
+}

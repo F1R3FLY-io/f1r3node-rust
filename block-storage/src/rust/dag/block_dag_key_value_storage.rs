@@ -59,6 +59,7 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use super::block_metadata_store::BlockMetadataStore;
+use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
@@ -131,6 +132,10 @@ pub struct KeyValueDagRepresentation {
     /// these — Pending/Finalized/Expired/Failed are lookups, never
     /// computations.
     pub lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// The repeat-deploy carrier index (see `carrier_index`): per-sig
+    /// carrier records over valid, invalid, and settled blocks, plus the
+    /// engagement watermark. Fed by `insert` before DAG visibility.
+    pub carrier_index: Arc<PlRwLock<CarrierIndex>>,
 }
 
 impl KeyValueDagRepresentation {
@@ -231,10 +236,35 @@ impl KeyValueDagRepresentation {
         self.lifecycle.read().open_sigs()
     }
 
+    /// Repeat-deploy carrier index: the height since which every insert
+    /// has recorded carriers on this database. The fast path engages only
+    /// for scan windows starting at or above this watermark; `None` means
+    /// the index was never initialized and the fast path stays off.
+    pub fn carrier_index_watermark(&self) -> Result<Option<i64>, KvStoreError> {
+        self.carrier_index.read().watermark()
+    }
+
+    /// Repeat-deploy carrier index: true when the index holds NO carrier
+    /// for the sig. Sound as an absence proof only when the scan window
+    /// starts at or above the watermark. A `false` is not a verdict — it
+    /// routes the sig to the exact ancestor scan.
+    pub fn carrier_index_proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
+        self.carrier_index.read().proves_absence(sig)
+    }
+
+    /// Repeat-deploy carrier index: drop entries below the cutoff (below
+    /// every future scan window). The finality register drives this on
+    /// floor advances.
+    pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
+        self.carrier_index.read().prune_below(cutoff)
+    }
+
     /// The sig's most recent canonical appearance — the latest lifecycle
     /// event by (height, hash), or the terminal record's frozen display
     /// block once the row is pruned. A pure function of the DAG's bodies,
-    /// so the answer never depends on node-local insertion order.
+    /// so the answer never depends on node-local insertion order. Events
+    /// whose block is not in this representation's `dag_set` are orphans
+    /// from a crash inside the ingest-first window and never resolve.
     pub fn deploy_canonical_appearance(
         &self,
         sig: &[u8],
@@ -242,7 +272,9 @@ impl KeyValueDagRepresentation {
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(sig)?
+            .canonical_appearance(sig, &|h| {
+                self.dag_set.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
     }
 
@@ -777,6 +809,8 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
     /// Deploy-lifecycle tables (see `KeyValueDagRepresentation::lifecycle`).
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
+    /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
+    pub(crate) carrier_index: Arc<PlRwLock<CarrierIndex>>,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
@@ -807,16 +841,57 @@ pub struct BlockDagKeyValueStorage {
 impl BlockDagKeyValueStorage {
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
-    /// than a representation.
+    /// than a representation. Lock order: `block_metadata_index` before
+    /// `lifecycle` (the DAG-visibility filter reads the metadata state).
     pub fn deploy_canonical_appearance(
         &self,
         sig: &[u8],
     ) -> Result<Option<BlockHash>, KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
         Ok(self
             .lifecycle
             .read()
-            .canonical_appearance(sig)?
+            .canonical_appearance(sig, &|h| {
+                metadata_guard.contains(&BlockHash::copy_from_slice(h))
+            })?
             .map(BlockHash::from))
+    }
+
+    /// First-boot carrier-index initialization (startup, next to the
+    /// LFB-migration precedent). Writes the watermark W once: 0 on an
+    /// empty database (complete from the first insert), else the current
+    /// max height + 1 (complete from the next insert). Blocks below W are
+    /// never claimed — the fast path engages only for scan windows that
+    /// start at or above W — so no backfill walk exists and there is no
+    /// walk-completeness state to certify or to forge. Returns the
+    /// effective watermark.
+    pub fn ensure_carrier_watermark(&self) -> Result<i64, KvStoreError> {
+        let _lock_guard = self.global_lock.write();
+        let next_height = {
+            let metadata_guard = self.block_metadata_index.read();
+            let dag_state_guard = metadata_guard.dag_state().read();
+            dag_state_guard
+                .height_map
+                .get_max()
+                .map(|(h, _)| h + 1)
+                .unwrap_or(0)
+        };
+        self.carrier_index
+            .read()
+            .set_watermark_if_absent(next_height)
+    }
+
+    /// Test-only corruption helper (P2-16-style escape hatch): deletes the
+    /// PERSISTED metadata row for a block while the in-memory DAG state
+    /// still lists it, simulating a crash between the lifecycle ingest and
+    /// the metadata add.
+    #[cfg(any(test, feature = "test-internals"))]
+    pub fn remove_block_metadata_row_for_tests(
+        &self,
+        hash: &BlockHash,
+    ) -> Result<(), KvStoreError> {
+        let metadata_guard = self.block_metadata_index.read();
+        metadata_guard.delete_kv_row_for_tests(hash)
     }
 
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
@@ -849,6 +924,10 @@ impl BlockDagKeyValueStorage {
         let lifecycle_events_kv_store = kvm.store("deploy-lifecycle-events".to_string()).await?;
         let lifecycle_terminal_kv_store =
             kvm.store("deploy-lifecycle-terminal".to_string()).await?;
+        let carrier_index_kv_store = kvm.store("carrier-index".to_string()).await?;
+        let carrier_index_meta_kv_store = kvm.store("carrier-index-meta".to_string()).await?;
+        let carrier_index_tables =
+            CarrierIndex::new(carrier_index_kv_store, carrier_index_meta_kv_store);
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
@@ -864,6 +943,7 @@ impl BlockDagKeyValueStorage {
             frontier_index: frontier_index_db,
             equivocation_tracker_index: equivocation_tracker_store,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
+            carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
@@ -962,6 +1042,7 @@ impl BlockDagKeyValueStorage {
             frontier_index,
             equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
+            carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             dag_generation,
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
@@ -1063,6 +1144,7 @@ impl BlockDagKeyValueStorage {
             floor_index: self.floor_index.clone(),
             frontier_index: self.frontier_index.clone(),
             lifecycle: self.lifecycle.clone(),
+            carrier_index: self.carrier_index.clone(),
         })
     }
 
@@ -1242,46 +1324,76 @@ impl BlockDagKeyValueStorage {
                 tracing::warn!("{}", log_empty_sender);
             }
 
+            // Carrier-index ingest: every body sig — valid, invalid, and
+            // settled alike — is recorded BEFORE the metadata-index add, so
+            // the completeness invariant behind the repeat-deploy fast path
+            // holds at every crash point: a crash here leaves orphan
+            // carrier entries (harmless — a hit just routes to the exact
+            // scan), never a DAG-visible block with unindexed sigs. Every
+            // insert path (validated, proposed, genesis, LFS, fixtures)
+            // flows through here, so coverage is total by construction
+            // from the watermark onward. `body.deploys` sigs are
+            // decode-verified (`Signed::from_signed_data`); the unverified
+            // `rejected_deploys` sigs are deliberately NOT recorded — the
+            // ancestor scan never reads them, and the carrier index must
+            // not ingest attacker-chosen keys.
+            {
+                let block_number = block.body.state.block_number;
+                let carrier_guard = self.carrier_index.write();
+                for pd in &block.body.deploys {
+                    carrier_guard.record_once(
+                        &pd.deploy.sig,
+                        block_number,
+                        block.block_hash.to_vec(),
+                    )?;
+                }
+            }
+
+            // Lifecycle event ingest: one body pass projects inclusion and
+            // rejection events into the per-sig lifecycle rows. Invalid
+            // blocks contribute nothing — their bodies are not canonical
+            // history (the carrier index above covers the repeat-deploy
+            // scan's view of them). Appends go through `append_event_once`:
+            // after a crash inside this ingest-first window the block is
+            // not yet DAG-visible, so its redelivery re-runs this pass —
+            // the per-(block, kind) dedup makes that retry write nothing
+            // twice.
+            {
+                let block_number = block.body.state.block_number;
+                let lifecycle_guard = self.lifecycle.write();
+                if !invalid {
+                    for pd in &block.body.deploys {
+                        lifecycle_guard.append_event_once(
+                            &pd.deploy.sig,
+                            Some(pd.deploy.data.valid_after_block_number),
+                            LifecycleEvent {
+                                height: block_number,
+                                block_hash: block.block_hash.to_vec(),
+                                kind: LifecycleEventKind::Included {
+                                    is_failed: pd.is_failed,
+                                },
+                            },
+                        )?;
+                    }
+                    for rd in &block.body.rejected_deploys {
+                        lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                            height: block_number,
+                            block_hash: block.block_hash.to_vec(),
+                            kind: LifecycleEventKind::Rejected {
+                                duplicate: rd.duplicate,
+                                carrier: rd.carrier.to_vec(),
+                            },
+                        })?;
+                    }
+                }
+                drop(lifecycle_guard);
+            }
+
             let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
             self.dag_generation.fetch_add(1, Ordering::Relaxed);
-
-            // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. Invalid
-            // blocks contribute nothing — their bodies are not canonical
-            // history. Every insert path
-            // (validated, proposed, genesis, LFS, fixtures) flows through
-            // here, so ingest coverage is total by construction.
-            if !invalid {
-                let block_number = block.body.state.block_number;
-                let lifecycle_guard = self.lifecycle.write();
-                for pd in &block.body.deploys {
-                    lifecycle_guard.append_events(
-                        &pd.deploy.sig,
-                        Some(pd.deploy.data.valid_after_block_number),
-                        vec![LifecycleEvent {
-                            height: block_number,
-                            block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Included {
-                                is_failed: pd.is_failed,
-                            },
-                        }],
-                    )?;
-                }
-                for rd in &block.body.rejected_deploys {
-                    lifecycle_guard.append_events(&rd.sig, None, vec![LifecycleEvent {
-                        height: block_number,
-                        block_hash: block.block_hash.to_vec(),
-                        kind: LifecycleEventKind::Rejected {
-                            duplicate: rd.duplicate,
-                            carrier: rd.carrier.to_vec(),
-                        },
-                    }])?;
-                }
-                drop(lifecycle_guard);
-            }
 
             if invalid {
                 self.invalid_blocks_index
