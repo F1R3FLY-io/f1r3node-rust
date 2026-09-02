@@ -101,6 +101,32 @@ impl ExploratoryDeployConfig {
         })
     }
 
+    /// Resolve the operator-facing form of `max_concurrent`: `0` derives the
+    /// value from this host's cores (observers are the dedicated servers of
+    /// exploratory traffic, and the right ceiling is a host property); an
+    /// explicit value is honored, clamped to the semaphore's permit range.
+    /// The constructed config always carries a real ceiling — `new` still
+    /// rejects 0.
+    pub fn resolve(
+        max_concurrent: usize,
+        phlo_limit: i64,
+        execution_timeout: Duration,
+    ) -> Result<Self, CasperError> {
+        let resolved = if max_concurrent == 0 {
+            let cores = std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(4);
+            Self::derive_max_concurrent(cores)
+        } else {
+            max_concurrent.min(Semaphore::MAX_PERMITS)
+        };
+        Self::new(resolved, phlo_limit, execution_timeout)
+    }
+
+    /// Two cores stay reserved for block-following; a floor of two keeps any
+    /// host able to serve overlapping clients.
+    pub fn derive_max_concurrent(cores: usize) -> usize { cores.saturating_sub(2).max(2) }
+
     /// Fixture for the test-only constructors. Deliberately not a `Default`
     /// impl: the operator-facing default lives in `defaults.conf` and reaches
     /// the runtime through `create_with_history_config`, so a second
@@ -1543,6 +1569,32 @@ mod tests {
         assert_eq!(valid.max_concurrent, 2);
         assert_eq!(valid.phlo_limit, 42);
         assert_eq!(valid.execution_timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn exploratory_deploy_concurrency_derivation() {
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(1), 2);
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(4), 2);
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(8), 6);
+        assert_eq!(ExploratoryDeployConfig::derive_max_concurrent(16), 14);
+
+        let derived = ExploratoryDeployConfig::resolve(0, 5_000_000, Duration::from_secs(15))
+            .expect("the sentinel derives, never rejects");
+        assert!(derived.max_concurrent >= 2);
+
+        let explicit = ExploratoryDeployConfig::resolve(5, 5_000_000, Duration::from_secs(15))
+            .expect("explicit value");
+        assert_eq!(explicit.max_concurrent, 5);
+
+        let clamped =
+            ExploratoryDeployConfig::resolve(usize::MAX, 5_000_000, Duration::from_secs(15))
+                .expect("an oversized explicit value clamps instead of panicking");
+        assert_eq!(clamped.max_concurrent, Semaphore::MAX_PERMITS);
+
+        assert!(
+            ExploratoryDeployConfig::resolve(0, 0, Duration::from_secs(15)).is_err(),
+            "the sentinel does not bypass the other range checks"
+        );
     }
 
     #[tokio::test]

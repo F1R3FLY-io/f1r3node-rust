@@ -567,7 +567,7 @@ mod embedded_defaults_tests {
         assert!(matches!(cfg.logging.sink, LogSink::Stdout));
         assert!(matches!(cfg.logging.file.rotation, LogRotation::Daily));
         assert_eq!(cfg.logging.file.retention, 14);
-        assert_eq!(cfg.api_server.exploratory_deploy_max_concurrent, 1);
+        assert_eq!(cfg.api_server.exploratory_deploy_max_concurrent, 0);
         assert_eq!(cfg.api_server.exploratory_deploy_phlo_limit, 5_000_000);
         assert_eq!(
             cfg.api_server.exploratory_deploy_execution_timeout,

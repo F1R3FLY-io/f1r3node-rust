@@ -250,11 +250,19 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             mergeable_store,
             Arc::new(Genesis::default_mergeable_tags()),
             external_services.clone(),
-            ExploratoryDeployConfig::new(
-                conf.api_server.exploratory_deploy_max_concurrent,
-                conf.api_server.exploratory_deploy_phlo_limit,
-                conf.api_server.exploratory_deploy_execution_timeout,
-            )?,
+            {
+                let exploratory = ExploratoryDeployConfig::resolve(
+                    conf.api_server.exploratory_deploy_max_concurrent,
+                    conf.api_server.exploratory_deploy_phlo_limit,
+                    conf.api_server.exploratory_deploy_execution_timeout,
+                )?;
+                tracing::info!(
+                    max_concurrent = exploratory.max_concurrent,
+                    derived = conf.api_server.exploratory_deploy_max_concurrent == 0,
+                    "exploratory-deploy concurrency resolved"
+                );
+                exploratory
+            },
         );
         tracing::debug!("[Setup] RuntimeManager created successfully");
         result
