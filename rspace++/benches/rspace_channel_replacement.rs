@@ -17,6 +17,7 @@ use rspace_plus_plus::rspace::trace::event::Produce;
 
 const TREATMENT_SIZES: [usize; 5] = [1_000, 2_000, 4_000, 8_000, 16_000];
 const CONTROL_SIZES: [usize; 5] = [64, 128, 256, 512, 1_024];
+const LOADED_REPLACEMENT_SIZES: [usize; 5] = [1_000, 2_000, 4_000, 8_000, 16_000];
 const RETAINED_TRIALS: usize = 5;
 
 #[derive(Clone, Copy)]
@@ -73,6 +74,39 @@ fn measure(arm: Arm, channels: usize) -> (u128, usize, u64, usize) {
     (elapsed_ns, distinct, cardinality, loaded)
 }
 
+fn measure_loaded_replacement(
+    resident_channels: usize,
+    replacement_ordinal: usize,
+) -> (u128, usize, u64, usize) {
+    assert_ne!(resident_channels, 0);
+    let mut store = RSpaceDataStore::<String, String>::new();
+    for index in 0..resident_channels {
+        store
+            .set_channel(format!("channel-{index:08}"), [datum(index)])
+            .unwrap();
+    }
+
+    let replacement = datum(
+        resident_channels
+            .checked_add(replacement_ordinal)
+            .expect("benchmark ordinals fit usize"),
+    );
+    let started = Instant::now();
+    store
+        .set_channel("channel-00000000".to_owned(), [replacement])
+        .unwrap();
+    let elapsed_ns = started.elapsed().as_nanos();
+
+    let distinct = black_box(store.distinct_len());
+    let cardinality = black_box(store.cardinality());
+    let loaded = black_box(store.loaded_channel_count());
+    assert_eq!(distinct, resident_channels);
+    assert_eq!(cardinality, resident_channels as u64);
+    assert_eq!(loaded, resident_channels);
+    drop(store);
+    (elapsed_ns, distinct, cardinality, loaded)
+}
+
 fn main() {
     println!("META\trspace-channel-prefix-publication-v1\ttrials={RETAINED_TRIALS}");
     println!("OBS_HEADER\tarm\tchannels\ttrial\telapsed_ns\tdistinct\tcardinality\tloaded");
@@ -95,6 +129,22 @@ fn main() {
                     loaded
                 );
             }
+        }
+    }
+
+    println!("META\trspace-loaded-channel-replacement-v1\ttrials={RETAINED_TRIALS}");
+    println!(
+        "LOADED_OBS_HEADER\tresident_channels\ttrial\telapsed_ns\tdistinct\tcardinality\tloaded"
+    );
+    for resident_channels in LOADED_REPLACEMENT_SIZES {
+        let _ = measure_loaded_replacement(resident_channels.min(64), 0);
+        for trial in 0..RETAINED_TRIALS {
+            let (elapsed_ns, distinct, cardinality, loaded) =
+                measure_loaded_replacement(resident_channels, trial);
+            println!(
+                "LOADED_OBS\t{}\t{}\t{}\t{}\t{}\t{}",
+                resident_channels, trial, elapsed_ns, distinct, cardinality, loaded
+            );
         }
     }
 }
