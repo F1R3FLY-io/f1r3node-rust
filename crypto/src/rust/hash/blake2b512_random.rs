@@ -94,6 +94,9 @@ impl Blake2b512Random {
 
     pub fn split_byte(&self, index: u8) -> Blake2b512Random {
         let mut split = self.copy();
+        // Deliberate two's-complement reinterpretation, not a lossy narrowing:
+        // add_byte takes i8, and indices 128..=255 must land on the same byte
+        // pattern Scala produces via `id.toByte`. Do not drop this cast.
         split.add_byte(index as i8);
         split
     }
@@ -460,10 +463,14 @@ mod tests {
         }
         assert_eq!(seen.len(), 256);
 
-        assert_eq!(
-            base.split_byte(128).next(),
-            base.split_byte((-128i8) as u8).next()
-        );
+        // Indices 128..=255 previously panicked on the i8 conversion. They now
+        // hash as the two's-complement byte pattern of the index (200 -> -56),
+        // the same value the historical i8 path fed to add_byte. This golden
+        // vector locks that encoding against future refactors of split_byte.
+        assert_eq!(base.split_byte(200).next(), [
+            63, 124, 112, -114, 99, -48, -30, -57, -63, -102, 36, -21, 75, -46, 41, 42, -52, 116,
+            -105, 24, -31, 0, 85, 3, 111, 107, 14, -128, 75, 81, 73, -116
+        ]);
     }
 
     #[test]
