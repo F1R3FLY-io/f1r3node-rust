@@ -3601,15 +3601,124 @@ impl FsProcesses {
             _ => None,
         };
         if is_replay {
-            // H-29-3 lift slice 2: follower journals from the leader's
-            // cached reply.  Non-recursive → single RemoveDir entry
-            // (fully derivable from args).  Recursive Consensus →
-            // walk the reply's manifest and journal each entry;
-            // Oracular has no manifest, so no journal.
+            // Phase 4 (Consensus re-execute + verify, 2026-09-02):
+            // Non-recursive Consensus follower re-executes the
+            // unlinkat(AT_REMOVEDIR) syscall against its own subdir
+            // via the Shape A resolver, then verifies fresh vs
+            // cached.  Same pattern as fs_chmod / fs_remove_file /
+            // fs_rename / fs_copy_file.  Recursive Consensus keeps
+            // the existing manifest-mirror-from-cached behavior —
+            // recursive re-execute belongs in a separate Phase 4
+            // slice (R5: walkdir path canonicalization for byte-
+            // identity across leader/follower under Shape A per-
+            // validator subdirs).  Non-recursive Oracular keeps the
+            // H-6 tautological finalize path.
             if let Some((root, rel, recursive)) = &parsed {
+                if !recursive && cmode == ConsensusMode::Consensus {
+                    // Phase 4 non-recursive Consensus re-execute.
+                    let canon_path = canonicalize_lexical(root, rel);
+                    if self
+                        .journal_path_mutation_single(
+                            cmode,
+                            WalOp::RemoveDir,
+                            canon_path,
+                            None,
+                            None,
+                            None,
+                            ack,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                        produce(&out, ack).await?;
+                        return Ok(out);
+                    }
+                    // Fresh syscall via Shape A resolver + lock-check
+                    // gate (same as leader's non-recursive path).
+                    let raw_root_pb = PathBuf::from(root);
+                    let (on_disk_root_pb, expected_root_id) =
+                        self.handles.root_registry.resolve_or_identity(&raw_root_pb);
+                    let rel_owned = rel.to_string();
+                    let lock_registry = self.handles.lock_registry.clone();
+                    let fresh_reply = spawn_blocking(move || -> Par {
+                        let parent = match safe_descend_verified(
+                            &on_disk_root_pb,
+                            &rel_owned,
+                            expected_root_id,
+                        ) {
+                            Ok(p) => p,
+                            Err(qe) => {
+                                let (c, m) = quarantine_err_reply(&qe);
+                                return err(c, m);
+                            }
+                        };
+                        let target_dev_inode = target_dev_inode_at(&parent);
+                        let target_is_locked = target_dev_inode
+                            .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
+                            .unwrap_or(false);
+                        // Consensus + locked → FSERR_BUSY (symmetric
+                        // with leader; shared LockRegistry across
+                        // spawned runtimes means both sides observe
+                        // the same lock state).
+                        if target_is_locked {
+                            return err(
+                                FSERR_BUSY,
+                                "cannot remove: lock held on target (dev, inode)",
+                            );
+                        }
+                        let rc = unsafe {
+                            libc::unlinkat(
+                                parent.as_raw_fd(),
+                                parent.leaf_ptr(),
+                                libc::AT_REMOVEDIR,
+                            )
+                        };
+                        if rc == 0 {
+                            ok_bare()
+                        } else {
+                            let e = std::io::Error::last_os_error();
+                            err(io_err_code(&e), io_msg_scrub(&e))
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"));
+                    // Verify + finalize.
+                    let supp_n =
+                        fs_remove_dir_supplement_count_from_previous(&parsed, cmode, &previous);
+                    self.metering.reserve_incremental_primitive(
+                        costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
+                    )?;
+                    match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                        Ok(()) => {
+                            if let Some(code_str) =
+                                extract_err_code(std::slice::from_ref(&fresh_reply))
+                            {
+                                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                            }
+                            let out = vec![fresh_reply];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
+                        Err(reason) => {
+                            let divergence_reply = err(
+                                FSERR_CONSENSUS_DIVERGENCE,
+                                format!(
+                                    "fs_remove_dir follower re-execute diverges from leader: \
+                                     {reason}",
+                                ),
+                            );
+                            self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                            let out = vec![divergence_reply];
+                            produce(&out, ack).await?;
+                            return Ok(out);
+                        }
+                    }
+                }
                 if !recursive {
-                    // Non-recursive: journal single RemoveDir entry
-                    // (matches the leader path below) if Consensus.
+                    // Non-recursive Oracular: journal single RemoveDir
+                    // entry (no-op for Oracular via journal_path_mutation_
+                    // single) + H-6 finalize from cached.
                     let canon_path = canonicalize_lexical(root, rel);
                     let _ = self
                         .journal_path_mutation_single(
@@ -6164,8 +6273,11 @@ mod cmode_tests {
         let fn_start = src
             .find("pub async fn fs_remove_dir")
             .expect("handlers.rs missing fs_remove_dir definition");
-        // 10KB window (see fs_remove_file test for rationale).
-        let window = &src[fn_start..std::cmp::min(fn_start + 10000, src.len())];
+        // 30KB window: fs_remove_dir grew past 20KB in Phase 4
+        // (2026-09-02) after the non-recursive Consensus follower
+        // re-execute branch landed, adding a second spawn_blocking
+        // body plus its lock-check + syscall + verify tail.
+        let window = &src[fn_start..std::cmp::min(fn_start + 30000, src.len())];
         assert!(
             window.contains("target_dev_inode_at(&parent)"),
             "step 6 regression: fs_remove_dir must call target_dev_inode_at"

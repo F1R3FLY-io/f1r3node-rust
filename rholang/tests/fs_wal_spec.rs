@@ -5364,6 +5364,262 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_remove_dir non-recursive positive re-execute**.  Leader
+    /// removes an empty directory via unlinkat(AT_REMOVEDIR).
+    /// Restore pre-play state (recreate the directory) between
+    /// leader + follower evaluate so follower's own real syscall
+    /// can succeed against its own directory.  Post-follower:
+    /// directory is gone.  Regression to Phase-0 tautological
+    /// leaves the directory present.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_non_recursive_reexecute_removes_follower_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("empty-dir");
+        std::fs::create_dir(&target).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ackCh in {{
+              fsRemoveDir!("{root}", "empty-dir", false, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[120; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_dir non-recursive positive");
+        assert!(!target.exists(), "leader's unlinkat must have removed dir");
+
+        // Restore dir pre-follower — proves follower's own real
+        // unlinkat re-did the removal.
+        std::fs::create_dir(&target).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_remove_dir non-recursive positive");
+
+        // LOAD-BEARING: directory must be gone post-follower-evaluate.
+        // Regression to Phase-0 tautological leaves it present.
+        assert!(
+            !target.exists(),
+            "Phase 4 REGRESSION: follower's fs_remove_dir non-recursive did NOT \
+             fire — dir still exists after follower.evaluate.  Either fresh-syscall \
+             path not engaged (Phase-0 tautological came back) or Shape A resolver \
+             failed to route."
+        );
+
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 4: WAL entry {i} differs on fs_remove_dir non-recursive \
+                 positive: leader={l:?} follower={f:?}"
+            );
+        }
+        let rd_entry = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::RemoveDir)
+            .expect("leader must journal a RemoveDir entry");
+        assert_eq!(rd_entry.outcome, WalOutcome::Success);
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs_remove_dir");
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_remove_dir non-recursive divergence-detection**.  Leader
+    /// removes the directory successfully; do NOT restore between
+    /// evaluate — follower's unlinkat returns ENOENT → fresh err vs
+    /// cached [true] → CONSENSUS_DIVERGENCE fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_non_recursive_reexecute_detects_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("empty-dir")).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ackCh in {{
+              fsRemoveDir!("{root}", "empty-dir", false, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[121; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_dir non-recursive divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::RemoveDir && e.outcome == WalOutcome::Success),
+            "leader must journal a successful RemoveDir entry"
+        );
+
+        // DO NOT restore — follower's unlinkat sees ENOENT.
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 4 D1 enforcement: follower's fresh ENOENT vs leader's cached \
+             [true] must trip RSpace rig verification"
+        );
+
+        let follower_rd = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::RemoveDir)
+            .expect("follower must have a pre-appended RemoveDir entry");
+        match follower_rd.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 4: RemoveDir divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 4 REGRESSION: follower's RemoveDir entry stayed at \
+                 Success despite fs drift.  Entry: {follower_rd:?}"
+            ),
+        }
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_remove_dir non-recursive symmetric syscall error**.
+    /// Attempt to remove a non-existent directory on both sides →
+    /// both see ENOENT → FSERR_NOT_FOUND → verify OK → both finalize
+    /// to Failure { FSERR_CODE_NOT_FOUND }, NOT CONSENSUS_DIVERGENCE.
+    /// Parity with fs_chmod / fs_remove_file / fs_rename /
+    /// fs_copy_file symmetric-error pins.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_remove_dir_non_recursive_symmetric_syscall_error_finalizes_to_failure() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_NOT_FOUND;
+
+        let dir = tempfile::tempdir().unwrap();
+        // No directory at "missing-dir".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), ackCh in {{
+              fsRemoveDir!("{root}", "missing-dir", false, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[122; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_remove_dir non-recursive symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_rd = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::RemoveDir)
+            .expect("leader must journal a RemoveDir entry");
+        match leader_rd.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_NOT_FOUND,
+                "leader's RemoveDir entry must finalize to Failure with NOT_FOUND \
+                 for unlinkat(AT_REMOVEDIR) on missing dir (ENOENT); got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's RemoveDir entry stayed at Success despite ENOENT.  \
+                 Leader H-6 finalize broken.  Entry: {leader_rd:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_remove_dir non-recursive symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 fs_remove_dir non-recursive symmetric-error: WALs must be \
+             byte-identical. A regression that spuriously fired \
+             CONSENSUS_DIVERGENCE on the symmetric FSERR_NOT_FOUND would \
+             fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression
