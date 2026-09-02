@@ -4270,6 +4270,300 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_chmod positive path** with load-bearing on-disk mode-
+    /// bits assertion.  Path-based mutation via `fchmodat`.  Under
+    /// Phase-0 tautological replay, the follower's is_replay branch
+    /// consumed the leader's cached reply and NEVER fired the
+    /// syscall — the follower's on-disk file mode stayed unchanged.
+    /// Under Phase 4, the follower's Consensus re-execute does a
+    /// real `fchmodat` against its own subdir via the Shape A
+    /// resolver.
+    ///
+    /// Uses same restore-mode pattern as fs_truncate's positive pin:
+    /// same term on both sides (RSpace rig hashes produce content
+    /// including arg values); restore file mode to a KNOWN-different
+    /// value (0o644) between leader + follower evaluate so the
+    /// follower's real fchmodat has to re-do the leader's work
+    /// (setting mode to 0o444).  Load-bearing post-follower on-disk
+    /// mode-bits check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_chmod_reexecute_changes_follower_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"content").unwrap();
+        // Pre-play mode = 0o644.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Target mode = 0o444 (read-only).
+        let target_mode: u32 = 0o444;
+        let term = format!(
+            r#"
+            new fsChmod(`rho:io:fs:native:1.0.0/chmod`), ackCh in {{
+              fsChmod!("{root}", "data.bin", {mode}, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+            mode = target_mode,
+        );
+        let r = Blake2b512Random::create_from_bytes(&[101; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_chmod positive");
+        let leader_mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            leader_mode, target_mode,
+            "leader's fchmodat must have set the file's mode to 0o444"
+        );
+
+        // Restore mode to 0o644 pre-follower — proves follower's own
+        // real fchmodat re-did the change.
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_chmod positive");
+
+        // LOAD-BEARING: file mode must be 0o444 post-follower-evaluate.
+        // Regression to Phase-0 tautological leaves it at 0o644.
+        let follower_mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(
+            follower_mode, target_mode,
+            "Phase 4 REGRESSION: follower's fs_chmod did NOT fire — file mode \
+             is still 0o{follower_mode:o} (expected 0o{target_mode:o}).  Either \
+             fresh-syscall path not engaged (Phase-0 tautological came back) or \
+             the Shape A resolver failed to route to the on-disk root.",
+        );
+
+        // Restore for cleanup.
+        let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644));
+
+        // WAL byte-identity.
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 4: WAL entry {i} differs on fs_chmod positive: \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        let chmod_entry = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Chmod)
+            .expect("leader must journal a Chmod entry");
+        assert_eq!(chmod_entry.mode_bits, Some(target_mode));
+        assert_eq!(chmod_entry.outcome, WalOutcome::Success);
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs_chmod");
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_chmod divergence-detection**.  Same chmod-cascade pattern
+    /// as other Phase-3 divergence pins.  Between leader + follower
+    /// evaluate, replace the file with a DIRECTORY at the same name;
+    /// follower's fchmodat on a directory (with AT_SYMLINK_NOFOLLOW)
+    /// still succeeds on most systems but may fail differently
+    /// depending on FS.  Simplest: remove the file entirely →
+    /// fchmodat returns ENOENT → FSERR_NOT_FOUND.  verify sees
+    /// fresh err vs cached ok → CONSENSUS_DIVERGENCE fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_chmod_reexecute_detects_divergence() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        std::fs::write(&target, b"content").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsChmod(`rho:io:fs:native:1.0.0/chmod`), ackCh in {{
+              fsChmod!("{root}", "data.bin", {mode}, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+            mode = 0o444u32,
+        );
+        let r = Blake2b512Random::create_from_bytes(&[102; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_chmod divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal
+                .iter()
+                .any(|e| e.op == WalOp::Chmod && e.outcome == WalOutcome::Success),
+            "leader must journal a successful Chmod entry"
+        );
+
+        // Force divergence: remove the file entirely.  Follower's
+        // fchmodat sees ENOENT → FSERR_NOT_FOUND, which differs from
+        // leader's cached [true].
+        std::fs::remove_file(&target).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 4 D1 enforcement: divergent state (file removed pre-follower) \
+             must trip RSpace rig verification on the fs_chmod produce"
+        );
+
+        let follower_chmod = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::Chmod)
+            .expect("follower must have a pre-appended Chmod entry");
+        match follower_chmod.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 4: Chmod divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 4 REGRESSION: follower's Chmod entry stayed at Success \
+                 despite fs drift.  Chmod entry: {follower_chmod:?}"
+            ),
+        }
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_chmod symmetric syscall error**.  Analog of fs_truncate /
+    /// fs_write / fs_write_at symmetric-error pins.  Attempt fchmodat
+    /// on a non-existent file — both leader and follower see the
+    /// same ENOENT → FSERR_NOT_FOUND → verify OK → both finalize to
+    /// Failure { FSERR_CODE_NOT_FOUND }, NOT CONSENSUS_DIVERGENCE.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_chmod_symmetric_syscall_error_finalizes_to_failure() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_NOT_FOUND;
+
+        let dir = tempfile::tempdir().unwrap();
+        // No file at "does-not-exist.bin".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsChmod(`rho:io:fs:native:1.0.0/chmod`), ackCh in {{
+              fsChmod!("{root}", "does-not-exist.bin", {mode}, "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+            mode = 0o644u32,
+        );
+        let r = Blake2b512Random::create_from_bytes(&[103; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_chmod symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_chmod = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::Chmod)
+            .expect("leader must journal a Chmod entry");
+        match leader_chmod.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_NOT_FOUND,
+                "leader's Chmod entry must finalize to Failure with NOT_FOUND \
+                 for fchmodat on missing file (ENOENT); got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's Chmod entry stayed at Success despite ENOENT.  H-6 \
+                 finalize_failure_journal broken.  Chmod entry: {leader_chmod:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_chmod symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 fs_chmod symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_NOT_FOUND would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression

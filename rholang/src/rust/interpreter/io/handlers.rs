@@ -3826,18 +3826,30 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
-            // Follower: if leader's cached reply was an error,
-            // flip the placeholder to Failure { code } so
-            // reconstruction on a fresh joiner skips the mutation
-            // symmetrically.
+        // Phase 4 (Consensus re-execute + verify, 2026-09-02):
+        // Path-based mutation.  Under Consensus, the follower now
+        // re-executes fchmodat against its own subdir file via the
+        // Shape A resolver, verifies the fresh reply's stable_hash
+        // matches leader's cached, and either keeps the pre-appended
+        // Success placeholder (on match) or flips it to Failure {
+        // FSERR_CODE_CONSENSUS_DIVERGENCE } (on mismatch).  Oracular
+        // follower is unchanged from the Phase-0 H-6 tautological
+        // finalize path.  Same shape as fs_truncate's Phase-3
+        // refactor since chmod's reply is `[true]` (no numeric
+        // payload).
+        if is_replay && cmode != ConsensusMode::Consensus {
+            // Oracular follower — Phase-0 H-6 shape.
             if let Some(code_str) = extract_err_code(&previous) {
                 self.finalize_failure_journal(fserr_to_code(&code_str), ack);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed {
+        // Fresh syscall — leader (always) or Consensus follower.
+        // safe_descend_verified + fchmodat via the follower's own
+        // resolved on-disk root (Shape A per-validator remap under
+        // Consensus; identity fall-through under Oracular).
+        let fresh_reply = match parsed {
             Some((root, rel, bits)) => {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
@@ -3887,13 +3899,41 @@ impl FsProcesses {
                 "expected (String, String, u64<=0o7777, String)",
             ),
         };
-        // H-6 mirror: flip placeholder to Failure on syscall error.
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        if is_replay {
+            // Consensus follower — Phase 4 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    // Match: fresh reply is byte-identical to cached.
+                    // H-6 finalize path applies to fresh symmetrically
+                    // — if both sides saw the same syscall error, both
+                    // finalize with the same code.
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!("fs_chmod follower re-execute diverges from leader: {reason}",),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — H-6 finalize on syscall error.
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
