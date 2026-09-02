@@ -5,6 +5,8 @@ theories/Bag.v
 theories/RSpaceCommit.v
 theories/GenerationCheckpointPublication.v
 theories/EPM1.v
+theories/IncrementalPrepareStreaming.v
+theories/StreamingCodecPDA.v
 theories/RMP2.v
 theories/SpatialMatcher.v
 theories/FreeMapJournal.v
@@ -28,8 +30,12 @@ theories/TwoLevelRSpaceOperations.v
 theories/TwoLevelRSpaceDelta.v
 theories/TwoLevelRSpaceRepresentation.v
 theories/TwoLevelRSpaceGuardedOwnership.v
+theories/TwoLevelRSpaceCheckpointCodec.v
+theories/TwoLevelRSpaceCheckpointStreaming.v
+theories/TwoLevelRSpaceCheckpointCompatibility.v
 theories/TwoLevelRSpaceAuthorityMutants.v
 theories/TwoLevelRSpaceOperationsMutants.v
 theories/TwoLevelRSpaceDeltaMutants.v
 theories/TwoLevelRSpaceRepresentationMutants.v
 theories/TwoLevelRSpaceGuardedOwnershipMutants.v
+theories/TwoLevelRSpaceCheckpointMutants.v
