@@ -250,6 +250,47 @@ impl BundleEntry {
         reject_char_set(&logical_name).map_err(|d| format!("logical_name: {d}"))?;
         reject_char_set(path_str).map_err(|d| format!("canon_path: {d}"))?;
         reject_char_set(&mode).map_err(|d| format!("mode: {d}"))?;
+        // Consensus `logical_name` MUST be a well-formed relative
+        // path — no absolute root, no Windows prefix, no ParentDir
+        // segments (2026-09-02, defense-in-depth per the
+        // consensus-reexecute plan's Deferred item).  Rationale:
+        // `project_bundle_per_validator` (in the test harness AND
+        // in the production RootIdentityRegistry provisioning
+        // flow) computes `on_disk_target = <subdir>.join(&logical_
+        // name)`.  `PathBuf::join` REPLACES self when the argument
+        // is absolute, so a malicious `logical_name = "/etc/
+        // passwd"` in an operator's bundle config would land the
+        // projection at `/etc/passwd` instead of under the
+        // validator subdir — a straight arbitrary-file overwrite
+        // via operator config compromise.  `..` segments similarly
+        // escape the subdir via lexical traversal.
+        //
+        // Oracular entries don't go through per-validator subdir
+        // projection (they stay at their operator-supplied
+        // canon_path), so this check is Consensus-only.  Operator
+        // config trust is assumed today (per f1r3node's threat
+        // model where the node is the only software on the
+        // machine), but this rejection surfaces a config bug or
+        // supply-chain attack as a genesis-build failure rather
+        // than a silent projection escape.
+        if consensus_mode == BundleConsensusMode::Consensus {
+            for component in std::path::Path::new(&logical_name).components() {
+                match component {
+                    std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_) => {
+                        return Err(format!(
+                            "logical_name {logical_name:?} contains illegal component \
+                             {component:?} for Consensus entry (must be a well-formed \
+                             relative path with no `..`, absolute root, or Windows \
+                             prefix segments — projection at `subdir.join(&logical_name)` \
+                             would escape the validator subdir)"
+                        ));
+                    }
+                }
+            }
+        }
         Ok(BundleEntry {
             logical_name,
             canon_path,
@@ -2207,6 +2248,114 @@ mod tests {
             BundleConsensusMode::Oracular,
         );
         assert!(r.is_ok(), "valid input rejected: {r:?}");
+    }
+
+    // Defense-in-depth pins (2026-09-02): Consensus `logical_name`
+    // must be a well-formed relative path.  `project_bundle_per_
+    // validator` computes `subdir.join(&logical_name)` — a malicious
+    // absolute or `..`-containing name would escape the validator
+    // subdir at projection time (arbitrary-file overwrite).
+
+    #[test]
+    fn try_new_rejects_absolute_logical_name_under_consensus() {
+        let r = BundleEntry::try_new(
+            "/etc/passwd".into(),
+            PathBuf::from("/tmp/staging/target"),
+            BundleEntryKind::File,
+            "rw".into(),
+            BundleConsensusMode::Consensus,
+        );
+        assert!(
+            r.is_err(),
+            "absolute logical_name under Consensus must be rejected: got {r:?}"
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_parent_dir_logical_name_under_consensus() {
+        let r = BundleEntry::try_new(
+            "..".into(),
+            PathBuf::from("/tmp/staging/target"),
+            BundleEntryKind::File,
+            "rw".into(),
+            BundleConsensusMode::Consensus,
+        );
+        assert!(
+            r.is_err(),
+            "logical_name `..` under Consensus must be rejected: got {r:?}"
+        );
+    }
+
+    #[test]
+    fn try_new_rejects_parent_dir_traversal_under_consensus() {
+        let r = BundleEntry::try_new(
+            "foo/../evil".into(),
+            PathBuf::from("/tmp/staging/target"),
+            BundleEntryKind::File,
+            "rw".into(),
+            BundleConsensusMode::Consensus,
+        );
+        assert!(
+            r.is_err(),
+            "logical_name containing `..` traversal under Consensus must be \
+             rejected: got {r:?}"
+        );
+    }
+
+    #[test]
+    fn try_new_accepts_nested_relative_logical_name_under_consensus() {
+        let r = BundleEntry::try_new(
+            "foo/bar/baz.bin".into(),
+            PathBuf::from("/tmp/staging/target"),
+            BundleEntryKind::File,
+            "rw".into(),
+            BundleConsensusMode::Consensus,
+        );
+        assert!(
+            r.is_ok(),
+            "well-formed nested relative logical_name under Consensus must be \
+             accepted: got {r:?}"
+        );
+    }
+
+    #[test]
+    fn try_new_accepts_curdir_prefix_logical_name_under_consensus() {
+        // "./foo" normalizes to "foo" via components() (CurDir is
+        // skipped by std::path::Component semantics) — harmless.
+        let r = BundleEntry::try_new(
+            "./foo".into(),
+            PathBuf::from("/tmp/staging/target"),
+            BundleEntryKind::File,
+            "rw".into(),
+            BundleConsensusMode::Consensus,
+        );
+        assert!(
+            r.is_ok(),
+            "logical_name with harmless `.` prefix under Consensus should be \
+             accepted (CurDir components are safe): got {r:?}"
+        );
+    }
+
+    #[test]
+    fn try_new_allows_absolute_logical_name_under_oracular() {
+        // Oracular entries don't go through per-validator subdir
+        // projection — their `logical_name` is used as a display /
+        // key value in Rholang tuples, not as a filesystem
+        // component.  An absolute-looking name is legal (though
+        // unusual) for Oracular; the ban is Consensus-only per the
+        // documented threat model.
+        let r = BundleEntry::try_new(
+            "/some/logical/key".into(),
+            PathBuf::from("/etc/myapp/data"),
+            BundleEntryKind::File,
+            "r".into(),
+            BundleConsensusMode::Oracular,
+        );
+        assert!(
+            r.is_ok(),
+            "absolute logical_name under Oracular is allowed (no projection \
+             escape surface): got {r:?}"
+        );
     }
 
     // MT-25-1: a non-empty-bundle composed source must actually parse
