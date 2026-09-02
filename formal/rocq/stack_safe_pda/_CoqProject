@@ -41,3 +41,5 @@ theories/TwoLevelRSpaceGuardedOwnershipMutants.v
 theories/TwoLevelRSpaceCheckpointMutants.v
 theories/TwoLevelRSpaceMatchTransaction.v
 theories/TwoLevelRSpaceMatchTransactionMutants.v
+theories/TwoLevelRSpaceCheckpointRecovery.v
+theories/TwoLevelRSpaceCheckpointRecoveryMutants.v
