@@ -142,17 +142,26 @@ fn final_anchor_teardown_measurement() {
                 .expect("RSPACE_TEARDOWN_SIZE must be an unsigned integer")
         })
         .unwrap_or(4_096);
-    let (guarded, expected_values, disposed) = measurement_map(&shape, size);
+    let trials = env::var("RSPACE_TEARDOWN_TRIALS")
+        .map(|raw| {
+            raw.parse::<usize>()
+                .expect("RSPACE_TEARDOWN_TRIALS must be an unsigned integer")
+        })
+        .unwrap_or(1);
+    assert_ne!(trials, 0, "RSPACE_TEARDOWN_TRIALS must be nonzero");
 
-    let started = Instant::now();
-    drop(black_box(guarded));
-    let elapsed_ns = started.elapsed().as_nanos();
+    for trial in 0..trials {
+        let (guarded, expected_values, disposed) = measurement_map(&shape, size);
+        let started = Instant::now();
+        drop(black_box(guarded));
+        let elapsed_ns = started.elapsed().as_nanos();
 
-    assert_eq!(disposed.load(Ordering::Relaxed), expected_values);
-    println!(
-        "TEARDOWN_OBS\tshape={}\tsize={}\tvalues={}\telapsed_ns={}",
-        shape, size, expected_values, elapsed_ns
-    );
+        assert_eq!(disposed.load(Ordering::Relaxed), expected_values);
+        println!(
+            "TEARDOWN_OBS\tshape={}\tsize={}\ttrial={}\tvalues={}\telapsed_ns={}",
+            shape, size, trial, expected_values, elapsed_ns
+        );
+    }
 }
 
 #[test]
