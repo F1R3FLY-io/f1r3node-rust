@@ -27,7 +27,9 @@ theories/TwoLevelRSpaceAuthority.v
 theories/TwoLevelRSpaceOperations.v
 theories/TwoLevelRSpaceDelta.v
 theories/TwoLevelRSpaceRepresentation.v
+theories/TwoLevelRSpaceGuardedOwnership.v
 theories/TwoLevelRSpaceAuthorityMutants.v
 theories/TwoLevelRSpaceOperationsMutants.v
 theories/TwoLevelRSpaceDeltaMutants.v
 theories/TwoLevelRSpaceRepresentationMutants.v
+theories/TwoLevelRSpaceGuardedOwnershipMutants.v
