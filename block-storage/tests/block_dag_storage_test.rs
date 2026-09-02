@@ -833,6 +833,150 @@ fn dag_storage_should_advance_latest_message_to_invalid_block_from_same_sender()
 }
 
 #[test]
+fn first_recorded_sender_message_replaces_the_genesis_placeholder_for_both_hash_orders() {
+    let validator = Bytes::from(vec![0xaa; models::rust::validator::LENGTH]);
+
+    for candidate_byte in [0x00, 0x20] {
+        let mut genesis = genesis_block();
+        genesis.block_hash = Bytes::from(vec![0x10; models::rust::block_hash::LENGTH]);
+        genesis.body.state.bonds = vec![Bond {
+            validator: validator.clone(),
+            stake: 100,
+        }];
+        let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+        let mut candidate = get_random_block(
+            Some(1),
+            Some(0),
+            None,
+            None,
+            Some(validator.clone()),
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            Some(vec![]),
+            None,
+            None,
+            Some(genesis.body.state.bonds.clone()),
+            None,
+            None,
+        );
+        candidate.block_hash = Bytes::from(vec![candidate_byte; models::rust::block_hash::LENGTH]);
+
+        dag_storage.insert(&candidate, InsertMode::Invalid).unwrap();
+
+        assert_eq!(
+            dag_storage
+                .get_representation()
+                .unwrap()
+                .latest_message_hash(&validator),
+            Some(candidate.block_hash)
+        );
+    }
+}
+
+#[cfg(feature = "test-internals")]
+#[test]
+fn missing_current_latest_metadata_rejects_before_candidate_insertion() {
+    let validator = Bytes::from(vec![0xab; models::rust::validator::LENGTH]);
+    let mut genesis = genesis_block();
+    genesis.body.state.bonds = vec![Bond {
+        validator: validator.clone(),
+        stake: 100,
+    }];
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+    let missing = Bytes::from(vec![0x77; models::rust::block_hash::LENGTH]);
+    dag_storage
+        .put_latest_message_for_test(validator.clone(), missing.clone())
+        .unwrap();
+
+    let mut candidate = get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        Some(validator.clone()),
+        None,
+        None,
+        Some(vec![genesis.block_hash]),
+        Some(vec![]),
+        None,
+        None,
+        Some(genesis.body.state.bonds),
+        None,
+        None,
+    );
+    candidate.block_hash = Bytes::from(vec![0x78; models::rust::block_hash::LENGTH]);
+
+    let error = match dag_storage.insert(&candidate, InsertMode::Normal) {
+        Ok(_) => panic!("candidate insertion must fail when current latest metadata is missing"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, KvStoreError::KeyNotFound(_)));
+    let dag = dag_storage.get_representation().unwrap();
+    assert!(!dag.contains(&candidate.block_hash));
+    assert_eq!(dag.lookup(&candidate.block_hash).unwrap(), None);
+    assert_eq!(dag.latest_message_hash(&validator), Some(missing));
+}
+
+#[cfg(feature = "test-internals")]
+#[test]
+fn online_and_reconciled_first_sender_materialization_agree() {
+    RUNTIME.block_on(async {
+        let validator = Bytes::from(vec![0xac; models::rust::validator::LENGTH]);
+        let mut genesis = genesis_block();
+        genesis.block_hash = Bytes::from(vec![0x10; models::rust::block_hash::LENGTH]);
+        genesis.body.state.bonds = vec![Bond {
+            validator: validator.clone(),
+            stake: 100,
+        }];
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let dag_storage = TestDagStorage(BlockDagKeyValueStorage::new(&mut kvm).await.unwrap());
+        block_store.put_block_message(&genesis).unwrap();
+        dag_storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+
+        let mut candidate = get_random_block(
+            Some(1),
+            Some(0),
+            None,
+            None,
+            Some(validator.clone()),
+            None,
+            None,
+            Some(vec![genesis.block_hash.clone()]),
+            Some(vec![]),
+            None,
+            None,
+            Some(genesis.body.state.bonds.clone()),
+            None,
+            None,
+        );
+        candidate.block_hash = Bytes::from(vec![0x20; models::rust::block_hash::LENGTH]);
+        block_store.put_block_message(&candidate).unwrap();
+        dag_storage.insert(&candidate, InsertMode::Invalid).unwrap();
+        let online = dag_storage
+            .get_representation()
+            .unwrap()
+            .latest_message_hash(&validator);
+        assert_eq!(online, Some(candidate.block_hash.clone()));
+
+        dag_storage
+            .put_latest_message_for_test(validator.clone(), genesis.block_hash)
+            .unwrap();
+        dag_storage.reconcile_latest_messages(&block_store).unwrap();
+        assert_eq!(
+            dag_storage
+                .get_representation()
+                .unwrap()
+                .latest_message_hash(&validator),
+            online
+        );
+    });
+}
+
+#[test]
 fn equal_sequence_latest_message_tie_break_is_arrival_order_independent() {
     let validator = Bytes::from(vec![0xa9; models::rust::validator::LENGTH]);
     let mut genesis = genesis_block();

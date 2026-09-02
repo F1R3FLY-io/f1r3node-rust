@@ -79,15 +79,18 @@ erasure in one transition.
 | `MC_DeployIdentitySeparation_raw_key_unsafe.cfg` | violate `Inv_CrossDomainRejectionIsolation` | an untagged byte key lets a legacy rejection erase v6 state, or the reverse |
 
 `ProtocolDeployIngress.tla` closes the pending-pool boundary. Protocol v6
-admits only authenticated envelope identities; pre-v6 protocols admit only
-legacy payload signatures. Rejected cross-version submissions leave both pool
-domains unchanged, so a legacy row cannot poison a v6 proposal scan and an
-envelope row cannot poison a historical proposal scan.
+admits only authenticated envelope identities. Pre-v6 protocols admit only
+legacy payload signatures. The model interleaves tip advances with both
+submission paths. Each accepted row records the immutable tip captured at its
+admission linearization point. An accepted row must satisfy the strict deploy
+window at that captured tip. A later tip advance can expire the row through
+normal lifecycle processing. It cannot change the completed admission result.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_ProtocolDeployIngress.cfg` | pass | protocol-specific ingress preserves disjoint pending-pool domains |
+| `MC_ProtocolDeployIngress.cfg` | pass | protocol-specific ingress preserves pool domains and admits only rows open at the captured tip |
 | `MC_ProtocolDeployIngress_permissive_unsafe.cfg` | violate `V6HasNoLegacyPool` | permissive legacy ingress inserts a row that makes protocol-v6 pool reads fail closed |
+| `MC_ProtocolDeployIngress_expiry_unsafe.cfg` | violate `IngressWindowSound` | a missing height-window gate admits a row after concurrent tip advance closes its lifespan |
 
 `MergeRecoveryCoherence.tla` closes the refinement boundary between occurrence
 records and the state rooted at the finalized merge floor. Base-committed

@@ -254,9 +254,22 @@ fn validate_deploy_submission<'a>(
     Ok(())
 }
 
+fn deploy_is_block_expired(
+    valid_after_block_number: i64,
+    latest_block_number: i64,
+    deploy_lifespan: i64,
+) -> Result<bool, CasperError> {
+    Ok(!crate::rust::util::deploy_window::is_open(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )?)
+}
+
 async fn submit_deploy_with_engine(
     engine_cell: &EngineCell,
     trigger_propose: &Option<Arc<ProposeFunction>>,
+    valid_after_block_number: i64,
     submit: impl FnOnce(
         Arc<dyn MultiParentCasper + Send + Sync>,
     ) -> Result<Either<DeployError, DeployId>, CasperError>,
@@ -267,6 +280,22 @@ async fn submit_deploy_with_engine(
         tracing::warn!("{}", message);
         eyre::eyre!(message)
     })?;
+
+    let dag = casper.block_dag().await?;
+    let latest_block_number = dag.latest_block_number();
+    let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
+    if deploy_is_block_expired(
+        valid_after_block_number,
+        latest_block_number,
+        deploy_lifespan,
+    )? {
+        return Err(eyre::Report::new(DeployValidationError {
+            message: format!(
+                "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+                valid_after_block_number, latest_block_number, deploy_lifespan
+            ),
+        }));
+    }
 
     match submit(casper)? {
         Either::Left(error) => Err(error.into()),
@@ -703,8 +732,13 @@ impl BlockAPI {
         )
         .map_err(eyre::Report::new)?;
 
-        submit_deploy_with_engine(engine_cell, trigger_propose, move |casper| casper.deploy(d))
-            .await
+        submit_deploy_with_engine(
+            engine_cell,
+            trigger_propose,
+            d.data.valid_after_block_number,
+            move |casper| casper.deploy(d),
+        )
+        .await
     }
 
     /// Multi-signature-aware deploy submission.
@@ -738,9 +772,12 @@ impl BlockAPI {
         )
         .map_err(eyre::Report::new)?;
 
-        submit_deploy_with_engine(engine_cell, trigger_propose, move |casper| {
-            casper.deploy_cosigned(cosigned)
-        })
+        submit_deploy_with_engine(
+            engine_cell,
+            trigger_propose,
+            cosigned.data.valid_after_block_number,
+            move |casper| casper.deploy_cosigned(cosigned),
+        )
         .await
     }
 
@@ -2263,6 +2300,36 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use super::*;
+
+    #[test]
+    fn block_expiration_matches_the_strict_deploy_window() {
+        assert!(deploy_is_block_expired(0, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
+        assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
+        assert!(deploy_is_block_expired(i64::MIN, i64::MIN, 1).unwrap());
+        assert!(!deploy_is_block_expired(i64::MIN + 1, i64::MIN, 1).unwrap());
+        assert!(deploy_is_block_expired(0, 0, -1).is_err());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn block_expiration_refines_the_lifespan_upper_bound(
+            valid_after_block_number in -1_000_000i64..=1_000_000,
+            latest_block_number in -1_000_000i64..=1_000_000,
+            deploy_lifespan in 0i64..=10_000,
+        ) {
+            let expired = deploy_is_block_expired(
+                valid_after_block_number,
+                latest_block_number,
+                deploy_lifespan,
+            ).unwrap();
+
+            proptest::prop_assert_eq!(
+                !expired,
+                latest_block_number < valid_after_block_number + deploy_lifespan,
+            );
+        }
+    }
 
     #[test]
     fn canonical_deploy_loader_reads_only_the_indexed_block_and_fails_closed() {

@@ -350,12 +350,8 @@ mod tests {
 
     #[tokio::test]
     async fn engine_should_respond_to_fork_choice_tip_request() {
-        let mut fixture = TestFixture::new().await;
-
-        // Step 1: Create a request object
         let request = ForkChoiceTipRequest {};
 
-        // Step 2: Create 2 blocks with distinct senders so both can be tips.
         let mut block1 = get_random_block(
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
         );
@@ -366,12 +362,12 @@ mod tests {
         );
         block2.sender = Bytes::from_static(b"sender-2");
 
-        // Step 3: Insert blocks in blockDagStorage (following Scala implementation)
-        // This matches the Scala pattern: blockDagStorage.insert(block1, false)
-        fixture.casper.insert_block(block1.clone(), false);
-        fixture.casper.insert_block(block2.clone(), false);
+        let fixture = TestFixture::new_with_casper_blocks(vec![
+            (block1.clone(), false),
+            (block2.clone(), false),
+        ])
+        .await;
 
-        // Step 5: Call engine.handle with local peer and request object
         fixture
             .engine
             .handle(
@@ -385,16 +381,18 @@ mod tests {
             .engine
             .with_casper()
             .expect("Running engine should expose a casper instance");
-        let expected_tips: HashSet<Bytes> = engine_casper
+        let expected_dag = engine_casper
             .block_dag()
             .await
-            .expect("Failed to load block DAG")
+            .expect("Failed to load block DAG");
+        let canonical_genesis_hash = expected_dag.canonical_genesis_hash().cloned();
+        let expected_tips: HashSet<Bytes> = expected_dag
             .latest_message_hashes()
             .into_iter()
             .map(|(_, hash)| hash)
+            .filter(|hash| Some(hash) != canonical_genesis_hash.as_ref())
             .collect();
 
-        // Step 6: Get requests from transportLayer
         let requests = fixture.transport_layer.get_all_requests();
         assert_eq!(
             requests.len(),
@@ -402,12 +400,10 @@ mod tests {
             "Expected one HasBlock response per fork-choice tip"
         );
 
-        // Step 8: Assert all transport-layer requests target local peer.
         for request in &requests {
             assert_eq!(request.peer, fixture.local);
         }
 
-        // Step 9: Assert all responses are HasBlock messages with at least one tip hash.
         let mut received_tips: HashSet<Bytes> = HashSet::new();
         let mut has_block_count = 0usize;
         for request in &requests {

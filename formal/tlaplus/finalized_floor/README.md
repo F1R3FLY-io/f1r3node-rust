@@ -15,6 +15,7 @@ and the proof and execution evidence is cataloged in
 | `FinalizedFloorScan.tla` | complete parent-band scan |
 | `RestoreHorizonCertifiedContext.tla` | full-history/restored context equivalence and fail-closed missing live dependencies |
 | `RestoreHorizonStartup.tla` | restart reconciliation, monotonic per-key sequence selection, atomic running-state publication, and support identity retention |
+| `LatestMessageMaterialization.tla` | concurrent insertion order, lowest-ranked genesis placeholders, duplicate insertion, and online/restart selection equivalence |
 | `FinalizerProgress.tla` | complete candidate search and restart-safe progress |
 | `AccountableFinality.tla` | exact weighted asynchronous certificate support and accountable conflicts |
 | `StateLineageFinality.tla` | causal certificate, state certificate, and committed-effect lineage |
@@ -50,6 +51,24 @@ and the proof and execution evidence is cataloged in
 | `DivergentFinalizationHistories.tla` | same-target convergence with node-local ledger revisions and record digests, and rejection of remote ledger identity as state authority |
 | `WitnessEquivalentCarrier.tla` | semantic predecessor proof equivalence across divergent honest witness digests, exact carrier block/digest pairing, and state-bound park/wake behavior |
 | `LiveMinorityForkRecovery.tla` | multi-peer tip discovery, dependency-first ordinary admission, local finalizer publication, retry after concurrent admission, and validator/shard-local framing |
+
+## Latest-message materialization
+
+`LatestMessageMaterialization.tla` models two replicas that receive sender
+messages in independent orders. Each replica can crash and rebuild its durable
+latest-message slot.
+
+The canonical genesis placeholder ranks below every recorded sender message.
+Authored messages use greatest sequence and then least hash. Repeated delivery
+does not change the result.
+
+The safe model checks online selection against canonical reconciliation after
+each transition. Equal replica inputs must produce equal latest-message slots.
+
+| Configuration | Expected result | Defect isolated |
+|---|---|---|
+| `MC_LatestMessageMaterialization.cfg` | pass | insertion, restart, duplicates, and arrival permutations preserve one canonical slot |
+| `MC_LatestMessageMaterialization_genesis_tie_unsafe.cfg` | violate `MaterializationCorrect` | genesis metadata participates in the ordinary sequence-and-hash comparison |
 
 ## State-preserving fork choice
 

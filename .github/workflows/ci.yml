@@ -534,20 +534,20 @@ jobs:
   # casper is the one crate whose suite does not reliably fit the shared
   # 30-minute test-job ceiling: ~23 minutes on a nominal runner (7m build +
   # 15m tests), which a degraded runner overran on 2026-08-27 with every
-  # completed test passing. It runs here as two nextest count-partition
-  # shards so each leg carries roughly half the test wall-clock. Larger
+  # completed test passing. It runs here as three nextest count-partition
+  # shards so each leg carries roughly one third of the test wall-clock. Larger
   # GitHub-hosted runners are not an option: the org's plan does not support
   # them, and OCI ephemeral runners are reserved for the approval-gated
   # heavy pipeline (shared daily instance quota).
   test_casper:
-    name: Test (casper ${{ matrix.partition }}/2)
+    name: Test (casper ${{ matrix.partition }}/3)
     needs: [build_base, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        partition: [1, 2]
+        partition: [1, 2, 3]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -572,7 +572,7 @@ jobs:
         with:
           tool: nextest
 
-      - name: Run tests (shard ${{ matrix.partition }}/2)
+      - name: Run tests (shard ${{ matrix.partition }}/3)
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
           RUST_BACKTRACE: "1"
@@ -584,12 +584,12 @@ jobs:
         run: |
           ulimit -n 65536
           mkdir -p /tmp/test-logs
-          # `count:m/2` deals tests round-robin across the two shards, so the
-          # slow convergence/recursion specs spread over both legs instead of
+          # `count:m/3` deals tests round-robin across the three shards, so the
+          # slow convergence/recursion specs spread over three legs instead of
           # landing together. `--no-tests=pass` tolerates an empty shard.
           nt=0
           cargo nextest run --release -p casper --no-tests=pass \
-            --partition count:${{ matrix.partition }}/2 2>&1 \
+            --partition count:${{ matrix.partition }}/3 2>&1 \
             | tee /tmp/test-logs/casper-${{ matrix.partition }}.txt || nt=$?
           # nextest does NOT run doctests, and doctests cannot be partitioned;
           # shard 1 runs them once for the whole crate.
@@ -746,7 +746,7 @@ jobs:
           retention-days: 30
 
   # Ruleset gate. The branch ruleset requires a status check named exactly
-  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
+  # `Test (casper)` (formerly the matrix leg's name). This collapses the three
   # shard jobs into that one required context, in the same style as the
   # per-arch integration aggregators below. `needs` on a matrix job resolves
   # to success only when every shard succeeds.
@@ -767,7 +767,7 @@ jobs:
             echo "casper shard matrix concluded: $result"
             exit 1
           fi
-          echo "Both casper shards succeeded"
+          echo "All casper shards succeeded"
 
   # Heavy pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.

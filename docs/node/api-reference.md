@@ -221,6 +221,9 @@ curl http://localhost:40403/api/is-finalized/3bfdf56f...
 
 Submit a signed deploy to the network. Validator nodes only.
 
+The node captures one DAG view before it inserts the deploy. The node rejects
+the deploy when its block-height lifespan is closed in that view.
+
 **Request body:**
 
 | Field | Type | Required | Description |
@@ -863,7 +866,7 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates canonical signer authority, shard ID, and expiration; state-bound purse funding is checked during block assembly. Triggers auto-propose if enabled |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates signer authority, shard ID, time expiry, and block-height expiry. Checks state-bound purse funding during block assembly. Triggers auto-propose if enabled |
 | `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo`; each `DeployInfo` includes protocol-v8 authority certificate/witness, adjacent roots, and admission status. Transfers are enriched on readonly nodes |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |

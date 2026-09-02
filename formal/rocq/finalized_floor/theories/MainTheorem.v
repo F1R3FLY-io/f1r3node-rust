@@ -2224,6 +2224,11 @@ Definition finalized_floor_restore_first_authored_sequence_correct :=
 
 Print Assumptions finalized_floor_restore_first_authored_sequence_correct.
 
+Definition finalized_floor_latest_message_materialization_correct :=
+  latest_message_materialization_contract.
+
+Print Assumptions finalized_floor_latest_message_materialization_correct.
+
 Definition finalized_floor_restore_sequence_correct :=
   @generation_change_preserves_monotonic_key_sequence.
 

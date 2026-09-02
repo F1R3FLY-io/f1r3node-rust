@@ -126,6 +126,12 @@ For a block `B` with non-empty parent set `P₁…Pₖ` and frozen justification
   sequence for each retained validator key. Equal sequences MUST select the
   least block hash. A bond-generation change MUST NOT reset the per-key
   sequence. Evidence identity MUST retain the bond generation.
+- **R-LATEST-MATERIALIZATION.** Online insertion and startup reconciliation
+  MUST use one latest-message selection rule. The canonical genesis placeholder
+  MUST compare below every recorded sender message, independent of sequence or
+  hash. Higher sequences MUST win. Equal sequences MUST select the least hash.
+  A missing noncanonical current entry MUST cause a typed consistency error
+  before the node writes candidate state.
 - **R-RESTORE-SUPPORT.** A certificate support manifest MUST retain the canonical
   genesis identity. Carrier selection and support traversal MUST NOT require its
   omitted body. Every other missing support block MUST fail closed.

@@ -128,7 +128,9 @@ pub struct TestFixture {
 }
 
 impl TestFixture {
-    pub async fn new() -> Self {
+    pub async fn new() -> Self { Self::new_with_casper_blocks(Vec::new()).await }
+
+    pub async fn new_with_casper_blocks(blocks: Vec<(BlockMessage, bool)>) -> Self {
         // Scala: val params @ (_, _, genesisParams) = GenesisBuilder.buildGenesisParameters()
         let mut genesis_builder = GenesisBuilder::new();
         let genesis_parameters_tuple =
@@ -287,13 +289,16 @@ impl TestFixture {
         // Wrap RuntimeManager in Arc<Mutex<>> for shared mutable access
         let runtime_manager_shared = Arc::new(runtime_manager);
 
-        let casper = NoOpsCasperEffect::new_with_shared_kvm(
+        let mut casper = NoOpsCasperEffect::new_with_shared_kvm(
             None, // estimator_func
             runtime_manager_shared.clone(),
             block_store.clone(),
             block_dag_representation,
             kvm_blockstorage.clone(),
         );
+        for (block, approved) in blocks {
+            casper.insert_block(block, approved);
+        }
 
         // Create mpsc channel for block processing queue (receiver kept for test inspection)
         let (block_processing_queue_tx, block_processing_queue_rx) =

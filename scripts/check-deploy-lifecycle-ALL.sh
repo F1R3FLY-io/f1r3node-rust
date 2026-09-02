@@ -194,7 +194,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     fail "raw-byte identity failed for the wrong reason (see $LOG_DIR/deploy_identity_tlc_unsafe.log)"
   fi
   if tlc_run "$(tlc_metadir protocol_deploy_ingress_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_tlc.log" 2>&1; then
-    pass "TLA+ deploy ingress preserves protocol-specific pool domains"
+    pass "TLA+ deploy ingress preserves protocol domains and captured-tip window soundness"
     rm -f "$LOG_DIR/protocol_deploy_ingress_tlc.log"
   else
     fail "TLA+ protocol deploy ingress did NOT pass (see $LOG_DIR/protocol_deploy_ingress_tlc.log)"
@@ -206,6 +206,14 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     rm -f "$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log"
   else
     fail "permissive ingress failed for the wrong reason (see $LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir protocol_deploy_ingress_expiry_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress_expiry_unsafe.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log" 2>&1; then
+    fail "expired deploy ingress should produce a counterexample but passed"
+  elif grep -q "IngressWindowSound is violated" "$LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log"; then
+    pass "missing ingress window gate reproduces stale deploy admission"
+    rm -f "$LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log"
+  else
+    fail "expired deploy ingress failed for the wrong reason (see $LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log)"
   fi
 
   if tlc_run "$(tlc_metadir recovery_frontier_coverage_gate)" "$RECOVERY_TLA_DIR/MC_RecoveryFrontierCoverage.cfg" "$RECOVERY_TLA_DIR/RecoveryFrontierCoverage.tla" >"$LOG_DIR/recovery_frontier_coverage_tlc.log" 2>&1; then
@@ -533,11 +541,11 @@ if command -v apalache-mc >/dev/null 2>&1; then
       --out-dir="$apalache_out/protocol-ingress-safe" \
       check \
       --config=MC_ProtocolDeployIngressApalache.cfg \
-      --length=3 \
+      --length=5 \
       --no-deadlock \
       ProtocolDeployIngress.tla) >"$protocol_ingress_safe_log" 2>&1 \
       && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$protocol_ingress_safe_log"; then
-    pass "Apalache deploy ingress preserves protocol-specific pool domains"
+    pass "Apalache deploy ingress preserves protocol domains and captured-tip window soundness"
     rm -f "$protocol_ingress_safe_log"
   else
     fail "Apalache protocol deploy ingress failed (see $protocol_ingress_safe_log)"
@@ -559,6 +567,24 @@ if command -v apalache-mc >/dev/null 2>&1; then
     rm -f "$protocol_ingress_unsafe_log"
   else
     fail "permissive ingress failed for the wrong reason under Apalache (see $protocol_ingress_unsafe_log)"
+  fi
+
+  protocol_ingress_expiry_unsafe_log="$LOG_DIR/protocol_deploy_ingress_expiry_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/protocol-ingress-expiry-unsafe" \
+      check \
+      --config=MC_ProtocolDeployIngress_expiry_unsafe_Apalache.cfg \
+      --length=3 \
+      --no-deadlock \
+      ProtocolDeployIngress.tla) >"$protocol_ingress_expiry_unsafe_log" 2>&1; then
+    fail "expired deploy ingress should produce an Apalache counterexample but passed"
+  elif grep -q 'IngressWindowSound' "$protocol_ingress_expiry_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$protocol_ingress_expiry_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$protocol_ingress_expiry_unsafe_log"; then
+    pass "missing ingress window gate reproduces stale deploy admission under Apalache"
+    rm -f "$protocol_ingress_expiry_unsafe_log"
+  else
+    fail "expired deploy ingress failed for the wrong reason under Apalache (see $protocol_ingress_expiry_unsafe_log)"
   fi
 
   recovery_frontier_safe_log="$LOG_DIR/recovery_frontier_coverage_apalache.log"

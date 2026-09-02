@@ -222,7 +222,11 @@ env:
   # It pins pyf1r3fly 0189d17 for DeployId and progress-aware finalization.
   # Verified: descends from e4a26eb; 305 unit tests, Ruff, and lock checks pass.
   # The suite collects 127 integration cases. Re-pin after SI PR #135 merges.
-  SYSTEM_INTEGRATION_REF: f6db0f1915e27397d827efe8beaf9aec840b78ce
+  # 2026-09-02: f6db0f1 -> c33d590 (SI PR #135 branch, draft). The repair
+  # removes retired deploy price and limit fields from all protocol-v6 callers.
+  # It adds authority-funding rejection coverage and a schema regression gate.
+  # Verified: 308 unit tests, Ruff, lock validation, and 127-test collection pass.
+  SYSTEM_INTEGRATION_REF: c7fe598966879b235d6c930276308ea71b58e7b9
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"

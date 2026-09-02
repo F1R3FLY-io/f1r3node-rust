@@ -177,6 +177,13 @@ At $`n = v_d + L`$, the deploy is expired. Rejection history cannot extend the
 interval. Expired entries are removed from both deploy storage and the local
 rejected-deploy buffer.
 
+Deploy submission captures one immutable DAG view. Its next candidate height
+is the admission linearization point. The node rejects the deploy before pool
+insertion when the strict upper bound is closed in that view.
+
+A concurrent block can advance after this capture. The accepted deploy then
+follows normal lifecycle expiry. Admission does not require a shard-wide lock.
+
 ### O12 — carrier-owner retry custody
 
 Let $`c`$ be a rejected source carrier. Let $`owner(c)`$ be the validator that

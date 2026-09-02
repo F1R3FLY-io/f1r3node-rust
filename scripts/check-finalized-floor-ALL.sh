@@ -815,6 +815,18 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ restore-startup control failed for the wrong reason (see $startup_log)"
     fi
   done
+  if tlc_run "$(tlc_metadir ff_latest_message_materialization)" "$TLA_DIR/MC_LatestMessageMaterialization.cfg" "$TLA_DIR/LatestMessageMaterialization.tla" >"$LOG_DIR/ff_tlc_latest_message_materialization.log" 2>&1; then
+    pass "TLA+ online insertion and startup reconciliation select the same latest message under all arrival orders"
+  else
+    fail "TLA+ latest-message materialization model failed (see $LOG_DIR/ff_tlc_latest_message_materialization.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_latest_message_genesis_tie_unsafe)" "$TLA_DIR/MC_LatestMessageMaterialization_genesis_tie_unsafe.cfg" "$TLA_DIR/LatestMessageMaterialization.tla" >"$LOG_DIR/ff_tlc_latest_message_genesis_tie_unsafe.log" 2>&1; then
+    fail "TLA+ genesis-metadata tie control should reproduce online and restored latest-message disagreement but passed"
+  elif grep -Eq "The invariant of MaterializationCorrect is equal to FALSE|Invariant MaterializationCorrect is violated" "$LOG_DIR/ff_tlc_latest_message_genesis_tie_unsafe.log"; then
+    pass "TLA+ genesis-metadata tie control reproduces online and restored latest-message disagreement"
+  else
+    fail "TLA+ genesis-metadata tie control failed for the wrong reason (see $LOG_DIR/ff_tlc_latest_message_genesis_tie_unsafe.log)"
+  fi
   if tlc_run "$(tlc_metadir ff_finalization_closure_availability)" "$TLA_DIR/MC_FinalizationClosureAvailability.cfg" "$TLA_DIR/FinalizationClosureAvailability.tla" >"$LOG_DIR/ff_tlc_finalization_closure_availability.log" 2>&1; then
     pass "TLA+ finalization closure blocks incomplete and invalid certificates, excludes outsiders, and preserves dependency wakeups"
   else
@@ -1891,6 +1903,25 @@ if command -v apalache-mc >/dev/null 2>&1; then
     pass "Apalache restore-startup control rejects stale raw latest-message indexes by bound 3"
   else
     fail "Apalache restore-startup control did not reproduce skipped reconciliation (see $LOG_DIR/ff_apalache_restore_horizon_startup_skip.log)"
+  fi
+  latest_message_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/latest-message-safe" check --config=MC_LatestMessageMaterializationApalache.cfg --length=7 LatestMessageMaterialization.tla 2>&1)"
+  latest_message_rc=$?
+  printf '%s\n' "$latest_message_output" >"$LOG_DIR/ff_apalache_latest_message_materialization.log"
+  if [[ $latest_message_rc -eq 0 ]] && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$LOG_DIR/ff_apalache_latest_message_materialization.log"; then
+    pass "Apalache latest-message materialization invariants through bound 7"
+  else
+    fail "Apalache latest-message materialization model failed (see $LOG_DIR/ff_apalache_latest_message_materialization.log)"
+  fi
+  latest_message_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/latest-message-genesis-tie-unsafe" check --config=MC_LatestMessageMaterialization_genesis_tie_unsafe_Apalache.cfg --length=2 LatestMessageMaterialization.tla 2>&1)"
+  latest_message_unsafe_rc=$?
+  printf '%s\n' "$latest_message_unsafe_output" >"$LOG_DIR/ff_apalache_latest_message_genesis_tie_unsafe.log"
+  if [[ $latest_message_unsafe_rc -ne 0 ]] \
+       && grep -Fq 'Using inv predicate(s) TypeOK, MaterializationCorrect' "$LOG_DIR/ff_apalache_latest_message_genesis_tie_unsafe.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_latest_message_genesis_tie_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_latest_message_genesis_tie_unsafe.log"; then
+    pass "Apalache genesis-metadata tie control reproduces materialization disagreement by bound 2"
+  else
+    fail "Apalache genesis-metadata tie control failed (see $LOG_DIR/ff_apalache_latest_message_genesis_tie_unsafe.log)"
   fi
   finalization_closure_safe_length="${FINALIZATION_CLOSURE_APALACHE_SAFE_LENGTH:-6}"
   finalization_closure_unsafe_length="${FINALIZATION_CLOSURE_APALACHE_UNSAFE_LENGTH:-4}"

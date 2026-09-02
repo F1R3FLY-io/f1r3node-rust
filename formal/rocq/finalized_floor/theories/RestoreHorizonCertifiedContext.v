@@ -1,5 +1,6 @@
 From Stdlib Require Import Arith.PeanoNat.
 From Stdlib Require Import Bool.Bool.
+From Stdlib Require Import Lia.
 From Stdlib Require Import Lists.List.
 Import ListNotations.
 
@@ -267,6 +268,162 @@ Theorem generation_change_preserves_monotonic_key_sequence :
     previous_sequence < S previous_sequence.
 Proof. apply Nat.lt_succ_diag_r. Qed.
 
+Inductive MaterializedLatest : Type :=
+| LatestGenesis
+| LatestAuthored (sequence hash : nat).
+
+Definition latest_message_join
+  (left right : MaterializedLatest) : MaterializedLatest :=
+  match left, right with
+  | LatestGenesis, candidate => candidate
+  | candidate, LatestGenesis => candidate
+  | LatestAuthored left_sequence left_hash,
+    LatestAuthored right_sequence right_hash =>
+      match Nat.compare left_sequence right_sequence with
+      | Lt => right
+      | Gt => left
+      | Eq => LatestAuthored left_sequence (Nat.min left_hash right_hash)
+      end
+  end.
+
+Theorem genesis_placeholder_is_latest_message_bottom :
+  forall candidate,
+    latest_message_join LatestGenesis candidate = candidate /\
+    latest_message_join candidate LatestGenesis = candidate.
+Proof.
+  intros [|sequence hash]; split; reflexivity.
+Qed.
+
+Theorem higher_sequence_is_preferred :
+  forall left_sequence left_hash right_sequence right_hash,
+    left_sequence < right_sequence ->
+    latest_message_join
+      (LatestAuthored left_sequence left_hash)
+      (LatestAuthored right_sequence right_hash) =
+    LatestAuthored right_sequence right_hash.
+Proof.
+  intros left_sequence left_hash right_sequence right_hash Hlt.
+  unfold latest_message_join.
+  assert (Nat.compare left_sequence right_sequence = Lt) as Hcompare.
+  { apply Nat.compare_lt_iff. exact Hlt. }
+  rewrite Hcompare. reflexivity.
+Qed.
+
+Theorem equal_sequence_selects_least_hash :
+  forall sequence left_hash right_hash,
+    latest_message_join
+      (LatestAuthored sequence left_hash)
+      (LatestAuthored sequence right_hash) =
+    LatestAuthored sequence (Nat.min left_hash right_hash).
+Proof.
+  intros sequence left_hash right_hash.
+  unfold latest_message_join.
+  rewrite Nat.compare_refl. reflexivity.
+Qed.
+
+Theorem latest_message_join_idempotent :
+  forall latest,
+    latest_message_join latest latest = latest.
+Proof.
+  intros [|sequence hash].
+  - reflexivity.
+  - rewrite equal_sequence_selects_least_hash, Nat.min_id. reflexivity.
+Qed.
+
+Theorem latest_message_join_commutative :
+  forall left right,
+    latest_message_join left right = latest_message_join right left.
+Proof.
+  intros [|left_sequence left_hash] [|right_sequence right_hash];
+    try reflexivity.
+  unfold latest_message_join.
+  destruct (Nat.compare left_sequence right_sequence) eqn:Hcompare.
+  - apply Nat.compare_eq_iff in Hcompare. subst right_sequence.
+    rewrite Nat.compare_refl, Nat.min_comm. reflexivity.
+  - assert (Nat.compare right_sequence left_sequence = Gt) as Hreverse.
+    { apply Nat.compare_gt_iff. apply Nat.compare_lt_iff in Hcompare. exact Hcompare. }
+    rewrite Hreverse. reflexivity.
+  - assert (Nat.compare right_sequence left_sequence = Lt) as Hreverse.
+    { apply Nat.compare_lt_iff. apply Nat.compare_gt_iff in Hcompare. exact Hcompare. }
+    rewrite Hreverse. reflexivity.
+Qed.
+
+Theorem latest_message_join_associative :
+  forall left middle right,
+    latest_message_join (latest_message_join left middle) right =
+    latest_message_join left (latest_message_join middle right).
+Proof.
+  intros left middle right.
+  destruct left as [|left_sequence left_hash].
+  - reflexivity.
+  - destruct middle as [|middle_sequence middle_hash].
+    + reflexivity.
+    + destruct right as [|right_sequence right_hash].
+      * rewrite (proj2 (genesis_placeholder_is_latest_message_bottom
+          (latest_message_join
+            (LatestAuthored left_sequence left_hash)
+            (LatestAuthored middle_sequence middle_hash)))).
+        rewrite (proj2 (genesis_placeholder_is_latest_message_bottom
+          (LatestAuthored middle_sequence middle_hash))).
+        reflexivity.
+      * unfold latest_message_join.
+        remember (Nat.compare left_sequence middle_sequence) as left_middle
+          eqn:Hleft_middle.
+        remember (Nat.compare middle_sequence right_sequence) as middle_right
+          eqn:Hmiddle_right.
+        remember (Nat.compare left_sequence right_sequence) as left_right
+          eqn:Hleft_right.
+        symmetry in Hleft_middle, Hmiddle_right, Hleft_right.
+        destruct left_middle, middle_right, left_right;
+          repeat match goal with
+          | H : Nat.compare _ _ = Eq |- _ => apply Nat.compare_eq_iff in H
+          | H : Nat.compare _ _ = Lt |- _ => apply Nat.compare_lt_iff in H
+          | H : Nat.compare _ _ = Gt |- _ => apply Nat.compare_gt_iff in H
+          end;
+          subst; repeat rewrite Nat.compare_refl;
+          repeat match goal with
+          | H : ?left < ?right |- context [Nat.compare ?left ?right] =>
+              rewrite (proj2 (Nat.compare_lt_iff left right) H)
+          | H : ?left < ?right |- context [Nat.compare ?right ?left] =>
+              rewrite (proj2 (Nat.compare_gt_iff right left) H)
+          end;
+          try rewrite Nat.min_assoc; try reflexivity; try lia.
+Qed.
+
+Definition online_latest_update := latest_message_join.
+Definition reconciled_latest_update := latest_message_join.
+
+Theorem online_and_reconciled_latest_updates_are_identical :
+  forall current candidate,
+    online_latest_update current candidate =
+    reconciled_latest_update current candidate.
+Proof. reflexivity. Qed.
+
+Theorem latest_message_materialization_contract :
+  (forall candidate,
+    latest_message_join LatestGenesis candidate = candidate /\
+    latest_message_join candidate LatestGenesis = candidate) /\
+  (forall latest, latest_message_join latest latest = latest) /\
+  (forall left right,
+    latest_message_join left right = latest_message_join right left) /\
+  (forall left middle right,
+    latest_message_join (latest_message_join left middle) right =
+    latest_message_join left (latest_message_join middle right)) /\
+  (forall current candidate,
+    online_latest_update current candidate =
+    reconciled_latest_update current candidate).
+Proof.
+  split.
+  - exact genesis_placeholder_is_latest_message_bottom.
+  - split.
+    + exact latest_message_join_idempotent.
+    + split.
+      * exact latest_message_join_commutative.
+      * split.
+        -- exact latest_message_join_associative.
+        -- exact online_and_reconciled_latest_updates_are_identical.
+Qed.
+
 Print Assumptions genesis_placeholder_classification_is_heldness_independent.
 Print Assumptions missing_noncanonical_latest_fails_closed.
 Print Assumptions full_and_restored_projections_are_identical.
@@ -279,3 +436,4 @@ Print Assumptions genesis_first_proposal_is_heldness_independent.
 Print Assumptions genesis_placeholder_has_sequence_zero.
 Print Assumptions genesis_placeholder_first_authored_sequence_is_one.
 Print Assumptions generation_change_preserves_monotonic_key_sequence.
+Print Assumptions latest_message_materialization_contract.

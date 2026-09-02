@@ -135,6 +135,74 @@ pub enum InsertMode {
     SettledHistory,
 }
 
+fn candidate_is_preferred_latest_message(
+    current_sequence_number: Option<i32>,
+    current_hash: &BlockHash,
+    candidate_sequence_number: i32,
+    candidate_hash: &BlockHash,
+) -> bool {
+    match current_sequence_number {
+        None => true,
+        Some(current_sequence_number) => {
+            candidate_sequence_number > current_sequence_number
+                || (candidate_sequence_number == current_sequence_number
+                    && candidate_hash < current_hash)
+        }
+    }
+}
+
+#[cfg(test)]
+mod latest_message_order_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn hash(value: u16) -> BlockHash { Bytes::copy_from_slice(&value.to_be_bytes()) }
+
+    fn select(candidates: &[(i32, u16)]) -> (Option<i32>, BlockHash) {
+        candidates.iter().fold(
+            (None, hash(u16::MAX)),
+            |(current_sequence, current_hash), (candidate_sequence, candidate_hash)| {
+                let candidate_hash = hash(*candidate_hash);
+                if candidate_is_preferred_latest_message(
+                    current_sequence,
+                    &current_hash,
+                    *candidate_sequence,
+                    &candidate_hash,
+                ) {
+                    (Some(*candidate_sequence), candidate_hash)
+                } else {
+                    (current_sequence, current_hash)
+                }
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn latest_message_selection_is_permutation_invariant(
+            candidates in prop::collection::vec((0i32..100, any::<u16>()), 0..32),
+        ) {
+            let selected = select(&candidates);
+            let mut reversed = candidates.clone();
+            reversed.reverse();
+            prop_assert_eq!(&selected, &select(&reversed));
+
+            let expected = candidates.iter().max_by(|left, right| {
+                left.0.cmp(&right.0).then_with(|| right.1.cmp(&left.1))
+            });
+            match expected {
+                Some((sequence, value)) => {
+                    prop_assert_eq!(selected, (Some(*sequence), hash(*value)));
+                }
+                None => {
+                    prop_assert_eq!(selected, (None, hash(u16::MAX)));
+                }
+            }
+        }
+    }
+}
+
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
 // now dispatches on `mode` via `matches!` directly.
 
@@ -1697,9 +1765,9 @@ impl BlockDagKeyValueStorage {
             self.invalid_blocks_index.delete(stale_invalid)?;
         }
 
-        let mut expected: HashMap<Validator, (i32, BlockHash)> = registered
+        let mut expected: HashMap<Validator, (Option<i32>, BlockHash)> = registered
             .iter()
-            .map(|validator| (validator.clone(), (-1, genesis_hash.clone())))
+            .map(|validator| (validator.clone(), (None, genesis_hash.clone())))
             .collect();
         for entry in metadata {
             if entry.sender.is_empty() || !registered.contains(&entry.sender) {
@@ -1716,13 +1784,16 @@ impl BlockDagKeyValueStorage {
             expected
                 .entry(entry.sender)
                 .and_modify(|current| {
-                    if candidate.0 > current.0
-                        || (candidate.0 == current.0 && candidate.1 < current.1)
-                    {
-                        *current = candidate.clone();
+                    if candidate_is_preferred_latest_message(
+                        current.0,
+                        &current.1,
+                        candidate.0,
+                        &candidate.1,
+                    ) {
+                        *current = (Some(candidate.0), candidate.1.clone());
                     }
                 })
-                .or_insert(candidate);
+                .or_insert((Some(candidate.0), candidate.1));
         }
 
         self.latest_messages_index.put(
@@ -2366,6 +2437,55 @@ impl BlockDagKeyValueStorage {
                 _ => unreachable!(),
             }
         };
+        let new_latest_from_sender = if !block_exists && !settled_history {
+            let sender_is_registered = !sender_is_empty
+                && self
+                    .latest_messages_index
+                    .contains_key(ValidatorSerde(block.sender.clone()))?;
+            if !sender_is_empty && (!invalid || sender_is_registered) {
+                let canonical_genesis_hash = self.genesis_hash_internal()?;
+                let candidate_wins = match self
+                    .latest_messages_index
+                    .get_one(&block.sender.clone().into())?
+                {
+                    Some(BlockHashSerde(latest_message_hash)) => {
+                        let current_sequence_number =
+                            if canonical_genesis_hash.as_ref() == Some(&latest_message_hash) {
+                                None
+                            } else {
+                                let current_metadata = self
+                                    .block_metadata_index
+                                    .read()
+                                    .get(&latest_message_hash)?
+                                    .ok_or_else(|| {
+                                        KvStoreError::KeyNotFound(format!(
+                                        "latest message metadata {} is missing for validator {}",
+                                        PrettyPrinter::build_string_bytes(&latest_message_hash),
+                                        PrettyPrinter::build_string_bytes(&block.sender)
+                                    ))
+                                    })?;
+                                Some(current_metadata.sequence_number)
+                            };
+                        candidate_is_preferred_latest_message(
+                            current_sequence_number,
+                            &latest_message_hash,
+                            block.seq_num,
+                            &block.block_hash,
+                        )
+                    }
+                    None => true,
+                };
+                if candidate_wins {
+                    HashMap::from([senders_new_lm])
+                } else {
+                    HashMap::new()
+                }
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
         let (metadata_key, metadata_value, metadata_store) = {
             let metadata_guard = self.block_metadata_index.read();
             let (key, value) = metadata_guard.encode_add(&block_metadata)?;
@@ -2639,38 +2759,6 @@ impl BlockDagKeyValueStorage {
         }
 
         if !settled_history {
-            let sender_is_registered = !sender_is_empty
-                && self
-                    .latest_messages_index
-                    .contains_key(ValidatorSerde(block.sender.clone()))?;
-            let new_latest_from_sender = if !sender_is_empty && (!invalid || sender_is_registered) {
-                // Add LM either if there is no existing message for the sender, or if sequence number advances
-                // - assumes block sender is not valid hash
-                if match self
-                    .latest_messages_index
-                    .get_one(&block.sender.clone().into())
-                {
-                    Ok(Some(latest_message_hash)) => {
-                        let block_metadata_index_guard = self.block_metadata_index.read();
-                        match block_metadata_index_guard.get(&latest_message_hash.into()) {
-                            Ok(Some(metadata)) => {
-                                block.seq_num > metadata.sequence_number
-                                    || (block.seq_num == metadata.sequence_number
-                                        && block.block_hash < metadata.block_hash)
-                            }
-                            _ => true,
-                        }
-                    }
-                    _ => true,
-                } {
-                    HashMap::from([senders_new_lm])
-                } else {
-                    HashMap::new()
-                }
-            } else {
-                HashMap::new()
-            };
-
             let mut new_latest_to_add = if invalid {
                 HashMap::new()
             } else {

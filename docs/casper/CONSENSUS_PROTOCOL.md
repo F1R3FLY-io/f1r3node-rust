@@ -389,6 +389,10 @@ For each retained validator key, reconciliation selects the greatest sequence.
 An equal sequence selects the least block hash. This rule is independent of
 metadata arrival order and bond-generation boundaries.
 
+Online insertion uses the same selector. The canonical genesis placeholder
+always yields to the first recorded sender message, independent of hash order.
+A missing noncanonical current entry stops insertion before candidate writes.
+
 One storage write lock covers reconciliation and DAG snapshot capture. A
 concurrent reader sees either the old startup phase or one complete reconciled
 state. It cannot see a running state with a partial index.

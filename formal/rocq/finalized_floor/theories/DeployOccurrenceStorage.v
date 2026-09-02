@@ -1,8 +1,66 @@
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Bool.Bool.
+From Stdlib Require Import Lia.
 From Stdlib Require Import Lists.List.
 From Stdlib Require Import Sorting.Permutation.
+From Stdlib Require Import ZArith.ZArith.
 Import ListNotations.
+
+Definition ingress_window_open
+  (valid_after next_block lifespan : Z) : Prop :=
+  (valid_after > next_block - lifespan)%Z.
+
+Theorem ingress_window_matches_lifespan_upper_bound :
+  forall valid_after next_block lifespan,
+    (0 <= lifespan)%Z ->
+    ingress_window_open valid_after next_block lifespan <->
+    (next_block < valid_after + lifespan)%Z.
+Proof.
+  intros valid_after next_block lifespan Hlifespan.
+  unfold ingress_window_open.
+  lia.
+Qed.
+
+Theorem ingress_window_boundary_is_closed :
+  forall valid_after lifespan,
+    (0 <= lifespan)%Z ->
+    ~ ingress_window_open valid_after (valid_after + lifespan) lifespan.
+Proof.
+  intros valid_after lifespan Hlifespan.
+  unfold ingress_window_open.
+  lia.
+Qed.
+
+Theorem closed_ingress_window_stays_closed_after_tip_advance :
+  forall valid_after observed_tip later_tip lifespan,
+    (observed_tip <= later_tip)%Z ->
+    ~ ingress_window_open valid_after observed_tip lifespan ->
+    ~ ingress_window_open valid_after later_tip lifespan.
+Proof.
+  intros valid_after observed_tip later_tip lifespan Htip Hclosed.
+  unfold ingress_window_open in *.
+  lia.
+Qed.
+
+Theorem deploy_ingress_window_contract :
+  (forall valid_after next_block lifespan,
+    (0 <= lifespan)%Z ->
+    ingress_window_open valid_after next_block lifespan <->
+    (next_block < valid_after + lifespan)%Z) /\
+  (forall valid_after lifespan,
+    (0 <= lifespan)%Z ->
+    ~ ingress_window_open valid_after (valid_after + lifespan) lifespan) /\
+  (forall valid_after observed_tip later_tip lifespan,
+    (observed_tip <= later_tip)%Z ->
+    ~ ingress_window_open valid_after observed_tip lifespan ->
+    ~ ingress_window_open valid_after later_tip lifespan).
+Proof.
+  split.
+  - apply ingress_window_matches_lifespan_upper_bound.
+  - split.
+    + apply ingress_window_boundary_is_closed.
+    + apply closed_ingress_window_stays_closed_after_tip_advance.
+Qed.
 
 Inductive deploy_lookup_id :=
 | LegacyDeployId : nat -> deploy_lookup_id
@@ -211,3 +269,4 @@ Proof.
 Qed.
 
 Print Assumptions deploy_occurrence_storage_contract.
+Print Assumptions deploy_ingress_window_contract.
