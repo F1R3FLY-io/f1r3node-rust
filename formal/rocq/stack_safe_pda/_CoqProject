@@ -23,3 +23,6 @@ theories/PathMapCanonicalStreamPublication.v
 theories/PathMapCanonicalStreamPublicationMutants.v
 theories/CandidateCatalogAuthorityIsolation.v
 theories/CandidateCatalogAuthorityIsolationMutants.v
+theories/TwoLevelRSpaceAuthority.v
+theories/TwoLevelRSpaceOperations.v
+theories/TwoLevelRSpaceAuthorityMutants.v
