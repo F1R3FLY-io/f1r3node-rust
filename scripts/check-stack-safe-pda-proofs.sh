@@ -188,6 +188,98 @@ if [[ "$rmp2_closed_capstones" != "7" ]]; then
   exit 1
 fi
 tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/SpatialMatcher.v
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceAuthority.v 5 \
+  "the exact two-level RSpace logical authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceOperations.v 8 \
+  "the exact two-level RSpace operation authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceDelta.v 7 \
+  "the exact two-level RSpace delta authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceRepresentation.v 5 \
+  "the exact two-level RSpace representation authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceGuardedOwnership.v 6 \
+  "the exact two-level RSpace guarded-ownership authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceCheckpointCodec.v 4 \
+  "the exact RBA1 codec authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceCheckpointStreaming.v 4 \
+  "the exact RBA1 streaming authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceCheckpointCompatibility.v 5 \
+  "the exact RBA1 compatibility authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceAuthorityMutants.v 3 \
+  "the two-level RSpace logical-authority causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceOperationsMutants.v 2 \
+  "the two-level RSpace operation causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceDeltaMutants.v 3 \
+  "the two-level RSpace delta causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceRepresentationMutants.v 3 \
+  "the two-level RSpace representation causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceGuardedOwnershipMutants.v 2 \
+  "the two-level RSpace guarded-ownership causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceCheckpointMutants.v 3 \
+  "the RBA1 codec, streaming, and compatibility causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceMatchTransaction.v 6 \
+  "the exact two-level RSpace accepted-match authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceMatchTransactionMutants.v 5 \
+  "the two-level RSpace accepted-match causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceCheckpointRecovery.v 14 \
+  "the exact separated-generation RBA1 recovery authority"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceCheckpointRecoveryMutants.v 6 \
+  "the separated-generation RBA1 recovery causal controls"
+rocq_reject_placeholders \
+  theories/TwoLevelRSpaceAuthority.v \
+  theories/TwoLevelRSpaceOperations.v \
+  theories/TwoLevelRSpaceDelta.v \
+  theories/TwoLevelRSpaceRepresentation.v \
+  theories/TwoLevelRSpaceGuardedOwnership.v \
+  theories/TwoLevelRSpaceCheckpointCodec.v \
+  theories/TwoLevelRSpaceCheckpointStreaming.v \
+  theories/TwoLevelRSpaceCheckpointCompatibility.v \
+  theories/TwoLevelRSpaceAuthorityMutants.v \
+  theories/TwoLevelRSpaceOperationsMutants.v \
+  theories/TwoLevelRSpaceDeltaMutants.v \
+  theories/TwoLevelRSpaceRepresentationMutants.v \
+  theories/TwoLevelRSpaceGuardedOwnershipMutants.v \
+  theories/TwoLevelRSpaceCheckpointMutants.v \
+  theories/TwoLevelRSpaceMatchTransaction.v \
+  theories/TwoLevelRSpaceMatchTransactionMutants.v \
+  theories/TwoLevelRSpaceCheckpointRecovery.v \
+  theories/TwoLevelRSpaceCheckpointRecoveryMutants.v
+rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
+  StackSafePDA.TwoLevelRSpaceAuthority \
+  StackSafePDA.TwoLevelRSpaceOperations \
+  StackSafePDA.TwoLevelRSpaceDelta \
+  StackSafePDA.TwoLevelRSpaceRepresentation \
+  StackSafePDA.TwoLevelRSpaceGuardedOwnership \
+  StackSafePDA.TwoLevelRSpaceCheckpointCodec \
+  StackSafePDA.TwoLevelRSpaceCheckpointStreaming \
+  StackSafePDA.TwoLevelRSpaceCheckpointCompatibility \
+  StackSafePDA.TwoLevelRSpaceAuthorityMutants \
+  StackSafePDA.TwoLevelRSpaceOperationsMutants \
+  StackSafePDA.TwoLevelRSpaceDeltaMutants \
+  StackSafePDA.TwoLevelRSpaceRepresentationMutants \
+  StackSafePDA.TwoLevelRSpaceGuardedOwnershipMutants \
+  StackSafePDA.TwoLevelRSpaceCheckpointMutants \
+  StackSafePDA.TwoLevelRSpaceMatchTransaction \
+  StackSafePDA.TwoLevelRSpaceMatchTransactionMutants \
+  StackSafePDA.TwoLevelRSpaceCheckpointRecovery \
+  StackSafePDA.TwoLevelRSpaceCheckpointRecoveryMutants
 free_map_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/FreeMapJournal.v 2>&1
 )"

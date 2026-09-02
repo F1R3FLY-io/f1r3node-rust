@@ -42,11 +42,30 @@ Example exact_inventory_binding_kills_detached_object :
   inventory_contains [82; 66; 65; 1] [] = false.
 Proof. vm_compute. split; reflexivity. Qed.
 
-(** 3. Match publication advances from generation four to exactly five;
-    binding a checkpoint to the pre-match generation is observable. *)
-Example successor_generation_kills_pre_match_generation_substitution :
-  S 4 <> 4.
-Proof. discriminate. Qed.
+Definition pre_match_state_generation : nat := 4.
+Definition post_match_state_generation : nat := S pre_match_state_generation.
+Definition maintenance_index_generation : nat := 11.
+
+Definition separated_generation_binding_accepts
+    (receipt_index selected_index descriptor_state artifact_state
+      store_state : nat) : bool :=
+  Nat.eqb receipt_index selected_index &&
+  Nat.eqb descriptor_state artifact_state &&
+  Nat.eqb artifact_state store_state.
+
+(** 3. An accepted match advances semantic state from four to exactly five.
+    A physical maintenance index may advance independently and cannot repair
+    substitution of the pre-match semantic generation. *)
+Example semantic_successor_kills_pre_match_state_generation_substitution :
+  separated_generation_binding_accepts
+    maintenance_index_generation maintenance_index_generation
+    post_match_state_generation post_match_state_generation
+    post_match_state_generation = true /\
+  separated_generation_binding_accepts
+    maintenance_index_generation maintenance_index_generation
+    post_match_state_generation pre_match_state_generation
+    post_match_state_generation = false.
+Proof. vm_compute. split; reflexivity. Qed.
 
 Definition loaded_empty_fixture : rba1_image := loaded_empty_image [3] [4].
 Definition unloaded_mutant_fixture : rba1_image := unloaded_image [3].
@@ -65,18 +84,20 @@ Qed.
 Inductive recovery_seam_mutant : Type :=
 | MutValidationSubjectSubstitution
 | MutObjectDetachedFromInventory
-| MutPostMatchUsesPreMatchGeneration
+| MutPostMatchUsesPreMatchStateGeneration
 | MutRestartErasesLoadedEmptyEndpoint.
 
 Definition recovery_seam_mutant_catalog : list recovery_seam_mutant :=
   [MutValidationSubjectSubstitution; MutObjectDetachedFromInventory;
-   MutPostMatchUsesPreMatchGeneration; MutRestartErasesLoadedEmptyEndpoint].
+   MutPostMatchUsesPreMatchStateGeneration;
+   MutRestartErasesLoadedEmptyEndpoint].
 
 Definition reference_observation (mutant : recovery_seam_mutant) : bytes :=
   match mutant with
   | MutValidationSubjectSubstitution => encode_rba1 subject_image
   | MutObjectDetachedFromInventory => [1]
-  | MutPostMatchUsesPreMatchGeneration => [5]
+  | MutPostMatchUsesPreMatchStateGeneration =>
+      [maintenance_index_generation; post_match_state_generation]
   | MutRestartErasesLoadedEmptyEndpoint => encode_rba1 loaded_empty_fixture
   end.
 
@@ -85,7 +106,8 @@ Definition mutated_observation (mutant : recovery_seam_mutant) : bytes :=
   | MutValidationSubjectSubstitution =>
       encode_rba1 substituted_same_cardinality_image
   | MutObjectDetachedFromInventory => []
-  | MutPostMatchUsesPreMatchGeneration => [4]
+  | MutPostMatchUsesPreMatchStateGeneration =>
+      [maintenance_index_generation; pre_match_state_generation]
   | MutRestartErasesLoadedEmptyEndpoint => encode_rba1 unloaded_mutant_fixture
   end.
 
@@ -113,7 +135,7 @@ Qed.
 
 Print Assumptions exact_subject_validation_kills_same_cardinality_substitution.
 Print Assumptions exact_inventory_binding_kills_detached_object.
-Print Assumptions successor_generation_kills_pre_match_generation_substitution.
+Print Assumptions semantic_successor_kills_pre_match_state_generation_substitution.
 Print Assumptions restart_exactness_kills_loaded_empty_erasure.
 Print Assumptions every_recovery_seam_mutant_has_a_causal_witness.
 Print Assumptions recovery_seam_mutant_catalog_is_unique_complete_and_exact.
