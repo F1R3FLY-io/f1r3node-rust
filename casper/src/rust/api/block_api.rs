@@ -477,7 +477,6 @@ impl BlockAPI {
         engine_cell: &EngineCell,
         d: Signed<DeployData>,
         trigger_propose: &Option<Arc<ProposeFunction>>,
-        min_phlo_price: i64,
         is_node_read_only: bool,
         shard_id: &str,
     ) -> ApiErr<String> {
@@ -612,18 +611,6 @@ impl BlockAPI {
                 }
             })
             .and_then(|_| {
-                if d.data.phlo_price < min_phlo_price {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Phlo price {} is less than minimum price {}.",
-                            d.data.phlo_price, min_phlo_price
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as i64)
@@ -655,6 +642,17 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
+            // The floor check reads the SAME value the validity rule reads
+            // (the shard conf), never a second node-conf copy.
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            if d.data.phlo_price < min_phlo_price {
+                return Err(eyre::Report::new(DeployValidationError {
+                    message: format!(
+                        "Phlo price {} is less than minimum price {}.",
+                        d.data.phlo_price, min_phlo_price
+                    ),
+                }));
+            }
             let dag = casper.block_dag().await?;
             // A deploy admitted now can only ever land in a block that doesn't
             // exist yet — the next one, at `latest_block_number + 1` — never

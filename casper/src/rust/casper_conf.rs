@@ -31,6 +31,11 @@ pub struct CasperConf {
     pub max_number_of_parents: i32,
     #[serde(rename = "max-parent-depth")]
     pub max_parent_depth: i32,
+    /// Deploy validity window in blocks. Consensus-bearing (expiry and
+    /// repeat-deploy validity rules read it), so the genesis value is baked
+    /// into the PoS contract and adopted from chain at startup.
+    #[serde(rename = "deploy-lifespan", default = "default_deploy_lifespan")]
+    pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block.
     /// Zero means derived: `max-parent-depth * heartbeat.check-interval / 5`,
     /// resolved at launch — see `deploy_play_budget_millis` on
@@ -105,15 +110,6 @@ pub struct CasperConf {
     )]
     pub max_user_deploys_per_block: u32,
 
-    /// Disable late block filtering in DagMerger.
-    /// When true (default), all blocks are included in merged state regardless of when
-    /// they were observed. This prevents deploy loss during network partitions.
-    #[serde(
-        rename = "disable-late-block-filtering",
-        default = "default_disable_late_block_filtering"
-    )]
-    pub disable_late_block_filtering: bool,
-
     /// Enable background garbage collection for mergeable channels.
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
@@ -143,6 +139,8 @@ pub struct CasperConf {
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
 
+fn default_deploy_lifespan() -> i64 { 50 }
+
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
 fn default_synchrony_recovery_cooldown() -> Duration { Duration::from_secs(20) }
@@ -154,8 +152,6 @@ fn default_synchrony_finalized_baseline_enabled() -> bool { true }
 fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 
 fn default_max_user_deploys_per_block() -> u32 { 128 }
-
-fn default_disable_late_block_filtering() -> bool { true }
 
 fn default_enable_mergeable_channel_gc() -> bool { false }
 
@@ -406,6 +402,9 @@ pub struct HeartbeatAdvancedConf {
         default = "default_deploy_recovery_max_lag"
     )]
     pub deploy_recovery_max_lag: i64,
+    /// Width cap on empty-frontier (heartbeat) proposals. Must satisfy
+    /// hard finality-lag backpressure (8) < cap <= max-parent-depth
+    /// (validated at startup).
     #[serde(
         rename = "empty-frontier-max-unfinalized-blocks",
         deserialize_with = "de_non_negative_i64",
@@ -431,7 +430,7 @@ fn default_pending_deploy_max_lag() -> i64 { 20 }
 
 fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
-fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
+fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 12 }
 
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {

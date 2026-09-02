@@ -320,6 +320,47 @@ async fn multi_parent_casper_should_propose_blocks_it_adds_to_peers() {
     );
 }
 
+/// A block carrying a deploy priced below the shard's min-phlo-price must be
+/// REJECTED at validation, not merely warned about: the floor is a consensus
+/// value (adopted from chain), and a verdict that only logs lets a
+/// misconfigured or malicious proposer ship underpriced work every node then
+/// executes for free.
+#[tokio::test]
+async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        .await
+        .unwrap();
+
+    // Below the fixture's shard-conf floor (min_phlo_price = 1); the deploy
+    // enters the pool directly, modeling a proposer that skipped the API gate.
+    let underpriced = construct_deploy::source_deploy_now_full(
+        "Nil".to_string(),
+        None,
+        Some(0),
+        None,
+        None,
+        Some(ctx.shard_id.clone()),
+    )
+    .unwrap();
+
+    let result = nodes[0]
+        .add_block_status(&[underpriced], |s| {
+            matches!(
+                s,
+                Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
+            )
+        })
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a block carrying an underpriced deploy must validate as LowDeployCost, got: {:?}",
+        result.err()
+    );
+}
+
 #[tokio::test]
 async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
     let ctx = TestContext::new().await;

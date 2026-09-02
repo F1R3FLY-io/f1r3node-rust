@@ -73,6 +73,8 @@ pub type PublicKey = Vec<u8>;
 pub type Data = Vec<u8>;
 pub type Signature = Vec<u8>;
 
+/// Wall-clock tolerance of the timestamp validity rule; consensus-bearing,
+/// so compiled.
 const DRIFT: i64 = 15000; // 15 seconds
 
 /// Namespace for the block-validation functions. P4-6 (slashing audit)

@@ -148,7 +148,6 @@ struct FinalityLagStats {
 /// for per-shard control — when that happens the rename target is
 /// already in place.
 const DEPLOY_SELECTION_RESERVE_TAIL_ENABLED: bool = true;
-const ORDINARY_DEPLOY_PROPOSAL_CAP: usize = 128;
 const USER_DEPLOY_BYTE_PROPOSAL_BUDGET: usize = 2 * 1024 * 1024;
 const USER_DEPLOY_BACKPRESSURE_BYTE_PROPOSAL_BUDGET: usize = 512 * 1024;
 const RETRY_DEPLOY_REPROPOSAL_CAP: usize = 32;
@@ -162,8 +161,11 @@ const DEPLOY_INCLUSION_LEASE_MILLIS: i64 = 30_000;
 const FRESH_DEPLOY_MAX_ADMISSION_DELAY_MILLIS: i64 = 60_000;
 const FRESH_DEPLOY_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 120_000;
 const FRESH_DEPLOY_MAX_ESCALATED_ADMISSION_DELAY_MILLIS: i64 = 300_000;
-const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
-const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+/// Public so startup validation can order the width cap against the hard tier.
+pub const FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS: i64 = 4;
+pub const FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS: i64 = 8;
+const _: () =
+    assert!(FINALITY_LAG_SOFT_BACKPRESSURE_BLOCKS < FINALITY_LAG_HARD_BACKPRESSURE_BLOCKS);
 
 /// C15 / Smell-4: extract the deploy-signature pretty-print prefix
 /// used in operator-facing log messages. Previously inlined as
@@ -300,11 +302,10 @@ fn user_deploy_byte_budget(admission_policy: DeployAdmissionPolicy) -> usize {
 }
 
 fn normal_ordinary_deploy_cap(casper_snapshot: &CasperSnapshot) -> usize {
-    (casper_snapshot
+    casper_snapshot
         .on_chain_state
         .shard_conf
-        .max_user_deploys_per_block as usize)
-        .min(ORDINARY_DEPLOY_PROPOSAL_CAP)
+        .max_user_deploys_per_block as usize
 }
 
 fn is_retryable_single_value_batch_error(err: &CasperError) -> bool {
@@ -2913,7 +2914,6 @@ pub async fn create(
         casper_snapshot,
         runtime_manager,
         &latest_messages,
-        None,
         Some(&rejected_deploy_buffer),
         floor_ctx.as_ref(),
         Some(&local_validator),
@@ -4955,7 +4955,7 @@ mod tests {
             false,
             DeployAdmissionPolicy {
                 allow_ordinary: true,
-                ordinary_cap: ORDINARY_DEPLOY_PROPOSAL_CAP,
+                ordinary_cap: normal_ordinary_deploy_cap(&snapshot),
                 allow_in_scope_recovery: false,
                 in_scope_recovery_cap: 0,
                 reserve_tail: false,
@@ -4968,7 +4968,7 @@ mod tests {
         .expect("prepare deploys");
 
         assert!(!prepared.deploys.is_empty());
-        assert!(prepared.deploys.len() < ORDINARY_DEPLOY_PROPOSAL_CAP);
+        assert!(prepared.deploys.len() < normal_ordinary_deploy_cap(&snapshot));
         assert!(prepared.byte_cap_hit);
         assert!(prepared.cap_hit);
         assert!(prepared.selected_user_deploy_bytes <= USER_DEPLOY_BYTE_PROPOSAL_BUDGET);
@@ -5769,7 +5769,7 @@ mod tests {
         let deploys = HashSet::from([deploy]);
         let selected = select_deploys_for_block(
             &deploys,
-            ORDINARY_DEPLOY_PROPOSAL_CAP,
+            128, // count cap irrelevant; the test exercises the byte budget
             false,
             USER_DEPLOY_BYTE_PROPOSAL_BUDGET,
         );

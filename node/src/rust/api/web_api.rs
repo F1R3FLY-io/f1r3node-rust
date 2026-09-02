@@ -357,7 +357,7 @@ impl WebApiImpl {
 #[async_trait::async_trait]
 impl WebApi for WebApiImpl {
     async fn status(&self) -> Result<ApiStatus> {
-        const STATUS_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
+        use crate::rust::web::shared_handlers::STATUS_SLOW_THRESHOLD;
         let total_start = Instant::now();
 
         let rp_conf_start = Instant::now();
@@ -422,6 +422,13 @@ impl WebApi for WebApiImpl {
 
         let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
+
+        // Advertise the floor admission and validity actually enforce — the
+        // chain-adopted value; local conf only until casper is up.
+        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().min_phlo_price,
+            None => self.min_phlo_price,
+        };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
         } else {
@@ -438,7 +445,7 @@ impl WebApi for WebApiImpl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price: self.min_phlo_price,
+            min_phlo_price,
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -480,7 +487,6 @@ impl WebApi for WebApiImpl {
             &self.engine_cell,
             signed_deploy,
             &self.trigger_propose_f,
-            self.min_phlo_price,
             self.is_node_read_only,
             &self.shard_id,
         )

@@ -825,7 +825,6 @@ pub fn merge(
     history_repository: &RhoHistoryRepository,
     rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
     scope: Option<HashSet<BlockHash>>,
-    disable_late_block_filtering: bool,
     floor_block_number: i64,
     deploy_lifespan: i64,
     // True iff the sig's effect is already present in the BASE state. The
@@ -879,8 +878,7 @@ pub fn merge(
             base_post_state = %hex::encode(base_post_state.clone().bytes()),
             scope = %scope
                 .as_ref()
-                .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
-            disable_late_block_filtering = disable_late_block_filtering);
+                .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())));
     }
 
     // Blocks to merge are all blocks in scope that are NOT the base or on its
@@ -926,44 +924,28 @@ pub fn merge(
         }
     };
 
-    // Late blocks: With the new actualBlocks definition that includes sibling branches,
-    // there are no "late" blocks when scope is provided - all non-ancestor blocks are in actualBlocks.
-    // Late block filtering is now only relevant for legacy code paths without scope.
-    let late_blocks: HashSet<BlockHash> = if disable_late_block_filtering || scope.is_some() {
-        // No late blocks when scope is provided (all relevant blocks are in actualBlocks)
-        HashSet::new()
-    } else {
-        // Legacy: query nonFinalizedBlocks (non-deterministic, but no scope means
-        // this is not a multi-parent merge validation)
-        let non_finalized_blocks = dag.non_finalized_blocks()?;
-        non_finalized_blocks
-            .difference(&actual_blocks)
-            .cloned()
-            .collect()
-    };
-
     // Log the block sets for debugging
     tracing::info!(
-        "DagMerger.merge: base={}, scope={}, actualBlocks (above base)={}, lateBlocks={}",
+        "DagMerger.merge: base={}, scope={}, actualBlocks (above base)={}",
         hex::encode(&base[..std::cmp::min(8, base.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| format!("{} blocks", s.len())),
         actual_blocks.len(),
-        late_blocks.len()
     );
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         let actual: Vec<String> = actual_blocks.iter().map(|b| hex::encode(&b[..])).collect();
-        let late: Vec<String> = late_blocks.iter().map(|b| hex::encode(&b[..])).collect();
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.block_sets",
-            n_actual = actual_blocks.len(), n_late = late_blocks.len(),
-            actual_blocks = ?actual, late_blocks = ?late);
+            n_actual = actual_blocks.len(), actual_blocks = ?actual);
     }
 
-    // Get indices for actual and late blocks, converting to sorted vectors for determinism
+    // Get indices for the merge set, converting to sorted vectors for
+    // determinism. The late lane below starts empty and receives only the
+    // window-closed chains (the deterministic lateness definition); the old
+    // node-local `non_finalized_blocks` late-block source is gone.
     let mut actual_set_vec = Vec::new();
-    let mut late_set_vec = Vec::new();
+    let mut late_set_vec: Vec<DeployChainIndex> = Vec::new();
 
     // Process actual blocks (sorted for determinism)
     let mut actual_blocks_sorted: Vec<_> = actual_blocks.iter().collect();
@@ -973,25 +955,14 @@ pub fn merge(
         actual_set_vec.extend(indices);
     }
 
-    // Process late blocks (sorted for determinism)
-    let mut late_blocks_sorted: Vec<_> = late_blocks.iter().collect();
-    late_blocks_sorted.sort();
-    for block_hash in late_blocks_sorted {
-        let indices = index(block_hash)?;
-        late_set_vec.extend(indices);
-    }
-
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "merge.indices_loaded",
-            n_actual_chains = actual_set_vec.len(), n_late_chains = late_set_vec.len());
+            n_actual_chains = actual_set_vec.len());
     }
 
-    // Both sets are stamped: `resolve_conflicts` rejects every late chain
-    // outright today, but it receives both sequences and ranks on
-    // `prior_rejections`, so a late chain must never reach a loss-aware
-    // comparison carrying the constructor's zero instead of its record.
+    // Stamped before the window split so window-rejected chains carry their
+    // records into the loss-aware ranking.
     stamp_prior_rejections(&mut actual_set_vec, prior_rejection_counts);
-    stamp_prior_rejections(&mut late_set_vec, prior_rejection_counts);
 
     // Accumulator for deploys that lose their chain via dedup but have no
     // fresher copy elsewhere. These are treated the same as conflict-rejected
@@ -1280,9 +1251,8 @@ pub fn merge(
     // late chains unconditionally (they reach the block's rejection record
     // through the standard pair assembly) and rejects actual chains that
     // depend on them; the stale-diff lineage expansion afterward covers
-    // state-lineage descendants. The floor-relative window is the
-    // deterministic lateness definition the legacy (nondeterministic,
-    // disabled) late-block query lacked. A chain both settled-in-base and
+    // state-lineage descendants. The floor-relative window is the sole,
+    // deterministic definition of lateness. A chain both settled-in-base and
     // window-closed was already dropped record-less by the dedup sentinel
     // above — fine: its effect stands, a record would be dup-flagged
     // testimony. Settled chains were split out above and are exempt: a
@@ -2154,13 +2124,12 @@ pub fn merge(
     rejected_slashes.sort();
 
     tracing::debug!(
-        "DagMerger.merge: base={}, scope={}, actual={}, late={}, rejected_user={}, rejected_slash={}",
+        "DagMerger.merge: base={}, scope={}, actual={}, rejected_user={}, rejected_slash={}",
         hex::encode(&base[..std::cmp::min(8, base.len())]),
         scope
             .as_ref()
             .map_or("ALL".to_string(), |s| s.len().to_string()),
         actual_blocks.len(),
-        late_blocks.len(),
         rejected_user_deploys.len(),
         rejected_slashes.len(),
     );

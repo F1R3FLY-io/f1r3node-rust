@@ -271,7 +271,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
             &self.engine_cell,
             signed_deploy,
             &self.trigger_propose_f,
-            self.min_phlo_price,
             self.is_node_read_only,
             &self.shard_id,
         )
@@ -1071,6 +1070,13 @@ impl DeployService for DeployGrpcServiceV1Impl {
             0
         };
 
+        // Advertise the floor admission and validity actually enforce — the
+        // chain-adopted value; local conf only until casper is up.
+        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => casper.casper_shard_conf().min_phlo_price,
+            None => self.min_phlo_price,
+        };
+
         let status = Status {
             version: Some(VersionInfo {
                 api: "1".to_string(),
@@ -1081,7 +1087,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price: self.min_phlo_price,
+            min_phlo_price,
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),

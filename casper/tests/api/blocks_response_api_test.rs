@@ -9,12 +9,12 @@ use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
+use casper::rust::estimator::Estimator;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use models::rust::validator::Validator;
 
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::helper::unlimited_parents_estimator_fixture::UnlimitedParentsEstimatorFixture;
 use crate::helper::{block_generator, block_util};
 use crate::util::rholang::resources::{
     generate_scope_id, mk_runtime_manager_at, mk_test_rnode_store_manager_shared,
@@ -281,8 +281,8 @@ async fn show_main_chain_should_return_only_blocks_in_the_main_chain() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let tips = Estimator::apply()
+        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
         .await
         .unwrap();
 
@@ -330,8 +330,8 @@ async fn get_blocks_should_return_all_blocks() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let tips = Estimator::apply()
+        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
         .await
         .unwrap();
 
@@ -377,8 +377,8 @@ async fn get_blocks_should_return_until_depth() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let tips = Estimator::apply()
+        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
         .await
         .unwrap();
 
@@ -429,8 +429,8 @@ async fn get_blocks_by_heights_should_return_blocks_between_start_and_end() {
         .get_representation()
         .expect("dag representation");
 
-    let tips = UnlimitedParentsEstimatorFixture::create_estimator()
-        .tips(&mut dag, &genesis)
+    let tips = Estimator::apply()
+        .tips(&mut dag, &genesis, Estimator::UNLIMITED_PARENTS, None)
         .await
         .unwrap();
 

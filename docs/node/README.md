@@ -355,14 +355,18 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 
 **`BlockProcessorInstance`** -- Receives blocks, validates, applies to DAG. Semaphore-bounded parallelism. Re-queues on `FinalizationInProgress`.
 
-### Block-processing tuning env vars
+### Block-processing bounds (compiled constants)
 
-| Env var | Default | Purpose |
-|---------|--------:|---------|
-| `F1R3_MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks in `BlockProcessorInstance`. **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later), so undersizing this on a catching-up node slows sync. Was hardcoded 2048 through v0.4.16; lowered to bound peak memory. `0`/invalid falls back to the default. |
-| `F1R3_MALLOC_TRIM_EVERY_BLOCKS` | `0` (disabled) | Linux/glibc only: call `malloc_trim(0)` after every N processed blocks to return freed arena memory to the OS. Was 8 through v0.4.16; now disabled by default because trims stall the processing loop. Long-running validators that need bounded RSS should set a non-zero interval (e.g. `8`). |
-| `F1R3_MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. Was 10s through v0.4.16; raised to 120s to stop request storms against slow peers. Lower it on small local networks where dependencies resolve fast. Also paces the validation-error quarantine below. |
-| `F1R3_VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. Retries between attempts are paced by the quarantine interval above. |
+The former `F1R3_*` block-processing env vars are gone — every bound is a
+named constant with a single definition. Current values:
+
+| Constant | Value | Purpose |
+|----------|------:|---------|
+| `MAX_BLOCKS_IN_PROCESSING` | `512` | Cap on concurrently in-flight blocks (one shared set; all admission gates use this one constant). **When the cap is hit, incoming blocks are dropped with a warn log** (they are re-fetched via the missing-dependency path later). |
+| `MALLOC_TRIM_INTERVAL_BLOCKS` | `64` | Linux/glibc only: `malloc_trim(0)` after every 64 processed blocks to return freed arena memory to the OS. |
+| `MISSING_DEPENDENCY_QUARANTINE_MS` | `120000` | How long a block whose dependencies exceeded the retry budget stays quarantined before another fetch round. |
+| `VALIDATION_ERROR_QUARANTINE_MS` | `120000` | Pacing of hard-validation-failure retries; a separate constant from the missing-dependency quarantine (they no longer alias). |
+| `VALIDATION_ERROR_ATTEMPTS_MAX` | `32` | Cap on hard validation `Err`s per buffered block (typed outcomes — duplicate, malformed, missing-dependency — never count). At the cap the block is purged from the buffer with a warn; only a fresh peer delivery brings it back. |
 
 **`ProposerInstance`** -- Dequeues proposal requests. Non-blocking locking (try_lock). 5-minute timeout for stuck proposals. Min-interval between proposals is 250ms (hardcoded).
 
@@ -379,7 +383,7 @@ These values are hardcoded (previously configurable via `F1R3_*` env vars, remov
 | `heartbeat.advanced.frontier-chase-max-lag` | 20 | EXPERIMENTAL. Max lag for frontier-chase proposals while ahead of LFB (0 stops validators contributing under load) |
 | `heartbeat.advanced.pending-deploy-max-lag` | 20 | EXPERIMENTAL. Lag threshold above which pending-deploy proposals throttle |
 | `heartbeat.advanced.deploy-recovery-max-lag` | 64 | EXPERIMENTAL. Wider lag cap during the deploy-finalization grace window. Must be >= `pending-deploy-max-lag` to take effect (else collapses to that floor). |
-| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 64 | EXPERIMENTAL. Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). |
+| `heartbeat.advanced.empty-frontier-max-unfinalized-blocks` | 12 | Width cap on empty (no-deploy) proposals: above this many unfinalized blocks, empty proposals stop — except one per validator per stale-recovery interval when temporally idle (the consensus-deadlock escape). Must satisfy hard finality-lag backpressure (8) < cap <= max-parent-depth (validated at startup). |
 
 **Deploy grace window**: When a deploy is proposed or finalization-critical parents observed, a grace window opens (default 25s) that allows proposals which would normally be blocked by cooldown/interval constraints.
 

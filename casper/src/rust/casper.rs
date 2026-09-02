@@ -268,6 +268,52 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
+    // Same adoption, same reasoning, for the parameters the VALIDITY rules
+    // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
+    // windows (deploy-lifespan), and the phlo floor (min-phlo-price). The
+    // assignment is unconditional — `reconcile(local, onchain) = onchain` —
+    // and absent/out-of-range fails the node (see
+    // `read_on_chain_consensus_parameters`).
+    let (onchain_mpd, onchain_lifespan, onchain_min_phlo) =
+        crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
+            &runtime_manager,
+            &approved_block.body.state.post_state_hash,
+        )
+        .await?;
+    if (onchain_mpd, onchain_lifespan, onchain_min_phlo)
+        != (
+            casper_shard_conf.max_parent_depth,
+            casper_shard_conf.deploy_lifespan,
+            casper_shard_conf.min_phlo_price,
+        )
+    {
+        tracing::info!(
+            onchain_max_parent_depth = onchain_mpd,
+            onchain_deploy_lifespan = onchain_lifespan,
+            onchain_min_phlo_price = onchain_min_phlo,
+            local_max_parent_depth = casper_shard_conf.max_parent_depth,
+            local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
+            local_min_phlo_price = casper_shard_conf.min_phlo_price,
+            "Adopting on-chain consensus parameters over local configuration"
+        );
+    }
+    casper_shard_conf.max_parent_depth = onchain_mpd;
+    casper_shard_conf.deploy_lifespan = onchain_lifespan;
+    casper_shard_conf.min_phlo_price = onchain_min_phlo;
+
+    // Startup validation ran on the LOCAL values; re-judge the inequalities
+    // the adopted values actually run under.
+    if casper_shard_conf.max_parent_depth != i32::MAX
+        && casper_shard_conf.deploy_lifespan <= casper_shard_conf.max_parent_depth as i64
+    {
+        tracing::warn!(
+            deploy_lifespan = casper_shard_conf.deploy_lifespan,
+            max_parent_depth = casper_shard_conf.max_parent_depth,
+            "adopted deploy-lifespan is at or below the adopted max-parent-depth: \
+             deploys can expire inside the citability window"
+        );
+    }
+
     Ok(MultiParentCasperImpl {
         divergence_monitor: std::sync::Arc::new(
             crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
@@ -367,6 +413,10 @@ impl OnChainCasperState {
     }
 }
 
+/// Protocol version stamped into proposed block headers and judged against
+/// peers' blocks. Changes only with a coordinated protocol upgrade.
+pub const CASPER_PROTOCOL_VERSION: i64 = 1;
+
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
     /// Display/back-compat `f32` view of the fault-tolerance threshold θ. The
@@ -393,14 +443,11 @@ pub struct CasperShardConf {
     /// rule: the block carries exactly the deploys that executed in budget.
     pub deploy_play_budget_millis: i64,
     pub casper_version: i64,
-    pub config_version: i64,
     pub bond_minimum: i64,
     pub bond_maximum: i64,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
-    /// Disable late block filtering in DagMerger (for testing or special configurations)
-    pub disable_late_block_filtering: bool,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -428,12 +475,10 @@ pub struct CasperShardConf {
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
-    /// Phase 13 (TC-2): maximum entries in the `active_validators_cache`
-    /// inside `compute_snapshot`. Previously a hardcoded `usize = 4096`
-    /// constant in `engine/multi_parent_casper/types.rs`; lifted to configuration so
-    /// operators can size the cache for their validator set without
-    /// recompiling. Distinct from the `runtime_manager`'s own 256-entry
-    /// validator-key cache.
+    /// Maximum entries in `compute_snapshot`'s `active_validators_cache`.
+    /// Always `ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT` in production —
+    /// no conf key feeds it. Distinct from the `runtime_manager`'s own
+    /// 256-entry validator-key cache.
     pub active_validators_cache_max_entries: usize,
 }
 
@@ -452,13 +497,11 @@ impl CasperShardConf {
             deploy_lifespan: 0,
             deploy_play_budget_millis: 0,
             casper_version: 0,
-            config_version: 0,
             bond_minimum: 0,
             bond_maximum: 0,
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
-            disable_late_block_filtering: true,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,

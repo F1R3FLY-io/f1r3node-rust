@@ -23,6 +23,9 @@ use crate::rust::util::proto_util;
 
 // Last Finalized State processor for receiving blocks.
 
+/// Retry-backoff ceiling shared by all three LFS requesters.
+pub(crate) const LFS_MAX_REQUEST_TIMEOUT: Duration = Duration::from_secs(128);
+
 /// Trait that abstracts the operations needed by the LFS block requester
 #[async_trait]
 pub trait BlockRequesterOps {
@@ -870,8 +873,7 @@ pub async fn stream<'a, T: BlockRequesterOps>(
     request_timeout: Duration,
     block_ops: &'a mut T,
 ) -> Result<impl futures::stream::Stream<Item = ST<BlockHash>> + use<'a, T>, CasperError> {
-    // Default max timeout is 128 seconds
-    let max_request_timeout = Duration::from_secs(128);
+    let max_request_timeout = LFS_MAX_REQUEST_TIMEOUT;
     let block = &approved_block.candidate.block;
 
     // Active validators as per approved block state
