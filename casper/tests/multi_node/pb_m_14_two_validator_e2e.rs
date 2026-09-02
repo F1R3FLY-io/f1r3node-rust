@@ -1182,3 +1182,194 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
         post_boot_lookup.as_ref().map(hex::encode),
     );
 }
+
+/// Phase 5 canary (2026-09-02): **multi-node divergence detection**.
+///
+/// Sets up 2 validators with identical per-validator subdirs
+/// (Shape A / D3) seeded with `PAYLOAD` at `target`.  Validator A
+/// plays a `file.readN(11)` deploy — its play caches reply
+/// `[true, "hello world" bytes]`.  BEFORE propagating to validator
+/// B, we tamper with validator B's subdir copy of `target`, over-
+/// writing `PAYLOAD` with `DIVERGENT_PAYLOAD`.  Validator B's replay
+/// re-executes `fs_read` against its tampered subdir; the fresh
+/// reply bytes differ from cached, `verify_reply_hash_matches_cached`
+/// fires `FSERR_CONSENSUS_DIVERGENCE`, and B's replay produces a
+/// different `Par` output than A's play.
+///
+/// Where the block rejection actually lands: the divergent reply
+/// downstream causes B's replay-deploy cost to differ from A's play
+/// cost, which trips `interpreter_util`'s replay-cost-mismatch check
+/// (`Found replay cost mismatch: initial deploy cost = X, replay
+/// deploy cost = Y`), and the block is rejected as
+/// `InvalidBlock::InvalidTransaction`.  This is downstream of but
+/// SIGNAL-EQUIVALENT to a direct RSpace-rig reply-hash rejection —
+/// either would fire block rejection on divergence.  The canary
+/// asserts the block-rejection outcome without pinning a specific
+/// InvalidBlock variant so a future refactor that moves the
+/// detection between the reply-hash and cost-mismatch paths doesn't
+/// spuriously break this test.
+///
+/// The runtime-level divergence pins in `rholang/tests/fs_wal_spec.rs`
+/// (e.g., `consensus_fs_read_reexecute_detects_divergence`) exercise
+/// `check_replay_data` directly; this canary adds coverage for the
+/// full block-processing chain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn pb_m_14_divergent_follower_read_causes_block_rejection() {
+    const DIVERGENT_PAYLOAD: &[u8] = b"HELLO WORLD";
+
+    // ---- fs setup (Shape A per-validator) -----------------------------
+    // Seed operator stage with PAYLOAD so both validators start
+    // with the same content at `target` post-projection.
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_file = stage_dir.path().join("target");
+    std::fs::write(&stage_file, PAYLOAD).expect("seed stage source with PAYLOAD");
+    let canon_path = std::fs::canonicalize(&stage_file).expect("canonicalize stage source");
+
+    let entry = BundleEntry::try_new(
+        "target".to_string(),
+        canon_path.clone(),
+        BundleEntryKind::File,
+        "rw".to_string(),
+        BundleConsensusMode::Consensus,
+    )
+    .expect("bundle entry construction");
+    let bundle = vec![entry];
+
+    let genesis = GenesisBuilder::new()
+        .with_fs_bundle(bundle.clone())
+        .with_consensus_fs_snapshot_cadence(Some(1))
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("build genesis with fs bundle");
+
+    let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
+    let projections =
+        project_bundle_per_validator(&bundle, 2, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
+    let leader_subdir = projections[0].subdir.clone();
+    let follower_subdir = projections[1].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
+
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
+            .await
+            .expect("two-validator network with fs provisioning");
+
+    // Sanity: both subdirs seeded with PAYLOAD post-projection.
+    assert_eq!(
+        std::fs::read(leader_subdir.join("target")).expect("read leader target"),
+        PAYLOAD,
+        "leader's projected subdir must contain PAYLOAD pre-play"
+    );
+    assert_eq!(
+        std::fs::read(follower_subdir.join("target")).expect("read follower target"),
+        PAYLOAD,
+        "follower's projected subdir must contain PAYLOAD pre-tamper"
+    );
+
+    // ---- Consensus read deploy ---------------------------------------
+    // openFile("rw") + readN(11) — reply carries the bytes.  Under
+    // Phase 2 the follower's fs_read re-execute reads from its own
+    // subdir; if that subdir's contents differ from leader's cached
+    // reply bytes, verify_reply_hash_matches_cached fires
+    // FSERR_CONSENSUS_DIVERGENCE and RSpace rig raises at
+    // check_replay_data.
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let deploy_src = format!(
+        r#"
+new rl(`rho:registry:lookup`), fsCh, ackCh in {{
+  rl!(`{fs_uri}`, *fsCh) |
+  for (@(_, fs) <- fsCh) {{
+    for (@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for (@reply <- @file!?("readN", {n})) {{
+        ackCh!(reply)
+      }}
+    }}
+  }}
+}}
+"#,
+        fs_uri = fs_uri,
+        n = PAYLOAD.len(),
+    );
+
+    let deploy = construct_deploy::source_deploy_now(deploy_src, None, None, Some(shard_id))
+        .expect("sign fs-read deploy");
+
+    // ---- execute: A creates + validates ------------------------------
+    // Leader reads PAYLOAD from its subdir; cache captures the reply
+    // bytes.  Any subsequent divergence on the follower must produce
+    // a DIFFERENT reply.
+    let block = nodes[0]
+        .add_block_from_deploys(&[deploy])
+        .await
+        .expect("node 0 (validator A) creates + adds Consensus-read block");
+
+    // Sanity: leader's on-disk file untouched by a read.
+    assert_eq!(
+        std::fs::read(leader_subdir.join("target")).expect("read leader target post-play"),
+        PAYLOAD,
+        "read op must not mutate leader's subdir"
+    );
+
+    // ---- Divergence injection ----------------------------------------
+    // Tamper the follower's copy of `target` before the block reaches
+    // it.  The follower's replay of the same deploy will re-execute
+    // fs_read against these bytes and get a DIFFERENT reply than
+    // leader cached.  Under Phase 2 fs_read Consensus re-execute +
+    // verify, this fires FSERR_CONSENSUS_DIVERGENCE and RSpace rig
+    // rejects the divergent produce.
+    std::fs::write(follower_subdir.join("target"), DIVERGENT_PAYLOAD)
+        .expect("tamper follower's target to force divergence");
+
+    // ---- process on B: expect NON-Valid result -----------------------
+    let (_left, right) = nodes.split_at_mut(1);
+    let result = right[0].process_block(block.clone()).await;
+
+    // The exact BlockError variant depends on how the RSpace rig
+    // error propagates up through replay_deploys_for_state; we assert
+    // the shape (any Left) rather than a specific variant so a future
+    // refactor that changes the surface doesn't break this pin
+    // without also breaking the divergence-detection intent.
+    match result {
+        Ok(rspace_plus_plus::rspace::history::Either::Left(err)) => {
+            // Good: block rejected.  Log the specific error so a
+            // regression to a different rejection path is greppable.
+            eprintln!(
+                "PB-M-14 divergence canary: block rejected as expected with BlockError: {err:?}"
+            );
+        }
+        Ok(rspace_plus_plus::rspace::history::Either::Right(valid)) => panic!(
+            "Phase 5 REGRESSION: divergent follower state must reject the block. \
+             Follower's fs_read re-executed against tampered subdir (DIVERGENT_PAYLOAD \
+             = {DIVERGENT_PAYLOAD:?}) but the block was ACCEPTED as {valid:?}.  \
+             This means verify_reply_hash_matches_cached did NOT fire \
+             FSERR_CONSENSUS_DIVERGENCE, or the divergence did not propagate to \
+             block validation.  Load-bearing pin for the whole Phase-2 → block-\
+             validation chain."
+        ),
+        Err(casper_err) => panic!(
+            "Phase 5 canary got infrastructure error instead of BlockError.Invalid: \
+             {casper_err:?}.  Divergence should produce a domain-level rejection, \
+             not a CasperError."
+        ),
+    }
+
+    // Belt-and-suspenders: assert the follower's tempered file still
+    // contains DIVERGENT_PAYLOAD post-replay.  A regression where
+    // Consensus re-execute re-writes bytes from D2 would show up here
+    // as the follower's file getting overwritten back to PAYLOAD,
+    // masking the divergence at the block-validation layer.  Note:
+    // fs_read is read-only; if follower's re-execute somehow mutates
+    // the file, that's a bug worth catching.
+    assert_eq!(
+        std::fs::read(follower_subdir.join("target")).expect("read follower target post-replay"),
+        DIVERGENT_PAYLOAD,
+        "Phase 5 SANITY: follower's tampered file must remain DIVERGENT_PAYLOAD \
+         post-replay — fs_read is read-only, no mutation expected"
+    );
+}
