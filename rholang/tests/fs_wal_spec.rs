@@ -5093,6 +5093,277 @@ mod tests {
             .expect("replay data must match on symmetric syscall error");
     }
 
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_copy_file positive re-execute**.  Leader copies src.bin
+    /// → dst.bin (success).  Delete dst.bin between leader + follower
+    /// evaluate so follower's own real copy re-creates it via
+    /// safe_open_verified + std::io::copy.  Post-follower: dst.bin
+    /// exists with identical bytes.  A regression to Phase-0
+    /// tautological leaves dst.bin missing (follower never fired
+    /// the syscall).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_copy_file_reexecute_copies_to_follower_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        let payload: &[u8] = b"payload bytes for copy";
+        std::fs::write(&src, payload).unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsCopy(`rho:io:fs:native:1.0.0/copyFile`), ackCh in {{
+              fsCopy!("{root}", "src.bin", "{root}", "dst.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[117; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_copy_file positive");
+        assert!(dst.exists(), "leader's copy must create dest");
+        assert_eq!(std::fs::read(&dst).unwrap(), payload);
+
+        // Remove dst pre-follower — proves follower's own real
+        // std::io::copy re-created it.
+        std::fs::remove_file(&dst).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_copy_file positive");
+
+        // LOAD-BEARING: dst present with correct bytes post-follower.
+        // Regression to Phase-0 tautological leaves dst absent.
+        assert!(
+            dst.exists(),
+            "Phase 4 REGRESSION: follower's fs_copy_file did NOT fire — dst \
+             not present after follower.evaluate.  Either fresh-syscall path \
+             not engaged (Phase-0 tautological came back) or Shape A resolver \
+             failed to route."
+        );
+        assert_eq!(
+            std::fs::read(&dst).unwrap(),
+            payload,
+            "Phase 4 REGRESSION: follower's fs_copy_file wrote different bytes \
+             than the source; std::io::copy through safe_open_verified must \
+             produce byte-identical output."
+        );
+
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), follower_wal.len());
+        for (i, (l, f)) in leader_wal.iter().zip(follower_wal.iter()).enumerate() {
+            assert_eq!(
+                l, f,
+                "Phase 4: WAL entry {i} differs on fs_copy_file positive: \
+                 leader={l:?} follower={f:?}"
+            );
+        }
+        let cf_entry = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::CopyFile)
+            .expect("leader must journal a CopyFile entry");
+        assert_eq!(cf_entry.outcome, WalOutcome::Success);
+
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on identical fs_copy_file");
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_copy_file byte-count divergence-detection**.  Leader
+    /// copies N bytes (cached reply [true, N]).  Between leader +
+    /// follower evaluate, truncate the source to a shorter length —
+    /// follower's copy produces M < N bytes → fresh reply [true, M]
+    /// hashes differently than cached [true, N] → CONSENSUS_DIVERGENCE
+    /// fires.  This pin specifically exercises the reply's u64
+    /// payload (byte count) as part of the hash, catching regressions
+    /// where verify was hashing only the boolean portion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_copy_file_reexecute_detects_byte_count_divergence() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.bin");
+        let dst = dir.path().join("dst.bin");
+        std::fs::write(&src, b"twenty-two payload bytes").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsCopy(`rho:io:fs:native:1.0.0/copyFile`), ackCh in {{
+              fsCopy!("{root}", "src.bin", "{root}", "dst.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[118; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_copy_file divergence setup");
+        let leader_n = std::fs::metadata(&dst).unwrap().len();
+        assert!(leader_n > 0, "leader must have copied bytes");
+
+        // Truncate source to a shorter length between evaluate.  We
+        // also delete dst so follower's O_CREAT|O_TRUNC re-creates
+        // it, but reads a smaller source → different n.
+        std::fs::write(&src, b"short").unwrap();
+        std::fs::remove_file(&dst).unwrap();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "Phase 4 D1 enforcement: follower's fresh copy with different n \
+             must trip RSpace rig verification"
+        );
+
+        let follower_cf = follower_wal
+            .iter()
+            .find(|e| e.op == WalOp::CopyFile)
+            .expect("follower must have a pre-appended CopyFile entry");
+        match follower_cf.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_CONSENSUS_DIVERGENCE,
+                "Phase 4: CopyFile divergence WAL entry must carry \
+                 CONSENSUS_DIVERGENCE code — got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "Phase 4 REGRESSION: follower's CopyFile entry stayed at \
+                 Success despite byte-count drift.  Entry: {follower_cf:?}"
+            ),
+        }
+    }
+
+    /// Phase 4 pin (Consensus re-execute + verify, 2026-09-02):
+    /// **fs_copy_file symmetric syscall error**.  Attempt copyFile
+    /// with a non-existent source on both sides → both see ENOENT
+    /// → FSERR_NOT_FOUND → verify OK → both finalize to Failure {
+    /// FSERR_CODE_NOT_FOUND }, NOT CONSENSUS_DIVERGENCE.  Parity
+    /// with fs_chmod / fs_remove_file / fs_rename symmetric-error
+    /// pins.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_copy_file_symmetric_syscall_error_finalizes_to_failure() {
+        use rholang::rust::interpreter::io::errors::FSERR_CODE_NOT_FOUND;
+
+        let dir = tempfile::tempdir().unwrap();
+        // No file at "missing.bin".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsCopy(`rho:io:fs:native:1.0.0/copyFile`), ackCh in {{
+              fsCopy!("{root}", "missing.bin", "{root}", "dst.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[119; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_copy_file symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        let leader_cf = leader_wal
+            .iter()
+            .find(|e| e.op == WalOp::CopyFile)
+            .expect("leader must journal a CopyFile entry");
+        match leader_cf.outcome {
+            WalOutcome::Failure { code } => assert_eq!(
+                code, FSERR_CODE_NOT_FOUND,
+                "leader's CopyFile entry must finalize to Failure with NOT_FOUND \
+                 for safe_open_verified on missing source (ENOENT); got {code}"
+            ),
+            WalOutcome::Success => panic!(
+                "leader's CopyFile entry stayed at Success despite ENOENT.  \
+                 H-6 finalize broken.  Entry: {leader_cf:?}"
+            ),
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_copy_file symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 4 fs_copy_file symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_NOT_FOUND would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Streaming-backing slice Step 3 (2026-08-25): Oracular
     /// entriesStreamNext MUST NOT journal — same cross-cap isolation
     /// invariant as fs_stat / fs_entries oracular pins.  A regression

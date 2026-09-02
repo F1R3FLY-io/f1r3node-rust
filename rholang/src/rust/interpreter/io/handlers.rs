@@ -44,8 +44,8 @@ use super::handle_table::{FileHandle, FileHandleTable};
 use super::lock::{AcquireOutcome, HolderId, LockError, LockId, LockMode, WaitPolicy};
 use super::mode::{fopen_flags, parse_open_mode, AccessMode};
 use super::path::{
-    canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified, safe_open,
-    SafeParent,
+    canonicalize_lexical, io_msg_scrub, quarantine_err_reply, safe_descend_verified,
+    safe_open_verified, SafeParent,
 };
 use super::response::*;
 use super::stat::{error_record, stat_record};
@@ -3186,7 +3186,7 @@ impl FsProcesses {
 
     // -------------------------------------------------------------------
     // copyFile — (fromRootCanon, fromRel, toRootCanon, toRel) -> [true, nBytes]
-    // Uses safe_open on both sides + std::io::copy on File objects.
+    // Uses safe_open_verified on both sides + std::io::copy on File objects.
     // -------------------------------------------------------------------
     pub async fn fs_copy_file(
         &self,
@@ -3246,30 +3246,70 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
+        // Phase 4 (Consensus re-execute + verify, 2026-09-02):
+        // Path-based mutation, two endpoints, reply carries a u64
+        // byte count `[true, n]` in addition to the boolean.  Under
+        // Consensus the follower re-executes the copy against its
+        // own subdir via the Shape A resolver applied to BOTH roots
+        // and verifies the fresh reply (including n) matches cached.
+        //
+        // H-5 identity migration (F2 residual from Phase 0 Stage 2,
+        // 2026-09-02): fs_copy_file previously called `safe_open`
+        // (unverified) directly on both endpoints — bypassing H-5's
+        // (dev, inode) check and undefended against rename-and-
+        // recreate against the operator's staged root.  This slice
+        // migrates both endpoints to `safe_open_verified` and passes
+        // the `expected_root_id` from `resolve_or_identity`, closing
+        // F2's fs_copy_file half (fs_open half landed with the
+        // Phase-0 F2 fix).
+        //
+        // Byte-count divergence surface: under D3 per-validator
+        // subdirs, byte-count symmetry holds because both sides
+        // re-execute every prior WAL op against their own copy of
+        // the source — the source contents at copy time are
+        // deterministic on the deploy sequence.  Divergence only
+        // fires if an external process modified the source between
+        // leader play and follower re-execute (a real inconsistency
+        // the CONSENSUS_DIVERGENCE surface is meant to catch).
+        if is_replay && cmode != ConsensusMode::Consensus {
+            // Oracular follower — Phase-0 H-6 shape.
             if let Some(code_str) = extract_err_code(&previous) {
                 self.finalize_failure_journal(fserr_to_code(&code_str), ack);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed {
+        // Fresh syscall — leader (always) or Consensus follower.
+        let fresh_reply = match parsed {
             Some((from_root, from_rel, to_root, to_rel)) => {
-                let from_pb = PathBuf::from(from_root);
-                let to_pb = PathBuf::from(to_root);
+                let from_root_pb = PathBuf::from(from_root);
+                let to_root_pb = PathBuf::from(to_root);
+                let (from_root_pb, from_expected_id) = self
+                    .handles
+                    .root_registry
+                    .resolve_or_identity(&from_root_pb);
+                let (to_root_pb, to_expected_id) =
+                    self.handles.root_registry.resolve_or_identity(&to_root_pb);
                 spawn_blocking(move || -> Par {
-                    let mut src = match safe_open(&from_pb, &from_rel, libc::O_RDONLY, 0) {
+                    let mut src = match safe_open_verified(
+                        &from_root_pb,
+                        &from_rel,
+                        libc::O_RDONLY,
+                        0,
+                        from_expected_id,
+                    ) {
                         Ok(f) => f,
                         Err(qe) => {
                             let (c, m) = quarantine_err_reply(&qe);
                             return err(c, m);
                         }
                     };
-                    let mut dst = match safe_open(
-                        &to_pb,
+                    let mut dst = match safe_open_verified(
+                        &to_root_pb,
                         &to_rel,
                         libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
                         0o644,
+                        to_expected_id,
                     ) {
                         Ok(f) => f,
                         Err(qe) => {
@@ -3287,12 +3327,37 @@ impl FsProcesses {
             }
             None => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+        if is_replay {
+            // Consensus follower — Phase 4 re-execute + verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!("fs_copy_file follower re-execute diverges from leader: {reason}",),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+            }
+        } else {
+            // Leader path — H-6 finalize on syscall error.
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     // -------------------------------------------------------------------
