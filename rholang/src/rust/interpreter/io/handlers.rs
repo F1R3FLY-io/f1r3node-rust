@@ -1957,51 +1957,94 @@ impl FsProcesses {
                 return Ok(out);
             }
         }
-        if is_replay {
-            // Slice 30c M-29-3: follower finalize on partial write.
+        // Phase 3 (Consensus re-execute + verify, 2026-09-01):
+        // Same shape as fs_write but positional — no shadow position
+        // advance on either side (pwrite doesn't advance OS-fd
+        // position).  Oracular follower unchanged (H-6 finalize
+        // path).  Consensus follower re-executes libc::pwrite via
+        // shadow's real fd + verify + finalize from fresh reply on
+        // match / divergence-err on mismatch.
+        let jmode: Option<ConsensusMode> = match &parsed {
+            Some((fd, _, _)) => self.handles.with_mut(*fd, |h| h.cmode).await,
+            None => None,
+        };
+        if is_replay && jmode != Some(ConsensusMode::Consensus) {
+            // Oracular / no-shadow follower — Phase-0 H-6 shape.
             if let (Some((_fd, _off, bytes)), Some(n)) = (&parsed, extract_ok_u64(&previous)) {
                 if n < bytes.len() as u64 {
                     self.finalize_write_journal(bytes, n, ack);
                 }
             }
-            // H-6 fix (2026-08-06): follower failure-finalize
-            // mirror of the leader path below.
             if let Some(code_str) = extract_err_code(&previous) {
                 self.finalize_failure_journal(fserr_to_code(&code_str), ack);
             }
             produce(&previous, ack).await?;
             return Ok(previous);
         }
-        let reply = match parsed.clone() {
+        // Fresh syscall — leader (always) or Consensus follower.
+        // libc::pwrite at the specified offset via shadow's real
+        // raw_fd.  pwrite does NOT advance the OS-fd position (per
+        // POSIX), so no position tracking needed on either side.
+        let fresh_reply = match parsed.clone() {
             Some((fd, off, bytes)) => self.write_impl(fd, bytes, Some(off)).await,
             None => err(FSERR_BAD_ARG, "expected (u64, u64, ByteArray)"),
         };
-        // Slice 30c M-29-3: leader finalize on partial write.
-        if let (Some((fd, off, bytes)), Some(n)) =
-            (&parsed, extract_ok_u64(std::slice::from_ref(&reply)))
-        {
-            if n < bytes.len() as u64 {
-                tracing::warn!(
-                    target: "f1r3fly.fs_wal",
-                    fd = fd,
-                    offset = off,
-                    requested = bytes.len(),
-                    actual = n,
-                    "partial write_at on Consensus cap; finalizing WAL entry"
-                );
-                self.finalize_write_journal(bytes, n, ack);
+        if is_replay {
+            // Consensus follower — Phase 3 verify.
+            match verify_reply_hash_matches_cached(&fresh_reply, &previous) {
+                Ok(()) => {
+                    if let (Some((_fd, _off, bytes)), Some(n)) =
+                        (&parsed, extract_ok_u64(std::slice::from_ref(&fresh_reply)))
+                    {
+                        if n < bytes.len() as u64 {
+                            self.finalize_write_journal(bytes, n, ack);
+                        }
+                    }
+                    if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                        self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+                    }
+                    let out = vec![fresh_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
+                Err(reason) => {
+                    let divergence_reply = err(
+                        FSERR_CONSENSUS_DIVERGENCE,
+                        format!(
+                            "fs_write_at follower re-execute diverges from leader: \
+                             {reason}",
+                        ),
+                    );
+                    self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
+                    let out = vec![divergence_reply];
+                    produce(&out, ack).await?;
+                    Ok(out)
+                }
             }
+        } else {
+            // Leader path — H-6 finalize.
+            if let (Some((fd, off, bytes)), Some(n)) =
+                (&parsed, extract_ok_u64(std::slice::from_ref(&fresh_reply)))
+            {
+                if n < bytes.len() as u64 {
+                    tracing::warn!(
+                        target: "f1r3fly.fs_wal",
+                        fd = fd,
+                        offset = off,
+                        requested = bytes.len(),
+                        actual = n,
+                        "partial write_at on Consensus cap; finalizing WAL entry"
+                    );
+                    self.finalize_write_journal(bytes, n, ack);
+                }
+            }
+            if let Some(code_str) = extract_err_code(std::slice::from_ref(&fresh_reply)) {
+                self.finalize_failure_journal(fserr_to_code(&code_str), ack);
+            }
+            let out = vec![fresh_reply];
+            produce(&out, ack).await?;
+            Ok(out)
         }
-        // H-6 fix (2026-08-06): flip placeholder to Failure on
-        // syscall error (EIO/ENOSPC/EROFS/etc.) so followers
-        // don't replay a write the leader never actually
-        // committed.
-        if let Some(code_str) = extract_err_code(std::slice::from_ref(&reply)) {
-            self.finalize_failure_journal(fserr_to_code(&code_str), ack);
-        }
-        let out = vec![reply];
-        produce(&out, ack).await?;
-        Ok(out)
     }
 
     async fn write_impl(&self, fd: u64, bytes: Vec<u8>, offset: Option<u64>) -> Par {
