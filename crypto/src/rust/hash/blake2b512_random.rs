@@ -453,7 +453,10 @@ mod tests {
         let mut seen = BTreeSet::new();
         for index in 0u8..=255 {
             let mut split = base.split_byte(index);
-            assert!(seen.insert(split.next()), "duplicate stream for index {index}");
+            assert!(
+                seen.insert(split.next()),
+                "duplicate stream for index {index}"
+            );
         }
         assert_eq!(seen.len(), 256);
 
