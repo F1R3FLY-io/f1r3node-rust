@@ -3210,7 +3210,7 @@ fn insert_retry_after_ingest_first_crash_does_not_duplicate_events() {
     rt.block_on(async {
         let genesis = genesis_block();
         let mut kvm = InMemoryStoreManager::new();
-        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let dag_storage = TestDagStorage(BlockDagKeyValueStorage::new(&mut kvm).await.unwrap());
         dag_storage
             .insert(&genesis, InsertMode::ApprovedGenesis)
             .unwrap();
