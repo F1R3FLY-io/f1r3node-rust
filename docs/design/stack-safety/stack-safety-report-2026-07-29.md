@@ -332,7 +332,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C30** | this checkpoint; campaign-root-4131 | f1r3node | record-sized kind-1 PREPARE recovery buffer $`\rightarrow`$ formally refined phase-split streaming PDA with one reusable 64 KiB scratch region and source-authenticated replay | native stack $`O(1)`$ in record/key/object depth; fixed scratch plus boxed constant state; two WAL scans for index repair rather than three | **yes for dormant physical recovery**; 89/89 invariant bindings, 53 generated properties, fixed 128/256 KiB stack matrix, 452/452 library and 877/877 package tests | [5.57](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30) |
 | **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
 | **SS-C32** | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | f1r3node | whole-store clone/mutate/publish for each newly loaded channel $`\rightarrow`$ private relative Bag plus prefix-rooted insertion into one unique guarded trie | measured new-channel construction exponent **1.99273 $`\rightarrow`$ 1.00258** through 16,000 channels; exact 20,000-bind release gate **7.52 s / 151,408 KiB / zero swap** | **yes for new-channel construction**; 27 Rocq invariants, 20 rejected mutants, frozen-success differential, and exact state metrics | [5.59](#559-prefix-local-rspace-channel-publication-ss-c32) |
-| **SS-C33** | `c3d48beb1`, `68534b6fc`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded-channel replacement now explicitly $`O(B)`$ in retained Bag bytes pending measurement | **yes for ownership/stack closure; no new latency claim**; 28/28 guard, 33/33 Bag, 3/3 CoW, 27/27 DataIndex, 27-invariant/20-mutant registry, and dedicated legacy teardown | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
+| **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remains allocation-heavy pending PMU-005; absolute concurrent-load latency is provisional | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -11550,8 +11550,8 @@ $`O(B + E)`$ work and retains the fresh result plus zipper state; native stack i
 depth. This is intentionally distinct from a value-only mutation, which retains the unique CoW
 anchor. An already-loaded channel replacement now pays for the retained Bag stream; the previously
 measured SS-C32 ladder consists of distinct new channels and continues to take the prefix-rooted
-in-place branch. A replacement-specific timing/allocation ladder is therefore required before any
-performance claim is made for the structural branch.
+in-place branch. The replacement-specific ladder reported in §5.60.4 measures this separate
+structural branch rather than extrapolating from the new-channel result.
 
 #### 5.60.3 Final-owner teardown and bounded payload retention
 
@@ -11580,13 +11580,31 @@ respectively, with zero swap.
 #### 5.60.4 Result boundary
 
 SS-C33 closes native-stack safety, exact payload conservation, sibling preservation, candidate
-ownership disjointness, and the retained detached-payload slope. It does **not** yet establish that
-the final topology PDA is allocation- or time-optimal. The August 31 profile's 23,208,116
-process-wide PathMap line-list allocation calls and final-coordinate `AnchorRoot::drop` hotspot
-remain historical motivation until the new implementation receives a matched headless uProf and
-Heaptrack rerun. No Rholang value, datum identity, multiplicity, candidate order, matcher result,
-binding, protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap
-algebra, accepted program, or parallel execution order changes.
+ownership disjointness, and the retained detached-payload slope. Five-point geometric measurement
+accepts the predicted linear scaling class for both remaining mechanisms: loaded-channel
+replacement has fitted exponent **0.999250304** with 95% confidence interval
+**[0.996032204, 1.002468403]**, while value-free-line, valued-comb, dense-fixed-width, and
+realistic-key final teardown have exponents **0.957847144**, **0.989113725**, **0.985569487**, and
+**0.984322909**, respectively. All one hundred teardown observations preserve exact disposal.
+Absolute replacement latency remains provisional because unrelated Rust work was active, although
+the host retained approximately 55–66% aggregate idle capacity.
+
+Headless AMD uProf attributes final-teardown CPU time to PathMap sharing checks, zipper navigation,
+`AnchorRoot::drop`, pruning, and compressed-line splitting. Headless Heaptrack records 187,109
+allocation calls, of which 177,403 are temporary; 181,708 line-list split allocations arise under
+the synthetic immediate-parent barriers for the realistic 256-endpoint shape. Peak profiler heap is
+386.49 KiB, so this is linear temporary churn rather than a retained-memory slope. The local PDA is
+therefore correct, fixed-stack, time-linear, and retained-space bounded, but it is not
+allocation-optimal. Removing its barriers would let PathMap detach a recursively dropped physical
+subtrie, so PMU-005 now requests an intrinsic iterative destructor or nonallocating consuming
+physical-node drain rather than a local workaround or fork. Full methods, medians, confidence
+intervals, profile qualifications, caps, artifact hashes, and the idle-host evidence boundary are
+recorded in
+[`measurements/guarded-pathmap-final-teardown-and-loaded-replacement-2026-09-01.md`](measurements/guarded-pathmap-final-teardown-and-loaded-replacement-2026-09-01.md).
+
+No Rholang value, datum identity, multiplicity, candidate order, matcher result, binding,
+protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap algebra,
+accepted program, or parallel execution order changes.
 
 ---
 
