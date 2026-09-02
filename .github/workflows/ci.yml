@@ -337,6 +337,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
 
+      - name: Verify coverage summary aggregation
+        shell: bash -euo pipefail {0}
+        run: .github/scripts/test-coverage-summary.sh
+
       - name: Verify soak summary aggregation
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-write-soak-summary.sh
@@ -603,6 +607,141 @@ jobs:
           name: test-logs-casper-${{ matrix.partition }}
           path: /tmp/test-logs/
           retention-days: 7
+
+  # Line coverage is report-only: it never gates a merge or release. It runs
+  # on pull-request heads so reviewers see per-crate percentages before merge.
+  # Codecov upload stays off until a maintainer sets the ENABLE_CODECOV
+  # variable and the CODECOV_TOKEN secret.
+  coverage:
+    name: Coverage (${{ matrix.crate }})
+    needs: [build_base, lint]
+    if: >-
+      github.event_name == 'pull_request'
+      && needs.build_base.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.crate == 'casper' && 60 || 45 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - rspace_plus_plus
+          - rholang
+          - shared
+          - node
+          - models
+          - crypto
+          - block-storage
+          - comm
+          - graphz
+          - casper
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: nightly-2026-02-09
+          components: llvm-tools-preview
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: coverage-${{ matrix.crate }}
+
+      - name: Install system dependencies
+        run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Install llvm-cov and nextest
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
+        with:
+          tool: cargo-llvm-cov,nextest
+
+      # nextest, not `cargo test`: same runner as the test matrix. `clean`
+      # drops only the profraw so instrumented builds stay cached. Outputs go
+      # to target/coverage because `clean` empties llvm-cov's own report dir.
+      - name: Measure coverage
+        env:
+          RUST_BACKTRACE: "1"
+          RUST_MIN_STACK: "8388608"
+        shell: bash -euo pipefail {0}
+        run: |
+          ulimit -n 65536
+          mkdir -p target/coverage
+          cargo llvm-cov clean
+          cargo llvm-cov nextest --release -p ${{ matrix.crate }} --no-tests=pass
+          cargo llvm-cov report --release -p ${{ matrix.crate }} \
+            --json --summary-only --output-path target/coverage/coverage-${{ matrix.crate }}.json
+          cargo llvm-cov report --release -p ${{ matrix.crate }} \
+            --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-${{ matrix.crate }}
+          path: |
+            target/coverage/coverage-${{ matrix.crate }}.json
+            target/coverage/coverage-${{ matrix.crate }}.lcov
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload to Codecov
+        if: >-
+          vars.ENABLE_CODECOV == 'true'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/coverage/coverage-${{ matrix.crate }}.lcov
+          flags: ${{ matrix.crate }}
+          fail_ci_if_error: false
+
+  coverage_summary:
+    name: Coverage Summary
+    needs: [build_base, coverage]
+    if: >-
+      always()
+      && github.event_name == 'pull_request'
+      && needs.coverage.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Prepare coverage directory
+        shell: bash -euo pipefail {0}
+        run: mkdir -p /tmp/coverage
+
+      - name: Download coverage data
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: coverage-*
+          path: /tmp/coverage
+          merge-multiple: true
+
+      - name: Aggregate and publish summary
+        shell: bash -euo pipefail {0}
+        run: |
+          .github/scripts/coverage-summary.sh /tmp/coverage > target-coverage-summary.md
+          cat target-coverage-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-summary
+          path: target-coverage-summary.md
+          retention-days: 30
 
   # Ruleset gate. The branch ruleset requires a status check named exactly
   # `Test (casper)` (formerly the matrix leg's name). This collapses the two

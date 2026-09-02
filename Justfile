@@ -31,6 +31,14 @@ build-debug:
     cargo build -p node
 
 # =================================================================
+# TEST COVERAGE
+# =================================================================
+
+# Measure per-crate line coverage (requires cargo-llvm-cov + llvm-tools-preview)
+coverage *crates:
+    scripts/coverage.sh {{crates}}
+
+# =================================================================
 # STANDALONE NODE
 # =================================================================
 

@@ -1780,11 +1780,15 @@ pub async fn compute_parents_post_state(
                     cursor = s.dag.main_parent(&hash);
                     count_visible.insert(hash);
                 }
+                // Records load through the lineage-step cache (one decode
+                // per block process-wide, store-revalidated) instead of a
+                // full body decode per visible block per merge — the same
+                // batching CLAIM-FINALITY-001 applied to the settled
+                // probes, for the walk that was next in the run
+                // 33099406770 attribution (~47ms/merge).
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
-                    block_store
-                        .get(hash)?
-                        .map(|b| b.body.rejected_deploys)
-                        .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))
+                    crate::rust::finality::deploy_lifecycle::rejected_records_of(block_store, hash)
+                        .map(|records| records.as_ref().clone())
                 })?
             };
             let prior_rejection_elapsed = prior_rejection_started.elapsed();
