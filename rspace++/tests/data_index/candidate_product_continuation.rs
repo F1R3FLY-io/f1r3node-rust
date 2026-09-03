@@ -705,9 +705,7 @@ fn production_candidate_authority_cannot_own_an_interior_pathmap_focus() {
         !guard_source.contains("fn guarded_focus_snapshot"),
         "the guarded facade must not expose an owned interior PathMap header"
     );
-    for required in
-        ["availability: Bag", "let availability = Bag::try_from_sorted_unique", "excluded: Bag"]
-    {
+    for required in ["authority: Bag", "fn from_catalog(authority: Bag", "excluded: Bag"] {
         assert!(
             index_source.contains(required),
             "missing candidate-authority isolation invariant: {required}"
