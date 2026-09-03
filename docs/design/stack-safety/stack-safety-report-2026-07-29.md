@@ -11631,6 +11631,30 @@ filesystem durability, runtime integration, compaction, migration, or LMDB parit
 separate gates in pgmcp (6361/6362, 5684, and 5688/6189). No Rholang value, PathMap topology,
 protobuf/bincode byte, hash, COMM schedule, or accounting rule changes in this certificate.
 
+### 5.62 Exact current-publication authority closure [SS-C35]
+
+SS-C35 records the follow-up closure of the current-publication certificate boundary in
+commit `417b2980c` (`formal(rspace): close exact current publication authority`). The model now
+requires selector acceptance to identify the exact checked PREPARE input, observed pool,
+catalogs, fresh arrival, exclusions, and selected vector; derives datum successors through the
+partition-refining `PreparedRSpaceDelta`; and validates continuation successors through the exact
+capability and boundary APIs. Data, continuations, cache invalidation, and generation counters
+are published as one typed state transition, with the phase sequence
+`Proposed → StatePublished → CommObserved`.
+
+The refusal branch is closed as well: refusal requires the absence of every valid publication
+certificate and preserves state, COMM visibility, and logical/datum/durable publication counts.
+This is a formal-only strengthening of the authority boundary. It introduces no native recursive
+traversal, runtime stack growth, PathMap representation change, byte/hash/COMM/accounting change,
+or filesystem-durability claim. Therefore the existing stack-safety conclusion remains valid while
+the previously open publication-authority correspondence is no longer left implicit.
+
+Verification evidence: capped `coqc` and `coqchk` for
+`formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceCurrentPublication.v` completed successfully;
+seven capstones closed under the global context, the module check succeeded, and no `Admitted`,
+`admit`, `Abort`, or axiom shortcut was used. Runtime integration, durable persistence,
+compaction, migration, and LMDB parity remain separate campaign gates.
+
 ---
 
 ## 6. Discussion
