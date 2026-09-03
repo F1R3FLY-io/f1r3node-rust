@@ -46,6 +46,62 @@ fn assert_same_state(
     assert_eq!(left.installed_joins, right.installed_joins);
 }
 
+/// Independent one-channel reference for the small accepted-transition
+/// fragment exercised below.  This deliberately operates on the legacy
+/// vector snapshot and does not call any production Bag/PathMap or accepted
+/// match implementation; it is therefore a useful refinement oracle rather
+/// than another wrapper around the code under test.
+fn shallow_one_channel_oracle(
+    mut state: HotStoreState<String, String, String, String>,
+    channel: &str,
+    continuation_channels: &[String],
+    selected: &Datum<String>,
+    arrival: Option<Datum<String>>,
+    continuation: &WaitingContinuation<String, String>,
+) -> HotStoreState<String, String, String, String> {
+    let data = state
+        .data
+        .get_mut(channel)
+        .expect("the reference fixture has a data bucket");
+    let selected_index = data
+        .iter()
+        .position(|datum| datum == selected)
+        .expect("the selected datum is present");
+    data.remove(selected_index);
+    if let Some(arrival) = arrival {
+        data.push(arrival);
+    }
+    data.sort_by(|left, right| {
+        left.a
+            .cmp(&right.a)
+            .then_with(|| left.source.hash.0.cmp(&right.source.hash.0))
+    });
+    if continuation.persist {
+        assert_eq!(
+            state
+                .continuations
+                .get(continuation_channels)
+                .map_or(0, |entries| entries.iter().filter(|entry| *entry == continuation).count()),
+            1,
+            "persistent continuation remains exactly once",
+        );
+    } else {
+        let entries = state
+            .continuations
+            .get_mut(continuation_channels)
+            .expect("the one-shot continuation bucket is present");
+        let continuation_index = entries
+            .iter()
+            .position(|entry| entry == continuation)
+            .expect("the selected continuation is present");
+        entries.remove(continuation_index);
+        if entries.is_empty() {
+            state.joins.insert(channel.to_owned(), Vec::new());
+        }
+    }
+    state
+}
+
 #[test]
 fn a_cross_group_continuation_capability_is_stale_before_any_state_change() {
     let left_channels = vec!["left".to_owned()];
@@ -527,4 +583,94 @@ fn a_continuation_source_mismatch_is_stale_before_a_nonempty_delta() {
     assert!(matches!(outcome, AcceptedMatchOutcome::Stale));
     assert_same_state(&before, &store.snapshot());
     assert_eq!(before_checkpoint, store.checkpoint_changes().expect("checkpoint projection"));
+}
+
+#[test]
+fn shallow_oracle_matches_one_channel_accepted_transition_matrix() {
+    let channel = "oracle".to_owned();
+    let selected_datum = Datum::create(&channel, "selected".to_owned(), false);
+
+    for multiplicity in 1..=4 {
+        for persist in [false, true] {
+            for arrival_present in [false, true] {
+                let selected = WaitingContinuation {
+                    patterns: Arc::new(vec![format!("pattern-{multiplicity}-{persist}-{arrival_present}")]),
+                    continuation: Arc::new(format!(
+                        "continuation-{multiplicity}-{persist}-{arrival_present}"
+                    )),
+                    persist,
+                    peeks: BTreeSet::new(),
+                    source: Consume {
+                        channel_hashes: Vec::new(),
+                        hash: Blake2b256Hash::from_bytes(vec![
+                            multiplicity as u8 + (persist as u8) * 8 + (arrival_present as u8) * 16;
+                            32
+                        ]),
+                        persistent: persist,
+                    },
+                };
+                let arrival = arrival_present.then(|| {
+                    Datum::create(&channel, format!("arrival-{multiplicity}"), false)
+                });
+                let channel_group = vec![channel.clone()];
+                let initial = HotStoreState {
+                    continuations: HashMap::from([(channel_group.clone(), vec![selected.clone()])]),
+                    installed_continuations: HashMap::new(),
+                    data: HashMap::from([(
+                        channel.clone(),
+                        std::iter::repeat_n(selected_datum.clone(), multiplicity).collect(),
+                    )]),
+                    joins: HashMap::from([(channel.clone(), vec![vec![channel.clone()]])]),
+                    installed_joins: HashMap::new(),
+                };
+                let expected = shallow_one_channel_oracle(
+                    initial.clone(),
+                    &channel,
+                    &channel_group,
+                    &selected_datum,
+                    arrival.clone(),
+                    &selected,
+                );
+                let store = HotStoreInstances::create_from_hs_and_hr(
+                    initial,
+                    Box::new(EmptyHistory),
+                );
+                let (version, _) = store.get_continuations_versioned(&channel_group);
+                let mut datum_delta = BagDelta::new();
+                datum_delta
+                    .record_removal(
+                        &RSpaceDataIndex::datum_path(&channel, &selected_datum),
+                        super::super::bag::Multiplicity::ONE,
+                    )
+                    .expect("fixture removal fits u64");
+                if let Some(arrival) = &arrival {
+                    datum_delta
+                        .record_addition(
+                            &RSpaceDataIndex::datum_path(&channel, arrival),
+                            super::super::bag::Multiplicity::ONE,
+                        )
+                        .expect("fixture addition fits u64");
+                }
+                let outcome = store
+                    .apply_accepted_match(AcceptedMatch {
+                        channels: vec![channel.clone()],
+                        continuation: Some(StoredContinuationCommit {
+                            address: ContinuationAddress::new(version, 0),
+                            source: selected.source.clone(),
+                            persist: selected.persist,
+                            peeks: selected.peeks.clone(),
+                        }),
+                        datum_delta,
+                        required_persistent_paths: Vec::new(),
+                        join_channels: vec![channel.clone()],
+                    })
+                    .expect("matrix transition is valid");
+                assert!(matches!(
+                    outcome,
+                    AcceptedMatchOutcome::Committed { continuation: Some(_) }
+                ));
+                assert_same_state(&expected, &store.snapshot());
+            }
+        }
+    }
 }
