@@ -68,7 +68,7 @@ fn concurrent_rspace_architecture_repro_checkpoint_gate_must_exclude_transitions
     for method in
         ["create_checkpoint", "reset", "create_soft_checkpoint", "revert_to_soft_checkpoint"]
     {
-        let marker = format!("async fn {method}");
+        let marker = format!("async fn {method}(");
         let start = rspace
             .find(&marker)
             .unwrap_or_else(|| panic!("RSpace::{method} is missing"));
@@ -86,4 +86,40 @@ fn concurrent_rspace_architecture_repro_checkpoint_gate_must_exclude_transitions
         5,
         "consume, produce, install, and both remove-all mutation paths must hold shared permits"
     );
+}
+
+#[test]
+fn concurrent_rspace_architecture_repro_replay_gate_must_match_live_authority_boundary() {
+    let replay = source("src/rspace/replay_rspace.rs");
+
+    for method in [
+        "create_checkpoint",
+        "reset",
+        "create_soft_checkpoint",
+        "revert_to_soft_checkpoint",
+        "clear",
+        "take_event_log",
+    ] {
+        let marker = format!("async fn {method}(");
+        let start = replay
+            .find(&marker)
+            .unwrap_or_else(|| panic!("ReplayRSpace::{method} is missing"));
+        let body = &replay[start..replay.len().min(start + 420)];
+        assert!(
+            body.contains("operation_gate.write().await"),
+            "ReplayRSpace::{method} must hold the exclusive authority-transition gate"
+        );
+    }
+
+    for method in ["consume", "produce", "install"] {
+        let marker = format!("async fn {method}(");
+        let start = replay
+            .find(&marker)
+            .unwrap_or_else(|| panic!("ReplayRSpace::{method} is missing"));
+        let body = &replay[start..replay.len().min(start + 2_500)];
+        assert!(
+            body.contains("operation_gate.read().await"),
+            "ReplayRSpace::{method} must hold a shared mutation permit"
+        );
+    }
 }
