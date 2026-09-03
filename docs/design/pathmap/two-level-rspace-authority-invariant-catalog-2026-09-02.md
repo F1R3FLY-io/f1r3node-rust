@@ -146,7 +146,10 @@ two-channel transaction with repeated identity and verifies that one multiplicit
 repeated channel while the single occurrence is consumed on the other. The companion cross-group
 stale-capability property checks refusal atomicity. This is concrete production-entry-point
 evidence, but it is not yet the exhaustive generated differential required by the formal
-transaction capstone.
+transaction capstone. `an_insufficient_datum_delta_is_stale_and_failure_atomic` and
+`a_missing_required_persistent_path_is_stale_before_any_mutation` add causal underflow and missing
+witness controls; both compare the complete hot-store state and checkpoint projection before and
+after refusal.
 
 Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 
