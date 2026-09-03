@@ -270,6 +270,10 @@ where
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
         let _operation_guard = self.operation_gate.write().await;
+        self.reset_inner(root).await
+    }
+
+    async fn reset_inner(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
         let next_history = self.get_history_repository().reset(root)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
@@ -332,8 +336,10 @@ where
     }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         self.replay_data.lock().expect("replay data lock").clear();
-        self.reset(&RadixHistory::empty_root_node_hash()).await
+        self.reset_inner(&RadixHistory::empty_root_node_hash())
+            .await
     }
 
     async fn get_root(&self) -> Blake2b256Hash { self.get_history_repository().root() }
