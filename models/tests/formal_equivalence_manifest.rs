@@ -670,7 +670,7 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "Theorem make_mut_creates_one_well_formed_fresh_anchor",
         "Theorem cross_anchor_teardown_preserves_the_sibling_image",
         "Theorem every_campaign_owned_exit_drains_before_release",
-        "Theorem invariant_catalog_has_exactly_eighteen_entries",
+        "Theorem invariant_catalog_has_exactly_twenty_five_entries",
         "Theorem campaign_branch_safe_pathmap_teardown_capstone",
     ] {
         assert!(
@@ -689,9 +689,9 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "kill_manual_family_count_protocol",
         "kill_unregistered_make_mut_raw_header",
         "kill_early_pending_writer_or_iterator_drop",
-        "kill_destructive_detached_subtree_raw_drop",
+        "kill_recursive_par_disposal",
         "every_teardown_mutant_has_a_causal_counterexample",
-        "teardown_mutant_registry_has_exactly_nineteen_entries",
+        "teardown_mutant_registry_has_exactly_twenty_seven_entries",
     ] {
         assert!(
             mutants.contains(marker),
@@ -772,8 +772,8 @@ fn pathmap_reverse_prune_formal_first_artifacts_are_manifested() {
         "DeadAnchorRequiresExactlyOnePda",
         "OneRawHeaderPerActiveAnchor",
         "HeaderAndRootRegistrationAgree",
-        "exact eighteen-invariant catalog proof",
-        "exact nineteen-mutant registry proof",
+        "the exact 25-primary/10-quarantine PathMap teardown authority and scoped production policies",
+        "the exact 27-teardown/13-quarantine PathMap teardown controls",
     ] {
         assert!(
             runner.contains(marker),
