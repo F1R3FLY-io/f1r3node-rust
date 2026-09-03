@@ -66,7 +66,13 @@ fn concurrent_rspace_architecture_repro_checkpoint_gate_must_exclude_transitions
     let rspace = source("src/rspace/rspace.rs");
 
     for method in
-        ["create_checkpoint", "reset", "create_soft_checkpoint", "revert_to_soft_checkpoint"]
+        [
+            "create_checkpoint",
+            "reset",
+            "create_soft_checkpoint",
+            "revert_to_soft_checkpoint",
+            "take_event_log",
+        ]
     {
         let marker = format!("async fn {method}(");
         let start = rspace
