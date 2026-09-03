@@ -174,6 +174,16 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(branches_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_RELATION_ITEMS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(merge_set.0.len() as f64);
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_RELATION_BRANCHES_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(branches.0.len() as f64);
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.branches",
         n_branches = branches.0.len(),
@@ -183,19 +193,23 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
     let branches_set = HashableSet(branches.0.iter().cloned().collect());
     let (conflict_map, conflicts_map_time) =
         measure_result_time(|| compute_conflict_map(&branches_set))?;
-    {
-        let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
-        tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
-            n_keys = conflict_map.len(), total_edges = total_edges);
-    }
+    let total_edges: usize = conflict_map.values().map(|s| s.0.len()).sum();
+    tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.conflict_map",
+        n_keys = conflict_map.len(), total_edges = total_edges);
     metrics::histogram!(
         crate::rust::metrics_constants::DAG_MERGE_CONFLICTS_MAP_TIME_METRIC,
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(conflicts_map_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_CONFLICT_EDGES_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(total_edges as f64);
 
     // Compute rejection options that leave only non-conflicting branches with timing
     use rspace_plus_plus::rspace::merger::merging_logic::compute_rejection_options;
+    let rejection_selection_start = Instant::now();
     let (rejection_options, rejection_options_time) =
         measure_time(|| compute_rejection_options(&conflict_map));
     metrics::histogram!(
@@ -203,6 +217,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
     )
     .record(rejection_options_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_OPTIONS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_options.0.len() as f64);
 
     // Get base mergeable channel results
     let channel_reads_start = Instant::now();
@@ -341,6 +360,11 @@ pub fn resolve_conflicts<R: Clone + Eq + std::hash::Hash + PartialOrd + Ord>(
         |branch| branch.0.iter().map(|item| cost(item)).sum(),
         |branch| branch_losses(branch, prior_losses),
     );
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_REJECTION_SELECTION_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(rejection_selection_start.elapsed().as_secs_f64());
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
         tracing::debug!(target: "f1r3fly.merge.step", step = "resolve_conflicts.optimal_rejection",
@@ -681,6 +705,16 @@ where
     // Compute and apply trie actions with timing
     let (trie_actions, compute_actions_time) =
         measure_result_time(|| compute_trie_actions(all_changes, all_mergeable_channels.clone()))?;
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(compute_actions_time.as_secs_f64());
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(trie_actions.len() as f64);
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.compute_trie_actions.EXIT",
         n_trie_actions = trie_actions.len(),
@@ -688,6 +722,11 @@ where
 
     let (new_state, apply_actions_time) =
         measure_result_time(|| apply_trie_actions(trie_actions.clone()))?;
+    metrics::histogram!(
+        crate::rust::metrics_constants::DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC,
+        "source" => crate::rust::metrics_constants::MERGING_METRICS_SOURCE
+    )
+    .record(apply_actions_time.as_secs_f64());
 
     tracing::debug!(target: "f1r3fly.merge.step", step = "compute_merged_state.apply_trie_actions.EXIT",
         new_state = %hex::encode(new_state.clone().bytes()),
