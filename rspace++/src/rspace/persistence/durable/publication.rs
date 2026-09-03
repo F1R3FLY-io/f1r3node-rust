@@ -21,6 +21,7 @@ use super::catalog::{
 use super::index::{
     CanonicalIndexStreamV1, IndexFormatError, IndexGenerationV1,
     PreparedGenerationCheckpointIndexV1, PreparedGenerationCheckpointIndexVisitErrorV1,
+    PreparedIndexAppendV1,
 };
 #[cfg(test)]
 use super::io::DurableIoOperation;
@@ -37,7 +38,8 @@ use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
     GenerationCheckpointPrepareIdentityV1, GenerationCheckpointPrepareWriteErrorV1, LogPackAddress,
-    LogPackDecodeLimits, LogPackFormatError, PackId, PreparedGenerationCheckpointV1,
+    LogPackDecodeLimits, LogPackFormatError, LogPackWriteError, PackId, PrepareRecordIdentityV1,
+    PreparedGenerationCheckpointV1, PreparedLogPackTransactionV1,
 };
 
 #[cfg(test)]
@@ -229,6 +231,37 @@ pub(crate) enum GenerationCheckpointPublicationErrorV1 {
     PublishedCatalogDirectory(DurableIoError),
     PublishedRecovery(Box<DurableStartupErrorV1>),
     PublishedAdmission(Box<DurableAdmissionErrorV1>),
+}
+
+/// Errors from the append-only portion of one incremental transaction.
+/// Catalog publication is intentionally a later phase so a caller can retain
+/// the old authority until PREPARE, index, and commit ordering is complete.
+#[derive(Debug)]
+pub(crate) enum IncrementalAppendErrorV1 {
+    Io(DurableIoError),
+    LogPack(Box<LogPackFormatError>),
+    Index(Box<IndexFormatError>),
+}
+
+impl From<DurableIoError> for IncrementalAppendErrorV1 {
+    fn from(error: DurableIoError) -> Self { Self::Io(error) }
+}
+
+impl From<IndexFormatError> for IncrementalAppendErrorV1 {
+    fn from(error: IndexFormatError) -> Self { Self::Index(Box::new(error)) }
+}
+
+impl From<LogPackFormatError> for IncrementalAppendErrorV1 {
+    fn from(error: LogPackFormatError) -> Self { Self::LogPack(Box::new(error)) }
+}
+
+impl From<LogPackWriteError<DurableIoError>> for IncrementalAppendErrorV1 {
+    fn from(error: LogPackWriteError<DurableIoError>) -> Self {
+        match error {
+            LogPackWriteError::Sink(error) => Self::Io(error),
+            LogPackWriteError::Invariant(error) => Self::LogPack(Box::new(error)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -654,6 +687,58 @@ fn preflight_recovery_limits(
     limits.require(DurableLimitKind::IndexRecords, object_records)?;
     limits.require(DurableLimitKind::IndexBytes, index_tail)?;
     Ok(())
+}
+
+/// Append one preflighted transaction and its DATA index records to the
+/// currently active generation. This function performs no catalog write: the
+/// caller must sync the commit and then publish the successor slot only after
+/// all bytes are durable.
+pub(crate) fn append_incremental_prepare_and_index<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    current: CatalogSlotV1,
+    prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+) -> Result<(LogPackAddress, PrepareRecordIdentityV1, u64), IncrementalAppendErrorV1> {
+    let pack_id = PackId::new(current.pack().active_pack())?;
+    let prepare_offset = current.pack().durable_pack_tail();
+    let prepare_address =
+        LogPackAddress::from_pack(pack_id, prepare_offset, prepared.record_len())?;
+    let index_generation = IndexGenerationV1::new(current.pack().index_generation())?;
+    let index_header = super::ObjectIndexHeaderV1::new(current.store_id(), index_generation);
+    let index_append = PreparedIndexAppendV1::new(
+        index_header,
+        current.pack().durable_index_tail(),
+        pack_id,
+        prepare_offset,
+        prepared,
+    )?;
+
+    let prepare_identity = {
+        let mut pack = lease.open_pack(pack_id)?;
+        pack.require_length(FileLengthExpectation::Exact(prepare_offset))?;
+        let mut sink =
+            DurableCanonicalAppendSinkV1::new(&mut pack, prepare_offset, prepare_address.end())?;
+        let identity = prepared.write_to(&mut sink)?;
+        sink.finish()?;
+        pack.sync_all()?;
+        identity
+    };
+
+    {
+        let mut index = lease.open_index(index_generation)?;
+        index.require_length(FileLengthExpectation::Exact(index_append.old_tail()))?;
+        let mut sink = DurableCanonicalAppendSinkV1::new(
+            &mut index,
+            index_append.old_tail(),
+            index_append.new_tail(),
+        )?;
+        for record in index_append.records() {
+            sink.write_all(&record?.encode())?;
+        }
+        sink.finish()?;
+        index.sync_all()?;
+    }
+
+    Ok((prepare_address, prepare_identity, index_append.new_tail()))
 }
 
 fn write_and_sync_prepare<P: SemanticProfile>(
