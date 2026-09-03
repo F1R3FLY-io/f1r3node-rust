@@ -259,7 +259,7 @@ pub(crate) enum IncrementalPublicationErrorV1 {
         actual: crate::rspace::persistence::StateVersionV1,
     },
     ProfileMismatch,
-    RetentionManifestStateMismatch,
+    MissingRetentionManifest,
 }
 
 impl From<IncrementalAppendErrorV1> for IncrementalPublicationErrorV1 {
@@ -718,13 +718,9 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         if receipt.profile_id() != P::ID {
             return Err(IncrementalPublicationErrorV1::ProfileMismatch);
         }
-        let retention = crate::rspace::persistence::retention::RetentionManifestView::parse(
-            source.retention_manifest_bytes(),
-        )
-        .map_err(|error| IncrementalPublicationErrorV1::Durable(Box::new(error.into())))?;
-        if retention.current().state() != receipt.target() {
-            return Err(IncrementalPublicationErrorV1::RetentionManifestStateMismatch);
-        }
+        let retention_manifest = prepared
+            .retention_manifest()
+            .ok_or(IncrementalPublicationErrorV1::MissingRetentionManifest)?;
 
         let (prepare_address, prepare_identity, index_tail) =
             append_incremental_prepare_and_index(&mut lease, current, prepared)?;
@@ -741,12 +737,22 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
                 current_state: prepared.current_state_canonical_bytes(),
                 retained: u64::MAX,
             })?;
+        let current_state_bytes = source
+            .report()
+            .current_structural
+            .canonical_bytes
+            .checked_add(prepared.current_state_canonical_bytes())
+            .and_then(|bytes| bytes.checked_sub(receipt.target().manifest().encoded_len()))
+            .ok_or(LogPackFormatError::ByteInventory {
+                current_state: u64::MAX,
+                retained: retained_bytes,
+            })?;
         let publication = crate::rspace::persistence::CommitPublicationV1::new(
             current.pack().first_live_pack(),
             current.pack().index_generation(),
             index_tail,
-            current.pack().retention_manifest(),
-            prepared.current_state_canonical_bytes(),
+            retention_manifest,
+            current_state_bytes,
             retained_bytes,
         )?;
         let commit = TransactionCommitRecordV1::new(

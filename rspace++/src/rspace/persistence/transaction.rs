@@ -20,6 +20,7 @@ use super::closure::{
 use super::manifest::{SemanticProfileId, SemanticStateManifestV1};
 use super::mutation::{ContentTransition, MutationBatchViewV1, StateVersionV1};
 use super::object::{CanonicalBlobKind, CanonicalObjectKind, CanonicalObjectView};
+use super::retention::RetentionManifestV1;
 use super::rewrite::{
     DagRewriteLimits, DagRewriteProduct, DagRewriteReport, RewriteError,
     rewrite_semantic_roots_in_store,
@@ -471,6 +472,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
             },
             mutation_bytes: self.mutation.canonical_bytes(),
             objects,
+            retention_manifest: None,
             profile: PhantomData,
         })
     }
@@ -546,6 +548,7 @@ pub struct SealedDagTransaction<'mutation, P: SemanticProfile> {
     diagnostics: DagTransactionDiagnostics,
     mutation_bytes: &'mutation [u8],
     objects: Box<[SealedObject]>,
+    retention_manifest: Option<ObjectRefV1>,
     profile: PhantomData<fn() -> P>,
 }
 
@@ -568,4 +571,37 @@ impl<'mutation, P: SemanticProfile> SealedDagTransaction<'mutation, P> {
     pub const fn mutation_bytes(&self) -> &'mutation [u8] { self.mutation_bytes }
 
     pub fn objects(&self) -> &[SealedObject] { &self.objects }
+
+    pub(crate) fn with_retention_manifest(
+        mut self,
+        manifest: RetentionManifestV1,
+    ) -> Result<Self, CanonicalFormatError> {
+        if self.retention_manifest.is_some() {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "retention manifest was attached more than once".to_owned(),
+            });
+        }
+        let reference = manifest.object_ref();
+        let bytes: Arc<[u8]> = manifest.try_canonical_bytes()?.into();
+        let object = SealedObject {
+            reference,
+            canonical_bytes: bytes,
+        };
+        let mut objects = self.objects.into_vec();
+        match objects
+            .binary_search_by_key(&reference.digest(), |candidate| candidate.reference.digest())
+        {
+            Ok(index) => {
+                if objects[index].canonical_bytes() != object.canonical_bytes() {
+                    return Err(CanonicalFormatError::ContentCollision(reference.digest()));
+                }
+            }
+            Err(index) => objects.insert(index, object),
+        }
+        self.objects = objects.into_boxed_slice();
+        self.retention_manifest = Some(reference);
+        Ok(self)
+    }
+
+    pub(crate) const fn retention_manifest(&self) -> Option<ObjectRefV1> { self.retention_manifest }
 }

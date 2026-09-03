@@ -17,7 +17,7 @@ use super::durable_recovery::{
     valid_checkpoint_image,
 };
 use super::support::TestSemanticProfile;
-use super::transaction_sealing::{data_batch, seal_data};
+use super::transaction_sealing::data_batch;
 use crate::rspace::persistence::checkpoint::{
     CheckpointObjectInventoryV1, GenerationCheckpointDescriptorV1, OrderedObjectInventoryBuilderV1,
 };
@@ -38,11 +38,10 @@ use crate::rspace::persistence::wal::{
     PreparedGenerationCheckpointV1,
 };
 use crate::rspace::persistence::{
-    CATALOG_IMAGE_LEN, CanonicalBlob, CanonicalBlobKind, CanonicalEncode, CanonicalObjectStore,
-    CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1, DurableLimitConfig,
-    DurableLimitError, DurableLimitKind, DurableLimits, IndexGenerationV1, LogPackAddress,
-    LogPackDecodeLimits, LogPackFormatError, MutableObjectStore, ObjectAdmission, ObjectDigest,
-    ObjectIndexHeaderV1, ObjectRefV1, PACK_HEADER_LEN_V1, PackHeaderV1, PackId,
+    CATALOG_IMAGE_LEN, CanonicalBlob, CanonicalBlobKind, CanonicalEncode, CatalogAuthorityTokenV1,
+    CatalogPackStateV1, CatalogSlotV1, DurableLimitConfig, DurableLimitError, DurableLimitKind,
+    DurableLimits, IndexGenerationV1, LogPackAddress, LogPackDecodeLimits, LogPackFormatError,
+    ObjectDigest, ObjectIndexHeaderV1, ObjectRefV1, PACK_HEADER_LEN_V1, PackHeaderV1, PackId,
     PackTerminalIdentityV1, SemanticValidationLimits, StructuralValidationLimits,
 };
 
@@ -336,23 +335,19 @@ fn publish(
 }
 
 #[test]
-fn incremental_publication_rejects_stale_retention_manifest_before_append() {
+fn incremental_publication_requires_attached_retention_manifest() {
     let source = checkpoint_source_fixture();
-    let canonical = CanonicalObjectStore::new();
-    for (reference, bytes) in &source.objects {
-        assert!(matches!(
-            canonical
-                .put_if_absent_or_equal(*reference, bytes.clone().into())
-                .unwrap(),
-            ObjectAdmission::Inserted | ObjectAdmission::AlreadyPresent
-        ));
-    }
     let scratch = test_scratch::acquire("rspace-incremental-publication-");
     install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source.clone()));
     let writer = admit(scratch.path());
     let base = writer.authority().slot().state();
     let mutation = data_batch(base, "incremental-publication");
-    let sealed = seal_data(&canonical, &mutation);
+    let view = crate::rspace::persistence::MutationBatchViewV1::parse(&mutation).unwrap();
+    let sealed = writer
+        .open_transaction(view, crate::rspace::persistence::DagTransactionLimits::UNBOUNDED)
+        .unwrap()
+        .seal()
+        .unwrap();
     let sequence = writer
         .authority()
         .slot()
@@ -369,13 +364,9 @@ fn incremental_publication_rejects_stale_retention_manifest_before_append() {
         DurableAdmissionLimitsV1::UNBOUNDED,
     ) {
         Err(error) => error,
-        Ok(_) => panic!("stale retention manifest was unexpectedly published"),
+        Ok(_) => panic!("missing retention manifest was unexpectedly published"),
     };
-    assert!(matches!(
-        error,
-        crate::rspace::persistence::durable::IncrementalPublicationErrorV1::
-            RetentionManifestStateMismatch
-    ));
+    assert!(matches!(error, crate::rspace::persistence::durable::IncrementalPublicationErrorV1::MissingRetentionManifest));
 }
 
 fn publication_error(

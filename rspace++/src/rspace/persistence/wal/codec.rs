@@ -413,6 +413,10 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         self.transaction.diagnostics().closure.canonical_bytes
     }
 
+    pub(crate) const fn retention_manifest(&self) -> Option<ObjectRefV1> {
+        self.transaction.retention_manifest()
+    }
+
     pub(crate) const fn store_id(&self) -> StoreId { self.store_id }
 
     pub(crate) const fn sequence(&self) -> LogPackSequence { self.sequence }

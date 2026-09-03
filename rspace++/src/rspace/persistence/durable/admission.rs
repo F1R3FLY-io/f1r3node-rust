@@ -32,7 +32,9 @@ use crate::rspace::persistence::closure::{
     verify_structural_closure_in_ledger_with_limits,
 };
 use crate::rspace::persistence::mutation::MutationBatchViewV1;
-use crate::rspace::persistence::retention::RetentionManifestView;
+use crate::rspace::persistence::retention::{
+    RetainedStateV1, RetentionManifestV1, RetentionManifestView,
+};
 use crate::rspace::persistence::semantic::{
     SemanticProfile, SemanticValidationLimits, SemanticValidationReport,
     SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
@@ -1178,6 +1180,24 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         OpenDagTransaction::new(self.source.verified_state(), mutation, limits)
     }
 
+    /// Attach the target retention manifest to a sealed transaction. The
+    /// previous current state becomes historical; no durable bytes are
+    /// published until this manifest is included in the prepared object set.
+    pub(crate) fn attach_target_retention_manifest<'mutation>(
+        &self,
+        sealed: crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
+    ) -> Result<crate::rspace::persistence::SealedDagTransaction<'mutation, P>, CanonicalFormatError>
+    {
+        let current = RetentionManifestView::parse(self.source.retention_manifest_bytes())?;
+        let mut historical = current.historical().collect::<Result<Vec<_>, _>>()?;
+        historical.push(current.current());
+        let target = sealed.receipt().target();
+        let target_state =
+            RetainedStateV1::new(target, sealed.diagnostics().closure.canonical_bytes)?;
+        let manifest = RetentionManifestV1::new(target_state, historical.into_boxed_slice())?;
+        sealed.with_retention_manifest(manifest)
+    }
+
     pub(crate) fn get_object_bounded(
         &self,
         digest: &ObjectDigest,
@@ -1201,7 +1221,7 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     /// transaction. Object dispositions are classified exactly once against
     /// the admitted index, then bound to its authenticated receipt and limits.
     pub(crate) fn prepare_transaction<'transaction, 'mutation>(
-        &'transaction self,
+        &self,
         transaction: &'transaction crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
         sequence: LogPackSequence,
         limits: crate::rspace::persistence::LogPackDecodeLimits,
