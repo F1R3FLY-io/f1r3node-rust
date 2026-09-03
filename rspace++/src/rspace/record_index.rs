@@ -381,6 +381,14 @@ impl<R> StoredRecord<R> {
     pub(crate) fn path(&self) -> &Arc<[u8]> { &self.path }
 
     pub(crate) fn value(&self) -> &R { &self.value }
+
+    /// Return the complete canonical record bytes embedded in this endpoint.
+    /// The prefix and suffix share the authoritative PathMap allocation; the
+    /// caller can keep the returned record alive while handing this borrowed
+    /// slice to a durable staging sink.
+    pub(crate) fn canonical_bytes(&self) -> &[u8] {
+        &self.path[self.prefix_len..self.prefix_len + self.canonical_len]
+    }
 }
 
 #[derive(Clone)]
@@ -1177,7 +1185,12 @@ where
         canonical: Vec<u8>,
     ) -> bool {
         let prefix = RhoPathV1::continuation_prefix(channels);
-        let record_path = RhoPathV1::collection_record_path(&prefix, &canonical);
+        // The primary continuation trie is keyed by the complete raw
+        // canonical record bytes.  The framed collection path is reserved for
+        // the source-free identity trie and must not enter the semantic
+        // mutation journal.
+        let mut record_path = prefix.clone();
+        record_path.extend_from_slice(&canonical);
         let source_ref = continuation_source_ref(&identity, &canonical);
         let inserted = self
             .resting
@@ -1231,6 +1244,19 @@ where
     ) -> Option<Arc<StoredRecord<WaitingContinuation<P, K>>>> {
         self.resting
             .get_path(&RhoPathV1::continuation_prefix(channels), path)
+    }
+
+    /// Look up an authoritative resting continuation endpoint by its complete
+    /// PathMap path. The returned Arc keeps the canonical suffix allocation
+    /// alive while a persistence adapter stages the bytes; no decode or
+    /// re-encoding is required.
+    pub(crate) fn source_record(
+        &self,
+        channels: &[C],
+        path: &[u8],
+    ) -> Option<Arc<StoredRecord<WaitingContinuation<P, K>>>> {
+        let prefix = RhoPathV1::continuation_prefix(channels);
+        self.resting.get_path(&prefix, path)
     }
 
     pub(crate) fn remove_path(
@@ -1648,7 +1674,8 @@ mod tests {
         let mut canonical = identity.clone();
         encode_continuation_source_into(&value, &mut canonical);
         let prefix = RhoPathV1::continuation_prefix(&channels);
-        let path = RhoPathV1::collection_record_path(&prefix, &canonical);
+        let mut path = prefix.clone();
+        path.extend_from_slice(&canonical);
         let mut store = RSpaceContinuationStore::new();
 
         assert!(store.put_prepared(&channels, value, identity, canonical));
@@ -1661,6 +1688,10 @@ mod tests {
             .expect("continuation content transition");
         assert!(transition.before().is_none());
         assert!(transition.after().is_some());
+        let source_record = store
+            .source_record(&channels, &path)
+            .expect("inserted continuation source record");
+        assert_eq!(source_record.canonical_bytes(), &path[prefix.len()..]);
 
         assert!(store.remove_path(&channels, &path).is_some());
         assert!(store.pending_delta().is_empty());
