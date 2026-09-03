@@ -9,6 +9,7 @@
 //! pushdown machines; neither term depth nor trie depth consumes native stack.
 
 use std::collections::{BTreeSet, HashSet};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use pathmap::PathMap;
@@ -55,6 +56,37 @@ pub trait SemanticProfile: semantic_profile_seal::Sealed + Send + Sync + 'static
     type Continuation: Clone + ColdStoreDecode + StableHashSerialize;
 
     const ID: SemanticProfileId;
+}
+
+/// The authenticated semantic profile used by a concrete RSpace type family.
+///
+/// The persistence layer is intentionally generic over RSpace's four value
+/// types, but production admission must still bind all four codecs as one
+/// inseparable interpretation.  This profile supplies that binding without
+/// introducing a second representation or requiring the durable backend to
+/// know about a particular application-level type alias.  The profile ID is
+/// part of every semantic manifest, so a manifest cannot be admitted under a
+/// different codec family by accident.
+pub struct RSpaceSemanticProfile<C, P, A, K>(PhantomData<fn() -> (C, P, A, K)>);
+
+const RSPACE_SEMANTIC_PROFILE_ID: SemanticProfileId =
+    SemanticProfileId::from_array(*b"RSpace.Rust.V1\0\0");
+
+impl<C, P, A, K> semantic_profile_seal::Sealed for RSpaceSemanticProfile<C, P, A, K> {}
+
+impl<C, P, A, K> SemanticProfile for RSpaceSemanticProfile<C, P, A, K>
+where
+    C: ColdStoreDecode + RhoPathEncode + Send + Sync + 'static,
+    P: Clone + ColdStoreDecode + StableHashSerialize + Send + Sync + 'static,
+    A: Clone + ColdStoreDecode + RhoPathEncode + Serialize + Send + Sync + 'static,
+    K: Clone + ColdStoreDecode + StableHashSerialize + Send + Sync + 'static,
+{
+    type Channel = C;
+    type Pattern = P;
+    type Datum = A;
+    type Continuation = K;
+
+    const ID: SemanticProfileId = RSPACE_SEMANTIC_PROFILE_ID;
 }
 
 /// Caller-selected admission budgets.

@@ -76,7 +76,8 @@ pub(crate) use semantic::semantic_profile_seal;
 pub(crate) use semantic::verify_rspace_semantics_after_structural;
 pub use semantic::{
     IncrementalSemanticLimits, IncrementalSemanticReport, SemanticProfile,
-    SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics,
+    RSpaceSemanticProfile, SemanticValidationLimits, SemanticValidationReport,
+    verify_rspace_semantics,
 };
 pub use store::{
     CanonicalObjectStore, ImmutableObjectStore, LayeredObject, MutableObjectStore, ObjectAdmission,
