@@ -6,7 +6,7 @@
 ' every theorem has multiple incident edges from distinct tool families.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/04-tool-theorem-coverage.puml
+'   plantuml -tsvg docs/casper/theory/slashing/methodology/diagrams/04-tool-theorem-coverage.puml
 
 @startuml 04-tool-theorem-coverage
 !theme plain

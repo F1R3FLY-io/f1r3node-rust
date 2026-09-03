@@ -8,21 +8,16 @@
 #   1. TLA+  (fail-soft) — TLC on the POST-fix MC_DeployLifecycle.cfg (must PASS
 #      with no violation, exhausting the bounded state space) and TWO PRE-fix
 #      regression cfgs, each of which must REPRODUCE its counterexample:
-#        * MC_DeployLifecycle_pre_fix.cfg (PurgeRejectedBuf=FALSE) ->
-#          Inv_NoFinalizedReproposable (the dropped finalization buffer purge);
+#        * MC_DeployLifecycle_pre_fix.cfg (AdmissionFiltersFinalized=FALSE) ->
+#          Inv_NoFinalizedReproposable;
 #        * MC_DeployLifecycle_quarantine_pre_fix.cfg (QuarantineBothStores=FALSE)
 #          -> Inv_NoToxicReproposable (the §3c proposer-side quarantine that
 #          leaves a refund-failing re-proposed deploy lingering re-proposable).
 #      SKIPPED if there is no TLC jar ($TLC_JAR) and no `tlc` on PATH.
 #
-# What it guards: casper/src/rust/engine/multi_parent_casper/finalization_runner.rs
-# (:234-241) documents a regression — the casper_engine split once DROPPED the
-# rejected_deploy_buffer purge, so record-driven recovery re-proposed an
-# already-finalized deploy, double-applying it (a second write to a single-value
-# cell -> IntegerAdd invariant violation). The purge was restored; this gate
-# keeps the fix pinned (post-fix cfg) and the regression reproducible (pre-fix
-# cfg). Modelled code: block_admission.rs (add_deploy / accepted-deploy
-# retention) + finalization_runner.rs (the two finalization purges).
+#   2. TLA+ source-aware deploy occurrence convergence, plus a signature-only
+#      pre-fix counterexample.
+#   3. Rust admission and occurrence-reducer properties.
 #
 # POLICY: this script is for LOCAL use only. Do NOT wire this into
 # .github/workflows/* (or any TLA+ step) — an earlier formal-CI workflow was
@@ -33,65 +28,842 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TLA_DIR="$REPO_ROOT/formal/tlaplus/deploy_lifecycle"
+OCCURRENCE_TLA_DIR="$REPO_ROOT/formal/tlaplus/deploy_occurrence"
+RECOVERY_TLA_DIR="$REPO_ROOT/formal/tlaplus/deploy_recovery"
+LOG_DIR="$REPO_ROOT/target/verification/deploy-lifecycle"
+mkdir -p "$LOG_DIR"
+VERIFY_TMP="$LOG_DIR/tmp"
+mkdir -p "$VERIFY_TMP"
+export TMPDIR="$VERIFY_TMP"
+export TLC_METADIR_ROOT="$VERIFY_TMP/tlc-metadir"
+mkdir -p "$TLC_METADIR_ROOT"
+trap 'rm -rf "$VERIFY_TMP"' EXIT
 
 rc=0
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; rc=1; }
 skip() { printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 
-echo "== [1/2] TLA+ (fail-soft) =="
+echo "== [1/4] deploy lifecycle TLA+ (fail-soft) =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
   # POST-fix: must pass (no violation, bounded space exhausted).
-  if tlc_run "$(tlc_metadir dl_post_gate)" "$TLA_DIR/MC_DeployLifecycle.cfg" "$TLA_DIR/DeployLifecycle.tla" >/tmp/dl_tlc_post.log 2>&1; then
-    pass "TLA+ post-fix Spec, PurgeRejectedBuf=TRUE + QuarantineBothStores=TRUE (TypeOK, Inv_NoFinalizedReproposable, Inv_NoLossBeforeFinal, Inv_NoToxicReproposable)"
+  if tlc_run "$(tlc_metadir dl_post_gate)" "$TLA_DIR/MC_DeployLifecycle.cfg" "$TLA_DIR/DeployLifecycle.tla" >"$LOG_DIR/dl_tlc_post.log" 2>&1; then
+    pass "TLA+ post-fix Spec, AdmissionFiltersFinalized=TRUE + QuarantineBothStores=TRUE"
+    rm -f "$LOG_DIR/dl_tlc_post.log"
   else
-    fail "TLA+ post-fix MC_DeployLifecycle.cfg did NOT pass (see /tmp/dl_tlc_post.log)"
+    fail "TLA+ post-fix MC_DeployLifecycle.cfg did NOT pass (see $LOG_DIR/dl_tlc_post.log)"
   fi
   # PRE-fix (finalization): must FAIL (counterexample). Inverted sense.
-  if tlc_run "$(tlc_metadir dl_pre_gate)" "$TLA_DIR/MC_DeployLifecycle_pre_fix.cfg" "$TLA_DIR/DeployLifecycle.tla" >/tmp/dl_tlc_pre.log 2>&1; then
+  if tlc_run "$(tlc_metadir dl_pre_gate)" "$TLA_DIR/MC_DeployLifecycle_pre_fix.cfg" "$TLA_DIR/DeployLifecycle.tla" >"$LOG_DIR/dl_tlc_pre.log" 2>&1; then
     fail "TLA+ pre-fix should VIOLATE Inv_NoFinalizedReproposable but passed (the regression demo is broken)"
   else
-    if grep -q "Inv_NoFinalizedReproposable is violated" /tmp/dl_tlc_pre.log; then
+    if grep -q "Inv_NoFinalizedReproposable is violated" "$LOG_DIR/dl_tlc_pre.log"; then
       pass "TLA+ pre-fix reproduces the finalized-deploy re-proposal counterexample"
+      rm -f "$LOG_DIR/dl_tlc_pre.log"
     else
-      fail "TLA+ pre-fix failed for the wrong reason (see /tmp/dl_tlc_pre.log)"
+      fail "TLA+ pre-fix failed for the wrong reason (see $LOG_DIR/dl_tlc_pre.log)"
     fi
   fi
   # PRE-fix (quarantine): must FAIL (Inv_NoToxicReproposable counterexample). The
   # §3c proposer-side quarantine with QuarantineBothStores=FALSE leaves a toxic
   # refund-failing deploy lingering re-proposable in rejectedBuf.
-  if tlc_run "$(tlc_metadir dl_quar_pre_gate)" "$TLA_DIR/MC_DeployLifecycle_quarantine_pre_fix.cfg" "$TLA_DIR/DeployLifecycle.tla" >/tmp/dl_tlc_quar.log 2>&1; then
+  if tlc_run "$(tlc_metadir dl_quar_pre_gate)" "$TLA_DIR/MC_DeployLifecycle_quarantine_pre_fix.cfg" "$TLA_DIR/DeployLifecycle.tla" >"$LOG_DIR/dl_tlc_quar.log" 2>&1; then
     fail "TLA+ quarantine pre-fix should VIOLATE Inv_NoToxicReproposable but passed (the regression demo is broken)"
   else
-    if grep -q "Inv_NoToxicReproposable is violated" /tmp/dl_tlc_quar.log; then
+    if grep -q "Inv_NoToxicReproposable is violated" "$LOG_DIR/dl_tlc_quar.log"; then
       pass "TLA+ quarantine pre-fix reproduces the toxic re-proposal counterexample"
+      rm -f "$LOG_DIR/dl_tlc_quar.log"
     else
-      fail "TLA+ quarantine pre-fix failed for the wrong reason (see /tmp/dl_tlc_quar.log)"
+      fail "TLA+ quarantine pre-fix failed for the wrong reason (see $LOG_DIR/dl_tlc_quar.log)"
     fi
   fi
 else
   skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [2/2] Rust purge unit (fail-soft) =="
+echo "== [2/4] deploy occurrence TLA+ (fail-soft) =="
+if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
+  if tlc_run "$(tlc_metadir occurrence_post_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrence.cfg" "$OCCURRENCE_TLA_DIR/DeployOccurrence.tla" >"$LOG_DIR/occurrence_tlc_post.log" 2>&1; then
+    pass "TLA+ exact occurrence projection preserves one winner and converges"
+    rm -f "$LOG_DIR/occurrence_tlc_post.log"
+  else
+    fail "TLA+ exact occurrence projection did NOT pass (see $LOG_DIR/occurrence_tlc_post.log)"
+  fi
+  if tlc_run "$(tlc_metadir occurrence_pre_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrence_sig_only_pre_fix.cfg" "$OCCURRENCE_TLA_DIR/DeployOccurrence.tla" >"$LOG_DIR/occurrence_tlc_pre.log" 2>&1; then
+    fail "TLA+ signature-only pre-fix should VIOLATE Inv_OneWinnerPreserved but passed"
+  elif grep -q "Inv_OneWinnerPreserved is violated" "$LOG_DIR/occurrence_tlc_pre.log"; then
+    pass "TLA+ signature-only pre-fix reproduces winner loss"
+    rm -f "$LOG_DIR/occurrence_tlc_pre.log"
+  else
+    fail "TLA+ signature-only pre-fix failed for the wrong reason (see $LOG_DIR/occurrence_tlc_pre.log)"
+  fi
+  if tlc_run "$(tlc_metadir occurrence_storage_post_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.cfg" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.tla" >"$LOG_DIR/occurrence_storage_tlc_post.log" 2>&1; then
+    pass "TLA+ atomic occurrence storage and strict fresh activation preserve concurrent state"
+    rm -f "$LOG_DIR/occurrence_storage_tlc_post.log"
+  else
+    fail "TLA+ occurrence storage did NOT pass (see $LOG_DIR/occurrence_storage_tlc_post.log)"
+  fi
+  if tlc_run "$(tlc_metadir occurrence_storage_atomic_pre_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage_non_atomic_pre_fix.cfg" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.tla" >"$LOG_DIR/occurrence_storage_atomic_pre.log" 2>&1; then
+    fail "TLA+ non-atomic occurrence storage should violate Inv_SummaryMatchesArchive but passed"
+  elif grep -q "Inv_SummaryMatchesArchive is violated" "$LOG_DIR/occurrence_storage_atomic_pre.log"; then
+    pass "TLA+ non-atomic occurrence storage reproduces partial admission"
+    rm -f "$LOG_DIR/occurrence_storage_atomic_pre.log"
+  else
+    fail "TLA+ non-atomic occurrence storage failed for the wrong reason (see $LOG_DIR/occurrence_storage_atomic_pre.log)"
+  fi
+  if tlc_run "$(tlc_metadir occurrence_storage_activation_pre_gate)" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage_partial_activation_pre_fix.cfg" "$OCCURRENCE_TLA_DIR/MC_DeployOccurrenceStorage.tla" >"$LOG_DIR/occurrence_storage_activation_pre.log" 2>&1; then
+    fail "TLA+ permissive occurrence activation should violate Inv_FreshActivation but passed"
+  elif grep -q "Inv_FreshActivation is violated" "$LOG_DIR/occurrence_storage_activation_pre.log"; then
+    pass "TLA+ permissive occurrence activation reproduces legacy-state admission"
+    rm -f "$LOG_DIR/occurrence_storage_activation_pre.log"
+  else
+    fail "TLA+ permissive occurrence activation failed for the wrong reason (see $LOG_DIR/occurrence_storage_activation_pre.log)"
+  fi
+else
+  skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
+fi
+
+echo "== [3/4] deploy recovery TLA+ (fail-soft) =="
+if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
+  if tlc_run "$(tlc_metadir recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_DeployRecovery.cfg" "$RECOVERY_TLA_DIR/MC_DeployRecovery.tla" >"$LOG_DIR/recovery_tlc_post.log" 2>&1; then
+    pass "TLA+ recovery protocol is occurrence-aware, expiry-bounded, per-finalized-view elected, and live"
+    rm -f "$LOG_DIR/recovery_tlc_post.log"
+  else
+    fail "TLA+ recovery protocol did NOT pass (see $LOG_DIR/recovery_tlc_post.log)"
+  fi
+
+  recovery_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/MC_DeployRecovery.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  recovery_negative_control \
+    MC_DeployRecovery_signature_pre_fix \
+    "Inv_RetryRequiresNoActiveSource is violated" \
+    "signature-wide retry authorization"
+  recovery_negative_control \
+    MC_DeployRecovery_expiry_pre_fix \
+    "Inv_NoExpiredRetry is violated" \
+    "recovered-deploy expiry bypass"
+  recovery_negative_control \
+    MC_DeployRecovery_multi_leader_pre_fix \
+    "Inv_RetryHasCarrierOwnerCustody is violated" \
+    "foreign-carrier retry custody"
+  recovery_negative_control \
+    MC_DeployRecovery_heartbeat_pre_fix \
+    "Temporal properties were violated" \
+    "offline recovery-leader heartbeat suppression"
+  recovery_negative_control \
+    MC_DeployRecovery_parallel_owner_witness \
+    "Inv_NoParallelOwnerRecovery is violated" \
+    "parallel distinct-owner recovery witness"
+  recovery_negative_control \
+    MC_DeployRecovery_packaging_pre_fix \
+    "Inv_SelectedRetrySurvivesSelfChainFilter is violated" \
+    "selected recovery dropped by self-chain filtering"
+  recovery_negative_control \
+    MC_DeployRecovery_rehome_pre_fix \
+    "Inv_SelectedRehomeSurvivesCandidateFilter is violated" \
+    "excluded-branch deploy dropped by raw self-chain filtering"
+
+  if tlc_run "$(tlc_metadir deploy_identity_post_gate)" "$RECOVERY_TLA_DIR/MC_DeployIdentitySeparation.cfg" "$RECOVERY_TLA_DIR/DeployIdentitySeparation.tla" >"$LOG_DIR/deploy_identity_tlc_post.log" 2>&1; then
+    pass "TLA+ protocol-tagged deploy identities isolate equal byte payloads"
+    rm -f "$LOG_DIR/deploy_identity_tlc_post.log"
+  else
+    fail "TLA+ tagged deploy identity separation did NOT pass (see $LOG_DIR/deploy_identity_tlc_post.log)"
+  fi
+  if tlc_run "$(tlc_metadir deploy_identity_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_DeployIdentitySeparation_raw_key_unsafe.cfg" "$RECOVERY_TLA_DIR/DeployIdentitySeparation.tla" >"$LOG_DIR/deploy_identity_tlc_unsafe.log" 2>&1; then
+    fail "raw-byte deploy identity should produce a counterexample but passed"
+  elif grep -q "Inv_CrossDomainRejectionIsolation is violated" "$LOG_DIR/deploy_identity_tlc_unsafe.log"; then
+    pass "raw-byte identity reproduces cross-protocol rejection aliasing"
+    rm -f "$LOG_DIR/deploy_identity_tlc_unsafe.log"
+  else
+    fail "raw-byte identity failed for the wrong reason (see $LOG_DIR/deploy_identity_tlc_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir carrier_index_post_gate)" "$RECOVERY_TLA_DIR/MC_CarrierIndexSoundness.cfg" "$RECOVERY_TLA_DIR/CarrierIndexSoundness.tla" >"$LOG_DIR/carrier_index_tlc_post.log" 2>&1; then
+    pass "TLA+ carrier index preserves typed, atomic, pruned, and cached scan semantics"
+    rm -f "$LOG_DIR/carrier_index_tlc_post.log"
+  else
+    fail "TLA+ carrier-index soundness did NOT pass (see $LOG_DIR/carrier_index_tlc_post.log)"
+  fi
+
+  carrier_index_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/CarrierIndexSoundness.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_raw_key_unsafe \
+    "Inv_ExactScanUsesTypedIdentity is violated" \
+    "raw-key exact scan"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_non_atomic_unsafe \
+    "Inv_WatermarkCoverage is violated" \
+    "metadata-first carrier publication"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_prune_gate_unsafe \
+    "Inv_FastPathIsSound is violated" \
+    "pruned-window fast-path admission"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_cached_missing_body_unsafe \
+    "Inv_MissingBodyIsUnknown is violated" \
+    "cached identity without a stored block body"
+  carrier_index_negative_control \
+    MC_CarrierIndexSoundness_valid_height_watermark_unsafe \
+    "Inv_WatermarkCoversPreexistingDomain is violated" \
+    "valid-only carrier watermark domain"
+  if tlc_run "$(tlc_metadir protocol_deploy_ingress_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_tlc.log" 2>&1; then
+    pass "TLA+ deploy ingress preserves protocol domains and captured-tip window soundness"
+    rm -f "$LOG_DIR/protocol_deploy_ingress_tlc.log"
+  else
+    fail "TLA+ protocol deploy ingress did NOT pass (see $LOG_DIR/protocol_deploy_ingress_tlc.log)"
+  fi
+  if tlc_run "$(tlc_metadir protocol_deploy_ingress_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress_permissive_unsafe.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log" 2>&1; then
+    fail "permissive protocol-v6 legacy ingress should produce a counterexample but passed"
+  elif grep -q "V6HasNoLegacyPool is violated" "$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log"; then
+    pass "permissive ingress reproduces protocol-v6 legacy-pool poisoning"
+    rm -f "$LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log"
+  else
+    fail "permissive ingress failed for the wrong reason (see $LOG_DIR/protocol_deploy_ingress_tlc_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir protocol_deploy_ingress_expiry_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolDeployIngress_expiry_unsafe.cfg" "$RECOVERY_TLA_DIR/ProtocolDeployIngress.tla" >"$LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log" 2>&1; then
+    fail "expired deploy ingress should produce a counterexample but passed"
+  elif grep -q "IngressWindowSound is violated" "$LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log"; then
+    pass "missing ingress window gate reproduces stale deploy admission"
+    rm -f "$LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log"
+  else
+    fail "expired deploy ingress failed for the wrong reason (see $LOG_DIR/protocol_deploy_ingress_expiry_tlc_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir recovery_frontier_coverage_gate)" "$RECOVERY_TLA_DIR/MC_RecoveryFrontierCoverage.cfg" "$RECOVERY_TLA_DIR/RecoveryFrontierCoverage.tla" >"$LOG_DIR/recovery_frontier_coverage_tlc.log" 2>&1; then
+    pass "TLA+ collective parent coverage preserves owner retry and ordinary progress"
+    rm -f "$LOG_DIR/recovery_frontier_coverage_tlc.log"
+  else
+    fail "TLA+ collective recovery frontier coverage did NOT pass (see $LOG_DIR/recovery_frontier_coverage_tlc.log)"
+  fi
+  if tlc_run "$(tlc_metadir recovery_frontier_single_parent_unsafe_gate)" "$RECOVERY_TLA_DIR/MC_RecoveryFrontierCoverage_single_parent_unsafe.cfg" "$RECOVERY_TLA_DIR/RecoveryFrontierCoverage.tla" >"$LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log" 2>&1; then
+    fail "one-parent retry coverage should produce a split-frontier counterexample but passed"
+  elif grep -q "CollectiveCoverageReadiesRetry is violated" "$LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log"; then
+    pass "TLA+ one-parent coverage reproduces split-frontier retry deferral"
+    rm -f "$LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log"
+  else
+    fail "one-parent recovery coverage failed for the wrong reason (see $LOG_DIR/recovery_frontier_single_parent_tlc_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir merge_recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.cfg" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.tla" >"$LOG_DIR/merge_recovery_tlc_post.log" 2>&1; then
+    pass "TLA+ finalized-base receipts, exact tombstones, chain filtering, and effect projection are coherent"
+    rm -f "$LOG_DIR/merge_recovery_tlc_post.log"
+  else
+    fail "TLA+ merge/recovery coherence did NOT pass (see $LOG_DIR/merge_recovery_tlc_post.log)"
+  fi
+
+  merge_recovery_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/MC_MergeRecoveryCoherence.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_base_precedence_unsafe \
+    "Inv_AtMostOneEffectPerSignature is violated" \
+    "tombstone-masked finalized effect retry"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_tombstone_filter_unsafe \
+    "Inv_TombstonedScopeNotApplied is violated" \
+    "late exact tombstone filtering"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_base_duplicate_unsafe \
+    "Inv_AtMostOneEffectPerSignature is violated" \
+    "above-floor-only duplicate adjudication"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_metadata_coverage_unsafe \
+    "Inv_TaggedNumberSingleDatum is violated" \
+    "missing numeric merge metadata"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_tombstone_authority_unsafe \
+    "Inv_InvalidTombstoneCannotErase is violated" \
+    "non-causal tombstone authority"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_partial_chain_unsafe \
+    "Inv_ChainAtomic is violated" \
+    "partial dependent-chain rejection"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_ordinary_retention_unsafe \
+    "Inv_StateRecordCoherence is violated" \
+    "rejected ordinary-effect retention"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_mergeable_retention_unsafe \
+    "Inv_StateRecordCoherence is violated" \
+    "rejected mergeable-effect retention"
+  merge_recovery_negative_control \
+    MC_MergeRecoveryCoherence_effect_identity_unsafe \
+    "Inv_EffectIdentityConsistency is violated" \
+    "inconsistent repeated causal-effect identity"
+
+  if tlc_run "$(tlc_metadir rejection_reason_post_gate)" "$RECOVERY_TLA_DIR/MC_RejectionReasonConfluence.cfg" "$RECOVERY_TLA_DIR/MC_RejectionReasonConfluence.tla" >"$LOG_DIR/rejection_reason_tlc_post.log" 2>&1; then
+    pass "TLA+ concurrent rejection reasons converge under canonical join"
+    rm -f "$LOG_DIR/rejection_reason_tlc_post.log"
+  else
+    fail "TLA+ rejection-reason confluence did NOT pass (see $LOG_DIR/rejection_reason_tlc_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir rejection_reason_unsafe)" "$RECOVERY_TLA_DIR/MC_RejectionReasonConfluence_last_writer_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_RejectionReasonConfluence.tla" >"$LOG_DIR/rejection_reason_tlc_unsafe.log" 2>&1; then
+    fail "last-writer rejection reasons should produce a counterexample but passed"
+  elif grep -q "Inv_EqualObservationConverges is violated" "$LOG_DIR/rejection_reason_tlc_unsafe.log"; then
+    pass "last-writer rejection reasons reproduce observation-order divergence"
+    rm -f "$LOG_DIR/rejection_reason_tlc_unsafe.log"
+  else
+    fail "last-writer rejection reasons failed for the wrong reason (see $LOG_DIR/rejection_reason_tlc_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir protocol_activation_post_gate)" "$RECOVERY_TLA_DIR/MC_ProtocolActivationCoherence.cfg" "$RECOVERY_TLA_DIR/MC_ProtocolActivationCoherence.tla" >"$LOG_DIR/protocol_activation_tlc_post.log" 2>&1; then
+    pass "TLA+ protocol activation, record encoding, and legacy-floor composition are coherent"
+    rm -f "$LOG_DIR/protocol_activation_tlc_post.log"
+  else
+    fail "TLA+ protocol activation coherence did NOT pass (see $LOG_DIR/protocol_activation_tlc_post.log)"
+  fi
+
+  protocol_activation_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/MC_ProtocolActivationCoherence.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  protocol_activation_negative_control \
+    MC_ProtocolActivationCoherence_floor_version_unsafe \
+    "Inv_AtMostOneEffectPerSignature is violated" \
+    "floor-version-gated finalized receipt"
+  protocol_activation_negative_control \
+    MC_ProtocolActivationCoherence_mixed_scope_unsafe \
+    "Inv_ActiveScopeVersionHomogeneous is violated" \
+    "mixed above-floor protocol scope"
+  protocol_activation_negative_control \
+    MC_ProtocolActivationCoherence_encoding_unsafe \
+    "Inv_EncodingMatchesVersion is violated" \
+    "protocol-incompatible disposition encoding"
+
+  for config in \
+    MC_ProtocolVersionLifecycle \
+    MC_ProtocolVersionLifecycle_legacy_rejected \
+    MC_ProtocolVersionLifecycle_unsupported_rejected; do
+    log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/${config}.tla" >"$log" 2>&1; then
+      pass "TLA+ protocol-version lifecycle ${config#MC_ProtocolVersionLifecycle} is coherent"
+      rm -f "$log"
+    else
+      fail "TLA+ protocol-version lifecycle ${config} did NOT pass (see $log)"
+    fi
+  done
+
+  protocol_version_negative_control() {
+    local config="$1"
+    local expected="$2"
+    local label="$3"
+    local log="$LOG_DIR/${config}.log"
+    if tlc_run "$(tlc_metadir "$config")" "$RECOVERY_TLA_DIR/${config}.cfg" "$RECOVERY_TLA_DIR/MC_ProtocolVersionLifecycle.tla" >"$log" 2>&1; then
+      fail "$label should produce a counterexample but passed"
+    elif grep -q "$expected" "$log"; then
+      pass "$label reproduces its counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason (see $log)"
+    fi
+  }
+
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_ceremony_unsafe \
+    "Inv_CeremonyCandidateCurrent is violated" \
+    "stale genesis ceremony protocol"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_adoption_unsafe \
+    "Inv_RunningNodesAdoptApproved is violated" \
+    "joiner retaining its local protocol"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_proposer_unsafe \
+    "Inv_ProposalUsesApprovedVersion is violated" \
+    "proposer bypassing the adopted protocol"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_receiver_unsafe \
+    "Inv_AllReceiversAccept is violated" \
+    "configured-v6 proposer versus approved-v5 receiver disagreement"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_unsupported_unsafe \
+    "Inv_ApprovedVersionSupported is violated" \
+    "unsupported approved protocol admission"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_occurrence_unsafe \
+    "Inv_CurrentGenesisIdentityUnified is violated" \
+    "legacy occurrence identity in protocol-6 genesis"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_execution_unsafe \
+    "Inv_CurrentGenesisIdentityUnified is violated" \
+    "legacy execution identity in protocol-6 genesis"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_replay_unsafe \
+    "Inv_CurrentGenesisReplayDeterministic is violated" \
+    "legacy replay identity in protocol-6 genesis"
+  protocol_version_negative_control \
+    MC_ProtocolVersionLifecycle_genesis_custody_unsafe \
+    "Inv_CurrentGenesisCustodyProjection is violated" \
+    "missing principal-to-ground-custody projection"
+
+  if tlc_run "$(tlc_metadir startup_metadata_preflight_post_gate)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_post.log" 2>&1; then
+    pass "TLA+ startup metadata preflight verifies before Running and supervises asynchronous rejection"
+    rm -f "$LOG_DIR/startup_metadata_preflight_post.log"
+  else
+    fail "TLA+ startup metadata preflight did NOT pass (see $LOG_DIR/startup_metadata_preflight_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir startup_metadata_preflight_publish_unsafe)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight_publish_unsafe.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_publish_unsafe.log" 2>&1; then
+    fail "publish-before-verification should violate Inv_RunningImpliesVerified but passed"
+  elif grep -q "Inv_RunningImpliesVerified is violated" "$LOG_DIR/startup_metadata_preflight_publish_unsafe.log"; then
+    pass "TLA+ publish-before-verification control reproduces observable unverified Running state"
+    rm -f "$LOG_DIR/startup_metadata_preflight_publish_unsafe.log"
+  else
+    fail "publish-before-verification control failed for the wrong reason (see $LOG_DIR/startup_metadata_preflight_publish_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir startup_metadata_preflight_supervisor_unsafe)" "$RECOVERY_TLA_DIR/MC_StartupMetadataPreflight_supervisor_unsafe.cfg" "$RECOVERY_TLA_DIR/StartupMetadataPreflight.tla" >"$LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log" 2>&1; then
+    fail "unsupervised asynchronous rejection should violate termination liveness but passed"
+  elif grep -q "Temporal properties were violated" "$LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log"; then
+    pass "TLA+ unsupervised rejection control reproduces a live process stranded outside Running"
+    rm -f "$LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log"
+  else
+    fail "unsupervised rejection control failed for the wrong reason (see $LOG_DIR/startup_metadata_preflight_supervisor_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir approved_state_replay_post_gate)" "$RECOVERY_TLA_DIR/MC_ApprovedStateReplay.cfg" "$RECOVERY_TLA_DIR/MC_ApprovedStateReplay.tla" >"$LOG_DIR/approved_state_replay_post.log" 2>&1; then
+    pass "TLA+ approved-state bootstrap replays every historical block from its own consensus data"
+    rm -f "$LOG_DIR/approved_state_replay_post.log"
+  else
+    fail "TLA+ approved-state replay did NOT pass (see $LOG_DIR/approved_state_replay_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir approved_state_replay_unsafe)" "$RECOVERY_TLA_DIR/MC_ApprovedStateReplay_current_context_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_ApprovedStateReplay.tla" >"$LOG_DIR/approved_state_replay_unsafe.log" 2>&1; then
+    fail "current-context historical replay should produce a counterexample but passed"
+  elif grep -q "Inv_ReplayUsesConsensusContext is violated" "$LOG_DIR/approved_state_replay_unsafe.log"; then
+    pass "TLA+ current-context replay reproduces late-checkpoint root divergence"
+    rm -f "$LOG_DIR/approved_state_replay_unsafe.log"
+  else
+    fail "current-context historical replay failed for the wrong reason (see $LOG_DIR/approved_state_replay_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_post_gate)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_post.log" 2>&1; then
+    pass "TLA+ parallel validators preserve typed block/state recovery, deduplicate requests, and keep descendants dependency-gated"
+    rm -f "$LOG_DIR/local_validation_recovery_post.log"
+  else
+    fail "TLA+ local-validation recovery did NOT pass (see $LOG_DIR/local_validation_recovery_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_ready_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_unsafe.log" 2>&1; then
+    fail "ready-queue local-fault retention should produce a counterexample but passed"
+  elif grep -q "Inv_NoImmediateSelfRequeue is violated" "$LOG_DIR/local_validation_recovery_unsafe.log"; then
+    pass "TLA+ ready-queue retention reproduces immediate self-requeue"
+    rm -f "$LOG_DIR/local_validation_recovery_unsafe.log"
+  else
+    fail "ready-queue local-fault retention failed for the wrong reason (see $LOG_DIR/local_validation_recovery_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_identity_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_identity_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_identity_unsafe.log" 2>&1; then
+    fail "block/state artifact identity collapse should produce a counterexample but passed"
+  elif grep -q "Inv_DeferredNamesRequiredArtifact is violated" "$LOG_DIR/local_validation_recovery_identity_unsafe.log"; then
+    pass "TLA+ identity-collapse control reproduces a state-root waiter requesting the wrong block artifact"
+    rm -f "$LOG_DIR/local_validation_recovery_identity_unsafe.log"
+  else
+    fail "artifact-identity collapse failed for the wrong reason (see $LOG_DIR/local_validation_recovery_identity_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_drop_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_drop_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_drop_unsafe.log" 2>&1; then
+    fail "dropping a locally inconclusive block should produce a counterexample but passed"
+  elif grep -q "Inv_NoDeferredBlockIsDropped is violated" "$LOG_DIR/local_validation_recovery_drop_unsafe.log"; then
+    pass "TLA+ drop control reproduces loss of an inconclusive block before exact recovery"
+    rm -f "$LOG_DIR/local_validation_recovery_drop_unsafe.log"
+  else
+    fail "local-deferral drop control failed for the wrong reason (see $LOG_DIR/local_validation_recovery_drop_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir local_validation_recovery_invalidity_unsafe)" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery_invalidity_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_LocalValidationRecovery.tla" >"$LOG_DIR/local_validation_recovery_invalidity_unsafe.log" 2>&1; then
+    fail "mapping local artifact absence to objective invalidity should produce a counterexample but passed"
+  elif grep -q "Inv_LocalAbsenceNeverCreatesInvalidity is violated" "$LOG_DIR/local_validation_recovery_invalidity_unsafe.log"; then
+    pass "TLA+ invalidity control reproduces slashable classification from node-local artifact absence"
+    rm -f "$LOG_DIR/local_validation_recovery_invalidity_unsafe.log"
+  else
+    fail "local-absence invalidity control failed for the wrong reason (see $LOG_DIR/local_validation_recovery_invalidity_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir funding_admission_lifecycle_post_gate)" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle.cfg" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle.tla" >"$LOG_DIR/funding_admission_lifecycle_post.log" 2>&1; then
+    pass "TLA+ funding admission records an immutable terminal decision from proposal pre-state"
+    rm -f "$LOG_DIR/funding_admission_lifecycle_post.log"
+  else
+    fail "TLA+ funding-admission lifecycle did NOT pass (see $LOG_DIR/funding_admission_lifecycle_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir funding_admission_live_state_unsafe)" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle_live_state_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle.tla" >"$LOG_DIR/funding_admission_live_state_unsafe.log" 2>&1; then
+    fail "live-state funding revalidation should produce a counterexample but passed"
+  elif grep -q "Inv_ValidatorUsesProposalPreState is violated" "$LOG_DIR/funding_admission_live_state_unsafe.log"; then
+    pass "TLA+ live-state revalidation reproduces proposer/validator funding disagreement"
+    rm -f "$LOG_DIR/funding_admission_live_state_unsafe.log"
+  else
+    fail "live-state funding revalidation failed for the wrong reason (see $LOG_DIR/funding_admission_live_state_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir funding_admission_pending_unsafe)" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle_pending_unsafe.cfg" "$RECOVERY_TLA_DIR/MC_FundingAdmissionLifecycle.tla" >"$LOG_DIR/funding_admission_pending_unsafe.log" 2>&1; then
+    fail "unrecorded underfunding should produce a counterexample but passed"
+  elif grep -q "Inv_UnderfundedAttemptLeavesPending is violated" "$LOG_DIR/funding_admission_pending_unsafe.log"; then
+    pass "TLA+ unrecorded underfunding reproduces an indefinitely pending deploy"
+    rm -f "$LOG_DIR/funding_admission_pending_unsafe.log"
+  else
+    fail "unrecorded underfunding failed for the wrong reason (see $LOG_DIR/funding_admission_pending_unsafe.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir admission_effect_alignment_post_gate)" "$RECOVERY_TLA_DIR/MC_AdmissionEffectAlignment.cfg" "$RECOVERY_TLA_DIR/AdmissionEffectAlignment.tla" >"$LOG_DIR/admission_effect_alignment_post.log" 2>&1; then
+    pass "TLA+ admission/status records align only with effect-bearing merge metadata and preserve proposal liveness"
+    rm -f "$LOG_DIR/admission_effect_alignment_post.log"
+  else
+    fail "TLA+ admission/effect alignment did NOT pass (see $LOG_DIR/admission_effect_alignment_post.log)"
+  fi
+
+  if tlc_run "$(tlc_metadir admission_effect_alignment_unsafe)" "$RECOVERY_TLA_DIR/MC_AdmissionEffectAlignment_status_count_unsafe.cfg" "$RECOVERY_TLA_DIR/AdmissionEffectAlignment.tla" >"$LOG_DIR/admission_effect_alignment_unsafe.log" 2>&1; then
+    fail "status-record counting should produce a counterexample but passed"
+  elif grep -q "Inv_StatusOnlyRecordCannotBlock is violated" "$LOG_DIR/admission_effect_alignment_unsafe.log"; then
+    pass "TLA+ status-record counting reproduces validator proposal failure"
+    rm -f "$LOG_DIR/admission_effect_alignment_unsafe.log"
+  else
+    fail "status-record counting failed for the wrong reason (see $LOG_DIR/admission_effect_alignment_unsafe.log)"
+  fi
+else
+  skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
+fi
+
+if command -v apalache-mc >/dev/null 2>&1; then
+  apalache_out="$(mktemp -d "$LOG_DIR/apalache-admission-effect.XXXXXX")"
+  protocol_ingress_safe_log="$LOG_DIR/protocol_deploy_ingress_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/protocol-ingress-safe" \
+      check \
+      --config=MC_ProtocolDeployIngressApalache.cfg \
+      --length=5 \
+      --no-deadlock \
+      ProtocolDeployIngress.tla) >"$protocol_ingress_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$protocol_ingress_safe_log"; then
+    pass "Apalache deploy ingress preserves protocol domains and captured-tip window soundness"
+    rm -f "$protocol_ingress_safe_log"
+  else
+    fail "Apalache protocol deploy ingress failed (see $protocol_ingress_safe_log)"
+  fi
+
+  protocol_ingress_unsafe_log="$LOG_DIR/protocol_deploy_ingress_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/protocol-ingress-unsafe" \
+      check \
+      --config=MC_ProtocolDeployIngress_permissive_unsafe_Apalache.cfg \
+      --length=2 \
+      --no-deadlock \
+      ProtocolDeployIngress.tla) >"$protocol_ingress_unsafe_log" 2>&1; then
+    fail "permissive protocol-v6 legacy ingress should produce an Apalache counterexample but passed"
+  elif grep -q 'V6HasNoLegacyPool' "$protocol_ingress_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$protocol_ingress_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$protocol_ingress_unsafe_log"; then
+    pass "permissive ingress reproduces protocol-v6 legacy-pool poisoning under Apalache"
+    rm -f "$protocol_ingress_unsafe_log"
+  else
+    fail "permissive ingress failed for the wrong reason under Apalache (see $protocol_ingress_unsafe_log)"
+  fi
+
+  protocol_ingress_expiry_unsafe_log="$LOG_DIR/protocol_deploy_ingress_expiry_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/protocol-ingress-expiry-unsafe" \
+      check \
+      --config=MC_ProtocolDeployIngress_expiry_unsafe_Apalache.cfg \
+      --length=3 \
+      --no-deadlock \
+      ProtocolDeployIngress.tla) >"$protocol_ingress_expiry_unsafe_log" 2>&1; then
+    fail "expired deploy ingress should produce an Apalache counterexample but passed"
+  elif grep -q 'IngressWindowSound' "$protocol_ingress_expiry_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$protocol_ingress_expiry_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$protocol_ingress_expiry_unsafe_log"; then
+    pass "missing ingress window gate reproduces stale deploy admission under Apalache"
+    rm -f "$protocol_ingress_expiry_unsafe_log"
+  else
+    fail "expired deploy ingress failed for the wrong reason under Apalache (see $protocol_ingress_expiry_unsafe_log)"
+  fi
+
+  recovery_frontier_safe_log="$LOG_DIR/recovery_frontier_coverage_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/recovery-frontier-safe" \
+      check \
+      --config=MC_RecoveryFrontierCoverageApalache.cfg \
+      --length=7 \
+      --no-deadlock \
+      RecoveryFrontierCoverage.tla) >"$recovery_frontier_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$recovery_frontier_safe_log"; then
+    pass "Apalache collective parent coverage preserves retry authorization"
+    rm -f "$recovery_frontier_safe_log"
+  else
+    fail "Apalache collective recovery frontier coverage failed (see $recovery_frontier_safe_log)"
+  fi
+
+  recovery_frontier_unsafe_log="$LOG_DIR/recovery_frontier_single_parent_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/recovery-frontier-unsafe" \
+      check \
+      --config=MC_RecoveryFrontierCoverage_single_parent_unsafe_Apalache.cfg \
+      --length=2 \
+      --no-deadlock \
+      RecoveryFrontierCoverage.tla) >"$recovery_frontier_unsafe_log" 2>&1; then
+    fail "one-parent retry coverage should produce an Apalache counterexample but passed"
+  elif grep -q 'CollectiveCoverageReadiesRetry' "$recovery_frontier_unsafe_log" \
+      && grep -qE 'state invariant [0-9]+ violated' "$recovery_frontier_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$recovery_frontier_unsafe_log"; then
+    pass "Apalache one-parent coverage reproduces split-frontier retry deferral"
+    rm -f "$recovery_frontier_unsafe_log"
+  else
+    fail "one-parent recovery coverage failed for the wrong reason under Apalache (see $recovery_frontier_unsafe_log)"
+  fi
+
+  safe_output="$(cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/safe" check --config=MC_AdmissionEffectAlignmentApalache.cfg --length=8 AdmissionEffectAlignment.tla 2>&1)"
+  safe_rc=$?
+  printf '%s\n' "$safe_output" >"$LOG_DIR/admission_effect_alignment_apalache.log"
+  if [[ $safe_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/admission_effect_alignment_apalache.log"; then
+    pass "Apalache admission/effect alignment remains safe through the complete lifecycle bound"
+    rm -f "$LOG_DIR/admission_effect_alignment_apalache.log"
+  else
+    fail "Apalache admission/effect alignment failed (see $LOG_DIR/admission_effect_alignment_apalache.log)"
+  fi
+
+  unsafe_output="$(cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/unsafe" check --config=MC_AdmissionEffectAlignmentUnsafeApalache.cfg --length=2 AdmissionEffectAlignment.tla 2>&1)"
+  unsafe_rc=$?
+  printf '%s\n' "$unsafe_output" >"$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"
+  if [[ $unsafe_rc -ne 0 ]] && grep -q 'state invariant 1 violated' "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log" && grep -q 'The outcome is: Error' "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"; then
+    pass "Apalache status-record counting reproduces validator proposal failure"
+    rm -f "$LOG_DIR/admission_effect_alignment_unsafe_apalache.log"
+  else
+    fail "Apalache status-record negative control failed for the wrong reason (see $LOG_DIR/admission_effect_alignment_unsafe_apalache.log)"
+  fi
+
+  local_recovery_safe_log="$LOG_DIR/local_validation_recovery_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/local-recovery-safe" \
+      check \
+      --config=MC_LocalValidationRecoveryApalache.cfg \
+      --length=8 \
+      LocalValidationRecovery.tla) >"$local_recovery_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$local_recovery_safe_log"; then
+    pass "Apalache parallel typed local-validation recovery is safe through length 8"
+    rm -f "$local_recovery_safe_log"
+  else
+    fail "Apalache local-validation recovery failed (see $local_recovery_safe_log)"
+  fi
+
+  local_recovery_apalache_negative_control() {
+    local config="$1"
+    local length="$2"
+    local invariant="$3"
+    local label="$4"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length="$length" \
+        LocalValidationRecovery.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q "$invariant" "$log" \
+        && grep -q 'state invariant 0 violated' "$log" \
+        && grep -q 'The outcome is: Error' "$log"; then
+      pass "$label reproduces its Apalache counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryReadyUnsafeApalache \
+    2 \
+    Inv_NoImmediateSelfRequeue \
+    "ready-queue local-fault retention"
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryIdentityUnsafeApalache \
+    9 \
+    Inv_DeferredNamesRequiredArtifact \
+    "block/state artifact identity collapse"
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryDropUnsafeApalache \
+    2 \
+    Inv_NoDeferredBlockIsDropped \
+    "locally inconclusive block loss"
+  local_recovery_apalache_negative_control \
+    MC_LocalValidationRecoveryInvalidityUnsafeApalache \
+    2 \
+    Inv_LocalAbsenceNeverCreatesInvalidity \
+    "node-local absence classified as objective invalidity"
+
+  deploy_identity_safe_log="$LOG_DIR/deploy_identity_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/deploy-identity-safe" \
+      check \
+      --config=MC_DeployIdentitySeparation.cfg \
+      --length=2 \
+      DeployIdentitySeparation.tla) >"$deploy_identity_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$deploy_identity_safe_log"; then
+    pass "Apalache protocol-tagged deploy identities isolate equal byte payloads"
+    rm -f "$deploy_identity_safe_log"
+  else
+    fail "Apalache tagged deploy identity separation failed (see $deploy_identity_safe_log)"
+  fi
+
+  deploy_identity_unsafe_log="$LOG_DIR/deploy_identity_unsafe_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/deploy-identity-unsafe" \
+      check \
+      --config=MC_DeployIdentitySeparation_raw_key_unsafe.cfg \
+      --length=1 \
+      DeployIdentitySeparation.tla) >"$deploy_identity_unsafe_log" 2>&1; then
+    fail "raw-byte deploy identity should produce an Apalache counterexample but passed"
+  elif grep -q 'Inv_CrossDomainRejectionIsolation' "$deploy_identity_unsafe_log" \
+      && grep -q 'state invariant 0 violated' "$deploy_identity_unsafe_log" \
+      && grep -q 'The outcome is: Error' "$deploy_identity_unsafe_log"; then
+    pass "raw-byte identity reproduces cross-protocol rejection aliasing under Apalache"
+    rm -f "$deploy_identity_unsafe_log"
+  else
+    fail "raw-byte deploy identity failed for the wrong reason under Apalache (see $deploy_identity_unsafe_log)"
+  fi
+
+  carrier_index_safe_log="$LOG_DIR/carrier_index_apalache.log"
+  if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+      --out-dir="$apalache_out/carrier-index-safe" \
+      check \
+      --config=MC_CarrierIndexSoundness.cfg \
+      --length=4 \
+      CarrierIndexSoundness.tla) >"$carrier_index_safe_log" 2>&1 \
+      && grep -qE 'The outcome is: (NoError|ExecutionsTooShort)|EXITCODE: OK' "$carrier_index_safe_log"; then
+    pass "Apalache carrier-index refinement is safe through length 4"
+    rm -f "$carrier_index_safe_log"
+  else
+    fail "Apalache carrier-index refinement failed (see $carrier_index_safe_log)"
+  fi
+
+  carrier_index_apalache_negative_control() {
+    local config="$1"
+    local length="$2"
+    local invariant="$3"
+    local label="$4"
+    local log="$LOG_DIR/${config}_apalache.log"
+    if (cd "$RECOVERY_TLA_DIR" && timeout 300 apalache-mc \
+        --out-dir="$apalache_out/$config" \
+        check \
+        --config="${config}.cfg" \
+        --length="$length" \
+        CarrierIndexSoundness.tla) >"$log" 2>&1; then
+      fail "$label should produce an Apalache counterexample but passed"
+    elif grep -q "$invariant" "$log" \
+        && grep -q 'state invariant 0 violated' "$log" \
+        && grep -q 'The outcome is: Error' "$log"; then
+      pass "$label reproduces its Apalache counterexample"
+      rm -f "$log"
+    else
+      fail "$label failed for the wrong reason under Apalache (see $log)"
+    fi
+  }
+
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_raw_key_unsafe \
+    1 \
+    Inv_ExactScanUsesTypedIdentity \
+    "raw-key exact scan"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_non_atomic_unsafe \
+    3 \
+    Inv_WatermarkCoverage \
+    "metadata-first carrier publication"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_prune_gate_unsafe \
+    5 \
+    Inv_FastPathIsSound \
+    "pruned-window fast-path admission"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_cached_missing_body_unsafe \
+    2 \
+    Inv_MissingBodyIsUnknown \
+    "cached identity without a stored block body"
+  carrier_index_apalache_negative_control \
+    MC_CarrierIndexSoundness_valid_height_watermark_unsafe \
+    2 \
+    Inv_WatermarkCoversPreexistingDomain \
+    "valid-only carrier watermark domain"
+  rm -rf "$apalache_out"
+else
+  skip "no apalache-mc on PATH"
+fi
+
+echo "== [4/4] Rust admission and occurrence units (fail-soft) =="
 # The DL-1 deploy-lifecycle invariant (no finalized deploy stays re-proposable) is NOT
 # enforced by a finalization-time rejected-deploy-buffer purge: that purge was re-derived
 # and MEASURED harmful during the 2026-07-15 dev merge (it evicts keep-one losers before
-# recovery — see the "DO NOT re-add" note atop finalization_runner.rs) and is deliberately
+# recovery — see DR-33 in cost-accounting-decision-records.md) and is deliberately
 # absent. The hazard is handled at ADMISSION instead: block_creator / `canonical_won_sigs`
 # drop already-canonical sigs when a deploy lands, pinned by the
 # `interpreter_util::backstop_tests` recovery-admission suite (the TLA+ layer above proves
 # the invariant; this proves the Rust realization enforces it). SKIPPED if cargo is absent;
 # a failure fails the gate.
 if command -v cargo >/dev/null 2>&1; then
-  if cargo test -p casper --lib interpreter_util::backstop_tests >/tmp/dl_rust_admission.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/dl_rust_admission.log; then
-    pass "Rust admission-drop unit (canonical-won deploys blocked from re-proposal at admission; visible win blocks / later rejection reopens recovery)"
+  if cargo test -p casper --lib interpreter_util::backstop_tests >"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib deploy_finalization_status::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib self_chain_filter_keeps_only_selected_recoveries >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper local_validation_fault_recovery >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper descendant_remains_blocked_after_locally_faulted_parent_leaves_ready_queue >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --test mod physical_rejection_rolls_back_before_later_state_bound_execution >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --test mod repeat_deploy_validation_rejects_duplicate_signatures_within_one_block >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --test mod source_aware_rejection_in_secondary_parent_is_authoritative >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p models funding_admission_rejection_roundtrips_as_terminal_non_execution >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && cargo test -p casper --lib rust::merging::block_index::tests >>"$LOG_DIR/dl_rust_admission.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/dl_rust_admission.log"; then
+    pass "Rust admission and source-aware occurrence reducer units"
+    rm -f "$LOG_DIR/dl_rust_admission.log"
   else
-    fail "Rust admission-drop unit failed (see /tmp/dl_rust_admission.log)"; tail -20 /tmp/dl_rust_admission.log | sed 's/^/      /'
+    fail "Rust admission-drop unit failed (see $LOG_DIR/dl_rust_admission.log)"; tail -20 "$LOG_DIR/dl_rust_admission.log" | sed 's/^/      /'
   fi
 else
   skip "no cargo on PATH"

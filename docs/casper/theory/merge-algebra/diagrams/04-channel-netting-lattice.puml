@@ -24,7 +24,7 @@
 '            Rust channel_change.rs tests.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/merge-algebra/diagrams/04-channel-netting-lattice.puml
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/04-channel-netting-lattice.puml
 
 @startuml 04-channel-netting-lattice
 !theme plain

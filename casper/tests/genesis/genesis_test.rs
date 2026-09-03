@@ -27,17 +27,20 @@ use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::bonds_parser::BondsParser;
+use casper::rust::util::rholang::costacc::vault_payer::balance_query_source;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::vault_parser::VaultParser;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use comm::rust::test_instances::{LogStub, LogicalTime};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+use crypto::rust::hash::blake2b256::Blake2b256;
+use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Event};
 use models::rust::string_ops::StringOps;
 use prost::bytes::Bytes;
+use prost::Message;
+use rholang::rust::interpreter::accounting::Sig;
+use rholang::rust::interpreter::rho_type::RhoNumber;
 use rspace_plus_plus::rspace::history::Either;
 use tempfile::TempDir;
 
@@ -99,6 +102,47 @@ where
     result
 }
 
+async fn build_genesis_with_isolated_runtime(mut genesis: Genesis, version: i64) -> BlockMessage {
+    genesis.version = version;
+    let mut manager = resources::mk_test_rnode_store_manager_shared(generate_scope_id());
+    let mergeable = RuntimeManager::mergeable_store(&mut *manager)
+        .await
+        .unwrap();
+    let rspace = manager.r_space_stores().await.unwrap();
+    let runtime = RuntimeManager::create_with_store(
+        rspace,
+        mergeable,
+        std::sync::Arc::new(Genesis::default_mergeable_tags()),
+        rholang::rust::interpreter::external_services::ExternalServices::noop(),
+    );
+    Genesis::create_genesis_block(&runtime, &genesis)
+        .await
+        .unwrap()
+}
+
+fn canonical_event_log_digest(events: &[Event], include_occurrence_counts: bool) -> Vec<u8> {
+    let mut encoded = events
+        .iter()
+        .cloned()
+        .map(|mut event| {
+            if !include_occurrence_counts {
+                match &mut event {
+                    Event::Produce(produce) => produce.times_repeated = 0,
+                    Event::Comm(comm) => {
+                        for produce in &mut comm.produces {
+                            produce.times_repeated = 0;
+                        }
+                    }
+                    Event::Consume(_) => {}
+                }
+            }
+            event.to_proto().encode_to_vec()
+        })
+        .collect::<Vec<_>>();
+    encoded.sort();
+    Blake2b256::hash(encoded.concat())
+}
+
 fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
     CasperSnapshot {
         dag,
@@ -112,24 +156,23 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
         rejected_in_scope: Default::default(),
         max_block_num: 0,
         max_seq_nums: Default::default(),
+        finalized_floor_bonds: Vec::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
             bonds_map: HashMap::new(),
+            bond_generations: HashMap::new(),
             active_validators: Vec::new(),
         },
+        consensus_context:
+            casper::rust::causal_equivocation::CertifiedConsensusContext::pre_genesis(),
+        finalized_floor_certificate: None,
     }
 }
 
 fn validators() -> Vec<(String, usize)> {
     vec![
-        (
-            "299670c52849f1aa82e8dfe5be872c16b600bf09cc8983e04b903411358f2de6".to_string(),
-            0,
-        ),
-        (
-            "6bf1b2753501d02d386789506a6d93681d2299c6edfd4455f596b97bc5725968".to_string(),
-            1,
-        ),
+        (hex::encode(&construct_deploy::DEFAULT_PUB.bytes), 0),
+        (hex::encode(&construct_deploy::DEFAULT_PUB2.bytes), 1),
     ]
 }
 
@@ -240,11 +283,15 @@ async fn from_input_files(
             validators,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+            max_cosigners_per_deploy: casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
         },
         vaults,
+        client_fuel_allocations: Vec::new(),
         supply: i64::MAX,
         block_number: params.block_number,
-        version: 1,
+        version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
         native_token_decimals: 8,
@@ -253,6 +300,214 @@ async fn from_input_files(
     let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;
 
     Ok(genesis_block)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn genesis_system_vault_funding_is_committed_and_replay_deterministic() {
+    with_gen_resources(|runtime_manager, _genesis_path, _log, _time| async move {
+        let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+        let expected = Genesis::vaults_with_protocol_funding(
+            &genesis.proof_of_stake,
+            &genesis.vaults,
+            &genesis.client_fuel_allocations,
+        )
+        .unwrap();
+        let genesis_block = Genesis::create_genesis_block(&runtime_manager, &genesis)
+            .await
+            .unwrap();
+        let mut authority_regions = 0;
+        for processed in &genesis_block.body.deploys {
+            assert_eq!(processed.envelope_commitment.len(), 32);
+            assert_eq!(processed.cosigner_threshold, 1);
+            let envelope = processed.to_cosigned().unwrap();
+            assert!(envelope.is_envelope_bound());
+            assert_eq!(
+                envelope.envelope_commitment().unwrap(),
+                processed.envelope_commitment
+            );
+            let witness = processed
+                .authority_cost_witness
+                .as_ref()
+                .expect("genesis deploy must carry authority evidence");
+            for event in &witness.events {
+                let authority = event
+                    .authority
+                    .as_ref()
+                    .expect("genesis authority event must carry regions");
+                for region in &authority.regions {
+                    authority_regions += 1;
+                    assert_eq!(
+                        rholang::rust::interpreter::accounting::authority::cost_signature_to_sig(
+                            region
+                                .signature
+                                .as_ref()
+                                .expect("genesis authority region must carry a signature"),
+                        )
+                        .unwrap(),
+                        Sig::Unit
+                    );
+                }
+            }
+        }
+        assert!(authority_regions > 0);
+        for vault in &expected {
+            let (values, _) = runtime_manager
+                .play_exploratory_deploy(
+                    balance_query_source(&vault.vault_address),
+                    &genesis_block.body.state.post_state_hash,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(values.len(), 1);
+            assert_eq!(
+                RhoNumber::unapply(&values[0]).unwrap(),
+                i64::try_from(vault.initial_balance).unwrap()
+            );
+        }
+
+        let replayed_from_consensus = runtime_manager
+            .replay_block_from_consensus_data(
+                &genesis_block.body.state.pre_state_hash,
+                &genesis_block,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_from_consensus,
+            genesis_block.body.state.post_state_hash
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v6_genesis_envelope_identity_is_deterministic_across_builders() {
+    let (_, _, genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+    let first = build_genesis_with_isolated_runtime(
+        genesis.clone(),
+        models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .await;
+    let second = build_genesis_with_isolated_runtime(
+        genesis,
+        models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION,
+    )
+    .await;
+
+    assert_eq!(
+        first.body.state.pre_state_hash,
+        second.body.state.pre_state_hash
+    );
+    assert_eq!(first.body.deploys.len(), second.body.deploys.len());
+    for (index, (first_deploy, second_deploy)) in first
+        .body
+        .deploys
+        .iter()
+        .zip(&second.body.deploys)
+        .enumerate()
+    {
+        assert_eq!(first_deploy.envelope_commitment.len(), 32);
+        assert_eq!(
+            first_deploy.envelope_commitment, second_deploy.envelope_commitment,
+            "blessed deploy {index} envelope identity"
+        );
+        assert_eq!(
+            first_deploy.cost, second_deploy.cost,
+            "blessed deploy {index} cost"
+        );
+        assert_eq!(
+            canonical_event_log_digest(&first_deploy.deploy_log, false),
+            canonical_event_log_digest(&second_deploy.deploy_log, false),
+            "blessed deploy {index} event identities without occurrence counters"
+        );
+        assert_eq!(
+            canonical_event_log_digest(&first_deploy.deploy_log, true),
+            canonical_event_log_digest(&second_deploy.deploy_log, true),
+            "blessed deploy {index} event multiset"
+        );
+        assert_eq!(
+            first_deploy.deploy_log, second_deploy.deploy_log,
+            "blessed deploy {index} event log"
+        );
+        assert_eq!(
+            first_deploy.pre_state_hash, second_deploy.pre_state_hash,
+            "blessed deploy {index} pre-state"
+        );
+        assert_eq!(
+            first_deploy.post_state_hash, second_deploy.post_state_hash,
+            "blessed deploy {index} post-state"
+        );
+    }
+    assert_eq!(
+        first.body.state.post_state_hash,
+        second.body.state.post_state_hash
+    );
+}
+
+#[test]
+fn genesis_protocol_funding_rejects_invalid_economic_parameters() {
+    let (_, _, baseline) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(3));
+
+    let mut invalid_epoch_length = baseline.clone();
+    invalid_epoch_length.proof_of_stake.epoch_length = 0;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_epoch_length.proof_of_stake,
+        &invalid_epoch_length.vaults,
+        &invalid_epoch_length.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut invalid_cosigner_limit = baseline.clone();
+    invalid_cosigner_limit
+        .proof_of_stake
+        .max_cosigners_per_deploy = 0;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_cosigner_limit.proof_of_stake,
+        &invalid_cosigner_limit.vaults,
+        &invalid_cosigner_limit.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut invalid_initial_phlogiston = baseline.clone();
+    invalid_initial_phlogiston.proof_of_stake.initial_phlogiston = -1;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_initial_phlogiston.proof_of_stake,
+        &invalid_initial_phlogiston.vaults,
+        &invalid_initial_phlogiston.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut invalid_epoch_phlogiston = baseline.clone();
+    invalid_epoch_phlogiston.proof_of_stake.epoch_phlogiston = -1;
+    assert!(Genesis::vaults_with_protocol_funding(
+        &invalid_epoch_phlogiston.proof_of_stake,
+        &invalid_epoch_phlogiston.vaults,
+        &invalid_epoch_phlogiston.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut empty_validator_key = baseline.clone();
+    empty_validator_key.proof_of_stake.validators[0].pk =
+        crypto::rust::public_key::PublicKey::from_bytes(&[]);
+    assert!(Genesis::vaults_with_protocol_funding(
+        &empty_validator_key.proof_of_stake,
+        &empty_validator_key.vaults,
+        &empty_validator_key.client_fuel_allocations,
+    )
+    .is_err());
+
+    let mut empty_client_key = baseline;
+    empty_client_key
+        .client_fuel_allocations
+        .push((crypto::rust::public_key::PublicKey::from_bytes(&[]), 1));
+    assert!(Genesis::vaults_with_protocol_funding(
+        &empty_client_key.proof_of_stake,
+        &empty_client_key.vaults,
+        &empty_client_key.client_fuel_allocations,
+    )
+    .is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -350,9 +605,8 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
                 })
                 .await;
 
-            assert!(result.is_ok(), "Genesis creation should succeed");
-
-            let genesis_block = result.unwrap();
+            let genesis_block =
+                result.unwrap_or_else(|error| panic!("Genesis creation should succeed: {error}"));
             let bonds = proto_util::bonds(&genesis_block);
 
             let expected_bonds: Vec<Bond> = validators()
@@ -396,7 +650,7 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                 block_dag_storage
                     .insert(
                         &genesis,
-                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
                     )
                     .expect("Failed to insert genesis into DAG");
 
@@ -413,8 +667,6 @@ async fn genesis_from_input_files_should_create_a_valid_genesis_block() {
                     &block_store,
                     &mut mk_casper_snapshot(dag),
                     &runtime_manager,
-                    None,
-                    None,
                     None,
                 )
                 .await
@@ -454,9 +706,8 @@ async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_de
             )
             .await;
 
-            assert!(result.is_ok(), "Genesis creation should succeed");
-
-            let genesis_block = result.unwrap();
+            let genesis_block =
+                result.unwrap_or_else(|error| panic!("Genesis creation should succeed: {error}"));
             let bonds = proto_util::bonds(&genesis_block);
 
             let expected_bonds: Vec<Bond> = validators()
@@ -510,15 +761,6 @@ new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
 // spec proves the read needs > 3000) while staying below the 9_000_000 default deployer vault.
 const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
 
-// Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
-    let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
-    hex::encode(unforgeable_id_u8)
-}
-
 // Deploys a balance query for `rev_address`, adds it in a block, and returns the pretty-printed
 // on-chain balance (a decimal string) read back from the deploy's `ret` channel.
 async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &str) -> String {
@@ -538,12 +780,22 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
         .await
         .expect("Failed to add balance-query block");
 
-    let data = rspace_util::get_data_at_private_channel(
-        &block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
-        &node.runtime_manager,
-    )
-    .await;
+    assert_eq!(block.body.deploys.len(), 1);
+    let processed = &block.body.deploys[0];
+    assert!(!processed.is_admission_rejected());
+    assert!(!processed.is_failed);
+    let envelope = processed.to_cosigned().expect("protocol-v6 envelope");
+    let unforgeable_id = Tools::user_deploy_rng(&envelope).next();
+    let private_name = hex::encode(
+        unforgeable_id
+            .iter()
+            .map(|&byte| byte as u8)
+            .collect::<Vec<_>>(),
+    );
+
+    let data =
+        rspace_util::get_data_at_private_channel(&block, &private_name, &node.runtime_manager)
+            .await;
 
     assert_eq!(
         data.len(),

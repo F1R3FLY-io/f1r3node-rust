@@ -23,7 +23,7 @@
 '   red    (#FFCDD2) = failure exit (post-fix: state intact for retry)
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/11-seq-withdrawal-flow-fix.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/11-seq-withdrawal-flow-fix.puml
 
 @startuml 11-seq-withdrawal-flow-fix
 !theme plain

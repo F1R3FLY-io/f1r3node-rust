@@ -1,14 +1,12 @@
 # Fork-Choice ("Ghosting") — Verification & Hardening Dossier
 
-> **Status:** casper's LMD-GHOST fork-choice logic is **formally verified end-to-end**
-> — Rocq (axiom-free capstones), TLA⁺ (determinism + LCA models with dual
-> counterexamples), Z3/Sage/Wolfram cross-witnesses, and Rust regression tests. The
-> headline finding is **honest**: unlike the finalized-floor (which had three real
-> safety bugs), the ghosting logic is **largely correct** — the prime fork suspect
-> (tie-break non-determinism) is **refuted** — with three **low-severity** robustness
-> seams (B1/B2/B3) fixed full-stack and one **reframe** (validators do not recompute
-> fork choice). Verification is **local-only** — no Rocq/TLA⁺/Z3/Sage/Wolfram step is
-> wired into CI.
+> **Status:** the certified-context fork-choice slice has axiom-free Rocq proofs,
+> concurrent TLA⁺ models with falsifying controls, Wolfram/Z3/Sage cross-witnesses,
+> and production-backed Rust example/property tests. This campaign found and repaired
+> a real LMD-GHOST defect: globally sorting terminal leaves can select a leaf below a
+> lighter root subtree. The implementation now composes a greedy GHOST head with the
+> complete concurrent terminal frontier. Verification remains local-only; formal-tool
+> steps are not installed in GitHub CI.
 
 This document is written so the design and its verification can be reconstructed from
 scratch. It records the feature, the bug-hunt outcome, the fixes, the formal artifacts
@@ -27,16 +25,15 @@ scratch. It records the feature, the bug-hunt outcome, the fixes, the formal art
 The **fork-choice estimator** selects the canonical tip(s) of the block DAG. For a DAG
 `d` and a frozen `latest_messages` map:
 
-- **filter** — remove slashed/invalid validators' latest messages (T-10) so they add
-  zero weight;
-- **LCA** — depth-filter latest messages (`> top − LATEST_MESSAGE_MAX_DEPTH`) and take
-  their lowest universal common ancestor as the scoring base;
+- **project** — derive one complete, sender-bound, generation-bound eligible latest
+  message per frozen-floor validator from the certified context;
+- **LCA** — take the lowest universal common ancestor of every eligible message,
+  without a receiver-local height projection;
 - **score** — `score(b) = Σ { w(v,b) : b ⪯ lm(v) }`, the cumulative bonded weight of
   the validators whose latest message supports `b`, accumulated to the LCA;
-- **rank** — a heaviest-subtree DESCENT from the LCA: at each fork, commit to the
-  scored main-parent child of maximum cumulative score, tie-broken by hash ascending,
-  and stop at the frontier; the descent's endpoint is the main tip. The remaining
-  frontier tips rank behind it `(score desc, hash asc)`;
+- **rank** — greedily descend through maximum-score children to the GHOST head;
+  independently enumerate every scored terminal under arbitrary parallel expansion
+  order; return the GHOST head followed by every other terminal in score/hash order;
 - **truncate** — keep ≤ `max_number_of_parents` tips (head preserved) and drop
   secondary parents deeper than `max_parent_depth`.
 
@@ -48,12 +45,14 @@ fork choice.
 
 | Step | Code |
 |---|---|
-| collect + T-10 filter | `estimator.rs:71-91` (`invalid_latest_messages_from_hashes` + `retain`) |
-| LCA (+ 1000-depth filter) | `estimator.rs:96-97,172-201`; `dag_operations.rs` (`lowest_universal_common_ancestor_many`) |
-| scores | `estimator.rs:203-276` (`build_scores_map`); `proto_util.rs:160-193` (`weight_from_validator_by_dag`) |
-| rank | `estimator.rs:349-402` (`rank_forkchoices`: the descent + `scored_main_children`; frontier tail); `list_ops.rs:44-67` (frontier total tie-break) |
-| depth + count cut | `estimator.rs:108-116,121-170` (`filter_deep_parents`, `take`) |
-| consumers | `snapshot.rs:182-213` (main-parent, proposer: the ghost head sorts first `(is_main DESC, hash ASC)`, then `prune_dag_covered_parents` may collapse to a single deploy-free parent that DAG-covers every other — see §6.2); `validate.rs:922` (bound check, **not** recompute) |
+| certified projection | `causal_equivocation.rs` (`CertifiedConsensusContext`, eligible projection) |
+| LCA | `estimator.rs` (`calculate_lca`); `dag_operations.rs` (`lowest_universal_common_ancestor_many`) |
+| scores | `estimator.rs` (`build_scores_map`) |
+| greedy head | `estimator.rs` (`greedy_ghost_head`) |
+| terminal frontier | `estimator.rs` (`terminal_frontier`, `replace_block_hash_with_children`) |
+| composition | `estimator.rs` (`rank_forkchoices`); `list_ops.rs` (`sort_by_with_decreasing_order`) |
+| depth + count cut | `estimator.rs` (`filter_deep_parents`, `retained_parent_indices`) |
+| consumers | `snapshot.rs` (proposer policy); `validate.rs` (declared-parent bound check, not estimator recomputation) |
 
 Key source files:
 
@@ -68,45 +67,76 @@ Key source files:
 
 ---
 
-## 2. The bug-hunt outcome — mostly refuted, three seams fixed
+## 2. Concurrent-model findings
 
-Front-loading the fork-suspects (as the finalized-floor did with H1/H2/H3), but
-reporting the **honest** result: each prime suspect is **refuted with code evidence**.
+The serial/depth-one model established tie-break totality but could not express a
+stake split below a heavier root subtree. Once the model contained multiple validator
+branches, independent latest messages, multi-level descent, and multi-parent DAGs, it
+exposed the difference between two algorithms:
+
+```math
+GHOST(root) = GHOST\!\left(\operatorname*{arg\,max}_{c \in children(root)} score(c)\right)
+```
+
+versus the former effective rule:
+
+```math
+\operatorname*{arg\,max}_{t \in terminal\_frontier(root)} score(t)
+```
+
+These are not equivalent. In the pinned counterexample, one root child has score `60`
+and terminal descendants of scores `30` and `30`; another root child and its only leaf
+have score `40`. LMD-GHOST chooses the score-`60` subtree, while the global-terminal
+rule incorrectly chooses the score-`40` leaf.
+
+The repair preserves concurrency:
+
+1. `greedy_ghost_head` performs the canonical per-level descent.
+2. `terminal_frontier` still expands all scored branches and deduplicates shared
+   multi-parent children.
+3. `rank_forkchoices` returns the greedy head first, then the other terminals under
+   the existing total score/hash order.
+4. Every traversed scored edge must advance height; malformed edges return a typed
+   error rather than allowing nontermination.
+
+The following suspected defects were separately resolved or refuted:
 
 - **S1 — tie-break non-determinism → fork (the #1 suspect): REFUTED.**
-  Both tie-breaks are **total** orders on distinct hashes: the descent sorts each
-  fork's scored children `(score desc, hash asc)` (`estimator.rs:379-383`; children
-  are distinct by construction), and the frontier tail is deduplicated then sorted by
-  `sort_by_with_decreasing_order` (`list_ops.rs:55-64` — score descending, then
-  block-hash ascending, lexicographic). So the head and the ranked tail are pure
-  functions of the scored set; the `HashSet`/`HashMap` iteration order can never leak
-  into them. Confirmed as a test (`tie_break_is_total_shuffle_invariant_on_distinct`)
-  and axiom-free in Rocq (`TieBreak.sort_total_order` / `output_indep_of_input_perm`).
+  `sort_by_with_decreasing_order` is a **total** order — score
+  descending, then `item_a.cmp(item_b)` (block-hash ascending, `BlockHash = Bytes`,
+  lexicographic). Greedy sibling choice and the deduplicated secondary-terminal tail
+  are therefore pure functions of the scored DAG; collection iteration order cannot
+  leak into either. Confirmed by `tie_break_is_total_shuffle_invariant_on_distinct`
+  and axiom-free Rocq results `TieBreak.sort_total_order` and
+  `output_indep_of_input_perm`.
 - **Weight non-determinism (the A9 `f32` analog): REFUTED.** Weights are exact **`i64`**
   read from the **main parent's on-chain `weight_map`** (`proto_util.rs:171-190`) —
   block-structural, identical across nodes, no floating point.
-- **LCA determinism + the `LATEST_MESSAGE_MAX_DEPTH = 1000` cliff (the 256/512 analog):
-  REFUTED as a fork.** Under an identical DAG the structural top height is identical, so
-  the depth filter is a pure function of the DAG (deterministic). Its *effect* — keeping
-  one stale validator from dragging the LCA to genesis — is intended and bounded; a
-  message below the resulting LCA has zero ranking influence.
-- **`rank_forkchoices` termination: HOLDS.** Each descent step commits to a
-  strictly higher-numbered child, bounded by the DAG height. (`Rank.rank_terminates`
-  proves this shape for the modeled descent; see §6.2 on model currency.)
+- **Receiver-local LCA projection: REPAIRED.** Every certified eligible message now
+  participates; unrelated ambient height cannot change the LCA.
+- **Both traversals terminate.** Every accepted child edge strictly increases height
+  in a finite DAG. Rocq proves greedy termination; TLA⁺ proves each asynchronous
+  frontier expansion strictly decreases the finite work measure.
 
-**Three low-severity robustness seams** (each fixed full-stack in §3; each below the
-convergence-test envelope, so a green gate would miss them):
+Additional robustness seams repaired in the same slice are:
 
 | ID | Sev | Evidence | Finding |
 |---|---|---|---|
 | **B1** | Med | `proto_util.rs:168,176` `.expect(...)` | Panics on the fork-choice BFS when a traversed block or its main parent is momentarily absent (sync/prune window). |
-| **B2** | Low | `estimator.rs:120-127` `take(.. as usize)`; `casper.rs:56` | The `-1` config "unlimited" sentinel reaches the estimator and only worked via `-1 as usize` wrap; two sentinels (`-1`, `i32::MAX`) silently conflated. |
-| **B3** | Low | `estimator.rs:267-268` (now `checked_add`; was `+=`) | Unchecked score accumulation; wraps only above `i64::MAX` (a supply-cap violation). |
-| **B4** | — | `estimator.rs:144-150` | Already hardened (P2-8 typed `Err` on empty tips); modeled, not re-fixed. |
+| **B2** | Low | `estimator.rs:152-169` `take(.. as usize)`; `casper.rs:62-70` | The `-1` config "unlimited" sentinel reaches the estimator and only worked via `-1 as usize` wrap; two sentinels (`-1`, `i32::MAX`) silently conflated. |
+| **B3** | Low | `estimator.rs:318` (now `checked_add`; was `+=`) | Unchecked score accumulation could wrap on signed-weight overflow (a supply-cap violation). |
+| **B4** | — | `estimator.rs:173-183` | Already hardened (P2-8 typed `Err` on empty tips); modeled, not re-fixed. |
 
 ---
 
 ## 3. The fixes (Phase 2)
+
+- **GHOST/head composition.** The production estimator now computes the greedy head
+  separately from the exact terminal frontier, asserts membership, and prefixes it.
+  Regressions include the explicit `60 → 30/30 versus 40` case, randomized two-level
+  author-bound latest messages, and a multi-parent diamond with one shared terminal.
+- **Traversal integrity.** Both greedy and frontier traversals reject a scored child
+  whose height does not strictly exceed its parent.
 
 - **B1 — typed error, not panic.** `weight_from_validator_by_dag` now returns
   `Err(KvStoreError::KeyNotFound(..))` (mirroring `snapshot.rs`'s sibling case) when a
@@ -137,17 +167,29 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-SCORE** | score accumulation additive/order-independent | Rocq `Score.score_perm_invariant`, `score_eq_support_sum`; Z3 `score_supply_cap_bitvec.py`; Sage `forkchoice_algebra.sage`; Rust `score_perm_invariant` (proptest: permuting the latest-message order never changes the tips — the score monoid's only observable consequence, `prop_estimator_determinism.rs`) |
 | **weight purity** | weights are block-structural `i64` (no `f32`, no node-local view) | Rocq `Score.weight_is_pure` + `GuardBridge.weight_block_structural` |
 | **T-FILTER** | slashed/invalid latest messages add zero weight (S2) | Rocq `Filter.invalid_excluded` (cites slashing `ForkChoice.v`); Rust `filter_t10_invalid_latest_message_excluded` (the real `Estimator` + a DAG-flagged invalid latest message: excluded ⇒ tips identical to omitting it, `prop_estimator_determinism.rs`) |
-| **T-GHOST** | the head lands in the heaviest subtree at every fork | Rust **proptests** `ghost_head_lands_in_the_heaviest_subtree_branch` (`heaviest_subtree_descent.rs`: DEPTH-2 weighted forks — the geometry where tip-ranking and descent diverge) and `ghost_ranked_tips_are_heaviest_subtree_argmax` (`prop_ghost_argmax.rs`: random weighted fork DAGs against an independent stake-sum oracle); directed regression `the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival` (the ucc-i6 production divergence, run 32404488936). Rocq `Rank.rank_selects_heaviest` / `rank_head_is_argmax` model a descent but their correspondence claims cite the deleted implementation — re-derivation pending (§6.2). Wolfram `ghost_heaviest_subtree.wl` |
-| **T-TERM** | the descent terminates | Each step commits to a strictly higher-numbered child, bounded by DAG height (`estimator.rs:373-385`). Rocq `Rank.rank_terminates` (same caveat as T-GHOST); Wolfram (measure monotone) |
-| **T-LCA** | LCA is a common ancestor (modeled from the fold; termination proved); depth filter deterministic (S6) | Rocq `Lca.lca_is_common_ancestor` (+ `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest` — §6.1), `lca_depth_filter_deterministic`, `lca_empty_is_genesis`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic`; Rust proptests `reduce_converges`, `lca_is_common_ancestor`, `lcua_many_is_max`, `lca_single_and_genesis_boundary` (`prop_lca.rs`: the real `DagOperations::lowest_universal_common_ancestor_many` on random DAGs converges, is a common ancestor of every input, and is the lowest such on trees) |
-| **T-BOUND** | count/depth/`i32::MAX` truncations keep the head, never panic (S3/S4) | Rocq `Bound.head_preserved`, `take_never_drops_head`, `empty_tips_typed_err`; Rust `filter_deep_parents` tests |
+| **T-GHOST** | the first result follows greedy heaviest-subtree descent, not global terminal-leaf order | Rocq `Rank.rank_selects_heaviest`, `rank_head_is_argmax`; TLA⁺ `GhostTerminalFrontier.Inv_HeadIsGreedyGhost` plus the unsafe global-leaf control; Wolfram `ghost_heaviest_subtree.wl`; Rust randomized `ghost_ranked_tips_are_heaviest_subtree_argmax` and pinned `aggregate_subtree_weight_beats_larger_terminal_leaf` |
+| **T-FRONTIER** | every asynchronous expansion order yields the exact duplicate-free scored terminal set, including shared multi-parent children | Rocq `TerminalFrontier.terminal_frontier_exact`, `terminal_frontier_nodup`, `terminal_frontier_confluent`; TLA⁺ `GhostTerminalFrontier.Inv_ExactWhenTerminal`, `Inv_StrictExpansionProgress`; Wolfram all-order expansion; Rust `multi_parent_diamond_has_one_shared_terminal_leaf` |
+| **T-COMPOSE** | result is the GHOST head followed by the totally ordered remainder of the exact terminal frontier | Rocq `ranked_ghost_frontier_correct`, `ranked_tips_tail_exact`, `ranked_tips_tail_sorted`; Rust randomized independent two-lane oracle |
+| **T-TERM** | greedy and terminal-frontier traversals terminate or return a typed malformed-edge error | Rocq `Rank.rank_terminates`, `TerminalFrontier.anc_ofb_complete_height`; TLA⁺ strict finite-work descent; Wolfram monotone bounded measures; Rust height checks in both production paths |
+| **T-LCA** | LCA is a common ancestor of all certified eligible messages and is receiver-local-state independent | Rocq `Lca.lca_is_common_ancestor`, `lcua_many_common_ancestor`, `reduce_converges`, `lca_is_lowest`; TLA⁺ `ForkChoiceScan.Inv_LcaDeterministic`, `Inv_AllCertifiedMessagesRetained`; Rust `prop_lca.rs` against the real LCUA fold |
+| **T-BOUND** | depth expiry keeps the head; exact finite-cap admission is equivalent to the complete frozen frontier fitting; over-cap frontiers defer without signing or truncation; the configured committee maximum is only a sufficient worst-case advisory | Rocq `Bound.{head_preserved,configured_parent_capacity_prevents_frontier_truncation,undersized_parent_capacity_has_a_blocked_frontier_witness,exact_frontier_admission_some_iff_fits,exact_frontier_admission_none_iff_over_cap,underprovisioned_worst_case_can_fit_actual_frontier}`; TLA⁺/Apalache `ParentFrontierCapacity` safe fit and over-cap models plus the static-maximum-gate control; TLA⁺ `StatePreservingForkChoice` depth-expiry witness; Loom `parallel_capacity_decisions_use_one_exact_frozen_frontier`; Rust exact-capacity unit/property tests, non-signing proposer deferral, HTTP diagnostic, and configuration warning boundary properties |
 | **B1** | missing metadata ⟹ typed error, not panic (S4) | Rust `weight_from_validator_missing_parent_is_typed_err`; bridged by `GuardBridge.weight_block_structural` |
 | **B3** | score overflow ⟹ typed error, not wrap (S5) | Rust (`checked_add`); Z3 `score_supply_cap_bitvec.py` |
-| **T-MP** | the proposer's main parent is the GHOST head, except when the parent set collapses to a single deploy-free parent that DAG-covers every other (content-preserving; see §6.2) | Rust `main_parent_is_ghost_head_deterministic` (`prop_ghost_argmax.rs`: `tips[0]` is the heaviest branch, stable across every latest-message map order) + `parent_selection_prunes_dag_covered_parents` (`snapshot.rs` in-module tests). Both promotion stages the Rocq pipeline theorems modeled are deleted (§6.2) — `GuardBridge` re-derivation pending |
-| **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`, derived against the real predicate — `parents` (`validate.rs:945`), which bound-checks count/depth/progress and never recomputes the estimator (§6) |
+| **T-MP** | the honest proposal's first parent is the GHOST head, invariant under parent enumeration; deploy policy cannot override it | Rocq `GuardBridge.{consensus_parent_pipeline_deterministic,consensus_parent_pipeline_preserves_ghost_head}`; TLA+ `Inv_GhostHeadIsMainParent` plus the deploy-promotion negative control; Rust `ghost_parent_order_is_permutation_invariant_and_preserves_the_head` and `main_parent_is_ghost_head_deterministic` |
+| **T-CAUSAL** | causal-parent projection `C` preserves objectively admitted state dependencies while vote projection `V` is its floor-descending subset | Rocq `CausalFinalityProjection` and finalized-floor capstone; TLA+ `Inv_VoteTipsAreCausalTips`, stale-sibling and invalid-stale controls; Rust certified-context and snapshot regressions |
+| **T-ANTICHAIN** | proposal parents are the complete reachability-maximal antichain and cover every live causal tip | Rocq `ParentAntichain` and `fork_choice_parent_antichain_correct`; TLA+ `Inv_ParentsFormReachabilityAntichain`; Rust example and 256-case reachability property tests |
+| **T-EVIDENCE-ROOTS** | exact latest messages and the selected floor remain evidence roots independently of proposal-parent expiry | Rocq `certified_evidence_closure_preserves_*`; TLA+ floor/latest evidence-root invariants and omit-floor control; Loom atomic floor/latest capture and stale-latest floor-root tests |
+| **T-RESTORE-CONTEXT** | omitting only the canonical genesis body preserves exact slots, frozen stake, projections, digest, replay state, and cost state; any missing live dependency fails closed | Rocq `RestoreHorizonCertifiedContext`; TLC and Apalache `RestoreHorizonCertifiedContext` safe model; required slot-deletion, stake-deletion, heldness, and blanket-abstention controls; Rust example and property tests in `causal_equivocation.rs`; storage-read regressions in `horizon_read_abstention_spec.rs` |
+| **T-VALID (reframed)** | honest proposer's parents pass `Validate::parents` (not a recompute) | Rocq `GuardBridge.honest_forkchoice_parents_validate`, derived against the real predicate — `parents` (`validate.rs:924-960`), which bound-checks count/depth/progress and never recomputes the estimator (§6) |
+| **T-ADMIT** | honest preferred frontiers satisfy receiver admission; admission permits replay-safe strict subsets but rejects every frontier disconnected from its committed floor | Rocq `GuardBridge.{honest_proposer_frontier_refines_receiver_admission,replay_safe_parent_subset_witness,disconnected_parent_frontier_rejected}`; TLA⁺/Apalache `CertifiedFloorCommitment.AcceptedCandidatesCarryCommittedFloor` and its unsafe control; Rust unit and multi-validator tests in `certificate.rs` and `protocol_v6_snapshot_replay_spec.rs` |
 | **T-WF (bridge)** | block validation ⟹ acyclic, height-monotone DAG (the premise the proofs derive) | Rocq `GuardBridge.validation_implies_wf_dag` |
-| **T-ROOT (bridge)** | block validation ⟹ single-rooted DAG (exactly one parentless block = the approved genesis); `single_root` DERIVED, not assumed | Rocq `GuardBridge.validation_implies_single_root` (models `justification_follows` rejecting every other parentless block as `InvalidParents` — `validate.rs:1159-1162`; genesis admitted via the signed approved-block path `Validate::approved_block`, `initializing.rs:441`) |
-| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.fork_choice_{determinism,ghost,bound,bridge}_correct` |
+| **T-ROOT (bridge)** | block validation ⟹ single-rooted DAG (exactly one parentless block = the approved genesis); `single_root` DERIVED, not assumed | Rocq `GuardBridge.validation_implies_single_root`; Rust validation bindings are listed below. |
+| **capstone** | all of the above, axiom-free | Rocq `MainTheorem.fork_choice_{determinism,certified_context,parent_antichain,ghost,terminal_frontier,bound,bridge}_correct` and finalized-floor `certified_projection_binding_and_evidence_roots_correct` |
+
+`justifications_well_formed` rejects every non-genesis parentless block as
+`InvalidParents` (`validate.rs:1129-1135`). Genesis enters through
+`approved_block` (`validate.rs:176-235`) and the signed initialization
+path (`initializing.rs:419-423`).
 
 ---
 
@@ -165,12 +207,15 @@ each round (no effect-application/idempotence concern).
 | `Foundation.v` | — | DAG, block numbers, parents/children, ancestry, `wf_dag`, height bound |
 | `Score.v` | Foundation | `weight_is_pure`, `score_perm_invariant`, `score_eq_support_sum` |
 | `Filter.v` | Foundation | `invalid_excluded`, `valid_preserved`, `filter_idempotent` (T-10 reuse) |
+| `CertifiedContext.v` | Foundation | complete slots, floor-descendant projection, receiver-state noninterference |
 | `TieBreak.v` | Foundation | **S1 proof**: `sort_total_order`, `output_indep_of_input_perm`, `sort_argmax_unique`, `sort_is_permutation` |
 | `Lca.v` | Foundation | `lcua_many` fold + `reduce_converges` (lex-measure termination); `lca_is_common_ancestor` (from the fold, no circular premise), `lca_is_lowest`, `lca_depth_filter_deterministic`, `lca_empty_is_genesis` |
-| `Rank.v` | Foundation, Score, TieBreak | `rank_terminates`, `rank_selects_heaviest`, `still_same_fixpoint` — models the pre-descent implementation; its per-step heaviest-pick matches the current descent, but the correspondence commentary and line references cite deleted code (re-derivation pending, §6.2) |
-| `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err` |
-| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: `validation_implies_wf_dag`, `validation_implies_single_root` (approved-genesis pin ⟹ `single_root`, DERIVED), `weight_block_structural`, `honest_forkchoice_parents_validate`; `lca_is_common_ancestor_validated` (the capstone-facing LCA property with `single_root` DERIVED). The pipeline theorems (`ghost_sort_first_deterministic`, `dbetter_strict_total_order`, `dbest_hash_perm_invariant`, `main_parent_pipeline_{permutation,deterministic}`, `pipeline_head_may_differ_from_ghost`) model TWO retired promotion stages — re-derivation for the current single-stage pipeline pending (§6.2) |
-| `MainTheorem.v` | all | capstones `fork_choice_{determinism,ghost,bound,bridge}_correct` |
+| `Rank.v` | Foundation, Score, TieBreak | `rank_terminates`, `rank_selects_heaviest`, `still_same_fixpoint` |
+| `TerminalFrontier.v` | Foundation, Rank, TieBreak | `terminal_frontier_exact`, `terminal_frontier_nodup`, `ghost_head_in_terminal_frontier`, `terminal_frontier_confluent`, `ranked_ghost_frontier_correct` |
+| `Bound.v` | Foundation, Rank | `head_preserved`, `take_never_drops_head`, `cast_usize_safe`, `empty_tips_typed_err`, worst-case frontier-capacity sufficiency and undersized witness, exact runtime fit/no-truncation equivalence, and the underprovisioned-but-live-fit witness |
+| `ParentAntichain.v` | Foundation | executable reachability-maximal compaction, pairwise maximality, and causal-tip coverage preservation |
+| `GuardBridge.v` | Foundation, Rank, Bound, Filter, Lca | the Rust-enforced seams: validation, single-root derivation, frozen weight, honest parent bounds, proposer-to-receiver admission refinement, replay/authority input separation, canonical parent order, and protected GHOST-head preservation |
+| `MainTheorem.v` | all | seven capstones covering determinism, certified context, causal-parent antichain, greedy GHOST, exact terminal-frontier composition, parent bounds, and the Rust validation bridge |
 
 Build (memory-capped, 32 GB envelope):
 
@@ -187,10 +232,29 @@ systemd-run --user --scope -p MemoryMax=16G -p CPUQuota=1800% -p TasksMax=200 \
   `Inv_HeaviestSubtree`); `MC_ForkChoice_nontotal.cfg` (`TotalTieBreak = FALSE`, the
   score-only fork) **reproduces** `Inv_Deterministic is violated` — the exact fork the
   total tie-break prevents.
-- **`ForkChoiceScan.tla`** — the LCA depth-filter layer, with the `NodeLocalTop` knob.
-  `MC_ForkChoiceScan.cfg` (`NodeLocalTop = 0`, structural top) **passes**
+- **`ForkChoiceScan.tla`** — certified-message retention at the LCA boundary, with
+  `NodeLocalTop` as the unsafe receiver-local projection knob.
+  `MC_ForkChoiceScan.cfg` (`NodeLocalTop = 0`, no receiver-local projection) **passes**
   (`Inv_LcaDeterministic`); `MC_ForkChoiceScan_bug.cfg` (`NodeLocalTop = 1`, node-local
   top) **reproduces** `Inv_LcaDeterministic is violated`.
+- **`GhostTerminalFrontier.tla`** — all asynchronous expansion orders of a
+  multi-parent DAG containing the `60 → 30/30 versus 40` counterexample.
+  `MC_GhostTerminalFrontier.cfg` proves strict progress, exact terminal convergence,
+  shared-child deduplication, and retention of the greedy head.
+  `MC_GhostTerminalFrontier_global_leaf_unsafe.cfg` reproduces
+  `Inv_HeadIsGreedyGhost` failure for the former global-terminal rule.
+- **`ParentDepthBounds.tla`** — finite depth preserves the GHOST head, filters
+  only secondary parents, and stays within the receiver's buffered horizon. Its
+  controls refute head filtering and invalid zero/negative configuration.
+- **`ParentFrontierCapacity.tla`** — two validators evaluate the same frozen
+  frontier in either order. The safe fit model sets
+  `ConfiguredActiveMaximum = 10000`, `ParentCap = 101`, and four exact parents;
+  all evaluators admit the full frontier. The safe over-cap model proves that a
+  three-parent frontier with cap two defers everywhere and publishes no partial
+  list. The `UseStaticMaximumGate = TRUE` control independently reproduces the
+  false deferral caused by treating the future committee ceiling as current
+  frontier cardinality. TLC exhausts all four states of each safe schedule;
+  Apalache checks both evaluation steps and reproduces the same unsafe trace.
 
 Run under the bounded envelope (never tmpfs/`auto`):
 
@@ -199,6 +263,11 @@ source scripts/lib/tlc-run.sh
 FC=formal/tlaplus/fork_choice
 tlc_run "$(tlc_metadir fc_det)"  "$FC/MC_ForkChoice.cfg"          "$FC/ForkChoice.tla"       # PASS
 tlc_run "$(tlc_metadir fc_nt)"   "$FC/MC_ForkChoice_nontotal.cfg" "$FC/ForkChoice.tla"       # counterexample
+tlc_run "$(tlc_metadir fc_tf)"   "$FC/MC_GhostTerminalFrontier.cfg" "$FC/GhostTerminalFrontier.tla" # PASS
+tlc_run "$(tlc_metadir fc_old)"  "$FC/MC_GhostTerminalFrontier_global_leaf_unsafe.cfg" "$FC/GhostTerminalFrontier.tla" # counterexample
+tlc_run "$(tlc_metadir fc_cap)"  "$FC/MC_ParentFrontierCapacity.cfg" "$FC/ParentFrontierCapacity.tla" # PASS
+tlc_run "$(tlc_metadir fc_cap_over)" "$FC/MC_ParentFrontierCapacity_over_cap.cfg" "$FC/ParentFrontierCapacity.tla" # PASS
+tlc_run "$(tlc_metadir fc_cap_static)" "$FC/MC_ParentFrontierCapacity_static_maximum_unsafe.cfg" "$FC/ParentFrontierCapacity.tla" # counterexample
 ```
 
 ### 5.3 Z3 / Sage / Wolfram cross-witnesses
@@ -210,11 +279,25 @@ tlc_run "$(tlc_metadir fc_nt)"   "$FC/MC_ForkChoice_nontotal.cfg" "$FC/ForkChoic
 - **Sage** `formal/sage/fork_choice/forkchoice_algebra.sage` — score commutative monoid
   (permutation identity), tie-break order-embedding key strictly monotone ⇒ total order
   ⇒ unique argmax. Prints `ALL PASS`.
-- **Wolfram** `formal/wolfram/fork_choice/ghost_heaviest_subtree.wl` — greedy heaviest-
-  child descent reaches the heaviest-subtree leaf; the descent measure is strictly
-  monotone (termination); the `LATEST_MESSAGE_MAX_DEPTH` cap bounds the scored band
-  deterministically. Validated via the licensed Wolfram MCP evaluator (CLI license-bind
-  is skip-tolerant).
+- **Wolfram** `formal/wolfram/fork_choice/ghost_heaviest_subtree.wl` — independently
+  calculates greedy descent, enumerates every asynchronous frontier expansion order,
+  checks shared-child deduplication, constructs the head-first ranked result, and
+  reproduces the unsafe global-terminal counterexample. This licensed defense-in-depth
+  tier is opt-in: `RUN_WOLFRAM=1 scripts/check-fork-choice-ALL.sh`. The default gate
+  skips it without acquiring a license. When selected, the gate supplies the same
+  Wolfram base directories as the licensed MCP service; a discovered kernel must bind
+  that license and pass its self-test.
+- **Wolfram** `formal/wolfram/fork_choice/parent_frontier_capacity.wl` — independently
+  enumerates all 315 rooted five-block DAGs, every candidate finalized floor, and every
+  unique causal-latest-message subset for up to three validators. It derives the
+  finality-vote subset by exact floor reachability and requires the designated GHOST
+  head to be maximal in that subset, or the floor when the subset is empty. Across
+  40,950 exact frontier constructions, 43,774 valid head-order cases, and 245,700 cap
+  decisions, it checks exact maximal-set equality, pairwise antichain structure,
+  causal-tip and floor coverage, canonical head-first ordering, permutation invariance,
+  the committee-plus-one cardinality bound, exact admission, and empty publication on
+  deferral. Required controls witness unsafe static rejection, omitted floor backstop,
+  truncation, and skipped reachability compaction.
 
 ### 5.4 Rust tests
 
@@ -229,6 +312,11 @@ gate's `[8/8]` Rust tier (each test carries its Rocq citation in a doc-comment):
   permuted latest-message input / `HashMap` seeds (`MainTheorem.fork_choice_determinism`); the
   `build_scores_map` score monoid is permutation-invariant (`Score.score_perm_invariant`); and
   the T-10 invalid-latest-message `retain` excludes invalid tips (`Filter`).
+- **`prop_ghost_argmax`** — a randomized, author-bound two-level fork is checked
+  against an independent two-lane oracle; `aggregate_subtree_weight_beats_larger_terminal_leaf`
+  pins the score-`60` subtree against the score-`40` leaf; and
+  `multi_parent_diamond_has_one_shared_terminal_leaf` proves exact deduplication through
+  the production DAG/storage path.
 - **`prop_lca`** — `lowest_universal_common_ancestor_many` over random DAGs: the fold converges
   (`Lca.reduce_converges`), the result is a common ancestor of every input
   (`Lca.lca_is_common_ancestor`), and no common ancestor is higher (`Lca.lcua_many_is_max`, over
@@ -247,8 +335,9 @@ gate's `[8/8]` Rust tier (each test carries its Rocq citation in a doc-comment):
   validator predicate.
 
 Plus `casper` `proto_util.rs` (`weight_from_validator_missing_parent_is_typed_err`), the
-existing bisimulation suite (`casper/tests/slashing/{prop_t_13c_forkchoice_bisim, uc_16,
-uc_17}`), and `three_writers_converge_under_load` exercise the estimator end-to-end.
+current three-tier differential suite
+(`casper/tests/slashing/{prop_t_triple_bisim_forkchoice, uc_16, uc_17}`), and
+`three_writers_converge_under_load` exercise the estimator end-to-end.
 
 ---
 
@@ -268,6 +357,24 @@ not assume a premise it doesn't) is therefore:
 
 Consensus safety of parents is anchored by the finalized-floor committee/bonds
 validation, not by re-running the estimator.
+
+The refined boundary separates proposal policy from receiver validity.
+Declared parents select replay inputs. Frozen justifications select votes, evidence, and authority.
+
+`GuardBridge.honest_proposer_frontier_refines_receiver_admission` proves the forward refinement.
+`replay_safe_parent_subset_witness` proves that the converse is false.
+`disconnected_parent_frontier_rejected` proves the required failure boundary.
+
+The protocol-6 TLA⁺ model adds one disconnected candidate.
+TLC checks 31,738 reachable states in the safe configuration.
+The unsafe configuration disables only the causal-input gate.
+TLC then violates `AcceptedCandidatesCarryCommittedFloor` through the disconnected candidate.
+Apalache passes the safe model through length 8 and finds the unsafe trace at length 6.
+
+Rust binds both sides to production behavior.
+One multi-validator test accepts a strict declared-parent subset with a retained non-parent justification.
+Another test rejects a parent frontier that carries no ancestry of its signed floor.
+The direct unit test checks the exact certificate error before dispatcher classification.
 
 ### 6.1 The LCA is modeled from the fold — RESOLVED
 
@@ -342,61 +449,79 @@ never axioms — every headline result is `Print Assumptions` Closed.
 
 ---
 
-### 6.2 Main-parent selection — single-stage; the promotion stages are deleted
+### 6.2 The GHOST head is the main parent — repaired
 
-**Current pipeline** (`snapshot.rs:182-213`): the estimator's ghost head sorts first
-(`(is_main DESC, hash ASC)`), then `prune_dag_covered_parents` may collapse the set to
-a single deploy-free parent that DAG-covers every other parent — content-preserving,
-since every other parent's effects are already in the covering parent's post-state. So
-the proposer's main parent **is** the GHOST head, except in that collapse case.
+The earlier implementation sorted the GHOST head first and then allowed deploy-support
+policy to promote another branch. That override was deterministic, but determinism was
+insufficient: it changed the primary replay spine after LMD-GHOST had selected it. In an
+asymmetric DAG, this can make proposal state depend on pending deploy placement rather
+than certified stake support.
 
-Two promotion stages that once re-ordered the list after the ghost sort are deleted,
-each for cause:
+The production pipeline now has one authority for index zero:
 
-- **Deploy-support promotion** (`prefer_deploy_support_main_parent`): its input evolved
-  over time, so the spine could legally flip between two sound certificates and fork
-  the finalized read surface (the ucc `ca7197d8` freeze). Deploys need no spine
-  position to finalize
-  (`verdict_convergence_spec::a_deploy_finalizes_from_a_carrier_the_spine_never_holds`).
-- **Certified promotion** (`prefer_certified_main_parent`): repaired certificate flips
-  only at GHOST score ties and only on nodes that had witnessed the certificate — the
-  window it missed is the ucc-i6 divergence (run 32404488936). The root cause sat
-  deeper: `rank_forkchoices` ranked **tips**, each scoring only its owner's weight, so
-  under concurrent proposal every tip tied and the head fell to hash order — violating
-  R-GHOST at any fork of depth ≥ 2. (The mechanized T-GHOST artifacts and the depth-1
-  proptest geometry did not distinguish tip-ranking from subtree descent, which is how
-  the violation survived them.) The rewrite to a true heaviest-subtree descent removes
-  the tie the patch existed to repair: a certified branch holds a strict weight
-  majority, so no rival child can tie it — pinned directly in
-  `heaviest_subtree_descent.rs`.
+```text
+ghost := LMD-GHOST(V)
+causal := unique block hashes in C
+if V is empty, ghost := captured finalized floor
+require ghost in causal or ghost is the inserted floor backstop
+parents := reachability-maximal(causal plus required floor backstop)
+sort parents with ghost first and every remaining hash ascending
+require parents[0] = ghost
+```
 
-**Model debt.** `Rank.v`'s correspondence commentary and `GuardBridge.v`'s pipeline
-theorems cite the deleted implementations. `Rank.v`'s per-step heaviest-pick already
-matches the descent; the pending re-derivation is the correspondence claims plus a
-single-stage pipeline statement (ghost-first sort determinism + the dag-cover
-collapse). Until then the mechanized rank-layer artifacts are historical; the Rust
-proptests and directed regressions in §4 are the live discharge.
+`GuardBridge.consensus_parent_pipeline_preserves_ghost_head` proves the ordering seam.
+`ParentAntichain.causal_parent_guard_preserves_tips` proves that reachability compaction
+does not lose a covered causal input. `StatePreservingForkChoice` separately demonstrates
+that enabling the former deploy promotion violates `Inv_GhostHeadIsMainParent`; the
+Rocq `pipeline_head_may_differ_from_ghost` example remains only as an executable negative
+control for that removed behavior.
+
+This repair does not require validators to recompute a Byzantine proposer's local fork
+choice. Receivers continue to validate the declared parent structure and replay result.
+The stronger equality is an honest-proposer construction invariant: every conforming
+proposer derives index zero from the same certified vote projection and preserves it
+through compaction, depth expiry, and recovery narrowing.
+
+### 6.3 Causal dependencies and finality votes are distinct — repaired
+
+The prior single projection excluded every latest message that did not descend from the
+new floor. That was correct for voting but wrong for replay dependencies: an accepted
+sibling can remain a causal input after another branch becomes finalized. The corrected
+context derives `C` from identity, generation, evidence, and objective admission, then
+derives `V` by adding floor ancestry. LMD-GHOST and finality consume `V`; proposal-parent
+selection consumes `C`.
+
+The selected floor is always an evidence root, even when every exact latest message is
+stale relative to it. Parent compaction retains the full reachability-maximal antichain.
+Recovery narrows to one parent only when that parent both descends from the floor and
+covers every live causal tip. A finite parent cap equal to the configured active-validator
+maximum plus one floor backstop guarantees worst-case capacity without deferral, but is
+not necessary for a particular snapshot. Proposal admits the complete frozen frontier
+when its exact cardinality fits and otherwise defers before signing. Depth expiry supplies
+deterministic liveness for permanently old, disjoint unfinalized tips without deleting
+their exact evidence roots.
 
 ---
 
 ## 7. Verification status
 
 Run the whole suite with `scripts/check-fork-choice-ALL.sh` (Rocq authoritative;
-TLA⁺/Z3/Sage/Wolfram fail-soft; PlantUML render check). Target result: **ALL GATES OK**.
+TLA⁺/Z3/Sage fail-soft; licensed Wolfram opt-in with `RUN_WOLFRAM=1`; PlantUML render
+check). Target result: **ALL GATES OK**.
 
 | Layer | Result |
 |---|---|
 | Rust build | `cargo check -p casper --all-targets` clean |
 | Rust unit/regression | tie-break totality, B1 typed-error, fork-choice bisim (5), uc_16, convergence — all pass |
-| Rocq | full dev builds `-j1`; **13 headline results axiom-free** — 4 capstones + `validation_implies_wf_dag`, `validation_implies_single_root` (approved-genesis pin ⟹ `single_root`, T-ROOT), `honest_forkchoice_parents_validate`, `sort_total_order`, `reduce_converges`, `lca_is_lowest`, and the P0–P3 derivations `lcua_many_is_max` (C2), `descends_from_root` + `common_ancestor_root` (C4) |
+| Rocq | full build passes; **29 named results axiom-free**, including seven capstones and the exact/confluent terminal-frontier results |
 | Rocq kernel (coqchk) | **independent kernel re-check** of `ForkChoice.MainTheorem` + all deps ⇒ "Modules were successfully checked" (C3 — the trust root under the `Print Assumptions` claim) |
-| TLA⁺ | `MC_ForkChoice.cfg` + `MC_ForkChoiceScan.cfg` pass; both bug cfgs reproduce their counterexample |
-| Apalache (unbounded) | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`); non-vacuous (`TotalTieBreak=FALSE` ⇒ STEP CTI = the S1 fork). Horizon-free: holds on every reachable state at any trajectory length (C9). Fail-soft. |
-| Rust proptest | **C12** proposer-side `prop_filter_deep_parents` (4/4: `Estimator::filter_deep_parents` ⊨ `GuardBridge.within_depth`/`prop_filter` — soundness + main-parent-retention + completeness + `retained == {main} ∪ prop_filter(secondaries)`) **+ receive-side** `Validate::parents` depth-horizon (accept within / reject beyond / buffer extends); `prop_estimator_determinism` (permutation-invariant tips + score-monoid + T-10 filter); `prop_ghost_argmax` (**T-GHOST** ranked tips = heaviest-subtree argmax on random weighted forks + **T-MP** main-parent `tips[0]` deterministic + heaviest); `prop_lca` (LUCA converges / common-ancestor / maximal); `prop_bound` (B2/B3/B4 sentinel/overflow/empty seams); tie-break `sort_by_with_decreasing_order` (perm-invariant + permutation + argmax-unique) — all pass |
+| TLA⁺ | total-order, certified-message retention, asynchronous terminal-frontier, parent-depth, and exact parent-capacity models pass; both safe capacity schedules exhaust 6 generated / 4 distinct states to depth 3. Non-total order, receiver-local projection, global-terminal head, all-entry head loss, invalid configurations, and the static configured-maximum admission gate reproduce their designated counterexamples. |
+| Apalache | **`IndInv = TypeOK ∧ Inv_Deterministic ∧ Inv_HeaviestSubtree` proved INDUCTIVE** (BASE `Init ⊨ IndInv` + STEP `Next` preserves `IndInv`) on `ForkChoice_apalache.tla` — over **all of ℤ scores** (native SMT `Int`, strictly beyond TLC's `MaxScore=2`). The exact-frontier model independently passes through both parallel evaluations, while its static-maximum control violates `Inv_ExactFitIsAdmitted` after one evaluation. The GHOST induction is horizon-free; the capacity refinement is deliberately bounded to both nodes because the protocol action is one-shot per frozen snapshot. |
+| Rust proptest | 25 fork-choice integration tests pass, including randomized author-bound two-level GHOST, the pinned aggregate-subtree counterexample, multi-parent shared-child deduplication, context noninterference, LCA properties, and parent bounds; 7 tie-break, 10 proposal-parent, 6 estimator-bound, and the receive-side depth test also pass |
 | Z3 | tie-break total order (5/5) + score supply-cap BitVec (4/4) |
 | Sage | fork-choice algebra ⇒ `ALL PASS` |
-| Wolfram | GHOST heaviest-subtree / termination / LCA-bound — via the licensed MCP evaluator |
-| Diagrams | 6 PlantUML diagrams render clean (populated SVG, no stderr) |
+| Wolfram (optional) | with `RUN_WOLFRAM=1`, greedy GHOST, all-order frontier confluence, head-first composition, unsafe global-leaf counterexample, context noninterference, 40,950 exact frontier constructions, 43,774 valid head-order cases, and 245,700 exact-parent-capacity decisions pass under the licensed launcher; the default gate does not acquire a license |
+| Diagrams | 6 updated PlantUML diagrams render clean (populated SVG, no stderr) |
 
 **Coverage matrix (§4).** Every catalog item maps to a concrete Rocq/TLA⁺/Z3/Sage/Wolfram
 artifact or a Rust test — no "prose-only" row. The DAG well-formedness the proofs rest on is
@@ -429,15 +554,15 @@ fully coloured with an in-diagram legend.
 
 ### 8.1 Component correspondence — spec ↔ Rocq ↔ TLA⁺ ↔ Z3/Sage ↔ Rust
 
-[![Diagram 1 — every fork-choice component (ranking/tie-break, scoring, T-10 filter, LCA, ranking fixpoint, bounds, main-parent/validation bridge) annotated with its spec concern, Rocq module, TLA⁺ model, Z3/Sage/Wolfram witness, and Rust file, with the axiom-free MainTheorem capstone on top](./diagrams/01-component-correspondence.svg)](./diagrams/01-component-correspondence.svg)
+[![Diagram 1 — certified projection, LCA, scoring, greedy head, exact concurrent terminal frontier, total tail order, bounds, and validation bridge mapped across specifications, proofs, models, witnesses, and Rust](./diagrams/01-component-correspondence.svg)](./diagrams/01-component-correspondence.svg)
 
 ### 8.2 The `Estimator::tips` pipeline (deterministic fork-choice)
 
-[![Diagram 2 — sequence: collect latest messages → T-10 filter → LCA (with the 1000-depth filter) → build_scores_map → rank_forkchoices (total tie-break) → filter_deep_parents → take, each a pure function of the DAG](./diagrams/02-seq-tips-pipeline.svg)](./diagrams/02-seq-tips-pipeline.svg)
+[![Diagram 2 — sequence: certified eligible messages → LCA → parallel score maps and deterministic reduction → greedy head → asynchronous terminal frontier → head-first composition → parent bounds](./diagrams/02-seq-tips-pipeline.svg)](./diagrams/02-seq-tips-pipeline.svg)
 
 ### 8.3 GHOST heaviest-subtree selection
 
-[![Diagram 3 — a worked weighted DAG: subtree-score accumulation and the per-level heaviest-child descent 0→1→3 to the heaviest-subtree leaf](./diagrams/03-ghost-heaviest-subtree.svg)](./diagrams/03-ghost-heaviest-subtree.svg)
+[![Diagram 3 — the 60-to-30/30 versus 40 counterexample, greedy path, shared-child diamond, exact terminal frontier, and head-first ranked result](./diagrams/03-ghost-heaviest-subtree.svg)](./diagrams/03-ghost-heaviest-subtree.svg)
 
 ### 8.4 Tie-break totality — why fork-choice cannot fork (S1)
 
@@ -447,12 +572,9 @@ fully coloured with an in-diagram legend.
 
 [![Diagram 5 — activity: collect → filter → LCA → build_scores (checked_add, B3) → rank → empty?→typed Err (B4) / else filter_deep + cast-safe parent cap (B2) → ForkChoice tips](./diagrams/05-activity-estimator-flow.svg)](./diagrams/05-activity-estimator-flow.svg)
 
-### 8.6 `rank_forkchoices` termination
+### 8.6 Greedy-head and asynchronous-frontier composition
 
-Diagram 6 (`06-state-rank-fixpoint.svg`) depicts the pre-descent level-expansion
-fixpoint and is historical; the current termination argument is the descent's
-strictly-increasing block-number measure (§2, T-TERM). Diagram 3 above shows the
-per-fork heaviest-child descent itself and remains accurate.
+[![Diagram 6 — parallel-preserving two-lane state flow: greedy head, arbitrary-order exact frontier expansion, strict progress, and deterministic composition](./diagrams/06-state-rank-fixpoint.svg)](./diagrams/06-state-rank-fixpoint.svg)
 
 ---
 

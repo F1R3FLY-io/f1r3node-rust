@@ -1,0 +1,69 @@
+@startuml
+title Exact stale-sibling settlement and single-owner recovery
+
+skinparam backgroundColor #FCFCFC
+skinparam sequence {
+  ArrowColor #29434E
+  LifeLineBorderColor #546E7A
+  ParticipantBorderColor #37474F
+  ParticipantBackgroundColor #ECEFF1
+}
+
+participant "Validator 1" as V1
+participant "Validator 2" as V2
+participant "Validator 3" as V3
+participant "Finalizer and settlement" as F
+participant "Rejected-occurrence buffer" as R
+
+note over V1
+Validator 1 owns source carrier A.
+end note
+
+par independent ordinary admission
+  V1 -> F: accept siblings A and B
+else
+  V2 -> F: accept B, then A
+else
+  V3 -> F: accept A, then B
+end
+
+V1 -> F: exact support for B
+V2 -> F: exact support for B
+V3 -> F: exact support for B
+F --> V1: publish finalized floor B
+F --> V2: publish finalized floor B
+F --> V3: publish finalized floor B
+note over V1,V3 #FFF3E0
+A remains an accepted causal input.
+A is no longer a finality vote for floor B.
+end note
+
+V1 -> F: settle exact frontier {A, B}
+F -> F: replay preserves B
+F -> R: tombstone exact occurrence (A signature, A source)
+par independent settlement observation
+  F --> V1: record canonical rejection A
+else
+  F --> V2: record canonical rejection A
+else
+  F --> V3: record canonical rejection A
+end
+R --> V1: store retry custody A
+V2 -> F: support settlement
+F --> V1: publish floor containing rejection A
+F --> V2: publish floor containing rejection A
+F --> V3: publish floor containing rejection A
+
+V1 -> F: carrier owner proposes {A, Fresh}
+V2 -[#B71C1C,dashed]> F: no custody for carrier A
+V3 -[#B71C1C,dashed]> F: no custody for carrier A
+V2 -> F: support recovered descendant
+V3 -> F: support recovered descendant
+F --> V1: finalize effects {A, B, Fresh}
+F --> V2: finalize effects {A, B, Fresh}
+F --> V3: finalize effects {A, B, Fresh}
+note over V1,V3 #E8F5E9
+All validators converge without dropping the floor,
+duplicating A, or serializing ordinary validation.
+end note
+@enduml

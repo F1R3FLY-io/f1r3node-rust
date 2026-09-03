@@ -32,14 +32,14 @@ fn uc_58_no_neglect_without_visible_evidence() {
     // v0 equivocates → record minted in the tracker.
     let _v0a = harness.sign_block("v0", 5);
     let bad = harness.sign_block_distinct("v0", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
     assert!(harness.has_record("v0", 4));
 
     // v1, v2, v3 all publish blocks that do NOT cite v0's bad
     // block (they have not seen the evidence). None of them
     // should be classified as neglecting.
     let v1_unrelated = harness.sign_block("v1", 6);
-    let s1 = harness.dispatch(v1_unrelated);
+    let s1 = harness.dispatch_counterfactual_neglect_evidence(v1_unrelated);
     assert_eq!(
         s1,
         Status::Valid,
@@ -47,11 +47,11 @@ fn uc_58_no_neglect_without_visible_evidence() {
     );
 
     let v2_unrelated = harness.sign_block("v2", 6);
-    let s2 = harness.dispatch(v2_unrelated);
+    let s2 = harness.dispatch_counterfactual_neglect_evidence(v2_unrelated);
     assert_eq!(s2, Status::Valid);
 
     let v3_unrelated = harness.sign_block("v3", 6);
-    let s3 = harness.dispatch(v3_unrelated);
+    let s3 = harness.dispatch_counterfactual_neglect_evidence(v3_unrelated);
     assert_eq!(s3, Status::Valid);
 
     // None of v1/v2/v3 has a record minted.
@@ -67,11 +67,11 @@ fn uc_58_neglect_fires_only_when_evidence_visible_and_unreported() {
     // v0 equivocates.
     let _v0a = harness.sign_block("v0", 5);
     let bad = harness.sign_block_distinct("v0", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
 
     // v1 cites v0's bad block AND issues a SlashDeploy → reported.
     let v1_honest = harness.sign_block_citing_with_slash("v1", 6, bad, "v0");
-    let s = harness.dispatch(v1_honest);
+    let s = harness.dispatch_counterfactual_neglect_evidence(v1_honest);
     assert_eq!(
         s,
         Status::Valid,
@@ -81,7 +81,7 @@ fn uc_58_neglect_fires_only_when_evidence_visible_and_unreported() {
 
     // v2 cites v0's bad block but does NOT slash → visible-unreported.
     let v2_neg = harness.sign_block_citing("v2", 7, bad);
-    let s = harness.dispatch(v2_neg);
+    let s = harness.dispatch_counterfactual_neglect_evidence(v2_neg);
     assert_eq!(
         s,
         Status::NeglectedEquivocation,

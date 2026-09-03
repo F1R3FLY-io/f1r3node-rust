@@ -4,14 +4,17 @@
 use comm::rust::rp::protocol_helper;
 use models::casper::{
     ApprovedBlockProto, ApprovedBlockRequestProto, BlockApprovalProto, BlockHashMessageProto,
-    BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
+    BlockMessageProto, BlockRequestProto, FinalizationCertificateRequestProto,
+    FinalizationCertificateResponseProto, FloorCacheRequestProto, FloorCacheResponseProto,
     ForkChoiceTipRequestProto, HasBlockProto, HasBlockRequestProto, MergeableEntryRequestProto,
     MergeableEntryResponseProto, NoApprovedBlockAvailableProto, StoreItemsMessageProto,
     StoreItemsMessageRequestProto, UnapprovedBlockProto,
 };
 use models::routing::{Packet, Protocol};
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::CasperMessage;
+use models::rust::casper::protocol::casper_message::{
+    CasperMessage, FinalizationCertificateRequest, FinalizationCertificateResponse,
+};
 use prost::Message;
 
 /// Result type for packet parsing operations
@@ -63,6 +66,8 @@ pub enum CasperMessageProto {
     ApprovedBlock(ApprovedBlockProto),
     ApprovedBlockRequest(ApprovedBlockRequestProto),
     BlockRequest(BlockRequestProto),
+    FinalizationCertificateRequest(FinalizationCertificateRequestProto),
+    FinalizationCertificateResponse(FinalizationCertificateResponseProto),
     HasBlock(HasBlockProto),
     HasBlockRequest(HasBlockRequestProto),
     ForkChoiceTipRequest(ForkChoiceTipRequestProto),
@@ -90,6 +95,8 @@ pub fn to_casper_message_proto(packet: &Packet) -> PacketParseResult<CasperMessa
         "ApprovedBlock" => convert_approved_block(packet),
         "ApprovedBlockRequest" => convert_approved_block_request(packet),
         "BlockRequest" => convert_block_request(packet),
+        "FinalizationCertificateRequest" => convert_finalization_certificate_request(packet),
+        "FinalizationCertificateResponse" => convert_finalization_certificate_response(packet),
         "HasBlock" => convert_has_block(packet),
         "HasBlockRequest" => convert_has_block_request(packet),
         "ForkChoiceTipRequest" => convert_fork_choice_tip_request(packet),
@@ -120,6 +127,12 @@ pub fn casper_message_from_proto(proto: CasperMessageProto) -> Result<CasperMess
             Ok(CasperMessage::from_approved_block_request(proto))
         }
         CasperMessageProto::BlockRequest(proto) => Ok(CasperMessage::from_block_request(proto)),
+        CasperMessageProto::FinalizationCertificateRequest(proto) => {
+            CasperMessage::from_finalization_certificate_request(proto)
+        }
+        CasperMessageProto::FinalizationCertificateResponse(proto) => {
+            CasperMessage::from_finalization_certificate_response(proto)
+        }
         CasperMessageProto::HasBlock(proto) => Ok(CasperMessage::from_has_block(proto)),
         CasperMessageProto::HasBlockRequest(proto) => {
             Ok(CasperMessage::from_has_block_request(proto))
@@ -172,6 +185,32 @@ fn convert_approved_block_request(packet: &Packet) -> PacketParseResult<CasperMe
 
 fn convert_block_request(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
     parse_packet::<BlockRequestProto>(packet).map(CasperMessageProto::BlockRequest)
+}
+
+fn convert_finalization_certificate_request(
+    packet: &Packet,
+) -> PacketParseResult<CasperMessageProto> {
+    if packet.content.len() > FinalizationCertificateRequest::MAX_ENCODED_BYTES {
+        return PacketParseResult::Failure(format!(
+            "finalization certificate request exceeds {} encoded bytes",
+            FinalizationCertificateRequest::MAX_ENCODED_BYTES
+        ));
+    }
+    parse_packet::<FinalizationCertificateRequestProto>(packet)
+        .map(CasperMessageProto::FinalizationCertificateRequest)
+}
+
+fn convert_finalization_certificate_response(
+    packet: &Packet,
+) -> PacketParseResult<CasperMessageProto> {
+    if packet.content.len() > FinalizationCertificateResponse::MAX_ENCODED_BYTES {
+        return PacketParseResult::Failure(format!(
+            "finalization certificate response exceeds {} encoded bytes",
+            FinalizationCertificateResponse::MAX_ENCODED_BYTES
+        ));
+    }
+    parse_packet::<FinalizationCertificateResponseProto>(packet)
+        .map(CasperMessageProto::FinalizationCertificateResponse)
 }
 
 fn convert_has_block(packet: &Packet) -> PacketParseResult<CasperMessageProto> {
@@ -349,5 +388,47 @@ mod tests {
             CasperMessageProto::HasBlockRequest(_) => {} // Expected
             _ => panic!("Expected HasBlockRequest variant"),
         }
+    }
+
+    #[test]
+    fn finalization_certificate_request_packet_is_length_checked_and_routed() {
+        let digest = BlockHash::from(vec![3; models::rust::block_hash::LENGTH]);
+        let packet = FinalizationCertificateRequestProto {
+            digest: digest.clone(),
+        }
+        .mk_packet();
+        let message = casper_message_from_proto(
+            to_casper_message_proto(&packet)
+                .get()
+                .expect("certificate request packet"),
+        )
+        .expect("certificate request message");
+        assert!(matches!(
+            message,
+            CasperMessage::FinalizationCertificateRequest(request) if request.digest == digest
+        ));
+
+        let malformed = FinalizationCertificateRequestProto {
+            digest: BlockHash::from_static(b"short"),
+        }
+        .mk_packet();
+        assert!(casper_message_from_proto(
+            to_casper_message_proto(&malformed)
+                .get()
+                .expect("decodable request")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn oversized_certificate_response_is_rejected_before_protobuf_decode() {
+        let packet = Packet {
+            type_id: "FinalizationCertificateResponse".to_string(),
+            content: vec![0; FinalizationCertificateResponse::MAX_ENCODED_BYTES + 1].into(),
+        };
+        assert!(matches!(
+            to_casper_message_proto(&packet),
+            PacketParseResult::Failure(error) if error.contains("exceeds")
+        ));
     }
 }

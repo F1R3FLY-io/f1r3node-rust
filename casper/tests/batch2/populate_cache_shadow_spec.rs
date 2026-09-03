@@ -172,13 +172,13 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
         .first()
         .cloned()
         .expect("the conflicting RMWs must produce a merge rejection");
-    let rejected_sig: Bytes = rejected_record.sig.clone();
+    let rejected_sig = Bytes::copy_from_slice(rejected_record.deploy_id());
     assert!(
         !nodes[1]
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_sig(&rejected_sig)
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
             .expect("buffer.contains_sig"),
         "the bufferless computation must not have populated the buffer"
     );
@@ -189,7 +189,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
     // cache not shadowing the populate.
     let owner: Bytes = nodes[1]
         .block_store
-        .get(&rejected_record.carrier)
+        .get(&rejected_record.source_block_hash)
         .expect("carrier read")
         .expect("carrier block present")
         .sender
@@ -210,7 +210,10 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
         .await
         .expect("validate-style merge (buffer attached)");
     let sigs = |records: &[models::rust::casper::protocol::casper_message::RejectedDeploy]| {
-        records.iter().map(|r| r.sig.clone()).collect::<Vec<_>>()
+        records
+            .iter()
+            .map(|r| Bytes::copy_from_slice(r.deploy_id()))
+            .collect::<Vec<_>>()
     };
     assert_eq!(
         sigs(&validate_merged.rejected_user),
@@ -222,7 +225,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             .rejected_deploy_buffer
             .lock()
             .expect("buffer lock")
-            .contains_sig(&rejected_sig)
+            .contains_id(&crate::current_deploy_id(&rejected_sig))
             .expect("buffer.contains_sig"),
         "the buffered computation must populate the rejected-deploy buffer \
          even when a bufferless computation already seeded the cache"

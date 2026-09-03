@@ -150,8 +150,7 @@ impl GrpcTransport {
         blob: &Blob,
         packet_chunk_size: usize,
     ) -> Result<(), CommError> {
-        // Generate chunks using our Chunker
-        let chunks = Chunker::chunk_it(network_id, blob, packet_chunk_size);
+        let chunks = Chunker::chunk_iter(network_id, blob, packet_chunk_size)?;
 
         // Create a stream of chunks
         let chunk_stream = tokio_stream::iter(chunks);
@@ -279,7 +278,7 @@ mod tests {
         };
 
         // Test that we can create chunks (functionality tested in chunker module)
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", &blob, 4096).unwrap();
         assert!(!chunks.is_empty());
         assert!(!chunks.is_empty()); // At least header chunk
     }

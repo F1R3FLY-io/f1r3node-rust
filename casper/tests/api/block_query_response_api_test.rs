@@ -6,14 +6,15 @@ use std::sync::{Arc, Mutex};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
 use casper::rust::api::block_api::BlockAPI;
+use casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::safety_oracle::{CliqueOracleImpl, MIN_FAULT_TOLERANCE};
+use casper::rust::safety_oracle::{CliqueOracleImpl, MAX_FAULT_TOLERANCE};
 use casper::rust::util::construct_deploy;
 use casper::rust::util::proto_util::{bond_to_bond_info, justifications_to_justification_infos};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use models::casper::{BlockInfo, BondInfo, JustificationInfo, LightBlockInfo};
-use models::rust::block_implicits::{get_random_block, get_random_block_default};
+use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, Justification, ProcessedDeploy,
 };
@@ -30,7 +31,7 @@ const TOO_SHORT_QUERY: &str = "12345";
 const BAD_TEST_HASH_QUERY: &str = "1234acd";
 const INVALID_HEX_QUERY: &str = "No such a hash";
 const DEPLOY_COUNT: usize = 10;
-const FAULT_TOLERANCE: f32 = MIN_FAULT_TOLERANCE;
+const FAULT_TOLERANCE: f32 = MAX_FAULT_TOLERANCE;
 
 struct TestContext {
     shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
@@ -80,21 +81,35 @@ fn create_sender_and_validator() -> (String, Bytes, Bond) {
 }
 
 fn create_test_blocks() -> (BlockMessage, BlockMessage, Vec<ProcessedDeploy>) {
-    let genesis_block = get_random_block_default();
-
     let random_deploys: Vec<ProcessedDeploy> = (0..DEPLOY_COUNT)
         .map(|i| construct_deploy::basic_processed_deploy(i as i32, None).unwrap())
         .collect();
 
     let (_sender_string, sender, bonds_validator) = create_sender_and_validator();
-
-    let second_block = get_random_block(
-        None,
-        None,
+    let genesis_block = get_random_block(
+        Some(0),
+        Some(0),
         None,
         None,
         Some(sender.clone()),
+        Some(CURRENT_CASPER_PROTOCOL_VERSION),
         None,
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(vec![bonds_validator.clone()]),
+        Some("root".to_string()),
+        None,
+    );
+
+    let second_block = get_random_block(
+        Some(1),
+        Some(1),
+        Some(genesis_block.body.state.post_state_hash.clone()),
+        None,
+        Some(sender.clone()),
+        Some(CURRENT_CASPER_PROTOCOL_VERSION),
         None,
         Some(vec![genesis_block.block_hash.clone()]),
         Some(vec![Justification {
@@ -104,7 +119,7 @@ fn create_test_blocks() -> (BlockMessage, BlockMessage, Vec<ProcessedDeploy>) {
         Some(random_deploys.clone()),
         None,
         Some(vec![bonds_validator]),
-        None,
+        Some("root".to_string()),
         None,
     );
 
@@ -122,7 +137,7 @@ async fn effects_for_simple_casper_setup(
     block_dag_storage
         .insert(
             genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .unwrap();
 
@@ -174,7 +189,7 @@ async fn empty_effects(
     block_dag_storage
         .insert(
             genesis_block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
         )
         .unwrap();
 
@@ -465,7 +480,9 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
     )
     .await;
 
-    let deploy_id = random_deploys[0].deploy.sig.to_vec();
+    let deploy_id = random_deploys[0]
+        .deploy_id_for_protocol(CURRENT_CASPER_PROTOCOL_VERSION)
+        .expect("protocol-v6 deploy id");
 
     let block_query_response = BlockAPI::find_deploy(&engine_cell, &deploy_id).await;
 
@@ -595,7 +612,7 @@ async fn find_deploy_should_return_successful_block_info_response_when_block_con
         "Deploy count mismatch"
     );
 
-    let fault_tolerance = MIN_FAULT_TOLERANCE;
+    let fault_tolerance = MAX_FAULT_TOLERANCE;
     assert_eq!(
         block_info.fault_tolerance, fault_tolerance,
         "Fault tolerance mismatch"
@@ -628,9 +645,14 @@ async fn find_deploy_should_return_error_when_no_block_contains_deploy_with_give
     )
     .await;
 
-    let deploy_id = b"asdfQwertyUiopxyzcbv".to_vec();
+    let deploy_id = vec![0xA5; models::rust::deploy_id::DeployIdV6::LENGTH];
+    let lookup_id = models::rust::deploy_id::DeployLookupId::from_protocol_bytes(
+        CURRENT_CASPER_PROTOCOL_VERSION,
+        &deploy_id,
+    )
+    .expect("protocol-v6 deploy id");
 
-    let block_query_response = BlockAPI::find_deploy(&engine_cell, &deploy_id).await;
+    let block_query_response = BlockAPI::find_deploy(&engine_cell, &lookup_id).await;
 
     assert!(
         block_query_response.is_err(),

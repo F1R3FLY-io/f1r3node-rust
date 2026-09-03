@@ -25,10 +25,12 @@ use crate::rspace::metrics_constants::{
     CHANGES_SPAN, CREATE_CHECKPOINT_SPAN, HISTORY_CHECKPOINT_SPAN, RESET_SPAN,
     REVERT_SOFT_CHECKPOINT_SPAN, RSPACE_METRICS_SOURCE,
 };
-use crate::rspace::rspace_interface::{ISpace, MaybeConsumeResult, MaybeProduceResult};
+use crate::rspace::rspace_interface::{
+    ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceAccountingObserver,
+};
 use crate::rspace::striped_locks;
 use crate::rspace::trace::Log;
-use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce};
+use crate::rspace::trace::event::{Consume, Event, IOEvent, Produce, recorded_removal};
 
 #[async_trait]
 impl<C, P, A, K> ISpace<C, P, A, K> for RSpace<C, P, A, K>
@@ -38,6 +40,16 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    fn set_accounting_observer(
+        &self,
+        observer: Option<Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>,
+    ) {
+        *self
+            .accounting_observer
+            .write()
+            .expect("accounting observer write lock") = observer;
+    }
+
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
@@ -59,7 +71,7 @@ where
         };
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
-        let log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let log = self.take_ordered_event_log();
         self.reset_produce_counter();
 
         let history_repo = self.get_history_repository();
@@ -83,6 +95,7 @@ where
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
         *self.event_log.lock().expect("event log lock") = Vec::new();
+        self.clear_ordered_event_log();
         self.reset_produce_counter();
 
         // Striped locks are fixed-size and stateless (Mutex<()>); nothing to
@@ -97,10 +110,20 @@ where
 
     async fn consume_result(
         &self,
-        _channel: Vec<C>,
-        _pattern: Vec<P>,
+        channel: Vec<C>,
+        pattern: Vec<P>,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
-        panic!("\nERROR: RSpace consume_result should not be called here");
+        let consume_result = self
+            .consume(channel, pattern, K::default(), false, BTreeSet::new())
+            .await?;
+        Ok(consume_result.map(|(continuation, data)| {
+            (
+                continuation.continuation,
+                data.into_iter()
+                    .map(|result| result.matched_datum)
+                    .collect(),
+            )
+        }))
     }
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
@@ -110,6 +133,51 @@ where
     }
 
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
+
+    async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_data(channel).len();
+        for index in (0..len).rev() {
+            self.get_store().remove_datum(channel, index as i32)?;
+        }
+        Ok(())
+    }
+
+    async fn remove_data_at(&self, channel: &C, index: i32) -> Result<(), RSpaceError> {
+        self.get_store().remove_datum(channel, index)
+    }
+
+    async fn remove_data_at_recorded(
+        &self,
+        channel: &C,
+        index: i32,
+        operation_id: &[u8],
+    ) -> Result<(), RSpaceError> {
+        let channel_hash = striped_locks::channel_hash(channel);
+        let _guard = self.consume_lock(&[channel_hash]).await;
+        let datum = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.get_store().get_data(channel).get(index).cloned())
+            .ok_or_else(|| {
+                RSpaceError::BugFoundError(
+                    "recorded removal references a missing datum".to_string(),
+                )
+            })?;
+        let (consume, comm) = recorded_removal(channel, &datum.source, operation_id);
+        self.get_store().remove_datum(channel, index)?;
+        self.push_event(Event::IoEvent(IOEvent::Consume(consume)));
+        self.push_event(Event::Comm(comm));
+        Ok(())
+    }
+
+    async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let len = self.get_store().get_continuations(&channels).len();
+        for index in (0..len).rev() {
+            let _ = self
+                .get_store()
+                .remove_continuation(&channels, index as i32);
+        }
+        Ok(())
+    }
 
     async fn clear(&self) -> Result<(), RSpaceError> {
         self.reset(&RadixHistory::empty_root_node_hash()).await
@@ -121,7 +189,7 @@ where
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
         let cache_snapshot = self.get_store().snapshot();
-        let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let curr_event_log = self.take_ordered_event_log();
         let curr_produce_counter = self.take_produce_counter();
 
         SoftCheckpoint {
@@ -132,7 +200,7 @@ where
     }
 
     async fn take_event_log(&self) -> Log {
-        let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let curr_event_log = self.take_ordered_event_log();
         self.reset_produce_counter();
         curr_event_log
     }
@@ -157,6 +225,7 @@ where
         // running against the old store either way.
         self.store.store(Arc::new(hot_store));
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
+        self.clear_ordered_event_log();
         self.restore_produce_counter(checkpoint.produce_counter);
 
         Ok(())
@@ -294,6 +363,46 @@ where
                 }
 
                 _ => continue,
+            }
+        }
+        for events in self
+            .ordered_event_log
+            .lock()
+            .expect("ordered event log lock")
+            .values_mut()
+        {
+            for event in events {
+                match event {
+                    Event::IoEvent(IOEvent::Produce(produce)) => {
+                        if produce.hash == produce_ref.hash {
+                            *produce = produce_ref.clone();
+                        }
+                    }
+                    Event::Comm(comm) => {
+                        for produce in &mut comm.produces {
+                            if produce.hash == produce_ref.hash {
+                                *produce = produce_ref.clone();
+                            }
+                        }
+                        if comm
+                            .times_repeated
+                            .keys()
+                            .any(|produce| produce.hash == produce_ref.hash)
+                        {
+                            comm.times_repeated = std::mem::take(&mut comm.times_repeated)
+                                .into_iter()
+                                .map(|(produce, count)| {
+                                    if produce.hash == produce_ref.hash {
+                                        (produce_ref.clone(), count)
+                                    } else {
+                                        (produce, count)
+                                    }
+                                })
+                                .collect();
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }

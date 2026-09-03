@@ -5,6 +5,7 @@ pub mod casper_launch;
 pub mod engine;
 pub mod engine_cell;
 pub mod engine_with_casper;
+pub mod finalization_certificate_retriever;
 pub mod genesis_ceremony_master;
 pub mod genesis_validator;
 pub mod initializing;

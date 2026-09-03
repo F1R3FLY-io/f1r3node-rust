@@ -2,10 +2,11 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::blocks::block_processing_queue::{
+    BlockProcessingQueueReceiver, BlockProcessingQueueSender,
+};
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::NodeIdentifier;
 use tokio::task::JoinSet;
@@ -13,14 +14,8 @@ use tracing::info;
 
 use crate::rust::configuration::NodeConf;
 use crate::rust::effects::node_discover;
+use crate::rust::instances::proposer_instance::ProposeQueueEntry;
 use crate::rust::node_environment;
-
-type ProposerQueueEntry = (
-    Arc<dyn casper::rust::casper::Casper + Send + Sync>,
-    bool,
-    tokio::sync::oneshot::Sender<ProposerResult>,
-    u8,
-);
 
 // Type aliases for repeatable async operations
 pub type CasperLoop =
@@ -120,6 +115,9 @@ impl NodeRuntime {
                 self.node_conf.protocol_client.grpc_max_recv_message_size as i32,
                 self.node_conf.protocol_client.grpc_stream_chunk_size as i32,
                 CLIENT_QUEUE_SIZE,
+                self.node_conf
+                    .protocol_server
+                    .grpc_max_recv_stream_message_size as u64,
                 channels_map,
                 self.node_conf.protocol_client.network_timeout,
             )
@@ -266,9 +264,6 @@ impl NodeRuntime {
             admin_web_api,
             proposer_opt,
             proposer_queue_rx,
-            proposer_queue_tx,
-            proposer_queue_pending,
-            proposer_queue_max_pending,
             proposer_state_ref_opt,
             block_processor,
             block_processor_state,
@@ -306,9 +301,6 @@ impl NodeRuntime {
             admin_web_api,
             proposer_opt,
             proposer_queue_rx,
-            proposer_queue_tx,
-            proposer_queue_pending,
-            proposer_queue_max_pending,
             trigger_propose_f,
             proposer_state_ref_opt,
             block_processor,
@@ -358,24 +350,15 @@ impl NodeRuntime {
             dyn crate::rust::api::admin_web_api::AdminWebApi + Send + Sync + 'static,
         >,
         proposer_opt: Option<casper::rust::blocks::proposer::proposer::ProductionProposer<T>>,
-        proposer_queue_rx: tokio::sync::mpsc::Receiver<ProposerQueueEntry>,
-        proposer_queue_tx: tokio::sync::mpsc::Sender<ProposerQueueEntry>,
-        proposer_queue_pending: Arc<AtomicUsize>,
-        proposer_queue_max_pending: usize,
+        proposer_queue_rx: tokio::sync::mpsc::Receiver<ProposeQueueEntry>,
         trigger_propose_f: Option<Arc<casper::rust::ProposeFunction>>,
         proposer_state_ref_opt: Option<
             Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
         >,
         block_processor: casper::rust::blocks::block_processor::BlockProcessor<T>,
         block_processor_state: Arc<dashmap::DashSet<models::rust::block_hash::BlockHash>>,
-        block_processor_queue_tx: tokio::sync::mpsc::Sender<(
-            Arc<dyn casper::rust::casper::MultiParentCasper + Send + Sync>,
-            models::rust::casper::protocol::casper_message::BlockMessage,
-        )>,
-        block_processor_queue_rx: tokio::sync::mpsc::Receiver<(
-            Arc<dyn casper::rust::casper::MultiParentCasper + Send + Sync>,
-            models::rust::casper::protocol::casper_message::BlockMessage,
-        )>,
+        block_processor_queue_tx: BlockProcessingQueueSender,
+        block_processor_queue_rx: BlockProcessingQueueReceiver,
         transport: comm::rust::transport::grpc_transport_client::GrpcTransportClient,
         rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
         rp_connections: comm::rust::rp::connect::ConnectionsCell,
@@ -400,6 +383,8 @@ impl NodeRuntime {
         heartbeat_signal_ref: casper::rust::heartbeat_signal::HeartbeatSignalRef,
         mergeable_channels_gc_loop: Option<CasperLoop>,
     ) -> eyre::Result<()> {
+        let mut startup_failure_rx = engine_cell_for_heartbeat.subscribe_startup_failure();
+
         // Display node startup info
         if self.node_conf.standalone {
             info!("Starting stand-alone node.");
@@ -661,6 +646,7 @@ impl NodeRuntime {
 
         // Proposer instance (Tier 2: Critical - if configured as validator)
         if let (Some(proposer), Some(proposer_state_ref)) = (proposer_opt, proposer_state_ref_opt) {
+            let engine_cell_for_proposer = engine_cell_for_heartbeat.clone();
             spawn_named_task(&mut critical_tasks, "Proposer Instance", async move {
                 use crate::rust::instances::proposer_instance::ProposerInstance;
 
@@ -675,11 +661,10 @@ impl NodeRuntime {
                 // - What was the last propose result? (latest_propose_result)
                 // Pass both receiver and sender as tuple
                 let instance = ProposerInstance::new(
-                    (proposer_queue_rx, proposer_queue_tx),
+                    proposer_queue_rx,
                     proposer_arc,
-                    proposer_state_ref, // State for API observability
-                    proposer_queue_pending,
-                    proposer_queue_max_pending,
+                    proposer_state_ref,
+                    engine_cell_for_proposer,
                 );
 
                 // Start the proposer stream - it will process propose requests as they arrive
@@ -776,8 +761,30 @@ impl NodeRuntime {
         // Supportive tasks: Failures are logged as warnings, node continues
         info!("All tasks started. Node is now running.");
 
+        let mut shutdown_error = None;
+
         loop {
             tokio::select! {
+                startup_failure = startup_failure_rx.changed() => {
+                    match startup_failure {
+                        Ok(()) => {
+                            if let Some(error) = startup_failure_rx.borrow().clone() {
+                                tracing::error!(error = %error, "startup validation failed");
+                                shutdown_error = Some(eyre::eyre!("Startup validation failed: {}", error));
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::error!(error = %error, "startup failure supervisor closed unexpectedly");
+                            shutdown_error = Some(eyre::eyre!(
+                                "Startup failure supervisor closed unexpectedly: {}",
+                                error
+                            ));
+                            break;
+                        }
+                    }
+                }
+
                 // Monitor critical tasks - any failure is fatal
                 Some(result) = critical_tasks.join_next() => {
                     match result {
@@ -874,7 +881,10 @@ impl NodeRuntime {
         }
 
         info!("Node shutdown complete");
-        Ok(())
+        match shutdown_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Perform shutdown cleanup

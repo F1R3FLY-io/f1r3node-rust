@@ -159,6 +159,27 @@ offence versus the component that detects it.
 *Avoid*: "double-signing" (Ethereum vocabulary; correct informally but not
 canonical here).
 
+### Bond generation
+
+A bond generation is the monotonic identity counter for one validator key.
+A completed withdrawal followed by a new bond advances the counter.
+Epoch changes, slash actions, and redemption do not advance the counter.
+
+**Preferred usage.** Use this term to bind evidence and effects to one
+[validator lifetime](#validator-lifetime). *Distinguish from* an activation
+epoch, which limits evidence eligibility but does not identify a lifetime.
+*Avoid*: bond epoch.
+
+### Validator lifetime
+
+A validator lifetime is the pair of a validator public key and its
+[bond generation](#bond-generation). One lifetime can cross ordinary epoch
+boundaries.
+
+**Preferred usage.** Use this term for validator identity across consensus,
+evidence, and slashing. *Distinguish from* an activation epoch and a public
+key without a bond generation. *Avoid*: validator epoch.
+
 ### Equivocation detector
 
 The equivocation detector is the detection-pipeline component that returns an
@@ -315,7 +336,8 @@ A latest message is the most recent block a bonded validator has produced,
 as recorded in a view or in a block's frozen justifications. Fork choice
 scores from the latest messages, and the
 [merged-frontier retry packaging](#merged-frontier-retry-packaging) gate
-tests whether one selected parent covers all valid latest messages.
+tests whether the selected parent set collectively covers all valid latest
+messages.
 
 **Preferred usage.** Use for the per-validator tip a view or a
 justification set records.
@@ -323,6 +345,23 @@ justification set records.
 reference to a latest message inside a block.
 *Avoid*: "tip" unqualified, because the DAG has many tips and only one
 latest message per validator.
+
+### Canonical genesis placeholder
+
+A canonical genesis placeholder is an exact latest-message slot for a new
+validator key before its first block. The slot retains the validator stake and
+exact wire identity. A restored node can omit the genesis block body because
+the immutable genesis hash identifies the placeholder.
+
+A rebonded key retains its prior latest message and advances its sequence. The
+bond generation changes the validator incarnation. It does not reset the
+per-key sequence.
+
+**Preferred usage.** Use for the genesis hash in a silent validator's exact
+latest-message slot.
+*Distinguish from* a missing dependency: a different missing block hash is an
+error and cannot abstain.
+*Avoid*: "missing latest message", because the exact slot remains present.
 
 ### Finalized floor
 
@@ -355,6 +394,49 @@ such as metrics, pruning, and API output.
 and the validation committee read the block-derived floor, never the LFB.
 *Avoid*: "finalized block" unqualified when the node-local marker is
 intended.
+
+### State-effect identity
+
+A state-effect identity is the pair `(source block hash, execution index)`.
+The pair identifies one committed successful execution or failed-body
+settlement. Equal deploy identities do not make two state effects equal.
+
+**Preferred usage.** Use this term for protocol-6 replay and finality state.
+*Distinguish from* [Deploy lookup identity](#deploy-lookup-identity), which
+identifies one submitted deploy.
+*Avoid*: "signature" when the rule requires exact committed state.
+
+### Exact state containment
+
+Exact state containment holds when every state-effect identity active at one
+block is active in another block. The relation does not require DAG ancestry.
+
+**Preferred usage.** Use this term for state comparison across joined replay
+lineages.
+*Distinguish from* state preservation, which also requires causal ancestry.
+*Avoid*: "descendant" when only the exact effect subset is required.
+
+### State witness
+
+A state witness is a frozen validator latest message with causal and exact
+state-preserving support for one candidate.
+
+**Preferred usage.** Use this term for a validator input to the exact state
+certificate.
+*Distinguish from* causal support, which can include a merge that rejected the
+candidate state.
+*Avoid*: "vote" without the exact state qualification.
+
+### Settled floor set
+
+The settled floor set contains every inherited finalized floor in one frozen
+block context. A selected floor and replay base must contain each member's
+exact effects.
+
+**Preferred usage.** Use this term when a decision must preserve multiple
+inherited floor states.
+*Distinguish from* one selected finalized floor.
+*Avoid*: "current floor" when the rule quantifies over the complete set.
 
 ### Lowest common ancestor (LCA)
 
@@ -444,18 +526,19 @@ content ordering is the tie-break that loss-aware adjudication subordinates.
 ### Prior-rejection count
 
 The prior-rejection count is the number of
-[kept rejection records](#kept-rejection-record) for a deploy signature that a
+[kept rejection records](#kept-rejection-record) for a deploy identity that a
 merge can see. The view contains the [merge scope](#merge-scope) and the
 base-lineage window. The count is on-chain data, so every validator derives
 the same value for the same merge. A dependency chain uses the maximum count
-among its member signatures.
+among its member deploy identities.
 
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
-*Distinguish from* the lifecycle `rejection_count`, which is a node-local
-observability value that includes duplicate records. The
-[repeat-deploy signature index](#repeat-deploy-signature-index) is the one
-lifecycle-backed structure with a ratified consensus-reading role, and it
+*Distinguish from* the lifecycle `rejection_count`. A pending response uses
+node-local visible records. A terminal response freezes records in the
+adopted finalized-floor closure. Both response types include duplicate
+records. The [repeat-deploy carrier index](#repeat-deploy-carrier-index) is
+the one node-local materialized structure with a consensus-reading role. It
 holds that role only under its completeness invariant.
 *Avoid*: "loss count" without qualification.
 
@@ -476,14 +559,14 @@ decides when prior-rejection counts are equal.
 ### Kept rejection record
 
 A kept rejection record is a rejection record without the duplicate flag. It
-disputes a standing win of its deploy signature. It is the only record class
+disputes a standing win of its deploy identity. It is the only record class
 that counts toward the [prior-rejection count](#prior-rejection-count) and
 that drives the retry disposition.
 
 **Preferred usage.** Use when record provenance matters, such as priority
 counting or [retry gate](#retry-gate) disposition.
 *Distinguish from* a duplicate-flagged record, which testifies that the
-effect of the signature is already present and disputes nothing.
+effect of the deploy identity is already present and disputes nothing.
 *Avoid*: "valid record", because duplicate records are also valid consensus
 content.
 
@@ -497,6 +580,38 @@ owner-scoped: only the sender of the carrier buffers the retry of that copy.
 *Distinguish from* the recording block, which is the merge block whose body
 holds the rejection record.
 *Avoid*: "source block" without qualification.
+
+### Occurrence carrier
+
+An occurrence carrier is a block whose body contains one exact deploy
+occurrence. Deploy lookup can return this block.
+
+**Preferred usage.** Use when a terminal API response identifies where the
+deploy occurred.
+*Distinguish from* the [finalized state anchor](#finalized-state-anchor), which
+identifies the replay state that determined the terminal verdict.
+*Avoid*: "finalized block" unless consensus finalized the occurrence carrier.
+
+### Finalized state anchor
+
+A finalized state anchor is the finalized floor whose replay state determines
+a terminal deploy verdict. The floor body does not need to contain the deploy.
+
+**Preferred usage.** Use when a terminal API response identifies the deciding
+state.
+*Distinguish from* an [occurrence carrier](#occurrence-carrier), which contains
+the deploy body.
+*Avoid*: "deploy block", because the anchor can omit that deploy.
+
+### Archive representative
+
+An archive representative is the deterministic height-and-hash selection from stored deploy occurrences.
+The occurrence store uses this value for constant-time lookup.
+
+**Preferred usage.** Use this term for the occurrence archive index value.
+*Distinguish from* the [occurrence carrier](#occurrence-carrier) in a terminal lifecycle response.
+An exact tombstone can exclude that carrier without deleting immutable archive history.
+*Avoid*: "terminal source", because the lifecycle record supplies the terminal source.
 
 ### Deploy lifespan
 
@@ -515,13 +630,29 @@ which bounds proposer deferral, not deploy validity.
 *Avoid*: "timeout" and "TTL", because the window uses block height, not
 wall-clock time.
 
+### Deploy lookup identity
+
+A deploy lookup identity is the protocol-tagged key for one deploy. A legacy
+key contains the deploy signature. A protocol-v6 key contains the envelope
+commitment.
+
+The protocol tag is part of the key. Equal payload bytes in the two protocol
+domains identify different deploys. Storage and validation must preserve the
+tag after wire decoding.
+
+**Preferred usage.** Use for keys shared by lifecycle, recovery, and
+repeat-deploy validation.
+*Distinguish from* a raw signature or commitment, which does not identify its
+protocol domain.
+*Avoid*: "signature" when the statement also applies to protocol v6.
+
 ### Deploy lifecycle
 
-The deploy lifecycle is the per-signature progression a node records for
+The deploy lifecycle is the per-deploy-identity progression a node records for
 each deploy: open event rows (inclusions and rejections projected from
 block bodies) and a WRITE-ONCE terminal record (`Finalized`, `Expired`,
 or `Failed`). Event rows are pruned at the terminal write, so the events
-table holds open signatures only. The status API reads these tables as
+table holds open deploy identities only. The status API reads these tables as
 lookups.
 
 **Preferred usage.** Use for the recorded progression and its storage
@@ -530,6 +661,29 @@ tables (`deploy-lifecycle-events`, `deploy-lifecycle-terminal`).
 verdict about one deploy; finalization is a property of blocks.
 *Avoid*: "deploy status" for the storage internals — status is the API
 view over the lifecycle tables.
+
+### Failed-body settlement
+
+A failed-body settlement is the verified SystemVault charge after a user body
+fails. The user body's program state rolls back. The attempted-work charge
+remains a committed state effect.
+
+**Preferred usage.** Use for the cost effect that survives failed user-body
+rollback.
+*Distinguish from* admission rejection, which executes no body and commits no
+cost effect.
+*Avoid*: "failed deploy has no effect", because the settlement changes state.
+
+### Adopted lifecycle state
+
+The adopted lifecycle state is the state of the node's adopted last finalized
+block. Exact effect membership in this state authorizes lifecycle cleanup.
+
+**Preferred usage.** Use for the state anchor of a terminal deploy verdict.
+*Distinguish from* a finality marker and a carrier's frozen floor. Those facts
+do not prove current effect membership.
+*Avoid*: "finalized carrier state", because the occurrence and state anchors
+can name different blocks.
 
 ### Settled content
 
@@ -549,7 +703,7 @@ floor closure; finalized is the oracle's property of a block.
 ### Retry gate
 
 The retry gate is the rule that makes a retry legal only after the latest
-[kept rejection record](#kept-rejection-record) of the signature settles
+[kept rejection record](#kept-rejection-record) of the deploy identity settles
 inside the frozen [finalized floor](#finalized-floor) closure. The gate is a
 pure function of the block, so
 every validator computes the same verdict (`PrematureDeployRetry`).
@@ -560,28 +714,46 @@ a lower bound on when a retry may appear, not a selection policy.
 *Avoid*: "retry timer" and "cooldown", because the gate keys on floor
 settlement, not on wall-clock time.
 
-### Repeat-deploy signature index
+### Repeat-deploy carrier index
 
-The repeat-deploy signature index is the per-signature carrier record in
-a dedicated store: for each body signature, the carrier blocks that hold
-it. The index covers valid blocks, invalid blocks, and approved blocks,
-because the repeat-deploy ancestor scan reads block bodies without a
-validity qualifier. Every insert records a block's carriers before the
-block becomes DAG-visible, and a persisted height watermark names the
-height since which that has held on this database. For a scan window
-that starts at or above the watermark, an index absence is a proof of no
-prior inclusion, so validation skips the ancestor scan for that
-signature. An index hit is not a verdict: the hit routes to window and
-parent-scope verification, because a fork-only inclusion must not
-invalidate a legal re-inclusion. An index read failure grants no proof,
-and validation falls back to the unchanged ancestor scan. Entries below
-the expiration window are pruned on floor advances.
+The repeat-deploy carrier index records carrier blocks by
+[deploy lookup identity](#deploy-lookup-identity). The index uses a dedicated
+persistent store. It covers valid, invalid, and approved blocks.
 
-The index is a deterministic cache of on-chain block bodies, not a new
-consensus input. The predicate it serves is unchanged: the signature
-appears in a parent-scope ancestor inside the expiration window. The
-dedicated store is load-bearing: the index must never share a keyspace
-with rows that unverified wire data can key.
+Each persistent insert records carrier rows before the block becomes visible
+in the in-memory directed acyclic graph (DAG). Protocol-v6 admission commits
+all applicable carrier, metadata, occurrence, and lifecycle rows in one strict
+transaction.
+Legacy admission writes the carrier row before metadata visibility.
+
+A write-once height watermark identifies the first complete index height.
+An empty database starts at height zero. A populated database starts at one
+height above its stored maximum, so startup requires no backfill.
+
+An absence is usable only when the scan window starts at or above the
+watermark. In that scope, absence skips the ancestor scan for that deploy
+identity. A hit always routes to the exact window and parent-scope scan.
+
+An index read failure also routes to the exact scan. Missing DAG metadata or
+a missing block body fails that scan. Validation never treats missing storage
+as proof of absence.
+
+Finalized-floor advances prune entries below the expiration cutoff. Pruning
+uses a stride and can retain older rows. It never removes a row at or above
+the current cutoff.
+
+The persistent index is a deterministic materialization of block bodies. The
+exact scan also uses a bounded, in-process block-body identity cache. One
+block-store instance owns the cache, and its clones share the cache. The cache
+is an optimization and is not consensus authority.
+
+Both paths preserve the protocol tag. Equal legacy-signature and v6-commitment
+bytes remain different keys. See
+[`DeployIdentitySeparation`](theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement).
+
+The served predicate is unchanged: the same deploy identity appears in a
+parent-scope ancestor inside the expiration window. The dedicated store must
+not share a keyspace with rows keyed by unverified wire data.
 
 **Preferred usage.** Use for the validation-side fast path of
 `Validate::repeat_deploy`.
@@ -594,9 +766,10 @@ not validity.
 
 ### Retry frontier lease
 
-The retry frontier lease bounds proposer deferral when no selected parent
-covers all valid latest messages. The lease starts at the latest kept rejection
-height and permits normal packaging after three blocks.
+The retry frontier lease bounds proposer deferral when the selected parent set
+does not collectively cover all valid latest messages. The lease starts at the
+latest kept rejection height. It permits normal packaging after three blocks.
+The lease does not bypass the retry gate or carrier custody.
 
 **Preferred usage.** Use for the phase-2 proposer selection bound.
 *Distinguish from* the [retry gate](#retry-gate), which controls block validity.
@@ -632,9 +805,10 @@ stays pending.
 ### Merged-frontier retry packaging
 
 Merged-frontier retry packaging is [remedy ladder](#remedy-ladder) option B1.
-The owner first packages a gated retry only when one selected parent covers
-all valid latest messages. The [retry frontier lease](#retry-frontier-lease)
-permits normal packaging after three blocks. **Status: implemented.**
+The carrier owner packages a gated retry when the complete selected parent set
+covers all valid latest messages. Each latest message can use a different
+covering parent. The [retry frontier lease](#retry-frontier-lease) permits
+normal packaging after three blocks. **Status: implemented.**
 
 **Preferred usage.** Use for the ratified phase-2 packaging policy.
 *Distinguish from* the [retry gate](#retry-gate): the gate is a consensus

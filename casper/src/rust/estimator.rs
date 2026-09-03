@@ -1,44 +1,37 @@
 // See casper/src/main/scala/coop/rchain/casper/Estimator.scala
 
-//! Fork-choice estimator — GHOST-style heaviest-subtree selection
-//! with the slashing-aware invalid-message filter.
+//! Fork-choice estimator — GHOST-style heaviest-subtree selection over a
+//! certified finalized-floor context.
 //!
 //! ## Responsibilities
 //!
-//! * Project the DAG's `latest_message_hashes` through the
-//!   `invalid_latest_messages` filter so slashed validators contribute
-//!   zero weight to fork choice (T-10).
-//! * Choose the head by a heaviest-subtree DESCENT over the scored
-//!   main-parent tree (`build_scores_map` + `rank_forkchoices`), ties
-//!   by ascending hash for cross-node determinism; rank the remaining
-//!   frontier tips behind it.
+//! * Consume the sole eligible-vote projection certified by
+//!   `CertifiedConsensusContext`.
+//! * Rank surviving tips by cumulative frozen finalized-floor stake,
+//!   breaking ties on hash for cross-node determinism.
 //! * Apply `max_parent_depth` truncation so old parents do not delay
 //!   finalization.
 //!
 //! ## Slashing-protocol position
 //!
-//! See `docs/casper/theory/slashing/slashing-verification.md` §6.4 (T-10) for
-//! the abstract filter property. The operational realization is the
-//! conjunction `(invalid-block-flag) ∧ (bond=0 ⇒ zero weight)` — see
-//! `docs/casper/theory/slashing/design/07-fork-choice-and-lifecycle.md`.
+//! See `docs/casper/theory/slashing/slashing-verification.md` §6.4 (T-10) and
+//! `docs/casper/theory/fork-choice/fork-choice-verification.md`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
+use rayon::prelude::*;
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use crate::rust::causal_equivocation::CertifiedConsensusContext;
 use crate::rust::util::dag_operations::DagOperations;
-use crate::rust::util::proto_util;
 
-/// Tips of the DAG, ranked against LCA. `scores` carries the LMD-GHOST
-/// cumulative-weight score per block so callers can distinguish a decisive
-/// fork-choice winner from a tie (parent ordering may reorder only within
-/// equal scores).
+/// Tips of the DAG, ranked against LCA.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForkChoice {
     pub tips: Vec<BlockHash>,
@@ -52,9 +45,61 @@ pub struct Estimator {
     max_parent_depth_opt: Option<i32>,
 }
 
+pub(crate) fn retained_parent_indices(
+    block_numbers: &[i64],
+    max_parent_depth: i64,
+) -> Result<Vec<usize>, KvStoreError> {
+    let Some(max_block_number) = block_numbers.iter().copied().max() else {
+        return Err(KvStoreError::InvalidArgument(
+            "consensus invariant: ranked fork choice has no parents".to_string(),
+        ));
+    };
+    let mut retained = Vec::with_capacity(block_numbers.len());
+    retained.push(0);
+    for (index, block_number) in block_numbers.iter().copied().enumerate().skip(1) {
+        let depth = max_block_number.checked_sub(block_number).ok_or_else(|| {
+            KvStoreError::InvalidArgument(
+                "parent depth overflow while bounding fork-choice tips".to_string(),
+            )
+        })?;
+        if depth <= max_parent_depth {
+            retained.push(index);
+        }
+    }
+    Ok(retained)
+}
+
+pub(crate) fn declared_parent_depths_valid(
+    block_numbers: &[i64],
+    genesis_slots: &[bool],
+    max_parent_depth: i64,
+) -> Result<bool, KvStoreError> {
+    if block_numbers.is_empty() || block_numbers.len() != genesis_slots.len() {
+        return Err(KvStoreError::InvalidArgument(
+            "declared parent depths require one height and genesis flag per parent".to_string(),
+        ));
+    }
+    let max_block_number = block_numbers.iter().copied().max().ok_or_else(|| {
+        KvStoreError::InvalidArgument("declared parent set has no maximum height".to_string())
+    })?;
+    for (index, block_number) in block_numbers.iter().copied().enumerate().skip(1) {
+        if genesis_slots[index] {
+            continue;
+        }
+        let depth = max_block_number.checked_sub(block_number).ok_or_else(|| {
+            KvStoreError::InvalidArgument(
+                "parent depth overflow while validating declared parents".to_string(),
+            )
+        })?;
+        if depth > max_parent_depth {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 impl Estimator {
     pub const UNLIMITED_PARENTS: i32 = i32::MAX;
-    const LATEST_MESSAGE_MAX_DEPTH: i64 = 1000;
 
     pub fn apply(max_number_of_parents: i32, max_parent_depth_opt: Option<i32>) -> Self {
         Self {
@@ -63,74 +108,44 @@ impl Estimator {
         }
     }
 
-    #[tracing::instrument(name = "tips0", target = "f1r3fly.casper.estimator.tips0", skip_all)]
-    pub async fn tips(
+    #[tracing::instrument(name = "tips", target = "f1r3fly.casper.estimator.tips", skip_all)]
+    pub async fn tips_with_context(
         &self,
-        dag: &mut KeyValueDagRepresentation,
+        dag: &KeyValueDagRepresentation,
         genesis: &BlockMessage,
+        context: &CertifiedConsensusContext,
     ) -> Result<ForkChoice, KvStoreError> {
-        // Phase 12 (PERF-5): `latest_message_hashes()` returns an owned
-        // `imbl::HashMap` (refcount-bump clone). Use `into_iter` to collect
-        // by ownership rather than re-cloning every key/value pair.
-        let latest_message_hashes: HashMap<Validator, BlockHash> =
-            dag.latest_message_hashes().into_iter().collect();
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_primary", "latest-message-hashes");
-        self.tips_with_latest_messages(dag, genesis, latest_message_hashes)
-            .await
-    }
-
-    /// When the BlockDag has an empty latestMessages, tips will return IndexedSeq(genesis.blockHash)
-    #[tracing::instrument(name = "tips1", target = "f1r3fly.casper.estimator.tips1", skip_all)]
-    pub async fn tips_with_latest_messages(
-        &self,
-        dag: &mut KeyValueDagRepresentation,
-        genesis: &BlockMessage,
-        latest_messages_hashes: HashMap<Validator, BlockHash>,
-    ) -> Result<ForkChoice, KvStoreError> {
-        let invalid_latest_messages =
-            dag.invalid_latest_messages_from_hashes(&latest_messages_hashes)?;
-
-        let mut filtered_latest_messages_hashes = latest_messages_hashes;
-        filtered_latest_messages_hashes
-            .retain(|validator, _| !invalid_latest_messages.contains_key(validator));
-
-        // A latest message this node does not hold (a stale slot below an
-        // LFS restore horizon) cannot be cited or scored; abstain the
-        // validator instead of failing every fork-choice run.
-        let mut unheld: Vec<Validator> = Vec::new();
-        for (validator, hash) in filtered_latest_messages_hashes.iter() {
-            if dag.lookup(hash)?.is_none() {
-                tracing::debug!(
-                    target: "f1r3fly.casper.estimator",
-                    "abstaining validator with unheld latest message {:?}",
-                    hash
-                );
-                unheld.push(validator.clone());
-            }
+        if !context.has_complete_latest_message_slots() {
+            return Err(KvStoreError::InvalidArgument(
+                "fork choice requires one exact latest-message slot for every active finalized-floor validator"
+                    .to_string(),
+            ));
         }
-        for validator in unheld {
-            filtered_latest_messages_hashes.remove(&validator);
-        }
+        let latest_messages_hashes = context
+            .vote_projection()
+            .eligible_latest_messages()
+            .iter()
+            .map(|(validator, hash)| (validator.clone(), hash.clone()))
+            .collect::<BTreeMap<_, _>>();
 
-        let genesis_metadata = BlockMetadata::from_block(genesis, false, None, None);
+        let genesis_metadata = BlockMetadata::from_block(genesis, None, None);
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "lca");
-        let lca =
-            Self::calculate_lca(dag, &genesis_metadata, &filtered_latest_messages_hashes).await?;
+        tracing::debug!(target: "f1r3fly.casper.estimator", "lca");
+        let lca = Self::calculate_lca(dag, &genesis_metadata, &latest_messages_hashes).await?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "score-map");
-        let scores_map =
-            Self::build_scores_map(dag, &filtered_latest_messages_hashes, &lca).await?;
-
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "ranked-latest-messages-hashes");
-        let ranked_latest_messages_hashes = Self::rank_forkchoices(
-            lca.clone(),
-            &filtered_latest_messages_hashes,
+        tracing::debug!(target: "f1r3fly.casper.estimator", "score-map");
+        let scores_map = Self::build_scores_map(
             dag,
-            &scores_map,
+            &latest_messages_hashes,
+            context.authority_stakes(),
+            &lca,
         )?;
 
-        tracing::debug!(target: "f1r3fly.casper.estimator.tips_fallback", "filtered-deep-parents");
+        tracing::debug!(target: "f1r3fly.casper.estimator", "ranked-latest-messages-hashes");
+        let ranked_latest_messages_hashes =
+            Self::rank_forkchoices(lca.clone(), &latest_messages_hashes, dag, &scores_map)?;
+
+        tracing::debug!(target: "f1r3fly.casper.estimator", "filtered-deep-parents");
         let ranked_shallow_hashes = self
             .filter_deep_parents(ranked_latest_messages_hashes, dag)
             .await?;
@@ -143,7 +158,7 @@ impl Estimator {
         // genuine positive cap truncates; any negative value or i32::MAX means
         // unlimited (take all). Behaviour is unchanged; the cast is now cast-safe and
         // the two conventions are no longer silently conflated by two's-complement.
-        let tips = if self.max_number_of_parents < 0
+        let tips = if self.max_number_of_parents == crate::rust::casper::UNLIMITED_PARENTS
             || self.max_number_of_parents == Self::UNLIMITED_PARENTS
         {
             ranked_shallow_hashes
@@ -167,45 +182,27 @@ impl Estimator {
     ) -> Result<Vec<BlockHash>, KvStoreError> {
         match self.max_parent_depth_opt {
             Some(max_parent_depth) => {
-                // P2-8: avoid `split_first().unwrap()` panic when
-                // `rank_forkchoices` returns an empty list (e.g.,
-                // genesis-only DAG). Surface as a typed error so the
-                // consensus hot path doesn't panic on an empty tip set.
-                //
-                // The variant choice — `KvStoreError::InvalidArgument` —
-                // is a layering compromise: this function returns
-                // `Result<_, KvStoreError>` (from the surrounding
-                // estimator API), so we encode the consensus-invariant
-                // violation as a precondition-violation on this function's
-                // input. The error message identifies the source clearly
-                // for operator diagnosis. A future cross-crate error
-                // refactor could promote this to a typed
-                // `CasperError::ConsensusInvariant` variant, but doing so
-                // would ripple through the estimator's call graph;
-                // documented as a follow-up.
-                let Some((main_hash, secondary_hashes)) = ranked_latest_hashes.split_first() else {
+                if ranked_latest_hashes.is_empty() {
                     return Err(KvStoreError::InvalidArgument(
-                        "consensus invariant: rank_forkchoices returned no tips \
-                         (genesis-only DAG?)"
-                            .to_string(),
+                        "consensus invariant: rank_forkchoices returned no tips".to_string(),
                     ));
-                };
-
-                let max_block_number = dag.lookup_unsafe(main_hash)?.block_number;
-
-                let secondary_parents: Vec<BlockMetadata> = secondary_hashes
+                }
+                let ranked_metadata = ranked_latest_hashes
                     .iter()
                     .map(|hash| dag.lookup_unsafe(hash))
                     .collect::<Result<Vec<_>, _>>()?;
-
-                let shallow_parents: Vec<BlockMetadata> = secondary_parents
-                    .into_iter()
-                    .filter(|p| max_block_number - p.block_number <= max_parent_depth as i64)
-                    .collect();
-
-                Ok(std::iter::once(main_hash.clone())
-                    .chain(shallow_parents.into_iter().map(|p| p.block_hash))
-                    .collect())
+                let block_numbers = ranked_metadata
+                    .iter()
+                    .map(|metadata| metadata.block_number)
+                    .collect::<Vec<_>>();
+                retained_parent_indices(&block_numbers, i64::from(max_parent_depth)).map(
+                    |indices| {
+                        indices
+                            .into_iter()
+                            .map(|index| ranked_metadata[index].block_hash.clone())
+                            .collect()
+                    },
+                )
             }
             None => Ok(ranked_latest_hashes),
         }
@@ -214,7 +211,7 @@ impl Estimator {
     async fn calculate_lca(
         block_dag: &KeyValueDagRepresentation,
         genesis: &BlockMetadata,
-        latest_messages_hashes: &HashMap<Validator, BlockHash>,
+        latest_messages_hashes: &BTreeMap<Validator, BlockHash>,
     ) -> Result<BlockHash, KvStoreError> {
         let latest_messages: Vec<BlockMetadata> = latest_messages_hashes
             .values()
@@ -224,27 +221,25 @@ impl Estimator {
             .flatten()
             .collect();
 
-        let top_block_number = block_dag.latest_block_number();
-
-        let filtered_lm: Vec<BlockMetadata> = latest_messages
-            .into_iter()
-            .filter(|msg| msg.block_number > top_block_number - Self::LATEST_MESSAGE_MAX_DEPTH)
-            .collect();
-
-        let result = if filtered_lm.is_empty() {
+        let result = if latest_messages.is_empty() {
             genesis.block_hash.clone()
         } else {
-            DagOperations::lowest_universal_common_ancestor_many(&filtered_lm, block_dag, genesis)
-                .await?
-                .block_hash
+            DagOperations::lowest_universal_common_ancestor_many(
+                &latest_messages,
+                block_dag,
+                genesis,
+            )
+            .await?
+            .block_hash
         };
 
         Ok(result)
     }
 
-    async fn build_scores_map(
-        block_dag: &mut KeyValueDagRepresentation,
-        latest_messages_hashes: &HashMap<Validator, BlockHash>,
+    fn build_scores_map(
+        block_dag: &KeyValueDagRepresentation,
+        latest_messages_hashes: &BTreeMap<Validator, BlockHash>,
+        authority_stakes: &BTreeMap<Validator, i64>,
         lowest_common_ancestor: &BlockHash,
     ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
         fn hash_parents(
@@ -260,37 +255,17 @@ impl Estimator {
             if meta.block_number < last_finalized_block_number {
                 Ok(Vec::new())
             } else {
-                // MAIN parent only. Crediting a validator's weight to every DAG
-                // ancestor saturates merged same-height siblings to equal scores
-                // permanently — every latest message descends from both once the
-                // race is merged — leaving the choice between them to a
-                // tie-break rather than to validator support. A block has
-                // exactly one main parent, so weight flows up exactly one chain
-                // and same-height siblings are mutually exclusive by
-                // construction, which is the exclusivity the clique theorem
-                // assumes. `main_parent` is `parents.first()`
-                // (block_metadata_store.rs:119).
                 Ok(meta.parents.into_iter().take(1).collect())
             }
         }
 
-        async fn add_validator_weight_down_supporting_chain(
-            score_map: HashMap<BlockHash, i64>,
-            validator: &Validator,
+        fn validator_support(
             latest_block_hash: &BlockHash,
-            block_dag: &mut KeyValueDagRepresentation,
-            lowest_common_ancestor: &BlockHash,
-        ) -> Result<HashMap<BlockHash, i64>, KvStoreError> {
-            let lca_block_num = block_dag
-                .lookup_unsafe(lowest_common_ancestor)?
-                .block_number;
-
-            // Phase 12 (PERF-2): merge BFS traversal with weight accumulation
-            // instead of building a Vec of traversed hashes then re-iterating.
-            // Saves one clone per node and one Vec allocation. Preallocate
-            // visited/result to a reasonable capacity for typical fork-choice
-            // BFS sizes (≤ ~few hundred blocks).
-            let mut result = score_map;
+            validator_weight: i64,
+            lca_block_num: i64,
+            block_dag: &KeyValueDagRepresentation,
+        ) -> Result<BTreeMap<BlockHash, i64>, KvStoreError> {
+            let mut result = BTreeMap::new();
             let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
             let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
@@ -298,20 +273,7 @@ impl Estimator {
                 if !visited.insert(hash.clone()) {
                     continue;
                 }
-                let validator_weight =
-                    proto_util::weight_from_validator_by_dag(block_dag, &hash, validator)?;
-                // B3: fail loudly on score overflow rather than wrapping. Reachable
-                // only if the cumulative bonded weight on a block exceeds i64::MAX —
-                // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
-                // so this can only ever reject an already-invalid state, never a valid one.
-                let entry = result.entry(hash.clone()).or_insert(0);
-                *entry = entry.checked_add(validator_weight).ok_or_else(|| {
-                    KvStoreError::InvalidArgument(
-                        "fork-choice score overflow: cumulative validator weight exceeds i64 \
-                         (total bonded stake must be ≤ i64::MAX by the supply cap)"
-                            .to_string(),
-                    )
-                })?;
+                result.insert(hash.clone(), validator_weight);
                 for parent in hash_parents(&hash, lca_block_num, block_dag)? {
                     if !visited.contains(&parent) {
                         queue.push_back(parent);
@@ -322,51 +284,52 @@ impl Estimator {
             Ok(result)
         }
 
-        // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel
-        let mut scores_map: HashMap<BlockHash, i64> = HashMap::new();
-        for (validator, latest_block_hash) in latest_messages_hashes.iter() {
-            scores_map = add_validator_weight_down_supporting_chain(
-                scores_map,
-                validator,
-                latest_block_hash,
-                block_dag,
-                lowest_common_ancestor,
-            )
-            .await?;
+        let lca_block_num = block_dag
+            .lookup_unsafe(lowest_common_ancestor)?
+            .block_number;
+        let inputs = latest_messages_hashes
+            .iter()
+            .map(|(validator, hash)| {
+                authority_stakes
+                    .get(validator)
+                    .copied()
+                    .filter(|stake| *stake > 0)
+                    .map(|stake| (validator.clone(), hash.clone(), stake))
+                    .ok_or_else(|| {
+                        KvStoreError::InvalidArgument(format!(
+                            "eligible validator {} has no positive frozen authority stake",
+                            hex::encode(validator)
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let contributions = inputs
+            .into_par_iter()
+            .map(|(validator, latest_hash, stake)| {
+                validator_support(&latest_hash, stake, lca_block_num, block_dag)
+                    .map(|scores| (validator, scores))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut scores_map = BTreeMap::<BlockHash, i64>::new();
+        for (_, contribution) in contributions {
+            for (hash, weight) in contribution {
+                let entry = scores_map.entry(hash).or_insert(0);
+                *entry = entry.checked_add(weight).ok_or_else(|| {
+                    KvStoreError::InvalidArgument(
+                        "fork-choice score overflow: frozen authority stake exceeds i64"
+                            .to_string(),
+                    )
+                })?;
+            }
         }
 
-        Ok(scores_map)
+        Ok(scores_map.into_iter().collect())
     }
 
-    /// The GHOST head plus the ranked frontier.
-    ///
-    /// The HEAD comes from a heaviest-subtree DESCENT: starting at the LCA,
-    /// each step commits to the scored MAIN-parent child carrying the greatest
-    /// cumulative score (ties by ascending hash) before descending further,
-    /// and stops at the first block with no scored main-parent children — a
-    /// latest-message tip. Scores accumulate up main-parent chains
-    /// (`build_scores_map`), so a child's score IS its subtree's
-    /// latest-message weight and the head can only leave a branch for one
-    /// carrying strictly more support. Only MAIN-parent children are
-    /// followed: a merge is a main-parent child of exactly one of its parents
-    /// and a secondary child of the rest, so weight flows up exactly one
-    /// chain and same-height siblings stay mutually exclusive. An unscored
-    /// child is beyond the latest messages and bounds the walk.
-    ///
-    /// Ranking the TIPS by their own scores instead is NOT GHOST: a tip's own
-    /// score is only its owner's weight, so under concurrent proposal every
-    /// tip ties and the head falls to hash order — the spine then abandons
-    /// majority branches, which is how a finality certificate was reverted
-    /// with zero equivocations in production (the ucc-i6 divergence; see
-    /// tests/fork_choice/heaviest_subtree_descent.rs).
-    ///
-    /// The tail is the remaining latest-message frontier — every other latest
-    /// message with no scored main-parent child (one that HAS such a child is
-    /// a superseded ancestor of another tip on its own chain) — ordered
-    /// (score DESC, hash ASC) for callers that consume the full frontier.
     fn rank_forkchoices(
         lca: BlockHash,
-        latest_messages_hashes: &HashMap<Validator, BlockHash>,
+        latest_messages_hashes: &BTreeMap<Validator, BlockHash>,
         block_dag: &KeyValueDagRepresentation,
         scores: &HashMap<BlockHash, i64>,
     ) -> Result<Vec<BlockHash>, KvStoreError> {
@@ -389,7 +352,13 @@ impl Estimator {
         }
 
         let mut head = lca;
+        let mut visited = HashSet::new();
         loop {
+            if !visited.insert(head.clone()) {
+                return Err(KvStoreError::InvalidArgument(
+                    "fork-choice child graph contains a cycle".to_string(),
+                ));
+            }
             let mut children = scored_main_children(&head, block_dag, scores);
             if children.is_empty() {
                 break;
@@ -399,23 +368,104 @@ impl Estimator {
                 let score_b = scores.get(b).copied().unwrap_or(0);
                 score_b.cmp(&score_a).then_with(|| a.cmp(b))
             });
-            head = children.swap_remove(0);
+            let next = children.swap_remove(0);
+            let current_number = block_dag.block_number_unsafe(&head)?;
+            let next_number = block_dag.block_number_unsafe(&next)?;
+            if next_number <= current_number {
+                return Err(KvStoreError::InvalidArgument(
+                    "fork-choice child does not advance DAG height".to_string(),
+                ));
+            }
+            head = next;
         }
 
-        let frontier: Vec<BlockHash> = latest_messages_hashes
+        let frontier = latest_messages_hashes
             .values()
             .filter(|hash| {
                 **hash != head && scored_main_children(hash, block_dag, scores).is_empty()
             })
             .cloned()
-            .collect::<HashSet<_>>() // distinct
-            .into_iter()
-            .collect();
-        let mut ranked = ListOps::sort_by_with_decreasing_order(frontier, scores);
+            .collect::<HashSet<_>>();
+        let mut ranked = ListOps::sort_by_with_decreasing_order(
+            frontier.into_iter().collect::<Vec<_>>(),
+            scores,
+        );
+        ranked.insert(0, head);
+        Ok(ranked)
+    }
+}
 
-        let mut tips = Vec::with_capacity(ranked.len() + 1);
-        tips.push(head);
-        tips.append(&mut ranked);
-        Ok(tips)
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::{declared_parent_depths_valid, retained_parent_indices};
+
+    #[test]
+    fn taller_secondary_never_removes_the_ranked_head() {
+        let retained = retained_parent_indices(&[10, 100, 95, 20], 10).unwrap();
+        assert_eq!(retained, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn count_truncation_after_depth_filter_keeps_the_ranked_head() {
+        let retained = retained_parent_indices(&[10, 100, 95, 20], 10).unwrap();
+        assert_eq!(retained.into_iter().take(1).collect::<Vec<_>>(), vec![0]);
+    }
+
+    #[test]
+    fn empty_ranked_parent_set_is_a_typed_error() {
+        let error = retained_parent_indices(&[], 10).unwrap_err();
+        assert!(matches!(error, super::KvStoreError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn approved_genesis_secondary_is_receiver_exempt() {
+        assert!(declared_parent_depths_valid(&[100, 0], &[false, true], 0).unwrap());
+    }
+
+    proptest! {
+        #[test]
+        fn depth_filter_preserves_head_and_exactly_bounds_the_tail(
+            block_numbers in prop::collection::vec(0i64..=10_000, 1..=32),
+            max_parent_depth in 0i64..=1_000,
+        ) {
+            let retained = retained_parent_indices(&block_numbers, max_parent_depth).unwrap();
+            let max_block_number = block_numbers.iter().copied().max().unwrap();
+            prop_assert_eq!(retained.first(), Some(&0));
+            let expected = std::iter::once(0)
+                .chain(
+                    block_numbers
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .skip(1)
+                        .filter(move |(_, height)| max_block_number - height <= max_parent_depth)
+                        .map(|(index, _)| index),
+                )
+                .collect::<Vec<_>>();
+            prop_assert_eq!(retained, expected);
+        }
+
+        #[test]
+        fn proposer_output_satisfies_buffered_receiver_depth_check(
+            block_numbers in prop::collection::vec(0i64..=10_000, 1..=32),
+            max_parent_depth in 0i64..=1_000,
+            depth_buffer in 0i64..=1_000,
+            count_cap in 1usize..=32,
+        ) {
+            let retained = retained_parent_indices(&block_numbers, max_parent_depth).unwrap();
+            let declared = retained
+                .into_iter()
+                .take(count_cap)
+                .map(|index| block_numbers[index])
+                .collect::<Vec<_>>();
+            let genesis_slots = vec![false; declared.len()];
+            prop_assert!(declared_parent_depths_valid(
+                &declared,
+                &genesis_slots,
+                max_parent_depth + depth_buffer,
+            ).unwrap());
+        }
     }
 }

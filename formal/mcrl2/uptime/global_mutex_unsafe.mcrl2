@@ -1,0 +1,7 @@
+act begin_validate1, end_validate1, begin_validate2, end_validate2;
+
+proc
+  GlobalMutex = begin_validate1 . end_validate1 . begin_validate2 . end_validate2 . GlobalMutex
+              + begin_validate2 . end_validate2 . begin_validate1 . end_validate1 . GlobalMutex;
+
+init GlobalMutex;

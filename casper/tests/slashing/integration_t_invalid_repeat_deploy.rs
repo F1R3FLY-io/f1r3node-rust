@@ -3,13 +3,12 @@
 // `docs/casper/theory/slashing/methodology/`, and `.mutants.toml` point at
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
-// Integration test — Tier 1 production-path verification of the
-// `InvalidRepeatDeploy` arm of the dispatcher's `is_slashable()`
-// catch-all (Bug #3 fix).
+// Integration test — Tier 1 production-path verification of
+// `InvalidRepeatDeploy` rejection persistence without economic evidence.
 //
 // UC-32 from docs/casper/theory/slashing/slashing-specification.md §12.
-// Theorem citation: T-9.3 (catch-all dispatcher), Rocq
-// formal/rocq/slashing/theories/BugFixDispatcher.v.
+// Theorem citation: T-9.3
+// (`certified_non_slashable_rejection_preserves_evidence`).
 //
 // Recipe:
 //   1. v0 proposes b1 normally containing d1.
@@ -23,10 +22,7 @@
 //      repeat_deploy fires first.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
-use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::{
@@ -53,7 +49,7 @@ async fn integration_t_invalid_repeat_deploy() {
 
     // Step 1: nodes[0] proposes b1 normally with d1.
     let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
-    nodes[0].casper.deploy(d1.clone()).expect("deploy d1");
+    nodes[0].submit_deploy(d1.clone()).expect("deploy d1");
     let b1 = nodes[0].create_block_unsafe(&[]).await.expect("create b1");
     // nodes[0] processes b1 back into its own DAG so the snapshot
     // for proposing b2 sees b1 as the parent (not genesis). Without
@@ -74,13 +70,12 @@ async fn integration_t_invalid_repeat_deploy() {
     // checkpoint-computation; then mutator REPLACES body.deploys
     // with a ProcessedDeploy wrapping the original d1.
     let d2 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone())).expect("d2");
-    let d1_processed = ProcessedDeploy {
-        deploy: d1.clone(),
-        cost: PCost { cost: 0 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-    };
+    let d1_processed = b1
+        .body
+        .deploys
+        .first()
+        .cloned()
+        .expect("b1 must contain the authenticated d1 deployment");
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
         b.body.deploys = vec![d1_processed];
     })

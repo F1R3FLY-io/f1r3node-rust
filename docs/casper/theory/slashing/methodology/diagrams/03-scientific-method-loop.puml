@@ -6,7 +6,7 @@
 ' persistent corpus. The loop never deletes evidence; it only re-classifies.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/03-scientific-method-loop.puml
+'   plantuml -tsvg docs/casper/theory/slashing/methodology/diagrams/03-scientific-method-loop.puml
 
 @startuml 03-scientific-method-loop
 !theme plain

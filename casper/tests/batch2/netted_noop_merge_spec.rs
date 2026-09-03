@@ -161,7 +161,7 @@ async fn netted_install_fire_pair_merges_as_a_noop() {
             .body
             .rejected_deploys
             .iter()
-            .map(|rd| hex::encode(&rd.sig[..8.min(rd.sig.len())]))
+            .map(|rd| hex::encode(&rd.deploy_id()[..8.min(rd.deploy_id().len())]))
             .collect::<Vec<_>>()
     );
 

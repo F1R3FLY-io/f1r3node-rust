@@ -11,8 +11,8 @@
 #         engine/multi_parent_casper/snapshot,validate}.rs
 #         f1r3node-rust/block-storage/src/rust/dag/block_dag_key_value_storage.rs
 # Companion docs:
-#   docs/casper/theory/finalized-floor/finalized-floor-specification.md
-#   docs/casper/theory/finalized-floor/finalized-floor-verification.md
+#   docs/casper/theory/finalized-floor/finalized-floor-specification.md   (normative spec)
+#   docs/casper/theory/finalized-floor/finalized-floor-verification.md    (math + Rocq pointers)
 #
 # Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
@@ -23,13 +23,19 @@
 #   Floor -> CliqueOracle        (frontier-cache transparency: warm up-walk == cold walk)
 #   Merge                        (semilattice merge algebra: determinism + no-lost-write)
 #   OccurrenceDisposition         (exact-source rejection + order independence)
+#   DeployIdentitySeparation      (protocol-tagged identity domain separation)
 #   Recovery                     (record-driven recovery: no-double-apply, T-NDA)
 #   AdmissionEffectAlignment     (status-record to runtime-effect refinement)
 #   EffectCausalClosure           (least exact-effect rejection closure)
-#   SettledEffectProbe            (settled-effect walk algebra: batched ≡ per-sig, memo soundness)
 #   StateEffectProvenance         (exact accepted/rejected merge-effect recurrence)
 #   StateLineageFinality          (abstract certificate/admission separation)
 #   CertifiedFloorPromotion       (dual-certified all-parent floor discovery)
+#   CommitteeTransition           (post-state cache, accepted registration, floor authority)
+#   ObjectiveEquivocation          (bond-incarnation evidence, pre-state authority, and durable repair)
+#   CandidateScopeDeployRehome     (candidate-relative duplicate suppression and excluded-branch rehome)
+#   ObjectiveEvidenceSequenceEligibility (signed sequence boundary for durable invalid metadata and pair evidence)
+#   NodeLocalProductLifting      (arbitrary-node safety and independent-action commutation)
+#   NodeLocalTemporalLifting     (finite-node weak-fairness projection and stable liveness suffix)
 #   MainTheorem -> all           (end-to-end capstone, axiom-free)
 
 -Q theories FinalizedFloor
@@ -41,26 +47,56 @@ theories/Floor.v
 theories/GuardBridge.v
 theories/Merge.v
 theories/OccurrenceDisposition.v
+theories/DeployIdentitySeparation.v
+theories/DeployOccurrenceStorage.v
 theories/FinalizedOccurrenceStatus.v
 theories/Recovery.v
 theories/MergeRecoveryCoherence.v
 theories/AdmissionEffectAlignment.v
 theories/RejectionReasonConfluence.v
 theories/ProtocolVersionLifecycle.v
+theories/StartupMetadataPreflight.v
 theories/ProtocolActivationCoherence.v
 theories/Selection.v
 theories/IntegerAdd.v
 theories/FtExact.v
+theories/FinalityThresholdAlignment.v
+theories/GenesisApprovalTrust.v
 theories/FtProvenance.v
 theories/FinalizerProgress.v
 theories/BootstrapReplayContext.v
 theories/LocalFaultDeferral.v
+theories/FundingAdmissionLifecycle.v
 theories/EffectCausalClosure.v
 theories/SettledEffectProbe.v
 theories/StateEffectProvenance.v
 theories/StateLineageFinality.v
 theories/CertifiedFloorPromotion.v
 theories/SnapshotFloorMaterialization.v
+theories/CommitteeTransition.v
+theories/ObjectiveEquivocation.v
+theories/BondGenerationLifecycle.v
+theories/CertifiedObjectiveEquivocation.v
+theories/CertifiedCausalAdmission.v
+theories/CausalFinalityProjection.v
+theories/RestoreHorizonCertifiedContext.v
 theories/HeartbeatFinalityBackpressure.v
+theories/TargetDeployTerminality.v
+theories/NodeLocalProductLifting.v
+theories/NodeLocalTemporalLifting.v
 theories/ParallelValidatorConsensus.v
+theories/FinalizationAtomicity.v
+theories/ProposalFloorReadiness.v
+theories/FinalizerFloorMaterialization.v
+theories/DeployLifecycleFinalization.v
+theories/DivergentFinalizationHistories.v
+theories/MinorityForkRecovery.v
+theories/CandidateScopeDeployRehome.v
+theories/RecoveryFrontierCoverage.v
+theories/StaleSiblingRecovery.v
+theories/CertifiedFloorCommitment.v
+theories/FinalizationCertificateRetrieval.v
+theories/DependencyMaintenanceRound.v
+theories/WitnessEquivalentCarrier.v
+theories/ObjectiveEvidenceSequenceEligibility.v
 theories/MainTheorem.v

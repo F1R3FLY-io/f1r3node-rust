@@ -15,7 +15,7 @@
 ' identical IFF DeployChainIndex::cmp is a strict total order (Finding-B fix).
 '
 ' Render:
-'   plantuml -tsvg docs/theory/merge-algebra/diagrams/02-merge-pipeline-sequence.puml
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/02-merge-pipeline-sequence.puml
 
 @startuml 02-merge-pipeline-sequence
 !theme plain

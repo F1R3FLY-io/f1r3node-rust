@@ -23,6 +23,8 @@ use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::vector_par;
 use models::rust::utils::*;
+use proptest::prelude::*;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::matcher::spatial_matcher::{SpatialMatcher, SpatialMatcherContext};
 use rholang::rust::interpreter::util::{prepend_connective, prepend_expr};
 
@@ -53,6 +55,59 @@ fn matching_ground_with_var_should_work() {
 
     let expected_captures = BTreeMap::from([(0, new_gint_par(7, Vec::new(), false))]);
     assert!(assert_spatial_match(target, pattern, Some(expected_captures)).is_ok());
+}
+
+#[test]
+fn matching_signed_terms_and_stacks_with_var_preserves_the_complete_par() {
+    for target in [
+        Compiler::source_to_adt(r#"{% @"x"!(1) %}[ s ]"#).unwrap(),
+        Compiler::source_to_adt(r#"a :: b :: ()"#).unwrap(),
+        Compiler::source_to_adt(r#"{% Nil %}[ s ] | a :: ()"#).unwrap(),
+    ] {
+        let expected_captures = BTreeMap::from([(0, target.clone())]);
+        assert!(assert_spatial_match(
+            target,
+            new_freevar_par(0, Vec::new()),
+            Some(expected_captures)
+        )
+        .is_ok());
+    }
+}
+
+#[test]
+fn exact_matching_cannot_erase_cost_or_conditional_terms() {
+    let nil = Par::default();
+    for target in [
+        Compiler::source_to_adt(r#"{% Nil %}[ s ]"#).unwrap(),
+        Compiler::source_to_adt(r#"s :: ()"#).unwrap(),
+        Compiler::source_to_adt(r#"if(true){ Nil } else { Nil }"#).unwrap(),
+    ] {
+        assert!(assert_spatial_match(target, nil.clone(), None).is_ok());
+    }
+}
+
+proptest! {
+    #[test]
+    fn free_variable_capture_preserves_every_cost_and_conditional_component(
+        signed_count in 0usize..4,
+        stack_count in 0usize..4,
+        conditional_count in 0usize..4,
+    ) {
+        let signed = Compiler::source_to_adt(r#"{% Nil %}[ s ]"#).unwrap();
+        let stack = Compiler::source_to_adt(r#"s :: ()"#).unwrap();
+        let conditional = Compiler::source_to_adt(r#"if(true){ Nil } else { Nil }"#).unwrap();
+        let target = Par {
+            cost_signed_terms: vec![signed.cost_signed_terms[0].clone(); signed_count],
+            cost_stacks: vec![stack.cost_stacks[0].clone(); stack_count],
+            conditionals: vec![conditional.conditionals[0].clone(); conditional_count],
+            ..Par::default()
+        };
+        let mut matcher = SpatialMatcherContext::new();
+        prop_assert!(matcher
+            .spatial_match(target.clone(), new_freevar_par(0, Vec::new()))
+            .is_some());
+        prop_assert_eq!(matcher.free_map.get(&0), Some(&target));
+    }
 }
 
 #[test]
@@ -789,6 +844,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_gint_par(7, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -798,6 +854,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_gint_par(8, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
         ],
         new_send_par(
@@ -835,6 +892,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_gint_par(7, Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -844,6 +902,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 source: Some(new_freevar_par(0, Vec::new())),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             },
         ],
         new_freevar_par(1, Vec::new()),
@@ -1995,6 +2054,7 @@ fn matching_a_target_with_var_ref_and_a_pattern_with_a_var_ref_should_ignore_loc
                 source: Some(vector_par(Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             vector_par(Vec::new(), false),
             false,
@@ -2026,6 +2086,7 @@ fn matching_a_target_with_var_ref_and_a_pattern_with_a_var_ref_should_ignore_loc
                 source: Some(vector_par(Vec::new(), false)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             vector_par(Vec::new(), false),
             false,

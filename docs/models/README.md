@@ -40,8 +40,26 @@ pub struct BlockMetadata {
 ## Deploy & Transfer Types (Protobuf)
 
 **`DeployInfo`** (proto `DeployServiceCommon.proto`) -- Per-deploy metadata in block responses:
-- Fields: `deployer`, `term`, `timestamp`, `sig`, `sigAlgorithm`, `phloPrice`, `phloLimit`, `validAfterBlockNumber`, `cost`, `errored`, `systemDeployError`
+- Fields: `deployer`, `term`, `timestamp`, `sig`, `sigAlgorithm`,
+  `validAfterBlockNumber`, `cost`, `errored`, `systemDeployError`,
+  `authorityFundingCertificate`, `authorityCostWitness`, `preStateHash`,
+  `postStateHash`, and `admissionStatus`
+- Retired `phloPrice` and `phloLimit` tags are reserved and cannot be reused
 - `transfers: repeated TransferInfo` -- Inline transfer data populated by the block enricher
+
+`DeployInfo.cost` is the public scalar projection of committed COMM count plus
+canonical RSpace byte cost. Internal `ProcessedDeployProto` additionally binds
+the authority certificate and execution witness used for physical RevVault
+settlement and replay. The gRPC `DeployInfo` carries those typed fields plus the
+adjacent state roots and admission status; HTTP summary responses remain a
+scalar projection.
+
+`authorityFundingCertificate` commits to authenticated pre-state funding,
+compute and byte bounds, fee allocation, protocol identity, and byte-schedule
+identity. `authorityCostWitness` carries exact compute and byte events, physical
+draws, settlements, and its certificate identifier. Clients must validate both
+messages and their roots together; neither message is meaningful as an
+independent bearer credential.
 
 **`TransferInfo`** (proto) -- REV transfer extracted from deploy execution:
 - `fromAddr: string` -- Sender address
@@ -58,7 +76,7 @@ pub struct BlockMetadata {
 - `BlockRequest`, `ForkChoiceTipRequest`
 - `HasBlock`, `HasBlockRequest`
 - `StoreItemsMessageRequest`, `StoreItemsMessage` (RSpace trie sync)
-- `MergeableEntryRequest`, `MergeableEntryResponse` (mergeable-channels store sync)
+- `MergeableEntryRequest`, `MergeableEntryResponse` (deprecated rolling-compatibility messages; known-block responses are empty and receivers ignore payloads because merge evidence is locally replay-derived)
 
 **`ToPacket` trait** -- Converts proto messages to routing `Packet`s for network serialization.
 
@@ -79,7 +97,7 @@ The core process calculus representation:
 | `GUnforgeable` | Unforgeable names via `UnfInstance` (GPrivate, GDeployId, GDeployerId, GSysAuthToken) |
 | `Connective` | Logical operators (AND, OR, NOT) for pattern matching |
 | `TaggedContinuation` | Stored continuation (ParBody or ScalaBodyRef) |
-| `PCost` | Phlogiston cost tracking per operation |
+| `PCost` | Legacy-compatible per-operation diagnostic cost value; consensus settlement uses authority and byte evidence |
 
 **Custom PartialEq/Hash**: Implemented manually on `Par`, `Send`, `Receive`, `New`, `Match`, `Bundle`, `Expr`, etc. to exclude auto-derived fields and ensure semantic equality.
 

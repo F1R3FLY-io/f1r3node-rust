@@ -11,7 +11,7 @@
    single (constant) committee `c`, finalization along a main-parent chain IS
    downward-closed — i.e. the `AdjDC` premise is DERIVED from `L_ANC`, not assumed.
 
-   `finb` is the finalization DECISION (the Rust `ft_witnessed >= t` bool); it is a
+   `finb` is the finalization DECISION (the Rust `ft_witnessed > t` bool); it is a
    Section parameter with `finb_spec` reflecting it into `CliqueOracle.Finalized`
    for the fixed committee `c` (finalization is decidable — finite committee /
    finite sub-committees — so a correct decision procedure exists; keeping it
@@ -21,7 +21,7 @@
    Rocq                         | Rust
    -----------------------------+--------------------------------------------
    c (single committee)         | committee-constancy guard (floor.rs)
-   finb / finb_spec             | ft_witnessed >= ft_threshold (the decision)
+   finb / finb_spec             | ft_witnessed > ft_threshold (the decision)
    chain_adj                    | main_parent_chain band (bottom->top)
    chain_adj_AdjDC              | guard establishes Floor.v's AdjDC premise
    guard_constant_committee_transparent | warm up-walk == cold walk under the guard
@@ -39,7 +39,7 @@ Section Bridge.
   Variable d : DAG.
   Variable c : Committee.               (* the SINGLE committee — constancy across the band *)
   Variable J : Snapshot.
-  Variable finb : BlockHash -> bool.    (* the finalization decision (ft_witnessed >= t) *)
+  Variable finb : BlockHash -> bool.    (* the finalization decision (ft_witnessed > t) *)
   Hypothesis finb_spec : forall b, finb b = true <-> Finalized d c J b.
 
   (* Band bottom->top; consecutive blocks are ancestry-adjacent — the lower block
@@ -117,9 +117,8 @@ End Bridge.
    (including the DEFAULT θ = 0 and the negative-θ sentinels, i.e. θ ≤ 0).
 
    Section `Bridge` routes cache transparency through the strict-majority
-   `Finalized`; for the θ-exact test that would depend on
-   `Finalized_ft_refines_Finalized`, whose `0 < num` side-condition is VACUOUS at
-   θ ≤ 0. But the frontier cache needs ONLY that finalization is downward-closed
+   `Finalized`; for negative thresholds the θ-exact test alone does not imply that
+   proxy. But the frontier cache needs only that finalization is downward-closed
    along the spine (`AdjDC`), and `CliqueOracle.L_ANC_ft` delivers that for
    `Finalized_ft` at ANY num. So we re-instantiate the SAME Floor.v machinery with
    a decision `finb_ft` reflecting `Finalized_ft` and obtain T-CACHE for all θ —

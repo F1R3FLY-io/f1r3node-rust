@@ -4,37 +4,125 @@
 | --- | --- |
 | `LocalActiveSources(v)` | `interpreter_util::canonical_disposition_sets` over a validator's visible parent scope |
 | `RetryEligible(v)` | rejected-buffer selection in `block_creator::prepare_user_deploys_with_policy` |
-| `LeaderAt(observedFinalizedHeights[v])` | finalized-height rotation in `block_creator::recovered_deploy_leader` |
+| `CustodyCandidates(v)` | exact rejected carriers whose sender is validator `v` |
 | `CandidateBlockHeight(v)` | the validator-local `CasperSnapshot::max_block_num + 1` expiry boundary |
 | `PrepareRetry` / `PublishRetry` | block construction followed by asynchronous block visibility |
 | `survivesSelfChainFilter` | selected recovery signatures bypass only the legacy self-chain duplicate filter in `block_creator::create` |
+| `excludedSources(v)` | historical self-chain occurrences outside validator `v`'s selected-parent closure |
+| `CandidateActiveSources(v)` | active occurrences reachable from validator `v`'s immutable candidate parents |
 | `ObserveOccurrence` / `ObserveTombstone` | eventual DAG propagation of exact occurrence dispositions |
 | `Advance` | ordinary heartbeat/finality-support blocks, including non-leaders |
 
-The model separates proposal height from finalized height and gives each
-validator independently lagging observations of both. It also models delayed
-visibility for winning occurrences and their exact-source tombstones. A leader
-is unique for one committed finalized-height view. Validators temporarily on
-different finalized views can therefore prepare concurrent retries, as an
-asynchronous protocol must permit. Those retries remain bounded to one pending
-retry per distinct finalized view and one per validator. Once any retry is
-visible as an active occurrence, an occurrence-aware validator cannot prepare
-another until every visible exact source is tombstoned.
+The model separates proposal height from finalized height. Each validator has
+independently delayed observations of both heights and exact tombstones.
 
-Selection authorization is preserved through packaging. The self-chain filter
-continues to remove ordinary duplicates, but it cannot remove a retry already
-selected from the exact-source recovery projection. The packaging negative
-control captures the earlier refinement gap in which the formal transition
-published every selected retry while Rust silently dropped a self-chain retry.
+A rejected carrier gives retry custody only to its sender. A received merge
+therefore enables the same owner on each replica and no other validator.
+Distinct carrier owners can recover distinct work in parallel. The model does
+not use a global retry lock.
+
+`RecoveryFrontierCoverage.tla` refines retry readiness to the selected parent
+frontier. Every valid latest message must be an ancestor of at least one
+selected parent. Different messages can use different parents. This relation
+preserves multi-parent concurrency and does not require a serial coalescing
+block.
+
+The shared floor gate and carrier ownership remain mandatory. A bounded lease
+can bypass only incomplete frontier coverage. Ordinary work keeps its separate
+leader and can progress while the owner waits or publishes a retry.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_DeployRecovery.cfg` | pass | occurrence-aware, expiry-bounded, view-relative elected recovery with eventual progress |
+| `MC_RecoveryFrontierCoverage.cfg` | pass | collective parent coverage, owner retry, bounded lease, and independent ordinary progress |
+| `MC_RecoveryFrontierCoverage_single_parent_unsafe.cfg` | violate `CollectiveCoverageReadiesRetry` | one selected parent must cover all valid latest messages, which rejects a valid split frontier |
+| `MC_RecoveryFrontierCoverageApalache.cfg` | pass | bounded symbolic check of the collective readiness relation |
+| `MC_RecoveryFrontierCoverage_single_parent_unsafe_Apalache.cfg` | violate `CollectiveCoverageReadiesRetry` | symbolic split-frontier counterexample to the inverted quantifiers |
+
+Once a retry becomes active, a validator cannot prepare another retry until
+all visible exact sources have tombstones.
+
+Selection authorization is preserved through packaging. The self-chain filter
+removes only occurrences active in the selected-parent closure. It cannot
+remove a retry already selected from the exact-source recovery projection or a
+retained deploy whose only historical occurrence lies on an excluded branch.
+The two packaging controls distinguish those authorization paths.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_DeployRecovery.cfg` | pass | occurrence-aware, expiry-bounded, owner-custodied recovery with eventual progress |
 | `MC_DeployRecovery_signature_pre_fix.cfg` | violate `Inv_RetryRequiresNoActiveSource` | any visible rejection authorizes retry despite a surviving visible source |
 | `MC_DeployRecovery_expiry_pre_fix.cfg` | violate `Inv_NoExpiredRetry` | recovery bypasses the validator's proposal-height lifespan boundary |
-| `MC_DeployRecovery_multi_leader_pre_fix.cfg` | violate `Inv_OneRecoveryProposerPerFinalizedView` | multiple validators prepare retries from the same finalized-height view |
-| `MC_DeployRecovery_heartbeat_pre_fix.cfg` | violate `Live_RecoveryOrExpiry` | an offline elected leader prevents proposal and finality views from advancing |
+| `MC_DeployRecovery_multi_leader_pre_fix.cfg` | violate `Inv_RetryHasCarrierOwnerCustody` | a non-owner uses another validator's rejected carrier |
+| `MC_DeployRecovery_heartbeat_pre_fix.cfg` | violate `Live_FinalizationProgress` | an offline elected ordinary leader prevents proposal and finality views from advancing |
+| `MC_DeployRecovery_parallel_owner_witness.cfg` | violate the deliberately false `Inv_NoParallelOwnerRecovery` | two distinct carrier owners can have same-view recovery work in flight without a global retry lock |
 | `MC_DeployRecovery_packaging_pre_fix.cfg` | violate `Inv_SelectedRetrySurvivesSelfChainFilter` | a canonically authorized retry is selected and then silently removed by downstream self-chain filtering |
+| `MC_DeployRecovery_rehome_pre_fix.cfg` | violate `Inv_SelectedRehomeSurvivesCandidateFilter` | an excluded historical self-chain occurrence masks retained work selected against different candidate parents |
+
+The safe and parallel-owner configurations use the minimal complete height
+horizon. Height zero contains both owner carriers, height one is the only open
+retry window, and height two is both the strict expiry boundary and the finality
+target. This retains every ordering of rejection, visibility, exclusion,
+concurrent owner preparation, publication, height observation, and finalization
+without multiplying equivalent states at later heights.
+
+`DeployIdentitySeparation.tla` closes the decoded-identity boundary. A deploy
+lookup key is the pair of a protocol domain and its payload. The legacy domain
+may contain a 32-byte signature equal to a v6 commitment byte-for-byte, but the
+two keys remain unequal. The model nondeterministically rejects either domain
+and proves that the equal-payload identity in the other domain remains active.
+The raw-key control removes the protocol tag and reproduces cross-domain
+erasure in one transition.
+
+The repeat-deploy carrier index and its exact-scan fallback are consumers of
+this result. Both paths must retain the protocol tag after block-body decoding.
+An index or scan that compares only payload bytes implements the unsafe control.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_DeployIdentitySeparation.cfg` | pass | protocol-tagged identities isolate equal byte payloads under either rejection order |
+| `MC_DeployIdentitySeparation_raw_key_unsafe.cfg` | violate `Inv_CrossDomainRejectionIsolation` | an untagged byte key lets a legacy rejection erase v6 state, or the reverse |
+
+`CarrierIndexSoundness.tla` composes typed identity with carrier completeness.
+Two validators initialize one watermark and cache block identities in
+independent orders. The model also interleaves admission, body loss, cache population, and
+pruning. Protocol-v6 admission is atomic. Legacy admission can stop after its
+carrier-first staging step without publishing metadata.
+The initial database contains a valid block and a higher invalid block.
+The watermark uses all stored block numbers because both blocks are carriers.
+
+The safe model checks these obligations:
+
+- Published blocks above the watermark and pruning cutoff have carrier rows.
+- The watermark exceeds each stored block that predates the index.
+- An index absence above both gates implies truth-level absence.
+- A decisive fast-path result equals the exact result.
+- A missing body produces `unknown`, not `fresh`.
+- A cached identity does not replace a missing stored body.
+- Parallel validators agree whenever both validators have decisive results.
+- Cached identities are authentic and retain their protocol tags.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_CarrierIndexSoundness.cfg` | pass | typed, atomic, watermark-gated, and pruning-gated fast-path refinement |
+| `MC_CarrierIndexSoundness_raw_key_unsafe.cfg` | violate `Inv_ExactScanUsesTypedIdentity` | equal legacy and v6 payload bytes alias in the exact scan |
+| `MC_CarrierIndexSoundness_non_atomic_unsafe.cfg` | violate `Inv_WatermarkCoverage` | metadata publication can precede its carrier row |
+| `MC_CarrierIndexSoundness_prune_gate_unsafe.cfg` | violate `Inv_FastPathIsSound` | a scan below the pruning cutoff can treat a removed carrier as absent |
+| `MC_CarrierIndexSoundness_cached_missing_body_unsafe.cfg` | violate `Inv_MissingBodyIsUnknown` | a stale decoded-identity cache substitutes for a missing stored block body |
+| `MC_CarrierIndexSoundness_valid_height_watermark_unsafe.cfg` | violate `Inv_WatermarkCoversPreexistingDomain` | a valid-only maximum skips a higher invalid carrier that predates the index |
+
+`ProtocolDeployIngress.tla` closes the pending-pool boundary. Protocol v6
+admits only authenticated envelope identities. Pre-v6 protocols admit only
+legacy payload signatures. The model interleaves tip advances with both
+submission paths. Each accepted row records the immutable tip captured at its
+admission linearization point. An accepted row must satisfy the strict deploy
+window at that captured tip. A later tip advance can expire the row through
+normal lifecycle processing. It cannot change the completed admission result.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_ProtocolDeployIngress.cfg` | pass | protocol-specific ingress preserves pool domains and admits only rows open at the captured tip |
+| `MC_ProtocolDeployIngress_permissive_unsafe.cfg` | violate `V6HasNoLegacyPool` | permissive legacy ingress inserts a row that makes protocol-v6 pool reads fail closed |
+| `MC_ProtocolDeployIngress_expiry_unsafe.cfg` | violate `IngressWindowSound` | a missing height-window gate admits a row after concurrent tip advance closes its lifespan |
 
 `MergeRecoveryCoherence.tla` closes the refinement boundary between occurrence
 records and the state rooted at the finalized merge floor. Base-committed
@@ -48,7 +136,7 @@ receipt.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_MergeRecoveryCoherence.cfg` | pass | finalized-base precedence, exact tombstone filtering, base/scope deduplication, state-record coherence, and numeric single-datum composition |
+| `MC_MergeRecoveryCoherence.cfg` | pass | finalized-base precedence, exact tombstone filtering, base/scope deduplication, state-record coherence, and numeric single-datum settlement |
 | `MC_MergeRecoveryCoherence_base_precedence_unsafe.cfg` | violate `Inv_AtMostOneEffectPerSignature` | a sibling tombstone masks an effect already materialized in the finalized base and authorizes a duplicate retry |
 | `MC_MergeRecoveryCoherence_tombstone_filter_unsafe.cfg` | violate `Inv_TombstonedScopeNotApplied` | an exact above-floor tombstone is recorded after the source chain has already entered state application |
 | `MC_MergeRecoveryCoherence_base_duplicate_unsafe.cfg` | violate `Inv_AtMostOneEffectPerSignature` | deduplication compares only above-floor candidates and misses a same-signature effect in the finalized base |
@@ -83,12 +171,18 @@ matching committed state. The unsafe projection deliberately consults only the
 main-parent spine and therefore reports two active sources after state has kept
 one.
 
+State construction uses only positive state-parent, applied, and own effects.
+A rejection record explains why a sibling effect was omitted. The record never
+subtracts an effect inherited from the selected state parent.
+
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
 | `MC_FinalizedOccurrenceStatus.cfg` | pass | all-parent exact status equals committed active occurrence state under every evidence order |
 | `MC_FinalizedOccurrenceStatus_main_chain_unsafe.cfg` | violate `Inv_StatusMatchesCommittedState` | main-chain-only status ignores a secondary-parent exact tombstone |
+| `MC_FinalizedOccurrenceStatus_rejection_subtraction_unsafe.cfg` | violate `Inv_RejectionDoesNotSubtractStateParent` | treating rejection evidence as state subtraction removes an inherited state-parent effect |
 | `MC_FinalizedOccurrenceStatusApalache.cfg` | pass | typed bounded verification of the same all-parent projection |
 | `MC_FinalizedOccurrenceStatus_main_chain_unsafe_Apalache.cfg` | violate `Inv_StatusMatchesCommittedState` | symbolic counterexample to main-chain-only exact status |
+| `MC_FinalizedOccurrenceStatus_rejection_subtraction_unsafe_Apalache.cfg` | violate `Inv_RejectionDoesNotSubtractStateParent` | symbolic counterexample to rejection-driven state subtraction |
 
 `RejectionReasonConfluence.tla` covers the diagnostic refinement carried by an
 exact tombstone. Concurrent descendants can reject the same source occurrence
@@ -131,30 +225,40 @@ starts. Protocol 2 remains the historical exact rejected-deploy threshold.
 `ProtocolVersionLifecycle.tla` closes the lifecycle that the activation model
 intentionally abstracts away. It follows the version from genesis candidate
 construction through validator approval, approved-block admission, node-wide
-adoption, proposal, and peer reception. The configured current version is 3;
-the supported active set is exactly `{3}`. A current ceremony therefore reaches
-running consensus with every node using one adopted version, while recovery from
-a protocol-1, protocol-2, or otherwise unsupported approved block fails closed before any
-proposal can be made. There is no feature flag or block-height transition
-between two consensus protocols.
+adoption, proposal, peer reception, and blessed-deployment replay. The
+configured current version is 6; the supported active set is exactly `{6}`.
+Protocol 5 represents historical encoding metadata in the finite model, and 7
+represents an unknown version. Recovery from either fails closed before any
+proposal can be made. There is no accounting enable/disable flag and no
+block-height transition between two charging engines.
+
+Fresh protocol-6 genesis uses the complete protocol envelope as the occurrence,
+construction, and replay identity. Its family-1 principal projects to the same
+ground custody key consumed by the existing SystemVault contract. This
+projection preserves native vault compatibility without reverting execution or
+replay to the legacy blessed-deployer identity.
 
 The original disagreement is retained as an executable negative control. A
-protocol-1 approved genesis combined with a locally configured current-protocol
-proposer produces current-version blocks while receivers compare against version 1;
+protocol-5 approved genesis combined with a locally configured current-protocol
+proposer produces protocol-6 blocks while receivers compare against version 5;
 `Inv_AllReceiversAccept` then fails. Separate controls demonstrate that the same
 single-authority property is necessary at ceremony, adoption, proposal, and
 unsupported-version admission.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_ProtocolVersionLifecycle.cfg` | pass | current ceremony, approval, adoption, proposal, and reception use protocol 3 end to end |
-| `MC_ProtocolVersionLifecycle_legacy_rejected.cfg` | pass | a protocol-1 approved block fails closed before running |
+| `MC_ProtocolVersionLifecycle.cfg` | pass | current ceremony, approval, adoption, proposal, reception, blessed identity, replay identity, and custody projection use protocol 6 end to end |
+| `MC_ProtocolVersionLifecycle_legacy_rejected.cfg` | pass | a protocol-5 approved block fails closed before running |
 | `MC_ProtocolVersionLifecycle_unsupported_rejected.cfg` | pass | an unknown approved version fails closed before running |
 | `MC_ProtocolVersionLifecycle_ceremony_unsafe.cfg` | violate `Inv_CeremonyCandidateCurrent` | genesis construction emits a stale protocol version |
 | `MC_ProtocolVersionLifecycle_adoption_unsafe.cfg` | violate `Inv_RunningNodesAdoptApproved` | nodes retain local configuration instead of adopting the approved version |
 | `MC_ProtocolVersionLifecycle_proposer_unsafe.cfg` | violate `Inv_ProposalUsesApprovedVersion` | proposal construction bypasses the adopted running version |
 | `MC_ProtocolVersionLifecycle_receiver_unsafe.cfg` | violate `Inv_AllReceiversAccept` | the exact configured-current proposer versus approved-legacy receiver disagreement |
 | `MC_ProtocolVersionLifecycle_unsupported_unsafe.cfg` | violate `Inv_ApprovedVersionSupported` | an unsupported approved block starts Casper |
+| `MC_ProtocolVersionLifecycle_genesis_occurrence_unsafe.cfg` | violate `Inv_CurrentGenesisIdentityUnified` | protocol-6 genesis stores a legacy occurrence identity |
+| `MC_ProtocolVersionLifecycle_genesis_execution_unsafe.cfg` | violate `Inv_CurrentGenesisIdentityUnified` | protocol-6 blessed construction executes under the legacy identity |
+| `MC_ProtocolVersionLifecycle_genesis_replay_unsafe.cfg` | violate `Inv_CurrentGenesisReplayDeterministic` | replay substitutes the legacy identity for the protocol envelope |
+| `MC_ProtocolVersionLifecycle_genesis_custody_unsafe.cfg` | violate `Inv_CurrentGenesisCustodyProjection` | the protocol principal fails to project to its ground SystemVault custody key |
 
 `ApprovedStateReplay.tla` closes the approved-state bootstrap boundary. A
 historical block is replayed from the immutable context serialized by that
@@ -169,24 +273,68 @@ than the order in which the joiner learned them.
 | `MC_ApprovedStateReplay.cfg` | pass | every historical replay uses its block-bound context, reconstructs the declared root, and reaches running state |
 | `MC_ApprovedStateReplay_current_context_unsafe.cfg` | violate `Inv_ReplayUsesConsensusContext` | replay substitutes the joiner's current approved-tip context and falsely invalidates valid history |
 
-`LocalValidationRecovery.tla` separates objective invalidity from a local,
-inconclusive validation fault. A locally faulted parent leaves the ready queue,
-opens one recovery request, and stays deferred if the transport attempt fails.
-Only successful recovery can make it ready again. Its ordinary descendants
-remain blocked until that exact parent has validated; local faults never create
-slash evidence or an invalid-block terminal state. Weak fairness proves that a
-transient fault followed by recovery validates both parent and child.
+`LocalValidationRecovery.tla` separates objective invalidity from local artifact
+absence across two independently scheduled validators: a genesis-rooted node,
+where absence is a typed local fault, and a restored node with truncated
+history, where it is a typed missing dependency. Concurrent parent and sibling
+validation share one request for the same missing block, while child replay
+requests its exact missing state root. Failed transport attempts retain both the
+block and the artifact identity; successful recovery releases only waiters for
+that artifact. Descendants remain blocked until their exact parent validates,
+and no recovery action serializes one validator behind another. Weak fairness
+proves that both validators validate all three blocks after finite transport
+failure. Negative controls demonstrate that immediate requeue, artifact-type
+collapse, dropping an inconclusive block, and converting local absence into
+objective invalidity each violate a named invariant.
+
+TLC exhausts 28,881 generated / 9,025 distinct safe states through depth 33,
+including the liveness property. Apalache independently checks every safe
+invariant through symbolic length 8. It also reproduces ready-queue retention,
+drop, and false-invalidity counterexamples at length 2, and the deeper
+artifact-identity counterexample at length 9.
+
+The Rocq refinement in
+`formal/rocq/finalized_floor/theories/LocalFaultDeferral.v` proves that the
+certified guard preserves block hashes and state-root identities, genesis and
+truncated histories differ only in local classification, mismatched artifacts
+cannot release a waiter, duplicate requests are pointwise idempotent, and
+independent requests commute. These results are included in
+`typed_local_validation_recovery_correct` and the bootstrap recovery capstone.
 
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
-| `MC_LocalValidationRecovery.cfg` | pass | bounded deferred recovery, transport-failure safety, parent gating, and eventual parent/child validation |
+| `MC_LocalValidationRecovery.cfg` | pass | parallel typed block/state recovery, request deduplication, transport-failure safety, parent gating, and eventual validation on both node histories |
 | `MC_LocalValidationRecovery_ready_unsafe.cfg` | violate `Inv_NoImmediateSelfRequeue` | retaining an inconclusive parent as a dependency-free pendant causes immediate self-requeue |
+| `MC_LocalValidationRecovery_identity_unsafe.cfg` | violate `Inv_DeferredNamesRequiredArtifact` | collapsing state-root and block deferrals requests the wrong artifact and prevents exact recovery |
+| `MC_LocalValidationRecovery_drop_unsafe.cfg` | violate `Inv_NoDeferredBlockIsDropped` | discarding an inconclusive block loses custody before its artifact can arrive |
+| `MC_LocalValidationRecovery_invalidity_unsafe.cfg` | violate `Inv_LocalAbsenceNeverCreatesInvalidity` | treating receiver-local artifact absence as objective invalidity can create false slash evidence |
+| `MC_LocalValidationRecoveryApalache.cfg` | pass through length 8 | bounded symbolic check of every safe invariant |
+| `MC_LocalValidationRecoveryReadyUnsafeApalache.cfg` | violate `Inv_NoImmediateSelfRequeue` at length 2 | independent symbolic ready-queue counterexample |
+| `MC_LocalValidationRecoveryIdentityUnsafeApalache.cfg` | violate `Inv_DeferredNamesRequiredArtifact` at length 9 | independent symbolic artifact-identity counterexample |
+| `MC_LocalValidationRecoveryDropUnsafeApalache.cfg` | violate `Inv_NoDeferredBlockIsDropped` at length 2 | independent symbolic custody-loss counterexample |
+| `MC_LocalValidationRecoveryInvalidityUnsafeApalache.cfg` | violate `Inv_LocalAbsenceNeverCreatesInvalidity` at length 2 | independent symbolic false-invalidity counterexample |
+
+`FundingAdmissionLifecycle.tla` closes the client-visible lifecycle for a
+state-bound funding decision. Proposal records both the decision and the exact
+pre-state supply from which it was derived. Validation recomputes from that
+recorded state. An underfunded attempt is therefore a terminal rejected record
+with no user effects, rather than an unrecorded candidate that remains pending
+until an unrelated later top-up changes its classification. A fundable deploy
+cannot be forged as rejected, and later supply cannot resurrect a finalized
+rejection.
+
+| Configuration | Expected result | Defect isolated |
+| --- | --- | --- |
+| `MC_FundingAdmissionLifecycle.cfg` | pass | proposal/validation agreement, terminal rejection, zero rejected effects, and eventual finalization |
+| `MC_FundingAdmissionLifecycle_live_state_unsafe.cfg` | violate `Inv_ValidatorUsesProposalPreState` | a validator reclassifies the block after an unrelated live-state top-up |
+| `MC_FundingAdmissionLifecycle_pending_unsafe.cfg` | violate `Inv_UnderfundedAttemptLeavesPending` | an attempted underfunded deploy has no consensus-visible terminal record and remains pending |
 
 ## Admission records and runtime-effect metadata
 
 A **status record** is a consensus-visible statement about a deploy lifecycle.
 An **effect record** is a deploy or system execution that entered the runtime and
-therefore has one position in the ordered merge-metadata stream. A terminal admission rejection is a status record but not an effect record. An
+therefore has one position in the ordered merge-metadata stream. A terminal
+funding-admission rejection is a status record but not an effect record. An
 ordinary deploy that entered the runtime and failed is both an execution-failure
 status and an effect record, because its attempted execution still owns its
 position in the state-witness and merge-metadata sequence.
@@ -205,7 +353,7 @@ $$
 
 `AdmissionEffectAlignment.tla` checks this refinement independently at three
 validators. Each validator indexes the same block containing one terminal
-admission rejection and one executed `closeBlock`. Under the effect projection,
+funding rejection and one executed `closeBlock`. Under the effect projection,
 one merge-metadata entry aligns with `closeBlock`; all validators can propose a
 successor, and a later deploy finalizes. The unsafe control counts both status
 records as effects, expects two metadata entries, blocks every validator at
@@ -223,7 +371,7 @@ admission rejection anywhere in the user-record sequence does not change the
 effect projection, an executed failure retains one slot, permutation does not
 change the required cardinality, and aligned metadata splits exactly between
 user and system executions. Its concrete regression theorem proves that one
-admission rejection plus one `closeBlock` requires one metadata entry, whereas
+funding rejection plus one `closeBlock` requires one metadata entry, whereas
 counting block-body status records would incorrectly require two.
 
 The liveness property permits two outcomes once every published occurrence is

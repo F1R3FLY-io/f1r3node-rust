@@ -525,7 +525,7 @@ fn extract_deploy_id_sig(par: &Par) -> Option<Vec<u8>> {
 }
 
 #[tokio::test]
-async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
+async fn estimate_cost_deploy_id_uses_protocol_v6_width() {
     let parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
     let genesis = GenesisBuilder::new()
@@ -542,8 +542,6 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
 
     let term = r#"new return, deployId(`rho:rchain:deployId`) in { return!(*deployId) }"#;
 
-    // Path 1: `deployer` public key is passed. Sig is a real secp256k1 DER signature over a
-    // preimage that folds the `deployer` public key in (via create_unbound).
     let result_with_deployer = BlockAPI::exploratory_deploy(
         &nodes[3].engine_cell,
         term.to_string(),
@@ -558,17 +556,12 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
 
     let sig_with = extract_deploy_id_sig(&pars_with[0])
         .expect("Some(deployer) path should return a GDeployId unforgeable on rho:rchain:deployId");
-    assert!(
-        !sig_with.is_empty(),
-        "deployId sig must be non-empty on Some(deployer) path (real secp256k1 DER signature), got {} bytes",
-        sig_with.len()
-    );
+    assert_eq!(sig_with.len(), 32);
     assert!(
         !sig_with.iter().all(|&b| b == 0),
         "deployId sig must be non-trivial (not all-zero) on Some(deployer) path"
     );
 
-    // Path 2: no `deployer` public key is passed.
     let result_without_deployer = BlockAPI::exploratory_deploy(
         &nodes[3].engine_cell,
         term.to_string(),
@@ -583,10 +576,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
 
     let sig_without = extract_deploy_id_sig(&pars_without[0])
         .expect("None path should return a GDeployId unforgeable on rho:rchain:deployId");
-    assert!(
-        !sig_without.is_empty(),
-        "deployId sig must be non-empty on None path (real secp256k1 DER signature)"
-    );
+    assert_eq!(sig_without.len(), 32);
 
     let diff = cost_with.abs_diff(cost_without);
     let tolerance = cost_with.max(cost_without) / 20; // 5%

@@ -1,32 +1,25 @@
-// Regression for the finalized-win blindness in rejected-deploy recovery
-// (root-caused from integration run 31150220859, test_bridge_api_real_deploy):
-// a deploy whose winning inclusion block has FINALIZED can still be
-// conflict-rejected by a later multi-parent merge sitting ABOVE the LFB.
-// Block finalization does not finalize a deploy's effects — once the
-// rejecting block finalizes, canonical state has dropped the deploy, so
-// the recovery pipeline must keep it re-proposable. Two sites instead
-// treat "finalized canonical win" as terminal while being unable to see
-// the pending rejection above the LFB:
-//
-//   1. `retain_pending_rejected_deploys_for_buffer` (populate filter):
-//      `deploy_finalization_status::resolve_batch` scans only the
-//      finalized chain, reports `Finalized` from the win, and populate
-//      skips the deploy — even though the populate call exists precisely
-//      because a merge just rejected it.
-//   2. The terminal purge in `block_creator::prepare_user_deploys`:
-//      `canonical_won_sigs` is walked from `last_finalized_block` only,
-//      so the in-scope rejection is invisible and the buffer entry is
-//      dropped as "finalized canonical win".
-//
-// Conflict generator and DAG choreography mirror `recovery_cycle_spec`:
-// two same-key deploys whose combined precharge over-drains the shared
-// vault; `conflict_set_merger::fold_rejection` deterministically rejects
-// the lex-larger sig, which is routed to validator 0's block_a.
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 
+use block_storage::rust::dag::block_dag_key_value_storage::FinalizationWitnessInputs;
+use casper::rust::blocks::proposer::block_creator::prepare_user_deploys;
+use casper::rust::casper::Casper;
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
+use casper::rust::finality::floor::{
+    floor_of_block, floor_of_frozen_vote_projection, Floor, FloorOfView,
+};
+use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
 use casper::rust::util::construct_deploy;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use casper::rust::util::rholang::interpreter_util;
+use crypto::rust::signatures::signed::Cosigned;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_id::DeployLookupId;
+use models::rust::validator::ValidatorSerde;
 use prost::bytes::Bytes;
+use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
+use tokio::time::{timeout, Duration};
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
@@ -37,7 +30,7 @@ struct TestContext {
 
 impl TestContext {
     async fn new() -> Self {
-        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(2));
+        let parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(Some(parameters))
             .await
@@ -47,277 +40,339 @@ impl TestContext {
     }
 }
 
-/// Same conflict shape as `recovery_cycle_spec`: trivial body, conflict
-/// comes from the system-level precharge against the shared source vault.
-const CONFLICT_RHO: &str = r#"
-Nil
-"#;
-const PHLO_LIMIT: i64 = 8;
-const PHLO_PRICE: i64 = 1_000_000;
-
-struct ConflictFixture {
+struct WinningReceiptFixture {
     nodes: Vec<TestNode>,
-    shard_id: String,
-    block_a: BlockMessage,
-    rejected_sig: Bytes,
+    envelope: Cosigned<DeployData>,
+    deploy_id: Bytes,
+    winning_block: BlockMessage,
 }
 
-/// Build the sibling-conflict DAG up to (but not including) the merge:
-/// block_a on validator 0 carries the lex-larger (to-be-rejected) deploy,
-/// block_b on validator 1 the survivor; both validators see both blocks.
-async fn build_conflict_siblings(ctx: &TestContext) -> ConflictFixture {
-    let shard_id = ctx.genesis.genesis_block.shard_id.clone();
-
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
-        .await
-        .expect("create_network(2)");
-    for node in nodes.iter_mut() {
-        node.allow_empty_blocks = true;
-    }
-
-    let deploy_x = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::source_deploy_now_full(
-            CONFLICT_RHO.to_string(),
-            Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
-            Some(construct_deploy::DEFAULT_SEC.clone()),
-            None,
-            Some(shard_id.clone()),
-        )
-        .expect("build deploy_x")
-    };
-    let deploy_y = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::source_deploy_now_full(
-            CONFLICT_RHO.to_string(),
-            Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
-            Some(construct_deploy::DEFAULT_SEC.clone()),
-            None,
-            Some(shard_id.clone()),
-        )
-        .expect("build deploy_y")
-    };
-
-    let (deploy_a, deploy_b) = if deploy_x.sig >= deploy_y.sig {
-        (deploy_x, deploy_y)
-    } else {
-        (deploy_y, deploy_x)
-    };
-    let rejected_sig: Bytes = deploy_a.sig.clone();
-    assert!(
-        deploy_a.sig > deploy_b.sig,
-        "deploy_a must hold the lex-larger sig so the merge rejection is deterministic"
-    );
-
-    let block_a = nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_a))
-        .await
-        .expect("validator 0 proposes block_a");
-    let block_b = nodes[1]
-        .add_block_from_deploys(std::slice::from_ref(&deploy_b))
-        .await
-        .expect("validator 1 proposes block_b");
-    assert_ne!(block_a.block_hash, block_b.block_hash);
-
-    {
-        let (a, b) = nodes.split_at_mut(1);
-        a[0].sync_with_one(&mut b[0]).await.expect("sync 0 -> 1");
-    }
-    {
-        let (a, b) = nodes.split_at_mut(1);
-        b[0].sync_with_one(&mut a[0]).await.expect("sync 1 -> 0");
-    }
-
-    ConflictFixture {
-        nodes,
-        shard_id,
-        block_a,
-        rejected_sig,
-    }
-}
-
-/// Validator 1 proposes the merge over [block_a, block_b]; the fixture's
-/// lex-larger deploy must be in its `rejected_deploys`.
-async fn propose_rejecting_merge(fixture: &mut ConflictFixture, nonce: i32) -> BlockMessage {
-    let marker_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::basic_deploy_data(nonce, None, Some(fixture.shard_id.clone()))
-            .expect("build marker deploy")
-    };
-    let merge_block = fixture.nodes[1]
-        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
-        .await
-        .expect("validator 1 proposes merge over [block_a, block_b]");
-    assert!(
-        merge_block
-            .body
-            .rejected_deploys
-            .iter()
-            .any(|rd| rd.sig == fixture.rejected_sig),
-        "merge block must conflict-reject the lex-larger sig {}",
-        hex::encode(&fixture.rejected_sig)
-    );
-    merge_block
-}
-
-fn buffer_contains(node: &TestNode, sig: &Bytes) -> bool {
+fn buffer_contains(node: &TestNode, deploy_id: &Bytes) -> bool {
     node.rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .contains_sig(sig)
-        .expect("buffer.contains_sig")
+        .contains_id(&crate::current_deploy_id(deploy_id))
+        .expect("buffer.contains_id")
 }
 
-/// Site 1 — populate filter. The winning block finalizes BEFORE the
-/// rejecting merge arrives. When validator 0 validates the merge, the
-/// populate path must still buffer the rejected deploy: the rejection sits
-/// above the LFB, so the "Finalized" the resolver reports from the win is
-/// not a terminal disposition — it is exactly the state this rejection is
-/// about to overturn.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial]
-async fn populate_buffers_rejected_deploy_whose_win_block_already_finalized() {
-    let ctx = TestContext::new().await;
-    let mut fixture = build_conflict_siblings(&ctx).await;
-
-    fixture.nodes[0]
-        .block_dag_storage
-        .record_directly_finalized(fixture.block_a.block_hash.clone(), 1.0, |_| async {
-            Ok(())
-        })
-        .await
-        .expect("finalize block_a (the win) before the rejecting merge is seen");
-
-    let merge_block = propose_rejecting_merge(&mut fixture, 0).await;
-
-    {
-        let (a, b) = fixture.nodes.split_at_mut(1);
-        a[0].sync_with_one(&mut b[0])
-            .await
-            .expect("sync merge_block 1 -> 0");
-    }
-    assert!(
-        fixture.nodes[0].contains(&merge_block.block_hash),
-        "validator 0 must validate the rejecting merge"
-    );
-
-    assert!(
-        buffer_contains(&fixture.nodes[0], &fixture.rejected_sig),
-        "populate must buffer sig {} despite its win block being finalized: \
-         the rejection above the LFB is pending, and once the rejecting block \
-         finalizes the deploy's effects are dropped from canonical state with \
-         no re-proposable copy",
-        hex::encode(&fixture.rejected_sig)
-    );
+async fn wait_for_finalizer_quiescence(node: &TestNode) {
+    timeout(Duration::from_secs(30), async {
+        let mut consecutive_quiescent_samples = 0;
+        loop {
+            let quiescent = node.casper.finalization_schedule.is_quiescent()
+                && node.casper.finalization_in_progress.load(Ordering::SeqCst) == 0;
+            if quiescent {
+                consecutive_quiescent_samples += 1;
+                if consecutive_quiescent_samples == 3 {
+                    return;
+                }
+            } else {
+                consecutive_quiescent_samples = 0;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background finalizer quiescence");
 }
 
-/// Site 2 — terminal purge. The deploy is buffered normally (win block
-/// not yet finalized when the rejection arrives, as in
-/// `recovery_cycle_spec`), and only THEN does the winning block finalize
-/// while the rejecting merge stays above the LFB. The next proposal's
-/// buffer scan must keep the entry: the in-scope rejection can still
-/// finalize and orphan the win's effects from canonical state.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial]
-async fn purge_keeps_buffered_deploy_with_pending_rejection_above_finalized_win() {
-    let ctx = TestContext::new().await;
-    let mut fixture = build_conflict_siblings(&ctx).await;
-
-    let merge_block = propose_rejecting_merge(&mut fixture, 0).await;
-
-    {
-        let (a, b) = fixture.nodes.split_at_mut(1);
-        a[0].sync_with_one(&mut b[0])
-            .await
-            .expect("sync merge_block 1 -> 0");
+async fn stage_state_preserving_winning_receipt(genesis: &GenesisContext) -> WinningReceiptFixture {
+    let mut nodes = TestNode::create_network_with_finalization_rate(
+        genesis.clone(),
+        4,
+        None,
+        None,
+        None,
+        None,
+        0,
+    )
+    .await
+    .expect("create four-validator network");
+    for node in &mut nodes {
+        node.allow_empty_blocks = true;
     }
-    assert!(
-        buffer_contains(&fixture.nodes[0], &fixture.rejected_sig),
-        "precondition (proven by recovery_cycle_spec): with the win block \
-         unfinalized, populate buffers the rejected sig"
-    );
 
-    fixture.nodes[0]
-        .block_dag_storage
-        .record_directly_finalized(fixture.block_a.block_hash.clone(), 1.0, |_| async {
-            Ok(())
-        })
+    let deploy =
+        construct_deploy::basic_deploy_data(41, None, Some(genesis.genesis_block.shard_id.clone()))
+            .expect("build winning deploy");
+    let envelope = nodes[0]
+        .envelope_for_deploy(&deploy)
+        .expect("build winning envelope");
+    let winning_block = nodes[0]
+        .add_block_from_deploys(&[deploy])
         .await
-        .expect("finalize block_a (the win) while the rejection stays above the LFB");
+        .expect("create winning block");
+    let deploy_id = Bytes::copy_from_slice(winning_block.body.deploys[0].deploy_id());
 
-    let marker_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::basic_deploy_data(1, None, Some(fixture.shard_id.clone()))
-            .expect("build post-finality marker deploy")
+    for node in nodes.iter_mut().skip(1) {
+        let result = node
+            .process_block(winning_block.clone())
+            .await
+            .expect("deliver winning block");
+        assert!(matches!(result, Either::Right(_)));
+    }
+
+    for round in 0..2 {
+        let mut support = Vec::with_capacity(nodes.len());
+        for node in &mut nodes {
+            support.push(
+                node.add_block_from_deploys(&[])
+                    .await
+                    .expect("create state-preserving support"),
+            );
+        }
+        for (source, block) in support.iter().enumerate() {
+            for (target, node) in nodes.iter_mut().enumerate() {
+                if source != target {
+                    let result = node
+                        .process_block(block.clone())
+                        .await
+                        .expect("deliver state-preserving support");
+                    assert!(
+                        matches!(result, Either::Right(_)),
+                        "round {round} support from node {source} must validate on node {target}, got {result:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    WinningReceiptFixture {
+        nodes,
+        envelope,
+        deploy_id,
+        winning_block,
+    }
+}
+
+async fn finalize_and_materialize_winning_floor(fixture: &mut WinningReceiptFixture) -> BlockHash {
+    wait_for_finalizer_quiescence(&fixture.nodes[0]).await;
+    let snapshot = fixture.nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("supported finalization snapshot");
+    let threshold = FtThreshold::from_ppm(
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .fault_tolerance_threshold_ppm,
+    );
+    let current_metadata = snapshot
+        .dag
+        .lookup_unsafe(&snapshot.last_finalized_block)
+        .expect("current floor metadata");
+    let current = Floor {
+        hash: snapshot.last_finalized_block.clone(),
+        block_number: current_metadata.block_number,
     };
-    let next_block = fixture.nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
+    let decision_context =
+        CertifiedConsensusContext::for_finalized_floor(&snapshot.dag, current.hash.clone())
+            .expect("build frozen finalization context");
+    let FloorOfView::Advance(derived) = floor_of_frozen_vote_projection(
+        &snapshot.dag,
+        &fixture.nodes[0].block_store,
+        &current,
+        decision_context
+            .vote_projection()
+            .eligible_latest_messages(),
+        threshold,
+    )
+    .await
+    .expect("derive supported floor") else {
+        panic!("state-preserving support must advance the floor");
+    };
+    assert!(snapshot
+        .dag
+        .is_dag_ancestor(&fixture.winning_block.block_hash, &derived.hash)
+        .expect("winning receipt ancestry query"));
+    assert!(CliqueOracle::ft_witnessed_exact(
+        &derived.hash,
+        &snapshot.dag,
+        decision_context
+            .vote_projection()
+            .eligible_latest_messages(),
+        threshold,
+    )
+    .await
+    .expect("exact floor certificate decision"));
+    let exact_latest = decision_context
+        .vote_projection()
+        .exact_latest_messages()
+        .iter()
+        .map(|(validator, hash)| {
+            (
+                ValidatorSerde(validator.clone()),
+                BlockHashSerde(hash.clone()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let zero = Bytes::from(vec![0; models::rust::block_hash::LENGTH]);
+    let finalization_base = fixture.nodes[0]
+        .block_dag_storage
+        .capture_finalization_base()
+        .expect("capture finalization base");
+    let ft_value = CliqueOracle::normalized_fault_tolerance(&derived.hash, &snapshot.dag)
         .await
-        .expect("validator 0 proposes with the win finalized and the rejection pending");
+        .expect("normalized floor fault tolerance");
+    let witness_inputs = FinalizationWitnessInputs {
+        protocol_version: snapshot.on_chain_state.shard_conf.casper_version,
+        shard_id: snapshot.on_chain_state.shard_conf.shard_name.clone(),
+        predecessor_certificate_digest: BlockHashSerde(zero.clone()),
+        predecessor_certificate_block_hash: BlockHashSerde(zero),
+        fault_tolerance_numerator: threshold.num,
+        fault_tolerance_denominator: threshold.den,
+        latest_messages: exact_latest,
+        authority_context_digest: BlockHashSerde(decision_context.digest().clone()),
+    };
+    fixture.nodes[0]
+        .block_dag_storage
+        .record_directly_finalized_certified_atomic(
+            &finalization_base.head,
+            derived.hash.clone(),
+            ft_value,
+            witness_inputs,
+            |_revision, _finalized| async { Ok(()) },
+        )
+        .await
+        .expect("materialize certified winning floor");
+    let carrier = fixture.nodes[0]
+        .add_block_from_deploys(&[])
+        .await
+        .expect("create finalized-floor certificate carrier");
+    let commitment = carrier
+        .header
+        .finalized_floor
+        .as_ref()
+        .expect("certificate carrier commits a finalized floor");
+    assert_eq!(
+        commitment.floor_hash, derived.hash,
+        "certificate carrier must commit the winning floor"
+    );
+    let snapshot = fixture.nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("snapshot after certificate carrier");
+    let carrier_floor = floor_of_block(
+        &snapshot.dag,
+        &fixture.nodes[0].block_store,
+        &carrier.block_hash,
+        threshold,
+    )
+    .await
+    .expect("derive certificate-carrier floor");
+    assert_eq!(
+        carrier_floor.hash, derived.hash,
+        "certificate carrier must materialize the winning floor"
+    );
+    derived.hash
+}
 
+fn add_recovery_entry(fixture: &mut WinningReceiptFixture) {
+    fixture.nodes[0]
+        .rejected_deploy_buffer
+        .lock()
+        .expect("buffer lock")
+        .add(vec![crate::pending_envelope(fixture.envelope.clone())])
+        .expect("add rejected deploy buffer entry");
+    assert!(buffer_contains(&fixture.nodes[0], &fixture.deploy_id));
+}
+
+async fn assert_terminal_cleanup(fixture: &WinningReceiptFixture, finalized_floor: &BlockHash) {
+    let snapshot = fixture.nodes[0]
+        .casper
+        .get_snapshot()
+        .await
+        .expect("snapshot for terminal cleanup");
+    assert_eq!(
+        snapshot.last_finalized_block, *finalized_floor,
+        "cleanup must use the certified winning floor as the LFB"
+    );
+    assert!(snapshot
+        .dag
+        .is_dag_ancestor(
+            &fixture.winning_block.block_hash,
+            &snapshot.last_finalized_block,
+        )
+        .expect("finalized winning receipt ancestry"));
+    let buffered = fixture.nodes[0]
+        .rejected_deploy_buffer
+        .lock()
+        .expect("buffer lock")
+        .read_all()
+        .expect("read rejected buffer")
+        .into_iter()
+        .find(|deploy| deploy.deploy_id() == &fixture.deploy_id)
+        .expect("buffered rejected deploy");
+    let next_block_number = snapshot
+        .max_block_num
+        .checked_add(1)
+        .expect("next block number");
+    let earliest_block_number =
+        next_block_number - snapshot.on_chain_state.shard_conf.deploy_lifespan;
+    let buffer_scan_floor = buffered
+        .data()
+        .valid_after_block_number
+        .min(earliest_block_number);
+    let parent_hashes = snapshot
+        .parents
+        .iter()
+        .map(|block| block.block_hash.clone())
+        .collect::<Vec<_>>();
+    let terminal_sigs = interpreter_util::finalized_won_terminal_sigs(
+        &fixture.nodes[0].block_store,
+        &snapshot.last_finalized_block,
+        &parent_hashes,
+        buffer_scan_floor,
+        snapshot.on_chain_state.shard_conf.casper_version,
+    )
+    .expect("compute finalized terminal signatures");
+    assert!(terminal_sigs.contains(
+        &DeployLookupId::from_protocol_bytes(
+            snapshot.on_chain_state.shard_conf.casper_version,
+            &fixture.deploy_id,
+        )
+        .expect("protocol deploy identity")
+    ));
+
+    let _prepared = prepare_user_deploys(
+        &snapshot,
+        next_block_number,
+        buffered.data().time_stamp,
+        fixture.nodes[0].deploy_storage.clone(),
+        fixture.nodes[0].rejected_deploy_buffer.clone(),
+        &fixture.nodes[0].block_store,
+        true,
+        true,
+    )
+    .await
+    .expect("prepare deploys with a finalized win");
     assert!(
-        buffer_contains(&fixture.nodes[0], &fixture.rejected_sig),
-        "the buffer entry for sig {} must survive the terminal purge while \
-         its rejection in {} is above the LFB: \"finalized canonical win\" is \
-         not terminal when a pending rejection can still overturn it \
-         (proposed block: {})",
-        hex::encode(&fixture.rejected_sig),
-        hex::encode(&merge_block.block_hash),
-        hex::encode(&next_block.block_hash)
+        !buffer_contains(&fixture.nodes[0], &fixture.deploy_id),
+        "finalized winning deploy must be removed from the recovery buffer"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn finalized_noncanonical_deploy_is_reproposed_after_canonical_rejection() {
+async fn finalized_base_win_purges_late_recovery_buffer_entry() {
     let ctx = TestContext::new().await;
-    let mut fixture = build_conflict_siblings(&ctx).await;
+    let mut fixture = stage_state_preserving_winning_receipt(&ctx.genesis).await;
+    let finalized_floor = finalize_and_materialize_winning_floor(&mut fixture).await;
+    add_recovery_entry(&mut fixture);
+    assert_terminal_cleanup(&fixture, &finalized_floor).await;
+}
 
-    fixture.nodes[0]
-        .block_dag_storage
-        .record_directly_finalized(fixture.block_a.block_hash.clone(), 1.0, |_| async {
-            Ok(())
-        })
-        .await
-        .expect("finalize the rejected deploy carrier");
-
-    let merge_block = propose_rejecting_merge(&mut fixture, 0).await;
-    {
-        let (a, b) = fixture.nodes.split_at_mut(1);
-        a[0].sync_with_one(&mut b[0])
-            .await
-            .expect("sync the rejecting merge");
-    }
-
-    // Recovery custody is owner-only: the buffer entry lives solely on the
-    // validator that sent the rejected copy's carrier (block_a's proposer,
-    // nodes[0]), so that node must drive the finalization and the recovery
-    // proposal.
-    fixture.nodes[0]
-        .block_dag_storage
-        .record_directly_finalized(merge_block.block_hash.clone(), 1.0, |_| async { Ok(()) })
-        .await
-        .expect("finalize the canonical rejecting merge");
-
-    let marker_deploy = {
-        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        construct_deploy::basic_deploy_data(1, None, Some(fixture.shard_id.clone()))
-            .expect("build recovery marker deploy")
-    };
-    let recovery_block = fixture.nodes[0]
-        .add_block_from_deploys(std::slice::from_ref(&marker_deploy))
-        .await
-        .expect("propose the recovery block");
-
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn finalized_base_win_purges_preexisting_recovery_buffer_entry() {
+    let ctx = TestContext::new().await;
+    let mut fixture = stage_state_preserving_winning_receipt(&ctx.genesis).await;
+    add_recovery_entry(&mut fixture);
+    finalize_and_materialize_winning_floor(&mut fixture).await;
     assert!(
-        recovery_block
-            .body
-            .deploys
-            .iter()
-            .any(|processed| processed.deploy.sig == fixture.rejected_sig),
-        "deploy {} must be re-proposed after the canonical merge rejects its finalized noncanonical carrier",
-        hex::encode(&fixture.rejected_sig)
+        !buffer_contains(&fixture.nodes[0], &fixture.deploy_id),
+        "certificate-carrier preparation must remove the preexisting finalized win"
     );
 }

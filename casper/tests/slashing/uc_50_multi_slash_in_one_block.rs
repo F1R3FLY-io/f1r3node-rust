@@ -2,7 +2,7 @@
 // dispatch slashes to multiple validators).
 //
 // Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-50.
-// Theorems: T-Idem, T-11.
+// Theorems: T-7, T-8, T-Idem.
 // Reference: design/06-proposing-and-effect.md §6.4.
 //
 // Scenario: validators v0 and v1 both equivocate independently.

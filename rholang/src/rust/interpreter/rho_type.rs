@@ -6,7 +6,8 @@ use std::hash::Hash;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{
-    EList, ETuple, Expr, GDeployId, GDeployerId, GPrivate, GSysAuthToken, GUnforgeable, Par,
+    EList, ETuple, Expr, GDeployId, GDeployerId, GPrincipalId, GPrivate, GSysAuthToken,
+    GUnforgeable, Par,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -241,6 +242,21 @@ impl RhoDeployerId {
     }
 }
 
+pub struct RhoSingleCustodyId;
+
+impl RhoSingleCustodyId {
+    pub fn unapply(p: &Par) -> Option<Vec<u8>> {
+        match single_unforgeable(p)?.unf_instance? {
+            UnfInstance::GDeployerIdBody(id) => Some(id.public_key),
+            UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 1,
+                public_key,
+            }) => Some(public_key),
+            _ => None,
+        }
+    }
+}
+
 pub struct RhoDeployId;
 
 impl RhoDeployId {
@@ -367,6 +383,12 @@ impl Extractor for RhoDeployerId {
     fn unapply(p: &Par) -> Option<Self::RustType> { RhoDeployerId::unapply(p) }
 }
 
+impl Extractor for RhoSingleCustodyId {
+    type RustType = Vec<u8>;
+
+    fn unapply(p: &Par) -> Option<Self::RustType> { RhoSingleCustodyId::unapply(p) }
+}
+
 impl Extractor for RhoDeployId {
     type RustType = Vec<u8>;
 
@@ -481,7 +503,48 @@ where
 
 #[cfg(test)]
 mod tests {
+    use models::rhoapi::g_unforgeable::UnfInstance::{GAuthorityIdBody, GPrincipalIdBody};
+    use models::rhoapi::{GAuthorityId, GPrincipalId};
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn unforgeable(instance: UnfInstance) -> Par {
+        Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(instance),
+        }])
+    }
+
+    proptest! {
+        #[test]
+        fn legacy_and_v61_singleton_custody_project_the_same_key(public_key in prop::collection::vec(any::<u8>(), 1..130)) {
+            let legacy = RhoDeployerId::create_par(public_key.clone());
+            let principal = unforgeable(GPrincipalIdBody(GPrincipalId {
+                key_family: 1,
+                public_key: public_key.clone(),
+            }));
+
+            prop_assert_eq!(RhoSingleCustodyId::unapply(&legacy), Some(public_key.clone()));
+            prop_assert_eq!(RhoSingleCustodyId::unapply(&principal), Some(public_key));
+        }
+
+        #[test]
+        fn non_custody_key_families_are_rejected(public_key in prop::collection::vec(any::<u8>(), 1..130), key_family in 2u32..=u32::MAX) {
+            let principal = unforgeable(GPrincipalIdBody(GPrincipalId {
+                key_family,
+                public_key,
+            }));
+
+            prop_assert_eq!(RhoSingleCustodyId::unapply(&principal), None);
+        }
+    }
+
+    #[test]
+    fn compound_authority_is_not_a_single_custody_capability() {
+        let authority = unforgeable(GAuthorityIdBody(GAuthorityId { id: vec![7; 32] }));
+
+        assert_eq!(RhoSingleCustodyId::unapply(&authority), None);
+    }
 
     #[test]
     fn nil_round_trip_and_negative() {

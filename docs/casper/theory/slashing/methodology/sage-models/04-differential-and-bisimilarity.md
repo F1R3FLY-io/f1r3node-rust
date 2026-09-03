@@ -1,4 +1,11 @@
-# 04 · Differential & bisimilarity models
+# 04 · Historical Rust–Scala differential models
+
+> **Historical scope.** These models record migration-time differential
+> evidence. DR-6 retired the Rust–Scala bisimilarity theorem after the
+> cost-accounted Rust architecture ceased to have a structurally corresponding
+> Scala implementation. Current normative evidence comes from the surviving
+> Rocq safety/refinement theorems and the Rust harness–oracle–production
+> differential suite.
 
 ## 1 · Family motivation
 
@@ -59,9 +66,10 @@ classified `permitted_bug_fix` and cites the bug-fix manifest entry.
 | `projection_risk`    | Add guard test                                                |
 | `unexpected`         | **Halt and investigate** — must be reclassified before commit |
 
-The Rocq theorem behind this family is the headline bisimilarity
-statement T-15a/b (`main_bisimilarity_theorem`); the Sage model is
-the *executable witness search* for that theorem on small bounds.
+Historically, the Rocq theorem behind this family was T-15a/b
+(`main_bisimilarity_theorem`); the Sage model was its executable witness search
+on small bounds. Both remain useful evidence about the migration snapshot, but
+neither is a current conformance target.
 
 ## 5 · Related findings
 
@@ -74,10 +82,7 @@ In [`formal/sage/slashing/FINDINGS.md`](../../../../../../formal/sage/slashing/F
 
 ## 6 · Methodology note
 
-This family is what makes the bisimilarity theorem **operationally
-checkable**. The Rocq theorem is mathematically correct under its
-definitions; the Sage model corroborates that those definitions
-remain in contact with both running implementations. Without the
-Sage corroboration, the Rocq theorem would risk becoming a
-*statement about the model* rather than *a statement about the
-system*.
+This family made the retired bisimilarity theorem operationally checkable at
+the migration snapshot. The same methodological lesson remains current:
+executable differential traces are needed to keep mechanized definitions in
+contact with production, but the active comparison no longer includes Scala.

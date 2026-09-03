@@ -17,10 +17,10 @@
 ' Finding-B fix pins a canonical fold order.
 '
 ' Source of truth for the traceability table in
-' docs/theory/merge-algebra/merge-algebra-verification.md (section 4).
+' docs/casper/theory/merge-algebra/merge-algebra-verification.md (section 4).
 '
 ' Render:
-'   plantuml -tsvg docs/theory/merge-algebra/diagrams/01-component-correspondence.puml
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/01-component-correspondence.puml
 
 @startuml 01-component-correspondence
 !theme plain

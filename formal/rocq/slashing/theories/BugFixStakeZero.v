@@ -63,3 +63,28 @@ Theorem t_9_5_active_has_positive_bond :
 Proof.
   intros ps v Hinv Hin. apply Hinv. assumption.
 Qed.
+
+Definition active_implies_bonded_stage_c (psc : PoSStateC) : Prop :=
+  active_implies_bonded (psc_pos psc).
+
+Theorem t_9_5_slashC_preserves_invariant :
+  forall psc v,
+    active_implies_bonded_stage_c psc ->
+    let result := slashC psc v in
+    let psc' := fst result in
+    active_implies_bonded_stage_c psc'.
+Proof.
+  intros psc v Hinv. simpl.
+  unfold active_implies_bonded_stage_c in *.
+  unfold slashC.
+  destruct (Nat.eq_dec (bm_lookup (ps_allBonds (psc_pos psc)) v) 0)
+    as [E | NE]; simpl.
+  - assumption.
+  - intros v' Hin.
+    simpl in Hin |- *.
+    apply filter_In in Hin. destruct Hin as [Hin Hf].
+    destruct (validator_eq_dec v' v) as [Eq | Neq]; [discriminate Hf |].
+    rewrite bm_slash_other.
+    + apply Hinv. assumption.
+    + intro Heq. apply Neq. symmetry. assumption.
+Qed.

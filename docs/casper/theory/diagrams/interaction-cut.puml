@@ -1,0 +1,41 @@
+' The gated interaction-cut (a cost-accounted COMM), Rule 1 (atomic signature s):
+' the signed redex { for(y ← x){T} | x!(U) }_s fires only when a co-present token
+' on the stack s : S authorizes it (no-leak), consuming exactly one token and
+' contracting to T{@U/y}. The continuation keeps its OWN seal (GAP-2: no SAnd
+' re-seal). The grade of the step is the consumed signature s.
+'
+' Source of truth for the interaction-cut figure (CAReduction.v ca_step rules;
+' WrappingSubjectReduction.v).
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/interaction-cut.puml
+'          (or: ./render.sh interaction-cut.puml)
+
+@startuml interaction-cut
+!include palette.iuml
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam rectangle {
+  BorderColor #333333
+}
+title Gated interaction-cut — a cost-accounted COMM (Rule 1, atomic s)
+
+rectangle "**signed redex**\n{ for(y ← x){T}  ∣  x!(U) }ₛ\n∥\n**token stack**   s : S" as Before $ca_pool
+rectangle "**continuation**   T{@U / y}\n(keeps its OWN seal — GAP-2: no SAnd re-seal)\n∥\n**tail**   S" as After $ca_note_green
+
+Before -[$ca_credit]-> After : the gate s consumes exactly ONE authorizing token\n(no-leak: the redex fires only when a co-present\ntoken authorizes it)  ·  grade of the step = s
+
+note bottom of After $ca_note_green
+  Interaction-cut: the receiver for(y←x){T} and the sender x!(U) annihilate on the
+  shared channel x, contracting to T{@U/y} (Milner's pseudo-application — the quoted
+  payload @U substitutes the bound name), gated by exactly one token.
+  Subject reduction + no-leak: WrappingSubjectReduction.v.
+  The five rules' pure-rho simulations: rule1..5_reachable (CATranslationFaithfulness.v).
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_pool>| pre-cut state: signed redex + token stack |
+  |<$ca_note_green>| post-cut state: continuation (own seal) + tail |
+  |<$ca_credit>| the single gated, billable COMM (consumes one token) |
+endlegend
+
+@enduml

@@ -38,8 +38,9 @@ The methodology uses proptest for:
 
 1. **Single-step properties** — a property about one harness step
    (*“slashing zeros the bond”*, T-7).
-2. **Bisimilarity at small bounds** — Rust ≈ oracle on `n ≤ 8`,
-   `depth ≤ 10` (T-13a/b/c, T-14, T-15).
+2. **Cross-implementation agreement at small bounds** — the Rust harness,
+   Rocq-derived oracle, and production adapter agree on `n ≤ 8`,
+   `depth ≤ 10`.
 3. **Idempotence and monotonicity** — slashing twice equals slashing
    once (T-Idem); record set is non-decreasing (T-5).
 4. **Soundness, completeness on small inputs** — sampling confirms
@@ -145,13 +146,13 @@ the table below is a representative subset to illustrate the
 |-------------------------------------------|-----------|--------------------------------------------------------------------------|
 | `prop_t_1_detection_sound.rs`             | T-1       | Honest validators never recorded                                         |
 | `prop_t_2_detection_complete.rs`          | T-2       | Every real equivocator is eventually recorded                            |
-| `prop_t_3_slashable_taxonomy.rs`          | T-3       | `is_slashable(s)` ⇔ `s ∈ {19 slashable variants}` (17 pre-fix + `IgnorableEquivocation` + `UnauthorizedSlashDeploy`) |
+| `prop_t_3_slashable_taxonomy.rs`          | T-3       | `is_slashable(s)` is true exactly for `AdmissibleEquivocation` and `IgnorableEquivocation` |
 | `prop_t_4_record_uniqueness.rs`           | T-4       | At most one record per `(v, base_seq)`                                   |
 | `prop_t_5_record_monotonicity.rs`         | T-5       | Record set is non-decreasing in any trace                                |
 | `prop_t_6_neglect_detection.rs`           | T-6       | Neglected equivocations detected at all valid views                      |
 | `prop_t_7_slash_zeros_bond.rs`            | T-7       | `slash(v)` ⇒ `bond(v) = 0`                                               |
 | `prop_t_9_1_ignorable_safety.rs`          | T-9.1     | Ignorable equivocations record (Bug #1 post-fix invariant)               |
-| `prop_t_9_3_catchall_records.rs`          | T-9.3     | Every slashable variant records (Bug #3 post-fix invariant)              |
+| `prop_t_9_3_catchall_records.rs`          | T-9.3     | Every rejection persists, and only eligible equivocations create evidence |
 | `prop_t_9_4_transfer_failure.rs`          | T-9.4     | Failed `transfer` leaves bonds untouched (Bug #4)                        |
 | `prop_t_9_5_active_has_positive_bond.rs`  | T-9.5     | Active set ⊆ {validators with bond > 0} (Bug #5)                         |
 | `prop_t_9_6_self_regression.rs`           | T-9.6     | Self-regression detected as equivocation (Bug #6)                        |
@@ -161,11 +162,6 @@ the table below is a representative subset to illustrate the
 | `prop_t_9_11_detector_*.rs` (three files) | T-9.11    | Detector totality, permutation invariance, bisim under complete pointers |
 | `prop_t_11_neglect_closure.rs`            | T-11      | Two-level closure converges in ≤ `n − 1` rounds                          |
 | `prop_t_12_quorum_preservation.rs`        | T-12      | Closure preserves BFT quorum under `f < n/3`                             |
-| `prop_t_13a_bonds_bisim.rs`               | T-13a     | Bond map ≈ between harness and oracle                                    |
-| `prop_t_13b_records_bisim.rs`             | T-13b     | Record set ≈ between harness and oracle                                  |
-| `prop_t_13c_forkchoice_bisim.rs`          | T-13c     | Fork-choice projection ≈ between harness and oracle                      |
-| `prop_t_14_weak_barbed_equiv.rs`          | T-14      | Weak barbed bisimilarity Rust ↔ oracle on bounded traces                 |
-| `prop_t_15_bisim_under_workload.rs`       | T-15      | Bisimilarity holds under a random workload                               |
 | `prop_t_auth_check.rs`                    | T-Auth    | System auth-token guard                                                  |
 | `prop_t_idem_slash_idempotence.rs`        | T-Idem    | Slashing twice = slashing once                                           |
 | `prop_t_invariants_under_workload.rs`     | composite | All invariants under a random workload                                   |
@@ -184,10 +180,10 @@ Three observations about this catalog:
    [`../../design/09-bug-fixes-and-rationale.md`](../../design/09-bug-fixes-and-rationale.md);
    the property is the *positive* statement of *“the bug cannot
    recur”*.
-3. **Triple coverage on bisimilarity**. Bisimilarity is the headline
-   claim and the most subtle one; it is checked at three levels
-   (T-13a/b/c per projection, T-14 weak-barbed, T-15a/b under
-   workload).
+3. **Three-way differential coverage**. The current cross-implementation
+   claim compares the harness, Rocq-derived oracle, and production adapter.
+   The former T-13a/b/c, T-14, and T-15 Rust–Scala properties were retired by
+   DR-6 and are preserved only in git history.
 
 ---
 

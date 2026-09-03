@@ -7,7 +7,7 @@
 ' bond and transfers the forfeited stake to the Coop vault; fork choice
 ' filters A's latest message out.
 '
-' Source of truth for Figure 4.1 in docs/theory/slashing/slashing-specification.md.
+' Source of truth for Figure 4.1 in docs/casper/theory/slashing/slashing-specification.md.
 '
 ' Color palette (consistent across all sequence diagrams 02, 03, 04, 05, 09):
 '   #C62828 red     — adversarial action; buggy/regression write
@@ -19,7 +19,7 @@
 '   #546E7A gray    — internal computation (no side effect)
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/02-seq-admissible-equivocation.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/02-seq-admissible-equivocation.puml
 
 @startuml 02-seq-admissible-equivocation
 !theme plain

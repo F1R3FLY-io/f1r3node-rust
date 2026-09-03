@@ -102,7 +102,17 @@ async fn start_node(options: Options) -> Result<()> {
     apply_log_cli_overrides_raw(log_overrides, &mut node_conf.logging);
 
     let data_dir = node_conf.storage.data_dir.clone();
-    let _log_guards = init_logging(&node_conf.logging, Some(&data_dir))?;
+    let (extra_logging_layers, _zipkin_guard) = if node_conf.metrics.zipkin {
+        let (layer, guard) = node::rust::diagnostics::zipkin_reporter::create_zipkin_reporter()?;
+        (vec![layer], Some(guard))
+    } else {
+        (Vec::new(), None)
+    };
+    let _log_guards =
+        init_logging_with_layers(&node_conf.logging, Some(&data_dir), extra_logging_layers)?;
+    if node_conf.metrics.zipkin {
+        info!("Zipkin reporter initialized successfully.");
+    }
 
     for w in deferred_warnings {
         warn!("{}", w);
@@ -184,25 +194,20 @@ fn run_cli(options: Options, rt: &Runtime) -> Result<()> {
 
                 Ok(())
             }
-            OptionsSubCommand::Deploy {
-                phlo_limit,
-                phlo_price,
-                valid_after_block,
-                private_key,
-                private_key_path,
-                location,
-                shard_id,
-            } => {
-                let private_key =
-                    get_private_key(private_key, private_key_path, &mut console_io()?)?;
+            OptionsSubCommand::Deploy(deploy) => {
+                let valid_after_block = i64::try_from(deploy.valid_after_block_number)
+                    .map_err(|_| eyre::eyre!("valid-after block number exceeds i64::MAX"))?;
+                let private_key = get_private_key(
+                    deploy.private_key,
+                    deploy.private_key_path,
+                    &mut console_io()?,
+                )?;
                 rt.block_on(DeployRuntime::deploy_file_program(
                     &mut deploy_client,
-                    phlo_limit,
-                    phlo_price,
                     valid_after_block,
                     &private_key,
-                    &location,
-                    &shard_id,
+                    &deploy.location,
+                    &deploy.shard_id,
                 ));
                 Ok(())
             }
@@ -283,6 +288,14 @@ pub fn init_logging(
     data_dir: Option<&std::path::Path>,
 ) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
     shared::rust::tracing_init::init(cfg, data_dir)
+}
+
+fn init_logging_with_layers(
+    cfg: &shared::rust::tracing_init::LoggingConfig,
+    data_dir: Option<&std::path::Path>,
+    extra_layers: Vec<shared::rust::tracing_init::BoxedTracingLayer>,
+) -> eyre::Result<shared::rust::tracing_init::TracingGuards> {
+    shared::rust::tracing_init::init_with_layers(cfg, data_dir, extra_layers)
 }
 
 fn apply_log_cli_overrides(options: &Options, cfg: &mut shared::rust::tracing_init::LoggingConfig) {

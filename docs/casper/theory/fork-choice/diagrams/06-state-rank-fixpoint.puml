@@ -1,17 +1,15 @@
-' State Diagram 06 — rank_forkchoices fixpoint (termination).
+' State Diagram 06 — greedy-head and asynchronous-frontier composition.
 '
-' rank_forkchoices(blocks) computes new_blocks by replacing each block with its
-' scored children (distinct, then sorted score-desc / hash-asc). If
-' still_same(blocks, new_blocks) it returns blocks (the fixpoint); otherwise it
-' recurses on new_blocks. Each recursion advances the frontier one level down
-' the DAG, so the Σ block-number measure strictly increases and is bounded by
-' the DAG height ⟹ termination.
+' The head lane follows one maximum-score child at a time. The frontier lane may
+' expand any scored nonterminal, retaining every terminal and deduplicating shared
+' children. Both require height progress. Composition reserves index zero for the
+' greedy head and totally orders only the remaining terminals.
 '
 ' Rocq Rank.rank_terminates ; the empty-tips case is a typed Err
 ' (Bound.empty_tips_typed_err).
 '
 ' Render:
-'   plantuml -tsvg docs/theory/fork-choice/diagrams/06-state-rank-fixpoint.puml
+'   plantuml -tsvg docs/casper/theory/fork-choice/diagrams/06-state-rank-fixpoint.puml
 
 @startuml 06-state-rank-fixpoint
 !theme plain
@@ -30,7 +28,7 @@ skinparam legendBorderColor #666666
 skinparam defaultFontName "monospace"
 skinparam defaultFontSize 10
 
-title rank_forkchoices fixpoint (termination)
+title LMD-GHOST two-lane ranking (parallel-preserving)
 
 ' State color legend:
 '   blue   (#BBDEFB) = seed frontier {lca}
@@ -42,22 +40,24 @@ title rank_forkchoices fixpoint (termination)
 '   orange(#E65100) = leaf guard (block keeps self)
 '   green (#2E7D32) = fixpoint transition
 
-state "start = {lca}" as Seed #BBDEFB
-state "expand to scored children\n(replace each block; distinct;\nsort score DESC, hash ASC)" as Expand #FFE0B2
-state "fixpoint = current tips\n(still_same = true ⟹\nnew_blocks == blocks)" as Fix #A5D6A7
+state "certified LCA" as Seed #BBDEFB
+state "greedy lane\nchoose score-DESC/hash-ASC child\nuntil a terminal" as Greedy #A5D6A7
+state "frontier lane\nchoose ANY scored nonterminal;\nreplace by all children; deduplicate" as Expand #FFE0B2
+state "compose\n[ghost] ++ sort(terminals - ghost)" as Fix #A5D6A7
 
 [*] -[#00838F]-> Seed
-Seed -[#00838F]-> Expand : rank_forkchoices({lca})
-Expand -[#1565C0]-> Expand : still_same = false ⟹\nadvance one level;\nΣ block-number STRICTLY increases
-Expand -[#E65100]-> Expand : no scored children ⟹\nkeep self (leaf reached)
-Expand -[#2E7D32]-> Fix : still_same = true ⟹\nall frontier blocks kept self
+Seed -[#2E7D32]-> Greedy : start head = lca
+Seed -[#00838F]-> Expand : frontier = {lca}
+Greedy -[#2E7D32]-> Greedy : scored children exist ⟹\nchoose unique best; height advances
+Expand -[#1565C0]-> Expand : scored nonterminal exists ⟹\nexpand any one; finite work decreases
+Greedy -[#2E7D32]-> Fix : no scored child ⟹ ghost terminal
+Expand -[#2E7D32]-> Fix : exact terminal frontier reached
 Fix -[#2E7D32]-> [*] : return tips
 
 note bottom of Fix
-  The strictly-increasing block-number measure is bounded by the DAG
-  height ⟹ the recursion terminates (Rocq Rank.rank_terminates).
-  The empty-tips case (genesis-only DAG) is a typed Err downstream in
-  filter_deep_parents, NOT a panic (Bound.empty_tips_typed_err).
+  Rocq proves greedy termination, exact frontier membership, confluence, and
+  head-first composition. TLA⁺ explores every asynchronous expansion order.
+  A malformed non-advancing child or missing head membership is a typed error.
 end note
 
 @enduml

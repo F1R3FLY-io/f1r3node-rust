@@ -39,6 +39,8 @@ pub struct LightBlockInfoSerde {
     #[serde(rename = "bodyExtraBytes", with = "base64_bytes")]
     pub body_extra_bytes: Vec<u8>,
     pub bonds: Vec<BondInfoJson>,
+    #[serde(rename = "activeBonds")]
+    pub active_bonds: Vec<BondInfoJson>,
     #[serde(rename = "blockSize")]
     pub block_size: String,
     #[serde(rename = "deployCount")]
@@ -71,6 +73,9 @@ pub struct JustificationInfoJson {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RejectedDeployInfoJson {
     pub sig: String,
+    #[serde(rename = "sourceBlockHash", skip_serializing_if = "String::is_empty")]
+    pub source_block_hash: String,
+    pub reason: String,
 }
 
 /// Convert LightBlockInfo to JSON-serializable format
@@ -100,6 +105,14 @@ impl From<LightBlockInfo> for LightBlockInfoSerde {
                     stake: b.stake,
                 })
                 .collect(),
+            active_bonds: block
+                .active_bonds
+                .iter()
+                .map(|b| BondInfoJson {
+                    validator: b.validator.clone(),
+                    stake: b.stake,
+                })
+                .collect(),
             block_size: block.block_size.clone(),
             deploy_count: block.deploy_count,
             fault_tolerance: block.fault_tolerance,
@@ -114,7 +127,11 @@ impl From<LightBlockInfo> for LightBlockInfoSerde {
             rejected_deploys: block
                 .rejected_deploys
                 .iter()
-                .map(|r| RejectedDeployInfoJson { sig: r.sig.clone() })
+                .map(|r| RejectedDeployInfoJson {
+                    sig: r.sig.clone(),
+                    source_block_hash: r.source_block_hash.clone(),
+                    reason: r.reason.clone(),
+                })
                 .collect(),
             is_finalized: block.is_finalized,
         }
@@ -148,6 +165,14 @@ impl From<LightBlockInfoSerde> for LightBlockInfo {
                     stake: b.stake,
                 })
                 .collect(),
+            active_bonds: json
+                .active_bonds
+                .into_iter()
+                .map(|b| BondInfo {
+                    validator: b.validator,
+                    stake: b.stake,
+                })
+                .collect(),
             block_size: json.block_size,
             deploy_count: json.deploy_count,
             fault_tolerance: json.fault_tolerance,
@@ -162,7 +187,11 @@ impl From<LightBlockInfoSerde> for LightBlockInfo {
             rejected_deploys: json
                 .rejected_deploys
                 .into_iter()
-                .map(|r| RejectedDeployInfo { sig: r.sig })
+                .map(|r| RejectedDeployInfo {
+                    sig: r.sig,
+                    source_block_hash: r.source_block_hash,
+                    reason: r.reason,
+                })
                 .collect(),
             is_finalized: json.is_finalized,
         }
@@ -207,6 +236,7 @@ impl Default for LightBlockInfoSerde {
             post_state_hash: String::new(),
             body_extra_bytes: Vec::new(),
             bonds: Vec::new(),
+            active_bonds: Vec::new(),
             block_size: String::new(),
             deploy_count: 0,
             fault_tolerance: 0.0,
@@ -258,6 +288,10 @@ mod tests {
                 validator: "validator1".to_string(),
                 stake: 1000,
             }],
+            active_bonds: vec![BondInfo {
+                validator: "validator1".to_string(),
+                stake: 1000,
+            }],
             block_size: "1024".to_string(),
             deploy_count: 5,
             fault_tolerance: 0.5,
@@ -267,6 +301,8 @@ mod tests {
             }],
             rejected_deploys: vec![RejectedDeployInfo {
                 sig: "rejected_sig".to_string(),
+                source_block_hash: "source_block_hash".to_string(),
+                reason: "merge_conflict".to_string(),
             }],
             is_finalized: false,
         }
@@ -310,6 +346,7 @@ mod tests {
         assert_eq!(original.bonds.len(), deserialized.bonds.len());
         assert_eq!(original.bonds[0].validator, deserialized.bonds[0].validator);
         assert_eq!(original.bonds[0].stake, deserialized.bonds[0].stake);
+        assert_eq!(original.active_bonds, deserialized.active_bonds);
         assert_eq!(original.block_size, deserialized.block_size);
         assert_eq!(original.deploy_count, deserialized.deploy_count);
         assert_eq!(original.fault_tolerance, deserialized.fault_tolerance);

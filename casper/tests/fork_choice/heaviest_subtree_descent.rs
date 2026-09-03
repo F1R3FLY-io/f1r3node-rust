@@ -24,7 +24,7 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
 lazy_static::lazy_static! {
@@ -52,7 +52,6 @@ fn make_block(
         Some(creator.clone()),
         Some(bonds.to_vec()),
         Some(justifications),
-        None,
         None,
         None,
         None,
@@ -203,12 +202,11 @@ async fn the_head_must_not_leave_a_majority_branch_for_a_hash_earlier_rival() {
             if !adversarial_ordering {
                 return None;
             }
-            let mut dag = block_dag_storage
+            let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply(i32::MAX, None);
-            let head = estimator
-                .tips_with_latest_messages(&mut dag, &fork.genesis, fork.latest.clone())
+            let head = certified_fork_choice(&estimator, &dag, &fork.genesis, fork.latest.clone())
                 .await
                 .expect("tips")
                 .tips
@@ -344,12 +342,11 @@ proptest! {
                 latest.insert(validator.clone(), tip.block_hash);
             }
 
-            let mut dag = block_dag_storage
+            let dag = block_dag_storage
                 .get_representation()
                 .expect("dag representation");
             let estimator = Estimator::apply(i32::MAX, None);
-            let head = estimator
-                .tips_with_latest_messages(&mut dag, &genesis, latest)
+            let head = certified_fork_choice(&estimator, &dag, &genesis, latest)
                 .await
                 .expect("tips")
                 .tips

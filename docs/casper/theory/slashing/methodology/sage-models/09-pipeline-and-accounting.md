@@ -69,7 +69,7 @@ order is observationally independent in this configuration.
 | Record uniqueness                | T-4                                | `EquivocationDetector.tla` `Inv_RecordUniqueness` | `prop_t_4_record_uniqueness.rs`                                   |
 | Slash order independence         | (informal; covered by composition) | (model-checked)                                   | `prop_t_5_record_monotonicity.rs`                                 |
 | Parent-bond authorization        | T-9.13′                            | `AuthorizedSlashFlow.tla`                         | `slash_authorization_regressions`                                 |
-| Rejected-slash reissue           | T-9.13″                            | `AuthorizedSlashFlow.tla`, `SlashFlow.tla`        | `slash_recovery_spec`, `rejected_slash`                           |
+| Canonical slash reconstruction   | T-9.13‴                            | `AuthorizedSlashFlow.tla`, `SlashFlow.tla`        | `slash_recovery_spec`, `slashing_authorization`                   |
 
 ## 5 · Related findings
 

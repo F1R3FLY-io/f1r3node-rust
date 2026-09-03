@@ -345,7 +345,12 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
+    fn from(err: RSpaceError) -> InterpreterError {
+        match err {
+            RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
+            other => InterpreterError::RSpaceError(other),
+        }
+    }
 }
 
 impl From<InterpreterError> for RSpaceError {

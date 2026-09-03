@@ -3,5 +3,7 @@ pub mod carrier_index;
 pub mod block_metadata_store;
 pub mod buffer_dag_transition;
 pub mod deploy_lifecycle_types;
+pub mod deploy_occurrence_store;
+pub mod deploy_occurrence_types;
 pub mod equivocation_tracker_store;
 pub mod equivocations_access;

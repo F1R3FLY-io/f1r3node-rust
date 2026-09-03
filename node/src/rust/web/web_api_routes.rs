@@ -98,8 +98,9 @@ pub async fn prepare_deploy_get_handler(State(app_state): State<AppState>) -> Re
     path = "/api/prepare-deploy",
     request_body = PrepareRequest,
     responses(
-        (status = 200, description = "Next deploy sequence number and pre-generated unforgeable names for the given deployer/timestamp", body = PrepareResponse),
+        (status = 200, description = "Next deploy sequence number. Legacy protocols can also return pre-generated unforgeable names", body = PrepareResponse),
         (status = 400, description = "Malformed request body or invalid deployer hex (`invalid_request_body`, `invalid_hash`)", body = ApiErrorResponse),
+        (status = 409, description = "The active protocol does not support key-and-timestamp private-name preview (`private_name_preview_unavailable`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`runtime_error`)", body = ApiErrorResponse),
     ),
     tag = "WebAPI"
@@ -630,8 +631,6 @@ mod tests {
                 None
             },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
-            phlo_price: if is_full { Some(10) } else { None },
-            phlo_limit: if is_full { Some(100000) } else { None },
             sig_algorithm: if is_full {
                 Some("secp256k1".to_string())
             } else {
@@ -714,11 +713,10 @@ mod tests {
                 Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
                     term: "for (x <- ch) { return!(x) }".to_string(),
                     timestamp: 1770028092477,
-                    phlo_price: 1,
-                    phlo_limit: 100_000,
                     valid_after_block_number: 0,
                     shard_id: String::new(),
                     deployer: pk.to_string(),
+                    deploy_id: "aa11".to_string(),
                     sig: "aa11".to_string(),
                     sig_algorithm: "secp256k1".to_string(),
                     expiration_timestamp: None,
@@ -728,11 +726,10 @@ mod tests {
                     PendingDeployJson {
                         term: "Nil".to_string(),
                         timestamp: 1770028092477,
-                        phlo_price: 1,
-                        phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
                         deployer: "0487def456".to_string(),
+                        deploy_id: "aa11".to_string(),
                         sig: "aa11".to_string(),
                         sig_algorithm: "secp256k1".to_string(),
                         expiration_timestamp: None,
@@ -741,11 +738,10 @@ mod tests {
                     PendingDeployJson {
                         term: "@0!(42)".to_string(),
                         timestamp: 1770028092478,
-                        phlo_price: 1,
-                        phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
                         deployer: "0499abc789".to_string(),
+                        deploy_id: "bb22".to_string(),
                         sig: "bb22".to_string(),
                         sig_algorithm: "secp256k1".to_string(),
                         expiration_timestamp: None,
@@ -877,8 +873,9 @@ mod tests {
         // Full view includes deploy execution details
         assert_eq!(json["deployer"], "0487def456");
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
-        assert!(json.get("phloLimit").is_some());
+        // D3 (DR-9): the deploy response no longer carries phloPrice / phloLimit.
+        assert!(json.get("phloPrice").is_none());
+        assert!(json.get("phloLimit").is_none());
         assert!(json.get("sigAlgorithm").is_some());
         assert!(json.get("transfers").is_some());
     }
@@ -1142,6 +1139,8 @@ mod router_tests {
                 state: "Finalized".to_string(),
                 rejection_count: 0,
                 latest_block_hash: Some("aa".to_string()),
+                finalized_floor_hash: Some("bb".to_string()),
+                finalized_floor_height: Some(1),
             })
         }
 
@@ -1371,11 +1370,11 @@ mod router_tests {
         let deploy_body = serde_json::json!({
             "data": {
                 "term": "Nil",
+                "language": "rholang",
                 "timestamp": 1,
-                "phloPrice": 1,
-                "phloLimit": 100,
                 "validAfterBlockNumber": 0,
                 "shardId": "root",
+                "authorityPresentations": [],
             },
             "deployer": "04aa",
             "signature": "bb",

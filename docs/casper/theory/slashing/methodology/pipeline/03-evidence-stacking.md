@@ -53,12 +53,12 @@ strength:
 | **1-stacked** | One layer only (e.g. a single proptest property)                                       | Exploratory only; never load-bearing             |
 | **2-stacked** | One mechanized + one randomized                                                        | Internal helpers; non-load-bearing utilities     |
 | **3-stacked** | One mechanized + one randomized + one of {differential, metamorphic, ledger}           | Most load-bearing properties                     |
-| **4-stacked** | One mechanized + one randomized + one differential/metamorphic + one ledger entry      | Headline properties (T-1, T-2, T-11, T-12, T-15) |
-| **5-stacked** | 4-stacked + a TLA⁺ trace-replay test that re-executes the property on production state | Bisimilarity (T-15a/b); the headline theorem     |
+| **4-stacked** | One mechanized + one randomized + one differential/metamorphic + one ledger entry      | Headline safety and closure properties            |
+| **5-stacked** | 4-stacked + a TLA⁺ trace-replay test that re-executes the property on production state | Cross-layer consensus and replay obligations      |
 
-The slashing development's headline theorems — bisimilarity, BFT
-bound, detector soundness/completeness, two-level closure
-termination — are all **5-stacked**. Internal helpers (e.g.
+The slashing development's current headline safety/refinement capstone, BFT
+bound, detector soundness/completeness, and two-level closure termination are
+all **5-stacked**. Internal helpers (e.g.
 arithmetic boundary functions) are typically **3-stacked** (Kani +
 libFuzzer + Rocq).
 
@@ -145,7 +145,7 @@ Property φ₂ = ∀ s ≤ 0. checked_base_seq(s) = None
 3 layers. Lower depth than T-1 because this is a per-function
 property (Kani exhausts the domain), not a system-wide property.
 
-### 3.3 Bisimilarity (T-15) — 5-stacked
+### 3.3 Historical bisimilarity stack (retired T-15)
 
 ```
 Property φ₃ = Rust LTS ≈_weak Scala LTS modulo {Bugs #1..#16}
@@ -159,9 +159,12 @@ Property φ₃ = Rust LTS ≈_weak Scala LTS modulo {Bugs #1..#16}
    └── Ledger entry: slashing-traceability.md "T-13a/b/c, T-14, T-15a/b"
 ```
 
-5 layers, with the differential and metamorphic arms providing the
-strongest possible operational corroboration of the unbounded Rocq
-theorem.
+This five-layer stack describes the Scala-to-Rust migration snapshot. DR-6
+retired the T-15 theorem and its dedicated Rust properties after the
+cost-accounted Rust architecture became structurally incomparable with Scala.
+The surviving differential corpus and harness–oracle–production properties
+now corroborate the current Rocq safety/refinement capstone rather than this
+retired theorem.
 
 ---
 

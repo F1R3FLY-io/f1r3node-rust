@@ -223,7 +223,7 @@ after the bounded frontier and Rust regression suite are stable.
 |---------|---------------------|----------------------|
 | `prop_t_15_triple_bisim_dispatch` fails on bond observable | Production | Compare `compute_bonds` output between two consecutive commits |
 | `prop_t_15_triple_bisim_dispatch` fails on has_record | Harness | Check `dispatch` arm coverage; harness may have skipped a slashable variant |
-| `prop_t_13a_bonds_bisim` fails (no production tier) | Oracle | Check `oracle.rs` against `formal/rocq/slashing/theories/PoSContract.v` |
+| `prop_t_triple_bisim_records` isolates the oracle | Oracle | Check `oracle.rs` against `formal/rocq/slashing/theories/PoSContract.v` |
 | Surviving mutant in `equivocation_detector.rs` | Coverage gap | Add a UC test or proptest exercising the mutated code path |
 | `loom-interleavings` job times out | Loom budget | Decrease `LOOM_MAX_PREEMPTIONS` or remove a thread from the schedule |
 
@@ -253,11 +253,13 @@ The principled architecture is verified against the constraints:
   the §14.2.4 tier-model summary.
 * [§09 Bug Fixes and Rationale](./09-bug-fixes-and-rationale.md)
   — the 16 documented bug fixes the tests are pinning.
-* [§10 Bisimilarity](./10-bisimilarity.md) — the formal
-  bisimulation theorem the triple-bisim tests are runtime-
-  checking.
-* `formal/rocq/slashing/theories/Bisimulation.v` — the Rocq
-  mechanization.
+* §10 Rust–Scala bisimilarity — **removed (2026-05-29, DR-6)** together
+  with its Rocq mechanization (`Bisimulation.v`) and dedicated T-13/T-14/T-15
+  properties: the cost-accounted-rho migration made the Rust and Scala
+  implementations structurally incomparable. The distinct three-tier
+  harness–oracle–production tests remain, and the tier model's closure rests
+  on `main_slashing_algorithm_correct`. See the removal notice in
+  [slashing-verification.md](../slashing-verification.md).
 
 ---
 

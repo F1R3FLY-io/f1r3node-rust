@@ -127,7 +127,7 @@ The TLA⁺ models in `formal/tlaplus/slashing/` are:
 | `ConcurrentTracker.tla`       | The lock-free vs. locked tracker, parameterized by `Locked ∈ BOOLEAN`                | `Inv_NoOverwrite` (violated when `Locked = FALSE`; satisfied when `Locked = TRUE`) |
 | `SlashFlow.tla`               | End-to-end pipeline (detection → record → propose → SlashDeploy → PoS → fork-choice) | `Inv_Pipeline_Reaches_Effect ∧ Inv_NoSlashWithoutRecord`                           |
 | `TwoLevelSlashing.tla`        | Closure of direct offenders + neglecters                                             | `Inv_ClosureTermination ∧ Inv_BFTBound ∧ Inv_QuorumIntersect`                      |
-| `AuthorizedSlashFlow.tla`     | Slash authorization for current-epoch invalid-block evidence                         | `Inv_SlashOnlyIfAuthorized ∧ Inv_RebondRejectsStaleEvidence`                       |
+| `AuthorizedSlashFlow.tla`     | Slash authorization for current-epoch invalid-block evidence                         | `Inv_OnlyCurrentEpochCurrentGenerationSlashCanBePending ∧ Inv_StaleGenerationCannotSlashRebondedKey` |
 | `JustificationProjection.tla` | Justification-validator-projection model                                             | `Inv_DuplicateValidatorsRejected`                                                  |
 | `WithdrawFlow.tla`            | Post-quarantine withdrawal flow modelling Bug #10                                    | `Inv_TotalFundsConserved ∧ Inv_WithdrawalRetryable`                                |
 
@@ -198,7 +198,9 @@ Read aloud:
 ### 4.3 The TLC run
 
 ```bash
-tlc -workers 12 MC_EquivocationDetector.tla
+systemd-run --user --scope \
+  -p MemoryMax=8G -p MemorySwapMax=0 \
+  tlc -workers 4 MC_EquivocationDetector.tla
 ```
 
 TLC enumerates breadth-first from `Init`. At every reachable state, it

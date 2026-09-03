@@ -55,13 +55,6 @@ pub fn initialize_diagnostics(
         }
     }
 
-    if conf.metrics.zipkin {
-        match zipkin_reporter::create_zipkin_reporter() {
-            Ok(_) => info!("Zipkin reporter initialized successfully."),
-            Err(e) => warn!("Failed to initialize Zipkin reporter: {}", e),
-        }
-    }
-
     if conf.metrics.sigar {
         sigar_reporter::start_sigar_reporter(metrics_interval);
         info!(

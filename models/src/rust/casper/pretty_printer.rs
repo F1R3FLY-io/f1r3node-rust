@@ -123,7 +123,7 @@ mod tests {
     use super::*;
     use crate::rhoapi::PCost;
     use crate::rust::block_implicits::get_random_block;
-    use crate::rust::casper::protocol::casper_message::HasBlock;
+    use crate::rust::casper::protocol::casper_message::{DeployAdmissionStatus, HasBlock};
 
     fn block_with_parents(parents: Vec<Bytes>) -> BlockMessage {
         get_random_block(
@@ -150,12 +150,12 @@ mod tests {
         Signed::create(
             DeployData {
                 term: "new x in { x!(1) }".to_string(),
+                language: "rholang".to_string(),
                 time_stamp: 42,
-                phlo_price: 1,
-                phlo_limit: 1000,
                 valid_after_block_number: 5,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                authority_presentations: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -297,12 +297,12 @@ mod tests {
     fn build_string_deploy_data_prints_timestamp_and_term() {
         let deploy = DeployData {
             term: "Nil".to_string(),
+            language: "rholang".to_string(),
             time_stamp: 99,
-            phlo_price: 1,
-            phlo_limit: 10,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         };
         assert_eq!(
             PrettyPrinter::build_string_deploy_data(&deploy),
@@ -328,10 +328,18 @@ mod tests {
         let signed = signed_deploy();
         let processed = ProcessedDeploy {
             deploy: signed.clone(),
+            envelope_commitment: Bytes::new(),
             cost: PCost { cost: 17 },
             deploy_log: Vec::new(),
             is_failed: false,
             system_deploy_error: None,
+            cosigners: Vec::new(),
+            cosigner_threshold: 0,
+            pre_state_hash: Bytes::new(),
+            post_state_hash: Bytes::new(),
+            authority_funding_certificate: None,
+            authority_cost_witness: None,
+            admission_status: DeployAdmissionStatus::Executed,
         };
         let rendered = PrettyPrinter::build_string_processed_deploy(&processed);
         assert!(rendered.starts_with(&format!(

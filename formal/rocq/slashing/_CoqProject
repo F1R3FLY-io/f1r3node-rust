@@ -2,7 +2,7 @@
 #
 # Establishes correctness of the Rust slashing logic in this repository:
 # detection soundness/completeness, the slash effect (bond zeroing, stake
-# transfer, fork-choice exclusion), two-level closure, and the documented
+# transfer, fork-choice exclusion), counterfactual two-level closure, and the documented
 # bug-fix deltas, composed in main_slashing_algorithm_correct.
 #
 # Source: f1r3node-rust/casper/src/rust/{equivocation_detector,validate,
@@ -13,18 +13,25 @@
 #   docs/casper/theory/slashing/slashing-specification.md  (normative spec)
 #   docs/casper/theory/slashing/slashing-verification.md   (proofs in math + Rocq pointers)
 #
-# 28 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
+# 30 modules. Zero `Admitted`. No custom `Axiom` or `Parameter`.
 #
 # Module dependency graph (→ = "depends on"):
 #
 #   Validator              (standalone)
 #   ValidatorLifetime      → Validator
+#   BondGenerationLifecycle → ValidatorLifetime
 #   Block                  → Validator
 #   InvalidBlock           → Block
 #   EquivocationRecord     → Validator, Block
 #   DAGState               → Block, EquivocationRecord
 #   EquivocationDetector   → DAGState, InvalidBlock
-#   PoSContract            → Validator
+#   PoSContract            → Validator   (+ Stage-C two-effect PoSStateC/slashC,
+#                                          §7-§12: quarantine + mintingHalted,
+#                                          ADDITIVE — legacy PoSState/slash kept)
+#   ValidatorRedemption    → Validator, PoSContract  (Stage-C redeemSlashed:
+#                                          vindicated/guilty/burned adjudication
+#                                          + slash→redeem total conservation;
+#                                          INDEPENDENT of MainTheorem.v)
 #   SlashDeploy            → Block, PoSContract, InvalidBlock
 #   BlockCreator           → DAGState, SlashDeploy, EquivocationRecord
 #   ForkChoice             → DAGState, PoSContract
@@ -46,7 +53,8 @@
 #                                  + parallel-fold order-independence)
 #   BugFixAtomicBufferDagTransition → (standalone; T-9.20 atomic buffer DAG
 #                                  transition bug fix #17)
-#   Bisimulation           → PoSContract, ForkChoice (the headline relations)
+#   ProtocolV5DependencyReadiness → (standalone; exact dependency projection,
+#                                  admitted-metadata readiness, direct/buffer parity)
 #   MainTheorem            → all of the above (composition)
 #
 # The development models the on-chain Rholang `slash` contract at
@@ -57,6 +65,7 @@
 
 theories/Validator.v
 theories/ValidatorLifetime.v
+theories/BondGenerationLifecycle.v
 theories/Block.v
 theories/InvalidBlock.v
 theories/EquivocationRecord.v
@@ -64,6 +73,7 @@ theories/DAGState.v
 theories/EquivocationDetector.v
 theories/DetectorProduct.v
 theories/PoSContract.v
+theories/ValidatorRedemption.v
 theories/SlashDeploy.v
 theories/BlockCreator.v
 theories/ForkChoice.v
@@ -81,5 +91,5 @@ theories/BugFixSlashAuthorization.v
 theories/BugFixUnbondedProposer.v
 theories/BugFixWithdrawTransferFailure.v
 theories/BugFixAtomicBufferDagTransition.v
-theories/Bisimulation.v
+theories/ProtocolV5DependencyReadiness.v
 theories/MainTheorem.v

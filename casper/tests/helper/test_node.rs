@@ -3,15 +3,18 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DeployId};
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
+use casper::rust::blocks::block_processing_queue::{
+    BlockProcessingQueueReceiver, BlockProcessingQueueSender,
+};
 use casper::rust::blocks::block_processor::{BlockProcessor, BlockProcessorDependencies};
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::new_proposer;
-use casper::rust::casper::{Casper, CasperShardConf, MultiParentCasper};
+use casper::rust::casper::{Casper, CasperShardConf, DeployError, MultiParentCasper};
 use casper::rust::engine::block_retriever::{BlockRetriever, RequestState, RequestedBlocks};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
@@ -35,17 +38,16 @@ use comm::rust::transport::communication_response::CommunicationResponse;
 use comm::rust::transport::grpc_transport_server::TransportLayerServer;
 use comm::rust::transport::transport_layer::Blob;
 use crypto::rust::private_key::PrivateKey;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use dashmap::DashSet;
 use models::routing::Protocol;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, DeployData,
 };
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::mpsc;
 
 use crate::util::comm::transport_layer_test_impl::test_network::TestNetwork;
 use crate::util::comm::transport_layer_test_impl::{
@@ -60,9 +62,12 @@ pub struct TestNode {
     pub tle: Arc<TransportLayerTestImpl>,
     pub tls: TransportLayerServerTestImpl,
     pub genesis: BlockMessage,
+    deploy_signing_keys: HashMap<prost::bytes::Bytes, PrivateKey>,
     pub validator_id_opt: Option<ValidatorIdentity>,
     // Note: blockProcessingPipe implemented as method process_block_through_pipe
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
+    pub block_processing_queue_rx:
+        Arc<tokio::sync::Mutex<BlockProcessingQueueReceiver>>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
@@ -104,9 +109,70 @@ impl TestNode {
     ) -> Result<BlockCreatorResult, CasperError> {
         // Deploy all datums
         for deploy_datum in deploy_datums {
-            self.casper.deploy(deploy_datum.clone())?;
+            self.submit_deploy(deploy_datum.clone())?;
         }
 
+        self.create_block_from_pending_pool().await
+    }
+
+    pub fn envelope_for_deploy(
+        &self,
+        deploy: &Signed<DeployData>,
+    ) -> Result<Cosigned<DeployData>, CasperError> {
+        let private_key = self
+            .deploy_signing_keys
+            .get(&deploy.pk.bytes)
+            .cloned()
+            .ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "test deploy signer {} has no registered private key",
+                    hex::encode(&deploy.pk.bytes)
+                ))
+            })?;
+        Cosigned::create_single_envelope(
+            deploy.data.clone(),
+            deploy.sig_algorithm.clone(),
+            private_key,
+        )
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))
+    }
+
+    pub fn canonical_deploy_id(
+        &self,
+        deploy: &Signed<DeployData>,
+    ) -> Result<DeployLookupId, CasperError> {
+        if self.genesis.header.version
+            >= casper::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+        {
+            let commitment = self
+                .envelope_for_deploy(deploy)?
+                .envelope_commitment()
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            let deploy_id = DeployIdV6::try_from(commitment.as_ref())
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+            Ok(DeployLookupId::V6(deploy_id))
+        } else {
+            Ok(DeployLookupId::Legacy(LegacyDeploySignature::new(
+                deploy.sig.to_vec(),
+            )))
+        }
+    }
+
+    pub fn submit_deploy(
+        &self,
+        deploy: Signed<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
+        if self.genesis.header.version
+            >= casper::rust::casper::CERTIFIED_FINALIZED_FLOOR_PROTOCOL_VERSION
+        {
+            self.casper
+                .deploy_cosigned(self.envelope_for_deploy(&deploy)?)
+        } else {
+            self.casper.deploy(deploy)
+        }
+    }
+
+    async fn create_block_from_pending_pool(&mut self) -> Result<BlockCreatorResult, CasperError> {
         // Get snapshot
         let snapshot = self.casper.get_snapshot().await?;
 
@@ -140,15 +206,71 @@ impl TestNode {
         &mut self,
         deploy_datums: &[Signed<DeployData>],
     ) -> Result<BlockMessage, CasperError> {
-        let result = self.create_block(deploy_datums).await?;
-
-        match result {
-            BlockCreatorResult::Created(block, ..) => Ok(block),
-            _ => Err(CasperError::RuntimeError(format!(
-                "Failed creating block: {:?}",
-                result
-            ))),
+        let mut finalization_deadline = None;
+        let mut first_attempt = true;
+        loop {
+            let result = if first_attempt {
+                first_attempt = false;
+                self.create_block(deploy_datums).await?
+            } else {
+                self.create_block(&[]).await?
+            };
+            match result {
+                BlockCreatorResult::Created(block, ..) => return Ok(block),
+                BlockCreatorResult::RecoveryDeferred(
+                    casper::rust::blocks::proposer::propose_result::RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                ) => {
+                    let deadline = *finalization_deadline.get_or_insert_with(|| {
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(30)
+                    });
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(CasperError::RuntimeError(
+                            "Timed out waiting for finalized-floor materialization".to_string(),
+                        ));
+                    }
+                    self.casper.request_finalization()?;
+                    self.wait_for_finalizer_quiescence(deadline).await?;
+                }
+                other => {
+                    return Err(CasperError::RuntimeError(format!(
+                        "Failed creating block: {:?}",
+                        other
+                    )))
+                }
+            }
         }
+    }
+
+    pub async fn wait_for_finalizer_quiescence(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<(), CasperError> {
+        loop {
+            if self.casper.finalization_schedule.is_quiescent()
+                && self
+                    .casper
+                    .finalization_in_progress
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    == 0
+            {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(CasperError::RuntimeError(
+                    "Timed out waiting for finalization to quiesce".to_string(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    pub async fn settle_finalization(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(), CasperError> {
+        self.casper.request_finalization()?;
+        self.wait_for_finalizer_quiescence(tokio::time::Instant::now() + timeout)
+            .await
     }
 
     /// Processes a block through the validation pipeline (equivalent to Scala processBlock, line 257-260).
@@ -169,7 +291,7 @@ impl TestNode {
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
-        casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
+        casper: Arc<dyn Casper + Send + Sync + 'static>,
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
@@ -247,19 +369,7 @@ impl TestNode {
     where
         F: FnOnce(&ValidBlockProcessing) -> bool,
     {
-        // Create block
-        let result = self.create_block(deploy_datums).await?;
-
-        // Extract block
-        let block = match result {
-            BlockCreatorResult::Created(b, ..) => b,
-            other => {
-                return Err(CasperError::RuntimeError(format!(
-                    "Expected Created block, got: {:?}",
-                    other
-                )))
-            }
-        };
+        let block = self.create_block_unsafe(deploy_datums).await?;
 
         // Process block
         let status = self.process_block(block.clone()).await?;
@@ -749,30 +859,27 @@ impl TestNode {
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
-        Self::create_network_with_deploy_lifespan(
+        Self::create_network_with_finalization_rate(
             genesis,
             network_size,
             synchrony_constraint_threshold,
             max_number_of_parents,
             max_parent_depth,
             with_read_only_size,
-            None,
+            1,
         )
         .await
     }
 
-    /// `create_network` with a shard `deploy_lifespan` override (default 50).
-    /// A short lifespan lets a spec close deploy validity windows within a
-    /// handful of blocks — required to exercise window-boundary behavior
-    /// (block-expiry, the merge-time window rule) without ~50 filler blocks.
-    pub async fn create_network_with_deploy_lifespan(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_network_with_finalization_rate(
         genesis: GenesisContext,
         network_size: usize,
         synchrony_constraint_threshold: Option<f64>,
         max_number_of_parents: Option<i32>,
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
-        deploy_lifespan: Option<i64>,
+        finalization_rate: i32,
     ) -> Result<Vec<TestNode>, CasperError> {
         // Initialize the shared tracing subscriber once per test process.
         // Without this, tracing calls in production code are silently
@@ -798,7 +905,40 @@ impl TestNode {
             with_read_only_size.unwrap_or(0),
             None,
             test_network,
-            deploy_lifespan,
+            finalization_rate,
+            50,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_network_with_deploy_lifespan(
+        genesis: GenesisContext,
+        network_size: usize,
+        synchrony_constraint_threshold: Option<f64>,
+        max_number_of_parents: Option<i32>,
+        max_parent_depth: Option<i32>,
+        with_read_only_size: Option<usize>,
+        deploy_lifespan: Option<i64>,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        crate::init_logger();
+        let test_network = TestNetwork::empty();
+        let sks_to_use: Vec<PrivateKey> = genesis
+            .validator_sks()
+            .into_iter()
+            .take(network_size + with_read_only_size.unwrap_or(0))
+            .collect();
+        Self::network(
+            sks_to_use,
+            genesis,
+            synchrony_constraint_threshold.unwrap_or(0.0),
+            max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
+            max_parent_depth,
+            with_read_only_size.unwrap_or(0),
+            None,
+            test_network,
+            1,
+            deploy_lifespan.unwrap_or(50),
         )
         .await
     }
@@ -826,7 +966,8 @@ impl TestNode {
             0,
             Some(bootstrap_index),
             test_network,
-            None,
+            1,
+            50,
         )
         .await
     }
@@ -842,7 +983,8 @@ impl TestNode {
         with_read_only_size: usize,
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
-        deploy_lifespan: Option<i64>,
+        finalization_rate: i32,
+        deploy_lifespan: i64,
     ) -> Result<Vec<TestNode>, CasperError> {
         let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
@@ -888,6 +1030,7 @@ impl TestNode {
                 test_network.clone(),
                 &genesis_context,
                 bootstrap_peer.clone(),
+                finalization_rate,
                 deploy_lifespan,
             )
             .await;
@@ -926,7 +1069,8 @@ impl TestNode {
         test_network: TestNetwork,
         genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
-        deploy_lifespan: Option<i64>,
+        finalization_rate: i32,
+        deploy_lifespan: i64,
     ) -> TestNode {
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -963,7 +1107,7 @@ impl TestNode {
         block_dag_storage
             .insert(
                 &genesis,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
             )
             .expect("Failed to insert genesis into DAG storage in TestNode");
         let deploy_storage = Arc::new(parking_lot::Mutex::new(
@@ -987,17 +1131,12 @@ impl TestNode {
             .await
             .unwrap();
         // Use create_with_history to ensure tests can reset to genesis state root hash
-        let (runtime_manager, rho_history_repository) = RuntimeManager::create_with_history(
+        let (runtime_manager, _) = RuntimeManager::create_with_history(
             rspace_store,
             mergeable_store,
             std::sync::Arc::new(Genesis::default_mergeable_tags()),
             rholang::rust::interpreter::external_services::ExternalServices::noop(),
         );
-        let rspace_state_manager = RSpaceStateManager::new(
-            rho_history_repository.exporter(),
-            rho_history_repository.importer(),
-        );
-
         let connections_cell = ConnectionsCell::new();
         let _clique_oracle = CliqueOracleImpl;
         let estimator = Estimator::apply(max_number_of_parents, max_parent_depth);
@@ -1059,44 +1198,33 @@ impl TestNode {
         // - Sender: Non-blocking, cloneable, used to enqueue blocks for processing
         // - Receiver: Thread-safe (Arc<Mutex>), used to dequeue blocks from processing pipeline
         let (block_processor_queue_tx, block_processor_queue_rx) =
-            mpsc::channel::<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>(1024);
-        let block_processor_queue = (
-            block_processor_queue_tx,
-            Arc::new(Mutex::new(block_processor_queue_rx)),
-        );
+            BlockProcessingQueueSender::channel(1024, 64 * 1024 * 1024)
+                .expect("block processing queue");
 
         let _block_processor_state = Arc::new(RwLock::new(HashSet::<BlockHash>::new()));
 
         let shard_id = "root".to_string();
-        let finalization_rate = 1;
-
         let _approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
                 block: genesis.clone(),
                 required_sigs: 0,
             },
-            floor_seed: None,
             sigs: vec![],
+            floor_seed: None,
         };
-        let last_approved_block = Arc::new(Mutex::new(Some(_approved_block.clone())));
-
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.0,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
             max_number_of_parents,
-            // Realistic depth bound by default: i32::MAX disabled the depth
-            // check entirely, so fixtures could lean on unbounded parent
-            // spread that no configured shard permits. Specs that need the
-            // check off pass an explicit override.
-            max_parent_depth: max_parent_depth.unwrap_or(30),
+            max_parent_depth: max_parent_depth.unwrap_or(i32::MAX),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
             // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
-            deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
+            deploy_lifespan,
+            casper_version: genesis.header.version,
             config_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
@@ -1123,16 +1251,21 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-            deploy_lifecycle: Arc::new(
+            deploy_lifecycle: std::sync::Arc::new(
                 casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
             ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             casper_shard_conf: shard_conf,
             approved_block: genesis.clone(),
-            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
+            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            recovery_sync_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalization_schedule: std::sync::Arc::new(
+                casper::rust::finality::finalization_schedule::FinalizationSchedule::new(2),
+            ),
+            certificate_verification_schedule: std::sync::Arc::new(
+                casper::rust::finality::certificate::CertificateVerificationSchedule::new(2),
+            ),
             finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
@@ -1145,6 +1278,12 @@ impl TestNode {
         };
 
         let casper = Arc::new(casper_impl);
+        let deploy_signing_keys = genesis_context
+            .validator_key_pairs
+            .iter()
+            .chain(genesis_context.genesis_vaults.iter())
+            .map(|(private_key, public_key)| (public_key.bytes.clone(), private_key.clone()))
+            .collect();
 
         // Create Running engine
 
@@ -1159,30 +1298,17 @@ impl TestNode {
         let engine_cell = EngineCell::init();
 
         let running_engine = Running::new(
-            block_processor_queue.0.clone(), // block_processing_queue_tx
-            Arc::new(DashSet::new()),        // blocks_in_processing
+            block_processor_queue_tx.clone(), // block_processing_queue_tx
+            Arc::new(DashSet::new()),         // blocks_in_processing
             casper.clone() as Arc<dyn MultiParentCasper + Send + Sync>, // casper
-            _approved_block.clone(),         // approved_block
-            the_init,                        // the_init
-            true,                            // disable_state_exporter
-            tle.clone(),                     // transport
-            rp_conf.clone(),                 // conf
-            block_retriever.clone(),         // block_retriever
+            _approved_block.clone(),          // approved_block
+            the_init,                         // the_init
+            true,                             // disable_state_exporter
+            tle.clone(),                      // transport
+            rp_conf.clone(),                  // conf
+            block_retriever.clone(),          // block_retriever
             Some(RunningRecoveryContext {
                 connections_cell: connections_cell.clone(),
-                last_approved_block: last_approved_block.clone(),
-                block_store: block_store.clone(),
-                block_dag_storage: block_dag_storage.clone(),
-                deploy_storage: deploy_storage.lock().clone(),
-                rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-                casper_buffer_storage: casper_buffer_storage.clone(),
-                rspace_state_manager: rspace_state_manager.clone(),
-                event_publisher: event_publisher.clone(),
-                engine_cell: Arc::new(engine_cell.clone()),
-                runtime_manager: Arc::new(runtime_manager.clone()),
-                estimator: estimator.clone(),
-                casper_shard_conf: casper.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper.heartbeat_signal_ref.clone(),
             }),
             None,
         );
@@ -1197,8 +1323,10 @@ impl TestNode {
             tle,
             tls,
             genesis,
+            deploy_signing_keys,
             validator_id_opt,
             block_processor,
+            block_processing_queue_rx: Arc::new(tokio::sync::Mutex::new(block_processor_queue_rx)),
             block_store,
             block_dag_storage,
             deploy_storage,

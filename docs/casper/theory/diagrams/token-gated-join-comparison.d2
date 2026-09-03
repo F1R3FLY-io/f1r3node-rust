@@ -1,0 +1,35 @@
+# Token-gated joins: sequential fuel (✓) vs folded-into-the-join (✗). A signed
+# n-clause join must acquire its fuel through SEQUENTIAL nested single-channel
+# fuel gates — each an O(1) single-channel match — wrapping the natural-arity
+# data join. Folding the n fuel tokens INTO the data join instead doubles the
+# arity to 2n; because RSpace join-matching is combinatorial in arity, the folded
+# form explodes the candidate cross-product. The sequential form is valid because
+# ∘ is commutative and no-double-spend is per-token.
+#
+# Source of truth for §4 (token-gated joins) in
+# cost-accounting-impl/w1-surface-syntax-native-integration.md.
+# Render:  d2 --layout elk token-gated-join-comparison.d2 token-gated-join-comparison.svg
+#          (or: ./render.sh token-gated-join-comparison.d2)
+...@palette
+direction: right
+
+seq: "✓ Sequential nested fuel gates  (linear in n)" {
+  style.fill: "#E8F5E9"
+  g1: "fuel gate on Σ⟦s₁⟧\nfor(_ <- Σ⟦s₁⟧)  — O(1) single-channel" { class: gate }
+  g2: "fuel gate on Σ⟦s₂⟧\nfor(_ <- Σ⟦s₂⟧)  — O(1) single-channel" { class: gate }
+  gn: "…  fuel gate on Σ⟦sₙ⟧" { class: gate }
+  dj: "natural-arity DATA join\nfor(y₁<-x₁ & … & yₙ<-xₙ)" { class: supply }
+  k: "continuation P\n(not re-signed)" { class: pool }
+  g1 -> g2 -> gn -> dj -> k: "each clause attributes its COMM to its own lane"
+}
+
+fold: "✗ Fuel folded into the data join  (REJECTED)" {
+  style.fill: "#FFEBEE"
+  j2n: "2n-way join\nfor(f₁<-Σ⟦s₁⟧ & y₁<-x₁ & … & fₙ<-Σ⟦sₙ⟧ & yₙ<-xₙ)" { class: reject }
+  blow: "RSpace join-matching is combinatorial in arity\n⇒ candidate cross-product explodes\n(arity n → 2n)" { class: reject }
+  j2n -> blow: "combinatorial blow-up" { class: debit }
+}
+
+note: "Greg's rule: acquire fuel via sequential single-channel receives,\nnever fold fuel into a data join. Valid because ∘ is commutative\nand no-double-spend is per-token (compute_settlement_debits charges\neach pool independently)." { class: control }
+seq -> note
+fold -> note

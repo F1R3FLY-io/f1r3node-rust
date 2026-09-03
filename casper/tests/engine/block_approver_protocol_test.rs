@@ -75,6 +75,11 @@ impl TestContext {
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
+            genesis_params.proof_of_stake.max_cosigners_per_deploy,
+            genesis_params.proof_of_stake.initial_phlogiston,
+            genesis_params.proof_of_stake.epoch_phlogiston,
+            casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            genesis_params.client_fuel_allocations,
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
@@ -203,6 +208,11 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        ctx.protocol.max_cosigners_per_deploy,
+        ctx.protocol.initial_phlogiston,
+        ctx.protocol.epoch_phlogiston,
+        ctx.protocol.protocol_version,
+        &ctx.protocol.client_fuel_allocations,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
@@ -210,6 +220,92 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
     .await;
 
     assert_eq!(result, Ok(()));
+}
+
+#[tokio::test]
+#[serial]
+async fn block_approver_protocol_should_reject_mismatched_protocol_version() {
+    let ctx = TestContext::create_protocol().await.unwrap();
+    let mut unapproved =
+        TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
+    unapproved.candidate.block.header.version =
+        casper::rust::casper::LEGACY_CASPER_PROTOCOL_VERSION;
+
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+        &ctx.node.runtime_manager,
+        &unapproved.candidate,
+        ctx.protocol.required_sigs,
+        ctx.protocol.deploy_timestamp,
+        &ctx.protocol.vaults,
+        &ctx.protocol.bonds_bytes,
+        ctx.protocol.minimum_bond,
+        ctx.protocol.maximum_bond,
+        ctx.protocol.epoch_length,
+        ctx.protocol.quarantine_length,
+        ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        SHARD_ID,
+        &ctx.protocol.pos_multi_sig_public_keys,
+        ctx.protocol.pos_multi_sig_quorum,
+        ctx.protocol.max_cosigners_per_deploy,
+        ctx.protocol.initial_phlogiston,
+        ctx.protocol.epoch_phlogiston,
+        ctx.protocol.protocol_version,
+        &ctx.protocol.client_fuel_allocations,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        Err(format!(
+            "Candidate protocol version mismatch: expected {}, got {}",
+            casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            casper::rust::casper::LEGACY_CASPER_PROTOCOL_VERSION
+        ))
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn block_approver_protocol_should_reject_mismatched_genesis_vault_funding() {
+    let ctx = TestContext::create_protocol().await.unwrap();
+    let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
+    let public_key = PublicKey::new(ctx.protocol.bonds_bytes.keys().next().unwrap().clone());
+    let mismatched_client_funding = vec![(public_key, 1)];
+
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+        &ctx.node.runtime_manager,
+        &unapproved.candidate,
+        ctx.protocol.required_sigs,
+        ctx.protocol.deploy_timestamp,
+        &ctx.protocol.vaults,
+        &ctx.protocol.bonds_bytes,
+        ctx.protocol.minimum_bond,
+        ctx.protocol.maximum_bond,
+        ctx.protocol.epoch_length,
+        ctx.protocol.quarantine_length,
+        ctx.protocol.number_of_active_validators,
+        ctx.protocol.fault_tolerance_threshold_ppm,
+        SHARD_ID,
+        &ctx.protocol.pos_multi_sig_public_keys,
+        ctx.protocol.pos_multi_sig_quorum,
+        ctx.protocol.max_cosigners_per_deploy,
+        ctx.protocol.initial_phlogiston,
+        ctx.protocol.epoch_phlogiston,
+        ctx.protocol.protocol_version,
+        &mismatched_client_funding,
+        &ctx.protocol.native_token_name,
+        &ctx.protocol.native_token_symbol,
+        ctx.protocol.native_token_decimals,
+    )
+    .await;
+
+    assert!(result
+        .unwrap_err()
+        .contains("Genesis candidate deploys do not match expected blessed contracts"));
 }
 
 #[tokio::test]
@@ -238,6 +334,11 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        ctx.protocol.max_cosigners_per_deploy,
+        ctx.protocol.initial_phlogiston,
+        ctx.protocol.epoch_phlogiston,
+        ctx.protocol.protocol_version,
+        &ctx.protocol.client_fuel_allocations,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
@@ -273,19 +374,20 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        ctx.protocol.max_cosigners_per_deploy,
+        ctx.protocol.initial_phlogiston,
+        ctx.protocol.epoch_phlogiston,
+        ctx.protocol.protocol_version,
+        &ctx.protocol.client_fuel_allocations,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
     )
     .await;
 
-    assert_eq!(
-        result,
-        Err(
-            "Mismatch between number of candidate deploys and expected number of deploys."
-                .to_string()
-        )
-    );
+    assert!(result
+        .unwrap_err()
+        .contains("Genesis candidate deploys do not match expected blessed contracts"));
 }
 
 #[tokio::test]
@@ -312,6 +414,11 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
+        ctx.protocol.max_cosigners_per_deploy,
+        ctx.protocol.initial_phlogiston,
+        ctx.protocol.epoch_phlogiston,
+        ctx.protocol.protocol_version,
+        &ctx.protocol.client_fuel_allocations,
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,

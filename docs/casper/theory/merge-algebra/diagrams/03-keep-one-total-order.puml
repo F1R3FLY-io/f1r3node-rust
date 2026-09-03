@@ -21,7 +21,7 @@
 '            sat probe), Rust deploy_chain_index.rs:151-230.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/merge-algebra/diagrams/03-keep-one-total-order.puml
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/03-keep-one-total-order.puml
 
 @startuml 03-keep-one-total-order
 !theme plain

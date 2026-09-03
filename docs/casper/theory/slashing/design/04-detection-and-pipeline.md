@@ -74,6 +74,18 @@ detectNeglected(S, b) =
   | otherwise                              ⟹ unchanged
 ```
 
+`AdmissibleEquivocation` and `IgnorableEquivocation` are the proof model's
+historical labels. Current Rust maps them to
+`EquivocationObservation::RequestedDependency` and `Unsolicited` on an
+otherwise accepted certified validation (`equivocation_detector.rs:79-120`,
+`block_status.rs:74-78`). Consensus evidence is not derived from that unary
+label: certified block admission atomically accumulates distinct hashes under
+`(validator, bond_generation, sequence)`, and the pair becomes objective only
+when the set contains at least two hashes
+(`block_dag_key_value_storage.rs:1499-1528`). The generation-scoped refinement
+is specified in
+[`objective-equivocation-evidence.md`](../objective-equivocation-evidence.md).
+
 ### Theorems
 
 The detector is **sound** and **complete**:
@@ -86,14 +98,12 @@ The detector is **sound** and **complete**:
   `EquivocationDetector.v:111`.)* If `equivocates(S, v, s)` and
   `b ∈ D` with `sender(b) = v`, `seq(b) = s`, then `detect`
   returns either `AdmissibleEquivocation` or `IgnorableEquivocation`.
-- **T-3 (Slashable set).** The normative slashable set is the equivocation
-  class `{ AdmissibleEquivocation, IgnorableEquivocation }` — see the
-  amendment in `slashing-specification.md` §4. The mechanized
-  `slashable_post_fix_extends_pre_fix` (`InvalidBlock.v`) proves the
-  bug-fix-era inclusion (pre-fix set plus `IgnorableEquivocation`), which
-  the narrowing reversed; the model is historical pending re-derivation.
-  Live pins: `t_3_slashable_set_is_the_equivocation_class`,
-  `dispatch_routes_demoted_variants_to_the_drop_arm`.
+- **T-3 (Historical detector refinement).**
+  *(`slashable_post_fix_extends_pre_fix`, `InvalidBlock.v:164`.)* The original
+  fix proves that the abstract unsolicited-equivocation verdict cannot be
+  silently discarded. Current production refines that verdict into accepted,
+  generation-scoped two-sibling objective evidence; the unary observation is
+  diagnostic and does not itself authorize a slash.
 - **T-6 (Neglect detection sound + complete).** *(`detect_neglected_sound`,
   `EquivocationDetector.v` §4.5; `detect_neglected_complete` §4.6.)*
   Verdict `NeglectedEquivocation` fires iff an existing
@@ -213,40 +223,30 @@ decides what to do. The relevant branches:
 
 ```
 match verdict:
-    Valid                          → DAG.insert(b, invalid = false)
-    AdmissibleEquivocation         → tracker.insert_equivocation_record(v, s-1, ∅)
-                                   → DAG.insert(b, invalid = true)
-    IgnorableEquivocation          → tracker.insert_equivocation_record(...)
-                                     (block itself is dropped, not inserted)
-    other (demoted, non-slashable) → dropped: no DAG insert, no record
+    Accepted                       → DAG.insert(b, invalid = false)
+    Rejected(reason)               → DAG.insert(b, invalid = true, reason)
+    Rejected(reason) if reason is AdmissibleEquivocation
+                                  or IgnorableEquivocation
+                                   → tracker.insert+update_record(v, s-1, evidence)
+    Rejected(other)                → no tracker update
 ```
 
 [![Diagram 05 — Generic invalid-block dispatch (post-fix #3)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)
 
-The dispatcher routes every `is_slashable() = ⊤` variant through the same
-record-creation path, so every slashable invalid block enters the slashing
-pipeline — and after the taxonomy narrowing (spec amendment) that set is
-exactly the equivocation class, so the catch-all arm now covers only the
-two equivocation verdicts. Demoted verdicts hit the drop arm: the block is
-rejected but nothing is inserted or recorded (pinned by
-`dispatch_routes_demoted_variants_to_the_drop_arm`). Diagram 05 and the
-historical narrative of bug #3 (the pre-fix dispatcher stub that let 15
-then-slashable variants bypass the tracker) describe the bug-fix era —
-see `09-bug-fixes-and-rationale.md` §9.4.
+The dispatcher persists all 29 certified rejection reasons. It creates
+economic evidence only for the two objective-equivocation reasons. This split
+prevents local validation context from creating consensus-visible penalties.
 
-## 4.6 Two-level detection: the neglected-equivocation path
+## 4.6 Neglect detection and the counterfactual closure
 
 Once `(A, baseSeq) ∈ E` (the tracker has a record for A), any
 *future* block `b_B` whose latest-message view makes A's equivocation
-detectable while A remains bonded is rejected as `NeglectedEquivocation`
-unless the block acknowledges/slashes A. A direct citation to A's invalid
-block is a common test witness, but production Rust also accepts nested
-latest-message evidence and previously detected hashes. This is the
-**two-level** closure: B's neglect of A is a form of collusion. Detection
-and rejection are unchanged; the ECONOMIC arm is currently inactive —
-`NeglectedEquivocation` is demoted from the slashable set (view-relative:
-it is judged against the receiver's own tracker), pending re-promotion
-once the check is shown admission-order-free (spec amendment).
+detectable while A remains bonded is invalid unless the block
+acknowledges/slashes A. A direct citation to A's invalid block is a
+common test witness, but production Rust also accepts nested
+latest-message evidence and previously detected hashes. The current protocol
+persists B's `NeglectedEquivocation` rejection without an evidence record.
+Section 08 analyzes the counterfactual policy that also slashes B.
 
 The data flow that powers neglect detection:
 
@@ -268,16 +268,18 @@ has_slash ← scan b_B.body.system_deploys for SystemDeployData::Slash
 reject ⟺ neglected ∧ ¬has_slash    -- post-fix #9
 ```
 
-For received `SlashDeploy`s, the corresponding positive-bond check is
-bound to the block's actual parent pre-state. This keeps recovery blocks
-valid when the receiver's current snapshot already includes a sibling
-where the same offender has been slashed.
+For both proposed and received `SlashDeploy`s, the positive-bond check is
+bound to the block's exact canonical merged pre-state. The receiver first
+replays the checkpoint, then computes bonds from the verified
+`pre_state_hash`. Local snapshot contents and parent arrival order therefore
+cannot change the authorization verdict.
 
 The post-fix `¬has_slash` clause is the *Rust widening* of bug #9
 (§09): a block that *self-corrects* by attaching its own
 `SlashDeploy` for the neglected justification's validator is
-admitted. Scala rejects it; Rust admits it. This is the only
-deliberate divergence in the bisimilarity claim.
+admitted. Scala rejects it; Rust admits it. This is the one
+deliberate, documented behavioral difference from the Scala
+original (proven correct as T-9.9).
 
 ## 4.7 What the pipeline gives you
 

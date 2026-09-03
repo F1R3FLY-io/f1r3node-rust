@@ -29,6 +29,35 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 ## Canonical Terms
 
+### Failed-body settlement
+
+See [Failed-body settlement](casper/GLOSSARY.md#failed-body-settlement) in the
+Casper glossary.
+
+### Adopted lifecycle state
+
+See [Adopted lifecycle state](casper/GLOSSARY.md#adopted-lifecycle-state) in the
+Casper glossary.
+
+### State-effect identity
+
+See [State-effect identity](casper/GLOSSARY.md#state-effect-identity) in the
+Casper glossary.
+
+### Exact state containment
+
+See [Exact state containment](casper/GLOSSARY.md#exact-state-containment) in the
+Casper glossary.
+
+### State witness
+
+See [State witness](casper/GLOSSARY.md#state-witness) in the Casper glossary.
+
+### Settled floor set
+
+See [Settled floor set](casper/GLOSSARY.md#settled-floor-set) in the Casper
+glossary.
+
 
 ### Release candidate
 
@@ -189,6 +218,14 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#liveness-configurati
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#equivocation).
 
+### Bond generation
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#bond-generation).
+
+### Validator lifetime
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#validator-lifetime).
+
 ### Equivocation detector
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#equivocation-detector).
@@ -252,6 +289,18 @@ This term moved to the [Casper glossary](casper/GLOSSARY.md#kept-rejection-recor
 ### Carrier
 
 This term moved to the [Casper glossary](casper/GLOSSARY.md#carrier).
+
+### Occurrence carrier
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#occurrence-carrier).
+
+### Finalized state anchor
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#finalized-state-anchor).
+
+### Archive representative
+
+This term moved to the [Casper glossary](casper/GLOSSARY.md#archive-representative).
 
 ### Retry gate
 

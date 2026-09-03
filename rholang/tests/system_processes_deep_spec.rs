@@ -15,7 +15,7 @@ use models::rhoapi::{Expr, Par};
 use rholang::rust::interpreter::registry::registry::Registry;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::{
-    test_framework_contracts, BlockData, DeployData, FixedChannels,
+    test_framework_contracts, BlockData, DeployAuthority, DeployData, FixedChannels,
 };
 use rholang::rust::interpreter::test_utils::resources::{create_runtimes, with_runtime};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -405,7 +405,7 @@ async fn block_data_deploy_data_and_invalid_blocks() {
         runtime
             .set_deploy_data(DeployData {
                 timestamp: 777,
-                deployer_id: PublicKey::from_bytes(&deployer_bytes),
+                authority: DeployAuthority::Legacy(PublicKey::from_bytes(&deployer_bytes)),
                 deploy_id: vec![5, 6],
             })
             .await;

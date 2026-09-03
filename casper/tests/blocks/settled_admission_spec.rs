@@ -19,9 +19,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, DeployId, InsertMode, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId,
+    InsertMode, KeyValueDagRepresentation,
 };
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::block_status::{CertifiedBlockValidation, InvalidBlock};
 use casper::rust::blocks::block_processor::{new_block_processor, BlockProcessor};
 use casper::rust::casper::{Casper, CasperSnapshot, DeployError};
 use casper::rust::engine::block_retriever::BlockRetriever;
@@ -49,6 +50,10 @@ struct AnchorCasper {
 
 #[async_trait]
 impl Casper for AnchorCasper {
+    async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> {
+        unimplemented!("not exercised by settled-admission tests")
+    }
+
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }
@@ -60,6 +65,10 @@ impl Casper for AnchorCasper {
     fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.anchor) }
+
+    fn request_finalization(&self) -> Result<(), CasperError> {
+        unimplemented!("not exercised by settled-admission tests")
+    }
 
     fn deploy(
         &self,
@@ -81,7 +90,7 @@ impl Casper for AnchorCasper {
         &self,
         _block: &BlockMessage,
         _snapshot: &mut CasperSnapshot,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }
 
@@ -91,13 +100,15 @@ impl Casper for AnchorCasper {
         _snapshot: &mut CasperSnapshot,
         _pre_state_hash: Bytes,
         _post_state_hash: Bytes,
-    ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }
 
     async fn handle_valid_block(
         &self,
         _block: &BlockMessage,
+        _certificate: &CertifiedSenderAuthority,
+        _outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }
@@ -107,6 +118,8 @@ impl Casper for AnchorCasper {
         _block: &BlockMessage,
         _status: &InvalidBlock,
         _dag: &KeyValueDagRepresentation,
+        _certificate: &CertifiedSenderAuthority,
+        _outcome: &CertifiedAdmissionOutcome,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }
@@ -202,7 +215,9 @@ impl Fixture {
         ];
 
         let genesis = lean_block(0, 0, None, vec![], vec![]);
-        dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+        dag_storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
 
         // The node's live chain: sender's latest message sits at seq 5, one
         // below the anchor height.

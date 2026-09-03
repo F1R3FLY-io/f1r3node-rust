@@ -17,7 +17,7 @@
 ' Color palette: see Diagram 02 header for the legend.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/05-seq-invalid-block-dispatch-fixed.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/05-seq-invalid-block-dispatch-fixed.puml
 
 @startuml 05-seq-invalid-block-dispatch-fixed
 !theme plain

@@ -13,7 +13,13 @@ doctest = false
 shared = { path = "../shared" }
 bincode = { workspace = true }
 heed = { workspace = true }
-serde = { workspace = true }
+# `rc` is load-bearing, not incidental: the replay-deterministic candidate
+# ordering (`shuffle_with_index` → `deterministic_candidate_hash`) serializes
+# `Arc<WaitingContinuation>` candidates (Arc-wrapped by the sharded hot store),
+# which needs serde's `impl Serialize for Arc<T>`. Declaring it here keeps the
+# crate self-contained instead of depending on feature unification from a
+# sibling crate (the fuzz workspace builds this crate without those siblings).
+serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }

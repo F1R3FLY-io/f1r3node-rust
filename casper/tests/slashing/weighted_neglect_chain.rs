@@ -32,25 +32,25 @@ fn uc_55_weighted_neglect_chain_amplification() {
     // v3 is the direct equivocator at seq=5.
     let _v3a = harness.sign_block("v3", 5);
     let bad = harness.sign_block_distinct("v3", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
     assert!(harness.has_record("v3", 4));
 
     // Chain v0 → v1 → v2 → v3 of cite-without-slash neglect:
     //   v2 cites v3's bad block without slashing.
     let v2_neg = harness.sign_block_citing("v2", 6, bad);
-    let s2 = harness.dispatch(v2_neg);
+    let s2 = harness.dispatch_counterfactual_neglect_evidence(v2_neg);
     assert_eq!(s2, Status::NeglectedEquivocation);
     assert!(harness.has_record("v2", 5));
 
     //   v1 cites v2's neglect block without slashing v2.
     let v1_neg = harness.sign_block_citing("v1", 7, v2_neg);
-    let s1 = harness.dispatch(v1_neg);
+    let s1 = harness.dispatch_counterfactual_neglect_evidence(v1_neg);
     assert_eq!(s1, Status::NeglectedEquivocation);
     assert!(harness.has_record("v1", 6));
 
     //   v0 cites v1's neglect block without slashing v1.
     let v0_neg = harness.sign_block_citing("v0", 8, v1_neg);
-    let s0 = harness.dispatch(v0_neg);
+    let s0 = harness.dispatch_counterfactual_neglect_evidence(v0_neg);
     assert_eq!(s0, Status::NeglectedEquivocation);
     assert!(harness.has_record("v0", 7));
 

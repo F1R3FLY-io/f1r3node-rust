@@ -1,0 +1,37 @@
+% ============================================================================
+% Cost-Accounted Rho — shared TikZ palette  (one concept = one colour)
+% ----------------------------------------------------------------------------
+% \input this file inside the preamble of any standalone TikZ figure here:
+%     \input{palette.tex}
+% then use the colour names, e.g.
+%     \node[fill=caPool] {Σ⟦s⟧};
+%     \draw[caCredit,->] (a) -- (b);
+%
+% Hex values are byte-identical to palette.iuml / palette.d2 /
+% palette.mermaid.json. Edit a colour HERE and re-render.
+% ============================================================================
+\usepackage{xcolor}
+
+% — fills --------------------------------------------------------------------
+\definecolor{caControl}{HTML}{FFECB3}
+\definecolor{caSupply}{HTML}{BBDEFB}
+\definecolor{caPool}{HTML}{C8E6C9}
+\definecolor{caCapability}{HTML}{C5CAE9}
+\definecolor{caSurface}{HTML}{F8C3B8}
+\definecolor{caProcess}{HTML}{D4C4E8}
+\definecolor{caGate}{HTML}{B2DFDB}
+\definecolor{caDelta}{HTML}{FFE0B2}
+\definecolor{caRejectFill}{HTML}{EF9A9A}
+
+% — arrows / strokes ---------------------------------------------------------
+\definecolor{caCredit}{HTML}{2E7D32}
+\definecolor{caDebit}{HTML}{C62828}
+\definecolor{caInstantiate}{HTML}{1565C0}
+\definecolor{caNeutral}{HTML}{444444}
+
+% — note / panel tints -------------------------------------------------------
+\definecolor{caNoteAmber}{HTML}{FFF8E1}
+\definecolor{caNoteRed}{HTML}{FFEBEE}
+\definecolor{caNoteGreen}{HTML}{E8F5E9}
+\definecolor{caNoteIndigo}{HTML}{E8EAF6}
+\definecolor{caNoteGrey}{HTML}{ECEFF1}

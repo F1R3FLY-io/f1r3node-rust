@@ -60,6 +60,8 @@ fn map_data(
                 ListParWithRandom {
                     pars: entry.data.clone(),
                     random_state: entry.rand.to_bytes(),
+                    cost_authority: None,
+                    cost_stack: None,
                 },
                 false,
             )],
@@ -87,6 +89,7 @@ fn check_continuation(
             &TaggedContinuation {
                 tagged_cont: Some(TaggedCont::ParBody(body)),
                 guard: None,
+                cost_authority: None,
             },
             false,
             BTreeSet::new(),
@@ -459,6 +462,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
             source: Some(new_bundle_par(y, true, false)),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -534,6 +538,10 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
     reducer.eval(send, &env, split_rand.clone()).await.unwrap();
 
     let result = space.to_map().await;
+    assert!(result
+        .values()
+        .flat_map(|row| &row.data)
+        .all(|datum| datum.a.cost_authority.is_none()));
     let mut expected_elements = HashMap::new();
     expected_elements.insert(
         channel,
@@ -626,6 +634,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
             source: Some(channel.clone()),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -643,6 +652,10 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
         .unwrap();
 
     let result = space.to_map().await;
+    assert!(result
+        .values()
+        .flat_map(|row| &row.wks)
+        .all(|waiting| waiting.continuation.cost_authority.is_none()));
     let bind_pattern = BindPattern {
         patterns: vec![
             new_freevar_par(0, Vec::new()),
@@ -682,6 +695,7 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
             source: Some(new_bundle_par(y.clone(), false, true)),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -745,6 +759,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
             source: Some(new_gstring_par("channel".to_string(), Vec::new(), false)),
             remainder: None,
             free_count: 3,
+            cost_signature: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -830,6 +845,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
             source: Some(channel.clone()),
             remainder: None,
             free_count: 3,
+            cost_signature: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(result_channel.clone()),
@@ -938,6 +954,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
             source: Some(channel.clone()),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(result_channel.clone()),
@@ -1022,6 +1039,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
             source: Some(new_gint_par(15, Vec::new(), false)),
             remainder: None,
             free_count: 3,
+            cost_signature: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1090,6 +1108,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             source: Some(new_gint_par(2, Vec::new(), false)),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -1114,6 +1133,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             source: Some(new_gint_par(1, Vec::new(), false)),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(new_boundvar_par(0, Vec::new(), false)),
         persistent: false,
@@ -1184,6 +1204,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             source: Some(new_gint_par(1, Vec::new(), false)),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(new_boundvar_par(0, Vec::new(), false)),
         persistent: false,
@@ -1342,6 +1363,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
                 source: Some(new_gstring_par("channel1".to_string(), Vec::new(), false)),
                 remainder: None,
                 free_count: 3,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -1352,6 +1374,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
                 source: Some(new_gstring_par("channel2".to_string(), Vec::new(), false)),
                 remainder: None,
                 free_count: 3,
+                cost_signature: None,
             },
         ],
         body: Some(Par::default().with_sends(vec![Send {
@@ -1460,6 +1483,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
             source: Some(new_gstring_par("channel".to_string(), Vec::new(), false)),
             remainder: Some(new_freevar_var(0)),
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1703,6 +1727,8 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                     unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
                 }])],
                 random_state: result0_rand.to_bytes(),
+                cost_authority: None,
+                cost_stack: None,
             },
             false,
         )],
@@ -1719,6 +1745,8 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                     })),
                 }])],
                 random_state: result1_rand.to_bytes(),
+                cost_authority: None,
+                cost_stack: None,
             },
             false,
         )],
@@ -1835,6 +1863,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
             source: Some(new_gstring_par("channel".to_string(), Vec::new(), false)),
             remainder: None,
             free_count: 0,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -2255,6 +2284,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                         source: Some(new_boundvar_par(0, Vec::new(), false)),
                         remainder: None,
                         free_count: 0,
+                        cost_signature: None,
                     }],
                     body: Some(Par::default().with_sends(vec![Send {
                         chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -2375,6 +2405,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                 source: Some(new_gint_par(7, Vec::new(), false)),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             }],
             body: Some(Par::default().with_matches(vec![Match {
                 target: Some(new_gint_par(10, Vec::new(), false)),
@@ -4741,6 +4772,7 @@ async fn receive_with_true_guard_should_consume_message() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -4787,6 +4819,7 @@ async fn receive_with_false_guard_should_leave_data_and_continuation() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -4828,6 +4861,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
             source: Some(chan.clone()),
             remainder: None,
             free_count: 1,
+            cost_signature: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -4970,12 +5004,14 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
         ],
         body: Some(Par::default()),
@@ -5041,12 +5077,14 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
         ],
         body: Some(Par::default()),
@@ -5102,12 +5140,14 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
         ],
         body: Some(Par::default()),
@@ -5233,12 +5273,14 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
         ],
         body: Some(Par::default()),
@@ -5306,12 +5348,14 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
                 source: Some(chan_a.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
                 source: Some(chan_b.clone()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             },
         ],
         body: Some(Par::default()),

@@ -1,106 +1,182 @@
-//! `equivocation_detector_paths` — fuzz the detector boundary against an
-//! independent three-way oracle.
-//!
-//! Reference: docs/casper/theory/slashing/slashing-specification.md §4
-//! (detection), §12 UC-01..UC-04.
-//!
-//! Oracle: a block whose creator-justification equals the snapshot's latest
-//! message for that validator is Valid; otherwise, if the block was pulled
-//! in as a dependency, AdmissibleEquivocation; otherwise IgnorableEquivocation.
-//! The production detector must agree on every synthetic input.
-//!
-//! The `.expect(...)` at the bottom asserts the detector is *total* for
-//! synthetic DAGs — synthetic DAGs cannot reach the store-error branch
-//! because `support::snapshot` builds an in-memory DAG with no I/O. A
-//! failure of that expect would mean the production detector grew a new
-//! error path that synthetic input can trigger (regression of T-9.11).
-
 #![no_main]
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use arbitrary::Arbitrary;
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::equivocation_detector::EquivocationDetector;
-use futures::executor::block_on;
+use casper::rust::causal_equivocation::{
+    EvidenceDeltaVerdict, proposer_evidence_delta, validate_evidence_delta,
+};
 use libfuzzer_sys::fuzz_target;
-use models::rust::casper::protocol::casper_message::Justification;
-use rspace_plus_plus::rspace::history::Either;
+use models::rust::bond_generation::BondGeneration;
+use models::rust::casper::protocol::casper_message::ObjectiveEquivocationEvidence;
+use models::rust::validator::Validator;
 
 mod support;
 
 #[derive(Arbitrary, Debug)]
-struct JustificationInput {
-    validator: u8,
+struct EvidenceInput {
     hash: u8,
+    sender: u8,
+    sequence_number: i16,
+    invalid: bool,
 }
 
 #[derive(Arbitrary, Debug)]
 struct Input {
-    requested_as_dependency: bool,
-    sender: u8,
-    block_hash: u8,
-    block_number: i16,
-    seq_num: i16,
-    latest_present: bool,
-    latest_hash: u8,
-    creator_justification_present: bool,
-    creator_justification_hash: u8,
-    extra_justifications: Vec<JustificationInput>,
+    validator_count: u8,
+    candidate_sender: u8,
+    actual_mode: u8,
+    evidences: Vec<EvidenceInput>,
+}
+
+fn validator_at(validators: &[Validator], index: u8) -> Validator {
+    validators[usize::from(index) % validators.len()].clone()
+}
+
+fn expected_delta(evidences: &[support::Evidence]) -> Vec<ObjectiveEquivocationEvidence> {
+    let mut first_by_hash = BTreeMap::new();
+    for evidence in evidences {
+        first_by_hash
+            .entry(evidence.hash.clone())
+            .or_insert_with(|| evidence.clone());
+    }
+    let mut groups = BTreeMap::<(Validator, i32), BTreeSet<_>>::new();
+    for evidence in first_by_hash.into_values() {
+        if evidence.sequence_number >= 0 {
+            groups
+                .entry((evidence.sender, evidence.sequence_number))
+                .or_default()
+                .insert(evidence.hash);
+        }
+    }
+    let mut canonical = BTreeMap::<Validator, ObjectiveEquivocationEvidence>::new();
+    for ((validator, sequence_number), hashes) in groups {
+        if hashes.len() < 2 {
+            continue;
+        }
+        let mut hashes = hashes.into_iter();
+        let first = hashes.next().expect("two hashes");
+        let second = hashes.next().expect("two hashes");
+        let evidence = ObjectiveEquivocationEvidence::new(
+            validator.clone(),
+            BondGeneration::GENESIS,
+            sequence_number,
+            first,
+            second,
+        )
+        .expect("canonical synthetic evidence");
+        canonical
+            .entry(validator)
+            .and_modify(|current| {
+                if evidence < *current {
+                    *current = evidence.clone();
+                }
+            })
+            .or_insert(evidence);
+    }
+    canonical.into_values().collect()
+}
+
+fn actual_delta(
+    required: &[ObjectiveEquivocationEvidence],
+    mode: u8,
+) -> Vec<ObjectiveEquivocationEvidence> {
+    let mut actual = required.to_vec();
+    match mode % 8 {
+        0 => {}
+        1 => {
+            actual.pop();
+        }
+        2 => {
+            if let Some(first) = actual.first().cloned() {
+                actual.push(first);
+            }
+        }
+        3 => actual.reverse(),
+        4 => actual.push(
+            ObjectiveEquivocationEvidence::new(
+                support::validator(250),
+                BondGeneration::GENESIS,
+                0,
+                support::block_hash(240),
+                support::block_hash(241),
+            )
+            .expect("foreign synthetic evidence"),
+        ),
+        5 => {
+            if actual.len() >= 2 {
+                actual.swap(0, 1);
+            }
+        }
+        6 => actual.truncate(1),
+        _ => actual.clear(),
+    }
+    actual
+}
+
+fn expected_verdict(
+    required: &[ObjectiveEquivocationEvidence],
+    actual: &[ObjectiveEquivocationEvidence],
+) -> EvidenceDeltaVerdict {
+    if actual == required {
+        return EvidenceDeltaVerdict::Valid;
+    }
+    let actual_set = actual.iter().cloned().collect::<BTreeSet<_>>();
+    let required_set = required.iter().cloned().collect::<BTreeSet<_>>();
+    if actual.len() == actual_set.len()
+        && actual.windows(2).all(|window| window[0] < window[1])
+        && actual_set.is_subset(&required_set)
+    {
+        EvidenceDeltaVerdict::Neglected
+    } else {
+        EvidenceDeltaVerdict::Invalid
+    }
 }
 
 fuzz_target!(|input: Input| {
-    let sender = support::validator(input.sender);
-    let mut justifications = Vec::new();
-    if input.creator_justification_present {
-        justifications.push(Justification {
-            validator: sender.clone(),
-            latest_block_hash: support::block_hash(input.creator_justification_hash),
-        });
-    }
-    // `.take(6)` bounds the synthetic justification list at 6 entries.
-    // The bound is a search-space cap, not a semantic limit — production
-    // blocks may have arbitrarily many justifications; 6 is the smallest
-    // value that exposes both the creator-justification path and at least
-    // a few cross-validator citations.
-    for item in input.extra_justifications.iter().take(6) {
-        justifications.push(Justification {
-            validator: support::validator(item.validator),
-            latest_block_hash: support::block_hash(item.hash),
-        });
-    }
+    let validator_count = usize::from(input.validator_count % 6) + 1;
+    let validators = (0..validator_count)
+        .map(|index| support::validator(index as u8))
+        .collect::<Vec<_>>();
+    let evidences = input
+        .evidences
+        .iter()
+        .enumerate()
+        .take(12)
+        .map(|(index, evidence)| support::Evidence {
+            hash: support::block_hash(evidence.hash),
+            sender: validator_at(&validators, evidence.sender),
+            block_number: index as i64,
+            sequence_number: i32::from(evidence.sequence_number.rem_euclid(16)),
+            invalid: evidence.invalid,
+        })
+        .collect::<Vec<_>>();
+    let snapshot = support::snapshot(&evidences, evidences.len() as i64, 8, Vec::new());
+    let roots = evidences
+        .iter()
+        .map(|evidence| evidence.hash.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let required = expected_delta(&evidences);
 
-    let mut block = support::block_with_system_deploys(
-        input.block_hash,
-        sender.clone(),
-        i64::from(input.block_number),
+    assert_eq!(
+        proposer_evidence_delta(&roots, &snapshot.dag).expect("synthetic causal closure"),
+        required
+    );
+
+    let actual = actual_delta(&required, input.actual_mode);
+    let mut candidate = support::block_with_system_deploys(
+        input.candidate_sender,
+        validator_at(&validators, input.candidate_sender),
+        evidences.len() as i64 + 1,
         Vec::new(),
     );
-    block.seq_num = i32::from(input.seq_num);
-    block.justifications = justifications;
+    candidate.header.parents_hash_list = roots;
+    candidate.header.objective_equivocation_evidence_delta = actual.clone();
 
-    let mut snapshot = support::snapshot(&[], i64::from(input.block_number), 1, Vec::new());
-    if input.latest_present {
-        snapshot
-            .dag
-            .latest_messages_map
-            .insert(sender.clone(), support::block_hash(input.latest_hash));
-    }
-
-    let expected = if EquivocationDetector::creator_justification_hash(&block)
-        == snapshot.dag.latest_message_hash(&sender)
-    {
-        Either::Right(ValidBlock::Valid)
-    } else if input.requested_as_dependency {
-        Either::Left(BlockError::Invalid(InvalidBlock::AdmissibleEquivocation))
-    } else {
-        Either::Left(BlockError::Invalid(InvalidBlock::IgnorableEquivocation))
-    };
-
-    let actual = block_on(EquivocationDetector::check_equivocations(
-        input.requested_as_dependency,
-        &block,
-        &snapshot.dag,
-    ))
-    .expect("equivocation detector check is total for synthetic DAGs");
-
-    assert_eq!(actual, expected);
+    assert_eq!(
+        validate_evidence_delta(&candidate, &snapshot.dag).expect("synthetic evidence validation"),
+        expected_verdict(&required, &actual)
+    );
 });

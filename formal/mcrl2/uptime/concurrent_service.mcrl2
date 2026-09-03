@@ -1,0 +1,15 @@
+act
+  receive1, capture1, begin_replay1, end_replay1,
+  begin_validate1, end_validate1, publish1, commit1, release1, retry1;
+  receive2, capture2, begin_replay2, end_replay2,
+  begin_validate2, end_validate2, publish2, commit2, release2, retry2;
+
+proc
+  Shard1 = receive1 . capture1 . begin_replay1 . end_replay1 .
+           begin_validate1 . end_validate1 . publish1 . commit1 . release1 . Shard1
+         + retry1 . Shard1;
+  Shard2 = receive2 . capture2 . begin_replay2 . end_replay2 .
+           begin_validate2 . end_validate2 . publish2 . commit2 . release2 . Shard2
+         + retry2 . Shard2;
+
+init Shard1 || Shard2;

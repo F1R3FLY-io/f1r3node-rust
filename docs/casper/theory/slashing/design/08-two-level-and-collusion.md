@@ -18,17 +18,16 @@ is no rule saying "you *must* slash any equivocator you know
 about". B's block looks valid: `b₁'` is just a justification, not a
 deploy.
 
-**Two-level slashing** closes this loophole.
+The counterfactual two-level policy closes this loophole by adding economic
+punishment. The current protocol uses rejection without recursive punishment.
 
 > **Current activation status.** Neglect DETECTION and block REJECTION are
 > live. The economic arm is not: `NeglectedEquivocation` /
 > `NeglectedInvalidBlock` are demoted from the slashable set (they are
 > judged against the receiver's own tracker and records — view-relative,
 > so honest nodes can disagree on them; CI run 32588262605 burned honest
-> stake through exactly this class). Level-2 stake loss resumes if the
-> neglect checks are shown admission-order-free and re-promoted — see the
-> amendment in `slashing-specification.md` §4. The closure theory below is
-> the design for that re-promoted state.
+> stake through exactly this class). The closure theory below is a
+> counterfactual risk model. It is not the current protocol.
 
 ## 8.2 The neglect rule (T-3, T-6)
 
@@ -63,9 +62,11 @@ introduced by bug fix #9: a self-correcting block (B cites A's
 invalid block *and* attaches a `SlashDeploy(_, A)`) is admitted.
 Pre-fix Scala rejects all such blocks unconditionally.
 
-## 8.3 The two-level pipeline
+## 8.3 Counterfactual two-level pipeline
 
-When B's block is rejected as `NeglectedEquivocation`, the
+If economic neglect slashing is enabled, B's rejection creates an economic
+record. The current implementation does not perform this transition. Under
+the counterfactual policy, the
 dispatcher inserts an `EquivocationRecord(B, seqN_B − 1, ∅)`.
 The next-next proposer C now sees *two* offenders: A (admissible
 equivocation) and B (neglected). C emits **two**
@@ -74,12 +75,12 @@ equivocation) and B (neglected). C emits **two**
 [![Diagram 04 — Two-level slashing](../diagrams/04-seq-two-level-slashing.svg)](../diagrams/04-seq-two-level-slashing.svg)
 
 The two slash deploys execute in sequence inside C's block; the
-post-state has `allBonds[A] = 0`, `allBonds[B] = 0`, and the
+counterfactual post-state has `allBonds[A] = 0`, `allBonds[B] = 0`, and the
 forfeited stake is in the Coop vault (200 = 100 + 100 if both had
 stake 100). Other validators replay C's block and reach the same
-post-state (replay determinism / T-15).
+post-state under the same replay-determinism obligations.
 
-> **Why does this work?** B's only winning move is to attach a
+> **Counterfactual incentive.** Under this policy, B's only winning move is to attach a
 > `SlashDeploy(b₁', A)` to B's own block. Pre-fix, that would have
 > made B's block invalid (Scala rejects neglecting blocks
 > unconditionally). Post-fix #9, the self-correction is admitted —
@@ -194,7 +195,7 @@ documented in verification §10.8.2. With n = 4, F = 1, if both A
 and the active set drops to `{C, D}` of size 2 — *below* the BFT
 quorum lower bound `⌈(2n + 1)/3⌉ = 3`.
 
-This is **expected behavior** outside T-12's domain: if more
+This is **expected counterfactual behavior** outside T-12's domain: if more
 validators misbehave than the protocol bound allows, the protocol
 cannot maintain quorum. This is not a bug in the slashing
 subsystem; it is a property of the BFT bound itself.
@@ -202,7 +203,7 @@ subsystem; it is a property of the BFT bound itself.
 The worked example in spec §11.2 walks through this trace
 explicitly as a *deliberate counter-example*.
 
-## 8.6 Why neglect detection works (intuition)
+## 8.6 Counterfactual economic effect of neglect detection
 
 The neglect detection rule is essentially: *"You may not cite an
 invalid block in your justifications without also slashing its
@@ -218,12 +219,12 @@ sender."* This rule:
 3. **Cannot be evaded by waiting.** As long as A's equivocation is
    in the DAG, *every* future block citing it must self-correct.
 
-The only winning strategy for B is to slash A. This makes
+Under the counterfactual policy, the only winning strategy for B is to slash A. This makes
 collusion **mutually destructive**: A is slashed for equivocation,
 B is slashed for neglect — unless B slashes A, in which case only
 A is slashed and B is admitted.
 
-## 8.7 Sequence diagram — collusion ends in mutual destruction
+## 8.7 Counterfactual sequence diagram
 
 [![Diagram 04 — Two-level slashing](../diagrams/04-seq-two-level-slashing.svg)](../diagrams/04-seq-two-level-slashing.svg)
 
@@ -233,8 +234,8 @@ The diagram shows:
   `AdmissibleEquivocation`; tracker records `(A, seqN − 1, ∅)`.
 - **Phase 2 setup (Level 2)**: B signs `b_B @ seqN_B` with `b'`
   cited in justifications, *no* `SlashDeploy` attached.
-- **Phase 3**: validate.rs:989-1030 fires `NeglectedInvalidBlock`;
-  tracker records `(B, seqN_B − 1, ∅)`.
+- **Phase 3**: validation fires `NeglectedInvalidBlock`. The counterfactual
+  policy records `(B, seqN_B − 1, ∅)`. The current protocol does not.
 - **Phase 4**: Honest proposer P proposes block `bP` at seqM; reads
   authorized current-epoch invalid-block evidence → `{(A, b'), (B, b_B)}`;
   emits two `SlashDeploy`s in `bP`.
@@ -262,21 +263,17 @@ The diagram shows:
 | T-12EID | Stale epoch evidence is ineligible unless explicit carryover maps it current.                                 | `TwoLevelSlashing.v`                     |
 | T-12HYP | The main quorum/closure hypotheses have finite counterexamples when removed.                                  | `TwoLevelSlashing.v`                     |
 | T-12AMP | Weighted amplification witnesses live outside the bounded-closure theorem precondition.                       | `TwoLevelSlashing.v`                     |
-| T-12PF  | Bounded slash liveness requires proposer evidence-inclusion fairness or an explicit inclusion rule.           | `Bisimulation.v`, `TwoLevelSlashing.tla` |
+| T-12PF  | Bounded slash liveness requires proposer evidence-inclusion fairness or an explicit inclusion rule.           | `TwoLevelSlashing.tla`                    |
 | T-5DF   | Delimiter-free record-key projection is non-injective; canonical pair keys are required.                     | `EquivocationRecord.v`                  |
 | T-9.9   | The Rust widening (admit self-correcting blocks) is sound: rejection-iff post-fix is `neglected ∧ ¬has_slash`. | `BugFixSelfRegression.v:107`             |
 
 ## 8.9 Why two levels and not three?
 
-A natural question: if neglecting an equivocator is itself slashable
-(Level 2), is *neglecting a neglector* slashable too (Level 3)?
+A natural counterfactual question asks whether neglecting a neglector adds
+a separate economic level.
 
-**No.** Level 2 already captures the closure. The dispatcher's
-neglect rule fires for *any* invalid block in justifications,
-regardless of *why* it was invalid. So if B's block is flagged
-invalid (because B neglected A), and C cites B's block without
-slashing B, then C is itself caught by the same Level-2 rule —
-no need for a separate Level-3 rule.
+**No.** The counterfactual closure already includes each reachable neglect
+edge. The current protocol creates no economic neglect edge and cannot recurse.
 
 The closure operator (Definition 8.2) iterates until fixed point;
 T-11 proves the iteration terminates. So **Level 2 is the closure
@@ -285,9 +282,9 @@ collapses into a single closure step.
 
 ## 8.10 Summary
 
-- **Level 1**: detect direct equivocations → record → slash.
-- **Level 2**: detect neglected justifications → record → slash.
-- **Closure**: iterate until fixed point.
+- **Current protocol**: detect direct equivocations → record → slash.
+- **Current neglect handling**: detect → reject → persist without evidence.
+- **Counterfactual policy**: convert neglect rejections into evidence and iterate the closure.
 - **Termination**: T-11.
 - **BFT-bound preservation**: T-12 (under `|closure| ≤ F`).
 - **Soundness of Rust widening**: T-9.9.

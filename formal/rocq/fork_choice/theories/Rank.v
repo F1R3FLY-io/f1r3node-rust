@@ -2,13 +2,11 @@
    Rank.v - The LMD-GHOST upward descent: terminates, and picks the heaviest
    scored child at every level.
 
-   `rank_forkchoices` (estimator.rs:301-327) starts at [lca] and repeatedly
-   REPLACES each block by its SCORED children, deduplicates, and re-sorts by
-   decreasing score; it stops when a round leaves the frontier unchanged
-   (`still_same`, :322) - i.e. when no scored children remain. We model the
-   single-tip GHOST descent that follows the winner: at each level move UP to the
-   argmax scored child (highest score, ties by hash - TieBreak), stopping at a
-   block with no scored child (a tip).
+   `greedy_ghost_head` starts at the LCA and moves to the argmax scored child
+   (highest score, ties by hash) at each level, stopping at a block with no
+   scored child. `TerminalFrontier.v` separately proves exact concurrent
+   frontier retention and the head-first composition performed by
+   `rank_forkchoices`.
 
    Proved:
      * `rank_terminates`   - with fuel = 1 + dag_max_num, the descent reaches a
@@ -29,10 +27,10 @@
    ---------------------------------------------------------------------------
    Rocq                         | Rust (casper/src/rust/estimator.rs)
    -----------------------------+------------------------------------------------
-   children / scored_children   | block_dag.children + scores.contains_key (:345-357)
-   best_child (argmax)          | sort_by_with_decreasing_order head (:320)
-   rank (upward descent)        | rank_forkchoices recursion (:301-327)
-   still_same_fixpoint          | still_same stop (:322,:368)
+   children / scored_children   | block_dag.children + scores.contains_key
+   best_child (argmax)          | sort_by_with_decreasing_order head
+   rank (upward descent)        | greedy_ghost_head
+   still_same_fixpoint          | no-scored-child terminal condition
    rank_terminates              | finite ascent (bounded by DAG height)
    rank_selects_heaviest        | heaviest-subtree pick (GHOST)
    =========================================================================== *)
@@ -273,10 +271,11 @@ Definition supported_b (d : DAG) (fuel : nat) (lms : list (Validator * BlockHash
   existsb (fun e => anc_ofb d fuel b (snd e)) lms.
 
 Corollary ghost_rank_terminates :
-  forall d sfuel lms h,
+  forall authority d sfuel lms h,
     wf_dag d -> wf_lookup d ->
-    best_child d (build_scores d sfuel lms) (supported_b d sfuel lms)
-      (rank d (build_scores d sfuel lms) (supported_b d sfuel lms) (S (dag_max_num d)) h)
+    best_child d (build_scores authority d sfuel lms) (supported_b d sfuel lms)
+      (rank d (build_scores authority d sfuel lms) (supported_b d sfuel lms)
+        (S (dag_max_num d)) h)
       = None.
 Proof.
   intros. apply rank_terminates; assumption.

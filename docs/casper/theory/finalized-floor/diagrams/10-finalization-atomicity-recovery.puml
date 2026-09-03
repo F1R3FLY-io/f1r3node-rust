@@ -1,0 +1,42 @@
+@startuml
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam ArrowColor #37474F
+skinparam componentStyle rectangle
+
+actor "Block admission\nand network delivery" as ADMISSION #E3F2FD
+component "Request sequencer\nSeqCst tickets" as REQUESTS #BBDEFB
+component "Worker A\nimmutable evaluation" as WORKER_A #C8E6C9
+component "Worker B\nimmutable evaluation" as WORKER_B #C8E6C9
+database "Finalization ledger\nround + head transaction" as LEDGER #FFE082
+database "Immutable genesis anchor\nhash · height · root digest" as GENESIS #FFD54F
+component "Ordered metadata\nprojection" as PROJECTION #FFCCBC
+component "Idempotent effects\ndeploy · cosigner · cache · event" as EFFECTS #D1C4E9
+database "Durable cursors\nprojection · effects · compaction" as CURSORS #FFF9C4
+component "Changed predecessor\nstale · fresh evaluation\nno state change" as STALE #FFCDD2
+
+ADMISSION --> REQUESTS : nonblocking request
+REQUESTS --> WORKER_A : bounded permit
+REQUESTS --> WORKER_B : bounded permit
+LEDGER --> WORKER_A : bind revision · block · height · digest
+LEDGER --> WORKER_B : bind revision · block · height · digest
+ADMISSION -[dashed]-> WORKER_A : continues concurrently
+ADMISSION -[dashed]-> WORKER_B : continues concurrently
+WORKER_A --> LEDGER : revalidate ancestry + state\ncompare-and-append exact base
+WORKER_B --> LEDGER : revalidate ancestry + state\ncompare-and-append exact base
+GENESIS --> LEDGER : roots every round digest
+LEDGER --> GENESIS : exact retry verifies only\nnever overwrites or resets head
+LEDGER --> PROJECTION : winning immutable manifest
+LEDGER --> STALE : mismatched predecessor
+PROJECTION --> CURSORS : advance contiguous projection
+PROJECTION --> EFFECTS : only after durable projection
+EFFECTS --> CURSORS : receipts and completion marker
+CURSORS --> EFFECTS : retry unfinished suffix after restart
+CURSORS -[dashed]-> GENESIS : bootstrap together atomically
+
+note bottom of LEDGER #FFFDE7
+Only the constant-size publication point is linearized.
+Clique evaluation, replay, admission, and network work remain parallel.
+Startup audits the full rooted chain; ordinary genesis retries are O(1).
+end note
+@enduml

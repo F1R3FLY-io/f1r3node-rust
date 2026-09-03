@@ -6,7 +6,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use lazy_static::lazy_static;
 use models::rust::casper::protocol::casper_message::DeployData;
 use rholang::rust::build::compile_rholang_source::{
@@ -56,6 +56,35 @@ pub const STACK_PK: &str = "c94e647de6876c954ebb7b64c40a220227770f9be003635edfe3
 // one-off generator and the derivation table at the top of TokenMetadata.rhox.
 pub const TOKEN_METADATA_PK: &str =
     "8f9a1c3b2d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a";
+pub const CAPABILITIES_REGISTRY_PK: &str =
+    "0c93f4a9b25d6e1f378203f4b09e8c43d17ab2c4e5f6a18b3294c02765a1f450";
+// Private key, timestamp, pubkey, signature, and URI for the blessed Exchange
+// (Cost-Accounted Rho, Stage D — the conserving 1:1 token swap, spec "Fee
+// conversion" tex:3061-3084) were generated via RegistrySigGen exactly like
+// CapabilitiesRegistry. The derived registry URI
+// (rho:id:h7oamwfmbdgahd4jk6kcf9kzqssapm6bifq5i4u77danpta6d1ejf5) is the
+// `rho:lang:exchange` shorthand in Registry.rho's bootstrapLookup table. The
+// pk/sig are RE-DERIVED per-shard at genesis (substituted into Exchange.rhox);
+// the URI is content-addressed from the pk alone, hence stable across shards.
+pub const EXCHANGE_PK: &str = "3f9c1a7e8b2d4056f1a3c7e90b4d28f6a5c3e1b7d9f08264a3c5e7091bd4f628";
+
+const BLESSED_PRIVATE_KEYS: [&str; 15] = [
+    REGISTRY_PK,
+    VERSIONED_REGISTRY_PK,
+    LIST_OPS_PK,
+    EITHER_PK,
+    NON_NEGATIVE_NUMBER_PK,
+    MAKE_MINT_PK,
+    AUTH_KEY_PK,
+    SYSTEM_VAULT_PK,
+    MULTI_SIG_SYSTEM_VAULT_PK,
+    POS_GENERATOR_PK,
+    VAULTS_GENERATOR_PK,
+    STACK_PK,
+    TOKEN_METADATA_PK,
+    CAPABILITIES_REGISTRY_PK,
+    EXCHANGE_PK,
+];
 
 // Timestamps for each deploy
 pub const REGISTRY_TIMESTAMP: i64 = 1559156071321;
@@ -69,6 +98,8 @@ pub const MULTI_SIG_SYSTEM_VAULT_TIMESTAMP: i64 = 1571408470880;
 pub const POS_GENERATOR_TIMESTAMP: i64 = 1559156420651;
 pub const STACK_TIMESTAMP: i64 = 1751539590099;
 pub const TOKEN_METADATA_TIMESTAMP: i64 = 1737500000000;
+pub const CAPABILITIES_REGISTRY_TIMESTAMP: i64 = 1748678400000;
+pub const EXCHANGE_TIMESTAMP: i64 = 1748678400001;
 
 lazy_static! {
     pub static ref REGISTRY_PUB_KEY: PublicKey = to_public(REGISTRY_PK);
@@ -84,6 +115,8 @@ lazy_static! {
     pub static ref VAULTS_GENERATOR_PUB_KEY: PublicKey = to_public(VAULTS_GENERATOR_PK);
     pub static ref STACK_PUB_KEY: PublicKey = to_public(STACK_PK);
     pub static ref TOKEN_METADATA_PUB_KEY: PublicKey = to_public(TOKEN_METADATA_PK);
+    pub static ref CAPABILITIES_REGISTRY_PUB_KEY: PublicKey = to_public(CAPABILITIES_REGISTRY_PK);
+    pub static ref EXCHANGE_PUB_KEY: PublicKey = to_public(EXCHANGE_PK);
 }
 
 pub fn system_public_keys() -> Vec<&'static PublicKey> {
@@ -101,6 +134,8 @@ pub fn system_public_keys() -> Vec<&'static PublicKey> {
         &VAULTS_GENERATOR_PUB_KEY,
         &STACK_PUB_KEY,
         &TOKEN_METADATA_PUB_KEY,
+        &CAPABILITIES_REGISTRY_PUB_KEY,
+        &EXCHANGE_PUB_KEY,
     ]
 }
 
@@ -117,14 +152,40 @@ fn to_deploy(
     let deploy_data = DeployData {
         time_stamp: timestamp,
         term: compiled_source.code,
-        phlo_limit: i64::MAX, // Equivalent to accounting.MAX_VALUE in Scala
-        phlo_price: 0,
+        language: "rholang".to_string(),
         valid_after_block_number: 0,
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
+        authority_presentations: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), sk).expect("Failed to create signed deploy")
+}
+
+pub fn protocol_envelope(
+    deploy: Signed<DeployData>,
+    protocol_version: i64,
+) -> Result<Cosigned<DeployData>, String> {
+    if protocol_version < models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION {
+        return Cosigned::from_single_signer(deploy).map_err(|error| error.to_string());
+    }
+
+    let private_key_hex = BLESSED_PRIVATE_KEYS
+        .iter()
+        .copied()
+        .find(|private_key_hex| to_public(private_key_hex) == deploy.pk)
+        .ok_or_else(|| {
+            format!(
+                "no blessed private key registered for public key {}",
+                hex::encode(&deploy.pk.bytes)
+            )
+        })?;
+    let private_key = PrivateKey::from_bytes(
+        &hex::decode(private_key_hex)
+            .map_err(|error| format!("invalid blessed private key: {error}"))?,
+    );
+    Cosigned::create_single_envelope(deploy.data, Box::new(Secp256k1), private_key)
+        .map_err(|error| error.to_string())
 }
 
 pub fn registry(shard_id: &str) -> Signed<DeployData> {
@@ -250,14 +311,20 @@ pub fn token_metadata(
 pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(pos.minimum_bond <= pos.maximum_bond);
     assert!(!pos.validators.is_empty());
+    let pos_public_key = hex::encode(&POS_GENERATOR_PUB_KEY.bytes);
 
     to_deploy(
         CompiledRholangTemplate::new("PoS.rhox", embedded_rho::POS, HashMap::new(), &[
+            ("posPubKey", &pos_public_key),
             ("minimumBond", &pos.minimum_bond.to_string()),
             ("maximumBond", &pos.maximum_bond.to_string()),
             (
                 "initialBonds",
                 &ProofOfStake::initial_bonds(&pos.validators),
+            ),
+            (
+                "initialBondGenerations",
+                &ProofOfStake::initial_bond_generations(&pos.validators),
             ),
             ("epochLength", &pos.epoch_length.to_string()),
             ("quarantineLength", &pos.quarantine_length.to_string()),
@@ -274,9 +341,81 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),
             ),
             ("posMultiSigQuorum", &pos.pos_multi_sig_quorum.to_string()),
+            ("initialPhlogiston", &pos.initial_phlogiston.to_string()),
+            ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
         ]),
         POS_GENERATOR_PK,
         POS_GENERATOR_TIMESTAMP,
+        shard_id,
+    )
+}
+
+/// Genesis deploy for the Phase 3 LL-rich algebra capability registry
+/// (`rho:system:capabilities`). Derives the per-genesis-shard
+/// `(pub_key, sig)` pair via [`RegistrySigGen`] and substitutes them
+/// into the `CapabilitiesRegistry.rhox` template so the contract
+/// bundle is signed with a stable per-shard key.
+pub fn capabilities_registry(shard_id: &str) -> Signed<DeployData> {
+    use crypto::rust::private_key::PrivateKey;
+
+    use crate::rust::util::rholang::registry_sig_gen::{Args, RegistrySigGen};
+
+    let sk = PrivateKey::from_bytes(
+        &hex::decode(CAPABILITIES_REGISTRY_PK).expect("Invalid CAPABILITIES_REGISTRY_PK hex"),
+    );
+    let args = Args::new(
+        Some("CapabilitiesRegistry".to_string()),
+        Some(CAPABILITIES_REGISTRY_TIMESTAMP),
+        Some(sk),
+    );
+    let derivation = RegistrySigGen::derive_from(&args);
+    let pub_key_hex = derivation.result.pk.to_string();
+    let sig_hex = derivation.result.sig.to_string();
+    to_deploy(
+        CompiledRholangTemplate::new(
+            "CapabilitiesRegistry.rhox",
+            embedded_rho::CAPABILITIES_REGISTRY,
+            HashMap::new(),
+            &[
+                ("capabilitiesRegistryPubKey", pub_key_hex.as_str()),
+                ("capabilitiesRegistrySig", sig_hex.as_str()),
+            ],
+        ),
+        CAPABILITIES_REGISTRY_PK,
+        CAPABILITIES_REGISTRY_TIMESTAMP,
+        shard_id,
+    )
+}
+
+/// Genesis deploy for the Cost-Accounted Rho Stage-D blessed `Exchange`
+/// (`rho:lang:exchange`) — the spec's conserving 1:1 token swap ("Fee
+/// conversion" tex:3061-3084). Wired EXACTLY like [`capabilities_registry`]:
+/// derives the per-genesis-shard `(pub_key, sig)` pair via [`RegistrySigGen`]
+/// and substitutes them into the `Exchange.rhox` template so the contract
+/// bundle is signed with the stable per-shard key. The derived registry URI
+/// is content-addressed from the pubkey and is exposed as the
+/// `rho:lang:exchange` shorthand in `Registry.rho`.
+pub fn exchange(shard_id: &str) -> Signed<DeployData> {
+    use crypto::rust::private_key::PrivateKey;
+
+    use crate::rust::util::rholang::registry_sig_gen::{Args, RegistrySigGen};
+
+    let sk = PrivateKey::from_bytes(&hex::decode(EXCHANGE_PK).expect("Invalid EXCHANGE_PK hex"));
+    let args = Args::new(
+        Some("Exchange".to_string()),
+        Some(EXCHANGE_TIMESTAMP),
+        Some(sk),
+    );
+    let derivation = RegistrySigGen::derive_from(&args);
+    let pub_key_hex = derivation.result.pk.to_string();
+    let sig_hex = derivation.result.sig.to_string();
+    to_deploy(
+        CompiledRholangTemplate::new("Exchange.rhox", embedded_rho::EXCHANGE, HashMap::new(), &[
+            ("exchangePubKey", pub_key_hex.as_str()),
+            ("exchangeSig", sig_hex.as_str()),
+        ]),
+        EXCHANGE_PK,
+        EXCHANGE_TIMESTAMP,
         shard_id,
     )
 }
@@ -307,4 +446,35 @@ pub fn to_public(priv_key_hex: &str) -> PublicKey {
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("Invalid private key hex string"));
     let secp256k1 = Secp256k1;
     secp256k1.to_public(&private_key)
+}
+
+#[cfg(test)]
+mod embedded_contract_compile_tests {
+    use super::*;
+    use crate::rust::genesis::contracts::validator::Validator;
+
+    #[test]
+    fn system_vault_source_compiles() { let _ = system_vault("root"); }
+
+    #[test]
+    fn proof_of_stake_source_compiles() {
+        let proof_of_stake = ProofOfStake {
+            minimum_bond: 1,
+            maximum_bond: 1_000_000,
+            validators: vec![Validator {
+                pk: POS_GENERATOR_PUB_KEY.clone(),
+                stake: 100,
+            }],
+            epoch_length: 10,
+            quarantine_length: 20,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 100_000,
+            pos_multi_sig_public_keys: vec![hex::encode(&POS_GENERATOR_PUB_KEY.bytes)],
+            pos_multi_sig_quorum: 1,
+            max_cosigners_per_deploy: 64,
+            initial_phlogiston: 100,
+            epoch_phlogiston: 100,
+        };
+        let _ = pos_generator(&proof_of_stake, "root");
+    }
 }

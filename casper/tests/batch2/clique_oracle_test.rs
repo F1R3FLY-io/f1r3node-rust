@@ -48,7 +48,6 @@ fn create_block<'a>(
             None,
             None,
             None,
-            None,
         )
     }
 }
@@ -786,25 +785,8 @@ async fn clique_oracle_growth_feedback_loop_stale_justification_chain() {
     .await
 }
 
-/// Tests whether a finalized block that becomes unreachable from future LFBs
-/// gets its cached FT updated by the propagation pass.
-///
-/// DAG structure:
-/// ```
-///   genesis
-///    ├── b1_v1 (V1, height 1) ← finalized as first LFB with FT=0.33
-///    ├── b1_v2 (V2, height 1)
-///    └── b1_v3 (V3, height 1)
-///              └── b2 (V1, height 2, parent=b1_v3) ← later LFB
-///
-///   b2's ancestor chain: b2 → b1_v3 → genesis
-///   b1_v1 is NOT in b2's ancestor chain (it's a sibling at height 1)
-/// ```
-///
-/// Question: does propagate_ft_to_ancestors update b1_v1 when b2 is finalized?
-/// If not, b1_v1 stays at FT=0.33 forever — the node issue.
 #[tokio::test]
-async fn orphaned_finalized_block_should_still_get_ft_updated() {
+async fn finalized_floor_requires_lineage_and_updates_secondary_parent_ft() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v1 = generate_validator(Some("Orphan V1"));
         let v2 = generate_validator(Some("Orphan V2"));
@@ -845,7 +827,7 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
 
         // Three blocks at height 1, one per validator, all parented on genesis
         let b1_v1 = creator1(&mut block_store, &mut block_dag_storage, &genesis, &gj);
-        let _b1_v2 = creator2(&mut block_store, &mut block_dag_storage, &genesis, &gj);
+        let b1_v2 = creator2(&mut block_store, &mut block_dag_storage, &genesis, &gj);
         let b1_v3 = creator3(&mut block_store, &mut block_dag_storage, &genesis, &gj);
 
         // Finalize b1_v1 as the first LFB with a low FT
@@ -864,41 +846,106 @@ async fn orphaned_finalized_block_should_still_get_ft_updated() {
             meta_v1.fault_tolerance_value
         );
 
+        let predecessor_certificate = block_dag_storage
+            .finalized_floor_certificate()
+            .expect("read finalized-floor certificate")
+            .expect("first finalization produces a certificate");
+        let certificate_carrier =
+            crate::helper::block_generator::create_block_with_finalized_floor_certificate(
+                &mut block_store,
+                &mut block_dag_storage,
+                vec![b1_v1.block_hash.clone(), b1_v2.block_hash.clone()],
+                &genesis,
+                v2.clone(),
+                bonds.clone(),
+                HashMap::from([
+                    (v1.clone(), b1_v1.block_hash.clone()),
+                    (v2.clone(), b1_v2.block_hash.clone()),
+                    (v3.clone(), b1_v3.block_hash.clone()),
+                ]),
+                predecessor_certificate,
+                crate::helper::block_generator::MergeFacts {
+                    merge_base: Some(b1_v1.block_hash.clone()),
+                    ..Default::default()
+                },
+            );
+
         // Build b2 on top of b1_v3 (NOT b1_v1) — the DAG diverges
         let b2 = creator1(
             &mut block_store,
             &mut block_dag_storage,
             &b1_v3,
-            &HashMap::from([(&v1, &b1_v1), (&v2, &genesis), (&v3, &b1_v3)]),
+            &HashMap::from([(&v1, &b1_v1), (&v2, &certificate_carrier), (&v3, &b1_v3)]),
         );
-
-        // Finalize b2 as the new LFB with FT=1.0
-        // b2's ancestor chain: b2 → b1_v3 → genesis
-        // b1_v1 is NOT in this chain
-        block_dag_storage
+        let error = block_dag_storage
             .record_directly_finalized(b2.block_hash.clone(), 1.0, |_| async { Ok(()) })
             .await
-            .unwrap();
+            .expect_err("a sibling cannot replace the durable finalized floor");
+        assert!(matches!(
+            error,
+            shared::rust::store::key_value_store::KvStoreError::InvalidArgument(ref message)
+                if message == "finalization candidate does not preserve the durable finalized floor"
+        ));
 
-        // Check: did b1_v1 get updated?
         let dag_after_second = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let meta_v1_after = dag_after_second.lookup(&b1_v1.block_hash).unwrap().unwrap();
-
-        eprintln!(
-            "b1_v1 FT after second finalization: {} (expected 1.0)",
+        assert!(
+            (meta_v1_after.fault_tolerance_value - 0.33).abs() < 0.01,
+            "rejected sibling finalization must not rewrite the durable floor FT, got {}",
             meta_v1_after.fault_tolerance_value
         );
+        assert_eq!(dag_after_second.last_finalized_block(), b1_v1.block_hash);
 
-        // This assertion will FAIL if propagation doesn't reach orphaned
-        // finalized blocks — confirming the node issue.
-        assert!(
-            (meta_v1_after.fault_tolerance_value - 1.0).abs() < 0.01,
-            "b1_v1 should have FT updated to 1.0 after second finalization, \
-             but got {}. The block is finalized but not in the new LFB's \
-             ancestor chain — propagation didn't reach it.",
-            meta_v1_after.fault_tolerance_value
+        let b2_rebased = crate::helper::block_generator::create_block_with_merge_facts(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![b1_v3.block_hash.clone(), b1_v1.block_hash.clone()],
+            &genesis,
+            Some(v1.clone()),
+            Some(bonds.clone()),
+            Some(HashMap::from([
+                (v1.clone(), b1_v1.block_hash.clone()),
+                (v2.clone(), certificate_carrier.block_hash.clone()),
+                (v3.clone(), b1_v3.block_hash.clone()),
+            ])),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            crate::helper::block_generator::MergeFacts {
+                merge_base: Some(b1_v1.block_hash.clone()),
+                ..Default::default()
+            },
+        );
+        let dag_before_rebased_finalization = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        assert!(!dag_before_rebased_finalization
+            .is_in_main_chain(&b1_v1.block_hash, &b2_rebased.block_hash)
+            .expect("main-chain ancestry"));
+        assert!(dag_before_rebased_finalization
+            .is_dag_ancestor(&b1_v1.block_hash, &b2_rebased.block_hash)
+            .expect("DAG ancestry"));
+
+        block_dag_storage
+            .record_directly_finalized(b2_rebased.block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .expect("secondary-parent descendant preserves the durable floor");
+        let dag_after_rebased_finalization = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let rebased_floor = dag_after_rebased_finalization
+            .lookup(&b1_v1.block_hash)
+            .unwrap()
+            .unwrap();
+        assert!((rebased_floor.fault_tolerance_value - 1.0).abs() < 0.01);
+        assert_eq!(
+            dag_after_rebased_finalization.last_finalized_block(),
+            b2_rebased.block_hash
         );
     })
     .await
@@ -975,7 +1022,6 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
                 Some(creator.clone()),
                 Some(bonds.clone()),
                 Some(justs),
-                None,
                 None,
                 None,
                 None,
@@ -1099,14 +1145,12 @@ async fn conflicting_same_height_siblings_cannot_both_certify() {
         }
 
         let thr = FtThreshold::from_f32_lossy(0.1);
-        let s1_certified =
-            CliqueOracle::ft_witnessed_exact(&s1.block_hash, &dag, &snapshot, thr, false)
-                .await
-                .expect("ft_witnessed_exact(S1)");
-        let s2_certified =
-            CliqueOracle::ft_witnessed_exact(&s2.block_hash, &dag, &snapshot, thr, false)
-                .await
-                .expect("ft_witnessed_exact(S2)");
+        let s1_certified = CliqueOracle::ft_witnessed_exact(&s1.block_hash, &dag, &snapshot, thr)
+            .await
+            .expect("ft_witnessed_exact(S1)");
+        let s2_certified = CliqueOracle::ft_witnessed_exact(&s2.block_hash, &dag, &snapshot, thr)
+            .await
+            .expect("ft_witnessed_exact(S2)");
 
         assert!(
             !(s1_certified && s2_certified),
@@ -1246,11 +1290,11 @@ async fn sound_certificates_form_on_both_fork_sides_across_time() {
         .into_iter()
         .collect();
         let c2_certified_snap1 =
-            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap1, thr, false)
+            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap1, thr)
                 .await
                 .expect("ft(c2) at snapshot 1");
         let sa_certified_snap1 =
-            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap1, thr, false)
+            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap1, thr)
                 .await
                 .expect("ft(s_a) at snapshot 1");
 
@@ -1282,11 +1326,11 @@ async fn sound_certificates_form_on_both_fork_sides_across_time() {
         .into_iter()
         .collect();
         let sa_certified_snap2 =
-            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap2, thr, false)
+            CliqueOracle::ft_witnessed_exact(&s_a.block_hash, &dag, &snap2, thr)
                 .await
                 .expect("ft(s_a) at snapshot 2");
         let c2_certified_snap2 =
-            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap2, thr, false)
+            CliqueOracle::ft_witnessed_exact(&c2.block_hash, &dag, &snap2, thr)
                 .await
                 .expect("ft(c2) at snapshot 2");
 
@@ -1392,7 +1436,7 @@ async fn a_coincidence_never_mutually_seen_must_not_certify() {
         .into_iter()
         .collect();
         let certified_at_coincidence =
-            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &coincidence, thr, false)
+            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &coincidence, thr)
                 .await
                 .expect("ft_witnessed_exact(T) at the coincidence");
         assert!(
@@ -1422,7 +1466,7 @@ async fn a_coincidence_never_mutually_seen_must_not_certify() {
         .into_iter()
         .collect();
         let certified_at_mutual =
-            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &mutual, thr, false)
+            CliqueOracle::ft_witnessed_exact(&t.block_hash, &dag, &mutual, thr)
                 .await
                 .expect("ft_witnessed_exact(T) at mutual knowledge");
         assert!(
@@ -1483,9 +1527,11 @@ fn stage_spine_state_divergence(
     state_parent_of_b: StateParentOfMerge,
 ) -> SpineStateDivergence {
     use casper::rust::util::construct_deploy::basic_processed_deploy;
-    use models::rust::casper::protocol::casper_message::RejectedDeploy;
+    use models::rust::casper::protocol::casper_message::{RejectedDeploy, RejectedDeployReason};
+    use models::rust::deploy_id::DeployIdV6;
+    use prost::bytes::Bytes;
 
-    use crate::helper::block_generator::MergeFacts;
+    use crate::helper::block_generator::{create_block_with_merge_facts, MergeFacts};
 
     let v1 = generate_validator(Some("State Finality V1"));
     let v2 = generate_validator(Some("State Finality V2"));
@@ -1518,22 +1564,39 @@ fn stage_spine_state_divergence(
               merge_facts: Option<MergeFacts>,
               block_store: &mut KeyValueBlockStore,
               block_dag_storage: &mut IndexedBlockDagStorage| {
-        crate::helper::block_generator::create_block(
-            block_store,
-            block_dag_storage,
-            parents,
-            &genesis,
-            Some(creator.clone()),
-            Some(bonds.clone()),
-            Some(justs),
-            deploys,
-            None,
-            None,
-            None,
-            None,
-            None,
-            merge_facts,
-        )
+        match merge_facts {
+            Some(merge_facts) => create_block_with_merge_facts(
+                block_store,
+                block_dag_storage,
+                parents,
+                &genesis,
+                Some(creator.clone()),
+                Some(bonds.clone()),
+                Some(justs),
+                deploys,
+                None,
+                None,
+                None,
+                None,
+                None,
+                merge_facts,
+            ),
+            None => crate::helper::block_generator::create_block(
+                block_store,
+                block_dag_storage,
+                parents,
+                &genesis,
+                Some(creator.clone()),
+                Some(bonds.clone()),
+                Some(justs),
+                deploys,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        }
     };
 
     let g = genesis.block_hash.clone();
@@ -1561,8 +1624,8 @@ fn stage_spine_state_divergence(
     // missing, S carries the content B's merge keeps.
     let x = basic_processed_deploy(1, Some("root".to_string())).expect("deploy x");
     let z = basic_processed_deploy(2, Some("root".to_string())).expect("deploy z");
-    let x_sig = x.deploy.sig.clone();
-    let z_sig = z.deploy.sig.clone();
+    let x_sig = Bytes::copy_from_slice(x.deploy_id());
+    let z_sig = Bytes::copy_from_slice(z.deploy_id());
 
     let a = mk(
         &v1,
@@ -1591,11 +1654,11 @@ fn stage_spine_state_divergence(
     // applied; re-based onto A, nothing is rejected and A's x survives in
     // the state B inherits.
     let b_rejected = match state_parent_of_b {
-        StateParentOfMerge::Floor => vec![RejectedDeploy {
-            sig: x_sig.clone(),
-            duplicate: false,
-            carrier: a.block_hash.clone(),
-        }],
+        StateParentOfMerge::Floor => vec![RejectedDeploy::occurrence_v6(
+            DeployIdV6::try_from(x_sig.as_ref()).expect("protocol-v6 x identity"),
+            a.block_hash.clone(),
+            RejectedDeployReason::MergeConflict,
+        )],
         StateParentOfMerge::MainParent => Vec::new(),
     };
     let b = mk(
@@ -1655,7 +1718,7 @@ fn stage_spine_state_divergence(
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == x_sig && !pd.is_failed),
+            .any(|pd| pd.deploy_id() == x_sig.as_ref() && !pd.is_failed),
         "staging: A must carry x as a non-failed deploy — it is the settled \
          content whose absence downstream is the whole specimen"
     );
@@ -1697,7 +1760,7 @@ fn stage_spine_state_divergence(
     }
 }
 
-/// WHY the oracle may read agreement off the MAIN-PARENT SPINE alone.
+/// The causal oracle does not prove exact state support.
 ///
 /// `agree` asks only `dag.is_in_main_chain(target, latest_message)`. That is
 /// sound exactly while every merge keeps its main parent's content, because
@@ -1714,24 +1777,10 @@ fn stage_spine_state_divergence(
 /// floors (#536 on two validators, #537 on two, #539 on one) and every propose
 /// was refused thereafter.
 ///
-/// The geometry is staged DIRECTLY here because the ordinary merge path can
-/// no longer build it: a merge bases on its main parent, so that parent's
-/// content is in the base rather than in the conflict set, and there is no
-/// rejection decision to make about it. (It is NOT pinning that holds this —
-/// `pinned` is empty in production and the option filter it feeds is dead
-/// code.) So this is a standing pin on the ORACLE's precondition, not a live
-/// defect: if the base rule is ever weakened, the oracle silently goes back to
-/// certifying blocks nothing holds, and the failure resurfaces here rather
-/// than on a wedged shard.
-///
-/// The precondition is CONDITIONAL, not structural. When the main parent's
-/// state does not hold the floor's settled content the base falls back to the
-/// floor, which puts the parent's content back in scope where cost-optimal
-/// resolution can drop it — this geometry's shape. Whether that path can
-/// actually produce it is open; it requires finality lag, which no suite here
-/// generates.
+/// The exact floor witness filters this causal result through state-effect
+/// containment. The unit regression in `finality::floor` verifies that filter.
 #[tokio::test]
-async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content() {
+async fn causal_spine_agreement_does_not_prove_state_support() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         use casper::rust::safety::clique_oracle::FtThreshold;
 
@@ -1761,30 +1810,26 @@ async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content()
         );
 
         let decision =
-            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr, false)
+            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr)
                 .await
                 .expect("ft_witnessed_exact(A)");
         assert!(
             decision,
-            "A certifies on spine agreement alone. Nothing in the oracle prevents \
-             this — only the merge rule that keeps A's content in every descendant's \
-             state makes spine agreement equal state agreement"
+            "the causal threshold does not inspect state effects; exact floor \
+             certification must apply the state-support filter"
         );
     })
     .await
 }
 
 /// The paired pin for
-/// [`spine_agreement_is_sound_only_because_merges_keep_main_parent_content`]:
+/// [`causal_spine_agreement_does_not_prove_state_support`]:
 /// the same DAG with `B` built as an ordinary merge — `merge_base = A`,
 /// nothing rejected — certifies `A` too.
 ///
 /// The pair together is the actual point. Both geometries produce the SAME
-/// oracle verdict, so the oracle cannot distinguish the state that holds `A`
-/// from the state that dropped it. Whether a certified block's content
-/// survives is settled entirely by the merge rule, never by finality — which
-/// is why the rule is enforced where content is chosen (conflict resolution)
-/// rather than where agreement is counted.
+/// causal oracle verdict. Exact floor certification distinguishes the states
+/// with the state-effect containment filter.
 #[tokio::test]
 async fn an_ordinary_merge_still_certifies_the_main_parent_it_kept() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -1798,14 +1843,13 @@ async fn an_ordinary_merge_still_certifies_the_main_parent_it_kept() {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         let decision =
-            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr, false)
+            CliqueOracle::ft_witnessed_exact(&staged.a, &staged.dag, &staged.snapshot, thr)
                 .await
                 .expect("ft_witnessed_exact(A)");
         assert!(
             decision,
-            "an ordinary merge keeps its main parent's content and A finalizes — \
-             the same verdict the divergent geometry gets, which is why the merge \
-             rule and not the oracle is what makes certification meaningful"
+            "the causal threshold accepts the ordinary merge, whose state also \
+             preserves its main-parent effect"
         );
     })
     .await

@@ -6,9 +6,8 @@
 //! finalized over the block's own justification snapshot
 //! ([`CliqueOracle::ft_witnessed_exact`], exact `>= θ`), and candidacy is
 //! containment-gated — a candidate must contain every inherited floor's
-//! settled effects ([`state_contains`]: sig-set inclusion over the recorded
-//! positive state-construction facts) or provably re-collect them through
-//! the merge it will base, so consecutive floors are state-monotone, never
+//! settled effects ([`state_contains`]: exact effect inclusion over the recorded
+//! positive state-construction facts), so consecutive floors are state-monotone, never
 //! merely DAG parent/child. Every input is consensus-checked block content
 //! (bodies, signed justifications, immutable ancestor metadata), so every
 //! honest node derives the same floor for the same block — no node-local
@@ -24,9 +23,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::finality::state_preservation::{
+    is_exact_state_contained_with_cache, metadata_with_cache, StateProvenanceCache,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
@@ -42,6 +45,26 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 pub struct Floor {
     pub hash: BlockHash,
     pub block_number: i64,
+}
+
+pub fn canonical_floor_committee(
+    floor_bonds: Vec<Bond>,
+    active: &[Validator],
+) -> Result<Vec<Bond>, CasperError> {
+    let mut committee = floor_bonds
+        .into_iter()
+        .filter(|bond| bond.stake > 0 && active.contains(&bond.validator))
+        .collect::<Vec<_>>();
+    committee.sort_by(|left, right| left.validator.cmp(&right.validator));
+    if committee
+        .windows(2)
+        .any(|pair| pair[0].validator == pair[1].validator)
+    {
+        return Err(CasperError::RuntimeError(
+            "finalized-floor PoS state contains duplicate validator bonds".to_string(),
+        ));
+    }
+    Ok(committee)
 }
 
 /// True iff `hash` is the floor block or one of its DAG ancestors —
@@ -66,7 +89,44 @@ pub(crate) fn in_floor_closure(
 
 /// Per-block introduced-sig memo shared across the containment checks of
 /// one derivation (the same settled segments are re-walked per candidate).
-pub(crate) type IntroducedSigsMemo = HashMap<BlockHash, HashSet<Bytes>>;
+#[derive(Default)]
+pub(crate) struct StateContainmentMemo {
+    legacy_sigs: HashMap<BlockHash, HashSet<Bytes>>,
+    exact: StateProvenanceCache,
+}
+
+async fn floor_witnessed_exact(
+    target: &BlockHash,
+    dag: &KeyValueDagRepresentation,
+    latest_messages: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+    cache: &mut StateProvenanceCache,
+) -> Result<bool, CasperError> {
+    if !dag.contains(target) {
+        return CliqueOracle::ft_witnessed_exact(target, dag, latest_messages, ftt)
+            .await
+            .map_err(CasperError::from);
+    }
+    let target_metadata = metadata_with_cache(dag, target, cache)?;
+    if target_metadata.protocol_version < APPLIED_STATE_EFFECTS_PROTOCOL_VERSION {
+        return CliqueOracle::ft_witnessed_exact(target, dag, latest_messages, ftt)
+            .await
+            .map_err(CasperError::from);
+    }
+    let mut state_supporting = BTreeMap::new();
+    for (validator, tip) in latest_messages {
+        if is_exact_state_contained_with_cache(dag, target, tip, cache)? {
+            state_supporting.insert(validator.clone(), tip.clone());
+        }
+    }
+    CliqueOracle::ft_witnessed_exact(target, dag, &state_supporting, ftt)
+        .await
+        .map_err(CasperError::from)
+}
+
+impl StateContainmentMemo {
+    pub(crate) fn new() -> Self { Self::default() }
+}
 
 /// The state-parent of a block, from metadata: the recorded merge base,
 /// else the sole parent, else none at a root. A multi-parent block with no
@@ -178,33 +238,29 @@ fn state_lineage_meet(
 }
 
 /// The sigs a single block's construction step introduces into its state:
-/// non-failed fresh executions plus chains its merge applied from scope.
+/// committed fresh effects plus chains its merge applied from scope.
 /// Reads the block body; an absent body is refused, never guessed.
 fn introduced_sigs<'m>(
     block_store: &KeyValueBlockStore,
     hash: &BlockHash,
-    memo: &'m mut IntroducedSigsMemo,
+    memo: &'m mut StateContainmentMemo,
 ) -> Result<&'m HashSet<Bytes>, CasperError> {
-    if !memo.contains_key(hash) {
-        let block = block_store.get(hash)?.ok_or_else(|| {
-            CasperError::Other(format!(
-                "state containment: lineage block {} is absent from the block \
-                 store — refusing to judge membership from an incomplete lineage",
-                PrettyPrinter::build_string_bytes(hash),
-            ))
-        })?;
+    if !memo.legacy_sigs.contains_key(hash) {
+        let block = block_store
+            .get(hash)?
+            .ok_or_else(|| CasperError::BlockNotHeld(hash.clone()))?;
         let mut sigs: HashSet<Bytes> = HashSet::new();
         for pd in &block.body.deploys {
-            if !pd.is_failed {
-                sigs.insert(pd.deploy.sig.clone());
+            if pd.has_committed_state_effect() {
+                sigs.insert(pd.deploy_id().clone());
             }
         }
         for sig in &block.body.applied_from_scope {
             sigs.insert(sig.clone());
         }
-        memo.insert(hash.clone(), sigs);
+        memo.legacy_sigs.insert(hash.clone(), sigs);
     }
-    Ok(memo.get(hash).expect("inserted above"))
+    Ok(memo.legacy_sigs.get(hash).expect("inserted above"))
 }
 
 /// The sigs introduced on `from`'s state lineage STRICTLY above `meet`.
@@ -213,7 +269,7 @@ fn segment_introduced_sigs(
     block_store: &KeyValueBlockStore,
     from: &BlockHash,
     meet: &BlockHash,
-    memo: &mut IntroducedSigsMemo,
+    memo: &mut StateContainmentMemo,
 ) -> Result<HashSet<Bytes>, CasperError> {
     let mut sigs: HashSet<Bytes> = HashSet::new();
     let mut cur = from.clone();
@@ -232,28 +288,40 @@ fn segment_introduced_sigs(
     Ok(sigs)
 }
 
-/// True iff `cand`'s committed state contains every effect settled in
-/// `x`'s state, decided at sig granularity from the recorded POSITIVE
-/// construction facts alone: `state(B) = state(state-parent(B)) +
-/// applied_from_scope(B) + non-failed deploys(B)`, all consensus-checked
-/// block content. The two state lineages meet at a unique block (the
-/// state-parent pointers form a tree); every sig at-or-below the meet is
-/// shared by construction, so containment reduces to set inclusion of the
-/// sigs introduced on the two segments above the meet. Rejection records
-/// play no part: testimony about what a merge kept OUT can be suppressed
-/// at emission (the 5fdb9bfe erasure — an eraser whose identical record
-/// lived only on a parent edge carried clean metadata), while the
-/// positive facts cannot be absent without the block being invalid.
+/// True when `cand` contains every committed effect in `x`.
+/// Protocol 6 compares exact state-effect identities from state-parent,
+/// applied-effect, and local committed-effect facts. Earlier protocols retain
+/// their historical signature projection. Missing data remains a typed error.
 pub(crate) fn state_contains(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     cand: &Floor,
     x: &Floor,
-    memo: &mut IntroducedSigsMemo,
+    memo: &mut StateContainmentMemo,
 ) -> Result<bool, CasperError> {
     if cand.hash == x.hash {
         trace_containment(cand, x, "same-block", 0);
         return Ok(true);
+    }
+    let cand_metadata = held_meta(dag, &cand.hash)?;
+    let required_metadata = held_meta(dag, &x.hash)?;
+    if cand_metadata.protocol_version >= APPLIED_STATE_EFFECTS_PROTOCOL_VERSION
+        || required_metadata.protocol_version >= APPLIED_STATE_EFFECTS_PROTOCOL_VERSION
+    {
+        let contained =
+            is_exact_state_contained_with_cache(dag, &x.hash, &cand.hash, &mut memo.exact)
+                .map_err(CasperError::from)?;
+        trace_containment(
+            cand,
+            x,
+            if contained {
+                "exact-contained"
+            } else {
+                "exact-missing"
+            },
+            usize::from(!contained),
+        );
+        return Ok(contained);
     }
     let StateLineage::Meet(meet) = state_lineage_meet(dag, &cand.hash, &x.hash)? else {
         trace_containment(cand, x, "disconnected-lineages", 0);
@@ -362,43 +430,41 @@ pub async fn floor_of_view(
     current: &Floor,
     ftt: FtThreshold,
 ) -> Result<FloorOfView, CasperError> {
-    // A latest-message slot whose held target the validator never signed
-    // is a seed — the newly-bonded genesis placeholder — not testimony,
-    // and it must not drag a height-0 tip into this derivation. A slot
-    // whose target is not held is abstained too: it names a block below
-    // the restore horizon, which catch-up can never deliver. Node-local
-    // filtering is sound here because this is the finalizer's own LFB
-    // clock, not a consensus-visible derivation.
-    let mut testimony: Vec<(Validator, BlockHash)> = Vec::new();
-    for (validator, hash) in dag.latest_message_hashes() {
-        match dag.lookup(&hash).map_err(CasperError::from)? {
-            Some(metadata) if metadata.sender != validator => continue,
-            Some(_) => {}
-            // An unheld slot names a block below the restore horizon —
-            // catch-up can never deliver it, so keeping the slot turns
-            // the absence hold below into a permanent, silent LFB freeze.
-            // Skipping it abstains the validator from this node's clock,
-            // sound by the same node-local argument as the seed filter.
-            None => {
-                tracing::debug!(
-                    target: "f1r3fly.finalizer",
-                    validator = %PrettyPrinter::build_string_bytes(&validator),
-                    lm = %PrettyPrinter::build_string_bytes(&hash),
-                    "abstaining unheld latest-message slot from the floor derivation"
-                );
-                continue;
+    let context =
+        match crate::rust::causal_equivocation::CertifiedConsensusContext::for_finalized_floor(
+            dag,
+            current.hash.clone(),
+        ) {
+            Ok(context) => context,
+            Err(CasperError::BlockNotHeld(missing)) => {
+                return Ok(FloorOfView::AbsenceHold { missing });
             }
-        }
-        testimony.push((validator, hash));
-    }
-    let mut tips: Vec<BlockHash> = testimony.iter().map(|(_, hash)| hash.clone()).collect();
+            Err(error) => return Err(error),
+        };
+    floor_of_frozen_vote_projection(
+        dag,
+        block_store,
+        current,
+        context.vote_projection().eligible_latest_messages(),
+        ftt,
+    )
+    .await
+}
+
+pub async fn floor_of_frozen_vote_projection(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    current: &Floor,
+    vote_projection: &BTreeMap<Validator, BlockHash>,
+    ftt: FtThreshold,
+) -> Result<FloorOfView, CasperError> {
+    let mut tips: Vec<BlockHash> = vote_projection.values().cloned().collect();
     tips.sort();
     tips.dedup();
     if tips.is_empty() {
         return Ok(FloorOfView::NoAdvance);
     }
-    let live_snapshot: BTreeMap<Validator, BlockHash> = testimony.into_iter().collect();
-    let derived = match finalized_floor(dag, block_store, &tips, &live_snapshot, ftt).await {
+    let derived = match finalized_floor(dag, block_store, &tips, vote_projection, ftt).await {
         Ok(derived) => derived,
         Err(CasperError::BlockNotHeld(missing)) => return Ok(FloorOfView::AbsenceHold { missing }),
         // Under a negative threshold, incompatible majority-agreement
@@ -412,7 +478,7 @@ pub async fn floor_of_view(
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
     }
-    let mut memo = IntroducedSigsMemo::new();
+    let mut memo = StateContainmentMemo::new();
     match state_contains(dag, block_store, &derived, current, &mut memo) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
@@ -558,8 +624,10 @@ async fn derive_floor(
     let mut candidates = inherited;
     let inherited_max = candidates.iter().map(|f| f.block_number).max();
     let mut frontiers: Vec<Floor> = Vec::with_capacity(parents.len());
+    let mut witness_cache = StateProvenanceCache::default();
     for parent in parents {
-        frontiers.push(parent_frontier(dag, parent, latest_messages, ftt).await?);
+        frontiers
+            .push(parent_frontier(dag, parent, latest_messages, ftt, &mut witness_cache).await?);
     }
     // parents[0] is the main parent; its frontier over this snapshot is F(B).
     let main_parent_frontier = frontiers[0].clone();
@@ -574,17 +642,18 @@ async fn derive_floor(
     // a merge is adjudicated by the record and re-landed by recovery, not
     // owed containment — so soundness quantifies over the inherited floors
     // only. Candidates are considered from the top down; `cand` is sound when
-    // every inherited floor `x` satisfies one of:
+    // every inherited floor `x` satisfies:
     //
     //   A. `cand`'s state CONTAINS `x`'s settled effects (`state_contains`):
-    //      decided exactly, at sig granularity, from the recorded positive
+    //      decided at exact effect granularity from the recorded positive
     //      construction facts. Rejection records are deliberately not
     //      consulted — a merge's own record can be suppressed at emission
     //      when an identical record is visible on a parent edge, leaving an
     //      eraser with clean lineage testimony (the 5fdb9bfe erasure); the
     //      positive facts cannot be absent without the block being invalid.
     //
-    //   B. `x` re-enters THIS merge as diffs: `x` is NOT in `cand`'s DAG
+    //   Legacy protocol blocks can also use the historical re-collection rule:
+    //      `x` re-enters THIS merge as diffs when `x` is NOT in `cand`'s DAG
     //      past — sound only for a PURE CUT (`cand` introduces no sigs of
     //      its own above its meet with `x`; a competing branch's own
     //      content must never become the settled position). Covers the
@@ -592,17 +661,6 @@ async fn derive_floor(
     //      28135973777); the merge-time settled-rejection tripwire guards
     //      this arm: a re-collected settled chain must land, never be
     //      keep-one'd out.
-    //
-    //      CAVEAT: the re-collection this arm relies on was derived when
-    //      the merge based on the FLOOR, where "not in `cand`'s DAG past"
-    //      did imply "retained by the scope filter". The merge now bases on
-    //      its main parent and the filter is relative to THAT base, so the
-    //      implication no longer follows — an `x` that is a DAG ancestor of
-    //      `parents[0]` whose chains that parent's merge rejected is in
-    //      neither the base nor the scope. Whether the arm admits such a
-    //      candidate is open; `base_holds_floor` checks containment against
-    //      the floor, not against each inherited `x`, so it would not catch
-    //      it. Not observed; not disproven.
     //
     // The highest candidate satisfying neither is skipped; if NO candidate is
     // sound (no finalized cut common to all parents), that is a genuinely
@@ -616,21 +674,23 @@ async fn derive_floor(
     });
 
     let mut chosen: Option<Floor> = None;
-    let mut memo = IntroducedSigsMemo::new();
+    let mut memo = StateContainmentMemo::new();
     'cands: for cand in ordered {
         for other in &inherited_floors {
             if other.hash == cand.hash {
                 continue;
             }
+            let exact_semantics = held_meta(dag, &cand.hash)?.protocol_version
+                >= APPLIED_STATE_EFFECTS_PROTOCOL_VERSION
+                || held_meta(dag, &other.hash)?.protocol_version
+                    >= APPLIED_STATE_EFFECTS_PROTOCOL_VERSION;
             let sound_with_other = if state_contains(dag, block_store, cand, other, &mut memo)? {
                 true
-            } else if !dag.is_dag_ancestor(&other.hash, &cand.hash)? {
+            } else if !exact_semantics && !dag.is_dag_ancestor(&other.hash, &cand.hash)? {
                 // `other` is NOT in `cand`'s DAG past, so its chains are
                 // expected back as this merge's diffs, with the merge-time
                 // settled-rejection tripwire guarding the re-application.
-                // (That expectation is weaker than it reads since the base
-                // became the main parent — see the CAVEAT above.) Sound ONLY when
-                // `cand` is a pure cut — it introduces no sigs of its own
+                // Sound ONLY when `cand` is a pure cut — it introduces no sigs of its own
                 // relative to its meet with `other`. A competing branch
                 // with content of its own must never become the settled
                 // position: its content can be exactly what the canonical
@@ -839,10 +899,12 @@ pub(crate) async fn parent_frontier(
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    state_cache: &mut StateProvenanceCache,
 ) -> Result<Floor, CasperError> {
     if let Some(pivot_hash) = dag.get_cached_frontier(parent)? {
         if let Some(frontier) =
-            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ftt).await?
+            incremental_frontier(dag, parent, &pivot_hash, latest_messages, ftt, state_cache)
+                .await?
         {
             metrics::counter!(
                 crate::rust::metrics_constants::FLOOR_FRONTIER_CACHE_HIT_METRIC,
@@ -857,7 +919,7 @@ pub(crate) async fn parent_frontier(
         "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
     )
     .increment(1);
-    cold_parent_frontier(dag, parent, latest_messages, ftt).await
+    cold_parent_frontier(dag, parent, latest_messages, ftt, state_cache).await
 }
 
 /// Warm frontier: resolve `parent`'s frontier over the (larger) `latest_messages`
@@ -871,6 +933,7 @@ async fn incremental_frontier(
     pivot_hash: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    state_cache: &mut StateProvenanceCache,
 ) -> Result<Option<Floor>, CasperError> {
     let pivot_number = held_number(dag, pivot_hash)?;
 
@@ -910,10 +973,10 @@ async fn incremental_frontier(
     // only raise the fault tolerance — but a bonding event in the band can break
     // that monotonicity, so we verify rather than assume.
     let mut oracle_calls: u64 = 1;
-    // A9 exact ≥-semantics (floor path): the pivot must still be witnessed-
-    // finalized over the larger snapshot. `strict=false` ⇒ (2q−S)/S ≥ θ.
+    // A9 exact strict semantics (floor path): the pivot must still be witnessed-
+    // finalized over the larger snapshot, so (2q−S)/S > θ.
     let pivot_finalized =
-        CliqueOracle::ft_witnessed_exact(pivot_hash, dag, latest_messages, ftt, false).await?;
+        floor_witnessed_exact(pivot_hash, dag, latest_messages, ftt, state_cache).await?;
     if !pivot_finalized {
         metrics::counter!(
             crate::rust::metrics_constants::FLOOR_INCREMENTAL_GUARD_FALLBACK_METRIC,
@@ -931,10 +994,10 @@ async fn incremental_frontier(
     let mut best_number = pivot_number;
     let mut advance: u64 = 0;
     for candidate in spine[..spine.len() - 1].iter().rev() {
-        // A9 exact ≥-semantics (floor path): advance while each block stays
+        // A9 exact strict semantics (floor path): advance while each block stays
         // witnessed-finalized over the snapshot.
         let finalized =
-            CliqueOracle::ft_witnessed_exact(candidate, dag, latest_messages, ftt, false).await?;
+            floor_witnessed_exact(candidate, dag, latest_messages, ftt, state_cache).await?;
         oracle_calls += 1;
         if finalized {
             best_hash = candidate.clone();
@@ -977,15 +1040,16 @@ async fn cold_parent_frontier(
     parent: &BlockHash,
     latest_messages: &BTreeMap<Validator, BlockHash>,
     ftt: FtThreshold,
+    state_cache: &mut StateProvenanceCache,
 ) -> Result<Floor, CasperError> {
     let mut current = parent.clone();
     let mut walked: usize = 0;
     let mut oracle_calls: u64 = 0;
     loop {
-        // A9 exact ≥-semantics (floor path): first witnessed-finalized block down
+        // A9 exact strict semantics (floor path): first witnessed-finalized block down
         // the main-parent chain is the frontier.
         let finalized =
-            CliqueOracle::ft_witnessed_exact(&current, dag, latest_messages, ftt, false).await?;
+            floor_witnessed_exact(&current, dag, latest_messages, ftt, state_cache).await?;
         oracle_calls += 1;
         tracing::debug!(
             target: "f1r3.trace.floor_walk",
@@ -1072,10 +1136,11 @@ mod frontier_determinism_tests {
     //! block derives is invariant to whether the caches are cold or warm
     //! (transparency ⇒ no fork). Complements the axiom-free Rocq proof
     //! (Floor.frontier_cache_transparent) and the 400+-block soak.
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
     use models::rust::block_metadata::BlockMetadata;
     use parking_lot::RwLock as PlRwLock;
     use prost::bytes::Bytes;
@@ -1085,24 +1150,68 @@ mod frontier_determinism_tests {
     use super::*;
 
     fn h(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
-    fn val() -> Bytes { Bytes::from(vec![9; 65]) }
+    fn validator(n: u8) -> Bytes { Bytes::from(vec![n; 65]) }
+    fn val() -> Bytes { validator(9) }
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
         wm.insert(v.clone(), 1i64);
-        BlockMetadata {
-            block_hash: hash,
+        let approved_genesis = num == 0 && parents.is_empty();
+        let metadata = BlockMetadata {
+            block_hash: hash.clone(),
+            post_state_hash: hash,
             parents,
             sender: v.clone(),
             justifications: vec![],
+            bond_generation_map: BTreeMap::from([(
+                v.clone(),
+                models::rust::bond_generation::BondGeneration::GENESIS,
+            )]),
             weight_map: wm,
+            active_validator_set: BTreeSet::from([v.clone()]),
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            admission_outcome: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            successful_state_effect_indices: BTreeSet::new(),
+            rejected_state_effects: BTreeSet::new(),
+            applied_state_effects: BTreeSet::new(),
+            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            objective_equivocation_evidence_delta: Vec::new(),
+            sender_authority: None,
+            finalized_floor_commitment: None,
+            admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+            approved_genesis,
             merge_base: Bytes::new(),
+        };
+        if approved_genesis {
+            metadata
+        } else {
+            let floor_hash = metadata
+                .parents
+                .first()
+                .cloned()
+                .unwrap_or_else(|| metadata.block_hash.clone());
+            let metadata = crate::rust::test_metadata::certify_with_floor_post_state(
+                metadata,
+                models::rust::bond_generation::BondGeneration::GENESIS,
+                floor_hash.clone(),
+            );
+            let commitment = metadata
+                .finalized_floor_commitment
+                .as_ref()
+                .expect("certified floor commitment");
+            let authority = metadata
+                .sender_authority
+                .as_ref()
+                .expect("certified sender authority");
+            assert_eq!(&commitment.floor_hash, &floor_hash);
+            assert_eq!(&commitment.floor_post_state_hash, &floor_hash);
+            assert_eq!(authority.authority_floor_hash(), &floor_hash);
+            assert_eq!(authority.authority_floor_post_state_hash(), &floor_hash);
+            metadata
         }
     }
 
@@ -1119,7 +1228,7 @@ mod frontier_determinism_tests {
         let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
 
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         bms.add(md(g.clone(), vec![], 0, &v)).unwrap();
         bms.add(md(b1.clone(), vec![g.clone()], 1, &v)).unwrap();
         bms.add(md(b2.clone(), vec![b1.clone()], 2, &v)).unwrap();
@@ -1141,6 +1250,7 @@ mod frontier_determinism_tests {
 
         let dag = KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1148,9 +1258,17 @@ mod frontier_determinism_tests {
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
+                InMemoryKeyValueStore::new(),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
@@ -1173,7 +1291,7 @@ mod frontier_determinism_tests {
         let held: Vec<Bytes> = (84u8..=88).map(h).collect();
 
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         let mut dag_set = imbl::HashSet::new();
         let mut bnum = imbl::HashMap::new();
         let mut mp = imbl::HashMap::new();
@@ -1204,6 +1322,7 @@ mod frontier_determinism_tests {
 
         let dag = KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1211,9 +1330,17 @@ mod frontier_determinism_tests {
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
+                InMemoryKeyValueStore::new(),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
@@ -1342,21 +1469,35 @@ mod frontier_determinism_tests {
     /// tip into the derivation. With the seed excluded, the real tip's
     /// seeded-anchor caches derive cleanly.
     #[tokio::test]
-    async fn a_seeded_latest_message_is_not_a_floor_tip() {
+    async fn an_outside_seeded_latest_message_cannot_change_an_absence_hold() {
         let thr = FtThreshold::from_f32_lossy(0.1);
-        let (dag, _absent, held, _genesis) = mk_truncated_dag_with_seeded_tip();
+        let (with_seed, absent, held, genesis) = mk_truncated_dag_with_seeded_tip();
         let current = Floor {
             hash: held[0].clone(),
-            block_number: seed_number(&dag, &held[0]),
+            block_number: seed_number(&with_seed, &held[0]),
         };
 
-        let outcome = floor_of_view(&dag, &mk_store(), &current, thr)
+        let seeded_outcome = floor_of_view(&with_seed, &mk_store(), &current, thr)
             .await
-            .expect("a seeded slot must not fail the finalizer's local read");
-        assert!(
-            matches!(outcome, FloorOfView::Advance(_)),
-            "with the seed excluded the real tip derives cleanly; got {outcome:?}"
-        );
+            .expect("an incomplete closure must return a typed hold");
+        let mut without_seed = with_seed.clone();
+        let seeded_validator = without_seed
+            .latest_messages_map
+            .iter()
+            .find_map(|(validator, latest)| {
+                (latest == &genesis && validator != &val()).then_some(validator.clone())
+            })
+            .expect("fixture contains an outside seeded latest message");
+        without_seed.latest_messages_map.remove(&seeded_validator);
+        let unseeded_outcome = floor_of_view(&without_seed, &mk_store(), &current, thr)
+            .await
+            .expect("an incomplete closure must return a typed hold");
+
+        assert_eq!(seeded_outcome, unseeded_outcome);
+        assert!(matches!(
+            seeded_outcome,
+            FloorOfView::AbsenceHold { missing } if missing == absent
+        ));
     }
 
     #[tokio::test]
@@ -1367,12 +1508,23 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         // Cold: top-down from b3 → first finalized is b2.
-        let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        let cold = cold_parent_frontier(&dag, &b3, &j, thr, &mut StateProvenanceCache::default())
+            .await
+            .unwrap();
         assert_eq!(cold.hash, b2, "cold frontier of b3 over J must be b2");
 
         // Warm: from a pivot BELOW the true frontier (b1) → the up-walk must
         // advance to b2 and stop (b3 not finalized), matching the cold result.
-        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+        let warm = incremental_frontier(
+            &dag,
+            &b3,
+            &b1,
+            &j,
+            thr,
+            &mut StateProvenanceCache::default(),
+        )
+        .await
+        .unwrap();
         assert!(
             warm.is_some(),
             "warm path must apply (committee constant across the band, pivot finalized)"
@@ -1424,31 +1576,98 @@ mod frontier_determinism_tests {
         for (validator, weight) in wm {
             weight_map.insert(validator, weight);
         }
-        BlockMetadata {
-            block_hash: hash,
+        let approved_genesis = num == 0 && parents.is_empty();
+        let metadata = BlockMetadata {
+            block_hash: hash.clone(),
+            post_state_hash: hash,
             parents,
             sender: sender.clone(),
             justifications: vec![],
+            bond_generation_map: weight_map
+                .keys()
+                .cloned()
+                .map(|validator| {
+                    (
+                        validator,
+                        models::rust::bond_generation::BondGeneration::GENESIS,
+                    )
+                })
+                .collect(),
+            active_validator_set: weight_map.keys().cloned().collect(),
             weight_map,
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            admission_outcome: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
+            successful_state_effect_indices: BTreeSet::new(),
+            rejected_state_effects: BTreeSet::new(),
+            applied_state_effects: BTreeSet::new(),
+            protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            objective_equivocation_evidence_delta: Vec::new(),
+            sender_authority: None,
+            finalized_floor_commitment: None,
+            admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+            approved_genesis,
             merge_base: Bytes::new(),
+        };
+        if approved_genesis {
+            metadata
+        } else {
+            let floor_hash = metadata
+                .parents
+                .first()
+                .cloned()
+                .unwrap_or_else(|| metadata.block_hash.clone());
+            let metadata = crate::rust::test_metadata::certify_with_floor_post_state(
+                metadata,
+                models::rust::bond_generation::BondGeneration::GENESIS,
+                floor_hash.clone(),
+            );
+            let commitment = metadata
+                .finalized_floor_commitment
+                .as_ref()
+                .expect("certified floor commitment");
+            let authority = metadata
+                .sender_authority
+                .as_ref()
+                .expect("certified sender authority");
+            assert_eq!(&commitment.floor_hash, &floor_hash);
+            assert_eq!(&commitment.floor_post_state_hash, &floor_hash);
+            assert_eq!(authority.authority_floor_hash(), &floor_hash);
+            assert_eq!(authority.authority_floor_post_state_hash(), &floor_hash);
+            metadata
         }
     }
 
     /// Assemble a DAG from an explicit block list, deriving `dag_set`,
     /// `block_number_map`, and `main_parent_map` (parents[0]) from the metadata.
     fn build_dag(blocks: Vec<BlockMetadata>) -> KeyValueDagRepresentation {
+        let post_states: BTreeMap<Bytes, Bytes> = blocks
+            .iter()
+            .map(|block| (block.block_hash.clone(), block.post_state_hash.clone()))
+            .collect();
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         let mut dag_set = imbl::HashSet::new();
         let mut bnum = imbl::HashMap::new();
         let mut mp = imbl::HashMap::new();
         for b in &blocks {
+            if !b.approved_genesis {
+                let floor_hash = b.parents.first().unwrap_or(&b.block_hash);
+                if let Some(floor_post_state_hash) = post_states.get(floor_hash) {
+                    let authority = b
+                        .sender_authority
+                        .as_ref()
+                        .expect("certified sender authority");
+                    assert_eq!(authority.authority_floor_hash(), floor_hash);
+                    assert_eq!(
+                        authority.authority_floor_post_state_hash(),
+                        floor_post_state_hash
+                    );
+                }
+            }
             dag_set.insert(b.block_hash.clone());
             bnum.insert(b.block_hash.clone(), b.block_number);
             if let Some(main) = b.parents.first() {
@@ -1460,6 +1679,7 @@ mod frontier_determinism_tests {
         }
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
             height_map: imbl::OrdMap::new(),
@@ -1467,9 +1687,17 @@ mod frontier_determinism_tests {
             main_parent_map: mp,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
+                InMemoryKeyValueStore::new(),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
@@ -1485,6 +1713,27 @@ mod frontier_determinism_tests {
     fn based(mut m: BlockMetadata, base: &Bytes) -> BlockMetadata {
         m.merge_base = base.clone();
         m
+    }
+
+    fn with_own_effect(mut metadata: BlockMetadata, execution_index: u32) -> BlockMetadata {
+        metadata
+            .successful_state_effect_indices
+            .insert(execution_index);
+        metadata
+    }
+
+    fn with_applied_effect(
+        mut metadata: BlockMetadata,
+        source_block_hash: &Bytes,
+        execution_index: u32,
+    ) -> BlockMetadata {
+        metadata.applied_state_effects.insert(
+            models::rust::casper::protocol::casper_message::StateEffectId {
+                source_block_hash: source_block_hash.clone(),
+                execution_index,
+            },
+        );
+        metadata
     }
 
     /// An empty in-memory block store for stagings whose settled segments
@@ -1518,18 +1767,25 @@ mod frontier_determinism_tests {
             header: Header {
                 parents_hash_list: parents,
                 timestamp: 0,
-                version: 0,
+                version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 extra_bytes: Bytes::new(),
+                sender_bond_generation: None,
+                objective_equivocation_evidence_delta: Vec::new(),
+                finalized_floor: None,
             },
             body: Body {
                 state: F1r3flyState {
                     pre_state_hash: Bytes::new(),
                     post_state_hash: Bytes::new(),
                     bonds: Vec::new(),
+                    bond_generations: Vec::new(),
+                    active_validators: Vec::new(),
                     block_number: num,
                 },
                 deploys,
                 rejected_deploys: Vec::new(),
+                rejected_state_effects: Vec::new(),
+                applied_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
                 applied_from_scope: applied,
@@ -1542,6 +1798,7 @@ mod frontier_determinism_tests {
             sig_algorithm: String::new(),
             shard_id: String::new(),
             extra_bytes: Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 
@@ -1553,6 +1810,137 @@ mod frontier_determinism_tests {
             store.put_block_message(block).expect("store fixture block");
         }
         store
+    }
+
+    #[test]
+    fn exact_containment_does_not_alias_equal_deploy_ids() {
+        let v = val();
+        let (g, left, right, joined) = (h(80), h(81), h(82), h(83));
+        let dag = build_dag(vec![
+            md(g.clone(), vec![], 0, &v),
+            with_own_effect(md(left.clone(), vec![g.clone()], 1, &v), 0),
+            with_own_effect(md(right.clone(), vec![g.clone()], 1, &v), 0),
+            with_applied_effect(
+                based(
+                    md(joined.clone(), vec![right.clone(), left.clone()], 2, &v),
+                    &right,
+                ),
+                &left,
+                0,
+            ),
+        ]);
+        let mut left_deploy =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
+                crate::rust::util::construct_deploy::basic_deploy_data(80, None, None)
+                    .expect("left deploy"),
+            );
+        left_deploy.envelope_commitment = Bytes::from(vec![9; 32]);
+        let mut right_deploy =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(
+                crate::rust::util::construct_deploy::basic_deploy_data(81, None, None)
+                    .expect("right deploy"),
+            );
+        right_deploy.envelope_commitment = left_deploy.envelope_commitment.clone();
+        assert_eq!(left_deploy.deploy_id(), right_deploy.deploy_id());
+        let store = mk_store();
+        let mut memo = StateContainmentMemo::new();
+        assert!(!state_contains(
+            &dag,
+            &store,
+            &Floor {
+                hash: right.clone(),
+                block_number: 1,
+            },
+            &Floor {
+                hash: left.clone(),
+                block_number: 1,
+            },
+            &mut memo,
+        )
+        .unwrap());
+        assert!(state_contains(
+            &dag,
+            &store,
+            &Floor {
+                hash: joined,
+                block_number: 2,
+            },
+            &Floor {
+                hash: left,
+                block_number: 1,
+            },
+            &mut memo,
+        )
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn floor_witness_requires_main_chain_and_exact_state_support() {
+        let v = val();
+        let (g, settled, dropping_tip) = (h(84), h(85), h(86));
+        let dag = build_dag(vec![
+            md(g.clone(), vec![], 0, &v),
+            with_own_effect(md(settled.clone(), vec![g.clone()], 1, &v), 0),
+            based(md(dropping_tip.clone(), vec![settled.clone()], 2, &v), &g),
+        ]);
+        let latest = BTreeMap::from([(v, dropping_tip)]);
+        let threshold = FtThreshold::from_f32_lossy(0.1);
+        assert!(
+            CliqueOracle::ft_witnessed_exact(&settled, &dag, &latest, threshold)
+                .await
+                .unwrap()
+        );
+        assert!(!floor_witnessed_exact(
+            &settled,
+            &dag,
+            &latest,
+            threshold,
+            &mut StateProvenanceCache::default(),
+        )
+        .await
+        .unwrap());
+    }
+
+    #[tokio::test]
+    async fn state_support_filter_keeps_the_full_committee_denominator() {
+        let supporting = validator(70);
+        let absent = validator(71);
+        let (genesis, target, tip) = (h(87), h(88), h(89));
+        let committee = vec![(supporting.clone(), 55), (absent, 45)];
+        let dag = build_dag(vec![
+            md_wm(genesis.clone(), vec![], 0, &supporting, committee.clone()),
+            with_own_effect(
+                md_wm(
+                    target.clone(),
+                    vec![genesis],
+                    1,
+                    &supporting,
+                    committee.clone(),
+                ),
+                0,
+            ),
+            md_wm(tip.clone(), vec![target.clone()], 2, &supporting, committee),
+        ]);
+        let latest = BTreeMap::from([(supporting, tip)]);
+
+        assert!(!floor_witnessed_exact(
+            &target,
+            &dag,
+            &latest,
+            FtThreshold::from_ppm(100_000),
+            &mut StateProvenanceCache::default(),
+        )
+        .await
+        .unwrap());
+        assert!(floor_witnessed_exact(
+            &target,
+            &dag,
+            &latest,
+            FtThreshold::from_ppm(99_999),
+            &mut StateProvenanceCache::default(),
+        )
+        .await
+        .unwrap());
     }
 
     /// Containment is decided from the positive construction facts: a block
@@ -1567,9 +1955,13 @@ mod frontier_determinism_tests {
         let sig = Bytes::from_static(b"settled_sig_facts");
         let dag = build_dag(vec![
             md(e.clone(), vec![], 0, &v),
-            md(c.clone(), vec![e.clone()], 1, &v),
+            with_own_effect(md(c.clone(), vec![e.clone()], 1, &v), 0),
             md(d.clone(), vec![e.clone()], 1, &v),
-            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+            with_applied_effect(
+                based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+                &c,
+                0,
+            ),
         ]);
         let store = store_with(vec![
             body_block(&e, vec![], 0, vec![], None, vec![]),
@@ -1588,7 +1980,7 @@ mod frontier_determinism_tests {
             hash: hash.clone(),
             block_number: n,
         };
-        let mut memo = IntroducedSigsMemo::new();
+        let mut memo = StateContainmentMemo::new();
         // e is on every lineage: contained by construction.
         assert!(state_contains(&dag, &store, &at(&m, 2), &at(&e, 0), &mut memo).unwrap());
         assert!(state_contains(&dag, &store, &at(&c, 1), &at(&e, 0), &mut memo).unwrap());
@@ -1612,7 +2004,7 @@ mod frontier_determinism_tests {
         let sig = Bytes::from_static(b"settled_sig_drop");
         let dag = build_dag(vec![
             md(e.clone(), vec![], 0, &v),
-            md(c.clone(), vec![e.clone()], 1, &v),
+            with_own_effect(md(c.clone(), vec![e.clone()], 1, &v), 0),
             md(d.clone(), vec![e.clone()], 1, &v),
             based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
             md(t.clone(), vec![m.clone()], 3, &v),
@@ -1637,7 +2029,7 @@ mod frontier_determinism_tests {
             hash: hash.clone(),
             block_number: n,
         };
-        let mut memo = IntroducedSigsMemo::new();
+        let mut memo = StateContainmentMemo::new();
         assert!(!state_contains(&dag, &store, &at(&m, 2), &at(&c, 1), &mut memo).unwrap());
         assert!(!state_contains(&dag, &store, &at(&t, 3), &at(&c, 1), &mut memo).unwrap());
         assert!(state_contains(&dag, &store, &at(&m, 2), &at(&d, 1), &mut memo).unwrap());
@@ -1667,11 +2059,11 @@ mod frontier_determinism_tests {
                 hash: e.clone(),
                 block_number: 0,
             },
-            &mut IntroducedSigsMemo::new(),
+            &mut StateContainmentMemo::new(),
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("no recorded merge base"),
+            err.to_string().contains("no merge base"),
             "must refuse to guess a multi-parent block's lineage: {err}"
         );
     }
@@ -1707,7 +2099,7 @@ mod frontier_determinism_tests {
                 vec![],
             ),
         ]);
-        let mut memo = IntroducedSigsMemo::new();
+        let mut memo = StateContainmentMemo::new();
         assert!(
             state_contains(
                 &dag,
@@ -1727,6 +2119,53 @@ mod frontier_determinism_tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_failed_state_bound_settlement_is_settled_content() {
+        let v = val();
+        let (e, c, d, m) = (h(0), h(1), h(2), h(3));
+        let failed_deploy =
+            crate::rust::util::construct_deploy::basic_deploy_data(8, None, None).expect("deploy");
+        let mut failed_pd =
+            models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(failed_deploy);
+        failed_pd.is_failed = true;
+        failed_pd.authority_funding_certificate = Some(Default::default());
+        failed_pd.authority_cost_witness = Some(Default::default());
+        let dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            with_own_effect(md(c.clone(), vec![e.clone()], 1, &v), 0),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+        ]);
+        let store = store_with(vec![
+            body_block(&e, vec![], 0, vec![], None, vec![]),
+            body_block(&c, vec![e.clone()], 1, vec![], None, vec![failed_pd]),
+            body_block(&d, vec![e.clone()], 1, vec![], None, vec![]),
+            body_block(
+                &m,
+                vec![c.clone(), d.clone()],
+                2,
+                vec![],
+                Some(e.clone()),
+                vec![],
+            ),
+        ]);
+        let mut memo = StateContainmentMemo::new();
+        assert!(!state_contains(
+            &dag,
+            &store,
+            &Floor {
+                hash: m,
+                block_number: 2
+            },
+            &Floor {
+                hash: c,
+                block_number: 1
+            },
+            &mut memo,
+        )
+        .unwrap());
+    }
+
     /// THE ucc round-0 erasure falsifier (session 1f9bbf8f): the floor
     /// reached a carrier block C, and the next witnessed spine block S — a
     /// pre-existing merge whose recorded base PREDATES C and which recorded
@@ -1740,7 +2179,10 @@ mod frontier_determinism_tests {
         let (e, c, d, s) = (h(0), h(1), h(2), h(3));
         let dag = build_dag(vec![
             md_wm(e.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
-            md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+            with_own_effect(
+                md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+                0,
+            ),
             md_wm(d.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
             based(
                 md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
@@ -1806,7 +2248,7 @@ mod frontier_determinism_tests {
         let dag = build_dag(vec![
             md_wm(e.clone(), vec![], 0, &v, wm()),
             md_wm(m.clone(), vec![e.clone()], 1, &v, wm()),
-            md_wm(c.clone(), vec![m.clone()], 2, &v, wm()),
+            with_own_effect(md_wm(c.clone(), vec![m.clone()], 2, &v, wm()), 0),
             md_wm(d.clone(), vec![m.clone()], 2, &v, wm()),
             // R: the recording merge (its record lives in its BODY on the
             // live path; the predicate reads no records either way).
@@ -1877,14 +2319,21 @@ mod frontier_determinism_tests {
         let (e, c, d, s) = (h(0), h(1), h(2), h(3));
         let dag = build_dag(vec![
             md_wm(e.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
-            md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+            with_own_effect(
+                md_wm(c.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
+                0,
+            ),
             md_wm(d.clone(), vec![e.clone()], 1, &v, vec![(v.clone(), 1)]),
-            based(
-                md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
-                    v.clone(),
-                    1,
-                )]),
-                &e,
+            with_applied_effect(
+                based(
+                    md_wm(s.clone(), vec![c.clone(), d.clone()], 2, &v, vec![(
+                        v.clone(),
+                        1,
+                    )]),
+                    &e,
+                ),
+                &c,
+                0,
             ),
         ]);
         let absorbed = Bytes::from_static(b"settled_sig_abs");
@@ -1928,7 +2377,7 @@ mod frontier_determinism_tests {
     /// soundness `GuardBridge.chain_adj_AdjDC` derives in Rocq.
     #[tokio::test]
     async fn guard_trip_committee_change_falls_back_to_cold() {
-        let v = h(50);
+        let v = validator(50);
         let (g, b1, b2, b3) = (h(0), h(1), h(2), h(3));
         // v's weight changes 1 -> 2 at b2, so committee(b3) = wm(b2) = {v:2} differs
         // from pivot_committee = committee(b1) = wm(g) = {v:1}.
@@ -1943,7 +2392,16 @@ mod frontier_determinism_tests {
         let thr = FtThreshold::from_f32_lossy(0.1);
 
         // Warm up-walk from pivot b1 must DECLINE (committee changes at b3 in the band).
-        let warm = incremental_frontier(&dag, &b3, &b1, &j, thr).await.unwrap();
+        let warm = incremental_frontier(
+            &dag,
+            &b3,
+            &b1,
+            &j,
+            thr,
+            &mut StateProvenanceCache::default(),
+        )
+        .await
+        .unwrap();
         assert!(
             warm.is_none(),
             "incremental_frontier must return Ok(None) on a committee change in the band"
@@ -1952,8 +2410,12 @@ mod frontier_determinism_tests {
         // Seed the pivot so the dispatcher attempts (and must abandon) the warm path;
         // it must fall back to the cold walk and return the identical frontier.
         dag.put_cached_frontier(b3.clone(), b1.clone()).unwrap();
-        let dispatched = parent_frontier(&dag, &b3, &j, thr).await.unwrap();
-        let cold = cold_parent_frontier(&dag, &b3, &j, thr).await.unwrap();
+        let dispatched = parent_frontier(&dag, &b3, &j, thr, &mut StateProvenanceCache::default())
+            .await
+            .unwrap();
+        let cold = cold_parent_frontier(&dag, &b3, &j, thr, &mut StateProvenanceCache::default())
+            .await
+            .unwrap();
         assert_eq!(
             dispatched, cold,
             "on a guard trip the dispatched frontier must equal the cold walk (transparent)"
@@ -1969,8 +2431,8 @@ mod frontier_determinism_tests {
     /// frontier) is in c's past ⇒ Case-B selects c. Mirrors Selection.case_b_compatible.
     #[tokio::test]
     async fn derive_floor_case_b_selects_dominating_finalized_tip() {
-        let v = h(50);
-        let w = h(51);
+        let v = validator(50);
+        let w = validator(51);
         let (g, t, c, p1, p2) = (h(0), h(1), h(2), h(3), h(4));
         let wm = || vec![(v.clone(), 1)]; // committee is always {v:1}; w never votes
         let dag = build_dag(vec![
@@ -2020,8 +2482,8 @@ mod frontier_determinism_tests {
     /// Case-A nor Case-B holds ⇒ the safety error fires (Selection.select_none_correct).
     #[tokio::test]
     async fn derive_floor_incompatible_fork_errors() {
-        let v = h(50);
-        let w = h(51);
+        let v = validator(50);
+        let w = validator(51);
         let (g_a, a1, g_b, b1) = (h(0), h(1), h(5), h(6));
         let dag = build_dag(vec![
             md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
@@ -2060,35 +2522,26 @@ mod frontier_determinism_tests {
         }
     }
 
-    /// Two disconnected roots, each certified by its own single-validator
-    /// committee, with both tips on the live frontier — the live derivation's
-    /// candidate set holds incompatible finalized candidates.
-    fn mk_agreement_flip_dag() -> (KeyValueDagRepresentation, Bytes, Bytes) {
-        let v = h(50);
-        let w = h(51);
-        let (g_a, a1, g_b, b1) = (h(0), h(1), h(5), h(6));
+    fn mk_common_committee_sibling_dag() -> (KeyValueDagRepresentation, Bytes) {
+        let v = validator(50);
+        let w = validator(51);
+        let (g, a1, b1) = (h(0), h(1), h(2));
+        let committee = vec![(v.clone(), 1), (w.clone(), 1)];
         let mut dag = build_dag(vec![
-            md_wm(g_a.clone(), vec![], 0, &v, vec![(v.clone(), 1)]),
-            md_wm(a1.clone(), vec![g_a.clone()], 1, &v, vec![(v.clone(), 1)]),
-            md_wm(g_b.clone(), vec![], 0, &w, vec![(w.clone(), 1)]),
-            md_wm(b1.clone(), vec![g_b.clone()], 1, &w, vec![(w.clone(), 1)]),
+            md_wm(g.clone(), vec![], 0, &v, committee.clone()),
+            md_wm(a1.clone(), vec![g.clone()], 1, &v, committee.clone()),
+            md_wm(b1.clone(), vec![g.clone()], 1, &w, committee),
         ]);
         dag.latest_messages_map.insert(v, a1);
         dag.latest_messages_map.insert(w, b1);
-        (dag, g_a, g_b)
+        (dag, g)
     }
 
-    /// Under a NEGATIVE fault-tolerance threshold, "finalized" is bare
-    /// majority agreement per snapshot, so incompatible same-height
-    /// certificates are an expected transient (CI run 32775081650: three
-    /// concurrent siblings at #7 under ftt=-1, one cycle refused, healed by
-    /// the next merge). The live clock must HOLD the cycle quietly, never
-    /// surface a safety violation the regime cannot promise.
     #[tokio::test]
-    async fn an_agreement_flip_under_negative_ftt_holds_the_cycle() {
-        let (dag, g_a, _g_b) = mk_agreement_flip_dag();
+    async fn concurrent_siblings_under_one_committee_do_not_create_a_negative_ftt_floor() {
+        let (dag, g) = mk_common_committee_sibling_dag();
         let current = Floor {
-            hash: g_a,
+            hash: g,
             block_number: 0,
         };
         let out = floor_of_view(
@@ -2098,20 +2551,15 @@ mod frontier_determinism_tests {
             FtThreshold::from_f32_lossy(-1.0),
         )
         .await
-        .expect("negative-ftt agreement flip must hold the cycle, not error");
-        assert!(
-            matches!(out, FloorOfView::IncompatibilityHold { .. }),
-            "expected IncompatibilityHold, got {out:?}"
-        );
+        .expect("one frozen committee must derive one compatible floor");
+        assert_eq!(out, FloorOfView::NoAdvance);
     }
 
-    /// Under a BFT threshold the same shape is impossible without a protocol
-    /// breach: the live clock keeps surfacing the loud typed error.
     #[tokio::test]
-    async fn an_incompatible_fork_under_bft_ftt_stays_loud() {
-        let (dag, g_a, _g_b) = mk_agreement_flip_dag();
+    async fn concurrent_siblings_under_one_committee_do_not_create_a_bft_floor() {
+        let (dag, g) = mk_common_committee_sibling_dag();
         let current = Floor {
-            hash: g_a,
+            hash: g,
             block_number: 0,
         };
         let out = floor_of_view(
@@ -2120,11 +2568,9 @@ mod frontier_determinism_tests {
             &current,
             FtThreshold::from_f32_lossy(0.1),
         )
-        .await;
-        assert!(
-            matches!(out, Err(CasperError::IncompatibleFinalizedFork(_))),
-            "expected the loud typed error under BFT ftt, got {out:?}"
-        );
+        .await
+        .expect("one frozen committee must derive one compatible floor");
+        assert_eq!(out, FloorOfView::NoAdvance);
     }
 
     /// A shared Case-A DAG: `g <- t <- c`, with BOTH parents `p1` (v) and `p2` (w)
@@ -2141,8 +2587,8 @@ mod frontier_determinism_tests {
         Vec<Floor>,
         (Bytes, Bytes, Bytes, Bytes, Bytes),
     ) {
-        let v = h(50);
-        let w = h(51);
+        let v = validator(50);
+        let w = validator(51);
         let (g, t, c, p1, p2) = (h(0), h(1), h(2), h(3), h(4));
         let wm = || vec![(v.clone(), 1)];
         let dag = build_dag(vec![
@@ -2249,7 +2695,7 @@ mod frontier_determinism_tests {
 
     /// T-FIN (`Selection.select_finalized` / `GuardBridge.upgo_finalized`): the floor
     /// `derive_floor` returns is itself `Finalized` over the justification snapshot — it
-    /// clears the exact FT threshold (floor path, `≥`) per the same clique oracle the
+    /// clears the exact FT threshold (floor path, `>`) per the same clique oracle the
     /// node runs (`CliqueOracle::ft_witnessed_exact`). Confirms the result is a genuinely
     /// finalized cut, not merely a well-formed ancestor.
     #[tokio::test]
@@ -2258,15 +2704,15 @@ mod frontier_determinism_tests {
         let (floor, _f) = derive_floor(&dag, &mk_store(), &parents, &j, thr, inherited)
             .await
             .expect("derive_floor");
-        let finalized = crate::rust::safety::clique_oracle::CliqueOracle::ft_witnessed_exact(
+        let finalized = floor_witnessed_exact(
             &floor.hash,
             &dag,
             &j,
             thr,
-            false,
+            &mut StateProvenanceCache::default(),
         )
         .await
-        .expect("ft_witnessed_exact");
+        .expect("floor_witnessed_exact");
         assert!(
             finalized,
             "the derive_floor result must be Finalized over the justification snapshot (T-FIN)"
@@ -2279,7 +2725,7 @@ mod frontier_determinism_tests {
     fn full_hash(tag: u8) -> Bytes { Bytes::from(vec![tag; models::rust::block_hash::LENGTH]) }
 
     fn md_base(hash: Bytes, parents: Vec<Bytes>, num: i64, base: Bytes) -> BlockMetadata {
-        let sender = Bytes::from_static(b"sender");
+        let sender = validator(90);
         let mut meta = md_wm(hash, parents, num, &sender, vec![]);
         meta.merge_base = base;
         meta
@@ -2294,10 +2740,10 @@ mod frontier_determinism_tests {
     /// must stay distinguishable from one that genuinely diverges.
     #[test]
     fn truncated_state_lineage_is_an_error_not_a_disconnection() {
-        let root = Bytes::from_static(b"root");
-        let gone = Bytes::from_static(b"never-downloaded");
-        let a = Bytes::from_static(b"a");
-        let b = Bytes::from_static(b"b");
+        let root = h(60);
+        let gone = h(61);
+        let a = h(62);
+        let b = h(63);
 
         // `a`'s state lineage runs off the blocks this node holds; `b`'s is whole.
         let dag = build_dag(vec![
@@ -2323,9 +2769,9 @@ mod frontier_determinism_tests {
     /// whoever proposed the block.
     #[tokio::test]
     async fn floor_of_block_reports_the_block_it_does_not_hold() {
-        let gone = Bytes::from_static(b"below-the-sync-window");
-        let oldest = Bytes::from_static(b"oldest-retained");
-        let tip = Bytes::from_static(b"tip");
+        let gone = h(70);
+        let oldest = h(71);
+        let tip = h(72);
 
         let dag = build_dag(vec![
             md_base(oldest.clone(), vec![gone.clone()], 36, gone.clone()),
@@ -2369,6 +2815,7 @@ mod frontier_determinism_tests {
             &tip,
             &BTreeMap::new(),
             FtThreshold::from_f32_lossy(0.1),
+            &mut StateProvenanceCache::default(),
         )
         .await
         .expect_err("a frontier walk that leaves the held blocks cannot yield a frontier");
@@ -2383,10 +2830,10 @@ mod frontier_determinism_tests {
     /// genuinely disconnected, and that IS a verdict the caller may act on.
     #[test]
     fn disconnected_state_lineages_are_reported_as_disconnected() {
-        let root_a = Bytes::from_static(b"root-a");
-        let root_b = Bytes::from_static(b"root-b");
-        let a = Bytes::from_static(b"a");
-        let b = Bytes::from_static(b"b");
+        let root_a = h(80);
+        let root_b = h(81);
+        let a = h(82);
+        let b = h(83);
 
         let dag = build_dag(vec![
             md_base(root_a.clone(), vec![], 1, Bytes::new()),
@@ -2445,7 +2892,7 @@ mod frontier_determinism_tests {
         #[test]
         fn derive_floor_selects_highest_sound_candidate_over_chain((depth, k, mask) in chain_scenario()) {
             FLOOR_RUNTIME.block_on(async move {
-                let v = h(50);
+                let v = validator(50);
                 let mut blocks: Vec<BlockMetadata> = Vec::with_capacity(depth + 1);
                 for i in 0..=depth {
                     let parents = if i == 0 { vec![] } else { vec![h((i - 1) as u8)] };
@@ -2522,7 +2969,7 @@ mod frontier_determinism_tests {
             (n, j, erasure) in stale_spine_scenario()
         ) {
             FLOOR_RUNTIME.block_on(async move {
-                let v = h(50);
+                let v = validator(50);
                 let (c, s) = (h(20), h(21));
                 let settled_sig = Bytes::from_static(b"settled_sig_prop");
                 let mut blocks: Vec<BlockMetadata> = Vec::new();
@@ -2532,12 +2979,15 @@ mod frontier_determinism_tests {
                     blocks.push(md_wm(h(i as u8), parents.clone(), i as i64, &v, vec![(v.clone(), 1)]));
                     bodies.push(body_block(&h(i as u8), parents, i as i64, vec![], None, vec![]));
                 }
-                blocks.push(md_wm(
-                    c.clone(),
-                    vec![h(n as u8)],
-                    (n + 1) as i64,
-                    &v,
-                    vec![(v.clone(), 1)],
+                blocks.push(with_own_effect(
+                    md_wm(
+                        c.clone(),
+                        vec![h(n as u8)],
+                        (n + 1) as i64,
+                        &v,
+                        vec![(v.clone(), 1)],
+                    ),
+                    0,
                 ));
                 bodies.push(body_block(
                     &c,
@@ -2547,7 +2997,7 @@ mod frontier_determinism_tests {
                     None,
                     vec![],
                 ));
-                let s_meta = based(
+                let mut s_meta = based(
                     md_wm(
                         s.clone(),
                         vec![c.clone(), h(n as u8)],
@@ -2557,6 +3007,9 @@ mod frontier_determinism_tests {
                     ),
                     &h(j as u8),
                 );
+                if !erasure {
+                    s_meta = with_applied_effect(s_meta, &c, 0);
+                }
                 blocks.push(s_meta);
                 bodies.push(body_block(
                     &s,

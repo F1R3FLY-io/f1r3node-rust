@@ -5,13 +5,14 @@ use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, FinalizationCertificate};
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
 use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
+use crate::rust::finality::finalization_ledger::FinalizationHead;
 
 pub struct IndexedBlockDagStorage {
     underlying: BlockDagKeyValueStorage,
@@ -55,12 +56,21 @@ impl IndexedBlockDagStorage {
 
         // Use internal methods to avoid re-acquiring lock
         self.underlying
-            .insert_internal(genesis, InsertMode::Approved)?;
+            .insert_internal(genesis, InsertMode::ApprovedGenesis)?;
+        if block.block_hash == genesis.block_hash {
+            let block_number = genesis.body.state.block_number;
+            self.id_to_blocks.insert(block_number, genesis.clone());
+            let mut current_id = self.current_id.lock().unwrap();
+            *current_id = (*current_id).max(block_number);
+            return Ok(genesis.clone());
+        }
         let dag = self.underlying.get_representation_internal()?;
         let next_creator_seq_num = if block.seq_num == 0 {
-            dag.latest_message(&block.sender)?
-                .map_or(-1, |b| b.sequence_number)
-                + 1
+            match dag.latest_message_hash(&block.sender) {
+                Some(hash) if dag.canonical_genesis_hash() == Some(&hash) => 1,
+                Some(hash) => dag.lookup_unsafe(&hash)?.sequence_number + 1,
+                None => 0,
+            }
         } else {
             block.seq_num
         };
@@ -137,6 +147,16 @@ impl IndexedBlockDagStorage {
             .await
     }
 
+    pub fn finalization_head(&self) -> Result<Option<FinalizationHead>, KvStoreError> {
+        self.underlying.finalization_head()
+    }
+
+    pub fn finalized_floor_certificate(
+        &self,
+    ) -> Result<Option<FinalizationCertificate>, KvStoreError> {
+        self.underlying.finalized_floor_certificate()
+    }
+
     pub fn lookup_by_id(&self, id: i64) -> Result<Option<BlockMessage>, KvStoreError> {
         // DashMap is already thread-safe, so no additional lock needed
         Ok(self.id_to_blocks.get(&id).map(|b| b.clone()))
@@ -164,6 +184,8 @@ impl crate::rust::dag::equivocations_access::EquivocationsAccess for IndexedBloc
 #[cfg(test)]
 mod tests {
     use models::rust::block_implicits::get_random_block;
+    use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    use models::rust::bond_generation::BondGeneration;
     use models::rust::equivocation_record::EquivocationRecord;
     use models::rust::validator::Validator;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -172,13 +194,18 @@ mod tests {
     use crate::rust::dag::block_dag_key_value_storage::InsertMode;
 
     fn block(number: i64, seq_num: i32, parents: Vec<BlockHash>) -> BlockMessage {
+        let certified_number = if parents.is_empty() {
+            number
+        } else {
+            number.max(1)
+        };
         get_random_block(
-            Some(number),
+            Some(certified_number),
             Some(seq_num),
             None,
             None,
             None,
-            None,
+            Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
             None,
             Some(parents),
             Some(vec![]),
@@ -271,7 +298,9 @@ mod tests {
     async fn inject_registers_a_block_at_an_explicit_index() {
         let mut storage = storage().await;
         let genesis = block(0, 0, vec![]);
-        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
 
         let injected = block(1, 1, vec![genesis.block_hash.clone()]);
         storage.inject(7, injected.clone(), false).unwrap();
@@ -286,6 +315,7 @@ mod tests {
         let storage = storage().await;
         let record = EquivocationRecord::new(
             Validator::from(vec![3u8; 65]),
+            BondGeneration::new(2).unwrap(),
             0,
             std::collections::BTreeSet::from([BlockHash::from(vec![0xAB; 32])]),
         );
@@ -303,7 +333,9 @@ mod tests {
     async fn record_directly_finalized_marks_held_ancestry() {
         let mut storage = storage().await;
         let genesis = block(0, 0, vec![]);
-        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
         let b1 = block(1, 1, vec![genesis.block_hash.clone()]);
         storage.insert(&b1, InsertMode::Normal).unwrap();
         let b2 = block(2, 2, vec![b1.block_hash.clone()]);

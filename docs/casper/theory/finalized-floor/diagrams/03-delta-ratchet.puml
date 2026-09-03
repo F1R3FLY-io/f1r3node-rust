@@ -2,24 +2,25 @@
 '
 ' Two side-by-side lanes (split) contrasting the finality-lag dynamics:
 '   - BUGGY: an uncached Θ(Δ²·V) floor walk whose propose cost feeds back into
-'     finalization lag (slope > 1 at every equilibrium) → Δ runs away → crosses
+'     finalization lag (smooth return slope > 1) → above-threshold Δ runs away → crosses
 '     the 256 cap → SILENT single-parent fallback drops co-parent writes (S5).
-'   - FIXED: a persisted frontier pivot + amortized-O(1) up-walk → zero feedback
-'     → Δ bounded → over-cap yields a deterministic Err (park / reject), never a
-'     lossy substitution.
+'   - FIXED: a persisted frontier pivot + amortized-O(1) up-walk removes lag
+'     feedback. Δ drains only when service exceeds arrivals, stays flat at
+'     equality, and grows under overload. Over-cap yields a deterministic Err.
 '
 ' NOTE on node coloring in THIS PlantUML build: the correct form is the suffix
 ' stereotype  ':label; <<#hex>>'  (the prefix '#hex:label;' form is deprecated
 ' here and emits an in-image warning banner). Verified by rendering.
 '
 ' Wolfram reference: formal/wolfram/finalized_floor/delta_ratchet.wl proves the
-' buggy feedback slope > 1 (unstable) and the fixed advance has zero feedback.
+' buggy feedback slope > 1 and the fixed advance has zero lag feedback plus
+' explicit service >, =, and < arrival-rate regimes.
 '
 ' Source of truth for the ratchet figure in
-' docs/theory/finalized-floor/finalized-floor-verification.md (section 2).
+' docs/casper/theory/finalized-floor/finalized-floor-verification.md (section 2).
 '
 ' Render:
-'   plantuml -tsvg docs/theory/finalized-floor/diagrams/03-delta-ratchet.puml
+'   plantuml -tsvg docs/casper/theory/finalized-floor/diagrams/03-delta-ratchet.puml
 
 @startuml 03-delta-ratchet
 !theme plain
@@ -34,7 +35,7 @@ skinparam activity {
 skinparam defaultFontName "monospace"
 skinparam defaultFontSize 10
 
-title The Δ-ratchet ── buggy Θ(Δ²·V) floor walk (runaway) vs fixed O(1) up-walk (bounded)
+title The Δ-ratchet ── buggy positive feedback vs fixed O(1) service-rate regimes
 
 ' Node color legend (suffix <<#hex>> form):
 '   red    (#FFEBEE / #FFCDD2 / #EF9A9A) = buggy step / cliff / write-loss
@@ -58,7 +59,7 @@ split again
   -[#2E7D32]-> AFTER the fix;
   partition "FIXED ── persisted pivot + O(1) up-walk" #E8F5E9 {
     :persisted frontier pivot F(X)\n+ incremental up-walk ──\namortized O(1) oracle calls\n(advances telescope to spine length); <<#E8F5E9>>
-    :Δ bounded\n(flat — ZERO feedback,\nno runaway back-edge); <<#E8F5E9>>
+    :ZERO lag feedback;\nservice > arrivals drains Δ,\nservice = arrivals holds Δ,\nservice < arrivals grows Δ; <<#E8F5E9>>
     if (Δ > cap 256 ?) then (yes)
       :over-cap ⟹ deterministic Err\n(propose PARKS the round;\nvalidate REJECTS — both sides\ncompute the same Δ ⟹ no fork)\nNEVER a lossy substitution; <<#C8E6C9>>
       kill
@@ -71,9 +72,10 @@ end split
 
 legend bottom
   Wolfram  formal/wolfram/finalized_floor/delta_ratchet.wl — over the reals,
-  parameter-free: the buggy Θ(Δ²) advance is structurally UNSTABLE (feedback
-  slope > 1 at every equilibrium) while the fixed O(1) advance has ZERO
-  feedback (Δ stable). The ratchet collapses; over-cap becomes safe.
+  parameter-free: the buggy Θ(Δ²) advance has positive lag feedback. The fixed
+  O(1) advance has ZERO lag feedback, but bounded lag additionally requires
+  service >= arrivals. The ratchet collapses; overload remains observable and
+  over-cap becomes safe rather than lossy.
 endlegend
 
 @enduml

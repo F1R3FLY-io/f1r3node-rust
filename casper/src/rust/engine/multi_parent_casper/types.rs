@@ -6,7 +6,7 @@
 //! plan's "Layout C" entry for the wider context.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -17,6 +17,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
 // Phase 9 (A-3): the deploy-storage handle migrates to
 // `parking_lot::Mutex` (no poison propagation, faster acquire).
@@ -36,12 +37,13 @@ use models::rust::validator::Validator;
 // `std::sync::Mutex` (held purely synchronously inside the
 // proposer / validator flows, never across `.await`).
 use parking_lot::Mutex as PlMutex;
-use prost::bytes::Bytes;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::casper::CasperShardConf;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::estimator::Estimator;
+use crate::rust::finality::certificate::CertificateVerificationSchedule;
+use crate::rust::finality::finalization_schedule::FinalizationSchedule;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
@@ -91,7 +93,10 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub approved_block: BlockMessage,
     /// Flag to track finalization status - block proposals fail fast if finalization is running.
     /// This prevents validators from creating blocks with stale snapshots during finalization.
-    pub finalization_in_progress: Arc<AtomicBool>,
+    pub finalization_in_progress: Arc<AtomicU64>,
+    pub recovery_sync_active: Arc<AtomicBool>,
+    pub finalization_schedule: Arc<FinalizationSchedule>,
+    pub certificate_verification_schedule: Arc<CertificateVerificationSchedule>,
     /// Escalates a persistent containment hold (the shard finalizing floors
     /// this node's LFB is not contained in) to a finality-divergence ERROR
     /// and metric. See `finalization_runner::DivergenceMonitor`.
@@ -115,7 +120,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// synchronously across read-modify-write of the cache cell.
     ///
     /// Merge of dev: tuple carries both scope sets — the trailing
-    /// `Arc<DashSet<Bytes>>` is the `rejected_in_scope` companion set
+    /// `Arc<DashSet<DeployLookupId>>` is the `rejected_in_scope` companion set
     /// to `deploys_in_scope`, used by `validate.rs::repeat_deploy` and
     /// `block_creator.rs` to distinguish in-scope deploys that were
     /// merge-rejected (and therefore eligible for re-inclusion) from
@@ -126,8 +131,8 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
                 u64,
                 BlockHash,
                 Vec<BlockHash>,
-                Arc<dashmap::DashSet<Bytes>>,
-                Arc<dashmap::DashSet<Bytes>>,
+                Arc<dashmap::DashSet<DeployLookupId>>,
+                Arc<dashmap::DashSet<DeployLookupId>>,
             )>,
         >,
     >,

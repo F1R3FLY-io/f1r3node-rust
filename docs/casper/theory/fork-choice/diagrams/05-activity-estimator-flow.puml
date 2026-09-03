@@ -14,10 +14,10 @@
 ' '#hex:label;' emits a deprecation banner and leaves the node uncolored.
 '
 ' Source of truth for the B1–B4 fixes (section 3) in
-' docs/theory/fork-choice/fork-choice-verification.md.
+' docs/casper/theory/fork-choice/fork-choice-verification.md.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/fork-choice/diagrams/05-activity-estimator-flow.puml
+'   plantuml -tsvg docs/casper/theory/fork-choice/diagrams/05-activity-estimator-flow.puml
 
 @startuml 05-activity-estimator-flow
 !theme plain
@@ -36,29 +36,30 @@ skinparam legendBorderColor #666666
 skinparam defaultFontName "monospace"
 skinparam defaultFontSize 10
 
-title Fork-choice evaluation flow ── Estimator::tips + the hardened seams (B1–B4)
+title Fork-choice evaluation flow ── certified two-lane LMD-GHOST
 
 ' Node color legend (suffix <<#hex>> form):
 '   blue     (#BBDEFB) = read / setup step
 '   lavender (#D1C4E9) = slashing filter (T-10)
 '   mint     (#C8E6C9) = scoring step
-'   orange   (#FFE0B2) = ranking fixpoint
+'   orange   (#FFE0B2) = greedy head + concurrent terminal frontier
 '   tan      (#D7CCC8) = bounds / truncation
 '   red      (#FFCDD2) = typed-error outcome (B4)
 '   green    (#A5D6A7) = final ForkChoice
 '   amber diamond (#FFF8E1) = decision
 
 start
-:collect latest_message_hashes; <<#BBDEFB>>
-:filter invalid latest messages\n(T-10, slashed → 0 weight); <<#D1C4E9>>
-:calculate_lca — depth-filter > top − 1000\n(deterministic: structural top); <<#BBDEFB>>
+:read complete certified eligible slots; <<#D1C4E9>>
+:calculate_lca over every eligible message; <<#BBDEFB>>
 :build_scores_map — BFS to LCA,\nchecked_add score (B3); <<#C8E6C9>>
 note right #FFECB3
   B1: weight_from_validator_by_dag
   returns a typed KvStoreError on a
   MISSING parent (no panic).
 end note
-:rank_forkchoices — heaviest scored-child;\nsort (score desc, hash asc);\nrecurse to still_same; <<#FFE0B2>>
+:greedy_ghost_head — choose the maximum-score\nchild at each level; validate height progress; <<#FFE0B2>>
+:terminal_frontier — expand every scored branch\nunder arbitrary order; deduplicate shared children; <<#FFE0B2>>
+:rank_forkchoices — require head membership;\nhead ++ score/hash-sorted remaining terminals; <<#FFE0B2>>
 
 if (tips empty? (genesis-only DAG)) then (yes ── B4)
   :typed Err\n(filter_deep_parents empty guard); <<#FFCDD2>>
@@ -71,7 +72,7 @@ else (no)
 endif
 
 legend bottom
-  Every step is a PURE function of (DAG, latest_messages), so all honest nodes
+  Every step is a PURE function of (DAG, certified context), so all honest nodes
   compute a node-identical ForkChoice (Rocq fork_choice_determinism_correct).
   The empty-tips case is a typed Err, NOT a panic (Bound.empty_tips_typed_err);
   the parent cap is cast-safe (B2); score accumulation is checked_add (B3);

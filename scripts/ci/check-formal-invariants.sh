@@ -3,6 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+WORK_DIR="$REPO_ROOT/target/verification/formal-ci"
+
+mkdir -p "$WORK_DIR"
 
 run_tla=false
 run_rocq=false
@@ -74,6 +77,7 @@ build_rocq_project() {
     local namespace="$2"
     local project_dir="$REPO_ROOT/formal/rocq/$project"
     local makefile="Makefile.verify.$$"
+    local coqchk_log="$WORK_DIR/${project}-coqchk.log"
 
     test -d "$project_dir/theories"
     cleanup_paths+=(
@@ -87,10 +91,10 @@ build_rocq_project() {
         coq_makefile -f _CoqProject -o "$makefile"
         make -f "$makefile" -j1
         coqchk -Q theories "$namespace" "$namespace.MainTheorem" \
-            >"/tmp/${project}-coqchk.log" 2>&1
+            >"$coqchk_log" 2>&1
     )
 
-    grep -q "Modules were successfully checked" "/tmp/${project}-coqchk.log"
+    grep -q "Modules were successfully checked" "$coqchk_log"
 }
 
 check_assumptions() {
@@ -103,7 +107,7 @@ check_assumptions() {
     local output
     local closed
 
-    check_file="$(mktemp "/tmp/${namespace}AssumptionsXXXXXX.v")"
+    check_file="$(mktemp "$WORK_DIR/${namespace}AssumptionsXXXXXX.v")"
     cleanup_paths+=("$check_file")
 
     {
@@ -136,9 +140,8 @@ run_rocq_checks() {
         "$REPO_ROOT/formal/rocq/rspace_guards/theories/"
 
     build_rocq_project slashing Slashing
-    check_assumptions slashing Slashing 2 \
-        main_bisimilarity_theorem \
-        main_bisimilarity_strong
+    check_assumptions slashing Slashing 1 \
+        main_slashing_algorithm_correct
 
     build_rocq_project fork_choice ForkChoice
     check_assumptions fork_choice ForkChoice 4 \

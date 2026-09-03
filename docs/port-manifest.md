@@ -33,7 +33,7 @@ without corresponding fetched objects are treated as notes, not unported work.
 |---|---|---|
 | `3499b39e` (part) | **remove the bonds-equality parent filter** | stop orphaning differently-bonded siblings; small, isolate from the seal parts of this commit |
 | `3499b39e` (part) | **fold system-deploy chains into conflict detection** | makes concurrent CloseBlock PoS-cell writes visible to conflict detection; verify still needed under new merge |
-| `85a75ffa` | **on-demand mergeable-entry recompute** (`ensure_scope_mergeable_present`) + **ancestry-based `repeat_deploy`** | load-bearing for LFS-imported / cross-node determinism. repeat_deploy may shift to record-based — keep the ancestry direction |
+| `85a75ffa` | **on-demand mergeable-entry recompute** + **ancestry-based `repeat_deploy`** | load-bearing for LFS-imported / cross-node determinism. Port the recompute as local replay under the complete execution-identity key; do not restore unauthenticated peer evidence import. `repeat_deploy` may shift to record-based — keep the ancestry direction |
 | `f0decf13` | **full-bonds finality denominator** (revert active-set weighting) | SAFETY fix — active-set denominator let a pause shrink quorum, finalizing under FTT. Keep full-bonds denominator |
 | `9d1f5d1d` | **total-order tiebreak in optimal rejection** | kills the HashSet coin-flip; node-deterministic merge rejection |
 | `16b2e980` | **reject multi-value IntegerAdd (not MAX-fold)** | CRITICAL — loud error instead of silent concurrent-write loss; keep `fold_bitmask_or` |
@@ -43,7 +43,7 @@ without corresponding fetched objects are treated as notes, not unported work.
 | `7ed761ab` | **fresh-joiner latest-message fix** + graceful not-bonded skip | consensus liveness under concurrent bonds; faithful Scala-bug port |
 | `4fdbd6aa` | **poison-tolerant shared-LMDB test lock** | stops a flake cascade |
 | `ad0081d7` | **LFS state-sync hardening** | networking resilience (join_all, deadline budget, byzantine reason) |
-| `e7efb39d` | **active-committee weighting** (`block.bonds = active(FS) ∩ bonds(FS)`) | committee read from signed block; closes the active-vs-bonded finality fracture |
+| `e7efb39d` | **active-committee weighting** | Retain the active-set idea but separate authority from serialization: `Auth(B) = active(post_state(floor(B))) ∩ bonds(post_state(floor(B)))`, while `block.body.state.bonds = bonds(post_state(B))` remains a replay-checked cache. Never let a block's own transition authorize itself. |
 | `97767045` | **genesis-sourced FT threshold** (`getFaultToleranceThreshold` PoS getter) | required for node-identical floor |
 | `4f63cb82` (part) | **live committee** (`active ∩ bonds ∩ live`; `recent_producers`, GRACE/LIVENESS windows; drop dead-stake from FT denominator) | the COMMITTEE half of the eager commit — sound + orthogonal to the base regression. Isolate from the base half |
 | `4f63cb82` (part) | **LFS horizon requester** (275 lines) | LFS feature; verify standalone |

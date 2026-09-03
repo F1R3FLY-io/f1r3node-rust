@@ -3,11 +3,15 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
+use casper::rust::block_status::{CertifiedBlockValidation, InvalidBlock};
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
@@ -18,13 +22,12 @@ use casper::rust::engine::running::{
 };
 use casper::rust::errors::CasperError;
 use casper::rust::validator_identity::ValidatorIdentity;
-use models::casper::ApprovedBlockRequestProto;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, BlockRequest, CasperMessage, DeployData,
-    ForkChoiceTipRequest, HasBlock,
+    FinalizationCertificateRequest, ForkChoiceTipRequest, HasBlock, MergeableEntryRequest,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -41,6 +44,8 @@ mod tests {
     struct ValidatorAwareNoOpsCasper {
         inner: crate::helper::no_ops_casper_effect::NoOpsCasperEffect,
         validator_id: ValidatorIdentity,
+        finalization_requests: Arc<AtomicUsize>,
+        recovery_sync_active: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[async_trait]
@@ -51,9 +56,9 @@ mod tests {
 
         fn normalized_initial_fault(
             &self,
-            weights: std::collections::HashMap<models::rust::validator::Validator, u64>,
+            target: &models::rust::block_hash::BlockHash,
         ) -> Result<f32, CasperError> {
-            self.inner.normalized_initial_fault(weights)
+            self.inner.normalized_initial_fault(target)
         }
 
         async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
@@ -94,8 +99,23 @@ mod tests {
 
     #[async_trait]
     impl Casper for ValidatorAwareNoOpsCasper {
+        async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
+            self.inner.request_block_from_peers(hash).await
+        }
+
         async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
             self.inner.get_snapshot().await
+        }
+
+        fn request_finalization(&self) -> Result<(), CasperError> {
+            self.finalization_requests.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn recovery_sync_active(&self) -> bool { self.recovery_sync_active.load(Ordering::SeqCst) }
+
+        fn set_recovery_sync_active(&self, active: bool) {
+            self.recovery_sync_active.store(active, Ordering::SeqCst);
         }
 
         fn contains(&self, hash: &BlockHash) -> bool { self.inner.contains(hash) }
@@ -131,7 +151,7 @@ mod tests {
             &self,
             block: &BlockMessage,
             snapshot: &mut CasperSnapshot,
-        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+        ) -> Result<CertifiedBlockValidation, CasperError> {
             self.inner.validate(block, snapshot).await
         }
 
@@ -141,7 +161,7 @@ mod tests {
             snapshot: &mut CasperSnapshot,
             pre_state_hash: Bytes,
             post_state_hash: Bytes,
-        ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+        ) -> Result<CertifiedBlockValidation, CasperError> {
             self.inner
                 .validate_self_created(block, snapshot, pre_state_hash, post_state_hash)
                 .await
@@ -150,11 +170,15 @@ mod tests {
         async fn handle_valid_block(
             &self,
             block: &BlockMessage,
+            certificate: &CertifiedSenderAuthority,
+            outcome: &CertifiedAdmissionOutcome,
         ) -> Result<
             block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
             CasperError,
         > {
-            self.inner.handle_valid_block(block).await
+            self.inner
+                .handle_valid_block(block, certificate, outcome)
+                .await
         }
 
         fn handle_invalid_block(
@@ -162,11 +186,14 @@ mod tests {
             block: &BlockMessage,
             status: &InvalidBlock,
             dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
+            certificate: &CertifiedSenderAuthority,
+            outcome: &CertifiedAdmissionOutcome,
         ) -> Result<
             block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
             CasperError,
         > {
-            self.inner.handle_invalid_block(block, status, dag)
+            self.inner
+                .handle_invalid_block(block, status, dag, certificate, outcome)
         }
 
         fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
@@ -242,6 +269,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_refuses_to_export_mergeable_evidence() {
+        let fixture = TestFixture::new().await;
+        let genesis = fixture.genesis.clone();
+        fixture
+            .block_store
+            .put(genesis.block_hash.clone(), &genesis)
+            .expect("Failed to put genesis block");
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::MergeableEntryRequest(MergeableEntryRequest {
+                    block_hash: genesis.block_hash.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 1);
+        let sent_request = fixture.transport_layer.pop_request().unwrap();
+        assert_eq!(sent_request.peer, fixture.local);
+        let packet = match sent_request.msg.message {
+            Some(ProtocolMessage::Packet(packet)) => packet,
+            _ => panic!("Expected packet response"),
+        };
+        assert_eq!(packet.type_id, "MergeableEntryResponse");
+        let response = models::casper::MergeableEntryResponseProto::decode(packet.content)
+            .expect("MergeableEntryResponse payload");
+        assert_eq!(response.block_hash, genesis.block_hash);
+        assert!(response.serialized_entry.is_empty());
+    }
+
+    #[tokio::test]
     async fn engine_should_respond_to_approved_block_request() {
         let fixture = TestFixture::new().await;
 
@@ -264,8 +325,8 @@ mod tests {
                     block: genesis_block,
                     required_sigs: 0,
                 },
-                floor_seed: None,
                 sigs: Vec::new(),
+                floor_seed: None,
             };
 
         fixture
@@ -289,12 +350,8 @@ mod tests {
 
     #[tokio::test]
     async fn engine_should_respond_to_fork_choice_tip_request() {
-        let mut fixture = TestFixture::new().await;
-
-        // Step 1: Create a request object
         let request = ForkChoiceTipRequest {};
 
-        // Step 2: Create 2 blocks with distinct senders so both can be tips.
         let mut block1 = get_random_block(
             None, None, None, None, None, None, None, None, None, None, None, None, None, None,
         );
@@ -305,12 +362,12 @@ mod tests {
         );
         block2.sender = Bytes::from_static(b"sender-2");
 
-        // Step 3: Insert blocks in blockDagStorage (following Scala implementation)
-        // This matches the Scala pattern: blockDagStorage.insert(block1, false)
-        fixture.casper.insert_block(block1.clone(), false);
-        fixture.casper.insert_block(block2.clone(), false);
+        let fixture = TestFixture::new_with_casper_blocks(vec![
+            (block1.clone(), false),
+            (block2.clone(), false),
+        ])
+        .await;
 
-        // Step 5: Call engine.handle with local peer and request object
         fixture
             .engine
             .handle(
@@ -324,16 +381,18 @@ mod tests {
             .engine
             .with_casper()
             .expect("Running engine should expose a casper instance");
-        let expected_tips: HashSet<Bytes> = engine_casper
+        let expected_dag = engine_casper
             .block_dag()
             .await
-            .expect("Failed to load block DAG")
+            .expect("Failed to load block DAG");
+        let canonical_genesis_hash = expected_dag.canonical_genesis_hash().cloned();
+        let expected_tips: HashSet<Bytes> = expected_dag
             .latest_message_hashes()
             .into_iter()
             .map(|(_, hash)| hash)
+            .filter(|hash| Some(hash) != canonical_genesis_hash.as_ref())
             .collect();
 
-        // Step 6: Get requests from transportLayer
         let requests = fixture.transport_layer.get_all_requests();
         assert_eq!(
             requests.len(),
@@ -341,12 +400,10 @@ mod tests {
             "Expected one HasBlock response per fork-choice tip"
         );
 
-        // Step 8: Assert all transport-layer requests target local peer.
         for request in &requests {
             assert_eq!(request.peer, fixture.local);
         }
 
-        // Step 9: Assert all responses are HasBlock messages with at least one tip hash.
         let mut received_tips: HashSet<Bytes> = HashSet::new();
         let mut has_block_count = 0usize;
         for request in &requests {
@@ -365,7 +422,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_validator_should_stay_running_and_request_fork_choice_tips() {
+    async fn stale_validator_should_stay_running_and_request_tips_and_local_finalization() {
         let fixture = TestFixture::new().await;
         let engine_cell = Arc::new(EngineCell::init());
 
@@ -387,16 +444,20 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
-            floor_seed: None,
             sigs: Vec::new(),
+            floor_seed: None,
         };
 
+        let finalization_requests = Arc::new(AtomicUsize::new(0));
+        let recovery_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let running = Running::new(
             fixture.block_processing_queue_tx.clone(),
             fixture.blocks_in_processing.clone(),
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
+                finalization_requests: finalization_requests.clone(),
+                recovery_sync_active: recovery_sync_active.clone(),
             }) as Arc<dyn MultiParentCasper + Send + Sync>,
             approved_block,
             Arc::new(|| {
@@ -409,28 +470,10 @@ mod tests {
             fixture.block_retriever.clone(),
             Some(RunningRecoveryContext {
                 connections_cell: fixture.connections_cell.clone(),
-                last_approved_block: fixture.last_approved_block.clone(),
-                block_store: fixture.block_store.clone(),
-                block_dag_storage: fixture.block_dag_storage.clone(),
-                deploy_storage: fixture.deploy_storage.clone(),
-                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
-                rspace_state_manager: fixture.rspace_state_manager.clone(),
-                event_publisher: fixture.event_publisher.clone(),
-                engine_cell: engine_cell.clone(),
-                runtime_manager: fixture.runtime_manager.clone(),
-                estimator: fixture.estimator.clone(),
-                casper_shard_conf: fixture.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
             None,
         );
         engine_cell.set(Arc::new(running)).await;
-
-        // The rejoin requires receive-quiescence in addition to the stale
-        // own message: no peer block has arrived since construction, so
-        // aging past the threshold makes the node genuinely quiescent.
-        tokio::time::sleep(Duration::from_millis(1_100)).await;
 
         update_fork_choice_tips_if_stuck(
             &engine_cell,
@@ -445,31 +488,22 @@ mod tests {
         let engine = engine_cell.get().await;
         assert!(
             engine.with_casper().is_some(),
-            "stale validator should remain Running while requesting peer tips"
+            "stale validator recovery must preserve its live Casper instance"
         );
+        assert_eq!(finalization_requests.load(Ordering::SeqCst), 1);
+        assert!(recovery_sync_active.load(Ordering::SeqCst));
 
-        let expected_proto = ApprovedBlockRequestProto {
-            identifier: "".to_string(),
-            trim_state: true,
-        };
-        let expected_content = Bytes::from(expected_proto.encode_to_vec());
         let requests = fixture.transport_layer.get_all_requests();
-        let found_approved_block_request = requests.iter().any(|req| {
-            if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
-                packet.content == expected_content
-            } else {
-                false
-            }
-        });
-
         assert!(
-            !found_approved_block_request,
-            "stale validator should not request an approved block; requests: {:?}",
+            requests.iter().any(|request| {
+                matches!(
+                    &request.msg.message,
+                    Some(models::routing::protocol::Message::Packet(packet))
+                        if packet.type_id == "ForkChoiceTipRequest"
+                )
+            }),
+            "recovery should request ordinary DAG tips from peers; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
-        );
-        assert!(
-            !requests.is_empty(),
-            "stale validator should request fork-choice tips"
         );
     }
 
@@ -499,16 +533,20 @@ mod tests {
                 block: fixture.genesis.clone(),
                 required_sigs: 0,
             },
-            floor_seed: None,
             sigs: Vec::new(),
+            floor_seed: None,
         };
 
+        let finalization_requests = Arc::new(AtomicUsize::new(0));
+        let recovery_sync_active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let running = Running::new(
             fixture.block_processing_queue_tx.clone(),
             fixture.blocks_in_processing.clone(),
             Arc::new(ValidatorAwareNoOpsCasper {
                 inner: casper,
                 validator_id: fixture.validator_id.clone(),
+                finalization_requests: finalization_requests.clone(),
+                recovery_sync_active: recovery_sync_active.clone(),
             }) as Arc<dyn MultiParentCasper + Send + Sync>,
             approved_block,
             Arc::new(|| {
@@ -521,19 +559,6 @@ mod tests {
             fixture.block_retriever.clone(),
             Some(RunningRecoveryContext {
                 connections_cell: fixture.connections_cell.clone(),
-                last_approved_block: fixture.last_approved_block.clone(),
-                block_store: fixture.block_store.clone(),
-                block_dag_storage: fixture.block_dag_storage.clone(),
-                deploy_storage: fixture.deploy_storage.clone(),
-                rejected_deploy_buffer: fixture.rejected_deploy_buffer.clone(),
-                casper_buffer_storage: fixture.casper_buffer_storage.clone(),
-                rspace_state_manager: fixture.rspace_state_manager.clone(),
-                event_publisher: fixture.event_publisher.clone(),
-                engine_cell: engine_cell.clone(),
-                runtime_manager: fixture.runtime_manager.clone(),
-                estimator: fixture.estimator.clone(),
-                casper_shard_conf: fixture.casper_shard_conf.clone(),
-                heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             }),
             None,
         );
@@ -555,25 +580,20 @@ mod tests {
             "fresh validator should remain in Running"
         );
 
-        let expected_proto = ApprovedBlockRequestProto {
-            identifier: "".to_string(),
-            trim_state: true,
-        };
-        let expected_content = Bytes::from(expected_proto.encode_to_vec());
         let requests = fixture.transport_layer.get_all_requests();
-        let found_approved_block_request = requests.iter().any(|req| {
-            if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
-                packet.content == expected_content
-            } else {
-                false
-            }
-        });
-
         assert!(
-            !found_approved_block_request,
-            "fresh validator should not request an approved block; requests: {:?}",
+            !requests.iter().any(|request| {
+                matches!(
+                    &request.msg.message,
+                    Some(models::routing::protocol::Message::Packet(packet))
+                        if packet.type_id == "ForkChoiceTipRequest"
+                )
+            }),
+            "fresh validator should not request recovery tips; requests: {:?}",
             requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
         );
+        assert_eq!(finalization_requests.load(Ordering::SeqCst), 0);
+        assert!(!recovery_sync_active.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -597,8 +617,8 @@ mod tests {
 
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut enqueued = 0usize;
-        while let Ok((_, block)) = rx.try_recv() {
-            if block.block_hash == signed_block.block_hash {
+        while let Ok(item) = rx.try_recv() {
+            if item.block.block_hash == signed_block.block_hash {
                 enqueued += 1;
             }
         }
@@ -709,32 +729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn floor_cache_request_over_the_cap_is_ignored() {
-        let fixture = TestFixture::new().await;
-        let hashes: Vec<BlockHash> = (0..4_097u32)
-            .map(|i| Bytes::from(format!("floor-cache-flood-{i}").into_bytes()))
-            .collect();
-
-        fixture
-            .engine
-            .handle(
-                fixture.local.clone(),
-                CasperMessage::FloorCacheRequest(
-                    models::rust::casper::protocol::casper_message::FloorCacheRequest { hashes },
-                ),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            fixture.transport_layer.request_count(),
-            0,
-            "an over-cap request must not become a scan or a response"
-        );
-    }
-
-    #[tokio::test]
-    async fn floor_cache_request_answers_with_only_fully_cached_entries() {
+    async fn legacy_floor_cache_requests_are_ignored_under_certified_recovery() {
         let fixture = TestFixture::new().await;
 
         fixture
@@ -743,7 +738,7 @@ mod tests {
                 fixture.local.clone(),
                 CasperMessage::FloorCacheRequest(
                     models::rust::casper::protocol::casper_message::FloorCacheRequest {
-                        hashes: vec![Bytes::from_static(b"floor-cache-uncached-hash")],
+                        hashes: vec![Bytes::from_static(b"legacy-floor-cache-request")],
                     },
                 ),
             )
@@ -752,9 +747,71 @@ mod tests {
 
         assert_eq!(
             fixture.transport_layer.request_count(),
-            1,
-            "a within-cap request is answered even when no entry is cached"
+            0,
+            "certified recovery must not serve unauthenticated floor-cache state"
         );
+    }
+
+    #[tokio::test]
+    async fn finalization_certificate_request_answers_only_for_an_exact_stored_digest() {
+        let fixture = TestFixture::new().await;
+        let absent_digest = Bytes::from(vec![0x51; 32]);
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::FinalizationCertificateRequest(FinalizationCertificateRequest {
+                    digest: absent_digest,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fixture.transport_layer.request_count(), 0);
+
+        let dag = fixture
+            .block_dag_storage
+            .get_representation()
+            .expect("DAG representation");
+        let certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
+            &dag,
+            &fixture.genesis,
+            fixture.casper_shard_conf.casper_version,
+            fixture.casper_shard_conf.shard_name.clone(),
+            fixture.casper_shard_conf.fault_tolerance_threshold_ppm,
+            1_000_000,
+        )
+        .expect("genesis certificate");
+        let digest = certificate.digest();
+        fixture
+            .block_store
+            .put_finalization_certificate(&digest, &certificate)
+            .expect("store finalization certificate");
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::FinalizationCertificateRequest(FinalizationCertificateRequest {
+                    digest: digest.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 1);
+        let sent = fixture.transport_layer.pop_request().expect("response");
+        let packet = match sent.msg.message {
+            Some(ProtocolMessage::Packet(packet)) => packet,
+            _ => panic!("expected finalization certificate response packet"),
+        };
+        assert_eq!(packet.type_id, "FinalizationCertificateResponse");
+        let response = models::casper::FinalizationCertificateResponseProto::decode(packet.content)
+            .expect("finalization certificate response payload");
+        let response = models::rust::casper::protocol::casper_message::FinalizationCertificateResponse::from_proto(response)
+            .expect("valid finalization certificate response");
+        assert_eq!(response.digest, digest);
+        assert_eq!(response.certificate, certificate);
     }
 
     #[tokio::test]

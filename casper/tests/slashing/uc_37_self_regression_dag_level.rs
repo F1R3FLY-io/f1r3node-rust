@@ -11,11 +11,9 @@
 // Reference: design/09-bug-fixes-and-rationale.md §9.7.
 //
 // Variation of UC-06 (which exercises the validation-time
-// classification): UC-37 confirms the DAG-level invariant — the
-// post-fix dispatcher records the offender, and a witness block
-// (a third validator's block citing both v0's later block and the
-// regressing block) sees the inconsistency and is part of the
-// detection chain.
+// classification): UC-37 confirms the DAG-level invariant. The dispatcher
+// persists the rejection without creating evidence. A witness cannot inherit
+// economic evidence from that rejection.
 
 use super::harness::SlashingTestHarness;
 use super::types::{BlockMeta, Status};
@@ -38,27 +36,14 @@ fn uc_37_self_regression_dag_with_witness() {
         slash_targets: vec![],
     });
 
-    // Dispatch the regressing block — JustificationRegression
-    // classification (post-fix #6) and record minted (post-fix #3).
     let s = harness.dispatch(regressing);
     assert_eq!(s, Status::JustificationRegression);
-    assert!(harness.has_record("v0", 4));
+    assert!(!harness.has_record("v0", 4));
 
-    // Step 3: a witness block by v1 cites the regressing block.
-    // The harness's neglect detection (post-fix #1+#3) sees that
-    // v0 has an outstanding record AND v1's block does not slash
-    // v0 → v1 is NeglectedEquivocation.
     let witness = harness.sign_block_citing("v1", 12, regressing);
     let ws = harness.dispatch(witness);
-    assert_eq!(
-        ws,
-        Status::NeglectedEquivocation,
-        "witness that observed but didn't slash v0 is itself slashable"
-    );
-    assert!(
-        harness.has_record("v1", 11),
-        "the witness's neglect is recorded"
-    );
+    assert_eq!(ws, Status::Valid);
+    assert!(!harness.has_record("v1", 11));
 
     // Confirm the records partition correctly.
     let v0_records: Vec<_> = harness
@@ -73,6 +58,6 @@ fn uc_37_self_regression_dag_with_witness() {
         .keys()
         .filter(|(v, _)| v == "v1")
         .collect();
-    assert_eq!(v0_records.len(), 1, "one record for v0 (the equivocation)");
-    assert_eq!(v1_records.len(), 1, "one record for v1 (the neglect)");
+    assert_eq!(v0_records.len(), 0);
+    assert_eq!(v1_records.len(), 0);
 }

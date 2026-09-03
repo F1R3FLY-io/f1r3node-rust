@@ -36,8 +36,8 @@ Set Implicit Arguments.
 
    Validators are abstract identifiers. We model them as natural numbers for
    decidability of equality without committing to any particular byte
-   representation. The bisimilarity proof argues observational equivalence
-   modulo this representation choice. *)
+   representation. Safety and refinement results are modulo this
+   representation choice. *)
 
 Definition Validator := nat.
 

@@ -3,7 +3,8 @@
 use std::collections::HashSet;
 
 use models::rhoapi::{expr, Expr, Par};
-use rholang::rust::interpreter::accounting::costs::{parsing_cost, subtraction_cost_with_value};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -278,32 +279,66 @@ async fn interpreter_should_signal_syntax_errors_to_the_caller() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_capture_parsing_errors_and_charge_for_parsing() {
+async fn interpreter_should_capture_parsing_errors_without_token_charge() {
     with_runtime("parsing-error-spec-", |mut runtime| async move {
         let bad_rholang = r#"for(@x <- @"x"; @y <- @"y"){ @"xy"!(x + y) | @"x"!(1) | @"y"!("hi") "#;
 
         let result = execute(&mut runtime, bad_rholang).await.unwrap();
 
         assert!(!result.errors.is_empty());
-
-        assert_eq!(result.cost, parsing_cost(bad_rholang));
+        assert_eq!(result.cost.value, 0);
     })
     .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interpreter_should_charge_for_parsing_even_when_not_enough_phlo() {
-    with_runtime("parsing-cost-spec-", |mut runtime| async move {
-        let send_rho = "@{0}!(0)";
-        let initial_phlo = parsing_cost(send_rho) - subtraction_cost_with_value(1);
-
-        let result = runtime
-            .evaluate_with_phlo(send_rho, initial_phlo.clone())
+async fn interpreter_should_enforce_the_exact_weighted_rspace_budget() {
+    with_runtime("metered-comm-spec-", |mut runtime| async move {
+        runtime.cost.set_deploy_signature_funded(
+            b"interpreter-metered-comm-deploy",
+            Sig::Ground(b"interpreter-metered-comm-payer".to_vec()),
+        );
+        let one_comm = "new x in { x!(0) | for (_ <- x) { Nil } }";
+        let one_probe = runtime
+            .evaluate_with_phlo(one_comm, Cost::create(i64::MAX, "one COMM probe"))
             .await
             .unwrap();
+        assert!(one_probe.errors.is_empty());
+        assert!(one_probe.cost.value > 1);
 
-        assert!(!result.errors.is_empty());
-        assert_eq!(result.cost.value, initial_phlo.value);
+        let exact_one = Cost::create(one_probe.cost.value, "exact one-COMM budget");
+        let admitted = runtime
+            .evaluate_with_phlo(one_comm, exact_one.clone())
+            .await
+            .unwrap();
+        assert!(
+            admitted.errors.is_empty(),
+            "the exact introduction, transfer, trace, and COMM budget must admit (got {:?})",
+            admitted.errors
+        );
+        assert_eq!(admitted.cost.value, exact_one.value);
+
+        let two_comms =
+            "new x, y in { x!(0) | for (_ <- x) { Nil } | y!(1) | for (_ <- y) { Nil } }";
+        let two_probe = runtime
+            .evaluate_with_phlo(two_comms, Cost::create(i64::MAX, "two COMM probe"))
+            .await
+            .unwrap();
+        assert!(two_probe.errors.is_empty());
+        assert!(two_probe.cost.value > exact_one.value);
+
+        let exhausted = runtime
+            .evaluate_with_phlo(two_comms, exact_one.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(exhausted.errors.as_slice(), [
+                InterpreterError::OutOfPhlogistonsError
+            ]),
+            "the larger weighted trace must exhaust the one-COMM reservation: {:?}",
+            exhausted.errors
+        );
+        assert_eq!(exhausted.cost.value, exact_one.value);
     })
     .await
 }

@@ -36,9 +36,9 @@ fn uc_60_disconnected_cycle_not_slashed() {
 
     // None of these blocks classify as Neglected because no
     // citee has an outstanding record.
-    let s2 = harness.dispatch(v2_b);
-    let s3 = harness.dispatch(v3_b);
-    let s1 = harness.dispatch(v1_b2);
+    let s2 = harness.dispatch_counterfactual_neglect_evidence(v2_b);
+    let s3 = harness.dispatch_counterfactual_neglect_evidence(v3_b);
+    let s1 = harness.dispatch_counterfactual_neglect_evidence(v1_b2);
     assert_eq!(s2, Status::Valid);
     assert_eq!(s3, Status::Valid);
     assert_eq!(s1, Status::Valid);
@@ -74,11 +74,11 @@ fn uc_60_connected_cycle_slashed_via_offender() {
     // v0 equivocates → direct offender.
     let _v0a = harness.sign_block("v0", 5);
     let bad = harness.sign_block_distinct("v0", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
 
     // v1 cites v0's bad block (path from v1 to direct offender).
     let v1_b = harness.sign_block_citing("v1", 6, bad);
-    let s1 = harness.dispatch(v1_b);
+    let s1 = harness.dispatch_counterfactual_neglect_evidence(v1_b);
     assert_eq!(
         s1,
         Status::NeglectedEquivocation,

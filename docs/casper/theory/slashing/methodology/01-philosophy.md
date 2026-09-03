@@ -82,16 +82,16 @@ unit test will never see it, regardless of how many paths it executes.
 The witness lives in the cross-product of `Threads × Schedules`, not
 in the input space alone.
 
-### 2.3 Bisimilarity is not testable; it is *provable*
+### 2.3 Universal refinement is not testable; it is *provable*
 
-The headline claim of the slashing port — *“the Rust implementation
-is observationally equivalent to the Scala original, modulo a closed
-set of sixteen documented bug fixes”* — is a statement about *all
-possible* executions of both systems. A test can falsify it (by
-exhibiting a divergent trace), but no finite test suite can establish
-it. Bisimilarity (Theorem T-15a/b, see
-[`../slashing-verification.md §8`](../slashing-verification.md))
-demands a proof, not a test.
+A claim that every accepted execution preserves the mechanized slashing
+invariants quantifies over all possible executions. A test can falsify that
+claim by exhibiting a divergent trace, but no finite suite can establish it.
+The current Rocq safety and refinement theorems therefore provide the proof,
+while differential and property tests keep their abstractions connected to
+production. The former Rust–Scala T-15a/b bisimilarity served this role during
+the port and was retired by DR-6 when the cost-accounted Rust architecture no
+longer had a structurally corresponding Scala implementation.
 
 ### 2.4 What tests *are* for
 

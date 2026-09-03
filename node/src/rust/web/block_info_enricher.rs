@@ -53,11 +53,10 @@ use super::transaction::helpers;
 ///   a warning. It never scans that segment as `USER`, because a future
 ///   system phase must not leak system transfers into the user list.
 /// - When every segment is unknown, this module recognizes no marker,
-///   so the report falls to the positional fallback. The fallback scans
+///   so the report falls to the unmarked compatibility path. That path scans
 ///   those segments. The deployer-sender filter in
 ///   `find_transfers_in_report` still applies, so a refund-shaped
-///   transfer cannot leak. Only a precharge that fails the shape check
-///   can leak.
+///   transfer cannot leak.
 ///
 /// The first rule can drop user transfers that a newer node wrote in a
 /// segment this build cannot name. This is the deliberate trade against
@@ -66,18 +65,13 @@ use super::transaction::helpers;
 ///
 /// ## Fallback path (compatibility)
 ///
-/// When every segment is `UNSPECIFIED` (a node predating this change, or
-/// a report replayed from data written before it), the positional
-/// logic from the initial fix runs verbatim: `report[0]` is treated as
-/// the precharge after a shape check (one deployer-sent transfer of
-/// `phlo_limit * phlo_price`), and on mismatch it is not skipped plus a
-/// warning. An unmarked report is expected during rollout, not a
-/// defect, so the fallback is logged once per deploy at `debug!`.
-///
-/// The fallback and the `phlo_limit * phlo_price` shape check become
-/// removable once every report-producing node is on the new model. They
-/// are kept here for wire-compatibility both directions. Do not delete
-/// them in this change (tracked as a follow-up).
+/// When every segment is `UNSPECIFIED`, every deployer-sent transfer is
+/// retained. The current cost model has no client-selected phlo price,
+/// phlo limit, or escrow precharge, so there is no amount that can safely
+/// identify and discard the first segment. Explicit phase markers are the
+/// only authority for excluding system transfers. The fallback therefore
+/// prefers preserving an ambiguous transfer over silently deleting user
+/// data.
 ///
 /// ## Deployer derivation
 ///
@@ -102,7 +96,15 @@ pub fn extract_transfers_from_report(
         }
 
         let deploy_info = deploy.deploy_info.as_ref();
-        let deploy_sig = deploy_info.map(|info| info.sig.clone()).unwrap_or_default();
+        let deploy_sig = deploy_info
+            .map(|info| {
+                if info.deploy_id.is_empty() {
+                    info.sig.clone()
+                } else {
+                    hex::encode(&info.deploy_id)
+                }
+            })
+            .unwrap_or_default();
 
         let deployer_addr = deploy_info.and_then(|info| {
             let pk_bytes = hex::decode(&info.deployer).ok()?;
@@ -152,7 +154,7 @@ pub fn extract_transfers_from_report(
                     deploy_sig = %deploy_sig,
                     "report carries no recognized phase marker and contains \
                      unrecognized phase values; those segments are scanned \
-                     by the positional fallback"
+                     by the unmarked compatibility path"
                 );
             }
         }
@@ -190,57 +192,13 @@ pub fn extract_transfers_from_report(
                 }
             }
         } else {
-            // Fallback path: every segment is UNSPECIFIED. This is the
-            // expected shape during rollout, not a defect.
             tracing::debug!(
                 target: "f1r3fly.node.web.enricher",
                 deploy_sig = %deploy_sig,
-                "report carries no phase marker; using positional precharge fallback"
+                "report carries no phase marker; scanning unmarked report segments"
             );
 
-            let precharge_amount = deploy_info
-                .map(|info| info.phlo_limit.wrapping_mul(info.phlo_price))
-                .unwrap_or(0);
-
-            let batches: &[models::casper::SingleReport] = if precharge_amount == 0 {
-                &deploy.report
-            } else {
-                let first = &deploy.report[0];
-                let found =
-                    find_transfers_in_report(first, transfer_unforgeable, deployer_addr.as_deref());
-                let precharge_consistent = found.len() == 1
-                    && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
-                    && found[0].amount == precharge_amount;
-
-                if precharge_consistent {
-                    &deploy.report[1..]
-                } else {
-                    if found.len() == 1 {
-                        tracing::warn!(
-                            target: "f1r3fly.node.web.enricher",
-                            deploy_sig = %deploy_sig,
-                            expected_amount = precharge_amount,
-                            found_transfers = 1,
-                            found_amount = found[0].amount,
-                            found_sender = %found[0].from_addr,
-                            "report[0] does not match the expected precharge shape; \
-                             not skipping it — the precharge may appear as a user transfer"
-                        );
-                    } else {
-                        tracing::warn!(
-                            target: "f1r3fly.node.web.enricher",
-                            deploy_sig = %deploy_sig,
-                            expected_amount = precharge_amount,
-                            found_transfers = found.len(),
-                            "report[0] does not match the expected precharge shape; \
-                             not skipping it — the precharge may appear as a user transfer"
-                        );
-                    }
-                    &deploy.report
-                }
-            };
-
-            for single_report in batches {
+            for single_report in &deploy.report {
                 user_transfers.extend(find_transfers_in_report(
                     single_report,
                     transfer_unforgeable,
@@ -442,6 +400,7 @@ mod tests {
                 ret_unforg_for_data,
             ],
             random_state: vec![],
+            ..Default::default()
         };
 
         ReportCommProto {
@@ -505,14 +464,12 @@ mod tests {
     fn make_deploy_info_with_charge(
         deploy_sig: &str,
         deployer_hex: &str,
-        phlo_limit: i64,
-        phlo_price: i64,
+        _phlo_limit: i64,
+        _phlo_price: i64,
     ) -> DeployInfo {
         DeployInfo {
             sig: deploy_sig.to_string(),
             deployer: deployer_hex.to_string(),
-            phlo_limit,
-            phlo_price,
             ..Default::default()
         }
     }
@@ -526,10 +483,8 @@ mod tests {
         }
     }
 
-    // 1. [precharge, user], amounts consistent → one user transfer, precharge
-    //    excluded, no warning.
     #[test]
-    fn precharge_then_user_consistent_excludes_precharge() {
+    fn unmarked_first_transfer_is_not_dropped_as_a_precharge() {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
@@ -551,16 +506,16 @@ mod tests {
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
         let transfers = result.get("deploy_abc").expect("should have deploy entry");
-        assert_eq!(transfers.len(), 1, "precharge excluded, user transfer kept");
-        assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 1000);
+        assert_eq!(transfers.len(), 2, "unmarked transfers are preserved");
+        assert_eq!(transfers[0].to_addr, "pos_vault_addr");
+        assert_eq!(transfers[0].amount, 100);
+        assert_eq!(transfers[1].to_addr, "receiver_addr");
+        assert_eq!(transfers[1].amount, 1000);
         assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 
-    // 2. [precharge, user, refund] → only the user transfer (refund excluded
-    //    by sender).
     #[test]
-    fn precharge_user_refund_keeps_only_user_transfer() {
+    fn unmarked_refund_is_filtered_by_sender_without_dropping_other_transfers() {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
@@ -586,9 +541,11 @@ mod tests {
         let transfers = result
             .get("deploy_with_refund")
             .expect("should have deploy entry");
-        assert_eq!(transfers.len(), 1, "only the user transfer should remain");
-        assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 700);
+        assert_eq!(transfers.len(), 2, "deployer-sent transfers should remain");
+        assert_eq!(transfers[0].to_addr, "pos_vault_addr");
+        assert_eq!(transfers[0].amount, 100);
+        assert_eq!(transfers[1].to_addr, "receiver_addr");
+        assert_eq!(transfers[1].amount, 700);
     }
 
     // 3. precharge_amount > 0, report[0] empty → nothing skipped, user
@@ -813,13 +770,19 @@ mod tests {
         let transfers = result
             .get("deploy_multi")
             .expect("should have deploy entry");
-        assert_eq!(transfers.len(), 3, "all user transfers returned in order");
-        assert_eq!(transfers[0].to_addr, "receiver_a");
-        assert_eq!(transfers[0].amount, 10);
-        assert_eq!(transfers[1].to_addr, "receiver_b");
-        assert_eq!(transfers[1].amount, 20);
-        assert_eq!(transfers[2].to_addr, "receiver_c");
-        assert_eq!(transfers[2].amount, 30);
+        assert_eq!(
+            transfers.len(),
+            4,
+            "all unmarked transfers returned in order"
+        );
+        assert_eq!(transfers[0].to_addr, "pos_vault_addr");
+        assert_eq!(transfers[0].amount, 100);
+        assert_eq!(transfers[1].to_addr, "receiver_a");
+        assert_eq!(transfers[1].amount, 10);
+        assert_eq!(transfers[2].to_addr, "receiver_b");
+        assert_eq!(transfers[2].amount, 20);
+        assert_eq!(transfers[3].to_addr, "receiver_c");
+        assert_eq!(transfers[3].amount, 30);
     }
 
     // The deployer is derived from `DeployInfo.deployer` only. A malformed
@@ -842,8 +805,6 @@ mod tests {
             deploy_info: Some(DeployInfo {
                 sig: "deploy_bad_deployer".to_string(),
                 deployer: "not-hex".to_string(),
-                phlo_limit: 100,
-                phlo_price: 1,
                 ..Default::default()
             })
             .into(),
@@ -861,13 +822,8 @@ mod tests {
         );
     }
 
-    // 9. Precharge only: report == [precharge_batch], precharge_amount > 0,
-    //    no user transfers. report[0] matches the precharge shape so it is
-    //    skipped; report[1..] is empty, so the deploy still receives a map
-    //    entry — an empty vector, not a missing key — and no warning is
-    //    emitted.
     #[test]
-    fn precharge_only_yields_empty_entry() {
+    fn unmarked_single_transfer_is_preserved() {
         let transfer_unforgeable = make_transfer_unforgeable();
         let (deployer_hex, deployer_addr) = make_deployer();
 
@@ -886,15 +842,12 @@ mod tests {
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
 
-        // A deploy with a non-empty report always receives a map entry,
-        // possibly empty — never a missing key.
         let transfers = result
             .get("deploy_precharge_only")
-            .expect("precharge-only deploy with non-empty report must still receive a map entry");
-        assert!(
-            transfers.is_empty(),
-            "report[0] is the consistent precharge and is skipped; no user transfers remain"
-        );
+            .expect("deploy with a non-empty report must receive a map entry");
+        assert_eq!(transfers.len(), 1);
+        assert_eq!(transfers[0].to_addr, "pos_vault_addr");
+        assert_eq!(transfers[0].amount, 100);
     }
 
     // 10. User transfer batch precedes the precharge batch. report[0] holds a

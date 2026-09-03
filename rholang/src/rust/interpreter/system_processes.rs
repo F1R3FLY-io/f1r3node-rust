@@ -14,8 +14,13 @@ use crypto::rust::signatures::signed::Signed;
 use k256::ecdsa::signature::hazmat::PrehashSigner;
 use k256::ecdsa::{Signature, SigningKey};
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::g_unforgeable::UnfInstance::GPrivateBody;
-use models::rhoapi::{Bundle, ETuple, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, Var};
+use models::rhoapi::g_unforgeable::UnfInstance::{
+    GAuthorityIdBody, GDeployerIdBody, GPrincipalIdBody, GPrivateBody,
+};
+use models::rhoapi::{
+    Bundle, ETuple, Expr, GAuthorityId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable,
+    ListParWithRandom, Par, Var,
+};
 use models::rust::casper::protocol::casper_message;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::rholang::implicits::single_expr;
@@ -34,15 +39,15 @@ use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
-    RhoSysAuthToken, RhoUri,
+    RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber,
+    RhoSingleCustodyId, RhoString, RhoSysAuthToken, RhoUri,
 };
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
 use crate::rust::interpreter::chromadb_service::{CollectionEntries, Metadata};
 #[cfg(feature = "chromadb")]
-use crate::rust::interpreter::rho_type::{Extractor, RhoList, RhoNil};
+use crate::rust::interpreter::rho_type::{Extractor, RhoNil};
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/SystemProcesses.scala
 // NOTE: Not implementing Logger
@@ -493,9 +498,16 @@ impl BlockData {
 }
 
 #[derive(Clone)]
+pub enum DeployAuthority {
+    Legacy(PublicKey),
+    Principal(GPrincipalId),
+    Compound(GAuthorityId),
+}
+
+#[derive(Clone)]
 pub struct DeployData {
     pub timestamp: i64,
-    pub deployer_id: PublicKey,
+    pub authority: DeployAuthority,
     pub deploy_id: Vec<u8>,
 }
 
@@ -503,7 +515,7 @@ impl DeployData {
     pub fn empty() -> Self {
         DeployData {
             timestamp: 0,
-            deployer_id: PublicKey::from_bytes(&[0]),
+            authority: DeployAuthority::Legacy(PublicKey::from_bytes(&[0])),
             deploy_id: vec![0],
         }
     }
@@ -511,8 +523,42 @@ impl DeployData {
     pub fn from_deploy(template: &Signed<casper_message::DeployData>) -> Self {
         DeployData {
             timestamp: template.data.time_stamp,
-            deployer_id: template.pk.clone(),
+            authority: DeployAuthority::Legacy(template.pk.clone()),
             deploy_id: template.sig.to_vec(),
+        }
+    }
+
+    pub fn from_cosigned(
+        template: &crypto::rust::signatures::signed::Cosigned<casper_message::DeployData>,
+    ) -> Self {
+        if template.is_envelope_bound() {
+            let selected = template
+                .selected_signers_v61()
+                .expect("validated protocol-v6 selected signers");
+            let authority = if let [signer] = selected.as_slice() {
+                DeployAuthority::Principal(GPrincipalId {
+                    key_family: 1,
+                    public_key: signer.pk.bytes.to_vec(),
+                })
+            } else {
+                DeployAuthority::Compound(GAuthorityId {
+                    id: models::rust::normalizer_env::authority_id_v61(&selected),
+                })
+            };
+            return DeployData {
+                timestamp: template.data.time_stamp,
+                authority,
+                deploy_id: template
+                    .envelope_commitment()
+                    .expect("validated protocol-v6 envelope identity")
+                    .to_vec(),
+            };
+        }
+        let primary = template.primary();
+        DeployData {
+            timestamp: template.data.time_stamp,
+            authority: DeployAuthority::Legacy(primary.pk.clone()),
+            deploy_id: primary.sig.to_vec(),
         }
     }
 }
@@ -743,7 +789,7 @@ impl SystemProcesses {
             },
 
             "fromDeployerId" => {
-                match RhoDeployerId::unapply(second_par).map(VaultAddress::from_deployer_id) {
+                match RhoSingleCustodyId::unapply(second_par).map(VaultAddress::from_deployer_id) {
                     Some(Some(ra)) => RhoString::create_par(ra.to_base58()),
                     _ => Par::default(),
                 }
@@ -780,7 +826,7 @@ impl SystemProcesses {
             return Err(illegal_argument_error("deployer_id_ops"));
         };
 
-        let response = RhoDeployerId::unapply(second_par)
+        let response = RhoSingleCustodyId::unapply(second_par)
             .map(RhoByteArray::create_par)
             .unwrap_or_default();
 
@@ -1016,12 +1062,14 @@ impl SystemProcesses {
             return Err(illegal_argument_error("get_block_data"));
         };
 
-        let data = block_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
-            RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
-        ];
+        let output = {
+            let data = block_data.read().await;
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.block_number)]),
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
+                RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1044,12 +1092,27 @@ impl SystemProcesses {
             ));
         };
 
-        let data = deploy_data.read().await;
-        let output = vec![
-            Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
-            RhoDeployerId::create_par(data.deployer_id.bytes.as_ref().to_vec()),
-            RhoDeployId::create_par(data.deploy_id.clone()),
-        ];
+        let output = {
+            let data = deploy_data.read().await;
+            let authority = match &data.authority {
+                DeployAuthority::Legacy(public_key) => GUnforgeable {
+                    unf_instance: Some(GDeployerIdBody(GDeployerId {
+                        public_key: public_key.bytes.to_vec(),
+                    })),
+                },
+                DeployAuthority::Principal(principal) => GUnforgeable {
+                    unf_instance: Some(GPrincipalIdBody(principal.clone())),
+                },
+                DeployAuthority::Compound(authority) => GUnforgeable {
+                    unf_instance: Some(GAuthorityIdBody(authority.clone())),
+                },
+            };
+            vec![
+                Par::default().with_exprs(vec![RhoNumber::create_expr(data.timestamp)]),
+                Par::default().with_unforgeables(vec![authority]),
+                RhoDeployId::create_par(data.deploy_id.clone()),
+            ]
+        };
 
         produce(&output, ack).await?;
         Ok(output)
@@ -1902,7 +1965,7 @@ impl SystemProcesses {
         };
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 
@@ -1974,7 +2037,7 @@ impl SystemProcesses {
         let result_par = RhoList::create_par(result_par_vec);
 
         let output = vec![result_par];
-        produce(&output, &ack).await?;
+        produce(&output, ack).await?;
         Ok(output)
     }
 

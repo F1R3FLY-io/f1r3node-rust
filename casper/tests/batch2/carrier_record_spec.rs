@@ -37,7 +37,7 @@ use serial_test::serial;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn short(sig: &Bytes) -> String { hex::encode(&sig[..8.min(sig.len())]) }
+fn short(sig: &[u8]) -> String { hex::encode(&sig[..8.min(sig.len())]) }
 
 async fn three_node_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
@@ -121,10 +121,6 @@ async fn stage_contest(
         )
         .expect("build contender f")
     };
-    let contenders = vec![
-        (contender_d.sig.clone(), contender_d.clone()),
-        (contender_f.sig.clone(), contender_f.clone()),
-    ];
     let c_block = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&contender_d))
         .await
@@ -133,6 +129,16 @@ async fn stage_contest(
         .add_block_from_deploys(std::slice::from_ref(&contender_f))
         .await
         .expect("block A with f");
+    let contenders = vec![
+        (
+            Bytes::copy_from_slice(c_block.body.deploys[0].deploy_id()),
+            contender_d,
+        ),
+        (
+            Bytes::copy_from_slice(a_block.body.deploys[0].deploy_id()),
+            contender_f,
+        ),
+    ];
     (c_block, a_block, contenders)
 }
 
@@ -207,10 +213,10 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         merged
             .rejected_user
             .iter()
-            .map(|record| short(&record.sig))
+            .map(|record| short(record.deploy_id()))
             .collect::<Vec<_>>(),
     );
-    let loser_sig = merged.rejected_user[0].sig.clone();
+    let loser_sig = Bytes::copy_from_slice(merged.rejected_user[0].deploy_id());
     let loser_deploy = contenders
         .iter()
         .find(|(sig, _)| *sig == loser_sig)
@@ -243,17 +249,18 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    let loser_envelope = nodes[2]
+        .envelope_for_deploy(&loser_deploy)
+        .expect("loser envelope");
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_cosigned_with_effects(
         &mut nodes[2].block_store,
         snapshot.parents.clone(),
-        vec![loser_deploy],
+        vec![loser_envelope],
         Vec::new(),
         &snapshot,
         &runtime_manager,
         block_data.clone(),
         HashMap::new(),
-        None,
-        None,
         None,
     )
     .await
@@ -262,24 +269,42 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         checkpoint
             .rejected_deploys
             .iter()
-            .any(|record| record.sig == loser_sig),
+            .any(|record| record.deploy_id() == loser_sig.as_ref()),
         "staging precondition: the checkpoint's merge must reject the loser's \
          scope copy (rejected: {:?})",
         checkpoint
             .rejected_deploys
             .iter()
-            .map(|record| short(&record.sig))
+            .map(|record| short(record.deploy_id()))
             .collect::<Vec<_>>(),
     );
     let fresh_execution = checkpoint
         .deploys
         .iter()
-        .find(|pd| pd.deploy.sig == loser_sig)
+        .find(|pd| pd.deploy_id() == &loser_sig)
         .expect("the loser must execute fresh in this block");
     assert!(
         !fresh_execution.is_failed,
         "staging precondition: the fresh execution must succeed"
     );
+    let mut bond_generations = snapshot
+        .on_chain_state
+        .bond_generations
+        .iter()
+        .map(|(validator, generation)| {
+            models::rust::casper::protocol::casper_message::ValidatorBondGeneration {
+                validator: validator.clone(),
+                generation: *generation,
+            }
+        })
+        .collect::<Vec<_>>();
+    bond_generations.sort_unstable();
+    let mut active_validators = snapshot.on_chain_state.active_validators.clone();
+    active_validators.sort_unstable();
+    let finalized_floor_certificate = snapshot.finalized_floor_certificate.clone();
+    let finalized_floor = finalized_floor_certificate
+        .as_ref()
+        .map(|certificate| certificate.commitment(snapshot.consensus_context.digest().clone()));
 
     // Package with the record list EMPTY: the adjudication is dropped while
     // its subject rides in the body.
@@ -288,10 +313,14 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
             pre_state_hash: checkpoint.pre_state_hash,
             post_state_hash: checkpoint.post_state_hash,
             bonds: checkpoint.bonds,
+            bond_generations,
+            active_validators,
             block_number: next_block_num,
         },
         deploys: checkpoint.deploys,
         rejected_deploys: Vec::new(),
+        rejected_state_effects: checkpoint.rejected_state_effects,
+        applied_state_effects: checkpoint.applied_state_effects,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
@@ -304,17 +333,25 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
             .map(|p| p.block_hash.clone())
             .collect(),
         timestamp: now_millis,
-        version: 1,
+        version: snapshot.on_chain_state.shard_conf.casper_version,
         extra_bytes: Bytes::new(),
+        sender_bond_generation: snapshot
+            .on_chain_state
+            .bond_generations
+            .get(&validator_identity.public_key.bytes)
+            .copied(),
+        objective_equivocation_evidence_delta: Vec::new(),
+        finalized_floor,
     };
-    let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();
-    let unsigned = proto_util::unsigned_block_proto(
+    let justifications: Vec<Justification> = snapshot.justifications.to_vec();
+    let mut unsigned = proto_util::unsigned_block_proto(
         body,
         header,
         justifications,
         shard_id.clone(),
         Some(next_seq_num),
     );
+    unsigned.finalized_floor_certificate = finalized_floor_certificate;
     let block = validator_identity.sign_block(&unsigned);
 
     // THE RED: the rejected-list equality must catch the dropped record.
@@ -328,8 +365,6 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         &nodes[2].block_store,
         &mut validation_snapshot,
         &runtime_manager,
-        None,
-        None,
         None,
     )
     .await
@@ -390,10 +425,10 @@ async fn record_carrier_is_consensus_checked() {
     let mut tampered = m_block.clone();
     let forged_carrier = Bytes::from(vec![0xAB; 32]);
     assert_ne!(
-        tampered.body.rejected_deploys[0].carrier, forged_carrier,
+        tampered.body.rejected_deploys[0].source_block_hash, forged_carrier,
         "the forgery must differ from the recorded carrier"
     );
-    tampered.body.rejected_deploys[0].carrier = forged_carrier;
+    tampered.body.rejected_deploys[0].source_block_hash = forged_carrier;
 
     let runtime_manager = nodes[1].runtime_manager.clone();
     let mut validation_snapshot = nodes[1]
@@ -406,8 +441,6 @@ async fn record_carrier_is_consensus_checked() {
         &nodes[1].block_store,
         &mut validation_snapshot,
         &runtime_manager,
-        None,
-        None,
         None,
     )
     .await

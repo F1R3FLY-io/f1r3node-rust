@@ -6,7 +6,7 @@
 ' classification step is the gate that prevents over- and under-claiming.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/02-witness-to-promotion.puml
+'   plantuml -tsvg docs/casper/theory/slashing/methodology/diagrams/02-witness-to-promotion.puml
 
 @startuml 02-witness-to-promotion
 !theme plain

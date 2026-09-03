@@ -7,15 +7,17 @@
 use std::collections::HashSet;
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    DeployId, InsertMode, KeyValueDagRepresentation,
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority, DeployId, InsertMode,
+    KeyValueDagRepresentation,
 };
+use block_storage::rust::deploy::pending_deploy::PendingDeploy;
 use comm::rust::transport::transport_layer::TransportLayer;
-use crypto::rust::signatures::signed::Signed;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
-use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::snapshot::record_dag_cardinality_metrics;
@@ -64,8 +66,16 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
+    if this.casper_shard_conf.casper_version >= 6 {
+        return Ok(Either::Left(DeployError::parsing_error(
+            "protocol-v6 admission requires authenticated v6.1 authorization".to_string(),
+        )));
+    }
     // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
-    if deploy_is_known(this, &deploy_id)? {
+    if deploy_is_known(
+        this,
+        &DeployLookupId::Legacy(LegacyDeploySignature::new(deploy_id.clone())),
+    )? {
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
 
@@ -101,11 +111,79 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
     }
 }
 
+/// Multi-signature-aware admission. Validates the deploy via
+/// `normalizer_env_from_cosigned_deploy` (so `rho:system:cosigners`
+/// reflects the full cosigner list), enforces the configured
+/// `max_cosigners_per_deploy` cap at the ingress boundary, then stores
+/// the legacy `Signed<DeployData>` shape in the standard
+/// the canonical protocol-v6 envelope in `KeyValueDeployStorage`.
+pub(crate) fn admit_deploy_cosigned<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+) -> Result<Either<DeployError, DeployId>, CasperError> {
+    use models::rust::normalizer_env::normalizer_env_from_cosigned_deploy;
+    if this.casper_shard_conf.casper_version >= 6 && !cosigned.is_envelope_bound() {
+        return Ok(Either::Left(DeployError::parsing_error(
+            "protocol-v6 admission requires authenticated v6.1 authorization".to_string(),
+        )));
+    }
+    if this.casper_shard_conf.casper_version < 6 && cosigned.is_envelope_bound() {
+        return Ok(Either::Left(DeployError::parsing_error(
+            "pre-v6 admission cannot accept protocol-v6 authorization".to_string(),
+        )));
+    }
+    let normalizer_env = normalizer_env_from_cosigned_deploy(&cosigned);
+    let parse_started_at = std::time::Instant::now();
+    match interpreter_util::mk_term(&cosigned.data.term, normalizer_env) {
+        Err(interpreter_error) => {
+            tracing::debug!(
+                target: "f1r3fly.deploy.latency",
+                parse_ms = parse_started_at.elapsed().as_millis(),
+                "Deploy parse failed (multi-sig path)"
+            );
+            Ok(Either::Left(DeployError::parsing_error(format!(
+                "Error in parsing term: \n{}",
+                interpreter_error
+            ))))
+        }
+        Ok(_parsed_term) => {
+            let max_cosigners = this.casper_shard_conf.max_cosigners_per_deploy as usize;
+            if cosigned.signers().len() > max_cosigners {
+                return Ok(Either::Left(DeployError::parsing_error(format!(
+                    "Cosigner cap exceeded at ingress: {} signers > limit {}",
+                    cosigned.signers().len(),
+                    max_cosigners
+                ))));
+            }
+            let parse_elapsed_ms = parse_started_at.elapsed().as_millis();
+            let add_started_at = std::time::Instant::now();
+            let deploy_result = add_deploy_cosigned(this, cosigned)?;
+            tracing::debug!(
+                target: "f1r3fly.deploy.latency",
+                parse_ms = parse_elapsed_ms,
+                add_deploy_ms = add_started_at.elapsed().as_millis(),
+                "Deploy parse/add completed (multi-sig path)"
+            );
+            Ok(deploy_result)
+        }
+    }
+}
+
 fn deploy_is_known<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
-    deploy_id: &DeployId,
+    deploy_id: &DeployLookupId,
 ) -> Result<bool, CasperError> {
-    if this.deploy_storage.lock().contains_sig(deploy_id)? {
+    let in_pool = match deploy_id {
+        DeployLookupId::Legacy(signature) => this
+            .deploy_storage
+            .lock()
+            .contains_sig(signature.as_bytes())?,
+        DeployLookupId::V6(deploy_id) => this
+            .deploy_storage
+            .lock()
+            .contains_envelope(deploy_id.as_ref())?,
+    };
+    if in_pool {
         return Ok(true);
     }
     if this
@@ -118,7 +196,7 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     this.rejected_deploy_buffer
         .lock()
         .map_err(|error| CasperError::LockError(error.to_string()))?
-        .contains_sig(deploy_id)
+        .contains_id(deploy_id)
         .map_err(Into::into)
 }
 
@@ -127,28 +205,55 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<bool, CasperError> {
     let deploy_id = deploy.sig.to_vec();
+    let typed_deploy_id = DeployLookupId::Legacy(LegacyDeploySignature::new(deploy_id.clone()));
     if this
         .block_dag_storage
-        .deploy_canonical_appearance(&deploy_id)?
+        .deploy_canonical_appearance(&typed_deploy_id)?
         .is_some()
     {
         return Ok(false);
     }
 
     let mut deploy_storage = this.deploy_storage.lock();
+    deploy_storage.add_if_absent(deploy).map_err(Into::into)
+}
+
+fn reserve_deploy_envelope<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    envelope: crypto::rust::signatures::signed::Cosigned<DeployData>,
+) -> Result<bool, CasperError> {
+    let deploy_id = envelope
+        .envelope_commitment()
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+    let typed_deploy_id = DeployLookupId::V6(
+        DeployIdV6::try_from(deploy_id.as_ref())
+            .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
+    );
+    if this
+        .block_dag_storage
+        .deploy_canonical_appearance(&typed_deploy_id)?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let mut deploy_storage = this.deploy_storage.lock();
     let rejected_deploys = this
         .rejected_deploy_buffer
         .lock()
         .map_err(|error| CasperError::LockError(error.to_string()))?;
-    if rejected_deploys.contains_sig(&deploy_id)? {
+    if rejected_deploys.contains_id(&typed_deploy_id)? {
         return Ok(false);
     }
-    deploy_storage.add_if_absent(deploy).map_err(Into::into)
+    deploy_storage
+        .add_envelope_if_absent(envelope)
+        .map_err(Into::into)
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
+    certificate: &CertifiedSenderAuthority,
+    outcome: &CertifiedAdmissionOutcome,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
     // via the helper. See
@@ -156,20 +261,27 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     //
     // Sealed-floor (record-driven recovery): user deploys are intentionally
     // NOT purged from pending storage on mere DAG acceptance. They are
-    // retained through accept and removed only once finalized (see
-    // finalization_runner), so an accepted-but-orphaned deploy can be
-    // re-proposed via the canonical-won record before it is lost.
+    // retained through accept and removed only after the deploy-lifecycle
+    // register writes a floor-terminal verdict, so an accepted-but-orphaned
+    // deploy can be re-proposed before it is lost.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
         &this.block_dag_storage,
         block,
         InsertMode::Normal,
+        certificate,
+        outcome,
         &this.casper_buffer_storage,
         block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
             block_hash_serde,
         ),
     )?;
     record_dag_cardinality_metrics(&updated_dag);
+    let finalization_revision = this
+        .block_dag_storage
+        .finalization_head()?
+        .map(|head| head.revision)
+        .unwrap_or(0);
 
     // Advance the deploy-lifecycle register: the insert above already
     // ingested the block's body into the lifecycle event rows; this bumps
@@ -186,6 +298,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             crate::rust::finality::deploy_lifecycle::citability_horizon(
                 this.casper_shard_conf.max_parent_depth,
             ),
+            finalization_revision,
         )
         .await?;
 
@@ -199,9 +312,18 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // into a live branch. Non-owners simply do not hold the sig (deploys
     // never gossip) and the removal is a no-op.
     if !terminalized.is_empty() {
-        let mut storage = this.deploy_storage.lock();
-        for sig in &terminalized {
-            storage.remove_by_sig(sig)?;
+        {
+            let mut storage = this.deploy_storage.lock();
+            for sig in &terminalized {
+                match sig {
+                    models::rust::deploy_id::DeployLookupId::Legacy(signature) => {
+                        storage.remove_by_sig(signature.as_bytes())?;
+                    }
+                    models::rust::deploy_id::DeployLookupId::V6(deploy_id) => {
+                        storage.remove_envelope_by_id(deploy_id.as_ref())?;
+                    }
+                }
+            }
         }
     }
 
@@ -226,6 +348,37 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     }
 
     Ok(updated_dag)
+}
+
+/// Multi-sig variant of `add_deploy`. Stores the legacy `Signed<DeployData>`
+/// in the canonical protocol-v6 envelope store.
+pub(crate) fn add_deploy_cosigned<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    cosigned: crypto::rust::signatures::signed::Cosigned<DeployData>,
+) -> Result<Either<DeployError, DeployId>, CasperError> {
+    let is_compound = cosigned.is_compound();
+    let deploy_id = cosigned
+        .envelope_commitment()
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+    let legacy_signed = cosigned.as_legacy_signed_ref();
+    if !reserve_deploy_envelope(this, cosigned)? {
+        return Ok(Either::Left(DeployError::duplicate_deploy(
+            deploy_id.to_vec(),
+        )));
+    }
+
+    let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&legacy_signed);
+    tracing::info!(
+        "Received (multi-sig path; is_compound={}): {}",
+        is_compound,
+        deploy_info
+    );
+    if this.casper_shard_conf.deploy_heartbeat_wake_enabled {
+        if let Some(signal) = this.heartbeat_signal_ref.get() {
+            signal.trigger_wake();
+        }
+    }
+    Ok(Either::Right(deploy_id.to_vec()))
 }
 
 pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
@@ -262,20 +415,22 @@ fn stored_deploy_is_pending_for_snapshot(
     latest_block_number: i64,
     earliest_block_number: i64,
     current_time_millis: i64,
-    deploy: &Signed<DeployData>,
+    deploy: &PendingDeploy,
 ) -> bool {
-    let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
-    let time_expired = deploy.data.is_expired_at(current_time_millis);
+    let block_expired = deploy.data().valid_after_block_number <= earliest_block_number;
+    let time_expired = deploy.data().is_expired_at(current_time_millis);
     if block_expired || time_expired {
         return false;
     }
 
     let is_future = super::events::pending_deploy_is_future_for_next_block(
         latest_block_number,
-        deploy.data.valid_after_block_number,
+        deploy.data().valid_after_block_number,
     );
-    let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
-        && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    let already_in_scope = snapshot.deploys_in_scope.contains(deploy.typed_deploy_id())
+        && !snapshot
+            .rejected_in_scope
+            .contains(deploy.typed_deploy_id());
     !is_future && !already_in_scope
 }
 
@@ -295,16 +450,18 @@ fn stored_deploy_is_queued(
     snapshot: &CasperSnapshot,
     earliest_block_number: i64,
     current_time_millis: i64,
-    deploy: &Signed<DeployData>,
+    deploy: &PendingDeploy,
 ) -> bool {
-    let block_expired = deploy.data.valid_after_block_number <= earliest_block_number;
-    let time_expired = deploy.data.is_expired_at(current_time_millis);
+    let block_expired = deploy.data().valid_after_block_number <= earliest_block_number;
+    let time_expired = deploy.data().is_expired_at(current_time_millis);
     if block_expired || time_expired {
         return false;
     }
 
-    let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
-        && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    let already_in_scope = snapshot.deploys_in_scope.contains(deploy.typed_deploy_id())
+        && !snapshot
+            .rejected_in_scope
+            .contains(deploy.typed_deploy_id());
     !already_in_scope
 }
 
@@ -342,25 +499,48 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
             ))
         })?;
 
-    // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex`.
-    let storage = this.deploy_storage.lock();
-    if !storage.non_empty().map_err(|e| {
-        CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
-    })? {
-        return Ok(false);
+    let fresh = {
+        let storage = this.deploy_storage.lock();
+        if storage.non_empty().map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
+        })? {
+            storage.read_all_for_protocol(snapshot.on_chain_state.shard_conf.casper_version)?
+        } else {
+            HashSet::new()
+        }
+    };
+    for deploy in &fresh {
+        if stored_deploy_is_pending_for_snapshot(
+            snapshot,
+            latest_block_number,
+            earliest_block_number,
+            current_time_millis,
+            deploy,
+        ) && snapshot
+            .dag
+            .deploy_terminal(deploy.typed_deploy_id())?
+            .is_none()
+        {
+            return Ok(true);
+        }
     }
 
-    storage
-        .any(|deploy| {
-            Ok(stored_deploy_is_pending_for_snapshot(
-                snapshot,
-                latest_block_number,
-                earliest_block_number,
-                current_time_millis,
-                deploy,
-            ))
-        })
-        .map_err(|e| CasperError::RuntimeError(format!("Failed to scan deploy storage: {:?}", e)))
+    let next_block_number = latest_block_number.checked_add(1).ok_or_else(|| {
+        CasperError::RuntimeError("latest block number cannot advance past i64::MAX".to_string())
+    })?;
+    let floor_context = crate::rust::blocks::proposer::block_creator::derive_floor_context(
+        snapshot,
+        &this.block_store,
+    )
+    .await?;
+    crate::rust::blocks::proposer::block_creator::rejected_buffer_has_recoverable_deploys(
+        snapshot,
+        next_block_number,
+        current_time_millis,
+        &this.rejected_deploy_buffer,
+        &this.block_store,
+        floor_context.as_ref(),
+    )
 }
 
 /// C15 / Arch-3: extracted from `Casper::list_pending_deploys` in
@@ -380,7 +560,7 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 /// `is_rejected = true` (the buffer dedups storage in its first clause).
 pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
-) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+) -> Result<Vec<(Cosigned<DeployData>, bool)>, CasperError> {
     let snapshot = this.get_snapshot().await?;
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
@@ -406,15 +586,19 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))
         })?;
-    let buffered_sigs: HashSet<Bytes> = rejected.iter().map(|d| d.sig.clone()).collect();
+    let buffered_sigs: HashSet<DeployLookupId> = rejected
+        .iter()
+        .map(|deploy| deploy.typed_deploy_id().clone())
+        .collect();
 
-    let mut out: Vec<(Signed<DeployData>, bool)> = Vec::with_capacity(rejected.len());
+    let mut out: Vec<(Cosigned<DeployData>, bool)> = Vec::with_capacity(rejected.len());
 
-    let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
-        CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
-    })?;
+    let fresh = this
+        .deploy_storage
+        .lock()
+        .read_all_for_protocol(snapshot.on_chain_state.shard_conf.casper_version)?;
     for deploy in fresh {
-        if buffered_sigs.contains(&deploy.sig) {
+        if buffered_sigs.contains(deploy.typed_deploy_id()) {
             continue;
         }
         if stored_deploy_is_queued(
@@ -423,7 +607,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((deploy, false));
+            out.push((deploy.into_envelope(), false));
         }
     }
 
@@ -439,7 +623,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((deploy, true));
+            out.push((deploy.into_envelope(), true));
         }
     }
 
@@ -448,6 +632,8 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
 #[cfg(test)]
 mod tests {
+    use block_storage::rust::deploy::pending_deploy::PendingDeploy;
+
     use super::stored_deploy_is_pending_for_snapshot;
     use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
     use crate::rust::util::construct_deploy;
@@ -457,31 +643,36 @@ mod tests {
         let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
         let deploy = construct_deploy::basic_deploy_data(91, None, Some("test".to_string()))
             .expect("deploy");
+        let pending = PendingDeploy::from_legacy(deploy.clone()).expect("pending deploy");
 
         assert!(stored_deploy_is_pending_for_snapshot(
             &snapshot,
             20,
             -1,
             deploy.data.time_stamp,
-            &deploy,
+            &pending,
         ));
 
-        snapshot.deploys_in_scope.insert(deploy.sig.clone());
+        snapshot
+            .deploys_in_scope
+            .insert(pending.typed_deploy_id().clone());
         assert!(!stored_deploy_is_pending_for_snapshot(
             &snapshot,
             20,
             -1,
             deploy.data.time_stamp,
-            &deploy,
+            &pending,
         ));
 
-        snapshot.rejected_in_scope.insert(deploy.sig.clone());
+        snapshot
+            .rejected_in_scope
+            .insert(pending.typed_deploy_id().clone());
         assert!(stored_deploy_is_pending_for_snapshot(
             &snapshot,
             20,
             -1,
             deploy.data.time_stamp,
-            &deploy,
+            &pending,
         ));
     }
 }

@@ -7,17 +7,14 @@
 #   • slashing/MC_EquivocationDetector_liveness{,_2v}.tla / .cfg
 #   • slashing/MC_EquivocationDetectorEager{,_3v2s}.tla / .cfg
 #   • slashing/MC_ConcurrentTracker{,_pre_fix}.tla / .cfg
-#   • slashing/MC_SlashFlow.tla / .cfg
+#   • slashing/MC_SlashFlow.tla / .cfg   (exhaustive tier — see below)
+#   • slashing/MC_SlashFlowRedeem.tla / .cfg
 #   • slashing/MC_TwoLevelSlashing.tla / .cfg
 #   • slashing/MC_AuthorizedSlashFlow.tla / .cfg
 #   • slashing/MC_JustificationProjection.tla / .cfg
 #   • slashing/MC_WithdrawFlow.tla / .cfg
 #   • block_admission/MC_BlockAdmission.tla / .cfg
-#   • deploy_lifecycle/MC_DeployLifecycle.tla / .cfg
-#   • fork_choice/MC_ForkChoice.tla / .cfg
-#   • fork_choice/MC_PromotionConvergence.tla / .cfg
-#   • recovery_leader/MC_RecoveryLeader.tla / .cfg
-#   • replay_liveness/MC_ReplayHotLoop.tla / .cfg
+#   • deploy_occurrence/MC_DeployOccurrence.tla / .cfg
 #
 # A non-zero exit code from TLC for any post-fix configuration is a CI
 # failure; the pre-fix configurations (e.g. MC_ConcurrentTracker_pre_fix)
@@ -44,56 +41,76 @@ if [[ ! -d "$TLA_ROOT/slashing" ]]; then
     exit 2
 fi
 
-# Locate TLC. Common installation paths:
-#   • $TLA_TOOLS_JAR pointing at tla2tools.jar (preferred, explicit)
-#   • Java + tla2tools.jar in /usr/share/tla / /opt/tlaplus / ~/.tla
-#   • `tlc` wrapper script on PATH
-TLC_CMD=""
-if [[ -n "${TLA_TOOLS_JAR:-}" && -f "$TLA_TOOLS_JAR" ]]; then
-    TLC_CMD="java -XX:+UseParallelGC -jar $TLA_TOOLS_JAR"
-elif command -v tlc >/dev/null 2>&1; then
-    TLC_CMD="tlc"
-else
-    for candidate in \
-        /usr/share/tla/tla2tools.jar \
-        /opt/tlaplus/tla2tools.jar \
-        "$HOME/.tla/tla2tools.jar"
-    do
-        if [[ -f "$candidate" ]]; then
-            TLC_CMD="java -XX:+UseParallelGC -jar $candidate"
-            break
-        fi
-    done
-fi
+# Shared memory-bounded TLC launcher: on-disk metadir (NOT tmpfs), capped
+# -Xmx heap, capped workers (this script previously used `-workers auto`,
+# = 64 threads on this host, which multiplied TLC's peak frontier and —
+# with a tmpfs metadir — OOM'd the machine on MC_SlashFlow), and a hard
+# systemd MemoryMax ceiling. The slashing models are heavier than the
+# cost_accounted_rho ones: the exhaustive MC_EquivocationDetector's
+# fingerprint set and MC_SlashFlow's liveness graph want > 8 GB, so default
+# to a roomier-but-still-bounded 16g heap / 24G ceiling / 8 workers (all
+# overridable via TLC_HEAP / TLC_RSS / TLC_WORKERS). Anything that overflows
+# the heap spills to the on-disk metadir (DiskFPSet) rather than RAM, and
+# the 24G cgroup cap kills a runaway cleanly instead of OOM-ing the host.
+# The helper also resolves TLC (jar or `tlc` wrapper), erroring if absent.
+: "${TLC_HEAP:=16g}"
+: "${TLC_RSS:=24G}"
+: "${TLC_WORKERS:=8}"
+export TLC_REPO_ROOT="$REPO_ROOT"
+source "$REPO_ROOT/scripts/lib/tlc-run.sh"
 
-if [[ -z "$TLC_CMD" ]]; then
-    echo "ERROR: TLC not found. Set TLA_TOOLS_JAR=/path/to/tla2tools.jar," >&2
-    echo "       install tlaplus, or place the jar at one of: " >&2
-    echo "         /usr/share/tla/tla2tools.jar" >&2
-    echo "         /opt/tlaplus/tla2tools.jar" >&2
-    echo "         ~/.tla/tla2tools.jar" >&2
-    exit 3
-fi
+# On-disk (NVMe) home for the per-config TLC logs — NOT /tmp, which is
+# tmpfs (RAM) on this host.
+LOG_DIR="$REPO_ROOT/target/slashing-tla-logs"
+mkdir -p "$LOG_DIR"
 
-# Post-fix configs: each must TLC-clean. Entries are
-# <subdir under formal/tlaplus>/<config basename>.
+# Clear this runner's on-disk metadirs up front (a SIGKILL'd prior run leaks
+# them, since the EXIT trap can't fire on SIGKILL) and again on exit, so
+# TLC's multi-GB state graphs don't accumulate on the NVMe across runs.
+\rm -rf "$TLC_METADIR_ROOT"/slashing-* 2>/dev/null || true
+trap '\rm -rf "$TLC_METADIR_ROOT"/slashing-* 2>/dev/null || true' EXIT
+
+# Post-fix configs: each must TLC-clean. Entries are either
+# <subdir>/<config basename> or <subdir>/<config basename>|<module basename>.
+# The mapped form registers multiple configurations against one non-empty module.
 POST_FIX_CONFIGS=(
     slashing/MC_EquivocationDetector_liveness
     slashing/MC_EquivocationDetector_liveness_2v
     slashing/MC_EquivocationDetectorEager
     slashing/MC_EquivocationDetectorEager_3v2s
     slashing/MC_ConcurrentTracker
-    slashing/MC_SlashFlow
+    slashing/MC_SlashFlowRedeem
     slashing/MC_TwoLevelSlashing
     slashing/MC_AuthorizedSlashFlow
     slashing/MC_JustificationProjection
     slashing/MC_WithdrawFlow
     block_admission/MC_BlockAdmission
-    deploy_lifecycle/MC_DeployLifecycle
-    fork_choice/MC_ForkChoice
-    fork_choice/MC_PromotionConvergence
-    recovery_leader/MC_RecoveryLeader
-    replay_liveness/MC_ReplayHotLoop
+    deploy_occurrence/MC_DeployOccurrence
+    'deploy_occurrence/MC_DeployOccurrenceStorage|MC_DeployOccurrenceStorage'
+    deploy_recovery/MC_DeployRecovery
+    'deploy_recovery/MC_CarrierIndexSoundness|CarrierIndexSoundness'
+    deploy_recovery/MC_MergeRecoveryCoherence
+    deploy_recovery/MC_RejectionReasonConfluence
+    deploy_recovery/MC_ProtocolActivationCoherence
+    deploy_recovery/MC_ProtocolVersionLifecycle
+    deploy_recovery/MC_ProtocolVersionLifecycle_legacy_rejected
+    deploy_recovery/MC_ProtocolVersionLifecycle_unsupported_rejected
+    'deploy_recovery/MC_FinalizedOccurrenceStatus|FinalizedOccurrenceStatus'
+    'deploy_recovery/MC_StartupMetadataPreflight|StartupMetadataPreflight'
+    'finalized_floor/MC_PendingDeployHeartbeatComposition|PendingDeployHeartbeatComposition'
+    'finalized_floor/MC_PendingWorkReadiness|PendingWorkReadiness'
+    'finalized_floor/MC_ExactFloorSelection|ExactFloorSelection'
+    'finalized_floor/MC_DeployLifecycleFinalization|DeployLifecycleFinalization'
+    'finalized_floor/MC_FinalizationSnapshotRetry|FinalizationSnapshotRetry'
+    'finalized_floor/MC_AppliedStateValidationPrecedence|AppliedStateValidationPrecedence'
+    'finalized_floor/MC_PendingDeployHeartbeatComposition_ingress_safety|PendingDeployHeartbeatComposition'
+    'finalized_floor/MC_ProposerAdmissionCoalescing|ProposerAdmissionCoalescing'
+    'finalized_floor/MC_RecoveryCommitteeTransition|RecoveryCommitteeTransition'
+    'finalized_floor/MC_AuthorityFloorStateBinding|AuthorityFloorStateBinding'
+    'finalized_floor/MC_ObjectiveEquivocation|ObjectiveEquivocation'
+    'finalized_floor/MC_ObjectiveEvidenceAuthorization|ObjectiveEvidenceAuthorization'
+    'finalized_floor/MC_RestoreHorizonCertifiedContext|RestoreHorizonCertifiedContext'
+    'finalized_floor/MC_RestoreHorizonStartup|RestoreHorizonStartup'
 )
 
 if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
@@ -101,21 +118,28 @@ if [[ "${RUN_EXHAUSTIVE_TLA:-0}" == "1" ]]; then
         slashing/MC_EquivocationDetector
         slashing/MC_EquivocationDetectorEager_3v
         slashing/MC_EquivocationDetector_safety
+        # Stage-C MC_SlashFlow outgrew the 45m nightly cap (2026-08-08: 45m
+        # TIMEOUT niced/4-workers; a dedicated 24g/12-worker run explored
+        # ~200M states to depth 22 with ZERO violations and the frontier
+        # still growing — the full space at these bounds is not nightly
+        # material). The nightly gate keeps MC_SlashFlowRedeem (seconds) as
+        # the bounded TLC cross-check and the TLAPS SlashFlowProofs section
+        # below as the DEDUCTIVE authority for the safety invariant (that
+        # section's own comment already documents this division of labor:
+        # the full SlashFlow space "is too large to exhaustively enumerate").
+        slashing/MC_SlashFlow
     )
 fi
 
 # Per-config wall-clock cap: one wedged or state-exploded config must not
 # consume the whole job silently (observed: the first config alone exceeded
 # a 60-minute CI job with no output). Timeouts are reported distinctly from
-# invariant violations. Override via TLC_PER_CONFIG_TIMEOUT (GNU timeout
-# duration syntax); the cap is skipped when `timeout` is unavailable.
+# invariant violations. The cap is enforced INSIDE tlc_run (TLC_WALL_TIMEOUT
+# in scripts/lib/tlc-run.sh) so it composes with the memory bound — the
+# `timeout` sits between systemd-run/prlimit and the JVM, TERM reaches java
+# directly, and exit 124 propagates. Override via TLC_PER_CONFIG_TIMEOUT
+# (GNU timeout duration syntax); skipped when `timeout` is unavailable.
 TLC_PER_CONFIG_TIMEOUT="${TLC_PER_CONFIG_TIMEOUT:-45m}"
-TIMEOUT_CMD=""
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout --signal=TERM --kill-after=60 $TLC_PER_CONFIG_TIMEOUT"
-fi
 
 # Registered entries are hand-maintained above: a malformed entry or a
 # missing config file is a broken registration, not a skippable condition —
@@ -124,45 +148,81 @@ failed=0
 timeouts=0
 violations=0
 for entry in "${POST_FIX_CONFIGS[@]}"; do
-    if [[ "$entry" != */* ]]; then
+    if [[ "$entry" == *'|'* ]]; then
+        config_entry="${entry%%|*}"
+        module="${entry#*|}"
+    else
+        config_entry="$entry"
+        module="${entry##*/}"
+    fi
+    if [[ "$config_entry" != */* || -z "$module" || "$module" == */* ]]; then
         echo "ERROR: malformed POST_FIX_CONFIGS entry '$entry' (expected <subdir>/<config>)" >&2
         exit 2
     fi
-    dir="$TLA_ROOT/${entry%/*}"
-    cfg="${entry##*/}"
-    log="/tmp/tlc-${entry//\//-}.log"
-    if [[ ! -f "$dir/$cfg.tla" || ! -f "$dir/$cfg.cfg" ]]; then
-        echo "FAIL   $entry (missing $cfg.tla or $cfg.cfg in $dir — registered config not found)"
+    dir="$TLA_ROOT/${config_entry%/*}"
+    cfg="${config_entry##*/}"
+    log="$LOG_DIR/tlc-${config_entry//\//-}.log"
+    if [[ ! -f "$dir/$module.tla" || ! -f "$dir/$cfg.cfg" ]]; then
+        echo "FAIL   $config_entry (missing $module.tla or $cfg.cfg in $dir — registered model/config not found)"
         failed=$((failed + 1))
         violations=$((violations + 1))
         continue
     fi
     started_epoch="$(date +%s)"
-    echo "CHECK  $entry (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
+    echo "CHECK  $config_entry -> $module (started $(date -u +%H:%M:%SZ), cap $TLC_PER_CONFIG_TIMEOUT)"
     set +e
-    (cd "$dir" && $TIMEOUT_CMD $TLC_CMD -workers auto -config "$cfg.cfg" "$cfg.tla") >"$log" 2>&1
+    (cd "$dir" && TLC_WALL_TIMEOUT="$TLC_PER_CONFIG_TIMEOUT" \
+        tlc_run "$(tlc_metadir "slashing-${config_entry//\//-}")" "$cfg.cfg" "$module.tla") >"$log" 2>&1
     status=$?
     set -e
     elapsed="$(( $(date +%s) - started_epoch ))s"
     if (( status == 0 )); then
-        echo "OK     $entry ($elapsed)"
+        echo "OK     $config_entry ($elapsed)"
     elif (( status == 124 )); then
-        echo "TIMEOUT $entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
+        echo "TIMEOUT $config_entry after $elapsed (cap $TLC_PER_CONFIG_TIMEOUT) — treat as failure; profile or split the config"
         failed=$((failed + 1))
         timeouts=$((timeouts + 1))
     else
-        echo "FAIL   $entry ($elapsed)"
+        echo "FAIL   $config_entry ($elapsed)"
         echo "--- last 40 lines of $log ---"
         tail -40 "$log"
         echo "--- end log ---"
         failed=$((failed + 1))
         violations=$((violations + 1))
     fi
+    # Reclaim this model's on-disk state graph immediately (MC_SlashFlow
+    # alone reaches ~11 GB); without this the per-model metadirs accumulate
+    # on the NVMe until the EXIT trap. The log under $LOG_DIR is retained.
+    \rm -rf "$TLC_METADIR_ROOT/slashing-${config_entry//\//-}" 2>/dev/null || true
 done
+
+# Redemption-un-halt invariant (Inv_RedeemedValidatorUnhalted): the full
+# MC_SlashFlow state space is too large to exhaustively enumerate (its TLC run
+# above checks it only as far as it gets), so this safety invariant is
+# established DEDUCTIVELY by TLAPS — no state search (cannot OOM) and proved for
+# ALL parameter values — via the inductive invariant in SlashFlowProofs.tla
+# (IndInv = TypeOK /\ active=>bonded /\ active=>not-halted). This mirrors how the
+# cost-accounting gate discharges the validator contract with `tlapm`. The tiny
+# MC_SlashFlowRedeem above is the bounded TLC cross-check. Local-only.
+SLASHING_TLAPS_PATH="$HOME/.local/tlaps/bin:$HOME/.local/bin:/usr/bin:$PATH"
+if PATH="$SLASHING_TLAPS_PATH" command -v tlapm >/dev/null 2>&1; then
+    printf "PROVE  %-40s ... " "SlashFlowProofs (TLAPS)"
+    tlaps_out=$( cd "$TLA_ROOT/slashing" && PATH="$SLASHING_TLAPS_PATH" tlapm SlashFlowProofs.tla 2>&1 || true )
+    if echo "$tlaps_out" | grep -Eq "All [1-9][0-9]* obligations? proved\." \
+       && ! echo "$tlaps_out" | grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)"; then
+        echo "ok"
+    else
+        echo "FAIL"
+        echo "$tlaps_out" | tail -20 | sed 's/^/    /'
+        failed=$((failed + 1))
+    fi
+else
+    echo "SKIP   SlashFlowProofs (tlapm not on PATH)"
+fi
 
 if (( failed > 0 )); then
     echo "FAILED: $failed config(s) did not verify — $timeouts cap timeout(s), $violations violation-or-error(s)."
     exit 1
 fi
 
-echo "All $((${#POST_FIX_CONFIGS[@]})) post-fix TLA+ configurations clean."
+echo "All $((${#POST_FIX_CONFIGS[@]})) post-fix TLA+ configurations clean (+ SlashFlowProofs TLAPS)."

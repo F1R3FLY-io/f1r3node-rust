@@ -1,0 +1,69 @@
+@startuml vault-backed-byte-accounting
+!theme plain
+skinparam defaultFontName "sans-serif"
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #37474F
+  LifeLineBorderColor #455A64
+  ParticipantBorderColor #37474F
+  ParticipantFontColor #102027
+}
+title Vault-backed byte accounting: staged located funding, exact settlement, deterministic replay
+
+actor "Authorized wallet\ntransaction" as Wallet #C8E6C9
+participant "SystemVault\nsponsor purse" as Sponsor #BBDEFB
+participant "Lollipop contract\nretained capability" as Contract #D1C4E9
+participant "SystemVault\nouter + continuation purses" as Located #90CAF9
+participant "Casper admission\npre-state snapshot" as Admission #FFE082
+actor "Authenticated\ngateway" as Gateway #C5E1A5
+participant "Rholang + RSpace\naccounting observer" as Runtime #FFCCBC
+participant "Atomic applyCost\nsettlement" as Settlement #CE93D8
+participant "Independent\nvalidator replay" as Replay #B2DFDB
+
+Wallet -> Sponsor : credit unreserved REV
+Contract --> Wallet : publish distinct deposit addresses\nretain unforgeable draw capability
+Wallet -> Sponsor : authenticate atomic funding transfer
+Sponsor -> Located : debit sponsor; credit both purses
+Gateway -> Contract : authenticate continuation activation
+Contract -> Runtime : activate only after funding\nand outer authority commit
+Admission -> Located : authenticate each purse and located authority
+Located --> Admission : fixed component-wise pre-state inventory
+Admission -> Located : reserve outer + continuation bounds
+Admission -> Sponsor : reserve separate gateway fee
+note over Admission,Located #FFF8E1
+The reservation snapshot is immutable.
+A later authorized credit changes only unreserved balance.
+end note
+
+Admission -> Runtime : execute under fixed hard ceiling
+Runtime -> Runtime : pin each introduction sponsor once\nwithout changing stored interaction authority
+Runtime -> Runtime : committed COMM\ncharge 1 execution unit + all payload/trace bytes;\nrecord independent physical authority draw
+Runtime --> Admission : exact witness + schedule digest
+
+Wallet -> Located : concurrent authorized top-up
+note right of Located #E8F5E9
+The top-up is a separate conserving state transition.
+It cannot enlarge the running reservation.
+end note
+
+Admission -> Settlement : certificate + exact witness
+Settlement -> Located : debit each purse's realized authority + bytes\nrefund each purse's unused reserve
+Settlement -> Sponsor : transfer gateway fee to its recipient
+Settlement --> Admission : one atomic committed state transition
+
+Admission -> Replay : block, certificate, witness, event trace
+Replay -> Replay : recompute sponsors, canonical sizes, located allocation,\nroot chain, and schedule binding
+Replay --> Admission : accept only exact equality
+
+legend bottom
+|= Color |= Meaning |
+|<#C8E6C9> green | authorized conserving credit |
+|<#BBDEFB> blue | native REV custody |
+|<#D1C4E9> lavender | retained linear capability |
+|<#90CAF9> light blue | independently funded located purses |
+|<#FFE082> amber | consensus reservation |
+|<#FFCCBC> orange | metered execution |
+|<#CE93D8> purple | atomic settlement |
+|<#B2DFDB> teal | independent replay |
+endlegend
+@enduml

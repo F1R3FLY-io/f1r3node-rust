@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "envelope_id": "current-compose-2026-08",
+  "evidence_class": "engineering_envelope",
+  "scope": {
+    "implementation": "the checked working tree",
+    "topology": "docker/shard.yml",
+    "validator_set": "three equal-stake validators from docker/genesis/bonds.txt",
+    "fault_tolerance_threshold": "1/10",
+    "workload": "funded valid-deploy traffic whose pressure-bucket transitions remain within the declared rates",
+    "horizon_hours": 720
+  },
+  "interpretation": {
+    "worst": "simultaneous adverse endpoints for every monotone parameter",
+    "expected": "central engineering assumption, not an empirical population mean",
+    "best": "simultaneous favorable endpoints for every monotone parameter"
+  },
+  "parameters": {
+    "VALIDATORS": {
+      "worst": 3,
+      "expected": 3,
+      "best": 3,
+      "unit": "validators",
+      "provenance": "implementation_exact",
+      "source": "docker/genesis/bonds.txt"
+    },
+    "QUORUM": {
+      "worst": 2,
+      "expected": 2,
+      "best": 2,
+      "unit": "validators",
+      "provenance": "derived_exact",
+      "source": "three equal stakes, docker/conf/default.conf FTT=0.1, and the strict exact finality inequality"
+    },
+    "QUEUE_CAP": {
+      "worst": 8,
+      "expected": 8,
+      "best": 8,
+      "unit": "pressure buckets",
+      "provenance": "derived_abstraction",
+      "source": "node/src/rust/runtime/setup.rs count cap 2048; one model bucket represents 256 pending blocks"
+    },
+    "LAG_CAP": {
+      "worst": 64,
+      "expected": 64,
+      "best": 64,
+      "unit": "blocks",
+      "provenance": "implementation_exact",
+      "source": "casper.heartbeat.advanced.deploy-recovery-max-lag"
+    },
+    "LAG_SLO": {
+      "worst": 20,
+      "expected": 20,
+      "best": 20,
+      "unit": "blocks",
+      "provenance": "implementation_exact",
+      "source": "casper.heartbeat.advanced.pending-deploy-max-lag"
+    },
+    "MEMORY_CAP": {
+      "worst": 8,
+      "expected": 8,
+      "best": 8,
+      "unit": "normalized resident-headroom buckets",
+      "provenance": "derived_abstraction",
+      "source": "the configured aggregate node-RSS guard is partitioned into eight equal crossings above the healthy baseline; calibration must supply the deployment-specific MiB-per-bucket mapping"
+    },
+    "INITIAL_ELIGIBLE": {
+      "worst": 3,
+      "expected": 3,
+      "best": 3,
+      "unit": "validators",
+      "provenance": "scope_precondition",
+      "source": "healthy shard at observation start"
+    },
+    "INITIAL_QUEUE": {
+      "worst": 0,
+      "expected": 0,
+      "best": 0,
+      "unit": "pressure buckets",
+      "provenance": "scope_precondition",
+      "source": "drained shard at observation start"
+    },
+    "INITIAL_LAG": {
+      "worst": 0,
+      "expected": 0,
+      "best": 0,
+      "unit": "blocks",
+      "provenance": "scope_precondition",
+      "source": "converged shard at observation start"
+    },
+    "INITIAL_MEMORY": {
+      "worst": 0,
+      "expected": 0,
+      "best": 0,
+      "unit": "normalized resident-headroom buckets",
+      "provenance": "scope_precondition",
+      "source": "healthy measured RSS baseline at observation start; bucket zero does not mean zero resident bytes"
+    },
+    "HORIZON_HOURS": {
+      "worst": 720,
+      "expected": 720,
+      "best": 720,
+      "unit": "hours",
+      "provenance": "requirement",
+      "source": "30 consecutive 24-hour days"
+    },
+    "VALIDATOR_FAILURE_RATE": {
+      "worst": "1/168",
+      "expected": "1/720",
+      "best": "1/2160",
+      "unit": "failures per validator-hour",
+      "provenance": "assumption_hole",
+      "source": "declared per-process MTBF range of 7 to 90 days; current-branch continuous-shard telemetry is unavailable"
+    },
+    "VALIDATOR_REPAIR_RATE": {
+      "worst": "1/2",
+      "expected": 2,
+      "best": 4,
+      "unit": "completed repairs per failed-validator-hour",
+      "provenance": "assumption_hole",
+      "source": "declared mean repair/rejoin range of 15 minutes to 2 hours, encompassing heartbeat, restart, dependency retrieval, catch-up, and replay"
+    },
+    "COMMON_FAILURE_RATE": {
+      "worst": "1/720",
+      "expected": "1/2160",
+      "best": "1/8760",
+      "unit": "failures per shard-hour",
+      "provenance": "assumption_hole",
+      "source": "declared software, operator, host-domain, and network common-cause MTBF range of 30 days to 1 year"
+    },
+    "COMMON_REPAIR_RATE": {
+      "worst": "1/4",
+      "expected": 1,
+      "best": 4,
+      "unit": "completed repairs per shard-hour",
+      "provenance": "assumption_hole",
+      "source": "declared common-cause mean recovery range of 15 minutes to 4 hours"
+    },
+    "STORAGE_FAILURE_RATE": {
+      "worst": "1/2160",
+      "expected": "1/8760",
+      "best": "1/17520",
+      "unit": "failures per shard-hour",
+      "provenance": "assumption_hole",
+      "source": "declared durable-storage unavailability MTBF range of 90 days to 2 years"
+    },
+    "STORAGE_REPAIR_RATE": {
+      "worst": "1/4",
+      "expected": 1,
+      "best": 2,
+      "unit": "completed repairs per shard-hour",
+      "provenance": "assumption_hole",
+      "source": "declared storage recovery mean range of 30 minutes to 4 hours"
+    },
+    "ARRIVAL_RATE": {
+      "worst": "1/2",
+      "expected": "1/6",
+      "best": "1/24",
+      "unit": "upward pressure-bucket crossings per hour",
+      "provenance": "assumption_hole",
+      "source": "declared valid-workload pressure envelope; this is not deployments per hour"
+    },
+    "SERVICE_RATE": {
+      "worst": 1,
+      "expected": 2,
+      "best": 4,
+      "unit": "downward pressure-bucket crossings per service-hour",
+      "provenance": "assumption_hole",
+      "source": "declared replay/admission relief envelope; requires queue-depth telemetry for calibration"
+    },
+    "LAG_GROWTH_RATE": {
+      "worst": "1/2",
+      "expected": "1/5",
+      "best": "1/10",
+      "unit": "upward finality-lag bucket crossings per hour",
+      "provenance": "assumption_hole",
+      "source": "declared aggregate height-difference growth envelope while peers can advance; this includes a locally protocol-ready finalizer falling behind and requires LFB time-series calibration"
+    },
+    "LAG_DRAIN_RATE": {
+      "worst": 1,
+      "expected": 2,
+      "best": 4,
+      "unit": "downward finality-lag bucket crossings per service-hour",
+      "provenance": "assumption_hole",
+      "source": "declared recovery envelope; heartbeat checks every 5 seconds but end-to-end catch-up is not yet calibrated"
+    },
+    "MEMORY_BACKGROUND_GROWTH_RATE": {
+      "worst": "1/24",
+      "expected": "1/168",
+      "best": "1/720",
+      "unit": "upward resident-headroom bucket crossings per idle hour",
+      "provenance": "assumption_hole",
+      "source": "declared residual-growth envelope spanning one normalized crossing per day to one per month; continuous current-tree RSS telemetry is required to fit it"
+    },
+    "MEMORY_WORK_GROWTH_RATE": {
+      "worst": "1/2",
+      "expected": "1/12",
+      "best": "1/48",
+      "unit": "additional upward resident-headroom bucket crossings per pressure hour",
+      "provenance": "assumption_hole",
+      "source": "declared workload-attributable allocation envelope while admitted work or finality lag is nonzero; queue, lag, and RSS time series are required to fit it"
+    },
+    "MEMORY_RECLAIM_RATE": {
+      "worst": 0,
+      "expected": 1,
+      "best": 4,
+      "unit": "downward resident-headroom bucket crossings per protocol-ready hour",
+      "provenance": "assumption_hole",
+      "source": "the adverse endpoint explicitly includes a no-reclamation leak; central and favorable rates require current-tree retention and allocator telemetry"
+    }
+  },
+  "historical_context": {
+    "source": "https://f1r3fly-io.github.io/f1r3node-rust/data/",
+    "daily_records": 12,
+    "weekend_records": 5,
+    "total_elapsed_hours": 46.87916666666667,
+    "passive_iterations": 73,
+    "passive_failures": 70,
+    "protection_breaches": 13,
+    "reported_rss_peak_range_mb": [19311, 47118],
+    "versions": ["0.4.43", "0.4.45"],
+    "applicability": "adverse context only: old commits, shard reset between iterations, and no current-working-tree exposure; these observations are not fitted as current rates"
+  },
+  "exclusions": [
+    "Byzantine safety is handled adversarially by the protocol models, not assigned a probability here.",
+    "Residual per-validator clocks are conditionally independent given the explicit common-cause state; unmodeled correlation invalidates the projection.",
+    "Waiting times are stationary and exponentially distributed within each scenario; nonstationary or heavy-tailed behavior requires a phase-type or regime-switching profile.",
+    "Disk-capacity exhaustion requires an operator-specific initial headroom and bytes-per-finalized-block profile.",
+    "The resident-memory state is normalized to configured headroom; a projection is invalid unless measured baseline RSS, guard RSS, and MiB-per-bucket are recorded for the target deployment.",
+    "A workload outside the declared pressure-transition range invalidates the projection.",
+    "A dirty working tree can produce engineering evidence but cannot produce release certification."
+  ]
+}

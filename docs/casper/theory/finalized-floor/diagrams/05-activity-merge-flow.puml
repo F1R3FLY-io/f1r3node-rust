@@ -13,10 +13,10 @@
 ' stereotype  ':label; <<#hex>>'  (verified by rendering).
 '
 ' Source of truth for the H3 fix (section 3.3) in
-' docs/theory/finalized-floor/finalized-floor-verification.md.
+' docs/casper/theory/finalized-floor/finalized-floor-verification.md.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/finalized-floor/diagrams/05-activity-merge-flow.puml
+'   plantuml -tsvg docs/casper/theory/finalized-floor/diagrams/05-activity-merge-flow.puml
 
 @startuml 05-activity-merge-flow
 !theme plain

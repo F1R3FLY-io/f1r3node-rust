@@ -2,12 +2,15 @@
 
 use models::rust::casper::protocol::casper_message::Event;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::state_change::StateChange;
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd)]
 pub struct DeployIndex {
     pub deploy_id: prost::bytes::Bytes,
     pub cost: u64,
     pub event_log_index: EventLogIndex,
+    pub execution_index: u32,
+    pub state_changes: Option<StateChange>,
 }
 
 impl DeployIndex {
@@ -16,11 +19,15 @@ impl DeployIndex {
     pub const SYS_SLASH_DEPLOY_COST: u64 = 0;
     pub const SYS_CLOSE_BLOCK_DEPLOY_COST: u64 = 0;
     pub const SYS_EMPTY_DEPLOY_COST: u64 = 0;
+    // Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12) — like the
+    // other system deploys it carries no merge weight.
+    pub const SYS_REDEEM_DEPLOY_COST: u64 = 0;
 
     // These are to be put in rejected set in blocks, so prefix format is defined for identification purposes.
     pub const SYS_SLASH_DEPLOY_ID: &'static [u8] = &[1];
     pub const SYS_CLOSE_BLOCK_DEPLOY_ID: &'static [u8] = &[2];
     pub const SYS_EMPTY_DEPLOY_ID: &'static [u8] = &[3];
+    pub const SYS_REDEEM_DEPLOY_ID: &'static [u8] = &[4];
 
     pub fn new(
         sig: prost::bytes::Bytes,
@@ -34,6 +41,8 @@ impl DeployIndex {
             deploy_id: sig,
             cost,
             event_log_index,
+            execution_index: 0,
+            state_changes: None,
         }
     }
 }

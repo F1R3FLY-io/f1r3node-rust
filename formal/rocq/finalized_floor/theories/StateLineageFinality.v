@@ -156,7 +156,7 @@ End StateBase.
 
 Inductive scenario_block : Type :=
 | Genesis
-| CertifiedFloor
+| Funding
 | Sibling
 | Stale
 | RejectedParent
@@ -178,9 +178,9 @@ Definition scenario_main_ancestor
   (ancestor descendant : scenario_block) : Prop :=
   match ancestor, descendant with
   | Genesis, _ => True
-  | CertifiedFloor, CertifiedFloor => True
-  | CertifiedFloor, Stale => True
-  | CertifiedFloor, RejectedParent => True
+  | Funding, Funding => True
+  | Funding, Stale => True
+  | Funding, RejectedParent => True
   | Sibling, Sibling => True
   | Sibling, Rebased => True
   | Stale, Stale => True
@@ -194,9 +194,9 @@ Definition scenario_state_ancestor
   (ancestor descendant : scenario_block) : Prop :=
   match ancestor, descendant with
   | Genesis, _ => True
-  | CertifiedFloor, CertifiedFloor => True
-  | CertifiedFloor, Rebased => True
-  | CertifiedFloor, RejectedParent => True
+  | Funding, Funding => True
+  | Funding, Rebased => True
+  | Funding, RejectedParent => True
   | Sibling, Sibling => True
   | Stale, Stale => True
   | RejectedParent, RejectedParent => True
@@ -205,36 +205,36 @@ Definition scenario_state_ancestor
   end.
 
 Definition scenario_initial_state : @finality_state scenario_block :=
-  {| current_lfb := CertifiedFloor;
-     committed_blocks := [CertifiedFloor; Genesis] |}.
+  {| current_lfb := Funding;
+     committed_blocks := [Funding; Genesis] |}.
 
 Definition state_lineage_contract : Prop :=
   scenario_certified Stale /\
   scenario_state_certified Stale /\
-  scenario_main_ancestor CertifiedFloor Stale /\
-  ~ scenario_state_ancestor CertifiedFloor Stale /\
+  scenario_main_ancestor Funding Stale /\
+  ~ scenario_state_ancestor Funding Stale /\
   ~ lfb_eligible
       scenario_certified
       scenario_state_certified
       scenario_state_ancestor
-      CertifiedFloor
+      Funding
       Stale /\
-  ~ scenario_main_ancestor CertifiedFloor Rebased /\
+  ~ scenario_main_ancestor Funding Rebased /\
   scenario_main_ancestor Sibling Rebased /\
   lfb_eligible
       scenario_certified
       scenario_state_certified
       scenario_state_ancestor
-      CertifiedFloor
+      Funding
       Rebased /\
   scenario_certified RejectedParent /\
   ~ scenario_state_certified RejectedParent /\
-  scenario_state_ancestor CertifiedFloor RejectedParent /\
+  scenario_state_ancestor Funding RejectedParent /\
   ~ lfb_eligible
       scenario_certified
       scenario_state_certified
       scenario_state_ancestor
-      CertifiedFloor
+      Funding
       RejectedParent /\
   lineage_invariant
       scenario_state_ancestor
@@ -260,8 +260,8 @@ Proof.
       * constructor.
   - intros Hlineage.
     inversion Hlineage as [|stale tail Hstale Htail]; subst.
-    inversion Htail as [|certified remaining Hcertified Hremaining]; subst.
-    exact Hcertified.
+    inversion Htail as [|funding remaining Hfunding Hremaining]; subst.
+    exact Hfunding.
   - constructor.
     + exact I.
     + constructor.

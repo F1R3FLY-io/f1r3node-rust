@@ -1,6 +1,6 @@
 # Sage cross-witness (symbolic CAS) for the fork-choice score algebra and the
 # heaviest-subtree / tie-break totality — the third leg of the multi-prover gate
-# (Wolfram primary; Z3 + Sage cross-witness) confirming the Rocq
+# (Rocq authoritative; Sage, Z3, and Wolfram independent cross-witnesses) confirming the
 # Score.score_perm_invariant, Rank.rank_selects_heaviest, and TieBreak.sort_total_order.
 
 # 1. SCORE is a commutative monoid over validator weights: a block's score is a SUM

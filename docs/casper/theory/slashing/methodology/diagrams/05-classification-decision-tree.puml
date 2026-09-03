@@ -12,11 +12,11 @@
 '   red          (#FFCDD2) — HALT — escalation required
 '
 ' Decision diamonds use the methodology-suite convention from
-' docs/theory/slashing/methodology/02-glossary-and-notation.md §7:
+' docs/casper/theory/slashing/methodology/02-glossary-and-notation.md §7:
 '   background #FFF7EE, border #E65100.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/05-classification-decision-tree.puml
+'   plantuml -tsvg docs/casper/theory/slashing/methodology/diagrams/05-classification-decision-tree.puml
 
 @startuml 05-classification-decision-tree
 !theme plain

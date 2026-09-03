@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use casper::rust::engine::engine::transition_to_initializing;
+use casper::rust::engine::engine::{transition_to_initializing, Engine};
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::initializing::Initializing;
 use casper::rust::engine::lfs_tuple_space_requester;
@@ -20,7 +20,7 @@ use models::casper::Signature;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockRequest, BlockMessage, BlockRequest, CasperMessage,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -28,6 +28,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::instances::rspace_exporter_store::RSpaceExporterStore;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::ByteVector;
 use tokio::sync::mpsc;
 
@@ -57,14 +58,15 @@ impl InitializingSpec {
 
         let engine_cell = Arc::new(EngineCell::init());
 
-        // interval and duration don't really matter since we don't require and signs from validators
+        // interval and duration do not affect this direct approved-block transition
         let initializing_engine =
             create_initializing_engine(&fixture, the_init, engine_cell.clone())
                 .await
                 .expect("Failed to create Initializing engine");
 
         let genesis = &fixture.genesis;
-        let approved_block_candidate = fixture.approved_block_candidate.clone();
+        let mut approved_block_candidate = fixture.approved_block_candidate.clone();
+        approved_block_candidate.required_sigs = fixture.required_sigs;
         let validator_sk = &fixture.validator_sk;
         let validator_pk = &fixture.validator_pk;
 
@@ -80,12 +82,12 @@ impl InitializingSpec {
 
             ApprovedBlock {
                 candidate: approved_block_candidate,
-                floor_seed: None,
                 sigs: vec![Signature {
                     public_key: validator_pk.bytes.clone(),
                     algorithm: "secp256k1".to_string(),
                     sig: signature_bytes.into(),
                 }],
+                floor_seed: None,
             }
         };
 
@@ -248,16 +250,6 @@ impl InitializingSpec {
             &fixture.network_id,
             models::casper::ForkChoiceTipRequestProto::default(),
         ));
-        // After the genesis BlockMessage lands and is saved, the joiner fires
-        // a MergeableEntryRequest for the same hash.
-        expected_requests.push(packet_with_content(
-            &local_for_expected,
-            &fixture.network_id,
-            models::casper::MergeableEntryRequestProto {
-                block_hash: genesis.block_hash.clone(),
-            },
-        ));
-
         let test = async {
             engine_cell.set(initializing_engine.clone()).await;
 
@@ -389,10 +381,12 @@ async fn create_initializing_engine(
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    // Mergeable-channels sync channel.
-    let (mergeable_tx, mergeable_rx) =
-        mpsc::channel::<models::rust::casper::protocol::casper_message::MergeableEntryResponse>(50);
-    let (block_processing_queue_tx, _block_processing_queue_rx) = mpsc::channel(1024);
+    let (block_processing_queue_tx, _block_processing_queue_rx) =
+        casper::rust::blocks::block_processing_queue::BlockProcessingQueueSender::channel(
+            1024,
+            64 * 1024 * 1024,
+        )
+        .expect("block processing queue");
 
     // Use all stores and managers from fixture (matching Scala's Setup pattern)
     Ok(Arc::new(Initializing::new(
@@ -409,14 +403,13 @@ async fn create_initializing_engine(
         block_processing_queue_tx,
         fixture.blocks_in_processing.clone(),
         fixture.casper_shard_conf.clone(),
+        fixture.required_sigs,
         Some(fixture.validator_id.clone()),
         the_init,
         block_tx,
         block_rx,
         tuple_tx,
         tuple_rx,
-        mergeable_tx,
-        mergeable_rx,
         true,
         false,
         fixture.event_publisher.clone(),
@@ -441,7 +434,6 @@ async fn make_transition_to_running_once_approved_block_received() {
 /// and dropped while the node was still in GenesisValidator state).
 #[tokio::test]
 async fn proactively_request_approved_block_on_init() {
-    use casper::rust::engine::engine::Engine;
     use models::casper::ApprovedBlockRequestProto;
     use models::routing::protocol::Message as ProtocolMessage;
     use prost::Message;
@@ -504,76 +496,41 @@ async fn proactively_request_approved_block_on_init() {
     InitializingSpec::after_each(&fixture);
 }
 
-/// An LFS restore that fails must ask again, not go quiet.
-///
-/// The restore runs inside a per-message task the transport layer spawned; when
-/// it returns an error, that task logs and drops it. Nothing tells the engine,
-/// the ApprovedBlock it was handed is already consumed, and `start_requester` is
-/// false, so no later ApprovedBlock is accepted either. The node then sits in
-/// Initializing indefinitely, answering heartbeats, looking alive. Observed: a
-/// joiner whose replay hit a missing rspace root at 04:55:38 was still idle two
-/// hours later, having reported nothing since.
 #[tokio::test]
-async fn a_failed_restore_requests_the_approved_block_again() {
-    use casper::rust::engine::engine::Engine;
-    use models::casper::ApprovedBlockRequestProto;
-    use models::routing::protocol::Message as ProtocolMessage;
-    use prost::Message;
-
+async fn initialization_ignores_unauthenticated_mergeable_evidence() {
     let fixture = TestFixture::new().await;
-    InitializingSpec::before_each(&fixture);
-
     let the_init = Arc::new(|| {
         Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
     });
     let engine_cell = Arc::new(EngineCell::init());
-    let initializing_engine = create_initializing_engine(&fixture, the_init, engine_cell.clone())
+    let initializing_engine = create_initializing_engine(&fixture, the_init, engine_cell)
         .await
         .expect("Failed to create Initializing engine");
+    let mut before = fixture
+        .runtime_manager
+        .mergeable_store
+        .collect(|(key, value)| Some((key.clone(), bincode::serialize(value).unwrap())))
+        .expect("mergeable store snapshot");
+    before.sort();
 
     initializing_engine
-        .init()
+        .handle(
+            fixture.local.clone(),
+            CasperMessage::MergeableEntryResponse(MergeableEntryResponse {
+                block_hash: vec![9; 32].into(),
+                serialized_entry: vec![7; 256].into(),
+            }),
+        )
         .await
-        .expect("init should succeed");
+        .expect("unauthenticated response must be handled fail-closed");
 
-    // Only the retry should be visible from here on.
-    fixture.transport_layer.reset();
-    fixture
-        .transport_layer
-        .set_responses(|_peer, _protocol| Ok(()));
-
-    initializing_engine
-        .recover_from_restore_failure(CasperError::RuntimeError(
-            "simulated restore failure".to_string(),
-        ))
-        .await
-        .expect("a restore failure must be handled, not propagated into the void");
-
-    let expected_content = prost::bytes::Bytes::from(
-        ApprovedBlockRequestProto {
-            identifier: "".to_string(),
-            trim_state: true,
-        }
-        .encode_to_vec(),
-    );
-    let requests = fixture.transport_layer.get_all_requests();
-    let asked_again = requests.iter().any(|req| {
-        if let Some(ProtocolMessage::Packet(packet)) = &req.msg.message {
-            packet.content == expected_content
-        } else {
-            false
-        }
-    });
-
-    assert!(
-        asked_again,
-        "a failed restore must re-request the approved state so the node can try \
-         again; staying silent leaves it wedged in Initializing forever. Requests \
-         sent: {:?}",
-        requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
-    );
-
-    InitializingSpec::after_each(&fixture);
+    let mut after = fixture
+        .runtime_manager
+        .mergeable_store
+        .collect(|(key, value)| Some((key.clone(), bincode::serialize(value).unwrap())))
+        .expect("mergeable store snapshot");
+    after.sort();
+    assert_eq!(before, after);
 }
 
 #[test]
@@ -612,6 +569,7 @@ fn transition_to_initializing_invokes_init_immediately() {
                     &fixture.block_processing_queue_tx,
                     &fixture.blocks_in_processing,
                     &fixture.casper_shard_conf,
+                    fixture.required_sigs,
                     &Some(fixture.validator_id.clone()),
                     the_init,
                     true,

@@ -24,7 +24,10 @@ list_match!(
     Match,
     Bundle,
     GUnforgeable,
-    ReceiveBind
+    ReceiveBind,
+    If,
+    CostSignedTerm,
+    CostStack
 );
 
 pub trait SpatialMatcher<T, P> {
@@ -307,7 +310,59 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     wildcard,
                 )
             })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.conditionals,
+                    pattern.conditionals,
+                    &|mut p, values| {
+                        p.conditionals = values;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.cost_signed_terms,
+                    pattern.cost_signed_terms,
+                    &|mut p, values| {
+                        p.cost_signed_terms = values;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.cost_stacks,
+                    pattern.cost_stacks,
+                    &|mut p, values| {
+                        p.cost_stacks = values;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
         }
+    }
+}
+
+impl SpatialMatcher<If, If> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: If, pattern: If) -> Option<()> { guard(target == pattern) }
+}
+
+impl SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostSignedTerm, pattern: CostSignedTerm) -> Option<()> {
+        guard(target == pattern)
+    }
+}
+
+impl SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostStack, pattern: CostStack) -> Option<()> {
+        guard(target == pattern)
     }
 }
 

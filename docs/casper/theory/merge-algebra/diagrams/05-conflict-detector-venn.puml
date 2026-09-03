@@ -19,7 +19,7 @@
 ' merging_logic.rs test removed_predicate_is_subsumed_by_retained_or_number_channel.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/merge-algebra/diagrams/05-conflict-detector-venn.puml
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/05-conflict-detector-venn.puml
 
 @startuml 05-conflict-detector-venn
 !theme plain

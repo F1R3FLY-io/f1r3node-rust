@@ -14,8 +14,6 @@
 use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, rspace_util};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 use crate::helper::test_node::TestNode;
@@ -48,15 +46,6 @@ new ret, rl(`rho:registry:lookup`), RevVaultCh, vaultCh, balanceCh in {
 // that two sequential query deploys succeed even under a worst-case (no-refund) charging model.
 const BALANCE_QUERY_PHLO_LIMIT: i64 = 4_000_000;
 
-// Reconstructs the unforgeable id of the first `new`-bound name of a deploy signed by DEFAULT_SEC.
-fn calculate_unforgeable_name(timestamp: i64) -> String {
-    let secp256k1 = Secp256k1;
-    let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-    let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
-    let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
-    hex::encode(unforgeable_id_u8)
-}
-
 // Deploys a balance query for `rev_address`, adds it in a block, and returns the pretty-printed
 // on-chain balance (a decimal string) read back from the deploy's `ret` channel.
 async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &str) -> String {
@@ -76,12 +65,22 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
         .await
         .expect("Failed to add balance-query block");
 
-    let data = rspace_util::get_data_at_private_channel(
-        &block,
-        &calculate_unforgeable_name(deploy.data.time_stamp),
-        &node.runtime_manager,
-    )
-    .await;
+    assert_eq!(block.body.deploys.len(), 1);
+    let processed = &block.body.deploys[0];
+    assert!(!processed.is_admission_rejected());
+    assert!(!processed.is_failed);
+    let envelope = processed.to_cosigned().expect("protocol-v6 envelope");
+    let unforgeable_id = Tools::user_deploy_rng(&envelope).next();
+    let private_name = hex::encode(
+        unforgeable_id
+            .iter()
+            .map(|&byte| byte as u8)
+            .collect::<Vec<_>>(),
+    );
+
+    let data =
+        rspace_util::get_data_at_private_channel(&block, &private_name, &node.runtime_manager)
+            .await;
 
     assert_eq!(
         data.len(),

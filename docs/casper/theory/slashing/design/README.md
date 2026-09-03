@@ -14,9 +14,8 @@ mental model, or jump to the layer you care about.
 | 05 | [Storage & records](05-storage-and-records.md)                       | The DAG, the equivocation tracker, and the lock-free race that bug #2 closes.                                  |
 | 06 | [Proposing & effect](06-proposing-and-effect.md)                     | How a `SlashDeploy` is assembled, signed, and executed in the PoS Rholang contract (Diagram 07).               |
 | 07 | [Fork-choice & validator lifecycle](07-fork-choice-and-lifecycle.md) | How a slashed validator loses influence; the seven-state lifecycle (Diagram 06).                               |
-| 08 | [Two-level slashing](08-two-level-and-collusion.md)                  | Why colluders are mutually destroyed; the BFT bound (Diagram 04).                                              |
-| 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The documented fixes and permitted Rust/Scala deltas, what each one was, why it was wrong, and how the post-fix code is correct. |
-| 10 | [Bisimilarity (Rust ↔ Scala)](10-bisimilarity.md)                    | The headline observational-equivalence claim, and what "modulo" means (Diagram 10).                            |
+| 08 | [Counterfactual two-level slashing](08-two-level-and-collusion.md)   | Policy-risk analysis for economic neglect closure and its BFT bound.                                          |
+| 09 | [Bug-fix manifest](09-bug-fixes-and-rationale.md)                    | The documented fixes and Rust-side deltas, what each one was, why it was wrong, and how the post-fix code is correct. |
 | 11 | [Worked examples](11-worked-examples.md)                             | Ten end-to-end traces that exercise each component path (Diagrams 02, 03, 05, 09).                             |
 | 12 | [Failure modes & recovery](12-failure-modes.md)                      | What goes wrong, why, and how the system recovers (transfer FIXME, lock race, stake-0, off-by-one density).    |
 | 13 | [References](13-references.md)                                       | Citations with DOIs verified.                                                                                  |
@@ -36,8 +35,7 @@ mental model, or jump to the layer you care about.
    then `../slashing-verification.md` for the proof, then the cited
    Rocq module.
 4. **Cross-implementation mode** — When porting or comparing against
-   the Scala or Ethereum reference, read §10 (bisimilarity) and
-   §13 (references).
+   the Scala or Ethereum reference, read §13 (references).
 
 ## Conventions
 
@@ -46,7 +44,7 @@ definitions live in §02; if you see a symbol you don't recognize,
 check §02 first.
 
 - Rocq theorem names appear as `monospace`, with file:line citations
-  like `Bisimulation.v:77`.
+  like `PoSContract.v:77`.
 - TLA+ identifiers appear as `monospace`, e.g. `IsRealEquivocation`.
 - Rust functions appear as `monospace::path`, e.g.
   `casper::handle_invalid_block`.
@@ -71,13 +69,13 @@ document to open the standalone image.
 | 01 | [Component overview](../diagrams/01-component-overview.svg)                                             | §03      |
 | 02 | [Admissible-equivocation slash flow](../diagrams/02-seq-admissible-equivocation.svg)                    | §04, §11 |
 | 03 | [Ignorable-equivocation slash flow (post-fix #1)](../diagrams/03-seq-ignorable-equivocation-fixed.svg)  | §09, §11 |
-| 04 | [Two-level slashing](../diagrams/04-seq-two-level-slashing.svg)                                         | §08, §11 |
+| 04 | [Counterfactual two-level slashing](../diagrams/04-seq-two-level-slashing.svg)                          | §08, §11 |
 | 05 | [Generic invalid-block dispatch (post-fix #3)](../diagrams/05-seq-invalid-block-dispatch-fixed.svg)     | §04, §09 |
 | 06 | [Validator lifecycle](../diagrams/06-state-validator-lifecycle.svg)                                     | §07      |
 | 07 | [PoS.slash() activity](../diagrams/07-activity-pos-slash-contract.svg)                                  | §06      |
 | 08 | [Justifications → neglect data flow](../diagrams/08-dataflow-justifications-to-neglect.svg)             | §04, §08 |
 | 09 | [Tracker race & locking fix](../diagrams/09-seq-tracker-race-and-fix.svg)                               | §05, §11 |
-| 10 | [Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence](../diagrams/10-component-formal-correspondence.svg) | §10      |
+| 10 | [Specification ↔ Rocq ↔ TLA+ ↔ Rust correspondence](../diagrams/10-component-formal-correspondence.svg) | §03, `../slashing-verification.md` §11.2 |
 | 11 | [Withdrawal transfer-failure fix](../diagrams/11-seq-withdrawal-flow-fix.svg)                           | §09, §11 |
 
 ## Status

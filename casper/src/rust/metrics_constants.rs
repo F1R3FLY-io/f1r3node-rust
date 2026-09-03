@@ -3,6 +3,7 @@ pub const CASPER_METRICS_SOURCE: &str = "f1r3fly.casper";
 pub const MERGING_METRICS_SOURCE: &str = "f1r3fly.casper.merging";
 pub const RUNNING_METRICS_SOURCE: &str = "f1r3fly.casper.running";
 pub const BLOCK_RETRIEVER_METRICS_SOURCE: &str = "f1r3fly.casper.block-retriever";
+pub const FINALIZATION_METRICS_SOURCE: &str = "f1r3fly.casper.finalization";
 pub const APPROVE_BLOCK_METRICS_SOURCE: &str = "f1r3fly.casper.approve-block";
 pub const REPORT_REPLAY_METRICS_SOURCE: &str = "f1r3fly.casper.report-replay";
 pub const ESTIMATOR_METRICS_SOURCE: &str = "f1r3fly.casper.estimator";
@@ -23,9 +24,21 @@ pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRun
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
+pub const BLOCK_REQUESTS_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
+    "block.requests.capacity-deferred.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
 pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
 pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
+pub const FINALIZATION_CERTIFICATE_REQUESTS_TOTAL_METRIC: &str =
+    "finalization.certificate.requests.total";
+pub const FINALIZATION_CERTIFICATE_REQUESTS_RETRIES_METRIC: &str =
+    "finalization.certificate.requests.retries";
+pub const FINALIZATION_CERTIFICATE_REQUESTS_CAPACITY_DEFERRED_METRIC: &str =
+    "finalization.certificate.requests.capacity-deferred";
+pub const FINALIZATION_CERTIFICATE_RETRIEVER_TRACKED_METRIC: &str =
+    "finalization.certificate.retriever.tracked";
+pub const SNAPSHOT_FINALIZATION_CAPTURE_RETRIES_METRIC: &str =
+    "finalization.snapshot.capture.retries";
 pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
     "block.retriever.dep-recovery-tracking.size";
 pub const BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC: &str =
@@ -39,7 +52,10 @@ pub const ACTIVE_VALIDATORS_CACHE_SIZE_METRIC: &str = "active-validators-cache.s
 pub const DEPLOYS_IN_SCOPE_SIZE_METRIC: &str = "deploys-in-scope.size";
 pub const DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC: &str = "deploys-in-scope.sig-bytes-estimate";
 pub const BLOCK_INDEX_CACHE_SIZE_METRIC: &str = "block-index-cache.size";
+pub const BLOCK_INDEX_CACHE_RETAINED_BYTES_METRIC: &str = "block-index-cache.retained-bytes";
 pub const PARENTS_POST_STATE_CACHE_SIZE_METRIC: &str = "parents-post-state-cache.size";
+pub const PARENT_FRONTIER_CAPACITY_DEFERRED_TOTAL_METRIC: &str =
+    "parent-frontier.capacity-deferred.total";
 pub const REPLAY_CACHE_ENTRIES_METRIC: &str = "replay-cache.entries";
 pub const REPLAY_CACHE_RETAINED_BYTES_METRIC: &str = "replay-cache.retained-bytes";
 pub const PROPOSER_QUEUE_PENDING_METRIC: &str = "proposer.queue.pending";
@@ -53,6 +69,8 @@ pub const DAG_FINALIZED_BLOCKS_SIZE_METRIC: &str = "dag.finalized-blocks.size";
 pub const GENESIS_METRIC: &str = "genesis";
 pub const BLOCK_VALIDATION_SUCCESS_METRIC: &str = "block.validation.success";
 pub const BLOCK_VALIDATION_FAILED_METRIC: &str = "block.validation.failed";
+pub const BLOCK_VALIDATION_LOCAL_FAULT_DEFERRED_METRIC: &str =
+    "block.validation.local-fault-deferred";
 pub const CASPER_INIT_ATTEMPTS_METRIC: &str = "casper.init.attempts";
 pub const CASPER_INIT_RETRY_NO_APPROVED_BLOCK_METRIC: &str = "casper.init.retry.no-approved-block";
 pub const CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC: &str = "casper.init.approved-block.received";
@@ -61,6 +79,13 @@ pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
 pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
+pub const BLOCK_PROCESSING_ADMISSION_BYTES_METRIC: &str = "block-processing.admission.bytes";
+pub const BLOCK_PROCESSING_ADMISSION_BYTES_LIMIT_METRIC: &str =
+    "block-processing.admission.bytes-limit";
+pub const BLOCK_PROCESSING_ADMISSION_DEFERRED_TOTAL_METRIC: &str =
+    "block-processing.admission.deferred.total";
+pub const BLOCKS_IN_PROCESSING_SIZE_METRIC: &str = "block-processing.in-flight";
+pub const PROCESS_RSS_KB_METRIC: &str = "process.rss-kb";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";
@@ -182,19 +207,23 @@ pub const BLOCK_PLAY_DEPLOY_REFUND_TIME_METRIC: &str = "block.play.deploy.refund
 pub const RUNTIME_SPAWN_TIME_METRIC: &str = "runtime.spawn.time";
 pub const RUNTIME_SPAWN_REPLAY_TIME_METRIC: &str = "runtime.spawn-replay.time";
 
-// Block validation step time metrics (7 variants)
+// Block validation step time metrics
 pub const BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC: &str =
     "block.validation.step.block-summary.time";
 pub const BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC: &str =
     "block.validation.step.checkpoint.time";
+pub const BLOCK_VALIDATION_STEP_PRE_STATE_TIME_METRIC: &str =
+    "block.validation.step.pre-state.time";
 pub const BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC: &str =
     "block.validation.step.bonds-cache.time";
+pub const BLOCK_VALIDATION_STEP_FLOOR_AUTHORITY_TIME_METRIC: &str =
+    "block.validation.step.floor-authority.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC: &str =
     "block.validation.step.neglected-invalid-block.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.neglected-equivocation.time";
-pub const BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC: &str =
-    "block.validation.step.phlo-price.time";
+pub const BLOCK_VALIDATION_STEP_SLASH_AUTHORIZATION_TIME_METRIC: &str =
+    "block.validation.step.slash-authorization.time";
 pub const BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.simple-equivocation.time";
 

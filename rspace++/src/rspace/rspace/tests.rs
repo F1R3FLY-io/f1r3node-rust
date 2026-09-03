@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::rspace::r#match::Match;
+use crate::rspace::operation_context::{self, OperationOrder};
 use crate::rspace::rspace_interface::ISpace;
 use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -29,6 +30,98 @@ async fn make_rspace() -> RSpace<String, Wildcard, String, Cont> {
     let mut kvm = InMemoryStoreManager::new();
     let store = kvm.r_space_stores().await.unwrap();
     RSpace::create(store, Arc::new(Box::new(AlwaysMatch))).unwrap()
+}
+
+fn order(step: u64) -> OperationOrder {
+    OperationOrder {
+        session: [9; 32],
+        path: vec![(step, 0)].into(),
+    }
+}
+
+#[tokio::test]
+async fn ordered_event_log_uses_causal_order_instead_of_arrival_order() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(2),
+        rspace.produce("later".to_string(), "two".to_string(), false),
+    )
+    .await
+    .unwrap();
+    operation_context::scope(
+        order(1),
+        rspace.produce("earlier".to_string(), "one".to_string(), false),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rspace.take_event_log().await, vec![
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"earlier".to_string(),
+            &"one".to_string(),
+            false,
+        ))),
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"later".to_string(),
+            &"two".to_string(),
+            false,
+        ))),
+    ]);
+}
+
+#[tokio::test]
+async fn soft_checkpoint_preserves_and_reverts_canonical_event_order() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(3),
+        rspace.produce("third".to_string(), "three".to_string(), false),
+    )
+    .await
+    .unwrap();
+    operation_context::scope(
+        order(1),
+        rspace.produce("first".to_string(), "one".to_string(), false),
+    )
+    .await
+    .unwrap();
+
+    let checkpoint = rspace.create_soft_checkpoint().await;
+    let expected = checkpoint.log.clone();
+    assert_eq!(expected, vec![
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"first".to_string(),
+            &"one".to_string(),
+            false,
+        ))),
+        Event::IoEvent(IOEvent::Produce(Produce::create(
+            &"third".to_string(),
+            &"three".to_string(),
+            false,
+        ))),
+    ]);
+    rspace.revert_to_soft_checkpoint(checkpoint).await.unwrap();
+    assert_eq!(rspace.take_event_log().await, expected);
+}
+
+#[tokio::test]
+async fn produce_metadata_updates_reach_causally_ordered_events() {
+    let rspace = make_rspace().await;
+    operation_context::scope(
+        order(1),
+        rspace.produce("service".to_string(), "request".to_string(), false),
+    )
+    .await
+    .unwrap();
+    let updated = Produce::create(&"service".to_string(), &"request".to_string(), false)
+        .mark_as_non_deterministic(vec![b"response".to_vec()]);
+    rspace.update_produce(updated).await;
+
+    let log = rspace.take_event_log().await;
+    let Event::IoEvent(IOEvent::Produce(produce)) = &log[0] else {
+        panic!("expected produce event")
+    };
+    assert!(!produce.is_deterministic);
+    assert_eq!(produce.output_value, vec![b"response".to_vec()]);
 }
 
 // Measures contention on the event_log mutex while N concurrent tasks call

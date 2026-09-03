@@ -32,8 +32,9 @@
                   parent is at height ≥ the base and reachable from that parent,
                   hence in the merge scope: the floor-bounded scan drops no parent
                   write in [floor, tip].
-     * T-COMM   — the validation committee is `bonds_of(floor)`, a pure function
-                  of the (deterministic) floor — never a node-local view (S8).
+     * T-COMM   — the authorization committee is `bonds_of(floor)`, a pure
+                  function of the deterministic floor — never a node-local
+                  view or the candidate's post-state cache (S8).
 
    ---------------------------------------------------------------------------
    Spec-to-Code Traceability
@@ -47,7 +48,8 @@
    select_floor             | the `chosen`/`ordered` top-down pick (:128-181)
    select_none_correct      | the "no sound base ⇒ Err" branch (:162-182)
    scope_covers_band        | floor-bounded ancestor scan (interpreter_util.rs H3)
-   committee_used           | bonds_cache_from_floor (validate.rs)
+   committee_used           | authority_committee_for_evidence +
+                            | Validate::floor_authority
    =========================================================================== *)
 
 From Stdlib Require Import Arith.Arith.
@@ -281,10 +283,10 @@ Qed.
 (* ===========================================================================
    Section 8 - T-COMM : the committee is a pure function of the floor (S8)
 
-   The validation committee is `bonds_of(floor)`. Since the floor is the
-   deterministic `select_floor` result and `bonds_of` reads only the floor
-   block's recorded bonds, the committee is node-identical — never a node-local
-   finalized view.
+   The authorization committee is `bonds_of(floor)`. Since the floor is the
+   deterministic `select_floor` result and `bonds_of` reads only the floor's
+   post-state, the committee is node-identical — never a node-local finalized
+   view or the candidate block's post-state bond cache.
    =========================================================================== *)
 
 Definition committee_used

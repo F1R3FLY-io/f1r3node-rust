@@ -9,6 +9,7 @@ use serde::Serialize;
 use super::RSpace;
 use crate::rspace::metrics_constants::RSPACE_METRICS_SOURCE;
 use crate::rspace::striped_locks;
+use crate::rspace::trace::Log;
 use crate::rspace::trace::event::{COMM, Consume, Event, IOEvent, Produce};
 
 impl<C, P, A, K> RSpace<C, P, A, K>
@@ -18,6 +19,40 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    pub(super) fn push_event(&self, event: Event) {
+        if let Some(order) = crate::rspace::operation_context::current() {
+            self.ordered_event_log
+                .lock()
+                .expect("ordered event log lock")
+                .entry(order)
+                .or_default()
+                .push(event);
+        } else {
+            self.event_log.lock().expect("event log lock").push(event);
+        }
+    }
+
+    pub(super) fn take_ordered_event_log(&self) -> Log {
+        let mut log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
+        let ordered = std::mem::take(
+            &mut *self
+                .ordered_event_log
+                .lock()
+                .expect("ordered event log lock"),
+        );
+        for events in ordered.into_values() {
+            log.extend(events);
+        }
+        log
+    }
+
+    pub(super) fn clear_ordered_event_log(&self) {
+        self.ordered_event_log
+            .lock()
+            .expect("ordered event log lock")
+            .clear();
+    }
+
     // Single-shard lookup for the hot path (log_produce): a given key always
     // hashes to the same shard, so per-key correctness holds regardless of
     // what any other shard is doing concurrently.
@@ -113,24 +148,15 @@ where
         metrics::counter!(comm_metric_label, "source" => RSPACE_METRICS_SOURCE).increment(1);
 
         // Then update event log (RSpace-specific behavior)
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .push(Event::Comm(comm));
+        self.push_event(Event::Comm(comm));
     }
 
     pub(super) fn log_consume(&self, consume_ref: &Consume) {
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .push(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
+        self.push_event(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
     }
 
     pub(super) fn log_produce(&self, produce_ref: &Produce, persist: bool) {
-        self.event_log
-            .lock()
-            .expect("event log lock")
-            .push(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
+        self.push_event(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
         if !persist {
             let mut counter = self
                 .produce_counter_shard(produce_ref)

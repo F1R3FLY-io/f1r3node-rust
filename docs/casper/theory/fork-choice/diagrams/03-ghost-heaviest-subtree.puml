@@ -1,17 +1,14 @@
 ' Component/Tree Diagram 03 — GHOST heaviest-subtree selection (worked example).
 '
-' The small weighted tree from the Wolfram witness
+' The multi-level DAG from the Wolfram/TLA+ witnesses
 ' (formal/wolfram/fork_choice/ghost_heaviest_subtree.wl):
-'   children : 0 → {1,2}, 1 → {3,4}, 2 → {5}
-'   wt       : 0=0, 1=3, 2=2, 3=5, 4=1, 5=4        (supporting weight at node)
-'   subScore : 1=9, 2=6, 3=5, 4=1, 5=4  (subScore[0]=15 = wt + Σ children)
-'
-' At each level the estimator descends into the child of MAX cumulative subtree
-' score (ties → lower hash, a total order). Chosen path: 0 → 1 (9>6) → 3 (5>1),
-' heaviest-subtree leaf = 3. This matches rank_forkchoices' fixpoint.
+'   root children have cumulative scores 60, 40, and 30;
+'   the 60 branch splits into terminal scores 30 and 30;
+'   the 40 branch has terminal score 40; block 4 is shared by branches 1 and 6.
+' Greedy GHOST chooses 0 → 1 → 3. Global terminal sorting would wrongly choose 5.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/fork-choice/diagrams/03-ghost-heaviest-subtree.puml
+'   plantuml -tsvg docs/casper/theory/fork-choice/diagrams/03-ghost-heaviest-subtree.puml
 
 @startuml 03-ghost-heaviest-subtree
 !theme plain
@@ -38,25 +35,27 @@ title GHOST heaviest-subtree selection
 '   green  (#2E7D32) = chosen descent (max cumulative score wins)
 '   gray   (#90A4AE) = not-chosen child
 
-rectangle "block 0  (root / LCA)\nwt = 0\nsubScore = 15" as N0 #A5D6A7
-rectangle "block 1  ◀ chosen\nwt = 3\nsubScore = 9" as N1 #A5D6A7
-rectangle "block 2\nwt = 2\nsubScore = 6" as N2 #FFFFFF
-rectangle "block 3  ◀ HEAVIEST LEAF\nwt = 5\nsubScore = 5" as N3 #A5D6A7
-rectangle "block 4  (leaf)\nwt = 1\nsubScore = 1" as N4 #FFFFFF
-rectangle "block 5  (leaf)\nwt = 4\nsubScore = 4" as N5 #FFFFFF
+rectangle "block 0  (root / LCA)\nscore = 110" as N0 #A5D6A7
+rectangle "block 1  ◀ chosen subtree\nscore = 60" as N1 #A5D6A7
+rectangle "block 2\nscore = 40" as N2 #FFFFFF
+rectangle "block 6\nscore = 30" as N6 #FFFFFF
+rectangle "block 3  ◀ GHOST head\nscore = 30" as N3 #A5D6A7
+rectangle "block 4  (shared terminal)\nscore = 30" as N4 #FFFFFF
+rectangle "block 5  (global leaf max; NOT head)\nscore = 40" as N5 #FFCDD2
 
-N0 -[#2E7D32,bold]-> N1 : 9 ≥ 6  ⟹ pick 1
-N0 -[#90A4AE]-> N2 : 6  (dropped)
-N1 -[#2E7D32,bold]-> N3 : 5 ≥ 1  ⟹ pick 3
-N1 -[#90A4AE]-> N4 : 1  (dropped)
-N2 -[#90A4AE]-> N5 : 4  (off the\nheaviest path)
+N0 -[#2E7D32,bold]-> N1 : 60 > 40 > 30
+N0 -[#90A4AE]-> N2 : secondary subtree
+N0 -[#90A4AE]-> N6 : secondary subtree
+N1 -[#2E7D32,bold]-> N3 : tie; lower hash wins
+N1 -[#90A4AE]-> N4 : retained terminal
+N2 -[#C62828]-> N5 : retained terminal, not head
+N6 -[#90A4AE]-> N4 : shared edge; deduplicate
 
 legend bottom
-  At each level DESCEND into the max-cumulative-score child;
-  ties → lower hash (a TOTAL order, so the argmax is unique).
-  subScore[n] = wt[n] + Σ subScore[children(n)].
-  Path 0 → 1 → 3 : subScore 15 ▶ 9 ▶ 5 ; heaviest-subtree leaf = 3.
-  Rocq Rank.rank_selects_heaviest ; Wolfram ghost_heaviest_subtree.wl.
+  Greedy path: 0 → 1 → 3. Exact terminal frontier: {3, 4, 5}.
+  Ranked result: [3, 5, 4]. A global terminal sort [5, 3, 4] is not GHOST.
+  Rocq Rank + TerminalFrontier; TLA⁺ GhostTerminalFrontier;
+  Wolfram ghost_heaviest_subtree.wl.
 endlegend
 
 @enduml

@@ -1,30 +1,20 @@
-// Releasing the proposer's deploy-pool copy keys on the FLOOR, not on the
-// finality marker.
+// Release the proposer's deploy-pool copy only when the adopted LFB state
+// contains the exact execution effect.
 //
-// Finalization marks the new LFB and its whole indirectly-finalized ancestor
-// closure, and that marker is not a statement about the floor: a marked block
-// can still be excluded from every future cone if fork choice moves off its
-// branch (ucc gate 38237bb7 — carrier #598 marked finalized as an ancestor of
-// #599, #599 orphaned three heights later, the deploy destroyed with it).
+// A finality marker proves causal support. It does not prove state-effect
+// membership. A candidate can contain a source block causally while its merge
+// rejects that source effect. Marker-only cleanup would destroy the pool's
+// recovery copy.
 //
-// The pool copy is the ONLY recovery net for that case. An orphaned carrier
-// was never merged, so no disposition record exists, nothing enters the
-// rejected-deploy buffer, and the record-driven recovery machinery cannot see
-// the deploy at all — orphan_reinclusion_spec is built on exactly that premise
-// ("The pool still holds the deploy, and re-inclusion under a foreign parent
-// is the ONLY path back into a live branch"). Releasing on the marker removes
-// the premise.
-//
-// So the release belongs to the deploy-lifecycle register, the one component
-// that re-evaluates as the floor advances: it happens when the register writes
-// its write-once terminal verdict. Gating the finalization edge on the floor
-// instead does not defer the release, it DROPS it — the block is already
-// marked by the next round and never reappears in a `finalized_set`. Both
-// halves are pinned below.
+// The block that becomes the LFB also carries an older frozen floor. That
+// frozen floor authenticated proposal context. It is not the current state
+// anchor. Once exact provenance proves that the adopted LFB contains the
+// effect, cleanup must not wait for the older frozen floor to catch up.
 
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::construct_deploy;
+use models::rust::casper::protocol::casper_message::StateEffectId;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
@@ -36,13 +26,11 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// nodes used.
 fn test_ftt() -> FtThreshold { FtThreshold::from_f32_lossy(0.0) }
 
-fn pool_holds(node: &TestNode, sig: &Bytes) -> bool {
+fn pool_holds(node: &TestNode, deploy_id: &Bytes) -> bool {
     node.deploy_storage
         .lock()
-        .read_all()
+        .contains_envelope(deploy_id)
         .expect("read deploy pool")
-        .iter()
-        .any(|d| d.sig == *sig)
 }
 
 /// Drive one round of empty proposals by every validator, delivering each to
@@ -63,14 +51,11 @@ async fn drive_round(nodes: &mut [TestNode]) {
     }
 }
 
-/// THE regression. Finality lands on a block before the floor reaches it, and
-/// it sweeps in the whole indirectly-finalized ancestor closure — so a carrier
-/// is marked finalized while its contents are NOT yet represented in every
-/// future merge base and its branch can still be abandoned. Removing the pool
-/// copy there is what turns an orphaned carrier into destroyed work.
+/// The adopted LFB contains the effect before the LFB block's frozen floor
+/// covers its source. Exact state provenance must release the pool copy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
+async fn an_adopted_lfb_effect_evicts_when_its_frozen_floor_lags() {
     let n_validators = 3usize;
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
@@ -96,12 +81,11 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
         Some(shard_id.clone()),
     )
     .expect("build carrier deploy");
-    let sig: Bytes = deploy.sig.clone();
-
     let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("validator 1 proposes the carrier");
+    let deploy_id = Bytes::copy_from_slice(carrier.body.deploys[0].deploy_id());
     let carrier_hash = carrier.block_hash.clone();
     for (i, node) in nodes.iter_mut().enumerate() {
         if i != 0 {
@@ -112,7 +96,7 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
     }
 
     assert!(
-        pool_holds(&nodes[0], &sig),
+        pool_holds(&nodes[0], &deploy_id),
         "fixture precondition: inclusion alone must not evict the pool copy — \
          the owner keeps it until the work is irreversibly settled",
     );
@@ -165,14 +149,30 @@ async fn a_finalized_carrier_above_the_floor_keeps_its_deploy_in_the_pool() {
          is the legitimate one",
     );
 
+    let dag = nodes[0]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag representation");
+    let adopted_lfb = dag.last_finalized_block();
+    let effect = StateEffectId {
+        source_block_hash: carrier_hash,
+        execution_index: 0,
+    };
     assert!(
-        pool_holds(&nodes[0], &sig),
-        "the carrier is finalized but the floor has NOT reached it, so its \
-         contents are not yet in every future merge base and its branch can \
-         still be abandoned. Evicting the pool copy here destroys the deploy \
-         outright: an orphaned carrier is never merged, so no rejection record \
-         exists, nothing reaches the rejected-deploy buffer, and the pool copy \
-         is the only path back into a live branch",
+        block_storage::rust::finality::state_preservation::is_state_effect_active(
+            &dag,
+            &adopted_lfb,
+            &effect,
+        )
+        .expect("committed effect provenance"),
+        "the adopted LFB state must contain the carrier effect even when the \
+         LFB block's older frozen floor does not cover the carrier",
+    );
+    assert!(
+        !pool_holds(&nodes[0], &deploy_id),
+        "the adopted LFB state contains the effect, so the lifecycle register \
+         must release the pool copy without waiting for the LFB block's older \
+         frozen floor",
     );
 }
 
@@ -207,12 +207,11 @@ async fn a_deploy_is_evicted_once_the_floor_covers_its_carrier() {
         Some(shard_id.clone()),
     )
     .expect("build carrier deploy");
-    let sig: Bytes = deploy.sig.clone();
-
     let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&deploy))
         .await
         .expect("validator 1 proposes the carrier");
+    let deploy_id = Bytes::copy_from_slice(carrier.body.deploys[0].deploy_id());
     for (i, node) in nodes.iter_mut().enumerate() {
         if i != 0 {
             node.process_block(carrier.clone())
@@ -224,7 +223,7 @@ async fn a_deploy_is_evicted_once_the_floor_covers_its_carrier() {
     let mut evicted = false;
     for _ in 0..16 {
         drive_round(&mut nodes).await;
-        if !pool_holds(&nodes[0], &sig) {
+        if !pool_holds(&nodes[0], &deploy_id) {
             evicted = true;
             break;
         }

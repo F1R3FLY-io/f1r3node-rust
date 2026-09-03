@@ -1,0 +1,58 @@
+# Stage D fee and Exchange loop (historical design)
+
+> **Retired implementation design; do not implement from this document.** The
+> separate `F_v` balance, epoch conversion, `W_v` mirror, and close-block supply
+> writes below were removed. Their conservation objective survives as an atomic
+> payer-to-proposer SystemVault transfer; the blessed Exchange remains a general
+> conserving swap of already-existing assets or authority. The current executable
+> protocol is documented in
+> [End-to-End Authority Settlement](end-to-end-authority-settlement.md) and the
+> [Executable Conformance Matrix](../cost-accounting-executable-conformance-matrix.md).
+
+**Status:** Retired historical design. Spec law:
+`publications/cost-accounting/cost-accounted-rho.tex` ("Fee conversion",
+"Persistent validator", Section 7 funding model, and Appendix B).
+
+## D.0 — Centerpiece: cost ≠ fee (the WD-D2 settlement is UNCHANGED)
+The D2 settlement debit (`post Σ⟦s⟧ = pre − ΣΔ_admitted`, `CloseBlockDeploy::dual_write_supply`) is the historical **COST** — calculus COMM tokens consumed from the signer's own pool (§7.4), *spent* by the calculus's rewrite rules, never routed to a recipient. DR-47 refines the current native burn to physical authority plus canonical quantitative RSpace bytes; both remain distinct from the **FEE**, which is the spec's explicit `FeeExtract` (`F_v!(c:())`, one client token per deploy *transferred* to the validator's fee channel, tex:2509-2521). StageD itself is historical and made no change to the then-current D2 gate/settlement; the current normative lifecycle is DR-47 and [`vault-backed-byte-accounting.md`](vault-backed-byte-accounting.md).
+
+## D.1 — `Exchange` blessed contract (OD-1 join; OD-2 opaque carriers; OD-5 1:1 peg)
+`casper/src/main/resources/Exchange.rhox`, registered at `rho:lang:exchange`, is wired like `capabilities_registry` (`RegistrySigGen::derive_from(&Args::new(Some("Exchange"), Some(EXCHANGE_TIMESTAMP), Some(sk)))` → `$$exchangePubKey$$`/`$$exchangeSig$$` substituted into the `.rhox`; `EXCHANGE_PK`/`EXCHANGE_TIMESTAMP`/`EXCHANGE_PUB_KEY` live in `standard_deploys.rs`, `system_public_keys()` includes its key, and genesis installs it after `make_mint`. The contract is the spec's conserving 1:1 swap (tex:3067-3081) as a **persistent join** over ordinary carrier channels: it consumes one datum from each carrier and re-emits both payloads on the opposite carriers. DR-4: the join **requires both inputs** (no one-sided mint). The 1:1 contract has no rate parameter.
+
+**Carrier vs `Σ⟦v⟧`:** Carrier payloads are opaque. They can be integer fee counts or first-class `CostStack` terms. Exact stack payloads retain cell identity, order, signature tags, and multiplicity through the swap; executing the received term materializes it through the separately authenticated, conserving stack-transfer path. `Σ⟦Ground(pk)⟧` balance datums remain unnameable from Rholang (no bytes→GPrivate primitive), so Exchange cannot directly write a native purse. The close-block `Σ⟦v⟧` credit is the Rust `supply::produce_balance` transition, backed by the fee-pool debit.
+
+## D.2 — `F_v` fee collection + closeBlock conversion (OD-3 flat 1-token; OD-4 SETTLED → `Σ⟦v⟧`-only, no `@W_v` mirror — DR-14)
+- **`F_v := @(*feeTag, validatorPk)`** — a per-validator PoS-private fee channel; allocate `feeTag` alongside `walletTag`/`quarantineTag` in PoS-state scope. Distinct from `@W_v` (draw) and `Σ⟦v⟧` (gate pool).
+- **Fee = flat ONE token per admitted client deploy** (the spec's literal `c:()` `FeeExtract` — NOT `Δ_c` (that's the cost); NOT a configurable param — spec-literal flat, avoids a business parameter), credited to the **proposing** validator (consensus-deterministic: `block_data.sender`).
+- **Write seam (replay-symmetric, mirrors D2's `settlement_debits`) — F-C/F-D CONSERVING CARVE (LANDED, supersedes the additive-mint sketch):** the fee is NOT an additive `F_v += count` mint; it is a supply-CONSERVING CARVE from each admitted client's OWN post-cost `Σ⟦c⟧` into the proposer's `F_v`, on `CloseBlockDeploy::post_eval`/`post_eval_replay`. Per client pool: `Σ⟦c⟧ -= fee` (one token per admitted deploy in that pool), then `F_v(proposer) += Σ fee` (clients debited == `F_v` credited; no mint). Play: the per-client carve is `AdmissionOutcome.fee_debits`, threaded as `CloseBlockDeploy::fee_carve` (an `Option<FeeCarve>`); replay: recomputed from `block.body.deploys` via `recompute_settlement_debits(...).fee` (identical, the SAME recompute-from-block discipline + `compute_settlement_debits` apportionment as the cost debit). Disjoint `fee_carve_random_state` (per-client `Σ⟦c⟧` debit) + `fee_collect_random_state` (the single `F_v` credit) RNG paths. `ReplaySupplyMismatch` readback guard on every write. (The removed `FeeCredit` / `recompute_fee_credits` API and the `block.body.deploys.len()` mint no longer exist.)
+- **closeBlock per-epoch conversion (the economic loop, tex:3095-3100):** in the epoch branch, BEFORE the epoch mint, fold over `allBonds`: for each `active ∧ ¬mintingHalted` validator with `F_v` count `f > 0`, run `f` through `Exchange` (1:1) → publish `(v, k=f)` on a `sys:casper:feeConvertList` env channel; `post_eval` credits each eligible `Σ⟦v⟧` via `produce_balance(Σ⟦v⟧, old+k)`; zero `F_v`. **SETTLED (DR-14): `Σ⟦v⟧`-only — NO `@W_v` mirror** (the `@W_v` amount is operationally inert under the s₀-collapse; depositing the fee on `@W_v` would be a consensus no-op). **`convertedEpochs: Set[(Pk,Int)]`** state guard (mirror `mintedEpochs`) ⇒ idempotent under multi-parent merge. DR-4: empty-`F_v` validators get only the epoch MINT, never an Exchange one-sided mint.
+
+## D.3 — `!VB` unchanged
+StageA's `VB = for(phlo <= @W_v){*phlo}` (persistent `<=`) IS the spec's `!VB`. No change to VB. The fee-feedback loop = `!VB` re-draw (per deploy) + the closeBlock per-epoch fee-convert (D.2). **Per DR-14 there is NO `@W_v` fee-mirror:** `@W_v` presence (the DR-3 halt anchor) is maintained by the epoch mint, and its amount is operationally inert under the s₀-collapse (the gate enforces `Σ⟦v⟧`).
+
+## D.4 — Client funding / #13 is ORTHOGONAL (do NOT change the gate activation)
+Stage D provisions the validator's `Σ⟦v⟧`/`@W_v` through mint and fee conversion; it does not silently derive client `Σ⟦c⟧` pools from legacy vault balances. The mandatory D2 gate treats an absent pool as zero supply, so a client needs either an explicit public-key allocation committed at genesis or a conserving first-class stack transfer from an already funded purse before its signed execution can be admitted. Exchange can transport that stack on ordinary carriers, but only the native stack-transfer protocol may materialize it into `Σ`.
+
+`rho:vault:system` is the existing REV custody contract. Some Rholang variables call it `RevVault`, but there is no separate `RevVault` cost-accounting primitive in either scoped paper. DR-27 identifies REV and phlogiston as one denomination at the platform level; it does **not** make two independently stored balances interchangeable. A vault-to-cost funding operation must therefore be an explicit, atomic reallocation: authenticate the vault withdrawal, debit exactly once, create or transfer the corresponding cost stack exactly once, bind the result to the destination signature or unforgeable funding slot, and commit the paired effects under one replay witness. Lollipop remains independent of custody: it selects the rendezvous and continuation purses after funding and never queries or debits SystemVault itself.
+
+## D.5 — Formal (register all in `scripts/check-cost-accounted-rho-proofs.sh`; zero admits/axioms)
+- NEW `formal/rocq/cost_accounted_rho/theories/Exchange.v`: `exchange_conserves_per_channel` (one consumed + one produced per channel), `exchange_total_conserved`, `exchange_requires_both_inputs` (DR-4), `exchange_is_ca_step_not_amint` (Exchange is a `ca_step`, not `AMint`, so by `user_ca_step_does_not_mint` it cannot mint). Add to `_CoqProject` + heredoc.
+- REINTERPRET `Settlement.v` (DR-9: escrow `limit*price`→fixed RevVault reservation and exact component debit; keep `debit_plus_refund_eq_reservation`/`post_evaluation_settlement_no_mint`) + `MultiSignerRefinement.v` (DR-5: `pos_charge`/`pos_refund`→wallet-draw/commit; **keep the distinctness/FIFO lemmas verbatim**; `fifo_drain_conservation` reads as `Σ released + Σ committed = Σ reserved`).
+- `TokenConservation.v` ADD `fee_collection_conserves` (the `F_v` credit + Exchange + `Σ⟦v⟧` mirror conserves total tokens; the COST lemmas STAY). `MintingInjection.v` ADD `fee_convert_credit_is_backed` (`Σ⟦v⟧ += k ≤ f` collected fees; distinct from `AMint`).
+
+## D.6 — TLA+ / Sage / threat-UC / docs
+- TLA+: `EvalScheduling.tla` += `feeCollected` var + `FeeConvert` action (epoch-boundary, before mint) + `Inv_FeeConvertConserves`/`Inv_FeeConvertNotFromEmpty`; generalize `SupplyOnlyFromMint`→`SupplyOnlyFromMintOrBackedFeeConvert`. NEW `ExchangeFlow.tla`(+cfg): 2-channel swap, `Inv_PerChannelConservation` + `Inv_RequiresBothInputs`.
+- Sage: NEW `exchange_conservation.sage`; extend `supply_accounting_model.sage` with the fee-convert phase (`post Σ⟦v⟧ = pre + epochMint + convertedFees`, `convertedFees ≤ feesCollected`, no double-convert under merge).
+- Threat/UC (next-free; verify live max TM-CA-157/UC-CA-155): TM-CA-158 (fee-conversion inflation — blocked by 1:1 + `convertedEpochs` + `fee_collection_conserves` + DR-4 join), TM-CA-159 (forged Exchange / unauthorized `Σ⟦v⟧` credit — sysAuthToken-gated mirror + unnameable `Σ⟦v⟧`), TM-CA-160 (fee-credit play/replay divergence — recompute-from-block discipline + disjoint RNG + readback). UC-CA-156 (collect fees to `F_v`), UC-CA-157 (epoch fee→v conversion replenishes `Σ⟦v⟧`), UC-CA-158 (Exchange 1:1 conserves per channel). Correct the stale `workstream-c-economic.md` "UC-CA-152" StageD label.
+- Docs: `workstream-c-economic.md` StageD → this design; `cost-accounting-decision-records.md` DR-4 "Realization (Stage D)" note (Exchange on carriers; `Σ⟦v⟧` credit = Rust mirror; fee ≠ cost) + DR-13 sub-bullet (fee writes ride the `post_eval` authorized-write seam).
+
+## D.7 — Impl sequencing
+1. `Exchange.rhox` + genesis wiring (mirror capabilities_registry) → verify genesis compiles + `rho:lang:exchange` resolves.
+2. `F_v` + fee plumbing (Rust; F-C/F-D conserving carve): `close_block_deploy.rs` `fee_carve` (an `Option<FeeCarve>`, sibling of `settlement_debits`, play-populate/replay-recompute), `supply.rs` `fee_carve_random_state` + `fee_collect_random_state` + helpers, `acceptance.rs` `AdmissionOutcome.fee_debits` (carved from `Σ⟦c⟧`) + `recompute_settlement_debits(...).fee`.
+3. PoS.rhox: `feeTag` + `convertedEpochs` state; closeBlock `convertFeesToValidators` fold (epoch branch, before mint) → `feeConvertList`; `post_eval` third phase (fee-convert `Σ⟦v⟧` credit ONLY; NO `@W_v` mirror — DR-14).
+4. Formal (Exchange.v + reinterpret Settlement/MultiSigner + corollaries; `_CoqProject` + heredoc).
+5. TLA+/Sage/threat-UC/doc deltas.
+**Tests:** `exchange_conserves_per_channel` (Rust), `fee_collection_and_convert_is_play_replay_deterministic` (byte-identical play/replay), `convertedEpochs` idempotency. Each chunk lands only when build/tests/proof-gate/TLC/Sage are green (LOCAL-ONLY).
+
+## Resolved open decisions
+OD-1 join Exchange; OD-2 opaque carrier payloads with exact first-class stack transport; OD-3 **flat 1-token fee, no param** (spec-literal); **OD-4 SETTLED (DR-14, user-ratified): `Σ⟦v⟧`-only — no duplicate `@W_v` credit**; OD-5 **1:1 peg, no rate param** (spec-literal). The production runtime has no accounting feature switch: the paper's unit-signature embedding is a mathematical conservative-extension case, not an A/B mode.

@@ -17,7 +17,7 @@
 '   red    (#FFCDD2) = failure exit (returnCh writes error or hang)
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/07-activity-pos-slash-contract.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/07-activity-pos-slash-contract.puml
 
 @startuml 07-activity-pos-slash-contract
 !theme plain

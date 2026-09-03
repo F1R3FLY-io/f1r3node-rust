@@ -18,13 +18,27 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::util::construct_deploy;
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::signed::{Cosigned, Signed};
+use models::rust::casper::protocol::casper_message::DeployData;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 struct TestContext {
     genesis: GenesisContext,
+}
+
+fn protocol_envelope(
+    deploy: &Signed<DeployData>,
+    private_key: Option<PrivateKey>,
+) -> Cosigned<DeployData> {
+    let mut data = deploy.data.clone();
+    if data.shard_id.is_empty() {
+        data.shard_id = "root".to_string();
+    }
+    construct_deploy::envelope_from_deploy_data(data, private_key).expect("protocol-v6 envelope")
 }
 
 impl TestContext {
@@ -63,7 +77,10 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
         casper_shard_conf: node.casper.casper_shard_conf.clone(),
         approved_block: node.casper.approved_block.clone(),
         divergence_monitor: node.casper.divergence_monitor.clone(),
-        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        recovery_sync_active: node.casper.recovery_sync_active.clone(),
+        finalization_schedule: node.casper.finalization_schedule.clone(),
+        certificate_verification_schedule: node.casper.certificate_verification_schedule.clone(),
         finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
@@ -102,12 +119,13 @@ async fn fresh_deploy_storage_returns_is_rejected_false() {
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
     let deploy = construct_deploy::basic_deploy_data(1, None, None).expect("deploy");
-    nodes[0]
+    let envelope = protocol_envelope(&deploy, None);
+    assert!(nodes[0]
         .casper
         .deploy_storage
         .lock()
-        .add(vec![deploy.clone()])
-        .expect("add fresh deploy");
+        .add_envelope_if_absent(envelope.clone())
+        .expect("add fresh deploy"));
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
         .await
@@ -119,7 +137,7 @@ async fn fresh_deploy_storage_returns_is_rejected_false() {
         !snapshot.deploys[0].1,
         "fresh deploy must be is_rejected=false"
     );
-    assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+    assert_eq!(snapshot.deploys[0].0, envelope);
 }
 
 /// A deploy in `rejected_deploy_buffer` is returned with `is_rejected = true`.
@@ -132,12 +150,13 @@ async fn rejected_deploy_buffer_returns_is_rejected_true() {
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
     let deploy = construct_deploy::basic_deploy_data(2, None, None).expect("deploy");
+    let envelope = protocol_envelope(&deploy, None);
     nodes[0]
         .casper
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![deploy.clone()])
+        .add(vec![crate::pending_envelope(envelope.clone())])
         .expect("add rejected deploy");
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
@@ -150,7 +169,7 @@ async fn rejected_deploy_buffer_returns_is_rejected_true() {
         snapshot.deploys[0].1,
         "rejected deploy must be is_rejected=true"
     );
-    assert_eq!(snapshot.deploys[0].0.sig, deploy.sig);
+    assert_eq!(snapshot.deploys[0].0, envelope);
 }
 
 /// A signature that sits in BOTH pools is emitted exactly once, with
@@ -169,18 +188,24 @@ async fn sig_in_both_pools_emitted_once_as_rejected() {
     let only_fresh =
         construct_deploy::basic_deploy_data(8, Some(construct_deploy::DEFAULT_SEC2.clone()), None)
             .expect("only fresh");
-    nodes[0]
-        .casper
-        .deploy_storage
-        .lock()
-        .add(vec![duplicated.clone(), only_fresh.clone()])
-        .expect("add storage deploys");
+    let duplicated_envelope = protocol_envelope(&duplicated, None);
+    let only_fresh_envelope =
+        protocol_envelope(&only_fresh, Some(construct_deploy::DEFAULT_SEC2.clone()));
+    {
+        let mut storage = nodes[0].casper.deploy_storage.lock();
+        assert!(storage
+            .add_envelope_if_absent(duplicated_envelope.clone())
+            .expect("add duplicated envelope"));
+        assert!(storage
+            .add_envelope_if_absent(only_fresh_envelope.clone())
+            .expect("add fresh envelope"));
+    }
     nodes[0]
         .casper
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![duplicated.clone()])
+        .add(vec![crate::pending_envelope(duplicated_envelope.clone())])
         .expect("add buffered deploy");
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
@@ -196,14 +221,21 @@ async fn sig_in_both_pools_emitted_once_as_rejected() {
     let by_sig: HashMap<_, _> = snapshot
         .deploys
         .iter()
-        .map(|(d, r)| (d.sig.clone(), *r))
+        .map(|(d, r)| (d.envelope_commitment().expect("deploy id"), *r))
         .collect();
     assert_eq!(
-        by_sig.get(&duplicated.sig),
+        by_sig.get(
+            &duplicated_envelope
+                .envelope_commitment()
+                .expect("duplicated id")
+        ),
         Some(&true),
         "sig in both pools must surface as rejected"
     );
-    assert_eq!(by_sig.get(&only_fresh.sig), Some(&false));
+    assert_eq!(
+        by_sig.get(&only_fresh_envelope.envelope_commitment().expect("fresh id")),
+        Some(&false)
+    );
 }
 
 /// Both pools are read in one snapshot: fresh + rejected deploys coexist.
@@ -217,18 +249,20 @@ async fn both_pools_snapshot_together() {
 
     let fresh = construct_deploy::basic_deploy_data(3, None, None).expect("fresh");
     let rejected = construct_deploy::basic_deploy_data(4, None, None).expect("rejected");
-    nodes[0]
+    let fresh_envelope = protocol_envelope(&fresh, None);
+    let rejected_envelope = protocol_envelope(&rejected, None);
+    assert!(nodes[0]
         .casper
         .deploy_storage
         .lock()
-        .add(vec![fresh.clone()])
-        .expect("add fresh");
+        .add_envelope_if_absent(fresh_envelope.clone())
+        .expect("add fresh"));
     nodes[0]
         .casper
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![rejected.clone()])
+        .add(vec![crate::pending_envelope(rejected_envelope.clone())])
         .expect("add rejected");
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
@@ -240,10 +274,20 @@ async fn both_pools_snapshot_together() {
     let by_sig: HashMap<_, _> = snapshot
         .deploys
         .iter()
-        .map(|(d, r)| (d.sig.clone(), *r))
+        .map(|(d, r)| (d.envelope_commitment().expect("deploy id"), *r))
         .collect();
-    assert_eq!(by_sig.get(&fresh.sig), Some(&false));
-    assert_eq!(by_sig.get(&rejected.sig), Some(&true));
+    assert_eq!(
+        by_sig.get(&fresh_envelope.envelope_commitment().expect("fresh id")),
+        Some(&false)
+    );
+    assert_eq!(
+        by_sig.get(
+            &rejected_envelope
+                .envelope_commitment()
+                .expect("rejected id")
+        ),
+        Some(&true)
+    );
 }
 
 /// The deployer filter returns only deploys signed by the given public key.
@@ -259,21 +303,26 @@ async fn deployer_filter_returns_only_matching() {
     let deploy_b =
         construct_deploy::basic_deploy_data(6, Some(construct_deploy::DEFAULT_SEC2.clone()), None)
             .expect("deploy b");
-    nodes[0]
-        .casper
-        .deploy_storage
-        .lock()
-        .add(vec![deploy_a.clone(), deploy_b.clone()])
-        .expect("add deploys");
+    let envelope_a = protocol_envelope(&deploy_a, None);
+    let envelope_b = protocol_envelope(&deploy_b, Some(construct_deploy::DEFAULT_SEC2.clone()));
+    {
+        let mut storage = nodes[0].casper.deploy_storage.lock();
+        assert!(storage
+            .add_envelope_if_absent(envelope_a.clone())
+            .expect("add deploy a"));
+        assert!(storage
+            .add_envelope_if_absent(envelope_b)
+            .expect("add deploy b"));
+    }
 
-    let pk_a = deploy_a.pk.bytes.clone();
+    let pk_a = envelope_a.primary().pk.bytes.clone();
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, Some(&pk_a))
         .await
         .expect("snapshot");
 
     assert_eq!(snapshot.deploys.len(), 1);
     assert_eq!(snapshot.total_available, 1);
-    assert_eq!(snapshot.deploys[0].0.pk.bytes, pk_a);
+    assert_eq!(snapshot.deploys[0].0.primary().pk.bytes, pk_a);
 }
 
 /// When more than `PENDING_DEPLOYS_MAX_RESULTS` deploys match, the result
@@ -294,7 +343,7 @@ async fn cap_truncates_and_reports_total_available() {
     // truncating rather than relying on storage order.
     let mut deploys: Vec<_> = (0..total)
         .map(|i| {
-            construct_deploy::source_deploy(
+            let deploy = construct_deploy::source_deploy(
                 format!("@{}!({})", i, i),
                 1_700_000_000_000 + i as i64,
                 None,
@@ -303,16 +352,19 @@ async fn cap_truncates_and_reports_total_available() {
                 Some(0),
                 None,
             )
-            .expect("deploy")
+            .expect("deploy");
+            protocol_envelope(&deploy, None)
         })
         .collect();
     deploys.reverse();
-    nodes[0]
-        .casper
-        .deploy_storage
-        .lock()
-        .add(deploys)
-        .expect("add deploys");
+    {
+        let mut storage = nodes[0].casper.deploy_storage.lock();
+        for envelope in deploys {
+            assert!(storage
+                .add_envelope_if_absent(envelope)
+                .expect("add deploy"));
+        }
+    }
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
         .await
@@ -325,12 +377,12 @@ async fn cap_truncates_and_reports_total_available() {
     // the oldest deploy inserted (timestamp base), and every next entry's
     // timestamp is greater or equal.
     let mut prev = (
-        snapshot.deploys[0].0.data.time_stamp,
-        snapshot.deploys[0].0.sig.as_ref().to_vec(),
+        snapshot.deploys[0].0.data().time_stamp,
+        snapshot.deploys[0].0.primary().sig.as_ref().to_vec(),
     );
     assert_eq!(prev.0, 1_700_000_000_000, "oldest deploy kept first");
     for (d, _) in &snapshot.deploys[1..] {
-        let cur = (d.data.time_stamp, d.sig.as_ref().to_vec());
+        let cur = (d.data().time_stamp, d.primary().sig.as_ref().to_vec());
         assert!(
             prev < cur,
             "deploys must be sorted by (timestamp, sig): {:?} then {:?}",
@@ -371,13 +423,14 @@ async fn a_future_dated_deploy_is_still_reported_as_pending() {
         construct_deploy::DEFAULT_SEC.clone(),
     )
     .expect("resign");
+    let future_envelope = protocol_envelope(&future, None);
 
-    nodes[0]
+    assert!(nodes[0]
         .casper
         .deploy_storage
         .lock()
-        .add(vec![future.clone()])
-        .expect("add future deploy");
+        .add_envelope_if_absent(future_envelope.clone())
+        .expect("add future deploy"));
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
         .await
@@ -388,7 +441,7 @@ async fn a_future_dated_deploy_is_still_reported_as_pending() {
         1,
         "a deploy ahead of its window is queued, not gone"
     );
-    assert_eq!(snapshot.deploys[0].0.sig, future.sig);
+    assert_eq!(snapshot.deploys[0].0, future_envelope);
 }
 
 /// The recovery backlog gets the same window test as the fresh pool: a deploy
@@ -412,30 +465,35 @@ async fn an_expired_deploy_in_the_rejected_buffer_is_not_reported() {
         construct_deploy::DEFAULT_SEC.clone(),
     )
     .expect("resign");
+    let live_envelope = protocol_envelope(&live, None);
+    let expired_envelope = protocol_envelope(&expired, None);
 
     nodes[0]
         .casper
         .rejected_deploy_buffer
         .lock()
         .expect("buffer lock")
-        .add(vec![live.clone(), expired.clone()])
+        .add(vec![
+            crate::pending_envelope(live_envelope.clone()),
+            crate::pending_envelope(expired_envelope.clone()),
+        ])
         .expect("add rejected deploys");
 
     let snapshot = BlockAPI::list_pending_deploys(&engine_cell, None)
         .await
         .expect("snapshot");
 
-    let sigs: Vec<_> = snapshot
+    let deploy_ids: Vec<_> = snapshot
         .deploys
         .iter()
-        .map(|(d, _)| d.sig.clone())
+        .map(|(d, _)| d.envelope_commitment().expect("deploy id"))
         .collect();
     assert!(
-        sigs.contains(&live.sig),
+        deploy_ids.contains(&live_envelope.envelope_commitment().expect("live id")),
         "a live rejected deploy is still awaiting retry"
     );
     assert!(
-        !sigs.contains(&expired.sig),
+        !deploy_ids.contains(&expired_envelope.envelope_commitment().expect("expired id")),
         "an expired rejected deploy can never land, so it is not pending"
     );
 }

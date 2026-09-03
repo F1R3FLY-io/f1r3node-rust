@@ -310,12 +310,15 @@ pub async fn check(
     validator_identity: &ValidatorIdentity,
 ) -> Result<CheckProposeConstraintsResult, CasperError> {
     let validator = validator_identity.public_key.bytes.clone();
-    let main_parent_opt = snapshot.parents.first();
     let shard_conf = &snapshot.on_chain_state.shard_conf;
     let synchrony_constraint_threshold = shard_conf.synchrony_constraint_threshold as f64;
 
     match snapshot.dag.latest_message_hash(&validator) {
         Some(last_proposed_block_hash) => {
+            if snapshot.dag.canonical_genesis_hash() == Some(&last_proposed_block_hash) {
+                update_recovery_state_on_success(&validator);
+                return Ok(CheckProposeConstraintsResult::success());
+            }
             let last_proposed_block_meta = snapshot.dag.lookup_unsafe(&last_proposed_block_hash)?;
 
             // If validator's latest block is genesis, it's not proposed any block yet and hence allowed to propose once.
@@ -329,14 +332,7 @@ pub async fn check(
                     return Ok(CheckProposeConstraintsResult::success());
                 }
 
-                let main_parent = main_parent_opt.ok_or(CasperError::Other(
-                    "Synchrony constraint checker: Parent blocks not found".to_string(),
-                ))?;
-
-                let main_parent_meta = snapshot.dag.lookup_unsafe(&main_parent.block_hash)?;
-
-                let validator_weight_map: HashMap<Validator, i64> =
-                    main_parent_meta.weight_map.into_iter().collect();
+                let validator_weight_map = snapshot.finalized_floor_weight_map();
 
                 // Guaranteed to be present since last proposed block was present
                 let seen_senders = calculate_seen_senders_since(

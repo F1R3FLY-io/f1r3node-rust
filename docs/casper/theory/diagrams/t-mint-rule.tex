@@ -1,0 +1,22 @@
+% The (T-Mint) typing rule: type-constrained minting. The mint authority
+% ⟨C⟩ ⊸ Mint(τ) lives in the unrestricted zone Γ (reusable); given a constructor
+% K that satisfies the behavioral contract C, mint_K(τ) is well-typed at Mint(τ).
+% A token with no mint capability in scope is provably unmintable.
+%
+% Source of truth for the §3.2 (T-Mint) rule in
+% cost-accounting-impl/w2-cost-aware-oslf-typing-forward-design.md.
+% Render:  lualatex --output-format=dvi t-mint-rule.tex && dvisvgm ...
+%          (or: ./render.sh t-mint-rule.tex)
+\documentclass[border=8pt]{standalone}
+\usepackage{amsmath,amssymb}
+\input{palette.tex}
+\usepackage{mathpartir}
+\begin{document}
+\renewcommand{\TirNameStyle}[1]{\textsf{\footnotesize #1}}
+\begin{mathpar}
+\inferrule*[left=T-Mint]
+  {\textcolor{caInstantiate}{\Gamma \vdash \mathit{cap} : \langle C\rangle \multimap \mathrm{Mint}(\tau)} \\
+   \Gamma\, ;\, \Delta \vdash K : \langle C\rangle}
+  {\Gamma\, ;\, \Delta \vdash \mathrm{mint}_K(\tau) : \textcolor{caCredit}{\mathrm{Mint}(\tau)}}
+\end{mathpar}
+\end{document}

@@ -39,7 +39,7 @@ where
         tracing::trace!(target: "f1r3fly.rspace.ops", mark = "started-locked-consume", "locked_consume");
 
         let t0 = Instant::now();
-        self.log_consume(consume_ref);
+        self.observe_consume(consume_ref, channels, patterns, continuation, persist, peeks)?;
         metrics::counter!("rspace.consume.log_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t0.elapsed().as_nanos() as u64);
 
@@ -87,15 +87,15 @@ where
                 let produce_counters_closure =
                     |produces: &[Produce]| self.produce_counters(produces);
 
-                self.log_comm(
-                    COMM::new(
-                        &data_candidates,
-                        consume_ref.clone(),
-                        peeks.clone(),
-                        produce_counters_closure,
-                    ),
-                    CONSUME_COMM_LABEL,
+                let comm = COMM::new(
+                    &data_candidates,
+                    consume_ref.clone(),
+                    peeks.clone(),
+                    produce_counters_closure,
                 );
+                self.observe_comm(&comm, continuation, persist, &data_candidates)?;
+                self.log_consume(consume_ref);
+                self.log_comm(comm, CONSUME_COMM_LABEL);
                 self.store_persistent_data(&data_candidates);
                 metrics::counter!("rspace.consume.process_match_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);
@@ -104,6 +104,7 @@ where
             }
             _ => {
                 let t3 = Instant::now();
+                self.log_consume(consume_ref);
                 self.store_waiting_continuation(channels.to_vec(), wk);
                 metrics::counter!("rspace.consume.store_continuation_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t3.elapsed().as_nanos() as u64);

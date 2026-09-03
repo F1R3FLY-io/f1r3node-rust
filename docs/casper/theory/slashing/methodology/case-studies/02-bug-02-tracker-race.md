@@ -51,9 +51,14 @@ RUSTFLAGS="--cfg loom" cargo test --release loom_t_9_2_atomic_record
 TLA⁺ reproduction (TLC):
 
 ```
-tlc -workers 12 MC_ConcurrentTracker.tla       # passes (Locked=TRUE default)
-tlc -workers 12 MC_ConcurrentTracker_pre_fix.tla  # fails Inv_NoOverwrite
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
+  tlc -workers 4 MC_ConcurrentTracker.tla
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 \
+  tlc -workers 4 MC_ConcurrentTracker_pre_fix.tla
 ```
+
+The first command passes with `Locked = TRUE`.
+The second command must violate `Inv_NoOverwrite`.
 
 ## 4 · Classification trace
 

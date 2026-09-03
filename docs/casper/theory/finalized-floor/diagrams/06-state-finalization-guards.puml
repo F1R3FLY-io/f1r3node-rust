@@ -8,10 +8,10 @@
 ' frontier (transparent) and emits floor_incremental_guard_fallback.
 '
 ' Source of truth for the determinism-linchpin figure (section 3.1) in
-' docs/theory/finalized-floor/finalized-floor-verification.md.
+' docs/casper/theory/finalized-floor/finalized-floor-verification.md.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/finalized-floor/diagrams/06-state-finalization-guards.puml
+'   plantuml -tsvg docs/casper/theory/finalized-floor/diagrams/06-state-finalization-guards.puml
 
 @startuml 06-state-finalization-guards
 !theme plain
@@ -46,13 +46,13 @@ state "Cold down-walk (fallback)\ntop-down from parent"               as Cold   
 
 [*] -[#2E7D32]-> Pivot
 
-Pivot   -[#2E7D32]-> Upwalk : guards HOLD ──\ncommittee constant (L-ANC)\n∧ pivot still ft_witnessed ≥ θ\nover J (L-SNAP)
+Pivot   -[#2E7D32]-> Upwalk : guards HOLD ──\ncommittee constant (L-ANC)\n∧ pivot still ft_witnessed > θ\nover J (L-SNAP)
 
-Upwalk  -[#1565C0]-> Upwalk : ft_witnessed(next) ≥ θ\n⟹ advance  (amortized O(1))
-Upwalk  -[#E65100]-> Frontier : ft_witnessed(next) < θ\n⟹ STOP at first non-finalized
+Upwalk  -[#1565C0]-> Upwalk : ft_witnessed(next) > θ\n⟹ advance  (amortized O(1))
+Upwalk  -[#E65100]-> Frontier : ft_witnessed(next) ≤ θ\n⟹ STOP at first non-finalized
 
 Pivot   -[#C62828]-> Cold : committee-constancy guard TRIPS\ncommittee changed in band (bonding)\n⟹ L-ANC premise fails\n/ floor_incremental_guard_fallback
-Pivot   -[#C62828]-> Cold : L-SNAP guard TRIPS\npivot no longer ft_witnessed ≥ θ\nover the larger snapshot J\n/ floor_incremental_guard_fallback
+Pivot   -[#C62828]-> Cold : L-SNAP guard TRIPS\npivot no longer ft_witnessed > θ\nover the larger snapshot J\n/ floor_incremental_guard_fallback
 
 Cold    -[#546E7A]-> Frontier : top-down walk yields the\nIDENTICAL frontier (transparent)
 

@@ -2,7 +2,7 @@
 '
 ' Walks an observed Rust-vs-Scala divergence δ through the
 ' threat-model classification used by §3 of
-' docs/theory/slashing/methodology/differential-and-metamorphic/01-differential-rust-vs-scala.md.
+' docs/casper/theory/slashing/methodology/differential-and-metamorphic/01-differential-rust-vs-scala.md.
 ' Every outcome leaf is colour-coded by threat-model class, matching
 ' the conventions used in diagram 05:
 '   light green  (#E8F5E9) — permitted_bug_fix
@@ -11,11 +11,11 @@
 '   red          (#FFCDD2) — unexpected (halt & investigate)
 '
 ' Decision diamonds use the methodology-suite convention from
-' docs/theory/slashing/methodology/02-glossary-and-notation.md §7:
+' docs/casper/theory/slashing/methodology/02-glossary-and-notation.md §7:
 '   background #FFF7EE, border #E65100.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/06-differential-divergence-classification.puml
+'   plantuml -tsvg docs/casper/theory/slashing/methodology/diagrams/06-differential-divergence-classification.puml
 
 @startuml 06-differential-divergence-classification
 !theme plain

@@ -17,12 +17,15 @@
 
 use std::sync::Arc;
 
+use models::rust::deploy_id::DeployLookupId;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
+
+use super::deploy_occurrence_types::occurrence_rank_cmp;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleEventKind {
@@ -78,11 +81,19 @@ pub struct TerminalRecord {
 /// finality evaluator write; the status API reads).
 #[derive(Clone)]
 pub struct DeployLifecycleTables {
-    events: KeyValueTypedStoreImpl<ByteString, LifecycleEvents>,
-    terminal: KeyValueTypedStoreImpl<ByteString, TerminalRecord>,
+    events: KeyValueTypedStoreImpl<DeployLookupId, LifecycleEvents>,
+    terminal: KeyValueTypedStoreImpl<DeployLookupId, TerminalRecord>,
 }
 
 impl DeployLifecycleTables {
+    pub(crate) fn events_store(&self) -> &KeyValueTypedStoreImpl<DeployLookupId, LifecycleEvents> {
+        &self.events
+    }
+
+    pub(crate) fn terminal_store(&self) -> &KeyValueTypedStoreImpl<DeployLookupId, TerminalRecord> {
+        &self.terminal
+    }
+
     pub fn new(events_kv: Arc<dyn KeyValueStore>, terminal_kv: Arc<dyn KeyValueStore>) -> Self {
         Self {
             events: KeyValueTypedStoreImpl::new(events_kv),
@@ -99,12 +110,15 @@ impl DeployLifecycleTables {
         }
     }
 
-    pub fn get_events(&self, sig: &[u8]) -> Result<Option<LifecycleEvents>, KvStoreError> {
-        let results = self.events.get(&vec![sig.to_vec()])?;
+    pub fn get_events(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<LifecycleEvents>, KvStoreError> {
+        let results = self.events.get(&vec![deploy_id.clone()])?;
         Ok(results.into_iter().next().flatten())
     }
 
-    /// The sig's most recent canonical appearance — the latest INCLUSION
+    /// The deploy's most recent canonical appearance is the latest inclusion
     /// event by (height, hash) whose block `is_visible` accepts, or the
     /// terminal record's frozen display block once the row is pruned. A
     /// rejection record's block holds the record, not the deploy, so
@@ -116,16 +130,16 @@ impl DeployLifecycleTables {
     /// guarded), so the frozen block was visible at the write.
     pub fn canonical_appearance(
         &self,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
         is_visible: &dyn Fn(&[u8]) -> bool,
     ) -> Result<Option<ByteString>, KvStoreError> {
-        if let Some(terminal) = self.get_terminal(sig)? {
+        if let Some(terminal) = self.get_terminal(deploy_id)? {
             if terminal.latest_block_hash.is_empty() {
                 return Ok(None);
             }
             return Ok(Some(terminal.latest_block_hash));
         }
-        let Some(row) = self.get_events(sig)? else {
+        let Some(row) = self.get_events(deploy_id)? else {
             return Ok(None);
         };
         Ok(row
@@ -133,11 +147,7 @@ impl DeployLifecycleTables {
             .iter()
             .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
             .filter(|e| is_visible(&e.block_hash))
-            .max_by(|a, b| {
-                a.height
-                    .cmp(&b.height)
-                    .then_with(|| a.block_hash.cmp(&b.block_hash))
-            })
+            .max_by(|a, b| occurrence_rank_cmp(a.height, &a.block_hash, b.height, &b.block_hash))
             .map(|e| e.block_hash.clone()))
     }
 
@@ -145,14 +155,14 @@ impl DeployLifecycleTables {
     /// inclusion. No-op for sigs that already have a terminal record.
     pub fn append_events(
         &self,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
         valid_after: Option<i64>,
         new_events: Vec<LifecycleEvent>,
     ) -> Result<(), KvStoreError> {
-        if self.get_terminal(sig)?.is_some() {
+        if self.get_terminal(deploy_id)?.is_some() {
             return Ok(());
         }
-        let mut row = self.get_events(sig)?.unwrap_or(LifecycleEvents {
+        let mut row = self.get_events(deploy_id)?.unwrap_or(LifecycleEvents {
             valid_after: None,
             events: Vec::new(),
         });
@@ -160,26 +170,26 @@ impl DeployLifecycleTables {
             row.valid_after = valid_after;
         }
         row.events.extend(new_events);
-        self.events.put_one(sig.to_vec(), row)
+        self.events.put_one(deploy_id.clone(), row)
     }
 
     /// Every sig with an open event row — the schedule rebuild's input.
     /// Rows are pruned at the terminal write, so this enumerates OPEN
     /// sigs, not history.
-    pub fn open_sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
+    pub fn open_sigs(&self) -> Result<Vec<DeployLookupId>, KvStoreError> {
         self.events.to_map().map(|m| m.into_keys().collect())
     }
 
-    /// Redelivery-idempotent append: a no-op when the row already holds an
+    /// Redelivery-idempotent append is a no-op when the row already holds an
     /// event for the same block with the same kind of testimony, so a
     /// crash-then-redelivery re-run never duplicates an event.
     pub fn append_event_once(
         &self,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
         valid_after: Option<i64>,
         event: LifecycleEvent,
     ) -> Result<(), KvStoreError> {
-        if let Some(row) = self.get_events(sig)? {
+        if let Some(row) = self.get_events(deploy_id)? {
             let duplicate = row.events.iter().any(|e| {
                 e.block_hash == event.block_hash
                     && std::mem::discriminant(&e.kind) == std::mem::discriminant(&event.kind)
@@ -188,11 +198,14 @@ impl DeployLifecycleTables {
                 return Ok(());
             }
         }
-        self.append_events(sig, valid_after, vec![event])
+        self.append_events(deploy_id, valid_after, vec![event])
     }
 
-    pub fn get_terminal(&self, sig: &[u8]) -> Result<Option<TerminalRecord>, KvStoreError> {
-        let results = self.terminal.get(&vec![sig.to_vec()])?;
+    pub fn get_terminal(
+        &self,
+        deploy_id: &DeployLookupId,
+    ) -> Result<Option<TerminalRecord>, KvStoreError> {
+        let results = self.terminal.get(&vec![deploy_id.clone()])?;
         Ok(results.into_iter().next().flatten())
     }
 
@@ -202,21 +215,27 @@ impl DeployLifecycleTables {
     /// flip them, including a buggy second evaluation.
     pub fn put_terminal_if_absent(
         &self,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
         record: TerminalRecord,
     ) -> Result<TerminalRecord, KvStoreError> {
-        if let Some(existing) = self.get_terminal(sig)? {
+        if let Some(existing) = self.get_terminal(deploy_id)? {
             return Ok(existing);
         }
-        self.terminal.put_one(sig.to_vec(), record.clone())?;
-        self.events.delete(vec![sig.to_vec()])?;
+        self.terminal.put_one(deploy_id.clone(), record.clone())?;
+        self.events.delete(vec![deploy_id.clone()])?;
         Ok(record)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use models::rust::deploy_id::LegacyDeploySignature;
+
     use super::*;
+
+    fn deploy_id() -> DeployLookupId {
+        DeployLookupId::Legacy(LegacyDeploySignature::new(b"sig".to_vec()))
+    }
 
     fn included(height: i64, is_failed: bool) -> LifecycleEvent {
         LifecycleEvent {
@@ -238,13 +257,14 @@ mod tests {
     #[test]
     fn valid_after_records_once_and_events_accumulate() {
         let tables = DeployLifecycleTables::in_memory();
+        let deploy_id = deploy_id();
         tables
-            .append_events(b"sig", Some(5), vec![included(6, false)])
+            .append_events(&deploy_id, Some(5), vec![included(6, false)])
             .expect("first append");
         tables
-            .append_events(b"sig", Some(7), vec![included(8, true)])
+            .append_events(&deploy_id, Some(7), vec![included(8, true)])
             .expect("second append");
-        let row = tables.get_events(b"sig").expect("read").expect("row");
+        let row = tables.get_events(&deploy_id).expect("read").expect("row");
         assert_eq!(
             row.valid_after,
             Some(5),
@@ -256,15 +276,16 @@ mod tests {
     #[test]
     fn terminal_is_write_once_and_prunes_the_event_row() {
         let tables = DeployLifecycleTables::in_memory();
+        let deploy_id = deploy_id();
         tables
-            .append_events(b"sig", Some(1), vec![included(2, false)])
+            .append_events(&deploy_id, Some(1), vec![included(2, false)])
             .expect("append");
         let first = tables
-            .put_terminal_if_absent(b"sig", terminal(TerminalState::Finalized))
+            .put_terminal_if_absent(&deploy_id, terminal(TerminalState::Finalized))
             .expect("first terminal");
         assert_eq!(first.state, TerminalState::Finalized);
         let survivor = tables
-            .put_terminal_if_absent(b"sig", terminal(TerminalState::Expired))
+            .put_terminal_if_absent(&deploy_id, terminal(TerminalState::Expired))
             .expect("second terminal");
         assert_eq!(
             survivor.state,
@@ -272,7 +293,7 @@ mod tests {
             "a terminal record never flips"
         );
         assert!(
-            tables.get_events(b"sig").expect("read").is_none(),
+            tables.get_events(&deploy_id).expect("read").is_none(),
             "the event row is pruned at the terminal write"
         );
         assert!(
@@ -284,33 +305,35 @@ mod tests {
     #[test]
     fn append_event_once_is_idempotent_per_block_and_kind() {
         let tables = DeployLifecycleTables::in_memory();
+        let deploy_id = deploy_id();
         let event = included(2, false);
         tables
-            .append_events(b"sig", Some(1), vec![event.clone()])
+            .append_events(&deploy_id, Some(1), vec![event.clone()])
             .expect("insert-path append");
         tables
-            .append_event_once(b"sig", Some(1), event.clone())
+            .append_event_once(&deploy_id, Some(1), event.clone())
             .expect("backfill re-append");
-        let row = tables.get_events(b"sig").expect("read").expect("row");
+        let row = tables.get_events(&deploy_id).expect("read").expect("row");
         assert_eq!(row.events.len(), 1, "backfill must not duplicate events");
         tables
-            .append_event_once(b"sig", Some(1), included(5, false))
+            .append_event_once(&deploy_id, Some(1), included(5, false))
             .expect("distinct block appends");
-        let row = tables.get_events(b"sig").expect("read").expect("row");
+        let row = tables.get_events(&deploy_id).expect("read").expect("row");
         assert_eq!(row.events.len(), 2);
     }
 
     #[test]
     fn append_after_terminal_is_a_noop() {
         let tables = DeployLifecycleTables::in_memory();
+        let deploy_id = deploy_id();
         tables
-            .put_terminal_if_absent(b"sig", terminal(TerminalState::Expired))
+            .put_terminal_if_absent(&deploy_id, terminal(TerminalState::Expired))
             .expect("terminal");
         tables
-            .append_events(b"sig", Some(1), vec![included(2, false)])
+            .append_events(&deploy_id, Some(1), vec![included(2, false)])
             .expect("append after terminal");
         assert!(
-            tables.get_events(b"sig").expect("read").is_none(),
+            tables.get_events(&deploy_id).expect("read").is_none(),
             "no event row may reopen behind a terminal record"
         );
     }

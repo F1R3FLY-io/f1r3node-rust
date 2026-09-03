@@ -79,11 +79,32 @@ Each occurrence must have one canonical disposition in one merge scope.
 
 A terminal rejection must not become executable because local state later changes.
 
-The repeat-deploy carrier index must record every carrier of a block, over valid, invalid, and approved blocks, before the block becomes DAG-visible. The index must live in a dedicated store that no unverified wire data can key.
+The repeat-deploy carrier index must record every block carrier. This scope
+includes valid, invalid, and approved blocks. Each key must retain the legacy
+or protocol-v6 deploy-identity tag.
 
-An index absence is an absence proof only for scan windows that start at or above the persisted watermark. An index read failure must fall back to the ancestor scan.
+Carrier rows must exist before the block becomes DAG-visible. Protocol-v6
+admission must commit all applicable carrier, metadata, occurrence, and
+lifecycle rows in one strict transaction. Legacy admission must write carrier
+rows before metadata visibility.
 
-Index-served repeat-deploy verdicts must equal ancestor-scan verdicts for every block. Index retention must never drop an entry at or above any future scan window's start.
+The persistent index must use a dedicated store. Unverified wire data must not
+key this store. Any decoded-identity cache owned by a block-store instance must
+remain bounded and non-authoritative. Only clones of that instance can share it.
+
+An index absence proves absence only above the persisted watermark. An index
+hit must receive exact window and parent-scope verification. An index read
+failure must fall back to that ancestor scan.
+
+A missing scan dependency must fail validation. It must not become proof of
+absence. Index-served verdicts must equal ancestor-scan verdicts for every
+block.
+
+Pruning must retain each carrier at or above the active expiration cutoff.
+Strided pruning can retain older rows without changing the verdict.
+
+[`DeployIdentitySeparation`](../theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement)
+defines the cross-protocol key-separation obligation.
 
 ### Replay
 

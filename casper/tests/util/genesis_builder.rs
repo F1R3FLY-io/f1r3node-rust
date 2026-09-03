@@ -18,8 +18,9 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use dashmap::DashMap;
 use lazy_static::lazy_static;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header,
+    BlockMessage, Body, Bond, F1r3flyState, Header, ValidatorBondGeneration,
 };
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -112,18 +113,30 @@ impl GenesisBuilder {
                 stake,
             })
             .collect();
+        let bond_generations = bonds
+            .iter()
+            .map(|bond| ValidatorBondGeneration {
+                validator: bond.validator.clone(),
+                generation: BondGeneration::GENESIS,
+            })
+            .collect();
+        let active_validators = bonds.iter().map(|bond| bond.validator.clone()).collect();
 
         let state = F1r3flyState {
             pre_state_hash: bytes::Bytes::new(),
             post_state_hash: bytes::Bytes::new(),
             block_number: 0,
             bonds,
+            bond_generations,
+            active_validators,
         };
 
         let body = Body {
             state,
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
+            applied_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: bytes::Bytes::new(),
             applied_from_scope: vec![],
@@ -133,8 +146,11 @@ impl GenesisBuilder {
         let header = Header {
             parents_hash_list: vec![],
             timestamp: 0, // Using 0 like in GenesisBuilder
-            version: 1,
+            version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             extra_bytes: bytes::Bytes::new(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: Vec::new(),
+            finalized_floor: None,
         };
 
         BlockMessage {
@@ -148,6 +164,7 @@ impl GenesisBuilder {
             sig_algorithm: "secp256k1".to_string(),
             shard_id: "root".to_string(), // Using "root" like in GenesisBuilder
             extra_bytes: bytes::Bytes::new(),
+            finalized_floor_certificate: None,
         }
     }
 
@@ -212,6 +229,7 @@ impl GenesisBuilder {
                     .expect("GenesisBuilder: Failed to create rev address")
             }))
             .collect();
+        let client_fuel_allocations = Vec::new();
 
         (validator_key_pairs, genesis_vaults, Genesis {
             shard_id: "root".to_string(),
@@ -235,11 +253,16 @@ impl GenesisBuilder {
                     .collect(),
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
+                max_cosigners_per_deploy:
+                    casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+                initial_phlogiston: casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON,
+                epoch_phlogiston: casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON,
             },
             vaults,
+            client_fuel_allocations,
             supply: i64::MAX,
             block_number: 0,
-            version: 1,
+            version: casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
@@ -329,7 +352,7 @@ impl GenesisBuilder {
                     .await?;
             block_dag_storage.insert(
                 &genesis,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
             )?;
 
             genesis

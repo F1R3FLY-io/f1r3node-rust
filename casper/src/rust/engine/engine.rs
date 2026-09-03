@@ -18,8 +18,7 @@ use comm::rust::transport::transport_layer::{Blob, TransportLayer};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, MergeableEntryResponse, NoApprovedBlockAvailable,
-    StoreItemsMessage,
+    ApprovedBlock, BlockMessage, CasperMessage, NoApprovedBlockAvailable, StoreItemsMessage,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
@@ -27,6 +26,7 @@ use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
+use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine_cell::EngineCell;
@@ -169,7 +169,7 @@ pub fn insert_into_block_and_dag_store(
     block_store.put(genesis.block_hash.clone(), genesis)?;
     block_dag_storage.insert(
         genesis,
-        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::ApprovedGenesis,
     )?;
     block_store.put_approved_block(&approved_block)?;
     Ok(())
@@ -201,10 +201,7 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 // NOTE: Changed to use trait object (dyn MultiParentCasper) instead of generic T
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
+    block_processing_queue_tx: BlockProcessingQueueSender,
     blocks_in_processing: Arc<DashSet<BlockHash>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
@@ -248,6 +245,10 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
                 e
             ))
         })?;
+    tracing::info!(
+        event = "casper_running_state_published",
+        "Casper Running state published after startup validation"
+    );
 
     let running = Running::new(
         block_processing_queue_tx,
@@ -283,12 +284,10 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
 // NOTE: Parameter types adapted to match GenesisValidator changes (Arc wrappers, trait objects)
 // based on discussion with Steven for TestFixture compatibility
 pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone + 'static>(
-    block_processing_queue_tx: &mpsc::Sender<(
-        Arc<dyn MultiParentCasper + Send + Sync>,
-        BlockMessage,
-    )>,
+    block_processing_queue_tx: &BlockProcessingQueueSender,
     blocks_in_processing: &Arc<DashSet<BlockHash>>,
     casper_shard_conf: &CasperShardConf,
+    required_genesis_signatures: i32,
     validator_id: &Option<ValidatorIdentity>,
     init: Arc<
         dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>> + Send + Sync,
@@ -314,11 +313,9 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
     state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
 ) -> Result<(), CasperError> {
     // Create bounded channels and return senders so caller can feed LFS responses (Scala: expose queues).
-    // Scala uses size-50 bounded queues; we add a third for the
-    // mergeable-channels store sync.
+    // Scala uses size-50 bounded queues.
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    let (mergeable_tx, mergeable_rx) = mpsc::channel::<MergeableEntryResponse>(50);
 
     // RuntimeManager is now Arc<Mutex<RuntimeManager>>, so we clone the Arc instead of taking
     let runtime_manager = runtime_manager_arc.clone();
@@ -337,14 +334,13 @@ pub async fn transition_to_initializing<U: TransportLayer + Send + Sync + Clone 
         block_processing_queue_tx.clone(),
         blocks_in_processing.clone(),
         casper_shard_conf.clone(),
+        required_genesis_signatures,
         validator_id.clone(),
         init,
         block_tx.clone(),
         block_rx,
         tuple_tx.clone(),
         tuple_rx,
-        mergeable_tx.clone(),
-        mergeable_rx,
         trim_state,
         disable_state_exporter,
         event_publisher.clone(),

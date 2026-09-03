@@ -85,16 +85,9 @@ pub enum OptionsSubCommand {
     Run(RunOptions),
     Eval(EvalOptions),
     Repl,
-    Deploy {
-        phlo_limit: i64,
-        phlo_price: i64,
-        valid_after_block: i64,
-        #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
-        private_key: Option<PrivateKey>,
-        private_key_path: Option<PathBuf>,
-        location: String,
-        shard_id: String,
-    },
+    // D3 (DR-9): the `--phlo-limit` / `--phlo-price` deploy flags are removed —
+    // a deploy carries no escrow price/limit (cost = per-COMM token count).
+    Deploy(DeployOptions),
     FindDeploy {
         id: Vec<u8>,
     },
@@ -107,6 +100,7 @@ pub enum OptionsSubCommand {
     },
     VisualizeDag {
         depth: i32,
+        #[arg(long = "show-justification-lines")]
         show_justification_lines: bool,
     },
     MachineVerifiableDag,
@@ -538,7 +532,8 @@ pub struct RunOptions {
     #[arg(long = "heartbeat-check-interval", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_check_interval: Option<Duration>,
 
-    /// Maximum age of last finalized block before triggering heartbeat
+    /// Time the locally observed LFB hash may remain unchanged before opening
+    /// a bounded, rotating-leader finality-recovery round.
     #[arg(long = "heartbeat-max-lfb-age", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_max_lfb_age: Option<Duration>,
 
@@ -548,27 +543,15 @@ pub struct RunOptions {
     #[arg(long = "heartbeat-self-propose-cooldown", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_self_propose_cooldown: Option<Duration>,
 
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Minimum age of this validator's latest proposal before the pending-deploy
+    /// recovery backstop is allowed to fire.
     #[arg(long = "heartbeat-stale-recovery-min-interval", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_stale_recovery_min_interval: Option<Duration>,
 
-    /// When pending deploys land, opens a grace window during which lag caps
-    /// relax to advanced.deploy-recovery-max-lag and self-propose-cooldown
-    /// is bypassable. Burst-tolerance budget.
+    /// When pending deploys land, opens a grace window during which the lag cap
+    /// relaxes to advanced.deploy-recovery-max-lag.
     #[arg(long = "heartbeat-deploy-finalization-grace", value_parser = ValueParser::new(parse_duration))]
     pub heartbeat_deploy_finalization_grace: Option<Duration>,
-
-    /// EXPERIMENTAL: when this validator is already ahead of LFB, blocks of
-    /// lag tolerated before "frontier-follow" proposing is throttled.
-    /// Must be >= 0; negative values are rejected at parse time.
-    #[arg(
-        long = "heartbeat-advanced-frontier-chase-max-lag",
-        value_parser = ValueParser::new(parse_non_negative_i64),
-        hide_short_help = true
-    )]
-    pub heartbeat_advanced_frontier_chase_max_lag: Option<i64>,
 
     /// EXPERIMENTAL: if validator has pending deploys but is > N blocks
     /// ahead of LFB, suppress pending-deploy proposing. Lower → harder
@@ -624,30 +607,34 @@ pub struct EvalOptions {
 }
 
 /// Deploy subcommand - Deploy a Rholang source file to Casper on an existing running node
+///
+/// D3 (DR-9): the `--phlo-limit` / `--phlo-price` flags are removed — a deploy
+/// carries no escrow price/limit (cost = per-COMM token count).
 #[derive(Args, Debug, Clone)]
 pub struct DeployOptions {
-    /// The amount of phlo to use for the transaction
-    #[arg(long = "phlo-limit")]
-    pub phlo_limit: u64,
-
-    /// The price of phlo for this transaction in units dust/phlo
-    #[arg(long = "phlo-price")]
-    pub phlo_price: u64,
-
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]
-    pub valid_after_block_number: Option<u64>,
+    pub valid_after_block_number: u64,
 
     /// The deployer's secp256k1 private key encoded as Base16
-    #[arg(long = "private-key")]
-    pub private_key: Option<String>,
+    #[arg(
+        long = "private-key",
+        value_parser = ValueParser::new(PrivateKeyConverter::parse),
+        conflicts_with = "private_key_path",
+        required_unless_present = "private_key_path"
+    )]
+    pub private_key: Option<PrivateKey>,
 
     /// The deployer's file with encrypted private key
-    #[arg(long = "private-key-path")]
+    #[arg(
+        long = "private-key-path",
+        conflicts_with = "private_key",
+        required_unless_present = "private_key"
+    )]
     pub private_key_path: Option<PathBuf>,
 
     /// The name of the shard
-    #[arg(long = "shard-id", default_value = "")]
+    #[arg(long = "shard-id", default_value = "root")]
     pub shard_id: String,
 
     /// Location of the Rholang file to deploy
@@ -736,8 +723,8 @@ pub struct ProposeOptions {
 }
 
 #[cfg(test)]
-mod native_token_clap_tests {
-    use clap::Parser;
+mod clap_tests {
+    use clap::{CommandFactory, Parser};
 
     use super::*;
 
@@ -769,5 +756,90 @@ mod native_token_clap_tests {
     fn accepts_decimals_at_max() {
         let res = Options::try_parse_from(["f1r3fly", "run", "--native-token-decimals=18"]);
         assert!(res.is_ok(), "decimals=18 should parse cleanly");
+    }
+
+    #[test]
+    fn command_schema_is_valid() { Options::command().debug_assert(); }
+
+    #[test]
+    fn deploy_accepts_a_private_key_flag() {
+        let options = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "--private-key",
+            "0101010101010101010101010101010101010101010101010101010101010101",
+            "contract.rho",
+        ])
+        .expect("deploy command must parse");
+
+        let Some(OptionsSubCommand::Deploy(deploy)) = options.subcommand else {
+            panic!("deploy subcommand must be selected");
+        };
+        assert_eq!(deploy.valid_after_block_number, 10);
+        assert!(deploy.private_key.is_some());
+        assert!(deploy.private_key_path.is_none());
+        assert_eq!(deploy.location, "contract.rho");
+        assert_eq!(deploy.shard_id, "root");
+    }
+
+    #[test]
+    fn deploy_accepts_a_private_key_path() {
+        let options = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "--private-key-path",
+            "rnode.key",
+            "--shard-id",
+            "test",
+            "contract.rho",
+        ])
+        .expect("deploy command must parse");
+
+        let Some(OptionsSubCommand::Deploy(deploy)) = options.subcommand else {
+            panic!("deploy subcommand must be selected");
+        };
+        assert!(deploy.private_key.is_none());
+        assert_eq!(deploy.private_key_path, Some(PathBuf::from("rnode.key")));
+        assert_eq!(deploy.shard_id, "test");
+    }
+
+    #[test]
+    fn deploy_help_is_available() {
+        let error = Options::try_parse_from(["f1r3fly", "deploy", "--help"])
+            .err()
+            .expect("deploy help must stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn deploy_requires_one_key_source() {
+        let result = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "contract.rho",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn deploy_rejects_two_key_sources() {
+        let result = Options::try_parse_from([
+            "f1r3fly",
+            "deploy",
+            "--valid-after-block-number",
+            "10",
+            "--private-key",
+            "0101010101010101010101010101010101010101010101010101010101010101",
+            "--private-key-path",
+            "rnode.key",
+            "contract.rho",
+        ]);
+        assert!(result.is_err());
     }
 }

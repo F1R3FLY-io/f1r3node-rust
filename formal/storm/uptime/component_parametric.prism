@@ -1,0 +1,18 @@
+ctmc
+
+const double lambda;
+const double mu;
+
+module component
+  up : bool init true;
+
+  [] up -> lambda : (up' = false);
+  [] !up -> mu : (up' = true);
+endmodule
+
+label "up" = up;
+label "down" = !up;
+
+rewards "up_hours"
+  up : 1;
+endrewards

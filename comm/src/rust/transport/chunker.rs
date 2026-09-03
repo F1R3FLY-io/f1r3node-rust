@@ -2,48 +2,101 @@
 
 use models::routing::{Chunk, ChunkData, ChunkHeader};
 use prost::bytes::Bytes;
-use shared::rust::shared::compression::CompressionOps;
+use shared::rust::shared::compression::{Compression, CompressionOps};
 
+use crate::rust::errors::CommError;
 use crate::rust::peer_node::PeerNode;
 use crate::rust::rp::protocol_helper;
 use crate::rust::transport::transport_layer::Blob;
 
 pub struct Chunker;
 
+pub struct ChunkIterator {
+    header: Option<Chunk>,
+    content: Bytes,
+    chunk_size: usize,
+    offset: usize,
+}
+
+impl Iterator for ChunkIterator {
+    type Item = Chunk;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(header) = self.header.take() {
+            return Some(header);
+        }
+        if self.offset >= self.content.len() {
+            return None;
+        }
+        let end = self
+            .offset
+            .saturating_add(self.chunk_size)
+            .min(self.content.len());
+        let content_data = self.content.slice(self.offset..end);
+        self.offset = end;
+        Some(Chunk {
+            content: Some(models::routing::chunk::Content::Data(ChunkData {
+                content_data,
+            })),
+        })
+    }
+}
+
 impl Chunker {
-    /// Chunks a blob into an iterator of Chunk messages for streaming
-    pub fn chunk_it(network_id: &str, blob: &Blob, max_message_size: usize) -> Vec<Chunk> {
-        let raw = blob.packet.content.as_ref();
-        let kb500 = 1024 * 500;
-        let compress = raw.len() > kb500;
+    const COMPRESSION_THRESHOLD: usize = 500 * 1024;
 
-        // Compress if data is large enough
-        let content = if compress {
-            raw.compress()
+    pub fn retained_bytes_bound(content_length: usize) -> Option<usize> {
+        if content_length > Self::COMPRESSION_THRESHOLD {
+            content_length.checked_add(Compression::max_compressed_allocation(content_length)?)
         } else {
-            raw.to_vec()
-        };
+            Some(content_length)
+        }
+    }
 
-        // Create header chunk
+    pub fn chunk_iter(
+        network_id: &str,
+        blob: &Blob,
+        max_message_size: usize,
+    ) -> Result<ChunkIterator, CommError> {
+        let raw = blob.packet.content.as_ref();
+        let compress = raw.len() > Self::COMPRESSION_THRESHOLD;
+        let content = if compress {
+            Bytes::from(raw.compress())
+        } else {
+            blob.packet.content.clone()
+        };
+        let content_length = i32::try_from(raw.len()).map_err(|_| {
+            CommError::ResourceExhausted("stream payload exceeds protocol length".to_string())
+        })?;
+        let chunk_size = max_message_size.checked_sub(2 * 1024).ok_or_else(|| {
+            CommError::ConfigError("stream chunk size must exceed 2048 bytes".to_string())
+        })?;
+        if chunk_size == 0 {
+            return Err(CommError::ConfigError(
+                "stream chunk size must exceed 2048 bytes".to_string(),
+            ));
+        }
         let header_chunk = Self::create_header_chunk(
             &blob.sender,
             &blob.packet.type_id,
             network_id,
             compress,
-            raw.len(),
+            content_length,
         );
+        Ok(ChunkIterator {
+            header: Some(header_chunk),
+            content,
+            chunk_size,
+            offset: 0,
+        })
+    }
 
-        // Calculate chunk size (reserve 2KB buffer for protobuf overhead)
-        let buffer = 2 * 1024; // 2 kbytes for protobuf related stuff
-        let chunk_size = max_message_size.saturating_sub(buffer);
-
-        // Create data chunks
-        let data_chunks = Self::create_data_chunks(&content, chunk_size);
-
-        // Return iterator starting with header, followed by data chunks
-        let mut chunks = vec![header_chunk];
-        chunks.extend(data_chunks);
-        chunks
+    pub fn chunk_it(
+        network_id: &str,
+        blob: &Blob,
+        max_message_size: usize,
+    ) -> Result<Vec<Chunk>, CommError> {
+        Ok(Self::chunk_iter(network_id, blob, max_message_size)?.collect())
     }
 
     /// Create the header chunk containing metadata
@@ -52,13 +105,13 @@ impl Chunker {
         type_id: &str,
         network_id: &str,
         compressed: bool,
-        content_length: usize,
+        content_length: i32,
     ) -> Chunk {
         let chunk_header = ChunkHeader {
             sender: Some(protocol_helper::node(sender)),
             type_id: type_id.to_string(),
             compressed,
-            content_length: content_length as i32,
+            content_length,
             network_id: network_id.to_string(),
         };
 
@@ -66,31 +119,12 @@ impl Chunker {
             content: Some(models::routing::chunk::Content::Header(chunk_header)),
         }
     }
-
-    /// Create data chunks by sliding over content
-    fn create_data_chunks(content: &[u8], chunk_size: usize) -> Vec<Chunk> {
-        if chunk_size == 0 {
-            return vec![];
-        }
-
-        content
-            .chunks(chunk_size)
-            .map(|chunk_data| {
-                let chunk_data_proto = ChunkData {
-                    content_data: Bytes::copy_from_slice(chunk_data),
-                };
-
-                Chunk {
-                    content: Some(models::routing::chunk::Content::Data(chunk_data_proto)),
-                }
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use models::routing::Packet;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
@@ -118,7 +152,7 @@ mod tests {
     fn test_small_message_no_compression() {
         let content = vec![1u8; 1000]; // Small message
         let blob = create_test_blob(content.clone());
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", &blob, 4096).unwrap();
 
         // Should have header + 1 data chunk for small message
         assert_eq!(chunks.len(), 2);
@@ -146,7 +180,7 @@ mod tests {
         // Create message larger than 500KB to trigger compression
         let content = vec![42u8; 600 * 1024]; // 600KB of repeatable data
         let blob = create_test_blob(content.clone());
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", &blob, 4096).unwrap();
 
         // Should have header + multiple data chunks
         assert!(chunks.len() > 1);
@@ -175,30 +209,13 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_data_chunks() {
-        let content = vec![1u8; 10000]; // 10KB content
+    fn rejects_chunk_sizes_that_cannot_carry_data() {
+        let content = vec![1u8; 10000];
         let blob = create_test_blob(content);
-        let small_chunk_size = 1024; // Force multiple chunks
-        let chunks = Chunker::chunk_it("test_network", &blob, small_chunk_size);
-
-        // Should have header + multiple data chunks
-        // With 10KB content and 1024 max chunk size (minus 2KB buffer = -1024 bytes),
-        // we actually can't create any data chunks, so let's use a larger chunk size
-        assert!(!chunks.is_empty()); // At least header chunk
-
-        // First should be header
         assert!(matches!(
-            chunks[0].content,
-            Some(models::routing::chunk::Content::Header(_))
+            Chunker::chunk_it("test_network", &blob, 1024),
+            Err(CommError::ConfigError(_))
         ));
-
-        // Rest should be data chunks
-        for chunk in chunks.iter().skip(1) {
-            assert!(matches!(
-                chunk.content,
-                Some(models::routing::chunk::Content::Data(_))
-            ));
-        }
     }
 
     #[test]
@@ -206,7 +223,7 @@ mod tests {
         let content = vec![1u8; 10000]; // 10KB content
         let blob = create_test_blob(content);
         let chunk_size = 4096; // Larger chunk size to ensure we get data chunks
-        let chunks = Chunker::chunk_it("test_network", &blob, chunk_size);
+        let chunks = Chunker::chunk_it("test_network", &blob, chunk_size).unwrap();
 
         // With 10KB content and 4096 max chunk size (minus 2KB buffer = 2048 bytes),
         // we should get header + multiple data chunks
@@ -231,7 +248,7 @@ mod tests {
     fn test_empty_content() {
         let content = vec![];
         let blob = create_test_blob(content);
-        let chunks = Chunker::chunk_it("test_network", &blob, 4096);
+        let chunks = Chunker::chunk_it("test_network", &blob, 4096).unwrap();
 
         // Should have just header chunk for empty content
         assert_eq!(chunks.len(), 1);
@@ -249,7 +266,7 @@ mod tests {
         let content = vec![1u8; 5000];
         let blob = create_test_blob(content);
         let max_message_size = 3000;
-        let chunks = Chunker::chunk_it("test_network", &blob, max_message_size);
+        let chunks = Chunker::chunk_it("test_network", &blob, max_message_size).unwrap();
 
         // Should respect chunk size limits
         assert!(chunks.len() > 2); // Header + multiple data chunks
@@ -260,6 +277,31 @@ mod tests {
                 // Each data chunk should be <= (max_message_size - 2KB buffer)
                 assert!(data.content_data.len() <= max_message_size - 2048);
             }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn lazy_chunks_reconstruct_arbitrary_uncompressed_payloads(
+            content in prop::collection::vec(any::<u8>(), 0..65_536),
+            max_message_size in 2_049usize..16_384,
+        ) {
+            let blob = create_test_blob(content.clone());
+            let mut chunks = Chunker::chunk_iter("test_network", &blob, max_message_size).unwrap();
+            let header = chunks.next().unwrap();
+            prop_assert!(matches!(
+                header.content,
+                Some(models::routing::chunk::Content::Header(_))
+            ));
+            let reconstructed = chunks.fold(Vec::new(), |mut bytes, chunk| {
+                if let Some(models::routing::chunk::Content::Data(data)) = chunk.content {
+                    bytes.extend_from_slice(&data.content_data);
+                }
+                bytes
+            });
+            prop_assert_eq!(reconstructed, content);
         }
     }
 }

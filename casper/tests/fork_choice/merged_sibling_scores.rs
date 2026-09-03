@@ -13,7 +13,7 @@ use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_generator::{create_block, create_genesis_block};
+use crate::helper::block_generator::{certified_fork_choice, create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
 /// The specimen shape, reduced to its scoring core:
@@ -90,7 +90,6 @@ async fn merged_siblings_must_not_score_equal() {
                 None,
                 None,
                 None,
-                None,
             )
         };
 
@@ -144,7 +143,7 @@ async fn merged_siblings_must_not_score_equal() {
             &mut block_dag_storage,
         );
 
-        let mut dag = block_dag_storage
+        let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
         let latest: HashMap<Validator, BlockHash> = HashMap::from([
@@ -153,10 +152,10 @@ async fn merged_siblings_must_not_score_equal() {
             (v3.clone(), m3.block_hash.clone()),
         ]);
 
-        let fork_choice = Estimator::apply(i32::MAX, None)
-            .tips_with_latest_messages(&mut dag, &genesis, latest)
-            .await
-            .expect("tips");
+        let fork_choice =
+            certified_fork_choice(&Estimator::apply(i32::MAX, None), &dag, &genesis, latest)
+                .await
+                .expect("tips");
 
         // Scoring the spine narrows what the GHOST descent can walk: it follows
         // MAIN-parent children, so a scored block is reachable only through the

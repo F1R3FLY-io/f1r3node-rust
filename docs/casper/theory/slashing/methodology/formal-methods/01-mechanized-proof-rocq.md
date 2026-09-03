@@ -48,15 +48,13 @@ producing a contradictory term in the same kernel.
 
 ### 1.1 The slashing-specific payoff
 
-The headline claim of the slashing port — *Rust ≈ Scala modulo
-sixteen bug fixes* — could not be discharged any other way. A
-bisimilarity is a coinductive statement quantifying over all infinite
-labeled transition sequences; no finite testing apparatus can
-establish it. Rocq's coinductive `CoFixpoint` reasoning [San12] makes
-this proof tractable. See
-[`../slashing-verification.md §8`](../../slashing-verification.md) for
-the proof structure and `formal/rocq/slashing/theories/MainTheorem.v`
-for the kernel-checked term.
+The current headline result, `main_slashing_algorithm_correct`, composes the
+mechanized detection, authorization, effect, closure, and bug-fix obligations
+for all modeled inputs; finite testing cannot establish that universal claim.
+See [`../slashing-verification.md`](../../slashing-verification.md) for the
+proof structure and `formal/rocq/slashing/theories/MainTheorem.v` for the
+kernel-checked capstone. The former Rust–Scala bisimilarity proof was a
+migration-time result and was retired by DR-6.
 
 ### 1.2 Why kernel checking matters in practice
 
@@ -83,8 +81,9 @@ because of Rocq's kernel:
 ## 2 · When *not* to reach for Rocq
 
 Rocq is expensive. The slashing development cost ≈ 2.5 person-weeks
-to mechanize 6 100+ lines across 14 modules, with peak memory of
-~12 GB per module on `Bisimulation.v` and `TwoLevelSlashing.v`.
+to mechanize 6 100+ lines across its modules. The retired
+`Bisimulation.v` and retained `TwoLevelSlashing.v` were historically the
+largest modules, with peak memory near 12 GB per module during development.
 
 The methodology deliberately does **not** use Rocq for:
 
@@ -197,7 +196,7 @@ The Rocq `Print Assumptions T` command lists every `Axiom`,
 depends on. The slashing development closes with the literal output:
 
 ```
-Print Assumptions main_bisimilarity_theorem.
+Print Assumptions main_slashing_algorithm_correct.
 > Closed under the global context
 ```
 

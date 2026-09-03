@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use block_storage::rust::finality::FinalizationLedger;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
     Db, LmdbDirStoreManager, LmdbEnvConfig, GB, TB,
@@ -75,11 +76,23 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            Db::new("finalization-certificates".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("block-metadata".to_string(), None),
             dag_storage_env_config(),
         ),
         (
-            Db::new("equivocation-tracker".to_string(), None),
+            Db::new("dag-admission-schema".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("equivocation-tracker-v5".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("equivocation-evidence-v5".to_string(), None),
             dag_storage_env_config(),
         ),
         (
@@ -88,6 +101,14 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         ),
         (
             Db::new("invalid-blocks".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("deploy-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new("deploy-occurrence-index".to_string(), None),
             dag_storage_env_config(),
         ),
         (
@@ -133,10 +154,11 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
-            // Single-slot register for the shard's genesis hash (learned during
-            // a truncated restore). Opened in BlockDagKeyValueStorage::new like
-            // the indices above.
             Db::new("genesis-hash".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
+            Db::new(FinalizationLedger::STORE_NAME.to_string(), None),
             dag_storage_env_config(),
         ),
         // Runtime mergeable store (cache of mergeable channels for block-merge)
@@ -147,6 +169,10 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
         // Deploy storage
         (
             Db::new("deploy_storage".to_string(), None),
+            deploy_storage_env_config(),
+        ),
+        (
+            Db::new("deploy_envelope_storage_v6".to_string(), None),
             deploy_storage_env_config(),
         ),
         // Buffer of deploys rejected during multi-parent merge; shares sizing

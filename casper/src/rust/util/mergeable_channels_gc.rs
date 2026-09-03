@@ -123,11 +123,7 @@ pub async fn collect_garbage(
         // unknown, and nothing ever retries it again.
         if let Some(block) = block_store.get(&block_hash)? {
             let deleted = runtime_manager
-                .delete_mergeable_channels(
-                    &block.body.state.post_state_hash,
-                    block.sender.clone(),
-                    block.seq_num,
-                )
+                .delete_mergeable_channels(&block)
                 .map_err(|e| KvStoreError::IoError(e.to_string()))?;
 
             if deleted {
@@ -307,8 +303,12 @@ fn common_strict_main_chain_ancestors(
     // Validators sharing the same latest message (common on a healthy,
     // synchronized chain) would otherwise seed the frontier with that same
     // lineage once per validator instead of once total.
-    let latest_messages: HashSet<BlockHash> =
-        dag.latest_message_hashes().values().cloned().collect();
+    let latest_messages: HashSet<BlockHash> = dag
+        .latest_message_hashes()
+        .values()
+        .filter(|hash| dag.canonical_genesis_hash() != Some(*hash))
+        .cloned()
+        .collect();
 
     // Main-parent chains are linear, so the intersection of N strict-ancestor
     // paths is just the path below their deepest common point. Finding that
@@ -440,6 +440,7 @@ mod tests {
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::deploy_occurrence_store::DeployOccurrenceStore;
     use models::rust::block_metadata::BlockMetadata;
     use parking_lot::RwLock as PlRwLock;
     use proptest::prelude::*;
@@ -750,6 +751,48 @@ mod tests {
 
     fn hash(n: u8) -> Bytes { Bytes::from(vec![n; 32]) }
 
+    fn side_hash(n: u8) -> Bytes { Bytes::from(vec![0x80 + n; models::rust::block_hash::LENGTH]) }
+
+    fn metadata(
+        block_hash: Bytes,
+        parents: Vec<Bytes>,
+        sender: Bytes,
+        block_number: i64,
+    ) -> BlockMetadata {
+        crate::rust::test_metadata::certify(
+            BlockMetadata {
+                block_hash: block_hash.clone(),
+                post_state_hash: block_hash,
+                parents,
+                sender: sender.clone(),
+                justifications: Vec::new(),
+                weight_map: BTreeMap::new(),
+                bond_generation_map: BTreeMap::from([(
+                    sender.clone(),
+                    models::rust::bond_generation::BondGeneration::GENESIS,
+                )]),
+                active_validator_set: std::collections::BTreeSet::from([sender]),
+                block_number,
+                sequence_number: block_number as i32,
+                admission_outcome: None,
+                directly_finalized: true,
+                finalized: true,
+                fault_tolerance_value: 1.0,
+                successful_state_effect_indices: Default::default(),
+                rejected_state_effects: Default::default(),
+                applied_state_effects: Default::default(),
+                protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                objective_equivocation_evidence_delta: Vec::new(),
+                sender_authority: None,
+                finalized_floor_commitment: None,
+                admission_schema_version: models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+                approved_genesis: false,
+                merge_base: Bytes::new(),
+            },
+            models::rust::bond_generation::BondGeneration::GENESIS,
+        )
+    }
+
     /// A linear finalized chain 0..=TOP by one validator, whose latest message
     /// is the tip. Everything `is_safe_to_delete` reads is populated: heights
     /// (so `latest_block_number` is real), main parents, children, the
@@ -758,7 +801,7 @@ mod tests {
 
     fn linear_chain_dag() -> KeyValueDagRepresentation {
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         let validator = Bytes::from(vec![0xEEu8; 65]);
 
         let mut dag_set = imbl::HashSet::new();
@@ -788,21 +831,8 @@ mod tests {
                 vec![parent]
             };
 
-            bms.add(BlockMetadata {
-                block_hash: h.clone(),
-                parents,
-                sender: validator.clone(),
-                justifications: vec![],
-                weight_map: BTreeMap::new(),
-                block_number: n as i64,
-                sequence_number: n as i32,
-                invalid: false,
-                directly_finalized: true,
-                finalized: true,
-                fault_tolerance_value: 1.0,
-                merge_base: Bytes::new(),
-            })
-            .expect("add metadata");
+            bms.add(metadata(h.clone(), parents, validator.clone(), n as i64))
+                .expect("add metadata");
         }
 
         let mut latest_messages_map = imbl::HashMap::new();
@@ -810,6 +840,7 @@ mod tests {
 
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map,
             child_map,
             height_map,
@@ -817,9 +848,17 @@ mod tests {
             main_parent_map,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
+                InMemoryKeyValueStore::new(),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
@@ -907,6 +946,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_genesis_placeholder_does_not_change_reclamation_frontier() {
+        let mut full = linear_chain_dag();
+        full.canonical_genesis_hash = Some(hash(0));
+        full.latest_messages_map
+            .insert(Bytes::from(vec![0xAB; 65]), hash(0));
+        let mut restored = full.clone();
+        restored.dag_set.remove(&hash(0));
+        restored.block_number_map.remove(&hash(0));
+
+        assert_eq!(
+            common_strict_main_chain_ancestors(&full, 5),
+            common_strict_main_chain_ancestors(&restored, 5)
+        );
+        assert!(
+            is_safe_to_delete_at_floor(&restored, &hash(5), &floor_at(10), &conf())
+                .expect("restored safety check")
+        );
+    }
+
     /// The allowance is measured on the floor clock, so the boundary is exact:
     /// one block closer than the discriminator above must be retained.
     #[test]
@@ -952,10 +1011,10 @@ mod tests {
     fn forked_chain_dag() -> KeyValueDagRepresentation {
         const FORK_POINT: u8 = 4;
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-        let mut bms = BlockMetadataStore::new(store);
+        let mut bms = BlockMetadataStore::new(store).unwrap();
         let validator_a = Bytes::from(vec![0xEEu8; 65]);
         let validator_b = Bytes::from(vec![0xDDu8; 65]);
-        let side = |n: u8| Bytes::from(format!("side{}", n).into_bytes());
+        let side = side_hash;
 
         let mut dag_set = imbl::HashSet::new();
         let mut block_number_map = imbl::HashMap::new();
@@ -993,21 +1052,8 @@ mod tests {
                 None => Vec::new(),
             };
 
-            bms.add(BlockMetadata {
-                block_hash: hash,
-                parents,
-                sender,
-                justifications: vec![],
-                weight_map: BTreeMap::new(),
-                block_number: height,
-                sequence_number: height as i32,
-                invalid: false,
-                directly_finalized: true,
-                finalized: true,
-                fault_tolerance_value: 1.0,
-                merge_base: Bytes::new(),
-            })
-            .expect("add metadata");
+            bms.add(metadata(hash, parents, sender, height))
+                .expect("add metadata");
         };
 
         for n in 0..=TOP {
@@ -1054,6 +1100,7 @@ mod tests {
 
         KeyValueDagRepresentation {
             dag_set,
+            canonical_genesis_hash: None,
             latest_messages_map,
             child_map,
             height_map,
@@ -1061,9 +1108,17 @@ mod tests {
             main_parent_map,
             self_justification_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
+            equivocation_observations: imbl::HashMap::new(),
             last_finalized_block_hash: hash(TOP),
             finalized_blocks_set,
             block_metadata_index: Arc::new(PlRwLock::new(bms)),
+            deploy_index: Arc::new(PlRwLock::new(KeyValueTypedStoreImpl::new(Arc::new(
+                InMemoryKeyValueStore::new(),
+            )))),
+            deploy_occurrence_store: DeployOccurrenceStore::activate_fresh(Arc::new(
+                InMemoryKeyValueStore::new(),
+            ))
+            .unwrap(),
             floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             lifecycle: Arc::new(parking_lot::RwLock::new(
@@ -1102,7 +1157,7 @@ mod tests {
     #[test]
     fn a_side_branch_block_is_kept_even_though_it_is_deep() {
         let dag = forked_chain_dag();
-        let side5 = Bytes::from(b"side5".to_vec());
+        let side5 = side_hash(5);
         assert!(
             !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), &conf())
                 .expect("safety check"),

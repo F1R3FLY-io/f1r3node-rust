@@ -36,6 +36,17 @@ message BlockRequestProto {
   bytes  hash = 1;
 }
 
+message FinalizationCertificateRequestProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes digest = 1;
+}
+
+message FinalizationCertificateResponseProto {
+  option (scalapb.message).extends = "CasperMessageProto";
+  bytes digest = 1;
+  FinalizationCertificateProto certificate = 2;
+}
+
 message ForkChoiceTipRequestProto {
   option (scalapb.message).extends = "CasperMessageProto";
 }
@@ -151,6 +162,7 @@ message BlockMessageProto {
   string                      sigAlgorithm   = 8; // name of the algorithm used to sign
   string                      shardId        = 9; // identifier of the shard where the block was created
   bytes                       extraBytes     = 10;
+  optional FinalizationCertificateProto finalizedFloorCertificate = 11;
 }
 
 message BlockHashMessageProto {
@@ -171,11 +183,52 @@ message BlockMetadataInternal {
   repeated BondProto bonds                   = 5 [(scalapb.field).collection_type="collection.immutable.List"];
   int64 blockNum                             = 6;
   int32 seqNum                               = 7;
-  bool invalid                               = 8; // whether the block was marked as invalid
+  reserved 8;
+  reserved "intrinsicallyInvalid";
   bool directlyFinalized                     = 9; // whether the block has been last finalized block (LFB)
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
-  bytes mergeBase                            = 12;// recorded state parent (BlockProto body mergeBase); empty = header-derivable
+  bytes mergeBase                            = 12;
+  // Historical field name. The set contains each committed state effect,
+  // including a cost settlement that follows a failed user-body execution.
+  repeated uint32 successfulStateEffectIndices = 13;
+  repeated StateEffectIdProto rejectedStateEffects = 14;
+  int64 protocolVersion                     = 15;
+  optional int64 senderBondGeneration       = 16;
+  repeated ObjectiveEquivocationEvidenceProto objectiveEquivocationEvidenceDelta = 17;
+  repeated ValidatorBondGenerationProto bondGenerations = 18;
+  optional CertifiedSenderAuthorityProto senderAuthority = 19;
+  uint32 admissionSchemaVersion = 20;
+  bool approvedGenesis = 21;
+  repeated bytes activeValidators = 22;
+  bytes postStateHash = 23;
+  optional CertifiedAdmissionOutcomeProto admissionOutcome = 24;
+  optional FinalizedFloorCommitmentProto finalizedFloorCommitment = 25;
+  repeated StateEffectIdProto appliedStateEffects = 26;
+}
+
+message CertifiedSenderAuthorityProto {
+  bytes blockHash = 1;
+  int64 protocolVersion = 2;
+  reserved 3;
+  reserved "preStateHash";
+  bytes sender = 4;
+  int64 bondGeneration = 5;
+  int64 stake = 6;
+  bytes authorityFloorHash = 7;
+  bytes authorityFloorPostStateHash = 8;
+  bytes contextDigest = 9;
+}
+
+message CertifiedAdmissionOutcomeProto {
+  bytes blockHash = 1;
+  int64 protocolVersion = 2;
+  uint32 admissionSchemaVersion = 3;
+  bytes rulesetDigest = 4;
+  bytes incomingContextDigest = 5;
+  bytes senderAuthorityDigest = 6;
+  uint32 disposition = 7;
+  uint32 rejectionReason = 8;
 }
 
 message HeaderProto {
@@ -183,25 +236,248 @@ message HeaderProto {
   int64 timestamp  = 5;
   int64 version    = 6;
   bytes extraBytes = 7;
+  optional int64 senderBondGeneration = 8;
+  repeated ObjectiveEquivocationEvidenceProto objectiveEquivocationEvidenceDelta = 9;
+  optional FinalizedFloorCommitmentProto finalizedFloor = 10;
+}
+
+message FinalizedFloorCommitmentProto {
+  bytes floorHash = 1;
+  bytes floorPostStateHash = 2;
+  bytes certificateDigest = 3;
+  bytes authorityContextDigest = 4;
+}
+
+message FinalizationCertificateProto {
+  uint32 schemaVersion = 1;
+  int64 protocolVersion = 2;
+  string shardId = 3;
+  bytes genesisHash = 4;
+  bytes predecessorFloorHash = 5;
+  bytes predecessorCertificateDigest = 6;
+  bytes targetFloorHash = 7;
+  bytes targetPostStateHash = 8;
+  int64 targetBlockNumber = 9;
+  int64 faultToleranceNumerator = 10;
+  int64 faultToleranceDenominator = 11;
+  repeated JustificationProto exactLatestMessages = 12;
+  bytes authorityContextDigest = 13;
+  reserved 14, 15;
+  reserved "supportingBlockHashes", "finalizedBlockHashes";
+  bytes predecessorCertificateBlockHash = 16;
+  bytes supportingManifestDigest = 17;
+  bytes finalizedManifestDigest = 18;
+  uint32 supportingBlockCount = 19;
+  uint32 finalizedBlockCount = 20;
+}
+
+message ObjectiveEquivocationEvidenceProto {
+  bytes validator = 1;
+  int64 bondGeneration = 2;
+  int32 sequenceNumber = 3;
+  bytes firstBlockHash = 4;
+  bytes secondBlockHash = 5;
 }
 
 /**
- * Note: deploys are uniquely keyed by `user`, `timestamp`.
+ * Note: deploys are uniquely keyed by (`deployer`, `timestamp`).
  *
- * **TODO**: details of signatures and payment. See RHOL-781
+ * Multi-signature support is provided via the `cosigners` field, realizing the
+ * compound-signature operational semantics of the cost-accounted rho-calculus
+ * paper (`publications/cost-accounting/cost-accounted-rho.tex`, §3.2 Rules 2-5).
+ * When `cosigners` is empty, the deploy is a legacy single-signer deploy: fields
+ * 1/4/5 hold the only signer. When `cosigners` is non-empty, the primary signer
+ * occupies index 0 (fields 1/4/5) and additional cosigners occupy `cosigners`
+ * (field 14) entries with their own (pk, sig, sig_algorithm). The wire decoder
+ * enforces canonical `pk.bytes` ascending sort, no duplicate signers, and that
+ * every signer's signature verifies against the canonical message hash.
+ *
+ * D3 (DR-9): there is NO per-deploy phlo escrow/price and NO per-signer
+ * phlo_share. A deploy's cost is the per-COMM token count, funded by the
+ * per-signature supply pool Σ⟦s⟧ and gated at block assembly (Def 19, §7.6).
  */
 message DeployDataProto {
+  // Cost-Accounted Rho D3 (DR-9, fresh-genesis): the singular-phlo
+  // escrow/price model is REMOVED. Consensus cost is now the per-COMM
+  // token count gated by the per-signature supply pool Σ⟦s⟧ (no per-deploy
+  // phloPrice/phloLimit, no per-signer phlo_share). The retired tags are
+  // RESERVED so they can never be reused with a different meaning.
+  reserved 7, 8, 15;
+  reserved "phloPrice", "phloLimit", "primary_phlo_share";
   bytes  deployer             = 1; //public key
   string term                 = 2; //rholang source code to deploy (will be parsed into `Par`)
   int64  timestamp            = 3; //millisecond timestamp
   bytes  sig                  = 4; //signature of (hash(term) + timestamp) using private key
   string sigAlgorithm         = 5; //name of the algorithm used to sign
-  int64 phloPrice             = 7; //phlo price
-  int64 phloLimit             = 8; //phlo limit for the deployment
   int64 validAfterBlockNumber = 10;
   string shardId              = 11;//shard ID to prevent replay of deploys between shards
   string language             = 12;//language (rholang or metta) of the source code
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
+  repeated CompoundSigner cosigners = 14; //additional cosigners (empty = legacy single-sig)
+  // Phase 2: M-of-N threshold quorum size.
+  //   0  → N-of-N (Phase 1 semantics): every signer must verify.
+  //   k>0 → M-of-N: at least `k` of `cosigners.len() + 1` signers must
+  //         present a valid signature. Placeholder signers (sig.is_empty())
+  //         are allowed and do not count toward quorum.
+  // Constraint at decode: 0 ≤ cosigner_threshold ≤ cosigners.len() + 1.
+  int32 cosigner_threshold   = 16;
+  // Phase 3: LL-rich signature algebra. When present, OVERRIDES
+  // `cosigners[]` and `cosigner_threshold` — the deploy is validated
+  // against the algebraic expression instead of the flat list. Atomic
+  // leaves (SigAtom) carry the per-signer (pk, sig, sig_algorithm) tuples,
+  // and the algebra describes their combination.
+  // See `rholang/src/rust/interpreter/accounting/mod.rs::Sig` for the
+  // operational semantics.
+  optional SigCompound sig_algebra = 17;
+  repeated rhoapi.CostSignature authorityPresentations = 18;
+  bytes deployId = 19;
+  DeployAuthorizationV61 authorizationV61 = 20;
+}
+
+enum SignatureSchemeV61 {
+  SIGNATURE_SCHEME_V61_UNSPECIFIED = 0;
+  SIGNATURE_SCHEME_V61_SECP256K1 = 1;
+  SIGNATURE_SCHEME_V61_SECP256K1_ETH = 2;
+  SIGNATURE_SCHEME_V61_SCHNORR_SECP256K1 = 3;
+  SIGNATURE_SCHEME_V61_FROST_SECP256K1 = 4;
+  SIGNATURE_SCHEME_V61_ED25519 = 5;
+}
+
+message PrincipalV61 {
+  SignatureSchemeV61 scheme = 1;
+  bytes publicKey = 2;
+}
+
+message AllOfPolicyV61 {
+  repeated PrincipalV61 members = 1;
+}
+
+message ThresholdPolicyV61 {
+  uint32 minimum = 1;
+  repeated PrincipalV61 members = 2;
+}
+
+message AuthorizationPolicyV61 {
+  oneof policy {
+    AllOfPolicyV61 allOf = 1;
+    ThresholdPolicyV61 threshold = 2;
+  }
+}
+
+message SignatureWitnessV61 {
+  uint32 memberIndex = 1;
+  bytes signature = 2;
+}
+
+message DeployAuthorizationV61 {
+  uint32 formatVersion = 1;
+  AuthorizationPolicyV61 policy = 2;
+  bytes presenceBitmap = 3;
+  repeated SignatureWitnessV61 witnesses = 4;
+}
+
+// One cosigner in a multi-signature deploy. Sorted ascending by `pk` bytes
+// in `DeployDataProto.cosigners` (decoder enforces). Each cosigner signs
+// the same canonical message hash as the primary deployer.
+message CompoundSigner {
+  // D3 (DR-9): per-signer phlo_share is removed; funding is per-signature
+  // supply Σ⟦s⟧, not an escrow share. Tag 4 RESERVED.
+  reserved 4;
+  reserved "phloShare";
+  bytes  pk           = 1; //cosigner public key
+  bytes  sig          = 2; //cosigner signature of (hash(term) + timestamp) using private key
+  string sigAlgorithm = 3; //name of the algorithm used to sign (e.g., "secp256k1", "ed25519")
+}
+
+// Phase 2 / Phase 3 LL-rich signature algebra wire encoding.
+//
+// `SigCompound` is a recursive algebraic shape mirroring the runtime
+// `Sig` enum (`rholang/src/rust/interpreter/accounting/mod.rs`). When
+// present on a `DeployDataProto` (future field expansion — Phase 2/3 RFC),
+// the verifier validates the deploy against the `Sig` expression instead
+// of the flat `cosigners[]` list.
+//
+// At Phase 1 (current), `Sig::And` is the only compound shape used and
+// the flat cosigners[] field encodes a left-associated And tree. The
+// `SigCompound` message is introduced here to give downstream Phase 2/3
+// wire-format extensions a forward-compatible scaffold:
+//
+//   - Phase 2 (M-of-N quorum): set `threshold` field to encode a
+//     `Sig::Threshold` envelope; populate `members[]` with the candidate
+//     signers and `threshold_min` with the required quorum size.
+//   - Phase 3 (LL-rich): set `plus` / `with_` / `bang` / `whynot` /
+//     `lolly` to encode the corresponding LL connectives. Branch witness
+//     for `Plus` is carried via `plus_branch` (0 = left, 1 = right).
+message SigCompound {
+  oneof connective {
+    SigAtom      atom      = 1;   // Sig::Ground / Sig::Quote leaf (atom_kind selects axis)
+    SigPair      tensor    = 2;   // Sig::And / Sig::Tensor (multiplicative ⊗)
+    SigPlus      plus      = 3;   // Sig::Plus  (additive ⊕ with branch witness)
+    SigPair      with_     = 4;   // Sig::With  (additive & — LL "with")
+    SigBang      bang      = 5;   // Sig::Bang  (exponential !)
+    SigCompound  whynot    = 6;   // Sig::WhyNot (exponential ?)
+    SigLolly     lolly     = 7;   // Sig::Lolly  (linear implication ⊸)
+    SigThreshold threshold = 8;   // Sig::Threshold (M-of-N quorum)
+  }
+}
+
+// Distinguishes the two atomic signature axes of the cost-accounted
+// rho-calculus (`publications/cost-accounting/cost-accounted-rho.tex`
+// §App-A, eqs. eq:app-sig-ground / eq:app-sig-hash):
+//   GROUND (`g`)  — a ground signature key `g ∈ G`; Σ⟦g⟧ = quote(H_g).
+//   QUOTE  (`#P`) — a cryptographic process-hash `#P`; Σ⟦#P⟧ = quote(H(𝒫⟦P⟧)).
+// Both reflect to a quoted name on the wire, so the SIGNATURE-CHANNEL
+// derivation is identical for equal `pk` bytes; the axis is carried only
+// so the runtime `Sig` value round-trips faithfully. GROUND = 0 is the
+// proto3 default, so any legacy `SigAtom` decoded without this field is a
+// ground atom — preserving backward compatibility.
+enum AtomKind {
+  GROUND = 0;
+  QUOTE  = 1;
+}
+
+message SigAtom {
+  // D3 (DR-9): per-leaf phlo_share is removed (no escrow share). Tag 4 RESERVED.
+  reserved 4;
+  reserved "phloShare";
+  bytes    pk           = 1;
+  bytes    sig          = 2;
+  string   sigAlgorithm = 3;
+  AtomKind atom_kind    = 5;
+}
+
+message SigPair {
+  SigCompound left  = 1;
+  SigCompound right = 2;
+}
+
+message SigPlus {
+  SigCompound left          = 1;
+  SigCompound right         = 2;
+  int32       chosen_branch = 3; // 0 = left, 1 = right (signer's choice)
+}
+
+message SigBang {
+  SigCompound inner               = 1;
+  // uses_bound = 0 means unbounded (LL-canonical); uses_bound > 0 means
+  // bounded replication (Phase 3 §3.5 capability registry).
+  int64       uses_bound          = 2;
+  // capability_handle: optional registry pointer to a pre-registered
+  // replicable signature (Phase 3 §3.5 rho:system:capabilities).
+  bytes       capability_handle   = 3;
+}
+
+message SigLolly {
+  SigCompound from                = 1;
+  SigCompound to                  = 2;
+  // capability_handle: pointer into rho:system:capabilities registry
+  // that holds the transformer process for this σ_from ⊸ σ_to delegation.
+  bytes       capability_handle   = 3;
+}
+
+message SigThreshold {
+  int32 threshold              = 1; // required quorum size k
+  repeated SigCompound members = 2; // candidate signers (n total; k-of-n)
 }
 
 message ProcessedDeployProto {
@@ -210,21 +486,148 @@ message ProcessedDeployProto {
     repeated EventProto deployLog = 3; //the new terms and comm. rule reductions from this deploy
     bool errored                  = 5; //true if deploy encountered a user error
     string systemDeployError      = 6;
+    // Fields 7-8 (costTraceDigest, costTraceEventCount) were removed: the
+    // per-operation cost trace is diagnostic-only and is NOT a consensus
+    // quantity. Consensus cost integrity is the conserved total `cost`
+    // (field 2) plus `errored` status plus the post-state hash. The trace
+    // itself remains available at runtime via RuntimeBudget diagnostics.
+    reserved 7, 8;
+    reserved "costTraceDigest", "costTraceEventCount";
+    bytes preStateHash             = 9;
+    bytes postStateHash            = 10;
+    CostAuthorityFundingCertificateProto authorityFundingCertificate = 11;
+    CostAuthorityWitnessProto authorityCostWitness = 12;
+    DeployAdmissionStatusProto admissionStatus = 13;
+}
+
+enum DeployAdmissionStatusProto {
+    DEPLOY_ADMISSION_STATUS_EXECUTED = 0;
+    DEPLOY_ADMISSION_STATUS_REJECTED = 1;
+}
+
+message CostAuthorityResourceProto {
+  bytes key = 1;
+  uint64 amount = 2;
+}
+
+enum CostAuthorityDemandKindProto {
+  COST_AUTHORITY_DEMAND_KIND_EXACT = 0;
+  COST_AUTHORITY_DEMAND_KIND_FINITE_UPPER_BOUND = 1;
+  COST_AUTHORITY_DEMAND_KIND_UNPROVABLE = 2;
+}
+
+message CostAuthorityFundingCertificateProto {
+  uint32 protocolVersion = 1;
+  bytes programHash = 2;
+  bytes preStateRoot = 3;
+  bytes reservationId = 4;
+  CostAuthorityDemandKindProto demandKind = 5;
+  repeated CostAuthorityResourceProto demand = 6;
+  bytes proof = 7;
+  uint32 unprovableReason = 8;
+  repeated CostAuthorityResourceProto allocation = 9;
+  repeated CostAuthorityStackReservationProto stackReservations = 10;
+  repeated CostAuthorityResourceProto feeAllocation = 11;
+  bytes feeRecipient = 12;
+  uint32 byteCostScheduleVersion = 13;
+  bytes byteCostScheduleDigest = 14;
+  uint64 byteCostBound = 15;
+  repeated CostAuthorityResourceProto byteAllocation = 16;
+}
+
+message CostAuthorityStackReservationProto {
+  bytes stackId = 1;
+  uint64 popCount = 2;
+}
+
+message CostAuthorityEventProto {
+  bytes eventId = 1;
+  repeated CostAuthorityResourceProto debit = 2;
+  rhoapi.CostAuthority authority = 3;
+}
+
+enum CostAuthorityByteEventKindProto {
+  COST_AUTHORITY_BYTE_EVENT_KIND_PRODUCE_INTRODUCTION = 0;
+  COST_AUTHORITY_BYTE_EVENT_KIND_CONSUME_INTRODUCTION = 1;
+  COST_AUTHORITY_BYTE_EVENT_KIND_COMM = 2;
+}
+
+message CostAuthorityByteEventProto {
+  bytes eventId = 1;
+  CostAuthorityByteEventKindProto kind = 2;
+  rhoapi.CostAuthority authority = 3;
+  uint64 amount = 4;
+}
+
+message CostAuthorityPhysicalEventDrawProto {
+  bytes eventId = 1;
+  repeated CostAuthorityResourceProto balances = 2;
+  repeated bytes stackIds = 3;
+}
+
+message CostAuthorityBornStackProto {
+  bytes stackId = 1;
+  bytes produceHash = 2;
+  repeated rhoapi.CostSignature cells = 3;
+}
+
+message CostAuthorityWitnessProto {
+  uint32 protocolVersion = 1;
+  bytes certificateId = 2;
+  bytes preStateRoot = 3;
+  bytes postStateRoot = 4;
+  repeated CostAuthorityEventProto events = 5;
+  repeated CostAuthorityResourceProto realized = 6;
+  repeated CostAuthorityResourceProto settlement = 7;
+  repeated CostAuthorityPhysicalEventDrawProto physicalDraws = 8;
+  repeated CostAuthorityBornStackProto bornStacks = 9;
+  uint32 byteCostScheduleVersion = 10;
+  bytes byteCostScheduleDigest = 11;
+  uint64 byteCost = 12;
+  repeated CostAuthorityResourceProto byteSettlement = 13;
+  repeated CostAuthorityByteEventProto byteEvents = 14;
 }
 
 message SlashSystemDeployDataProto {
   bytes invalidBlockHash = 1;
   bytes issuerPublicKey = 2;
   int64 targetActivationEpoch = 3;
+  bytes equivocationBlockHash = 4;
+  optional int64 targetBondGeneration = 5;
 }
 
 message CloseBlockSystemDeployDataProto{
+}
+
+// Cost-Accounted Rho Stage-C validator redemption (DR-7/DR-12). Carries the
+// FULL redemption-authorization material so a block's redeem deploy round-trips
+// and replay can re-run the DR-12 PoS-multisig-quorum platform obligation
+// (RedeemDeploy::verify_multisig_quorum) byte-identically to play.
+message RedemptionAuthorizationProto {
+  bytes publicKey = 1;
+  bytes signature = 2;
+}
+
+message RedeemSystemDeployDataProto {
+  bytes validatorPk = 1;
+  // Outcome tag: "Vindicated" | "Guilty" | "Burned".
+  string outcomeTag = 2;
+  // Penalty for the Guilty outcome (0 for Vindicated / Burned).
+  int64 penalty = 3;
+  // The genesis-configured PoS-multisig authority keyset (hex-encoded), the
+  // quorum threshold, and the cosigner authorizations over the redemption
+  // digest — all replay inputs to the multisig-quorum verification.
+  repeated string posMultiSigPublicKeys = 4;
+  uint32 posMultiSigQuorum = 5;
+  repeated RedemptionAuthorizationProto authorizations = 6;
+  optional int64 targetBondGeneration = 7;
 }
 
 message SystemDeployDataProto{
   oneof systemDeploy{
     SlashSystemDeployDataProto slashSystemDeploy = 1;
     CloseBlockSystemDeployDataProto closeBlockSystemDeploy = 2;
+    RedeemSystemDeployDataProto redeemSystemDeploy = 3;
   }
 }
 
@@ -232,6 +635,8 @@ message ProcessedSystemDeployProto {
     SystemDeployDataProto systemDeploy = 1 [(scalapb.field).no_box = true];
     repeated EventProto deployLog      = 2;
     string errorMsg                    = 3;
+    bytes preStateHash                 = 4;
+    bytes postStateHash                = 5;
 }
 
 message BodyProto {
@@ -240,36 +645,32 @@ message BodyProto {
   repeated ProcessedSystemDeployProto systemDeploys = 3;
   bytes extraBytes                                  = 4;
   repeated RejectedDeployProto rejectedDeploys      = 5;
-  // User-deploy sigs whose chains this block's merge APPLIED from scope
-  // into its pre-state. The state plane's positive fact: a deploy's
-  // effect enters a state either by fresh execution (a `deploys` entry)
-  // or by a merge re-applying its chain — which, without this field, no
-  // block data records. Empty for non-merged blocks. Validator-recomputed
-  // and consensus-checked alongside rejectedDeploys.
   repeated bytes appliedFromScope                   = 6;
-  // The block whose committed state this block's pre-state derives from:
-  // for a merged block its main parent, or the floor block when that
-  // parent's state does not hold the floor's settled content; the covering
-  // parent for the fast path; empty where the header derives it
-  // (single-parent and genesis). Recording it makes state-membership a walk over recorded
-  // pointers instead of a per-block re-derivation:
-  // state(B) = state(mergeBase) + appliedFromScope + deploys.
   bytes mergeBase                                   = 7;
+  repeated StateEffectIdProto rejectedStateEffects  = 8;
+  repeated StateEffectIdProto appliedStateEffects   = 9;
+}
+
+message StateEffectIdProto {
+  bytes sourceBlockHash = 1;
+  uint32 executionIndex = 2;
 }
 
 message RejectedDeployProto{
-  bytes sig       = 1;
-  // Set by the merge that formed this record when the sig's effect is
-  // present in that merge's own post-state (a kept copy in the same merge,
-  // or already settled in its base): the record discarded a redundant copy
-  // and does not dispute the sig's standing win. Validators recompute the
-  // flag during checkpoint validation; a mismatch invalidates the block.
-  bool duplicate  = 2;
-  // The block that held the copy this record adjudicated. The merge knows
-  // it exactly (the rejected chain's source block); recording it makes
-  // coverage an equality instead of an inference. Validators recompute the
-  // carrier during checkpoint validation; a mismatch invalidates the block.
-  bytes carrier   = 3;
+  bytes sig = 1;
+  bool duplicate = 2;
+  bytes carrier = 3;
+  bytes sourceBlockHash = 4;
+  RejectedDeployReasonProto reason = 5;
+  bytes deployIdV6 = 6;
+}
+
+enum RejectedDeployReasonProto {
+  REJECTED_DEPLOY_REASON_UNSPECIFIED = 0;
+  REJECTED_DEPLOY_REASON_MERGE_CONFLICT = 1;
+  REJECTED_DEPLOY_REASON_DUPLICATE_OCCURRENCE = 2;
+  REJECTED_DEPLOY_REASON_COLLATERAL_CHAIN_DROP = 3;
+  REJECTED_DEPLOY_REASON_VALIDITY_WINDOW_CLOSED = 4;
 }
 
 message JustificationProto {
@@ -285,6 +686,14 @@ message RChainStateProto {
   //(which will be part of the tuplespace in the real implementation).
   repeated BondProto bonds = 3;
   int64 blockNumber        = 4;
+  repeated ValidatorBondGenerationProto bondGenerations = 5;
+  repeated bytes activeValidators = 6;
+  reserved "genesisSupply";
+}
+
+message ValidatorBondGenerationProto {
+  bytes validator = 1;
+  int64 generation = 2;
 }
 
 message EventProto {
@@ -325,6 +734,7 @@ message BondProto {
   bytes validator = 1;
   int64 stake     = 2;
 }
+
 // --------- End Core Protocol  --------
 
 // --------- Last finalized state  --------
@@ -366,7 +776,7 @@ message MergeableEntryRequestProto {
 message MergeableEntryResponseProto {
   option (scalapb.message).extends = "CasperMessageProto";
   bytes block_hash       = 1;
-  // bincode of Vec<DeployMergeableData>. Empty bytes = peer has the block but
-  // no entry for it.
+  // Deprecated compatibility field. Honest peers send empty bytes and receivers
+  // ignore nonempty bytes because mergeable evidence is not block-authenticated.
   bytes serialized_entry = 2;
 }

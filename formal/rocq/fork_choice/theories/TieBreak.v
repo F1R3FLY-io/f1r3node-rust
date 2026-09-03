@@ -37,15 +37,10 @@
    sort_argmax_unique         | tips[0] = the GHOST head (snapshot.rs:317-323)
    =========================================================================== *)
 
-(* CAVEAT - tips[0] is the GHOST head, NOT necessarily the block's MAIN PARENT.
-   `snapshot.rs:317-323` takes `tips.into_iter().next()` as `ghost_main_parent` and
-   :325-331 sorts the parents so it comes first, but :332 then runs
-   `prefer_deploy_support_main_parent` (:124-185), which can PROMOTE a
-   deploy-carrying branch to index 0 and override it. The estimator/ranking results
-   in THIS module are unaffected (they are about `tips`, which is what they say);
-   the consumer-side re-ordering is modeled in GuardBridge.v seam (3) - see
-   `main_parent_pipeline_deterministic` and the computable refutation
-   `pipeline_head_may_differ_from_ghost`. *)
+(* The selected GHOST tip is also the block's main parent. GuardBridge proves
+   that the production parent-ordering pipeline preserves this head. Its
+   historical deploy-support promotion remains only as an executable unsafe
+   control demonstrating why a deterministic post-sort override is insufficient. *)
 
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Lists.List.

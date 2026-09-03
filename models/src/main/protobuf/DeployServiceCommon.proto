@@ -71,9 +71,9 @@ message MachineVerifyQuery {
 }
 
 message PrivateNamePreviewQuery {
-  bytes  user      = 1; // public key a la DeployData
-  int64  timestamp = 2; // millisecond timestamp
-  int32  nameQty   = 3; // how many names to preview? (max: 1024)
+  bytes  user      = 1; // legacy deploy public key
+  int64  timestamp = 2; // legacy deploy millisecond timestamp
+  int32  nameQty   = 3; // legacy names to preview (max: 1024)
 }
 
 message LastFinalizedBlockQuery {
@@ -98,9 +98,11 @@ enum DeployFinalizationStateProto {
 message DeployFinalizationStatusInfo {
   DeployFinalizationStateProto state = 1;
   uint32 rejectionCount              = 2;
-  // Present when the sig has been included in at least one block.
-  // Absent (no field set) when the deploy is unknown to this node.
+  // An occurrence carrier that contains the deploy.
   optional bytes latestBlockHash     = 3;
+  // The finalized floor whose state determines a terminal verdict.
+  optional bytes finalizedFloorHash  = 4;
+  optional int64 finalizedFloorHeight = 5;
 }
 
 message BondStatusQuery {
@@ -132,19 +134,28 @@ message TransferInfo {
 }
 
 message DeployInfo{
+  // D3 (DR-9): phloPrice/phloLimit removed — a deploy's cost is the per-COMM
+  // token count (reported in `cost`); there is no escrow price/limit. Tags
+  // 7, 8 RESERVED.
+  reserved 7, 8;
+  reserved "phloPrice", "phloLimit";
   string deployer             = 1;
   string term                 = 2;
   int64  timestamp            = 3;
   string  sig                 = 4;
   string sigAlgorithm         = 5;
-  int64 phloPrice             = 7;
-  int64 phloLimit             = 8;
   int64 validAfterBlockNumber = 9;
   uint64 cost                 = 10;
   bool errored                = 11;
   string systemDeployError    = 12;
   repeated TransferInfo transfers = 13;
   bool transfersAvailable         = 14; // true when transfers were extracted (readonly), false on validators
+  CostAuthorityFundingCertificateProto authorityFundingCertificate = 15;
+  CostAuthorityWitnessProto authorityCostWitness = 16;
+  bytes preStateHash = 17;
+  bytes postStateHash = 18;
+  DeployAdmissionStatusProto admissionStatus = 19;
+  bytes deployId = 20;
 }
 
 message PendingDeploysQuery {
@@ -200,10 +211,13 @@ message LightBlockInfo {
   repeated JustificationInfo justifications   = 20;
   repeated RejectedDeployInfo rejectedDeploys = 21;
   bool isFinalized                            = 22;
+  repeated BondInfo activeBonds               = 23;
 }
 
 message RejectedDeployInfo{
   string sig = 1;
+  string sourceBlockHash = 2;
+  string reason = 3;
 }
 
 // For node clients, see BlockMessage for actual Casper protocol Block representation

@@ -110,26 +110,32 @@ from the bonded path). This is a state-migration operation applied
 identically on every node at the same height — it is **not** consensus
 logic and is **not** needed on a fresh genesis (where no pollution exists).
 
-### 12.2.1b BlockException → InvalidTransaction coercion (attribution caveat — FV audit #4)
+### 12.2.1b Objective invalidity and local validation faults
 
-**Status: reachable; soundness depends on determinism.** `block_processor.rs`
-(`:357-376`) coerces a receiver-local `BlockException` (a runtime error raised
-while the *receiver* validates a block) into the slashable variant
-`InvalidTransaction`, dispatched against the *sender* via the same
-record-creation path as a genuine invalid block. The coercion is now modelled in
-Rocq (`BugFixDispatcher.v §4`: `coerce_block_outcome`,
-`block_exception_coerces_to_slashable`, re-exported
-`main_T9_3_block_exception_coerces_to_slashable`), so the taxonomy FV explicitly
-covers this control-flow edge and confirms the coerced variant is slashable
-(hence T-9.3 dispatch completeness fires a record).
+**Status: separated and verified.** `block_processor.rs` dispatches only an
+explicit `BlockError::Invalid` through invalid-DAG recording and slash-evidence
+creation. `BlockException` represents a receiver-local inability to complete
+validation, remains outside the DAG, and enters bounded dependency recovery.
+Certified recovery preserves the exact missing block hash or replay-state root.
+On genesis-rooted history the absence remains a typed local fault; on a restored
+node with truncated history it remains a typed missing dependency. Both paths
+retain the block, request the named artifact, and acknowledge ready-path
+ownership without minting invalidity. Same-artifact requests deduplicate, while
+distinct artifacts and validators recover independently.
+Deterministic replay mismatches and invalid cost certificates are converted to
+the explicit `InvalidTransaction` path before reaching the processor.
 
-**Caveat (not proven).** Attributing a *receiver-local* exception to the
-*sender* is sound only if `BlockException` is **deterministic** across nodes. A
-transient/local exception (storage error, non-deterministic replay) on one node
-but not another would let the nodes disagree on the sender's slashability — the
-same divergence family as §12.2.1a. The dispatch-completeness theorem does not
-establish determinism; if a non-deterministic `BlockException` path is
-reachable, the coercion needs a determinism guard (design separately).
+Rocq models the boundary in `BugFixDispatcher.v §4`:
+`block_exception_is_not_objective_invalidity` proves that an exception has no
+invalid-block classification, while `explicit_slashable_invalidity_dispatches`
+retains T-9.3 completeness for every explicitly classified slashable variant.
+The top-level export is `main_T9_3_block_exception_is_local_fault`. The TLA+
+end-to-end cost/consensus model independently checks that a recoverable local
+fault never creates slash evidence and includes an expected-refutation control
+which fails when that mapping is reintroduced.
+`LocalFaultDeferral.v` and the concurrent `LocalValidationRecovery.tla` model
+the typed boundary itself; their controls reject block/state identity collapse,
+immediate self-requeue, and loss of the inconclusive block.
 
 ### 12.2.2 Storage layer
 
@@ -142,9 +148,9 @@ reachable, the coercion needs a determinism guard (design separately).
 
 | Failure mode                                    | Effect                                                                                                    | Resolution                                                                                                       |
 |-------------------------------------------------|-----------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
-| **Non-equivocation slashable variant detected** | Pre-fix: not recorded; relies on later proposer surfacing. **Bug #3.**                                    | Post-fix #3: dispatcher creates record uniformly.                                                                |
+| **Certified contextual rejection detected** | Rejection metadata could disappear before dependency resolution. **Bug #3.** | Persist canonical rejection metadata. Do not create economic evidence from local context. |
 | **Unbonded proposer emits doomed slashes**      | Pre-fix: wasted CPU; the offending block is rejected at replay-time proposer-bond validation. **Bug #8.** | Post-fix #8: short-circuit to `Vec::new()` if proposer's bond = 0. |
-| **Replay determinism break**                    | Block evaluation diverges; consensus splits.                                                              | Bisimilarity / replay determinism (T-15) is a design invariant.                                                  |
+| **Replay determinism break**                    | Block evaluation diverges; consensus splits.                                                              | Current replay-determinism and refinement checks are design invariants.                                         |
 
 ### 12.2.4 Effect layer
 
@@ -211,10 +217,10 @@ For each failure mode, the recovery is:
 |------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Detection silently drops bad block | Re-run validation when next proposer surfaces the offender. (Pre-fix only; post-fix this doesn't happen.)                                                          |
 | Tracker race loses a hash          | Same — pre-fix only. Post-fix #2 prevents the race entirely.                                                                                                       |
-| Dispatcher stub doesn't record     | Same — pre-fix only. Post-fix #3 creates the record uniformly.                                                                                                     |
+| Dispatcher drops a certified rejection | Pre-fix only. Post-fix #3 persists the terminal outcome without creating contextual slash evidence.                                                        |
 | PoS transfer hangs                 | Pre-fix: indefinite. Post-fix #4: deterministic timeout returns `(false, "transfer failed")`. Validator returns to `EquivocatorRecorded`; next proposer can retry. |
 | Auth-token spoofing detected       | Deploy rejected; no state change. No recovery needed.                                                                                                              |
-| `>F` neglectful quorum-drop        | **Manual.** Operators re-bond honest validators or update validator set; the protocol cannot recover automatically.                                                |
+| Counterfactual `>F` neglect closure | Policy-risk result only. The current protocol disables economic neglect closure.                                                                                  |
 | Genesis bad sender                 | **Manual.** Restart with corrected genesis config. Pre-genesis validation should catch this.                                                                       |
 
 ## 12.5 Liveness vs safety tradeoffs
@@ -224,9 +230,8 @@ The slashing subsystem is designed to be **safety-first** with
 
 - **Safety (no honest validator slashed).** This is *unconditional*
   — T-1 (detection soundness) holds for all DAG states.
-- **Liveness (every Byzantine action eventually slashed).** This is
-  *conditional* on the BFT bound `|closure| ≤ F`. If too many
-  validators misbehave, liveness fails; safety still holds.
+- **Liveness (direct evidence eventually executes).** This requires gossip,
+  retention, an eligible proposer, and evidence inclusion.
 
 This matches the standard BFT literature [LSP82, BKM18, ABPT19]:
 safety is guaranteed in all conditions; liveness requires the BFT
@@ -241,16 +246,16 @@ failure modes are likely:
 |----------------------------------------------------------|------------------------------------------------------------------------------------------------------|
 | Validator stuck in `SlashPending` for > N rounds         | Bug #4 (transfer-failure FIXME) — pre-fix only. Post-fix → `EquivocatorRecorded` automatically.      |
 | Inconsistent `equivocation_records()` views across nodes | Bug #2 (race) — pre-fix only.                                                                        |
-| `JustificationRegression` blocks not surfacing slashes   | Bug #3 (dispatcher stub) — pre-fix only.                                                             |
+| `JustificationRegression` blocks do not create slashes   | Expected. The node persists this contextual rejection without economic evidence.                     |
 | Repeated rejected proposer-block submissions             | Bug #8 (unbonded proposer) — pre-fix only.                                                           |
-| `bonds_map` divergence between Rust / Scala nodes        | Bisimilarity violation — should not occur post the sixteen fixes; if seen, investigate as a regression. |
+| `bonds_map` divergence between nodes replaying the same DAG | Replay-determinism violation; investigate as a consensus regression.                                    |
 | Validator stuck in `withdrawers` map for > N rounds      | Bug #10 (post-fix retry path). If `posVault.transfer` keeps failing, the validator's withdrawal entry remains intact across blocks; investigate the underlying vault failure cause. |
-| Validator set size drops below `n − F`                   | F-neglectful quorum-drop (§12.3.1). Manual intervention required.                                    |
+| Validator set size drops below `n − F`                   | Direct slashing or another validator-set transition exceeded the configured operating bound.         |
 | Detector emits storage `KeyNotFound` for a block view     | Bug #11 pre-fix only. Post-fix, missing latest-message pointers contribute `∅` and traversal continues. |
 | Neglect fires from two citations of the same child        | Bug #11 pre-fix only. Post-fix, distinct offender-child hashes are counted before applying `≥ 2`.       |
 | Slash deploy executes against an honest, never-detected validator | Bug #12 pre-fix only. Post-fix, `SlashAuthorizedByEvidence` rejects unknown / unbonded / cross-epoch / duplicate-target deploys before replay (`Inv_RejectedSlashWithoutEvidenceNoPending`). |
-| Rebonded validator gets slashed for prior-lifetime equivocation | Bug #13 pre-fix only. Post-fix, slash evidence is epoch-scoped: `(v, e₁)` evidence does not authorize a slash for `(v, e₂)` with `e₁ ≠ e₂` (`Inv_StaleEvidenceCannotSlashRebondedKey`). |
-| Detected equivocator keeps their bond — no slash deploy emerges | Bug #14 pre-fix only. Post-fix, the proposer derives candidates from the authorized invalid-block evidence index (`Inv_NoInvalidLatestLivenessGap`). |
+| Rebonded validator gets slashed for prior-lifetime equivocation | Bug #13 pre-fix only. A monotonic bond generation now separates validator lifetimes. The activation-epoch check remains independent (`Inv_StaleGenerationCannotSlashRebondedKey`). |
+| Detected equivocator keeps their bond — no slash deploy emerges | Bug #14 pre-fix only. The proposer now derives the complete candidate set from canonical evidence (`Inv_PendingSlashCompleteForCurrentPreState`). |
 | Proposer panics or block has negative `seq`               | Bug #15 pre-fix only. Post-fix, `checked_pred`/`checked_succ` reject domain-boundary inputs cleanly. |
 | Two different cited hashes for the same validator in one block's justifications | Bug #16 pre-fix only. Post-fix, validation rejects duplicate-validator justifications before detector projection (`Inv_AcceptedProjectionCardinality`). |
 
@@ -260,8 +265,8 @@ Spec §12 enumerates 112 use cases across four tiers:
 
 - **Core (UC-01–UC-25):** baseline scenarios.
 - **Tier A (UC-26, 27, 37, 38, 39, 41, 42, 43):** audit blockers.
-- **Tier B (UC-28–UC-36):** one entry per remaining slashable
-  `InvalidBlock` variant.
+- **Tier B (UC-28–UC-36):** certified rejection persistence without
+  contextual economic evidence.
 - **Tier C (UC-40, UC-44–UC-112):** operational, adversarial, and
   Sage-derived closure edge cases.
 

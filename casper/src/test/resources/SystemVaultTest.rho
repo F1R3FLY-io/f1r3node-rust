@@ -24,6 +24,7 @@ match (
       getDeployerId(`rho:test:deployerId:make`),
       setup,
       testFindOrCreateGenesisVault,
+      testFindExistingAndAbsentVaults,
       testDepositToGenesisCreatedVault,
       testBalanceInGenesisCreatedVault,
       testTransferInGenesisCreatedVault,
@@ -37,6 +38,10 @@ match (
       testInvalidVaultAddress,
       testUnfBoundVault,
       testLogging,
+      testTransferBatch,
+      testTransferBatchInsufficient,
+      testTransferBatchInvalidTarget,
+      testTransferBatchDuplicateTarget,
       withVaultAndIdentityOf,
       transfer,
       assertBalances
@@ -46,6 +51,7 @@ match (
         @RhoSpec!("testSuite", *setup,
           [
             ("Create genesis vault with expected balance", *testFindOrCreateGenesisVault),
+            ("Find existing vaults without creating absent vaults", *testFindExistingAndAbsentVaults),
             ("Return an error for invalid public key", *testCreateVaultFail),
             ("Create vault and see that it is secured", *testCreateVault),
             ("Transfer from genesis to Alice", *testTransfer),
@@ -55,7 +61,11 @@ match (
             ("Fail the transfer if there are insufficient funds", *testInsufficeintFunds),
             ("Fail the transfer if the destination addresss is not a valid VaultAddress", *testInvalidVaultAddress),
             ("Transfer from unforgeable name bound vault", *testUnfBoundVault),
-            ("Logging works", *testLogging)
+            ("Logging works", *testLogging),
+            ("Transfer a batch atomically", *testTransferBatch),
+            ("Reject an underfunded batch atomically", *testTransferBatchInsufficient),
+            ("Reject an invalid-target batch atomically", *testTransferBatchInvalidTarget),
+            ("Reject a duplicate-target batch atomically", *testTransferBatchDuplicateTarget)
           ])
       } |
 
@@ -75,6 +85,16 @@ match (
             // so far, access to genesisVault is not secured. This will be changd.
             @genesisVault!("balance", *balanceCh) |
             rhoSpec!("assert", (9000000, "== <-", *balanceCh), "balance is as expected", *ackCh)
+          }
+        }
+      } |
+
+      contract testFindExistingAndAbsentVaults(rhoSpec, SystemVault, ackCh) = {
+        new existingCh, absentCh, existingFoundCh in {
+          SystemVault!("find", genesisVaultAddress, *existingCh) |
+          SystemVault!("find", bobVaultAddress, *absentCh) |
+          for (@(true, _) <- existingCh) {
+            rhoSpec!("assert", ((false, "Vault not found"), "== <-", *absentCh), "absent vault is not created", *ackCh)
           }
         }
       } |
@@ -216,6 +236,176 @@ match (
                     ([aliceVaultAddress, 1000, (true, Nil)] == [vaultAddress, amount, result]),
                     "transfer successfully logged",
                     *ackCh)
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      contract testTransferBatch(rhoSpec, SystemVault, ackCh) = {
+        new VaultAddress(`rho:vault:address`), source, targetA, targetB,
+            sourceAddressCh, targetAAddressCh, targetBAddressCh,
+            sourceVaultCh, targetAVaultCh, targetBVaultCh, sourceKeyCh,
+            genesisVaultCh, seedCh, batchCh, batchOk
+        in {
+          VaultAddress!("fromUnforgeable", *source, *sourceAddressCh) |
+          VaultAddress!("fromUnforgeable", *targetA, *targetAAddressCh) |
+          VaultAddress!("fromUnforgeable", *targetB, *targetBAddressCh) |
+          withVaultAndIdentityOf!(genesisPubKey, *genesisVaultCh) |
+          for (@sourceAddress <- sourceAddressCh &
+               @targetAAddress <- targetAAddressCh &
+               @targetBAddress <- targetBAddressCh &
+               genesisVault, genesisKey <- genesisVaultCh) {
+            SystemVault!("findOrCreate", sourceAddress, *sourceVaultCh) |
+            SystemVault!("findOrCreate", targetAAddress, *targetAVaultCh) |
+            SystemVault!("findOrCreate", targetBAddress, *targetBVaultCh) |
+            SystemVault!("unforgeableAuthKey", *source, *sourceKeyCh) |
+            for (@(true, sourceVault) <- sourceVaultCh &
+                 @(true, targetAVault) <- targetAVaultCh &
+                 @(true, targetBVault) <- targetBVaultCh &
+                 sourceKey <- sourceKeyCh) {
+              genesisVault!("transfer", sourceAddress, 300, *genesisKey, *seedCh) |
+              for (@(true, _) <- seedCh) {
+                @sourceVault!(
+                  "transferBatch",
+                  [(targetAAddress, 100), (targetBAddress, 200)],
+                  *sourceKey,
+                  *batchCh
+                ) |
+                rhoSpec!("assert", ((true, Nil), "== <-", *batchCh), "batch transfer succeeded", *batchOk) |
+                assertBalances!(
+                  *batchOk,
+                  [(sourceVault, 0), (targetAVault, 100), (targetBVault, 200)],
+                  *rhoSpec,
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      } |
+
+      contract testTransferBatchInsufficient(rhoSpec, SystemVault, ackCh) = {
+        new VaultAddress(`rho:vault:address`), source, targetA, targetB,
+            sourceAddressCh, targetAAddressCh, targetBAddressCh,
+            sourceVaultCh, sourceKeyCh, genesisVaultCh, seedCh,
+            batchCh, batchOk, targetAFindCh, targetBFindCh, sourceBalanceCh
+        in {
+          VaultAddress!("fromUnforgeable", *source, *sourceAddressCh) |
+          VaultAddress!("fromUnforgeable", *targetA, *targetAAddressCh) |
+          VaultAddress!("fromUnforgeable", *targetB, *targetBAddressCh) |
+          withVaultAndIdentityOf!(genesisPubKey, *genesisVaultCh) |
+          for (@sourceAddress <- sourceAddressCh &
+               @targetAAddress <- targetAAddressCh &
+               @targetBAddress <- targetBAddressCh &
+               genesisVault, genesisKey <- genesisVaultCh) {
+            SystemVault!("findOrCreate", sourceAddress, *sourceVaultCh) |
+            SystemVault!("unforgeableAuthKey", *source, *sourceKeyCh) |
+            for (@(true, sourceVault) <- sourceVaultCh &
+                 sourceKey <- sourceKeyCh) {
+              genesisVault!("transfer", sourceAddress, 100, *genesisKey, *seedCh) |
+              for (@(true, _) <- seedCh) {
+                @sourceVault!(
+                  "transferBatch",
+                  [(targetAAddress, 60), (targetBAddress, 60)],
+                  *sourceKey,
+                  *batchCh
+                ) |
+                rhoSpec!("assert", ((false, "Insufficient funds"), "== <-", *batchCh), "batch transfer rejected", *batchOk) |
+                for (_ <- batchOk) {
+                  SystemVault!("find", targetAAddress, *targetAFindCh) |
+                  SystemVault!("find", targetBAddress, *targetBFindCh) |
+                  @sourceVault!("balance", *sourceBalanceCh) |
+                  rhoSpec!("assertMany",
+                    [
+                      ((100, "== <-", *sourceBalanceCh), "source balance is unchanged"),
+                      (((false, "Vault not found"), "== <-", *targetAFindCh), "first target was not created"),
+                      (((false, "Vault not found"), "== <-", *targetBFindCh), "second target was not created")
+                    ], *ackCh
+                  )
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      contract testTransferBatchInvalidTarget(rhoSpec, SystemVault, ackCh) = {
+        new VaultAddress(`rho:vault:address`), source, target,
+            sourceAddressCh, targetAddressCh, sourceVaultCh,
+            sourceKeyCh, genesisVaultCh, seedCh, batchCh, batchOk,
+            targetFindCh, sourceBalanceCh
+        in {
+          VaultAddress!("fromUnforgeable", *source, *sourceAddressCh) |
+          VaultAddress!("fromUnforgeable", *target, *targetAddressCh) |
+          withVaultAndIdentityOf!(genesisPubKey, *genesisVaultCh) |
+          for (@sourceAddress <- sourceAddressCh &
+               @targetAddress <- targetAddressCh &
+               genesisVault, genesisKey <- genesisVaultCh) {
+            SystemVault!("findOrCreate", sourceAddress, *sourceVaultCh) |
+            SystemVault!("unforgeableAuthKey", *source, *sourceKeyCh) |
+            for (@(true, sourceVault) <- sourceVaultCh &
+                 sourceKey <- sourceKeyCh) {
+              genesisVault!("transfer", sourceAddress, 100, *genesisKey, *seedCh) |
+              for (@(true, _) <- seedCh) {
+                @sourceVault!(
+                  "transferBatch",
+                  [(targetAddress, 50), ("invalid", 50)],
+                  *sourceKey,
+                  *batchCh
+                ) |
+                rhoSpec!("assert", ((false, "Invalid target vault address"), "== <-", *batchCh), "invalid-target batch rejected", *batchOk) |
+                for (_ <- batchOk) {
+                  SystemVault!("find", targetAddress, *targetFindCh) |
+                  @sourceVault!("balance", *sourceBalanceCh) |
+                  rhoSpec!("assertMany",
+                    [
+                      ((100, "== <-", *sourceBalanceCh), "source balance is unchanged"),
+                      (((false, "Vault not found"), "== <-", *targetFindCh), "valid prefix target was not created")
+                    ], *ackCh
+                  )
+                }
+              }
+            }
+          }
+        }
+      } |
+
+      contract testTransferBatchDuplicateTarget(rhoSpec, SystemVault, ackCh) = {
+        new VaultAddress(`rho:vault:address`), source, target,
+            sourceAddressCh, targetAddressCh, sourceVaultCh,
+            sourceKeyCh, genesisVaultCh, seedCh, batchCh, batchOk,
+            targetFindCh, sourceBalanceCh
+        in {
+          VaultAddress!("fromUnforgeable", *source, *sourceAddressCh) |
+          VaultAddress!("fromUnforgeable", *target, *targetAddressCh) |
+          withVaultAndIdentityOf!(genesisPubKey, *genesisVaultCh) |
+          for (@sourceAddress <- sourceAddressCh &
+               @targetAddress <- targetAddressCh &
+               genesisVault, genesisKey <- genesisVaultCh) {
+            SystemVault!("findOrCreate", sourceAddress, *sourceVaultCh) |
+            SystemVault!("unforgeableAuthKey", *source, *sourceKeyCh) |
+            for (@(true, sourceVault) <- sourceVaultCh &
+                 sourceKey <- sourceKeyCh) {
+              genesisVault!("transfer", sourceAddress, 100, *genesisKey, *seedCh) |
+              for (@(true, _) <- seedCh) {
+                @sourceVault!(
+                  "transferBatch",
+                  [(targetAddress, 40), (targetAddress, 60)],
+                  *sourceKey,
+                  *batchCh
+                ) |
+                rhoSpec!("assert", ((false, "Transfer targets must be distinct"), "== <-", *batchCh), "duplicate-target batch rejected", *batchOk) |
+                for (_ <- batchOk) {
+                  SystemVault!("find", targetAddress, *targetFindCh) |
+                  @sourceVault!("balance", *sourceBalanceCh) |
+                  rhoSpec!("assertMany",
+                    [
+                      ((100, "== <-", *sourceBalanceCh), "source balance is unchanged"),
+                      (((false, "Vault not found"), "== <-", *targetFindCh), "duplicate target was not created")
+                    ], *ackCh
+                  )
                 }
               }
             }

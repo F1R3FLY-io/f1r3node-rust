@@ -5,10 +5,10 @@
 ' The orange (#FFE0B2) "race window" callout marks the lock-free surface
 ' that bug fix #2 closes.
 '
-' Source of truth for Figure 3.1 in docs/theory/slashing/slashing-specification.md.
+' Source of truth for Figure 3.1 in docs/casper/theory/slashing/slashing-specification.md.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/01-component-overview.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/01-component-overview.puml
 
 @startuml 01-component-overview
 !theme plain

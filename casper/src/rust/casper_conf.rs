@@ -3,6 +3,63 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::rust::casper::UNLIMITED_PARENTS;
+
+pub fn validate_finalization_certificate_capacity(
+    number_of_active_validators: u32,
+) -> Result<(), String> {
+    let configured = usize::try_from(number_of_active_validators)
+        .map_err(|_| "number-of-active-validators does not fit this platform".to_string())?;
+    let maximum = models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES;
+    if configured > maximum {
+        return Err(format!(
+            "number-of-active-validators={configured} exceeds the finalization-certificate committee capacity {maximum}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_parent_bound_values(
+    max_number_of_parents: i32,
+    max_parent_depth: i32,
+    depth_buffer: i32,
+) -> Result<(), String> {
+    if max_number_of_parents != UNLIMITED_PARENTS && max_number_of_parents < 1 {
+        return Err(format!(
+            "max-number-of-parents must be -1 or at least 1; got {max_number_of_parents}"
+        ));
+    }
+    if max_parent_depth < 0 {
+        return Err(format!(
+            "max-parent-depth must be non-negative; got {max_parent_depth}"
+        ));
+    }
+    if depth_buffer < 0 {
+        return Err(format!(
+            "mergeable-channels-gc-depth-buffer must be non-negative; got {depth_buffer}"
+        ));
+    }
+    Ok(())
+}
+
+pub fn parent_frontier_worst_case_capacity_warning(
+    max_number_of_parents: i32,
+    number_of_active_validators: u32,
+) -> Option<String> {
+    if max_number_of_parents == UNLIMITED_PARENTS {
+        return None;
+    }
+    let required_capacity = u64::from(number_of_active_validators)
+        .saturating_add(1)
+        .max(1);
+    if u64::try_from(max_number_of_parents).unwrap_or(0) < required_capacity {
+        return Some(format!(
+            "max-number-of-parents={max_number_of_parents} is below the worst-case capacity {required_capacity} for number-of-active-validators={number_of_active_validators} plus a finalized-floor backstop; startup remains valid because proposal admission checks the exact frozen parent frontier, but a future frontier wider than this cap will defer proposal until it becomes covered or the cap is raised"
+        ));
+    }
+    None
+}
+
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CasperConf {
@@ -131,6 +188,29 @@ pub struct CasperConf {
     pub mergeable_channels_gc_depth_buffer: i32,
 }
 
+impl CasperConf {
+    pub fn validate_finalization_certificate_capacity(&self) -> Result<(), String> {
+        validate_finalization_certificate_capacity(
+            self.genesis_block_data.number_of_active_validators,
+        )
+    }
+
+    pub fn validate_parent_bounds(&self) -> Result<(), String> {
+        validate_parent_bound_values(
+            self.max_number_of_parents,
+            self.max_parent_depth,
+            self.mergeable_channels_gc_depth_buffer,
+        )
+    }
+
+    pub fn parent_frontier_worst_case_capacity_warning(&self) -> Option<String> {
+        parent_frontier_worst_case_capacity_warning(
+            self.max_number_of_parents,
+            self.genesis_block_data.number_of_active_validators,
+        )
+    }
+}
+
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 
 fn default_synchrony_recovery_cooldown() -> Duration { Duration::from_secs(20) }
@@ -145,6 +225,21 @@ fn default_max_user_deploys_per_block() -> u32 { 128 }
 
 fn default_disable_late_block_filtering() -> bool { true }
 
+/// Default for `client_fuel_allocations`: no additional client fuel at genesis.
+fn default_client_fuel_allocations() -> Vec<ClientFuelAllocation> { Vec::new() }
+
+/// Additional fuel credited to a client's canonical SystemVault at genesis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientFuelAllocation {
+    /// Hex-encoded client public key used to derive its native vault address.
+    #[serde(rename = "public-key")]
+    pub public_key: String,
+    /// Phlogiston added to the client's SystemVault balance at genesis.
+    /// Must be `>= 0` (a negative seed is a config error; validated at wiring).
+    #[serde(rename = "amount")]
+    pub amount: i64,
+}
+
 fn default_enable_mergeable_channel_gc() -> bool { false }
 
 fn default_mergeable_channels_gc_interval() -> Duration {
@@ -152,6 +247,25 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 }
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+
+/// Default value for `max_cosigners_per_deploy`. 64 is generous
+/// defense-in-depth — real-world multi-sig wallets rarely exceed 10–15
+/// cosigners. The PoS contract enforces this cap inside `chargeDeploy`.
+/// Test fixtures and other defaulting paths MUST reference this constant
+/// rather than hardcoding `64` so the default has a single source of truth.
+pub const DEFAULT_MAX_COSIGNERS_PER_DEPLOY: u32 = 64;
+
+fn default_max_cosigners_per_deploy() -> u32 { DEFAULT_MAX_COSIGNERS_PER_DEPLOY }
+
+/// Default fuel credited to a validator's SystemVault when it joins the validator set.
+pub const DEFAULT_INITIAL_PHLOGISTON: i64 = 1_000_000;
+
+fn default_initial_phlogiston() -> i64 { DEFAULT_INITIAL_PHLOGISTON }
+
+/// Default fuel credited to each eligible active validator at an epoch boundary.
+pub const DEFAULT_EPOCH_PHLOGISTON: i64 = 1_000_000;
+
+fn default_epoch_phlogiston() -> i64 { DEFAULT_EPOCH_PHLOGISTON }
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +313,32 @@ pub struct GenesisBlockData {
     #[serde(rename = "pos-multi-sig-quorum")]
     pub pos_multi_sig_quorum: u32,
 
+    /// Per-deploy hard cap on the number of cosigners in a multi-signature
+    /// deploy. Committed in genesis parameters and enforced by Rust admission
+    /// before the deployment enters the pool. Default `64`; must be `>= 1`.
+    #[serde(
+        rename = "max-cosigners-per-deploy",
+        default = "default_max_cosigners_per_deploy"
+    )]
+    pub max_cosigners_per_deploy: u32,
+
+    /// Fuel credited to a validator's canonical SystemVault when it first bonds.
+    #[serde(rename = "initial-phlogiston", default = "default_initial_phlogiston")]
+    pub initial_phlogiston: i64,
+
+    /// Fuel credited to each eligible active validator at an epoch boundary.
+    #[serde(rename = "epoch-phlogiston", default = "default_epoch_phlogiston")]
+    pub epoch_phlogiston: i64,
+
+    /// Additional genesis balances for client SystemVaults. Each entry is
+    /// coalesced with any native-token vault balance for the same address before
+    /// the blessed vault-generator deploys are constructed.
+    #[serde(
+        rename = "client-fuel-allocations",
+        default = "default_client_fuel_allocations"
+    )]
+    pub client_fuel_allocations: Vec<ClientFuelAllocation>,
+
     /// Full display name of the native token. Substituted into the
     /// TokenMetadata Rholang contract at genesis and registered at
     /// `rho:system:tokenMetadata`. Immutable after genesis.
@@ -225,6 +365,81 @@ pub struct GenesisBlockData {
 pub const MAX_NATIVE_TOKEN_DECIMALS: u32 = 18;
 
 impl GenesisBlockData {
+    /// Lower the serde-parsed task #13b client funding-slot allocations
+    /// (`[(hex public-key, amount)]`) to `[(crypto::PublicKey, amount)]`,
+    /// hex-decoding each key ONCE at startup so a malformed key or a negative
+    /// amount fails fast (loudly at launch) rather than being baked into genesis
+    /// or silently producing a degenerate `Σ⟦c⟧` seed. Empty in, empty out
+    /// (existing shards). The lowered list is wired into `CasperShardConf` and
+    /// then into the canonical genesis supply commitment.
+    pub fn lowered_client_fuel_allocations(
+        &self,
+    ) -> Result<Vec<(crypto::rust::public_key::PublicKey, i64)>, String> {
+        let mut out = Vec::with_capacity(self.client_fuel_allocations.len());
+        for alloc in &self.client_fuel_allocations {
+            if alloc.amount < 0 {
+                return Err(format!(
+                    "client-fuel-allocations: amount must be >= 0 for public-key {}; got {}",
+                    alloc.public_key, alloc.amount
+                ));
+            }
+            let bytes = hex::decode(&alloc.public_key).map_err(|e| {
+                format!(
+                    "client-fuel-allocations: public-key {:?} is not valid hex: {}",
+                    alloc.public_key, e
+                )
+            })?;
+            if bytes.is_empty() {
+                return Err(
+                    "client-fuel-allocations: public-key must decode to non-empty bytes"
+                        .to_string(),
+                );
+            }
+            out.push((
+                crypto::rust::public_key::PublicKey::from_bytes(&bytes),
+                alloc.amount,
+            ));
+        }
+        Ok(out)
+    }
+
+    pub fn validate_cost_accounting_parameters(&self) -> Result<(), String> {
+        if self.epoch_length <= 0 {
+            return Err(format!(
+                "epoch-length must be positive; got {}",
+                self.epoch_length
+            ));
+        }
+        if self.max_cosigners_per_deploy == 0 {
+            return Err("max-cosigners-per-deploy must be at least 1".to_string());
+        }
+        if self.initial_phlogiston < 0 {
+            return Err(format!(
+                "initial-phlogiston must be non-negative; got {}",
+                self.initial_phlogiston
+            ));
+        }
+        if self.epoch_phlogiston < 0 {
+            return Err(format!(
+                "epoch-phlogiston must be non-negative; got {}",
+                self.epoch_phlogiston
+            ));
+        }
+
+        let allocations = self.lowered_client_fuel_allocations()?;
+        let mut totals = std::collections::BTreeMap::<Vec<u8>, i64>::new();
+        for (public_key, amount) in allocations {
+            let entry = totals.entry(public_key.bytes.to_vec()).or_default();
+            *entry = entry.checked_add(amount).ok_or_else(|| {
+                format!(
+                    "client-fuel-allocations overflow for public-key {}",
+                    hex::encode(&public_key.bytes)
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Validates native-token-* fields. Called during config load so a
     /// misconfigured node fails startup loudly rather than baking bad
     /// values into genesis or serving misleading metadata via `/api/status`.
@@ -288,9 +503,8 @@ pub struct HeartbeatConf {
         default = "default_self_propose_cooldown"
     )]
     pub self_propose_cooldown: Duration,
-    /// Minimum age of LFB/frontier before stale-recovery, leader-recovery,
-    /// and pending-deploy backstop are allowed to fire. Debounces empty-block
-    /// churn when the cluster is healthy.
+    /// Minimum age of this validator's latest proposal before the pending-deploy
+    /// recovery backstop is allowed to fire.
     #[serde(
         rename = "stale-recovery-min-interval",
         deserialize_with = "de_duration",
@@ -351,7 +565,7 @@ fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 /// These thresholds bound DAG width relative to replay cost in lieu of
 /// adaptive backpressure. Treat as unstable API; field names may change.
 ///
-/// All three fields must be non-negative; HOCON values < 0 are rejected
+/// All fields must be non-negative; HOCON values < 0 are rejected
 /// at deserialization time. The proposer treats these as caps on a
 /// non-negative lag count (`lfb_lag_blocks`), so a negative value would
 /// silently disable the corresponding code path (e.g. `lag <= cap` where
@@ -359,9 +573,7 @@ fn default_deploy_finalization_grace() -> Duration { Duration::from_secs(25) }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeartbeatAdvancedConf {
     /// When this validator is already ahead of LFB, how many blocks of lag
-    /// tolerate before "frontier-follow" proposing is throttled. `0` =
-    /// never frontier-chase while ahead unless deploy recovery is active
-    /// (which raises this dynamically).
+    /// tolerate before frontier-follow proposing is throttled.
     #[serde(
         rename = "frontier-chase-max-lag",
         deserialize_with = "de_non_negative_i64",
@@ -421,6 +633,53 @@ fn default_deploy_recovery_max_lag() -> i64 { 64 }
 
 fn default_empty_frontier_max_unfinalized_blocks() -> i64 { 64 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinalizerConf {
+    #[serde(
+        rename = "yield-interval",
+        deserialize_with = "de_duration",
+        default = "default_finalizer_yield_interval"
+    )]
+    pub yield_interval: Duration,
+    #[serde(
+        rename = "catchup-yield-interval",
+        deserialize_with = "de_duration",
+        default = "default_finalizer_catchup_yield_interval"
+    )]
+    pub catchup_yield_interval: Duration,
+    #[serde(
+        rename = "max-parallel-workers",
+        deserialize_with = "de_positive_usize",
+        default = "default_finalizer_max_parallel_workers"
+    )]
+    pub max_parallel_workers: usize,
+}
+
+impl Default for FinalizerConf {
+    fn default() -> Self {
+        Self {
+            yield_interval: default_finalizer_yield_interval(),
+            catchup_yield_interval: default_finalizer_catchup_yield_interval(),
+            max_parallel_workers: default_finalizer_max_parallel_workers(),
+        }
+    }
+}
+
+fn default_finalizer_yield_interval() -> Duration { Duration::from_millis(1) }
+
+fn default_finalizer_catchup_yield_interval() -> Duration { Duration::from_millis(1) }
+
+fn default_finalizer_max_parallel_workers() -> usize { 2 }
+
+fn de_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error as _;
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom("value must be at least 1"));
+    }
+    Ok(value)
+}
 pub fn de_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where D: serde::Deserializer<'de> {
     use serde::de::Error as _;
@@ -462,6 +721,8 @@ where D: serde::Deserializer<'de> {
 
 #[cfg(test)]
 mod native_token_validation_tests {
+    use proptest::prelude::*;
+
     use super::*;
 
     fn valid_genesis() -> GenesisBlockData {
@@ -471,13 +732,17 @@ mod native_token_validation_tests {
             wallets_file: String::new(),
             bond_minimum: 0,
             bond_maximum: 0,
-            epoch_length: 0,
+            epoch_length: 1,
             quarantine_length: 0,
             number_of_active_validators: 0,
             deploy_timestamp: None,
             genesis_block_number: 0,
             pos_multi_sig_public_keys: Vec::new(),
             pos_multi_sig_quorum: 0,
+            max_cosigners_per_deploy: DEFAULT_MAX_COSIGNERS_PER_DEPLOY,
+            initial_phlogiston: DEFAULT_INITIAL_PHLOGISTON,
+            epoch_phlogiston: DEFAULT_EPOCH_PHLOGISTON,
+            client_fuel_allocations: Vec::new(),
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,
@@ -547,5 +812,122 @@ mod native_token_validation_tests {
         let mut g = valid_genesis();
         g.native_token_decimals = MAX_NATIVE_TOKEN_DECIMALS;
         g.validate_native_token().unwrap();
+    }
+
+    #[test]
+    fn accepts_valid_cost_accounting_parameters() {
+        valid_genesis()
+            .validate_cost_accounting_parameters()
+            .unwrap();
+    }
+
+    #[test]
+    fn finalizer_parallelism_rejects_zero_workers() {
+        assert!(serde_json::from_str::<FinalizerConf>(r#"{"max-parallel-workers":0}"#).is_err());
+        assert_eq!(
+            serde_json::from_str::<FinalizerConf>(r#"{"max-parallel-workers":1}"#)
+                .unwrap()
+                .max_parallel_workers,
+            1
+        );
+    }
+
+    #[test]
+    fn finalization_certificate_capacity_accepts_the_protocol_boundary() {
+        let maximum = models::rust::casper::protocol::casper_message::FinalizationCertificate::MAX_EXACT_LATEST_MESSAGES;
+        assert!(validate_finalization_certificate_capacity(maximum as u32).is_ok());
+        assert!(validate_finalization_certificate_capacity(maximum as u32 + 1).is_err());
+    }
+
+    #[test]
+    fn parent_bound_values_require_a_nonempty_cap_and_nonnegative_depths() {
+        assert!(validate_parent_bound_values(-1, i32::MAX, 0).is_ok());
+        assert!(validate_parent_bound_values(1, 0, 0).is_ok());
+        assert!(validate_parent_bound_values(0, 0, 0).is_err());
+        assert!(validate_parent_bound_values(-2, 0, 0).is_err());
+        assert!(validate_parent_bound_values(1, -1, 0).is_err());
+        assert!(validate_parent_bound_values(1, 0, -1).is_err());
+    }
+
+    #[test]
+    fn parent_frontier_capacity_advises_on_worst_case_provisioning() {
+        assert!(parent_frontier_worst_case_capacity_warning(-1, u32::MAX).is_none());
+        assert!(parent_frontier_worst_case_capacity_warning(101, 100).is_none());
+        assert!(parent_frontier_worst_case_capacity_warning(100, 100).is_some());
+        assert!(parent_frontier_worst_case_capacity_warning(101, 101).is_some());
+        assert!(parent_frontier_worst_case_capacity_warning(101, 10_000).is_some());
+    }
+
+    proptest! {
+        #[test]
+        fn finite_parent_capacity_warns_exactly_below_the_worst_case_boundary(
+            active in 0u32..=i32::MAX as u32 - 1,
+            extra in 0u32..=1,
+        ) {
+            let required = active + 1;
+            let cap = required.saturating_sub(extra) as i32;
+            prop_assert_eq!(
+                parent_frontier_worst_case_capacity_warning(cap, active).is_some(),
+                extra == 1 || cap < 1
+            );
+        }
+
+        #[test]
+        fn unlimited_parent_capacity_accepts_every_committee_size(active in any::<u32>()) {
+            prop_assert!(parent_frontier_worst_case_capacity_warning(-1, active).is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_cost_accounting_parameters() {
+        let mut invalid_epoch_length = valid_genesis();
+        invalid_epoch_length.epoch_length = 0;
+        assert!(invalid_epoch_length
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_cosigner_limit = valid_genesis();
+        invalid_cosigner_limit.max_cosigners_per_deploy = 0;
+        assert!(invalid_cosigner_limit
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_initial_phlogiston = valid_genesis();
+        invalid_initial_phlogiston.initial_phlogiston = -1;
+        assert!(invalid_initial_phlogiston
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut invalid_epoch_phlogiston = valid_genesis();
+        invalid_epoch_phlogiston.epoch_phlogiston = -1;
+        assert!(invalid_epoch_phlogiston
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut empty_client_key = valid_genesis();
+        empty_client_key
+            .client_fuel_allocations
+            .push(ClientFuelAllocation {
+                public_key: String::new(),
+                amount: 1,
+            });
+        assert!(empty_client_key
+            .validate_cost_accounting_parameters()
+            .is_err());
+
+        let mut overflowing_clients = valid_genesis();
+        overflowing_clients.client_fuel_allocations = vec![
+            ClientFuelAllocation {
+                public_key: "01".to_string(),
+                amount: i64::MAX,
+            },
+            ClientFuelAllocation {
+                public_key: "01".to_string(),
+                amount: 1,
+            },
+        ];
+        assert!(overflowing_clients
+            .validate_cost_accounting_parameters()
+            .is_err());
     }
 }

@@ -8,7 +8,7 @@
 ' arbitrate between implementations.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/methodology/diagrams/01-methodology-stack.puml
+'   plantuml -tsvg docs/casper/theory/slashing/methodology/diagrams/01-methodology-stack.puml
 
 @startuml 01-methodology-stack
 !theme plain

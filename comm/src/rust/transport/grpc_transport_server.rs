@@ -22,7 +22,6 @@ use crate::rust::transport::communication_response::CommunicationResponse;
 use crate::rust::transport::grpc_transport_receiver::{
     GrpcTransportReceiver, MessageHandlers, PeerBufferSlot,
 };
-use crate::rust::transport::packet_ops::StreamCache;
 use crate::rust::transport::stream_handler::StreamHandler;
 use crate::rust::transport::transport_layer::Blob;
 
@@ -76,8 +75,6 @@ pub struct GrpcTransportServer {
     pub max_stream_message_size: u64,
     /// Number of parallel message processing tasks
     pub parallelism: usize,
-    /// Cache to store received partial data (streaming packets)
-    pub cache: StreamCache,
 }
 
 impl GrpcTransportServer {
@@ -101,8 +98,6 @@ impl GrpcTransportServer {
             max_message_size,
             max_stream_message_size,
             parallelism,
-            // Create cache for storing received partial data (streaming packets)
-            cache: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -279,10 +274,11 @@ impl TransportLayerServer for GrpcTransportServer {
             Arc::new({
                 let dispatch = dispatch.clone();
                 move |send_msg| {
-                    let protocol = send_msg.msg;
+                    let (protocol, reservation) = send_msg.into_parts();
                     let dispatch = dispatch.clone();
 
                     Box::pin(async move {
+                        let _reservation = reservation;
                         // Execute the dispatch function
                         match dispatch(protocol).await {
                             Ok(_communication_response) => {
@@ -300,15 +296,13 @@ impl TransportLayerServer for GrpcTransportServer {
             // Handler for StreamMessage (Blob streaming)
             Arc::new({
                 let handle_streamed = handle_streamed.clone();
-                let cache = self.cache.clone();
                 move |stream_msg| {
-                    let cache = cache.clone();
                     let handle_streamed = handle_streamed.clone();
 
                     Box::pin(async move {
-                        match StreamHandler::restore(&stream_msg, &cache).await {
-                            Ok(blob) => {
-                                // Execute the stream handler function
+                        match StreamHandler::restore(stream_msg).await {
+                            Ok((blob, reservation)) => {
+                                let _reservation = reservation;
                                 match handle_streamed(blob).await {
                                     Ok(()) => {
                                         metrics::counter!(DISPATCHED_PACKETS_METRIC, "source" => TRANSPORT_METRICS_SOURCE).increment(1);
@@ -321,7 +315,7 @@ impl TransportLayerServer for GrpcTransportServer {
                                 }
                             }
                             Err(e) => {
-                                tracing::error!(key = %stream_msg.key, error = %e, "blob stream data restore failed");
+                                tracing::error!(error = %e, "blob stream data restore failed");
                                 Err(e)
                             }
                         }
@@ -342,7 +336,6 @@ impl TransportLayerServer for GrpcTransportServer {
             buffers_map,
             message_handlers,
             self.parallelism,
-            self.cache.clone(),
         )
         .await?;
 

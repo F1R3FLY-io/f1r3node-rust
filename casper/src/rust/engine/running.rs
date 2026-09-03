@@ -7,11 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
@@ -20,28 +15,23 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    self, ApprovedBlock, ApprovedBlockCandidate, BlockHashMessage, BlockMessage, BlockRequest,
-    CasperMessage, FinalizedFloorSeed, HasBlock, HasBlockRequest,
+    self, ApprovedBlock, BlockHashMessage, BlockRequest, CasperMessage,
+    FinalizationCertificateRequest, FinalizationCertificateResponse, HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
-use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
-use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tokio::sync::mpsc;
 
-use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::blocks::block_processing_queue::BlockProcessingQueueSender;
+use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::errors::CasperError;
-use crate::rust::estimator::Estimator;
-use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
     BLOCK_HASH_RECEIVED_METRIC, BLOCK_REQUEST_RECEIVED_METRIC, RUNNING_METRICS_SOURCE,
 };
-use crate::rust::safety::clique_oracle::FtThreshold;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CasperMessageStatus {
@@ -58,17 +48,6 @@ pub struct IgnoreCasperMessageStatus {
     pub do_ignore: bool,
     pub status: CasperMessageStatus,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LastFinalizedBlockNotFoundError;
-
-impl std::fmt::Display for LastFinalizedBlockNotFoundError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Last finalized block not found in the block storage.")
-    }
-}
-
-impl std::error::Error for LastFinalizedBlockNotFoundError {}
 
 /**
  * As we introduced synchrony constraint - there might be situation when node is stuck.
@@ -90,7 +69,8 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
     // Check if we have casper
     if let Some(casper) = engine.with_casper() {
         // Get latest messages from block dag
-        let latest_messages = casper.block_dag().await?.latest_message_hashes();
+        let dag = casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -99,6 +79,9 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
         // Check if any latest message is recent
         let mut has_recent_latest_message = false;
         for (_, block_hash) in latest_messages.iter() {
+            if dag.canonical_genesis_hash() == Some(block_hash) {
+                continue;
+            }
             if let Ok(Some(block)) = casper.block_store().get(block_hash) {
                 let block_timestamp = block.header.timestamp;
                 if (now - block_timestamp) < delay_threshold.as_millis() as i64 {
@@ -110,7 +93,8 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
 
         // If stuck, request fork choice tips
         let stuck = !has_recent_latest_message;
-        if stuck {
+        let recovering = engine.recover_stuck_validator(delay_threshold).await?;
+        if stuck && !recovering {
             tracing::info!(
                 "Requesting tips update as newest latest message is more than {:?} old. Might be network is faulty.",
                 delay_threshold
@@ -121,6 +105,37 @@ pub async fn update_fork_choice_tips_if_stuck<T: TransportLayer + Send + Sync>(
         }
     }
 
+    Ok(())
+}
+
+pub async fn enqueue_dependency_free_blocks<T: TransportLayer + Send + Sync>(
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+    block_processing_queue_tx: &BlockProcessingQueueSender,
+    blocks_in_processing: &Arc<DashSet<BlockHash>>,
+    block_retriever: &BlockRetriever<T>,
+) -> Result<(), CasperError> {
+    let _scan_guard = block_processing_queue_tx.acquire_dependency_scan().await;
+    for block in casper.get_dependency_free_from_buffer()? {
+        let hash = block.block_hash.clone();
+        if casper.dag_contains(&hash) {
+            casper.remove_buffered_hash(&hash)?;
+            block_retriever.forget_hash_tracking(&hash)?;
+            continue;
+        }
+        if !blocks_in_processing.insert(hash.clone()) {
+            continue;
+        }
+        match block_processing_queue_tx.try_enqueue(casper.clone(), block) {
+            Ok(()) => block_retriever.ack_receive(hash).await?,
+            Err(error) if error.failure.is_temporary() => {
+                blocks_in_processing.remove(&hash);
+            }
+            Err(error) => {
+                blocks_in_processing.remove(&hash);
+                return Err(CasperError::Other(error.to_string()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -183,33 +198,36 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         );
                         return Ok(());
                     }
-                    let max_in_flight = max_blocks_in_processing();
-                    if self.blocks_in_processing.len() > max_in_flight {
-                        self.blocks_in_processing.remove(&block_hash);
-                        tracing::warn!(
-                            "Dropping BlockMessage {} because in-flight block cap {} is reached",
-                            PrettyPrinter::build_string_bytes(&block_hash),
-                            max_in_flight
-                        );
-                        return Ok(());
-                    }
-                    self.block_processing_queue_tx
-                        .send((self.casper.clone(), b))
-                        .await
-                        .map_err(|e| {
-                            // Roll back pre-enqueue mark if queue send fails.
+                    match self
+                        .block_processing_queue_tx
+                        .try_enqueue(self.casper.clone(), b)
+                    {
+                        Ok(()) => self.block_retriever.ack_receive(block_hash).await?,
+                        Err(error) if error.failure.is_temporary() => {
                             self.blocks_in_processing.remove(&block_hash);
-                            CasperError::RuntimeError(format!(
-                                "Failed to send block to queue: {}",
-                                e
-                            ))
-                        })?;
-                    let now_ms = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64;
-                    self.last_peer_block_arrival_ms
-                        .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+                            let tracked = self
+                                .block_retriever
+                                .defer_for_admission(block_hash.clone(), Some(peer))
+                                .await?;
+                            if tracked {
+                                tracing::info!(
+                                    error = %error,
+                                    "Deferred BlockMessage {} for re-request",
+                                    PrettyPrinter::build_string_bytes(&block_hash)
+                                );
+                            } else {
+                                tracing::warn!(
+                                    error = %error,
+                                    "Released untracked BlockMessage {} at request-tracker capacity; a later hash announcement or dependency scan must readmit it",
+                                    PrettyPrinter::build_string_bytes(&block_hash)
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            self.blocks_in_processing.remove(&block_hash);
+                            return Err(CasperError::RuntimeError(error.to_string()));
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -217,9 +235,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 metrics::counter!(BLOCK_REQUEST_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE).increment(1);
                 self.handle_block_request(peer, br).await
             }
+            CasperMessage::FinalizationCertificateRequest(request) => {
+                self.handle_finalization_certificate_request(peer, request)
+                    .await
+            }
+            CasperMessage::FinalizationCertificateResponse(response) => {
+                self.handle_finalization_certificate_response(peer, response)
+                    .await
+            }
 
-            // TODO should node say it has block only after it is in DAG, or CasperBuffer is enough? Or even just BlockStore?
-            // https://github.com/rchain/rchain/pull/2943#discussion_r449887701 -- OLD
             CasperMessage::HasBlockRequest(hbr) => {
                 self.handle_has_block_request(peer, hbr, |hash| self.casper.dag_contains(&hash))
                     .await
@@ -232,47 +256,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 self.handle_fork_choice_tip_request(peer).await
             }
             CasperMessage::ApprovedBlockRequest(abr) => {
-                let last_finalized_block_hash =
-                    self.casper.block_dag().await?.last_finalized_block();
-
-                // Create approved block from last finalized block
-                let last_finalized_block = self
-                    .casper
-                    .block_store()
-                    .get(&last_finalized_block_hash)?
-                    .ok_or_else(|| {
-                        CasperError::RuntimeError(LastFinalizedBlockNotFoundError.to_string())
-                    })?;
-
-                // Each approved block should be justified by validators signatures
-                // ATM we have signatures only for genesis approved block - we also have to have a procedure
-                // for gathering signatures for each approved block post genesis.
-                // Now new node have to trust bootstrap if it wants to trim state when connecting to the network.
-                // TODO We need signatures of Validators supporting this block -- OLD
-                let last_approved_block = ApprovedBlock {
-                    candidate: ApprovedBlockCandidate {
-                        block: last_finalized_block,
-                        required_sigs: 0,
-                    },
-                    sigs: vec![],
-                    // Filled in below, and only for a trimmed response.
-                    floor_seed: None,
-                };
-
-                let approved_block = if abr.trim_state {
-                    // If Last Finalized State is requested return Last Finalized block as Approved block
-                    ApprovedBlock {
-                        floor_seed: self.floor_seed_for(&last_finalized_block_hash).await,
-                        ..last_approved_block
-                    }
-                } else {
-                    // Respond with approved block that this node is started from.
-                    // The very first one is genesis, but this node still might start from later block,
-                    // so it will not necessary be genesis.
-                    self.approved_block.clone()
-                };
-
-                self.handle_approved_block_request(peer, approved_block)
+                if abr.trim_state {
+                    tracing::info!(
+                        "Peer requested legacy trimmed ApprovedBlock; serving canonical genesis approval."
+                    );
+                }
+                self.handle_approved_block_request(peer, self.approved_block.clone())
                     .await
             }
             CasperMessage::NoApprovedBlockAvailable(na) => {
@@ -311,21 +300,15 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     Ok(())
                 }
             }
-            // Chunks answering the runtime state requester's root fetches.
-            // Without a requester wired these fall through as they always did.
             CasperMessage::StoreItemsMessage(items) => {
                 if let Some(tx) = &self.state_items_tx {
                     if tx.try_send(items).is_err() {
                         tracing::warn!(
-                            "state requester items queue full or closed; dropping chunk \
-                             (the resend tick re-requests it)"
+                            "state requester items queue full or closed; dropping chunk"
                         );
                     }
                 }
                 Ok(())
-            }
-            CasperMessage::FloorCacheRequest(req) => {
-                self.handle_floor_cache_request(peer, req.hashes).await
             }
             CasperMessage::MergeableEntryRequest(req) => {
                 if self.disable_state_exporter {
@@ -359,8 +342,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
 // NOTE: Changed to use Arc<dyn MultiParentCasper> directly instead of generic M
 // based on discussion with Steven for TestFixture compatibility - avoids ?Sized issues
 pub struct Running<T: TransportLayer + Send + Sync> {
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
+    block_processing_queue_tx: BlockProcessingQueueSender,
     blocks_in_processing: Arc<DashSet<BlockHash>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync>,
     approved_block: ApprovedBlock,
@@ -374,128 +356,17 @@ pub struct Running<T: TransportLayer + Send + Sync> {
     conf: RPConf,
     block_retriever: BlockRetriever<T>,
     recovery_context: Option<RunningRecoveryContext>,
-    /// Wall-clock of the last peer block accepted for processing. The
-    /// stale-rejoin trigger requires receive-quiescence in addition to
-    /// own-message staleness: a node that keeps receiving blocks is not
-    /// partitioned — it is failing to PROPOSE, and ejecting it into an
-    /// approved-block state rejoin destroys its custody duties.
-    last_peer_block_arrival_ms: Arc<std::sync::atomic::AtomicI64>,
-    /// Routes incoming [`casper_message::StoreItemsMessage`]s to the runtime
-    /// state requester. `None` on a node that cannot need one (genesis
-    /// ceremony); without it those messages are dropped, as they always were.
     state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
 }
 
 #[derive(Clone)]
 pub struct RunningRecoveryContext {
     pub connections_cell: ConnectionsCell,
-    pub last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
-    pub block_store: KeyValueBlockStore,
-    pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: KeyValueDeployStorage,
-    pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    pub casper_buffer_storage: CasperBufferKeyValueStorage,
-    pub rspace_state_manager: RSpaceStateManager,
-    pub event_publisher: F1r3flyEvents,
-    pub engine_cell: Arc<EngineCell>,
-    pub runtime_manager: Arc<RuntimeManager>,
-    pub estimator: Estimator,
-    pub casper_shard_conf: CasperShardConf,
-    pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
-}
-
-const MAX_BLOCKS_IN_PROCESSING: usize = 2_048;
-
-fn max_blocks_in_processing() -> usize { MAX_BLOCKS_IN_PROCESSING }
-
-/// The stale-rejoin trigger: rejoin-from-approved-block only when the
-/// validator's own latest message is stale AND no peer block has arrived
-/// for the same window. Own-staleness alone is not a partition signal — a
-/// node that keeps receiving and validating peer blocks has a working
-/// network and a local PROPOSE problem, and ejecting it into a state
-/// rejoin abandons its owner-custody duties for the rejoin's duration
-/// (observed as an 80-minute self-eviction in the ucc ca7197d8 specimen,
-/// where every validator was propose-wedged but fully connected).
-fn should_rejoin_from_approved_block(
-    own_latest_age_ms: i64,
-    arrival_age_ms: i64,
-    threshold_ms: i64,
-) -> bool {
-    own_latest_age_ms >= threshold_ms && arrival_age_ms >= threshold_ms
 }
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
-    /// The floor and frontier of the block we are about to hand over as a sync
-    /// anchor.
-    ///
-    /// A trimmed response gives the requester nothing below the anchor, and
-    /// `floor(B)` is defined by recursion through B's parents — so the
-    /// requester cannot derive the anchor's own floor no matter how it tries.
-    /// We can: the anchor is our last finalized block and its floor is either
-    /// cached or derivable from history we still hold.
-    ///
-    /// Returns `None` rather than failing the request. A seedless anchor leaves
-    /// the requester deferring — visibly, and without accusing anyone — which is
-    /// strictly better than refusing to serve it at all. Genesis reaches here
-    /// with no frontier (it is its own floor, cached without one) and needs no
-    /// seed: a genesis anchor is not trimmed.
-    async fn floor_seed_for(&self, anchor: &BlockHash) -> Option<FinalizedFloorSeed> {
-        let seed: Result<Option<FinalizedFloorSeed>, CasperError> = async {
-            let dag = self.casper.block_dag().await?;
-            let ftt = FtThreshold::from_ppm(
-                self.casper
-                    .casper_shard_conf()
-                    .fault_tolerance_threshold_ppm,
-            );
-            // Populates BOTH caches from one derivation, so the frontier read
-            // below cannot miss for any block that has parents.
-            let floor = floor_of_block(&dag, self.casper.block_store(), anchor, ftt).await?;
-            let Some(frontier_hash) = dag.get_cached_frontier(anchor)? else {
-                return Ok(None);
-            };
-            let frontier_number = dag
-                .lookup(&frontier_hash)?
-                .map(|meta| meta.block_number)
-                .ok_or_else(|| CasperError::BlockNotHeld(frontier_hash.clone()))?;
-            Ok(Some(FinalizedFloorSeed {
-                floor_hash: floor.hash,
-                floor_number: floor.block_number,
-                frontier_hash,
-                frontier_number,
-            }))
-        }
-        .await;
-
-        match seed {
-            Ok(Some(seed)) => {
-                tracing::info!(
-                    anchor = %PrettyPrinter::build_string_bytes(anchor),
-                    floor = %PrettyPrinter::build_string_bytes(&seed.floor_hash),
-                    floor_number = seed.floor_number,
-                    frontier = %PrettyPrinter::build_string_bytes(&seed.frontier_hash),
-                    frontier_number = seed.frontier_number,
-                    "Serving trimmed approved block with a finalized-floor seed"
-                );
-                Some(seed)
-            }
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(
-                    anchor = %PrettyPrinter::build_string_bytes(anchor),
-                    error = %e,
-                    "Could not derive a floor seed for the trimmed approved block; the \
-                     requester will not be able to derive finality above it"
-                );
-                None
-            }
-        }
-    }
-
     pub fn new(
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
+        block_processing_queue_tx: BlockProcessingQueueSender,
         blocks_in_processing: Arc<DashSet<BlockHash>>,
         casper: Arc<dyn MultiParentCasper + Send + Sync>,
         approved_block: ApprovedBlock,
@@ -509,10 +380,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         recovery_context: Option<RunningRecoveryContext>,
         state_items_tx: Option<mpsc::Sender<casper_message::StoreItemsMessage>>,
     ) -> Self {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
         Running {
             block_processing_queue_tx,
             blocks_in_processing,
@@ -525,7 +392,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             conf,
             block_retriever,
             recovery_context,
-            last_peer_block_arrival_ms: Arc::new(std::sync::atomic::AtomicI64::new(now_ms)),
             state_items_tx,
         }
     }
@@ -555,9 +421,17 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         let dag = self.casper.block_dag().await?;
         let latest_hash = match dag.latest_message_hash(&validator) {
             Some(hash) => hash,
-            None => return Ok(false),
+            None => {
+                self.casper.set_recovery_sync_active(false);
+                return Ok(false);
+            }
         };
+        if dag.canonical_genesis_hash() == Some(&latest_hash) {
+            self.casper.set_recovery_sync_active(false);
+            return Ok(false);
+        }
         if latest_hash == dag.last_finalized_block() {
+            self.casper.set_recovery_sync_active(false);
             return Ok(false);
         }
 
@@ -571,56 +445,25 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             .unwrap()
             .as_millis() as i64;
         let latest_age_ms = now_ms.saturating_sub(latest_block.header.timestamp);
-        let arrival_age_ms = now_ms.saturating_sub(
-            self.last_peer_block_arrival_ms
-                .load(std::sync::atomic::Ordering::Relaxed),
-        );
-        if !should_rejoin_from_approved_block(
-            latest_age_ms,
-            arrival_age_ms,
-            delay_threshold.as_millis() as i64,
-        ) {
+        if latest_age_ms < delay_threshold.as_millis() as i64 {
+            self.casper.set_recovery_sync_active(false);
             return Ok(false);
         }
 
-        let init = Arc::new(|| {
-            Box::pin(async { Ok(()) })
-                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-        });
-
         tracing::warn!(
-            "Validator latest message {} has been stale for {}ms; rejoining from approved block.",
+            "Validator latest message {} has been stale for {}ms; requesting multi-peer DAG tips and local finalization.",
             PrettyPrinter::build_string_bytes(&latest_hash),
             latest_age_ms
         );
 
-        engine::transition_to_initializing(
-            &self.block_processing_queue_tx,
-            &self.blocks_in_processing,
-            &recovery_context.casper_shard_conf,
-            &Some(validator_id),
-            init,
-            true,
-            self.disable_state_exporter,
-            &self.transport,
-            &self.conf,
-            &recovery_context.connections_cell,
-            &recovery_context.last_approved_block,
-            &recovery_context.block_store,
-            &recovery_context.block_dag_storage,
-            &recovery_context.deploy_storage,
-            &recovery_context.rejected_deploy_buffer,
-            &recovery_context.casper_buffer_storage,
-            &recovery_context.rspace_state_manager,
-            recovery_context.event_publisher.clone(),
-            self.block_retriever.clone(),
-            &recovery_context.engine_cell,
-            &recovery_context.runtime_manager,
-            &recovery_context.estimator,
-            &recovery_context.heartbeat_signal_ref,
-            self.state_items_tx.clone(),
-        )
-        .await?;
+        self.casper.set_recovery_sync_active(true);
+        if let Err(error) = self.casper.request_finalization() {
+            self.casper.set_recovery_sync_active(false);
+            return Err(error);
+        }
+        self.transport
+            .send_fork_choice_tip_request(&recovery_context.connections_cell, &self.conf)
+            .await?;
 
         Ok(true)
     }
@@ -708,6 +551,65 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         Ok(())
     }
 
+    pub async fn handle_finalization_certificate_request(
+        &self,
+        peer: PeerNode,
+        request: FinalizationCertificateRequest,
+    ) -> Result<(), CasperError> {
+        if let Some(certificate) = self
+            .casper
+            .block_store()
+            .get_finalization_certificate(&request.digest)?
+        {
+            self.transport
+                .stream_message_to_peer(
+                    &self.conf,
+                    &peer,
+                    Arc::new(
+                        FinalizationCertificateResponse {
+                            digest: request.digest,
+                            certificate,
+                        }
+                        .to_proto(),
+                    ),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn handle_finalization_certificate_response(
+        &self,
+        peer: PeerNode,
+        response: FinalizationCertificateResponse,
+    ) -> Result<(), CasperError> {
+        if !self
+            .block_retriever
+            .finalization_certificate_response_is_expected(&response.digest)?
+        {
+            tracing::debug!(
+                peer = %peer,
+                digest = %PrettyPrinter::build_string_bytes(&response.digest),
+                "Ignoring unsolicited finalization certificate response"
+            );
+            return Ok(());
+        }
+        self.casper
+            .block_store()
+            .put_finalization_certificate(&response.digest, &response.certificate)?;
+        self.casper
+            .resolve_finalization_certificate_dependency(&response.digest)?;
+        self.block_retriever
+            .complete_finalization_certificate_request(&response.digest)?;
+        enqueue_dependency_free_blocks(
+            self.casper.clone(),
+            &self.block_processing_queue_tx,
+            &self.blocks_in_processing,
+            &self.block_retriever,
+        )
+        .await
+    }
+
     pub async fn handle_has_block_request(
         &self,
         peer: PeerNode,
@@ -726,16 +628,20 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     /**
      * Peer asks for fork-choice tip
      */
-    // TODO name for this message is misleading, as its a request for all tips, not just fork choice. -- OLD
     pub async fn handle_fork_choice_tip_request(&self, peer: PeerNode) -> Result<(), CasperError> {
         tracing::info!("Received ForkChoiceTipRequest from {}", peer.endpoint.host);
-        let latest_messages = self.casper.block_dag().await?.latest_message_hashes();
-        let tips: Vec<BlockHash> = latest_messages
-            .iter()
-            .map(|(_, hash)| hash.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        let dag = self.casper.block_dag().await?;
+        let latest_messages = dag.latest_message_hashes();
+        let mut tips = Vec::new();
+        for tip in latest_messages.values().cloned().collect::<HashSet<_>>() {
+            if dag.canonical_genesis_hash() == Some(&tip) {
+                continue;
+            }
+            if !dag.contains(&tip) {
+                return Err(CasperError::BlockNotHeld(tip));
+            }
+            tips.push(tip);
+        }
         tracing::info!(
             "Sending tips {} to {}",
             tips.iter()
@@ -769,94 +675,24 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     /// Respond to a `MergeableEntryRequest`.
     ///
     /// - Block not in our store: silent (no response).
-    /// - Block present, no mergeable entry: respond with empty `serialized_entry`.
-    /// - Block present and entry present: respond with raw bincode bytes from
-    ///   the mergeable_store.
-    /// Serve cached finalized-floor values for the requested blocks.
-    ///
-    /// The values are pure functions of the named blocks, computed when this
-    /// node validated them. Entries this node does not have BOTH values for
-    /// are omitted — the requester derives those locally from its neighbours.
-    /// Capped so a hostile request cannot turn this into a scan.
-    async fn handle_floor_cache_request(
-        &self,
-        peer: PeerNode,
-        hashes: Vec<BlockHash>,
-    ) -> Result<(), CasperError> {
-        const FLOOR_CACHE_REQUEST_CAP: usize = 4_096;
-        if hashes.len() > FLOOR_CACHE_REQUEST_CAP {
-            tracing::warn!(
-                requested = hashes.len(),
-                cap = FLOOR_CACHE_REQUEST_CAP,
-                %peer,
-                "FloorCacheRequest over cap; ignoring"
-            );
-            return Ok(());
-        }
-        let dag = self.casper.block_dag().await?;
-        let mut entries = Vec::new();
-        for hash in hashes {
-            let (Some(floor), Some(frontier)) = (
-                dag.get_cached_floor(&hash)?,
-                dag.get_cached_frontier(&hash)?,
-            ) else {
-                continue;
-            };
-            entries.push(casper_message::FloorCacheEntry {
-                block_hash: hash,
-                floor_hash: floor,
-                frontier_hash: frontier,
-            });
-        }
-        tracing::info!(
-            entries = entries.len(),
-            %peer,
-            "Serving finalized-floor cache entries"
-        );
-        let genesis_hash = self.casper.genesis_block_hash()?.unwrap_or_default();
-        let genesis_block = if genesis_hash.is_empty() {
-            None
-        } else {
-            self.casper.block_store().get(&genesis_hash)?
-        };
-        let resp = casper_message::FloorCacheResponse {
-            entries,
-            genesis_hash,
-            genesis_block,
-        };
-        self.transport
-            .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
-            .await?;
-        Ok(())
-    }
-
+    /// - Block present: respond with an empty entry so the peer replays locally.
     async fn handle_mergeable_entry_request(
         &self,
         peer: PeerNode,
         block_hash: BlockHash,
     ) -> Result<(), CasperError> {
-        let block = match self.casper.block_store().get(&block_hash)? {
-            Some(b) => b,
-            None => {
-                tracing::debug!(
-                    "MergeableEntryRequest for {} from {}: block not in store; silent ignore.",
-                    PrettyPrinter::build_string_bytes(&block_hash),
-                    peer
-                );
-                return Ok(());
-            }
-        };
-
-        let runtime = self.casper.runtime_manager();
-        let (_key_bytes, value_bytes_opt) = runtime.get_mergeable_entry_bytes(&block)?;
-
-        let serialized_entry: prost::bytes::Bytes = value_bytes_opt
-            .map(prost::bytes::Bytes::from)
-            .unwrap_or_default();
+        if self.casper.block_store().get(&block_hash)?.is_none() {
+            tracing::debug!(
+                "MergeableEntryRequest for {} from {}: block not in store; silent ignore.",
+                PrettyPrinter::build_string_bytes(&block_hash),
+                peer
+            );
+            return Ok(());
+        }
 
         let resp = casper_message::MergeableEntryResponse {
             block_hash: block_hash.clone(),
-            serialized_entry,
+            serialized_entry: prost::bytes::Bytes::new(),
         };
 
         self.transport
@@ -864,7 +700,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
             .await?;
 
         tracing::debug!(
-            "Mergeable entry sent to {} for block {}.",
+            "Unauthenticated mergeable-entry export refused for {} and block {}; peer must replay locally.",
             peer,
             PrettyPrinter::build_string_bytes(&block_hash)
         );
@@ -908,26 +744,5 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
 
         tracing::info!("Store items sent to {}", peer);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::should_rejoin_from_approved_block;
-
-    /// A propose-wedged but connected validator must NOT rejoin: its own
-    /// latest message is stale, yet peer blocks keep arriving — the network
-    /// is alive and the fault is local to proposing.
-    #[test]
-    fn a_receiving_validator_with_a_stale_own_message_must_not_rejoin() {
-        assert!(!should_rejoin_from_approved_block(120_000, 500, 60_000));
-    }
-
-    /// Genuine quiescence: own message stale AND nothing arriving for the
-    /// window — the partition signal the rejoin exists for.
-    #[test]
-    fn a_quiescent_stale_validator_rejoins() {
-        assert!(should_rejoin_from_approved_block(120_000, 90_000, 60_000));
-        assert!(!should_rejoin_from_approved_block(500, 90_000, 60_000));
     }
 }

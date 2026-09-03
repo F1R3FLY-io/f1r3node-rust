@@ -2,6 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -9,13 +12,15 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
+use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::Validator;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tracing;
 
 use super::propose_result::ProposeStatus;
-use crate::rust::block_status::{BlockError, InvalidBlock};
+use crate::rust::block_status::{BlockError, CertifiedBlockValidation, InvalidBlock};
 use crate::rust::blocks::proposer::block_creator;
 use crate::rust::blocks::proposer::propose_result::{
     BlockCreatorResult, CheckProposeConstraintsFailure, CheckProposeConstraintsResult,
@@ -28,8 +33,65 @@ use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 use crate::rust::{
-    last_finalized_height_constraint_checker, synchrony_constraint_checker, ValidBlockProcessing,
+    finality_recovery_leader, last_finalized_height_constraint_checker,
+    synchrony_constraint_checker, FinalityRecoveryPermit, ProposeRequestKind, ValidBlockProcessing,
 };
+
+fn recovery_permit_matches(
+    permit: &FinalityRecoveryPermit,
+    lfb_hash: &BlockHash,
+    lfb_height: i64,
+    validators: Vec<Validator>,
+    local_validator: &Validator,
+) -> bool {
+    permit.lfb_hash == *lfb_hash
+        && permit.lfb_height == lfb_height
+        && finality_recovery_leader(validators, lfb_height, permit.recovery_round)
+            .is_some_and(|leader| leader == *local_validator)
+}
+
+fn recovery_permit_authorized(
+    permit: &FinalityRecoveryPermit,
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+) -> Result<bool, CasperError> {
+    if permit.lfb_hash != casper_snapshot.last_finalized_block {
+        return Ok(false);
+    }
+
+    let Some(lfb_metadata) = casper_snapshot
+        .dag
+        .lookup(&casper_snapshot.last_finalized_block)?
+    else {
+        return Ok(false);
+    };
+
+    Ok(recovery_permit_matches(
+        permit,
+        &casper_snapshot.last_finalized_block,
+        lfb_metadata.block_number,
+        casper_snapshot.finalized_floor_validators(),
+        &validator_identity.public_key.bytes,
+    ))
+}
+
+fn allow_empty_blocks_for_request(
+    request_kind: &ProposeRequestKind,
+    heartbeat_capability: bool,
+    recovery_authorized: bool,
+) -> bool {
+    heartbeat_capability
+        && recovery_authorized
+        && matches!(request_kind, ProposeRequestKind::FinalityRecovery(_))
+}
+
+fn request_kind_name(request_kind: &ProposeRequestKind) -> &'static str {
+    match request_kind {
+        ProposeRequestKind::Manual => "manual",
+        ProposeRequestKind::PendingDeploy => "pending_deploy",
+        ProposeRequestKind::FinalityRecovery(_) => "finality_recovery",
+    }
+}
 
 pub struct ProposeReturnType {
     pub propose_result: ProposeResult,
@@ -88,7 +150,7 @@ pub trait BlockValidator {
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         casper_snapshot: &mut CasperSnapshot,
         block: &BlockMessage,
-    ) -> Result<ValidBlockProcessing, CasperError>;
+    ) -> Result<CertifiedBlockValidation, CasperError>;
 }
 
 #[allow(async_fn_in_trait)]
@@ -97,6 +159,8 @@ pub trait ProposeEffectHandler {
         &mut self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<(), CasperError>;
 
     /// Publish BlockCreated event immediately after block creation (before validation).
@@ -214,6 +278,15 @@ where
                     BlockCreatorResult::NoNewDeploys => {
                         Ok((ProposeResult::failure(ProposeFailure::NoNewDeploys), None))
                     }
+                    BlockCreatorResult::RecoveryDeferred(reason) => {
+                        if reason.requires_finalization_request() {
+                            casper.request_finalization()?;
+                        }
+                        Ok((
+                            ProposeResult::failure(ProposeFailure::RecoveryDeferred(reason)),
+                            None,
+                        ))
+                    }
                     BlockCreatorResult::Created(block, pre_state_hash, post_state_hash) => {
                         // Publish BlockCreated event immediately after block is created (before validation)
                         self.propose_effect_handler.publish_block_created(&block)?;
@@ -227,10 +300,26 @@ where
                             )
                             .await?;
 
-                        match validation_result {
+                        match validation_result.status() {
                             ValidBlockProcessing::Right(valid_status) => {
+                                let certificate = validation_result
+                                    .sender_authority()
+                                    .ok_or_else(|| {
+                                        CasperError::RuntimeError(format!(
+                                            "self-created block {} has no certified sender authority",
+                                            PrettyPrinter::build_string_bytes(&block.block_hash)
+                                        ))
+                                    })?;
+                                let outcome = validation_result
+                                    .admission_outcome()
+                                    .ok_or_else(|| {
+                                        CasperError::RuntimeError(format!(
+                                            "self-created block {} has no certified admission outcome",
+                                            PrettyPrinter::build_string_bytes(&block.block_hash)
+                                        ))
+                                    })?;
                                 self.propose_effect_handler
-                                    .handle_propose_effect(casper, &block)
+                                    .handle_propose_effect(casper, &block, certificate, outcome)
                                     .await?;
                                 Ok((ProposeResult::success(valid_status), Some(block)))
                             }
@@ -349,7 +438,7 @@ where
     pub async fn propose(
         &mut self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        is_async: bool,
+        request_kind: ProposeRequestKind,
     ) -> Result<ProposeReturnType, CasperError> {
         // Using tracing events instead of spans for async context
         // Span[F].traceI("do-propose") equivalent from Scala
@@ -371,12 +460,31 @@ where
 
         // get snapshot to serve as a base for propose
         let snapshot_start = std::time::Instant::now();
-        let mut casper_snapshot = match self
+        let snapshot_result = self
             .casper_snapshot_provider
             .get_casper_snapshot(casper.clone())
-            .await
-        {
+            .await;
+        let mut casper_snapshot = match snapshot_result {
             Ok(snapshot) => snapshot,
+            Err(CasperError::ParentFrontierCapacityExceeded {
+                configured_cap,
+                required_parents,
+                ..
+            }) => {
+                let propose_result =
+                    ProposeResult::failure(ProposeFailure::ParentFrontierCapacityExceeded {
+                        configured_cap,
+                        required_parents,
+                    });
+                return Ok(ProposeReturnType {
+                    propose_result_to_send: ProposerResult::failure(
+                        propose_result.propose_status.clone(),
+                        -1,
+                    ),
+                    propose_result,
+                    block_message_opt: None,
+                });
+            }
             // Not having the history to build a snapshot is a reason not to
             // propose, not an error to retry. The constraint that would have
             // stopped this node lives inside the snapshot it cannot build, so
@@ -406,121 +514,62 @@ where
         let elapsed = start_time.elapsed();
         tracing::info!("getCasperSnapshot [{}ms]", elapsed.as_millis());
 
-        let self_seq = casper_snapshot
-            .max_seq_nums
-            .get(&self.validator.public_key.bytes)
-            .map(|seq| *seq as i64)
-            .unwrap_or(0);
-        // C13 / Perf-4: HashMap iteration yields `(&K, &V)` tuples
-        // (vs DashMap's `Ref<T>`-wrapped entries); use `.values()`
-        // since the key is unused (clippy::iter_kv_map).
-        let observed_max_seq = casper_snapshot
-            .max_seq_nums
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(0) as i64;
-        let (block_lag, seq_lag) = match casper_snapshot
-            .dag
-            .lookup_unsafe(&casper_snapshot.last_finalized_block)
-        {
-            Ok(lfb_meta) => (
-                casper_snapshot
-                    .max_block_num
-                    .saturating_sub(lfb_meta.block_number),
-                observed_max_seq.saturating_sub(lfb_meta.sequence_number as i64),
-            ),
-            Err(_) => (0, 0),
+        let recovery_authorized = match &request_kind {
+            ProposeRequestKind::FinalityRecovery(permit) => {
+                recovery_permit_authorized(permit, &casper_snapshot, &self.validator)?
+            }
+            ProposeRequestKind::Manual | ProposeRequestKind::PendingDeploy => false,
         };
-        let finality_lag = std::cmp::max(block_lag, seq_lag);
-        let allow_empty_for_recovery = finality_lag > 20;
-        if allow_empty_for_recovery && !is_async {
-            tracing::info!(
-                "Enabling empty-block propose in sync recovery mode due to finality lag (lag={}, block_lag={}, seq_lag={}, self_seq={}, observed_max_seq={})",
-                finality_lag,
-                block_lag,
-                seq_lag,
-                self_seq,
-                observed_max_seq
-            );
+        if matches!(request_kind, ProposeRequestKind::FinalityRecovery(_)) && !recovery_authorized {
+            let propose_result = ProposeResult::failure(ProposeFailure::RecoveryDeferred(
+                crate::rust::blocks::proposer::propose_result::RecoveryDeferralReason::StaleRecoveryPermit,
+            ));
+            let seq_number =
+                get_validator_next_seq_number(&casper_snapshot, &self.validator.public_key.bytes);
+            return Ok(ProposeReturnType {
+                propose_result_to_send: ProposerResult::failure(
+                    propose_result.propose_status.clone(),
+                    seq_number,
+                ),
+                propose_result,
+                block_message_opt: None,
+            });
         }
 
-        let allow_empty_blocks_for_request =
-            (self.allow_empty_blocks && is_async) || allow_empty_for_recovery;
+        let allow_empty_blocks_for_request = allow_empty_blocks_for_request(
+            &request_kind,
+            self.allow_empty_blocks,
+            recovery_authorized,
+        );
+        let propose_start = std::time::Instant::now();
+        let (propose_result, block_opt) = self
+            .do_propose(&mut casper_snapshot, casper, allow_empty_blocks_for_request)
+            .await?;
+        let propose_core_ms = propose_start.elapsed().as_millis();
 
-        let (result, propose_core_ms) = if is_async {
-            // Empty blocks are reserved for heartbeat/liveness-driven proposes.
-            // Synchronous/manual propose calls should fail fast when no new deploys exist.
-            // propose
-            let propose_start = std::time::Instant::now();
-            let (propose_result, block_opt) = self
-                .do_propose(
-                    &mut casper_snapshot,
-                    casper.clone(),
-                    allow_empty_blocks_for_request,
-                )
-                .await?;
-            let propose_core_ms = propose_start.elapsed().as_millis();
-
-            let propose_result_to_send = match &block_opt {
-                Some(block) => {
-                    ProposerResult::success(propose_result.propose_status.clone(), block.clone())
-                }
-                None => {
-                    let next_seq = get_validator_next_seq_number(
-                        &casper_snapshot,
-                        &self.validator.public_key.bytes,
-                    );
-                    ProposerResult::failure(propose_result.propose_status.clone(), next_seq)
-                }
-            };
-
-            (
-                ProposeReturnType {
-                    propose_result,
-                    propose_result_to_send,
-                    block_message_opt: block_opt,
-                },
-                propose_core_ms,
-            )
-        } else {
-            // Empty blocks are reserved for heartbeat/liveness-driven proposes.
-            // Synchronous/manual propose calls should fail fast when no new deploys exist.
-            // propose
-            let propose_start = std::time::Instant::now();
-            let (propose_result, block_opt) = self
-                .do_propose(&mut casper_snapshot, casper, allow_empty_blocks_for_request)
-                .await?;
-            let propose_core_ms = propose_start.elapsed().as_millis();
-
-            let propose_result_to_send = match &block_opt {
-                None => {
-                    let seq_number = get_validator_next_seq_number(
-                        &casper_snapshot,
-                        &self.validator.public_key.bytes,
-                    );
-                    ProposerResult::failure(propose_result.propose_status.clone(), seq_number)
-                }
-                Some(block) => {
-                    ProposerResult::success(propose_result.propose_status.clone(), block.clone())
-                }
-            };
-
-            (
-                ProposeReturnType {
-                    propose_result,
-                    propose_result_to_send,
-                    block_message_opt: block_opt,
-                },
-                propose_core_ms,
-            )
+        let propose_result_to_send = match &block_opt {
+            Some(block) => {
+                ProposerResult::success(propose_result.propose_status.clone(), block.clone())
+            }
+            None => {
+                let next_seq = get_validator_next_seq_number(
+                    &casper_snapshot,
+                    &self.validator.public_key.bytes,
+                );
+                ProposerResult::failure(propose_result.propose_status.clone(), next_seq)
+            }
+        };
+        let result = ProposeReturnType {
+            propose_result,
+            propose_result_to_send,
+            block_message_opt: block_opt,
         };
 
         let total_ms = start_time.elapsed().as_millis();
         tracing::info!(
             target: "f1r3fly.propose.timing",
-            "Propose timing: mode={}, snapshot_ms={}, propose_core_ms={}, total_ms={}",
-            if is_async { "async" } else { "sync" },
+            "Propose timing: request_kind={}, snapshot_ms={}, propose_core_ms={}, total_ms={}",
+            request_kind_name(&request_kind),
             snapshot_ms,
             propose_core_ms,
             total_ms
@@ -602,17 +651,8 @@ impl ActiveValidatorChecker for ProductionActiveValidatorChecker {
         validator_identity: &ValidatorIdentity,
     ) -> CheckProposeConstraintsResult {
         let in_committee = casper_snapshot
-            .parents
-            .first()
-            .map(|parent| {
-                parent
-                    .body
-                    .state
-                    .bonds
-                    .iter()
-                    .any(|bond| bond.validator == validator_identity.public_key.bytes)
-            })
-            .unwrap_or(false);
+            .finalized_floor_validators()
+            .contains(&validator_identity.public_key.bytes);
         if in_committee {
             CheckProposeConstraintsResult::success()
         } else {
@@ -711,7 +751,7 @@ impl BlockValidator for ProductionBlockValidator {
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         casper_snapshot: &mut CasperSnapshot,
         block: &BlockMessage,
-    ) -> Result<ValidBlockProcessing, CasperError> {
+    ) -> Result<CertifiedBlockValidation, CasperError> {
         casper.validate(block, casper_snapshot).await
     }
 }
@@ -752,12 +792,16 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         &mut self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
+        certificate: &CertifiedSenderAuthority,
+        outcome: &CertifiedAdmissionOutcome,
     ) -> Result<(), CasperError> {
         // store block
         self.block_store.put_block_message(block)?;
 
         // save changes to Casper (publishes BlockAdded and BlockFinalised events)
-        casper.handle_valid_block(block).await?;
+        casper
+            .handle_valid_block(block, certificate, outcome)
+            .await?;
 
         // inform block retriever about block
         self.block_retriever
@@ -792,5 +836,396 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         self.event_publisher
             .publish(created_event(block))
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod proposal_intent_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use models::rust::block_metadata::BlockMetadata;
+    use prost::bytes::Bytes;
+
+    use super::*;
+    use crate::rust::blocks::proposer::propose_result::RecoveryDeferralReason;
+
+    struct UnusedSnapshotProvider;
+
+    impl CasperSnapshotProvider for UnusedSnapshotProvider {
+        async fn get_casper_snapshot(
+            &self,
+            _casper: Arc<dyn Casper + Send + Sync + 'static>,
+        ) -> Result<CasperSnapshot, CasperError> {
+            Err(CasperError::RuntimeError(
+                "unused snapshot provider".to_string(),
+            ))
+        }
+    }
+
+    struct CapacityExceededSnapshotProvider;
+
+    impl CasperSnapshotProvider for CapacityExceededSnapshotProvider {
+        async fn get_casper_snapshot(
+            &self,
+            _casper: Arc<dyn Casper + Send + Sync + 'static>,
+        ) -> Result<CasperSnapshot, CasperError> {
+            Err(CasperError::ParentFrontierCapacityExceeded {
+                configured_cap: 2,
+                required_parents: 3,
+                effective_committee: 3,
+                unique_causal_tips: 3,
+                floor_backstop_added: false,
+                expired_tip_count: 0,
+            })
+        }
+    }
+
+    struct AllowActiveValidator;
+
+    impl ActiveValidatorChecker for AllowActiveValidator {
+        fn check_active_validator(
+            &self,
+            _casper_snapshot: &CasperSnapshot,
+            _validator_identity: &ValidatorIdentity,
+        ) -> CheckProposeConstraintsResult {
+            CheckProposeConstraintsResult::Success
+        }
+    }
+
+    struct AllowStake;
+
+    impl StakeChecker for AllowStake {
+        async fn check_enough_base_stake(
+            &self,
+            _casper_snapshot: &CasperSnapshot,
+        ) -> Result<CheckProposeConstraintsResult, CasperError> {
+            Ok(CheckProposeConstraintsResult::Success)
+        }
+    }
+
+    struct AllowHeight;
+
+    impl HeightChecker for AllowHeight {
+        async fn check_finalized_height(
+            &self,
+            _casper_snapshot: &CasperSnapshot,
+        ) -> Result<CheckProposeConstraintsResult, CasperError> {
+            Ok(CheckProposeConstraintsResult::Success)
+        }
+    }
+
+    struct DeferredBlockCreator(RecoveryDeferralReason);
+
+    impl BlockCreator for DeferredBlockCreator {
+        async fn create_block(
+            &mut self,
+            _casper_snapshot: &CasperSnapshot,
+            _validator_identity: &ValidatorIdentity,
+            _dummy_deploy_opt: Option<(PrivateKey, String)>,
+            _allow_empty_blocks: bool,
+        ) -> Result<BlockCreatorResult, CasperError> {
+            Ok(BlockCreatorResult::RecoveryDeferred(self.0))
+        }
+    }
+
+    struct UnusedBlockValidator;
+
+    impl BlockValidator for UnusedBlockValidator {
+        async fn validate_block(
+            &self,
+            _casper: Arc<dyn Casper + Send + Sync + 'static>,
+            _casper_snapshot: &mut CasperSnapshot,
+            _block: &BlockMessage,
+        ) -> Result<CertifiedBlockValidation, CasperError> {
+            Err(CasperError::RuntimeError(
+                "unused block validator".to_string(),
+            ))
+        }
+    }
+
+    struct UnusedEffectHandler;
+
+    impl ProposeEffectHandler for UnusedEffectHandler {
+        async fn handle_propose_effect(
+            &mut self,
+            _casper: Arc<dyn Casper + Send + Sync + 'static>,
+            _block: &BlockMessage,
+            _certificate: &CertifiedSenderAuthority,
+            _outcome: &CertifiedAdmissionOutcome,
+        ) -> Result<(), CasperError> {
+            Err(CasperError::RuntimeError(
+                "unused effect handler".to_string(),
+            ))
+        }
+
+        fn publish_block_created(&self, _block: &BlockMessage) -> Result<(), CasperError> {
+            Err(CasperError::RuntimeError(
+                "unused effect publisher".to_string(),
+            ))
+        }
+    }
+
+    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
+
+    fn recovery_permit(hash: BlockHash, height: i64, round: u64) -> FinalityRecoveryPermit {
+        FinalityRecoveryPermit {
+            lfb_hash: hash,
+            lfb_height: height,
+            recovery_round: round,
+        }
+    }
+
+    #[test]
+    fn manual_and_pending_requests_never_authorize_empty_blocks() {
+        assert!(!allow_empty_blocks_for_request(
+            &ProposeRequestKind::Manual,
+            true,
+            true,
+        ));
+        assert!(!allow_empty_blocks_for_request(
+            &ProposeRequestKind::PendingDeploy,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn recovery_requires_both_fresh_authorization_and_heartbeat_capability() {
+        let request = ProposeRequestKind::FinalityRecovery(recovery_permit(
+            BlockHash::from_static(b"lfb"),
+            7,
+            0,
+        ));
+
+        assert!(allow_empty_blocks_for_request(&request, true, true));
+        assert!(!allow_empty_blocks_for_request(&request, false, true));
+        assert!(!allow_empty_blocks_for_request(&request, true, false));
+    }
+
+    #[tokio::test]
+    async fn only_floor_materialization_deferral_schedules_finalization() {
+        use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+
+        let cases = [
+            (
+                RecoveryDeferralReason::FinalizedFloorMaterializationPending,
+                1,
+            ),
+            (RecoveryDeferralReason::CandidateFloorRegression, 0),
+            (RecoveryDeferralReason::CandidateFloorConflict, 0),
+            (RecoveryDeferralReason::CertifiedContextMismatch, 0),
+            (RecoveryDeferralReason::IncompleteCandidateCommitteeSlots, 0),
+            (RecoveryDeferralReason::InactiveCandidateValidator, 0),
+            (RecoveryDeferralReason::StaleRecoveryPermit, 0),
+        ];
+
+        for (reason, expected_requests) in cases {
+            let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+            let lfb = models::rust::block_implicits::get_random_block_default();
+            let casper = Arc::new(TestCasperWithSnapshot::new(snapshot.clone(), lfb));
+            let validator = Arc::new(ValidatorIdentity::new(&PrivateKey::from_bytes(&[1; 32])));
+            let mut proposer = Proposer::new(
+                validator,
+                None,
+                UnusedSnapshotProvider,
+                AllowActiveValidator,
+                AllowStake,
+                AllowHeight,
+                DeferredBlockCreator(reason),
+                UnusedBlockValidator,
+                UnusedEffectHandler,
+                false,
+            );
+
+            let (result, block) = proposer
+                .do_propose(&mut snapshot, casper.clone(), false)
+                .await
+                .expect("typed deferral");
+
+            assert!(block.is_none());
+            assert!(matches!(
+                result.propose_status,
+                ProposeStatus::Failure(ProposeFailure::RecoveryDeferred(actual)) if actual == reason
+            ));
+            assert_eq!(casper.finalization_request_count(), expected_requests);
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_parent_frontier_over_cap_is_a_non_signing_deferral() {
+        use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+
+        let snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        let lfb = models::rust::block_implicits::get_random_block_default();
+        let casper = Arc::new(TestCasperWithSnapshot::new(snapshot, lfb));
+        let validator = Arc::new(ValidatorIdentity::new(&PrivateKey::from_bytes(&[1; 32])));
+        let mut proposer = Proposer::new(
+            validator,
+            None,
+            CapacityExceededSnapshotProvider,
+            AllowActiveValidator,
+            AllowStake,
+            AllowHeight,
+            DeferredBlockCreator(RecoveryDeferralReason::CandidateFloorConflict),
+            UnusedBlockValidator,
+            UnusedEffectHandler,
+            false,
+        );
+
+        let result = proposer
+            .propose(casper.clone(), ProposeRequestKind::Manual)
+            .await
+            .expect("capacity failure must be represented as a proposal result");
+
+        assert!(result.block_message_opt.is_none());
+        assert!(matches!(
+            result.propose_result.propose_status,
+            ProposeStatus::Failure(ProposeFailure::ParentFrontierCapacityExceeded {
+                configured_cap: 2,
+                required_parents: 3,
+            })
+        ));
+        assert_eq!(casper.finalization_request_count(), 0);
+    }
+
+    #[test]
+    fn recovery_leader_fails_closed_without_valid_height_or_committee() {
+        assert_eq!(finality_recovery_leader(Vec::new(), 0, 0), None);
+        assert_eq!(finality_recovery_leader(vec![validator(1)], -1, 0), None);
+    }
+
+    #[test]
+    fn recovery_permit_requires_exact_floor_round_committee_and_local_leader() {
+        let lfb_hash = Bytes::from(vec![7; models::rust::block_hash::LENGTH]);
+        let stale_hash = BlockHash::from_static(b"stale");
+        let committee = vec![validator(3), validator(2), validator(1), validator(2)];
+        let selected = validator(2);
+        let wrong_leader = validator(1);
+        let valid = recovery_permit(lfb_hash.clone(), 7, 0);
+
+        assert!(recovery_permit_matches(
+            &valid,
+            &lfb_hash,
+            7,
+            committee.clone(),
+            &selected,
+        ));
+        assert!(!recovery_permit_matches(
+            &recovery_permit(stale_hash, 7, 0),
+            &lfb_hash,
+            7,
+            committee.clone(),
+            &selected,
+        ));
+        assert!(!recovery_permit_matches(
+            &recovery_permit(lfb_hash.clone(), 8, 0),
+            &lfb_hash,
+            7,
+            committee.clone(),
+            &selected,
+        ));
+        assert!(!recovery_permit_matches(
+            &recovery_permit(lfb_hash.clone(), 7, 1),
+            &lfb_hash,
+            7,
+            committee.clone(),
+            &selected,
+        ));
+        assert!(!recovery_permit_matches(
+            &valid,
+            &lfb_hash,
+            7,
+            committee,
+            &wrong_leader,
+        ));
+    }
+
+    #[test]
+    fn recovery_permit_uses_floor_committee_when_head_committee_diverges() {
+        let lfb_hash = Bytes::from(vec![7; models::rust::block_hash::LENGTH]);
+        let floor_private_key = crypto::rust::private_key::PrivateKey::from_bytes(&[2; 32]);
+        let head_private_key = crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]);
+        let floor_identity = ValidatorIdentity::new(&floor_private_key);
+        let head_identity = ValidatorIdentity::new(&head_private_key);
+        let floor_validator = floor_identity.public_key.bytes.clone();
+        let head_validator = head_identity.public_key.bytes.clone();
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.last_finalized_block = lfb_hash.clone();
+        snapshot.dag.dag_set.insert(lfb_hash.clone());
+        snapshot.finalized_floor_bonds =
+            vec![models::rust::casper::protocol::casper_message::Bond {
+                validator: floor_validator.clone(),
+                stake: 1,
+            }];
+        snapshot.on_chain_state.active_validators = vec![head_validator.clone()];
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(crate::rust::test_metadata::certify(
+                BlockMetadata {
+                    block_hash: lfb_hash.clone(),
+                    post_state_hash: Bytes::from(vec![8; models::rust::block_hash::LENGTH]),
+                    parents: Vec::new(),
+                    sender: floor_validator.clone(),
+                    justifications: Vec::new(),
+                    weight_map: BTreeMap::new(),
+                    bond_generation_map: BTreeMap::from([(
+                        floor_validator.clone(),
+                        models::rust::bond_generation::BondGeneration::GENESIS,
+                    )]),
+                    active_validator_set: BTreeSet::from([floor_validator.clone()]),
+                    block_number: 7,
+                    sequence_number: 0,
+                    admission_outcome: None,
+                    directly_finalized: true,
+                    finalized: true,
+                    fault_tolerance_value: 1.0,
+                    successful_state_effect_indices: BTreeSet::new(),
+                    rejected_state_effects: BTreeSet::new(),
+                    applied_state_effects: BTreeSet::new(),
+                    protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                    objective_equivocation_evidence_delta: Vec::new(),
+                    sender_authority: None,
+                    finalized_floor_commitment: None,
+                    admission_schema_version:
+                        models::rust::block_metadata::ADMISSION_SCHEMA_VERSION,
+                    approved_genesis: false,
+                    merge_base: Bytes::new(),
+                },
+                models::rust::bond_generation::BondGeneration::GENESIS,
+            ))
+            .expect("insert LFB metadata");
+        let permit = recovery_permit(lfb_hash, 7, 0);
+        assert_eq!(
+            snapshot
+                .dag
+                .lookup(&snapshot.last_finalized_block)
+                .unwrap()
+                .unwrap()
+                .block_number,
+            7,
+        );
+        assert_eq!(snapshot.finalized_floor_validators(), vec![
+            floor_validator.clone()
+        ],);
+        assert!(recovery_permit_matches(
+            &permit,
+            &snapshot.last_finalized_block,
+            7,
+            snapshot.finalized_floor_validators(),
+            &floor_validator,
+        ));
+        assert!(recovery_permit_authorized(&permit, &snapshot, &floor_identity).unwrap());
+        assert!(!recovery_permit_authorized(&permit, &snapshot, &head_identity).unwrap());
+        assert!(matches!(
+            ProductionActiveValidatorChecker.check_active_validator(&snapshot, &floor_identity),
+            CheckProposeConstraintsResult::Success
+        ));
+        assert!(matches!(
+            ProductionActiveValidatorChecker.check_active_validator(&snapshot, &head_identity),
+            CheckProposeConstraintsResult::Failure(CheckProposeConstraintsFailure::NotBonded)
+        ));
     }
 }

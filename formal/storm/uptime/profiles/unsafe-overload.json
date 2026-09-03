@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile_id": "unsafe-overload",
+  "purpose": "Required negative control: sustained offered load above service capacity reaches the queue cap",
+  "evidence_class": "negative_control",
+  "calibration": {
+    "status": "not_required",
+    "source": "Constructed defect",
+    "valid_until": null
+  },
+  "constants": {
+    "VALIDATORS": 4,
+    "QUORUM": 3,
+    "QUEUE_CAP": 6,
+    "LAG_CAP": 4,
+    "LAG_SLO": 1,
+    "MEMORY_CAP": 4,
+    "INITIAL_ELIGIBLE": 4,
+    "INITIAL_QUEUE": 0,
+    "INITIAL_LAG": 0,
+    "INITIAL_MEMORY": 0,
+    "HORIZON_HOURS": 10,
+    "VALIDATOR_FAILURE_RATE": 0,
+    "VALIDATOR_REPAIR_RATE": 1,
+    "COMMON_FAILURE_RATE": 0,
+    "COMMON_REPAIR_RATE": 1,
+    "STORAGE_FAILURE_RATE": 0,
+    "STORAGE_REPAIR_RATE": 1,
+    "ARRIVAL_RATE": 4,
+    "SERVICE_RATE": 1,
+    "LAG_GROWTH_RATE": 1,
+    "LAG_DRAIN_RATE": 1,
+    "MEMORY_BACKGROUND_GROWTH_RATE": 0,
+    "MEMORY_WORK_GROWTH_RATE": 0,
+    "MEMORY_RECLAIM_RATE": 1
+  }
+}

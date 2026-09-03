@@ -25,16 +25,23 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             timestamp: 0,
             version: 1,
             extra_bytes: Bytes::new(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
                 pre_state_hash: Bytes::new(),
                 post_state_hash: Bytes::new(),
                 bonds: vec![],
+                bond_generations: vec![],
+                active_validators: vec![],
                 block_number: 1,
             },
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
+            applied_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
@@ -47,6 +54,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     let block2 = BlockMessage {
@@ -56,16 +64,23 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             timestamp: 0,
             version: 1,
             extra_bytes: Bytes::new(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
                 pre_state_hash: Bytes::new(),
                 post_state_hash: Bytes::new(),
                 bonds: vec![],
+                bond_generations: vec![],
+                active_validators: vec![],
                 block_number: 1,
             },
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
+            applied_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
@@ -78,6 +93,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     let block3 = BlockMessage {
@@ -87,16 +103,23 @@ fn create_mock_block_store() -> KeyValueBlockStore {
             timestamp: 0,
             version: 1,
             extra_bytes: Bytes::new(),
+            sender_bond_generation: None,
+            objective_equivocation_evidence_delta: vec![],
+            finalized_floor: None,
         },
         body: Body {
             state: F1r3flyState {
                 pre_state_hash: Bytes::new(),
                 post_state_hash: Bytes::new(),
                 bonds: vec![],
+                bond_generations: vec![],
+                active_validators: vec![],
                 block_number: 2,
             },
             deploys: vec![],
             rejected_deploys: vec![],
+            rejected_state_effects: vec![],
+            applied_state_effects: vec![],
             system_deploys: vec![],
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
@@ -112,6 +135,7 @@ fn create_mock_block_store() -> KeyValueBlockStore {
         sig_algorithm: String::new(),
         shard_id: String::new(),
         extra_bytes: Bytes::new(),
+        finalized_floor_certificate: None,
     };
 
     // Add blocks to store

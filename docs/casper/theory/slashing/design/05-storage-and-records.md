@@ -10,11 +10,9 @@ two different questions:
 | `BlockDagStorage`          | *Is this block hash known to be invalid?*            | §3.2.2 storage |
 | `EquivocationTrackerStore` | *Has this validator equivocated at this seq number?* | §3.2.2 storage |
 
-The two are **redundant by design**: a proposer reading invalid
-latest messages from the DAG and a proposer reading equivocation
-records from the tracker should converge on the same offender set
-(modulo bug fix #3, which makes the *non-equivocation* slashable
-variants reach the tracker too).
+The indices are not redundant. The DAG stores every certified terminal
+admission outcome. The tracker stores only direct equivocation evidence. A
+contextual rejection must never create an economic offender record.
 
 ## 5.2 The DAG store — `BlockDagStorage`
 
@@ -203,8 +201,8 @@ not byte-level — see §10).
 ## 5.7 What this layer does *not* do
 
 - **No deletion.** Once an `EquivocationRecord` is written, it is
-  never removed. (Bug fix #2 preserves this; bug fix #3 extends the
-  invariant to non-equivocation slashable variants.)
+  never removed. Bug fix #2 preserves this rule for eligible objective
+  equivocations.
 - **No GC.** The tracker store grows with the number of distinct
   `(validator, baseSeq)` keys that have ever equivocated. In
   practice this is bounded by the number of unique

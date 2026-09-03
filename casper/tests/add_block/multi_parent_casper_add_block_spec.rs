@@ -1,9 +1,12 @@
 // See casper/src/test/scala/coop/rchain/casper/addblock/MultiParentCasperAddBlockSpec.scala
 
+use std::collections::BTreeMap;
+
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
+use casper::rust::causal_equivocation::CertifiedConsensusContext;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
@@ -14,8 +17,8 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
-use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, ProcessedDeploy};
+use models::rust::block_metadata::AdmissionRejectionReason;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
@@ -23,6 +26,7 @@ use ValidBlock::Valid;
 
 use crate::helper::block_util::resign_block;
 use crate::helper::test_node::TestNode;
+use crate::slashing::integration_helpers::equivocate_block;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 /// Test fixture that holds common test data
@@ -98,7 +102,10 @@ async fn multi_parent_casper_should_be_able_to_create_a_chain_of_blocks_from_dif
     let mut dag = node.casper.block_dag().await.unwrap();
     let estimate = node.casper.estimator(&mut dag).await.unwrap();
 
-    let unforgeable_id = Tools::unforgeable_name_rng(&deploy2.pk, deploy2.data.time_stamp).next();
+    let deploy2_envelope = signed_block2.body.deploys[0]
+        .to_cosigned()
+        .expect("protocol-v6 deploy envelope");
+    let unforgeable_id = Tools::user_deploy_rng(&deploy2_envelope).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
 
     let data = rspace_util::get_data_at_private_channel(
@@ -276,25 +283,21 @@ async fn multi_parent_casper_should_reject_blocks_not_from_bonded_validators() {
         .unwrap_or(1);
 
     let ill_signed_block = validator_id.sign_block(&block);
+    let ill_signed_block_hash = ill_signed_block.block_hash.clone();
 
     let status = node.process_block(ill_signed_block).await.unwrap();
 
-    // The forged block (a bonded validator's block re-signed by a fresh,
-    // unbonded key) MUST be rejected. The Scala original asserted
-    // `InvalidSender`, but `block_sender_has_weight` (the sender/weight check
-    // that yields `InvalidSender`) is defined-but-unwired in BOTH the Scala
-    // reference (`Validate.blockSenderHasWeight` has no callers) and this Rust
-    // port — which is why the Scala test itself was `ignore`d. Re-signing only
-    // swaps the sender+signature; it does not touch the block's justifications,
-    // so the sequence-number validator (which runs in `block_summary`) sees a
-    // block claiming seq 1 from a sender whose creator-justification seq is -1
-    // and rejects it first. The security property under test — a block forged
-    // by an unbonded key is not accepted — holds; the deterministic rejection
-    // reason under the current multi-parent design is `InvalidSequenceNumber`.
     assert_eq!(
         status,
-        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSequenceNumber))
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
     );
+    assert!(!node.contains(&ill_signed_block_hash));
+    assert!(node
+        .block_dag_storage
+        .get_representation()
+        .unwrap()
+        .invalid_blocks()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -502,17 +505,6 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
             .expect("node 1 handles received block");
     }
 
-    // CURRENT (multi-parent) equivocation handling: node 1 KEEPS the whole
-    // equivocation pair and flags the offending block as invalid, rather than
-    // dropping it. The Scala original asserted node 1 neither contains nor
-    // stores `block1_prime` — but that contradicted its own inline comment
-    // ("we still add the equivocation pair"), and the multi-parent design keeps
-    // both blocks precisely so the equivocation remains provable (slashing
-    // evidence). So:
-    //   * both blocks are added to the DAG and persisted, and
-    //   * `block1_prime` (the second block at the same height from the same
-    //     validator) is recorded in the DAG's invalid-blocks set as an
-    //     equivocation, while `block1` stays valid.
     assert!(
         nodes[1].contains(&signed_block1.block_hash),
         "Node 1 should contain block 1"
@@ -549,8 +541,26 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
         "Block 1 should NOT be recorded as invalid"
     );
     assert!(
-        invalid_hashes.contains(&signed_block1_prime.block_hash),
-        "Block 1 prime should be recorded as an invalid (equivocation) block"
+        !invalid_hashes.contains(&signed_block1_prime.block_hash),
+        "Block 1 prime should remain individually valid"
+    );
+
+    let evidence_key = (
+        signed_block1.sender.clone(),
+        signed_block1
+            .header
+            .sender_bond_generation
+            .expect("equivocation block carries a bond generation"),
+        signed_block1.seq_num,
+    );
+    let expected_evidence = std::collections::BTreeSet::from([
+        signed_block1.block_hash.clone(),
+        signed_block1_prime.block_hash.clone(),
+    ]);
+    assert_eq!(
+        dag1.equivocation_observations().get(&evidence_key),
+        Some(&expected_evidence),
+        "The retained siblings should form canonical objective evidence"
     );
 }
 
@@ -701,13 +711,9 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         .await
         .unwrap();
 
-    let weight_map = proto_util::weight_map(&ctx.genesis.genesis_block);
-    let weight_map_u64: std::collections::HashMap<Validator, u64> =
-        weight_map.into_iter().map(|(k, v)| (k, v as u64)).collect();
-
     let normalized_fault = nodes[1]
         .casper
-        .normalized_initial_fault(weight_map_u64)
+        .normalized_initial_fault(&signed_block4.block_hash)
         .unwrap();
     let expected_fault = 1.0f32 / (1.0f32 + 3.0f32 + 5.0f32 + 7.0f32);
 
@@ -728,26 +734,15 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
 }
 
 #[tokio::test]
-async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence() {
+async fn multi_parent_casper_should_persist_a_rejection_and_reject_its_invalid_pointer() {
     let ctx = TestContext::new().await;
 
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
 
-    let deploys: Vec<_> = (0..=5)
-        .map(|i| construct_deploy::basic_deploy_data(i, None, None).unwrap())
-        .collect();
-
-    let deploys_with_cost: Vec<_> = deploys
-        .iter()
-        .map(|d| ProcessedDeploy {
-            deploy: d.clone(),
-            cost: PCost { cost: 0 },
-            deploy_log: vec![],
-            is_failed: false,
-            system_deploy_error: None,
-        })
+    let deploys: Vec<_> = (0..=1)
+        .map(|i| construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap())
         .collect();
 
     let signed_block = nodes[0]
@@ -757,64 +752,138 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
 
     let signed_invalid_block = {
         let mut invalid_block = signed_block.clone();
-        invalid_block.seq_num = -2;
+        invalid_block
+            .body
+            .state
+            .bonds
+            .first_mut()
+            .expect("candidate bond cache")
+            .stake += 1;
 
         let validator_id = nodes[0].validator_id_opt.as_ref().unwrap();
         resign_block(&invalid_block, &validator_id.private_key)
-    }; // Invalid seq num
+    };
 
-    let block_with_invalid_justification = build_block_with_invalid_justification(
-        &ctx,
-        &mut nodes,
-        &deploys_with_cost,
-        &signed_invalid_block,
-    )
-    .await;
-
-    nodes[1]
-        .process_block(block_with_invalid_justification)
-        .await
-        .expect("Node 1 should process block with invalid justification");
-
-    let _ = nodes[0].shutoff(); // nodes(0) rejects normal adding process for blockThatPointsToInvalidBlock
-
-    // Create packet message from signed invalid block and send from node 0 to node 1
-    let signed_invalid_block_packet_message = protocol_helper::packet_with_content(
-        &nodes[0].local,
-        "test", // network_id
-        signed_invalid_block.to_proto(),
+    assert_eq!(
+        nodes[0]
+            .process_block(signed_invalid_block.clone())
+            .await
+            .expect("Node 0 should classify its invalid block"),
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidBondsCache))
     );
 
+    let signed_invalid_block_packet_message = protocol_helper::packet_with_content(
+        &nodes[0].local,
+        "test",
+        signed_invalid_block.to_proto(),
+    );
     nodes[0]
         .tle
         .send(&nodes[1].local, &signed_invalid_block_packet_message)
         .await
-        .expect("Should send packet successfully");
-
-    // Node 1 receives signedInvalidBlock and attempts to add both blocks
+        .expect("Should send invalid block to Node 1");
     nodes[1]
         .handle_receive()
         .await
-        .expect("Node 1 should handle receive");
+        .expect("Node 1 should classify the invalid block");
 
-    // A bad sequence number is judged against local state (demoted since
-    // the is_slashable narrowing): the block is dropped without entering
-    // the DAG or minting slash evidence.
-    let dag = nodes[1].casper.block_dag().await.unwrap();
+    let block_with_invalid_justification = {
+        let mut block = nodes[1]
+            .create_block_unsafe(&[deploys[1].clone()])
+            .await
+            .unwrap();
+        block
+            .justifications
+            .iter_mut()
+            .find(|justification| justification.validator == signed_invalid_block.sender)
+            .expect("candidate carries the invalid sender's latest-message slot")
+            .latest_block_hash = signed_invalid_block.block_hash.clone();
+        let exact_latest_messages = block
+            .justifications
+            .iter()
+            .map(|justification| {
+                (
+                    justification.validator.clone(),
+                    justification.latest_block_hash.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let dag = nodes[1].casper.block_dag().await.unwrap();
+        let certificate = block
+            .finalized_floor_certificate
+            .clone()
+            .expect("protocol-v6 block carries a finalization certificate");
+        let floor_hash = block
+            .header
+            .finalized_floor
+            .as_ref()
+            .expect("protocol-v6 block carries a finalized-floor commitment")
+            .floor_hash
+            .clone();
+        let context =
+            CertifiedConsensusContext::for_frozen_floor(&dag, floor_hash, &exact_latest_messages)
+                .expect("candidate consensus context");
+        block.header.finalized_floor = Some(certificate.commitment(context.digest().clone()));
+        let validator_id = nodes[1].validator_id_opt.as_ref().unwrap();
+        resign_block(&block, &validator_id.private_key)
+    };
+    let block_with_invalid_justification_hash = block_with_invalid_justification.block_hash.clone();
+
+    let pending_status = nodes[2]
+        .process_block(block_with_invalid_justification.clone())
+        .await
+        .expect("Node 2 should process block with invalid justification");
+    assert_eq!(pending_status, Either::Left(BlockError::MissingBlocks));
+
+    nodes[0]
+        .tle
+        .send(&nodes[2].local, &signed_invalid_block_packet_message)
+        .await
+        .expect("Should send packet successfully");
+
+    nodes[2]
+        .handle_receive()
+        .await
+        .expect("Node 2 should handle receive");
+
+    let invalid_pointer_status = nodes[2]
+        .process_block(block_with_invalid_justification)
+        .await
+        .expect("Node 2 should classify the block after receiving its dependency");
+    assert_eq!(
+        invalid_pointer_status,
+        Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
+    );
+
+    let dag = nodes[2].casper.block_dag().await.unwrap();
     let invalid_blocks = dag.invalid_blocks();
 
-    let is_recorded = invalid_blocks
+    let dependency_metadata = invalid_blocks
         .iter()
-        .any(|block_meta| block_meta.block_hash == signed_invalid_block.block_hash);
+        .find(|metadata| metadata.block_hash == signed_invalid_block.block_hash)
+        .expect("invalid dependency must have durable rejection metadata");
+    assert_eq!(
+        dependency_metadata.rejection_reason(),
+        Some(AdmissionRejectionReason::InvalidBondsCache)
+    );
+    assert!(!dependency_metadata.is_slash_evidence_eligible());
 
-    assert!(
-        !is_recorded,
-        "a demoted verdict's block must be dropped, not recorded as evidence"
+    let child_metadata = invalid_blocks
+        .iter()
+        .find(|metadata| metadata.block_hash == block_with_invalid_justification_hash)
+        .expect("child must have durable rejection metadata");
+    assert_eq!(
+        child_metadata.rejection_reason(),
+        Some(AdmissionRejectionReason::NeglectedInvalidBlock)
     );
-    assert!(
-        !dag.contains(&signed_invalid_block.block_hash),
-        "a demoted verdict's block must not enter the DAG"
-    );
+    assert!(!child_metadata.is_slash_evidence_eligible());
+
+    let records = nodes[2]
+        .casper
+        .block_dag_storage
+        .access_equivocations_tracker(|tracker| tracker.data())
+        .expect("equivocation tracker");
+    assert!(records.is_empty());
 }
 
 #[tokio::test]
@@ -843,7 +912,7 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
         node: &mut TestNode,
         dd: Signed<DeployData>,
     ) -> Result<Either<DeployError, DeployId>, CasperError> {
-        node.casper.deploy(dd)
+        node.submit_deploy(dd)
     }
 
     async fn create(node: &mut TestNode) -> Result<BlockMessage, CasperError> {
@@ -964,32 +1033,130 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
         construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
 
     let signed_block = {
-        nodes[0]
-            .casper
-            .deploy(deploy_data)
-            .expect("Deploy should succeed");
+        assert!(matches!(
+            nodes[0]
+                .submit_deploy(deploy_data)
+                .expect("Deploy should succeed"),
+            Either::Right(_)
+        ));
         nodes[0].create_block_unsafe(&[]).await.unwrap()
     };
 
-    let invalid_block = {
-        let mut invalid = signed_block.clone();
-        invalid.seq_num = 47;
-        invalid
-    };
+    let equivocation_deploy =
+        construct_deploy::basic_deploy_data(7, None, Some(ctx.shard_id.clone())).unwrap();
+    let mut equivocation_node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+    let sibling = equivocate_block(&mut equivocation_node, &signed_block, vec![
+        equivocation_deploy,
+    ])
+    .await
+    .unwrap();
 
-    let status1 = nodes[1].process_block(invalid_block.clone()).await;
+    assert_ne!(signed_block.block_hash, sibling.block_hash);
+    assert_eq!(signed_block.sender, sibling.sender);
+    assert_eq!(signed_block.seq_num, sibling.seq_num);
+    assert_eq!(
+        signed_block.header.sender_bond_generation,
+        sibling.header.sender_bond_generation
+    );
+    assert_eq!(
+        signed_block.header.parents_hash_list,
+        sibling.header.parents_hash_list
+    );
+    assert_eq!(
+        signed_block.body.state.block_number,
+        sibling.body.state.block_number
+    );
+    for processed in signed_block
+        .body
+        .deploys
+        .iter()
+        .chain(&sibling.body.deploys)
+    {
+        assert_eq!(processed.envelope_commitment.len(), 32);
+        processed
+            .to_cosigned()
+            .expect("protocol-v6 sibling deploy must reconstruct its authenticated envelope");
+    }
 
-    let status2 = nodes[2].process_block(invalid_block).await;
+    let status1 = nodes[1].process_block(signed_block.clone()).await;
+    let status2 = nodes[1].process_block(sibling.clone()).await;
+    let status3 = nodes[2].process_block(sibling.clone()).await;
+    let status4 = nodes[2].process_block(signed_block.clone()).await;
+
+    assert!(
+        matches!(status1, Ok(Either::Right(Valid))),
+        "Expected first certified sibling to be accepted, got: {:?}",
+        status1
+    );
+    assert!(
+        matches!(status2, Ok(Either::Right(Valid))),
+        "Expected second certified sibling to be accepted, got: {:?}",
+        status2
+    );
+    assert!(
+        matches!(status3, Ok(Either::Right(Valid))),
+        "Expected reverse-order first sibling to be accepted, got: {:?}",
+        status3
+    );
+    assert!(
+        matches!(status4, Ok(Either::Right(Valid))),
+        "Expected reverse-order second sibling to be accepted, got: {:?}",
+        status4
+    );
+
+    let evidence_key = (
+        signed_block.sender.clone(),
+        signed_block
+            .header
+            .sender_bond_generation
+            .expect("equivocation sibling must carry its bond generation"),
+        signed_block.seq_num,
+    );
+    let expected_evidence = std::collections::BTreeSet::from([
+        signed_block.block_hash.clone(),
+        sibling.block_hash.clone(),
+    ]);
+    for node in [&nodes[1], &nodes[2]] {
+        let dag = node.casper.block_dag().await.unwrap();
+        assert_eq!(
+            dag.equivocation_observations().get(&evidence_key),
+            Some(&expected_evidence)
+        );
+    }
 
     let deploy_data2 =
         construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
-    nodes[1]
-        .casper
-        .deploy(deploy_data2)
-        .expect("Second deploy should succeed");
+    assert!(matches!(
+        nodes[1]
+            .submit_deploy(deploy_data2)
+            .expect("Second deploy should succeed"),
+        Either::Right(_)
+    ));
     let signed_block2 = nodes[1].create_block_unsafe(&[]).await.unwrap();
 
-    let status3 = nodes[1].process_block(signed_block2.clone()).await;
+    assert!(
+        signed_block2.body.system_deploys.iter().any(|processed| {
+            matches!(
+                processed,
+                models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Succeeded {
+                    system_deploy:
+                        models::rust::casper::protocol::casper_message::SystemDeployData::Slash {
+                            invalid_block_hash,
+                            equivocation_block_hash: Some(equivocation_block_hash),
+                            ..
+                        },
+                    ..
+                } if (invalid_block_hash == &signed_block.block_hash
+                    && equivocation_block_hash == &sibling.block_hash)
+                    || (invalid_block_hash == &sibling.block_hash
+                        && equivocation_block_hash == &signed_block.block_hash)
+            )
+        }),
+        "honest proposer must apply a canonical slash for the signed sibling pair: {:?}",
+        signed_block2.body.system_deploys
+    );
+
+    let status5 = nodes[1].process_block(signed_block2.clone()).await;
 
     let bonds = nodes[1]
         .runtime_manager
@@ -997,13 +1164,15 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
         .await
         .unwrap();
 
-    // Slashing should reduce the offender to the configured bond floor (currently 1 in tests).
-    // Older behavior allowed 0, so keep this tolerant to either floor.
-    let min_stake = bonds.iter().map(|b| b.stake).min().unwrap_or(0);
+    let slashed_stake = bonds
+        .iter()
+        .find(|bond| bond.validator == signed_block.sender)
+        .map(|bond| bond.stake)
+        .unwrap_or(0);
     assert!(
-        min_stake <= 1,
+        slashed_stake <= 1,
         "Slashed validator should be reduced to bond floor (<=1), got {}",
-        min_stake
+        slashed_stake
     );
 
     // Scala: _ <- nodes(2).handleReceive()
@@ -1014,47 +1183,27 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
 
     let deploy_data3 =
         construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone())).unwrap();
-    nodes[2]
-        .casper
-        .deploy(deploy_data3)
-        .expect("Third deploy should succeed");
+    assert!(matches!(
+        nodes[2]
+            .submit_deploy(deploy_data3)
+            .expect("Third deploy should succeed"),
+        Either::Right(_)
+    ));
     let signed_block3 = nodes[2].create_block_unsafe(&[]).await.unwrap();
     let signed_block3_post_state = proto_util::post_state_hash(&signed_block3);
 
-    let status4 = nodes[2].process_block(signed_block3).await;
+    let status6 = nodes[2].process_block(signed_block3).await;
 
     assert!(
-        matches!(
-            status1,
-            Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::InvalidBlockHash
-            )))
-        ),
-        "Expected Left(InvalidBlockHash), got: {:?}",
-        status1
+        matches!(status5, Ok(Either::Right(Valid))),
+        "Expected first slash-carrying block to be valid, got: {:?}",
+        status5
     );
 
     assert!(
-        matches!(
-            status2,
-            Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::InvalidBlockHash
-            )))
-        ),
-        "Expected Left(InvalidBlockHash), got: {:?}",
-        status2
-    );
-
-    assert!(
-        matches!(status3, Ok(Either::Right(Valid))),
-        "Expected Right(Valid), got: {:?}",
-        status3
-    );
-
-    assert!(
-        matches!(status4, Ok(Either::Right(Valid))),
-        "Expected Right(Valid), got: {:?}",
-        status4
+        matches!(status6, Ok(Either::Right(Valid))),
+        "Expected second slash-carrying block to be valid, got: {:?}",
+        status6
     );
 
     // Verify that the second slashing attempt has no effect below bond floor.
@@ -1085,83 +1234,4 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
             bond.stake
         );
     }
-}
-
-async fn build_block_with_invalid_justification(
-    ctx: &TestContext,
-    nodes: &mut [TestNode],
-    deploys: &[ProcessedDeploy],
-    signed_invalid_block: &BlockMessage,
-) -> BlockMessage {
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, Justification,
-    };
-    use prost::bytes::Bytes;
-
-    let post_state = F1r3flyState {
-        pre_state_hash: Bytes::new(),
-        post_state_hash: Bytes::new(),
-        bonds: proto_util::bonds(&ctx.genesis.genesis_block),
-        block_number: 1,
-    };
-
-    let header = Header {
-        parents_hash_list: signed_invalid_block.header.parents_hash_list.clone(),
-        timestamp: 0,
-        version: 0,
-        extra_bytes: Bytes::new(),
-    };
-
-    let block_hash = {
-        use prost::Message;
-        let header_proto = header.to_proto();
-        let header_bytes = header_proto.encode_to_vec();
-        crypto::rust::hash::blake2b256::Blake2b256::hash(header_bytes)
-    };
-
-    let body = Body {
-        state: post_state,
-        deploys: deploys.to_vec(),
-        rejected_deploys: vec![],
-        system_deploys: vec![],
-        extra_bytes: Bytes::new(),
-        applied_from_scope: vec![],
-        merge_base: Bytes::new(),
-    };
-
-    let serialized_justifications = vec![Justification {
-        validator: signed_invalid_block.sender.clone(),
-        latest_block_hash: signed_invalid_block.block_hash.clone(),
-    }];
-
-    let serialized_block_hash = Bytes::copy_from_slice(&block_hash);
-
-    let block_that_points_to_invalid_block = BlockMessage {
-        block_hash: serialized_block_hash,
-        header,
-        body,
-        justifications: serialized_justifications,
-        sender: Bytes::new(),
-        seq_num: 0,
-        sig: Bytes::new(),
-        sig_algorithm: String::new(),
-        shard_id: "root".to_string(),
-        extra_bytes: Bytes::new(),
-    };
-
-    let dag = nodes[1]
-        .block_dag_storage
-        .get_representation()
-        .expect("dag representation");
-
-    let sender = block_that_points_to_invalid_block.sender.clone();
-
-    let latest_message_opt = dag.latest_message(&sender).unwrap();
-
-    let _seq_num = latest_message_opt
-        .map(|msg| msg.sequence_number + 1)
-        .unwrap_or(1);
-
-    let validator_id = nodes[1].validator_id_opt.as_ref().unwrap();
-    validator_id.sign_block(&block_that_points_to_invalid_block)
 }

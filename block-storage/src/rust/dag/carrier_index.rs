@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use models::rust::deploy_id::DeployLookupId;
 use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use serde::{Deserialize, Serialize};
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
@@ -30,7 +31,7 @@ pub struct CarrierEntry {
 
 #[derive(Clone)]
 pub struct CarrierIndex {
-    carriers: KeyValueTypedStoreImpl<ByteString, Vec<CarrierEntry>>,
+    carriers: KeyValueTypedStoreImpl<DeployLookupId, Vec<CarrierEntry>>,
     meta: KeyValueTypedStoreImpl<String, i64>,
 }
 
@@ -61,25 +62,53 @@ impl CarrierIndex {
     /// a crash-then-redelivery re-run writes nothing twice.
     pub fn record_once(
         &self,
-        sig: &[u8],
+        deploy_id: &DeployLookupId,
         height: i64,
         block_hash: ByteString,
     ) -> Result<(), KvStoreError> {
-        let mut row = self.carriers.get_one(&sig.to_vec())?.unwrap_or_default();
+        let mut row = self.carriers.get_one(deploy_id)?.unwrap_or_default();
         if row.iter().any(|e| e.block_hash == block_hash) {
             return Ok(());
         }
         row.push(CarrierEntry { height, block_hash });
-        self.carriers.put_one(sig.to_vec(), row)
+        self.carriers.put_one(deploy_id.clone(), row)
     }
+
+    pub(crate) fn prepare_record_once(
+        &self,
+        deploy_id: &DeployLookupId,
+        height: i64,
+        block_hash: ByteString,
+    ) -> Result<Option<(ByteString, Option<ByteString>, ByteString)>, KvStoreError> {
+        let current = self.carriers.get_one(deploy_id)?;
+        if current
+            .as_ref()
+            .is_some_and(|row| row.iter().any(|entry| entry.block_hash == block_hash))
+        {
+            return Ok(None);
+        }
+        let expected = current
+            .as_ref()
+            .map(|row| self.carriers.encode_value(row))
+            .transpose()?;
+        let mut replacement = current.unwrap_or_default();
+        replacement.push(CarrierEntry { height, block_hash });
+        Ok(Some((
+            self.carriers.encode_key(deploy_id)?,
+            expected,
+            self.carriers.encode_value(&replacement)?,
+        )))
+    }
+
+    pub(crate) fn raw_store(&self) -> &Arc<dyn KeyValueStore> { self.carriers.raw_store() }
 
     /// True when the index holds NO carrier for the sig. Sound as an
     /// absence proof only when the caller's scan window starts at or
     /// above the watermark.
-    pub fn proves_absence(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
+    pub fn proves_absence(&self, deploy_id: &DeployLookupId) -> Result<bool, KvStoreError> {
         Ok(self
             .carriers
-            .get_one(&sig.to_vec())?
+            .get_one(deploy_id)?
             .is_none_or(|row| row.is_empty()))
     }
 
@@ -91,11 +120,13 @@ impl CarrierIndex {
     /// insert routes through the carrier recording. Returns the effective
     /// watermark (the stored one on every later start).
     pub fn set_watermark_if_absent(&self, w: i64) -> Result<i64, KvStoreError> {
-        if let Some(existing) = self.watermark()? {
-            return Ok(existing);
+        let key = Self::WATERMARK_KEY.to_string();
+        if self.meta.put_one_if_absent(key, w)? {
+            return Ok(w);
         }
-        self.meta.put_one(Self::WATERMARK_KEY.to_string(), w)?;
-        Ok(w)
+        self.watermark()?.ok_or_else(|| {
+            KvStoreError::KeyNotFound("carrier watermark disappeared after initialization".into())
+        })
     }
 
     /// Drop entries below the cutoff (they are below every future scan
@@ -132,20 +163,33 @@ impl CarrierIndex {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
+    use std::thread;
+
+    use models::rust::deploy_id::{DeployIdV6, LegacyDeploySignature};
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn legacy_id(bytes: &[u8]) -> DeployLookupId {
+        DeployLookupId::Legacy(LegacyDeploySignature::new(bytes.to_vec()))
+    }
 
     #[test]
     fn record_is_idempotent_per_block_and_absence_flips_on_first_carrier() {
         let index = CarrierIndex::in_memory();
-        assert!(index.proves_absence(b"sig").expect("probe"));
-        index.record_once(b"sig", 5, vec![1; 32]).expect("record");
+        let deploy_id = legacy_id(b"sig");
+        assert!(index.proves_absence(&deploy_id).expect("probe"));
         index
-            .record_once(b"sig", 5, vec![1; 32])
+            .record_once(&deploy_id, 5, vec![1; 32])
+            .expect("record");
+        index
+            .record_once(&deploy_id, 5, vec![1; 32])
             .expect("re-record");
-        assert!(!index.proves_absence(b"sig").expect("probe"));
+        assert!(!index.proves_absence(&deploy_id).expect("probe"));
         let row = index
             .carriers
-            .get_one(&b"sig".to_vec())
+            .get_one(&deploy_id)
             .expect("read")
             .expect("row");
         assert_eq!(row.len(), 1, "redelivery must not duplicate");
@@ -161,32 +205,94 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_watermark_initialization_selects_one_durable_value() {
+        let index = Arc::new(CarrierIndex::in_memory());
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = (0..8)
+            .map(|watermark| {
+                let index = Arc::clone(&index);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    index
+                        .set_watermark_if_absent(watermark)
+                        .expect("initialize watermark")
+                })
+            })
+            .collect::<Vec<_>>();
+        let observed = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("watermark worker"))
+            .collect::<Vec<_>>();
+        let stored = index.watermark().expect("read").expect("stored watermark");
+
+        assert!(observed.iter().all(|watermark| *watermark == stored));
+        assert!((0..8).contains(&stored));
+    }
+
+    #[test]
     fn prune_drops_below_cutoff_and_strides() {
         let index = CarrierIndex::in_memory();
-        index.record_once(b"old", 10, vec![1; 32]).expect("record");
-        index
-            .record_once(b"mixed", 10, vec![2; 32])
-            .expect("record");
-        index
-            .record_once(b"mixed", 500, vec![3; 32])
-            .expect("record");
-        index.record_once(b"new", 500, vec![4; 32]).expect("record");
+        let old = legacy_id(b"old");
+        let mixed = legacy_id(b"mixed");
+        let new = DeployLookupId::V6(DeployIdV6::try_from(&[4u8; 32][..]).unwrap());
+        let late = legacy_id(b"late");
+        index.record_once(&old, 10, vec![1; 32]).expect("record");
+        index.record_once(&mixed, 10, vec![2; 32]).expect("record");
+        index.record_once(&mixed, 500, vec![3; 32]).expect("record");
+        index.record_once(&new, 500, vec![4; 32]).expect("record");
 
         let removed = index.prune_below(400).expect("prune");
         assert_eq!(removed, 2);
         assert!(
-            index.proves_absence(b"old").expect("probe"),
+            index.proves_absence(&old).expect("probe"),
             "empty row deleted"
         );
-        assert!(!index.proves_absence(b"mixed").expect("probe"));
-        assert!(!index.proves_absence(b"new").expect("probe"));
+        assert!(!index.proves_absence(&mixed).expect("probe"));
+        assert!(!index.proves_absence(&new).expect("probe"));
 
-        index
-            .record_once(b"late", 401, vec![5; 32])
-            .expect("record");
+        index.record_once(&late, 401, vec![5; 32]).expect("record");
         let removed = index.prune_below(402).expect("prune inside stride");
         assert_eq!(removed, 0, "a cutoff inside the stride does not walk");
         let removed = index.prune_below(400 + 64).expect("prune at stride");
         assert_eq!(removed, 1, "the stride boundary walks again");
+    }
+
+    proptest! {
+        #[test]
+        fn pruning_preserves_exactly_the_entries_at_or_above_the_cutoff(
+            heights in proptest::collection::vec(0i64..1_000, 0..128),
+            cutoff in 0i64..1_000,
+        ) {
+            let index = CarrierIndex::in_memory();
+            let deploy_id = legacy_id(b"property-deploy");
+            index.set_watermark_if_absent(17).expect("set watermark");
+            for (ordinal, height) in heights.iter().enumerate() {
+                let mut block_hash = vec![0u8; 32];
+                block_hash[..8].copy_from_slice(&(ordinal as u64).to_le_bytes());
+                index
+                    .record_once(&deploy_id, *height, block_hash)
+                    .expect("record carrier");
+            }
+
+            let removed = index.prune_below(cutoff).expect("prune carriers");
+            let actual = index
+                .carriers
+                .get_one(&deploy_id)
+                .expect("read carriers")
+                .unwrap_or_default()
+                .into_iter()
+                .map(|entry| entry.height)
+                .collect::<Vec<_>>();
+            let expected = heights
+                .iter()
+                .copied()
+                .filter(|height| *height >= cutoff)
+                .collect::<Vec<_>>();
+
+            prop_assert_eq!(removed as usize, heights.len() - expected.len());
+            prop_assert_eq!(actual, expected);
+            prop_assert_eq!(index.watermark().expect("read watermark"), Some(17));
+        }
     }
 }

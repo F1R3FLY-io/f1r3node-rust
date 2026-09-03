@@ -9,9 +9,10 @@ implementations of the slashing protocol — the Rust test harness,
 the Rocq-derived oracle, and the production-shaped adapter — and
 asserts that all three agree on every observable.
 
-The triple-bisim pattern is the methodology's strongest *operational*
-evidence (the Rocq bisimilarity theorem T-15a/b is the strongest
-*mathematical* evidence; the two are complementary).
+The triple-bisim pattern is the methodology's strongest operational
+cross-implementation evidence. Its mathematical counterparts are the current
+Rocq safety and refinement theorems. The former Rust–Scala T-15a/b theorem was
+retired by DR-6 and is not an active verification dependency.
 
 Organization:
 

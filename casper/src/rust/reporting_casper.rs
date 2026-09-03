@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
@@ -67,6 +69,7 @@ impl ReportingCasper for NoopReportingCasper {
 /// Real implementation using RhoReporter
 pub struct RhoReporterCasper {
     rspace_store: RSpaceStore,
+    block_store: KeyValueBlockStore,
     block_dag_storage: BlockDagKeyValueStorage,
     replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
@@ -102,6 +105,15 @@ impl ReportingCasper for RhoReporterCasper {
             .get_representation()
             .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
 
+        let genesis = self
+            .block_store
+            .get_approved_block()
+            .map_err(|e| format!("Failed to get approved block: {}", e))?;
+        let is_genesis = genesis
+            .as_ref()
+            .map(|approved| block.block_hash == approved.candidate.block.block_hash)
+            .unwrap_or(false);
+
         let invalid_blocks_set = dag.invalid_blocks();
 
         let pre_state_hash_bytes = proto_util::pre_state_hash(block);
@@ -127,27 +139,54 @@ impl ReportingCasper for RhoReporterCasper {
             })
             .collect();
 
-        Self::replay_deploys(
-            &mut reporting_runtime,
-            &pre_state_hash,
-            &block.body.deploys,
-            &block.body.system_deploys,
-            with_cost_accounting(&block.header.parents_hash_list),
-            &block_data,
-            seen_invalid_blocks,
-        )
-        .await
+        let replay_terms = block
+            .body
+            .deploys
+            .iter()
+            .filter(|deploy| !deploy.is_admission_rejected())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !is_genesis {
+            self.verify_admission(&pre_state_hash, &replay_terms, &block_data.sender.bytes)
+                .await?;
+        }
+
+        let replay = self
+            .replay_deploys(
+                &mut reporting_runtime,
+                &pre_state_hash,
+                &replay_terms,
+                &block.body.system_deploys,
+                if is_genesis {
+                    crate::rust::rholang::replay_runtime::ReplayBlockKind::Genesis
+                } else {
+                    crate::rust::rholang::replay_runtime::ReplayBlockKind::Ordinary
+                },
+                &block_data,
+                seen_invalid_blocks,
+            )
+            .await?;
+        let expected_post_state = block.body.state.post_state_hash.to_vec();
+        if replay.post_state_hash != expected_post_state {
+            return Err(format!(
+                "reporting replay post-state {} differs from block post-state {}",
+                hex::encode(&replay.post_state_hash),
+                hex::encode(expected_post_state)
+            ));
+        }
+        Ok(replay)
     }
 }
 
 impl RhoReporterCasper {
     /// Replay deploys and collect reporting events
     async fn replay_deploys(
+        &self,
         runtime: &mut ReportingRuntime,
         start_hash: &Blake2b256Hash,
         terms: &[ProcessedDeploy],
         system_deploys: &[ProcessedSystemDeploy],
-        with_cost_accounting: bool,
+        block_kind: crate::rust::rholang::replay_runtime::ReplayBlockKind,
         block_data: &BlockData,
         invalid_blocks: HashMap<
             models::rust::block_hash::BlockHash,
@@ -162,7 +201,19 @@ impl RhoReporterCasper {
         runtime.set_block_data(block_data.clone()).await;
         runtime.set_invalid_blocks(invalid_blocks).await;
 
+        if block_kind == crate::rust::rholang::replay_runtime::ReplayBlockKind::Ordinary
+            && !crate::rust::rholang::replay_runtime::has_exactly_one_successful_terminal_close(
+                system_deploys,
+            )
+        {
+            return Err(
+                "ordinary reporting replay requires exactly one successful terminal close deploy"
+                    .to_string(),
+            );
+        }
+
         let mut deploy_results = Vec::new();
+        let mut current_root: StateHash = start_hash.to_bytes_prost();
         for (idx, term) in terms.iter().enumerate() {
             tracing::debug!(
                 target: "f1r3fly.casper.reporting",
@@ -171,33 +222,38 @@ impl RhoReporterCasper {
                 "Replaying deploy for report"
             );
 
-            runtime
-                .replay_deploy_e(with_cost_accounting, term)
-                .await
-                .map_err(|error| {
-                    // Logged where it is raised: the failure now aborts the whole report, and
-                    // several callers of the block-report API discard the error, so this is the
-                    // only record that survives regardless of which one asked.
-                    tracing::warn!(
-                        target: "f1r3fly.casper.reporting",
-                        deploy_index = idx,
-                        deploy_sig = %hex::encode(&term.deploy.sig),
-                        error = %error,
-                        "Deploy replay failed; aborting block report"
-                    );
-                    format!(
-                        "Deploy replay failed at index {} for {}: {}",
-                        idx,
-                        hex::encode(&term.deploy.sig),
-                        error
-                    )
-                })?;
-            let events = runtime.get_report().map_err(|error| {
-                format!(
-                    "Failed to collect deploy report at index {}: {}",
-                    idx, error
+            let effect = format!("user:{}", hex::encode(term.deploy_id()));
+            let validate_witness =
+                crate::rust::rholang::replay_runtime::ReplayRuntimeOps::validate_effect_pre_state(
+                    &effect,
+                    &term.pre_state_hash,
+                    &term.post_state_hash,
+                    &current_root,
                 )
-            })?;
+                .map_err(|error| format!("reporting effect pre-state failed: {error}"))?;
+            let purse_snapshot =
+                if block_kind == crate::rust::rholang::replay_runtime::ReplayBlockKind::Ordinary {
+                    Some(self.purse_snapshot_at_root(term, &current_root).await?)
+                } else {
+                    None
+                };
+            runtime
+                .replay_deploy_e(block_kind, term, purse_snapshot.as_ref())
+                .await
+                .map_err(|error| format!("reporting user deploy replay failed: {error}"))?;
+            let events = runtime
+                .get_report()
+                .map_err(|error| format!("reporting event collection failed: {error}"))?;
+            let actual_post = runtime.create_checkpoint().await.root.to_bytes_prost();
+            if validate_witness {
+                crate::rust::rholang::replay_runtime::ReplayRuntimeOps::validate_effect_post_state(
+                    &effect,
+                    &term.post_state_hash,
+                    &actual_post,
+                )
+                .map_err(|error| format!("reporting effect post-state failed: {error}"))?;
+            }
+            current_root = actual_post;
 
             deploy_results.push(DeployReportResult {
                 processed_deploy: term.clone(),
@@ -214,24 +270,33 @@ impl RhoReporterCasper {
                 "Replaying system deploy for report"
             );
 
+            let effect = format!("system:{idx}");
+            let (recorded_pre, recorded_post) = system_deploy.state_hashes();
+            let validate_witness =
+                crate::rust::rholang::replay_runtime::ReplayRuntimeOps::validate_effect_pre_state(
+                    &effect,
+                    recorded_pre,
+                    recorded_post,
+                    &current_root,
+                )
+                .map_err(|error| format!("reporting effect pre-state failed: {error}"))?;
             runtime
                 .replay_block_system_deploy(block_data, system_deploy)
                 .await
-                .map_err(|error| {
-                    tracing::warn!(
-                        target: "f1r3fly.casper.reporting",
-                        system_deploy_index = idx,
-                        error = %error,
-                        "System deploy replay failed; aborting block report"
-                    );
-                    format!("System deploy replay failed at index {}: {}", idx, error)
-                })?;
-            let events = runtime.get_report().map_err(|error| {
-                format!(
-                    "Failed to collect system deploy report at index {}: {}",
-                    idx, error
+                .map_err(|error| format!("reporting system deploy replay failed: {error}"))?;
+            let events = runtime
+                .get_report()
+                .map_err(|error| format!("reporting event collection failed: {error}"))?;
+            let actual_post = runtime.create_checkpoint().await.root.to_bytes_prost();
+            if validate_witness {
+                crate::rust::rholang::replay_runtime::ReplayRuntimeOps::validate_effect_post_state(
+                    &effect,
+                    recorded_post,
+                    &actual_post,
                 )
-            })?;
+                .map_err(|error| format!("reporting effect post-state failed: {error}"))?;
+            }
+            current_root = actual_post;
 
             let system_deploy_data = match system_deploy {
                 ProcessedSystemDeploy::Succeeded { system_deploy, .. } => system_deploy.clone(),
@@ -253,6 +318,94 @@ impl RhoReporterCasper {
             post_state_hash,
         })
     }
+
+    async fn purse_snapshot_at_root(
+        &self,
+        term: &ProcessedDeploy,
+        root: &StateHash,
+    ) -> Result<crate::rust::util::rholang::acceptance::ReplayPurseSnapshot, String> {
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+        use rspace_plus_plus::rspace::r#match::Match;
+
+        use crate::rust::genesis::genesis::Genesis;
+        use crate::rust::rholang::runtime::RuntimeOps;
+
+        let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
+            Arc::new(Box::new(Matcher));
+        let runtime = create_runtime_from_kv_store(
+            self.rspace_store.clone(),
+            Arc::new(Genesis::default_mergeable_tags()),
+            true,
+            &mut Vec::new(),
+            matcher,
+            self.external_services.clone(),
+        )
+        .await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .runtime
+            .reset(&Blake2b256Hash::from_bytes_prost(root))
+            .await
+            .map_err(|error| format!("reporting purse snapshot reset failed: {error}"))?;
+        let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
+            runtime_ops: &runtime_ops,
+            pre_state_root: root
+                .as_ref()
+                .try_into()
+                .expect("consensus state roots are Blake2b-256"),
+        };
+        crate::rust::util::rholang::acceptance::replay_purse_snapshot(term, &reader)
+            .await
+            .map_err(|error| format!("reporting purse snapshot failed: {error}"))
+    }
+
+    async fn verify_admission(
+        &self,
+        start_hash: &Blake2b256Hash,
+        terms: &[ProcessedDeploy],
+        fee_recipient: &[u8],
+    ) -> Result<(), String> {
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+        use rspace_plus_plus::rspace::r#match::Match;
+
+        use crate::rust::genesis::genesis::Genesis;
+        use crate::rust::rholang::runtime::RuntimeOps;
+
+        let matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>> =
+            Arc::new(Box::new(Matcher));
+        let runtime = create_runtime_from_kv_store(
+            self.rspace_store.clone(),
+            Arc::new(Genesis::default_mergeable_tags()),
+            true,
+            &mut Vec::new(),
+            matcher,
+            self.external_services.clone(),
+        )
+        .await;
+        let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops
+            .runtime
+            .reset(start_hash)
+            .await
+            .map_err(|error| format!("reporting admission reset failed: {error}"))?;
+        let reader = crate::rust::util::rholang::acceptance::RuntimeOpsSupplyReader {
+            runtime_ops: &runtime_ops,
+            pre_state_root: start_hash
+                .bytes()
+                .try_into()
+                .expect("consensus state roots are Blake2b-256"),
+        };
+        crate::rust::util::rholang::acceptance::verify_state_bound_replay_admission(
+            terms,
+            fee_recipient,
+            &reader,
+        )
+        .await
+        .map_err(|error| format!("reporting admission verification failed: {error}"))?;
+        Ok(())
+    }
 }
 
 /// Factory function to create noop reporting casper
@@ -261,21 +414,19 @@ pub fn noop() -> Arc<dyn ReportingCasper> { Arc::new(NoopReportingCasper) }
 /// Factory function to create rho reporter with real reporting capability
 pub fn rho_reporter(
     rspace_store: &RSpaceStore,
+    block_store: &KeyValueBlockStore,
     block_dag_storage: &BlockDagKeyValueStorage,
     replay_lock: Arc<crate::rust::util::rholang::runtime_manager::ReplayLock>,
     external_services: rholang::rust::interpreter::external_services::ExternalServices,
 ) -> Arc<dyn ReportingCasper> {
     Arc::new(RhoReporterCasper {
         rspace_store: rspace_store.clone(),
+        block_store: block_store.clone(),
         block_dag_storage: block_dag_storage.clone(),
         replay_lock,
         external_services,
     })
 }
-
-/// Genesis is the only block without parents, and it replays without cost
-/// accounting because no precharge or refund system deploy is wrapped around it.
-fn with_cost_accounting(parent_hashes: &[prost::bytes::Bytes]) -> bool { !parent_hashes.is_empty() }
 
 /// ReportingRuntime wraps RhoRuntimeImpl with ReportingRspace to enable event collection
 pub struct ReportingRuntime {
@@ -320,15 +471,16 @@ impl ReportingRuntime {
     /// Replay a deploy and collect reporting events
     pub async fn replay_deploy_e(
         &mut self,
-        with_cost_accounting: bool,
+        block_kind: crate::rust::rholang::replay_runtime::ReplayBlockKind,
         processed_deploy: &ProcessedDeploy,
+        purse_snapshot: Option<&crate::rust::util::rholang::acceptance::ReplayPurseSnapshot>,
     ) -> Result<(), crate::rust::errors::CasperError> {
         use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
         replay_ops
-            .replay_deploy_e(with_cost_accounting, processed_deploy)
+            .replay_deploy_e_with_snapshot(block_kind, processed_deploy, purse_snapshot)
             .await?;
 
         self.runtime = replay_ops.runtime_ops.runtime;
@@ -347,7 +499,6 @@ impl ReportingRuntime {
         // Create ReplayRuntimeOps from the runtime
         let mut replay_ops = ReplayRuntimeOps::new_from_runtime(self.runtime.clone());
 
-        // Replay the system deploy
         replay_ops
             .replay_block_system_deploy(block_data, processed_system_deploy)
             .await?;
@@ -405,18 +556,5 @@ impl ReportingRuntime {
             runtime,
             space: reporting_space,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn genesis_deploys_are_not_cost_accounted() {
-        assert!(!with_cost_accounting(&[]));
-        assert!(with_cost_accounting(&[prost::bytes::Bytes::from_static(
-            b"parent",
-        )]));
     }
 }

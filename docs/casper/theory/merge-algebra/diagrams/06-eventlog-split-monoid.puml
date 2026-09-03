@@ -19,7 +19,7 @@
 '            split_then_recombine_equals_monolithic_for_conflicts.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/merge-algebra/diagrams/06-eventlog-split-monoid.puml
+'   plantuml -tsvg docs/casper/theory/merge-algebra/diagrams/06-eventlog-split-monoid.puml
 
 @startuml 06-eventlog-split-monoid
 !theme plain

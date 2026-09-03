@@ -151,6 +151,6 @@ async fn state_change_computes_cont_diff_and_join_for_removed_continuation() {
         .consume_channels_to_join_serialized_map
         .get(&vec![hash(&channel)])
         .unwrap();
-    let join: Vec<String> = bincode::deserialize(&serialized_join).unwrap();
+    let join: Vec<String> = bincode::deserialize(serialized_join).unwrap();
     assert_eq!(join, vec![channel]);
 }

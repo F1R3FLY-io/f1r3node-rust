@@ -19,13 +19,24 @@ impl Compression {
     /// - Length is encoded as varint (1-5 bytes, matching Java format)
     /// - Compatible with Java's LZ4CompressorWithLength
     pub fn compress(content: &[u8]) -> Vec<u8> {
-        let compressed = lz4_flex::compress(content);
-        let mut result = Vec::new();
-
-        // Encode original (decompressed) length as varint to match Java format
+        let allocation_bound = Self::max_compressed_allocation(content.len())
+            .expect("compression allocation bound overflow");
+        let mut result = Vec::with_capacity(allocation_bound);
         encode_varint(content.len() as u64, &mut result);
-        result.extend_from_slice(&compressed);
+        let prefix_length = result.len();
+        result.resize(allocation_bound, 0);
+        let compressed_length =
+            lz4_flex::block::compress_into(content, &mut result[prefix_length..])
+                .expect("compression allocation bound must fit");
+        result.truncate(prefix_length + compressed_length);
         result
+    }
+
+    pub fn max_compressed_allocation(content_length: usize) -> Option<usize> {
+        content_length
+            .checked_mul(110)?
+            .checked_div(100)?
+            .checked_add(30)
     }
 
     /// Decompress data with varint length prefix
@@ -192,5 +203,29 @@ mod tests {
         let compressed = Compression::compress(&single_byte);
         let decompressed = Compression::decompress(&compressed, 1).unwrap();
         assert_eq!(single_byte, decompressed);
+    }
+
+    #[test]
+    fn compressed_capacity_never_exceeds_the_public_bound() {
+        for size in [0, 1, 12, 13, 1024, 500_000, 600_000] {
+            let content = vec![size as u8; size];
+            let compressed = Compression::compress(&content);
+            assert!(compressed.capacity() <= Compression::max_compressed_allocation(size).unwrap());
+        }
+    }
+
+    #[test]
+    fn compression_bound_rejects_arithmetic_overflow() {
+        assert_eq!(Compression::max_compressed_allocation(usize::MAX), None);
+    }
+
+    #[test]
+    fn incompressible_payload_stays_within_the_public_bound() {
+        for size in [13, 255, 65_535, 600_001] {
+            let content = generate_byte_array(size, size as u64);
+            let compressed = Compression::compress(&content);
+            assert!(compressed.len() <= Compression::max_compressed_allocation(size).unwrap());
+            assert_eq!(Compression::decompress(&compressed, size), Some(content));
+        }
     }
 }

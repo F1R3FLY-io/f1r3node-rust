@@ -9,8 +9,7 @@
   ([`formal/rocq/slashing/theories/`](../../../../../../formal/rocq/slashing/theories/)).
 - A mathematical statement of the theorem ready in advance — the
   theorem text is *not* something to discover while proving.
-- Resource limits configured (the build uses ≤ 12 GB per module
-  under `systemd-run --user --scope -p MemoryMax=96G -p CPUQuota=1800%`).
+- Configure an 8 GB memory limit and disable swap for the build.
 
 ## 2 · Skeleton
 
@@ -63,7 +62,7 @@ Build under resource limits (per project CLAUDE.md):
 
 ```sh
 systemd-run --user --scope \
-    -p MemoryMax=96G -p CPUQuota=1800% \
+    -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=1800% \
     -p IOWeight=30 -p TasksMax=200 \
     make -j1
 ```

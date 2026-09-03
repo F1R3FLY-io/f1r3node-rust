@@ -1,3 +1,4 @@
+pub mod acceptance;
 pub mod costacc;
 pub mod interpreter_util;
 pub mod mem_profiler;
@@ -5,6 +6,7 @@ pub mod registry_sig_gen;
 pub mod replay_cache;
 pub mod replay_failure;
 pub mod runtime_manager;
+pub mod supply;
 pub mod system_deploy;
 pub mod system_deploy_enum;
 pub mod system_deploy_result;

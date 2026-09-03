@@ -36,6 +36,23 @@ pub trait SignaturesAlg: std::fmt::Debug + Send + Sync {
     fn eq(&self, other: &dyn SignaturesAlg) -> bool;
 
     fn box_clone(&self) -> Box<dyn SignaturesAlg>;
+
+    /// Decidable equality on ground signatures `g ∈ G` (DR-2: the per-`G`
+    /// decidable-eq interface of the cost-accounted rho-calculus, realizing
+    /// the `sig_eq_dec` obligation of the Rocq `sig` model on the `SGround`
+    /// axis). Ground signatures are opaque byte sequences, so the default is
+    /// byte equality; algorithms with a non-trivial canonical form (e.g. a
+    /// curve with multiple wire encodings of the same key) may override.
+    fn ground_eq(&self, a: &[u8], b: &[u8]) -> bool { a == b }
+
+    /// Hash a ground signature `g` to its canonical-process encoding `H_g`
+    /// (DR-2; the spec's `Σ⟦g⟧ = quote(H_g)`, eq:app-sig-ground). Default is
+    /// Blake2b256 over the ground bytes, matching the repo-wide content-hash
+    /// used for `#P`-style process hashes; algorithms that pin a different
+    /// canonical hash may override.
+    fn ground_hash(&self, g: &[u8]) -> Vec<u8> {
+        crate::rust::hash::blake2b256::Blake2b256::hash(g.to_vec())
+    }
 }
 
 impl Clone for Box<dyn SignaturesAlg> {
@@ -69,7 +86,7 @@ impl<'de> Deserialize<'de> for Box<dyn SignaturesAlg> {
             where E: de::Error {
                 match value {
                     "secp256k1" => Ok(Box::new(Secp256k1)),
-                    "secp256k1-eth" => Ok(Box::new(Secp256k1Eth)),
+                    Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Ok(Box::new(Secp256k1Eth)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
                     "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
                     #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -94,7 +111,7 @@ impl SignaturesAlgFactory {
             // https://rchain.atlassian.net/browse/RCHAIN-3560
             // case Ed25519.name => Some(Ed25519)
             "secp256k1" => Some(Box::new(Secp256k1)),
-            "secp256k1-eth" => Some(Box::new(Secp256k1Eth)),
+            Secp256k1Eth::NAME | Secp256k1Eth::LEGACY_NAME => Some(Box::new(Secp256k1Eth)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
             "schnorr-secp256k1" => Some(Box::new(SchnorrSecp256k1)),
             #[cfg(feature = "schnorr_secp256k1_experimental")]
@@ -109,12 +126,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secp256k1_eth_canonical_name_roundtrips_through_factory() {
+        let algorithm = SignaturesAlgFactory::apply(Secp256k1Eth::NAME).unwrap();
+        assert_eq!(algorithm.name(), Secp256k1Eth::NAME);
+    }
+
+    #[test]
+    fn secp256k1_eth_legacy_name_decodes_to_canonical_name() {
+        let algorithm = SignaturesAlgFactory::apply(Secp256k1Eth::LEGACY_NAME).unwrap();
+        assert_eq!(algorithm.name(), Secp256k1Eth::NAME);
+    }
+
+    #[test]
     fn factory_returns_known_algorithms() {
         let alg = SignaturesAlgFactory::apply("secp256k1").unwrap();
         assert_eq!(alg.name(), "secp256k1");
 
-        let eth = SignaturesAlgFactory::apply("secp256k1-eth").unwrap();
-        assert_eq!(eth.name(), "secp256k1:eth");
+        let eth = SignaturesAlgFactory::apply(Secp256k1Eth::LEGACY_NAME).unwrap();
+        assert_eq!(eth.name(), Secp256k1Eth::NAME);
     }
 
     #[test]
@@ -160,6 +189,14 @@ mod tests {
     }
 
     #[test]
+    fn serde_roundtrip_preserves_canonical_eth_algorithm() {
+        let algorithm: Box<dyn SignaturesAlg> = Box::new(Secp256k1Eth);
+        let encoded = bincode::serialize(&algorithm).unwrap();
+        let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded.name(), Secp256k1Eth::NAME);
+    }
+
+    #[test]
     fn deserialize_rejects_unknown_algorithm_name() {
         let encoded = bincode::serialize("no-such-alg").unwrap();
         let result: Result<Box<dyn SignaturesAlg>, _> = bincode::deserialize(&encoded);
@@ -168,12 +205,8 @@ mod tests {
 
     #[test]
     fn deserialize_accepts_eth_alias() {
-        // Known-bug pin (issue #380): name() emits "secp256k1:eth" but the
-        // factory and Deserialize only accept "secp256k1-eth", so a boxed
-        // Secp256k1Eth does not survive a serde round-trip. This asserts the
-        // alias that DOES deserialize; update the pin when #380 is fixed.
-        let encoded = bincode::serialize("secp256k1-eth").unwrap();
+        let encoded = bincode::serialize(Secp256k1Eth::LEGACY_NAME).unwrap();
         let decoded: Box<dyn SignaturesAlg> = bincode::deserialize(&encoded).unwrap();
-        assert_eq!(decoded.name(), "secp256k1:eth");
+        assert_eq!(decoded.name(), Secp256k1Eth::NAME);
     }
 }

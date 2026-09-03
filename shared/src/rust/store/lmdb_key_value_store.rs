@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use heed::types::SerdeBincode;
+use heed::types::{Bytes, SerdeBincode};
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
-use super::key_value_store::{KeyValueStore, KvStoreError};
+use super::key_value_store::{
+    AtomicStoreMutation, AtomicStoreOperation, KeyValueStore, KvStoreError,
+};
 use crate::rust::ByteBuffer;
 
 // `heed::Database` is a `Copy` handle (a `u32` dbi) and is `Send + Sync`; it
@@ -135,6 +137,127 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let iter = self.db.iter(&reader)?;
+            let mut rows = Vec::new();
+            for result in iter {
+                let (key, value) = result?;
+                if key.starts_with(prefix) {
+                    rows.push((key.to_vec(), value));
+                }
+            }
+            drop(reader);
+            rows.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(rows)
+        })
+    }
+
+    fn scan_prefix_exact_len(
+        &self,
+        prefix: &[u8],
+        key_length: usize,
+    ) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
+        if prefix.len() > key_length {
+            return Ok(Vec::new());
+        }
+        in_blocking(|| {
+            let reader = self.env.read_txn()?;
+            let raw_db = self.db.remap_key_type::<Bytes>();
+            let encoded_key = bincode::serialize(&vec![0u8; key_length])?;
+            let header_length = encoded_key.len().checked_sub(key_length).ok_or_else(|| {
+                KvStoreError::SerializationError(
+                    "LMDB composite key encoding is shorter than its payload".to_string(),
+                )
+            })?;
+            let mut encoded_prefix = encoded_key[..header_length].to_vec();
+            encoded_prefix.extend_from_slice(prefix);
+            let iter = raw_db.prefix_iter(&reader, encoded_prefix.as_slice())?;
+            let mut rows = Vec::new();
+            for result in iter {
+                let (encoded, value) = result?;
+                let key: Vec<u8> = bincode::deserialize(encoded)?;
+                if key.len() == key_length && key.starts_with(prefix) {
+                    rows.push((key, value));
+                }
+            }
+            drop(reader);
+            Ok(rows)
+        })
+    }
+
+    fn strict_atomic_mutate(
+        &self,
+        mutations: &[AtomicStoreMutation<'_>],
+    ) -> Result<(), KvStoreError> {
+        in_blocking(|| {
+            let stores = mutations
+                .iter()
+                .map(|mutation| {
+                    mutation
+                        .store
+                        .as_any()
+                        .downcast_ref::<LmdbKeyValueStore>()
+                        .ok_or_else(|| {
+                            KvStoreError::AtomicityUnavailable(
+                                "strict LMDB transaction includes a non-LMDB store".to_string(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if stores
+                .iter()
+                .any(|store| !Arc::ptr_eq(&self.env, &store.env))
+            {
+                return Err(KvStoreError::AtomicityUnavailable(
+                    "strict LMDB transaction spans multiple environments".to_string(),
+                ));
+            }
+            let mut writer = self.env.write_txn()?;
+            for (mutation, store) in mutations.iter().zip(stores) {
+                let current = store.db.get(&writer, &mutation.key)?;
+                match &mutation.operation {
+                    AtomicStoreOperation::Put(value) => {
+                        store.db.put(&mut writer, &mutation.key, value)?;
+                    }
+                    AtomicStoreOperation::PutIfAbsentOrEqual(value) => match current {
+                        Some(existing) if existing != *value => {
+                            return Err(KvStoreError::TransactionConflict(format!(
+                                "existing value differs for key {}",
+                                hex::encode(&mutation.key)
+                            )));
+                        }
+                        Some(_) => {}
+                        None => store.db.put(&mut writer, &mutation.key, value)?,
+                    },
+                    AtomicStoreOperation::Delete => {
+                        store.db.delete(&mut writer, &mutation.key)?;
+                    }
+                    AtomicStoreOperation::CompareAndSwap {
+                        expected,
+                        replacement,
+                    } => {
+                        if current.as_ref() != expected.as_ref() {
+                            return Err(KvStoreError::TransactionConflict(format!(
+                                "compare-and-swap expectation failed for key {}",
+                                hex::encode(&mutation.key)
+                            )));
+                        }
+                        match replacement {
+                            Some(value) => store.db.put(&mut writer, &mutation.key, value)?,
+                            None => {
+                                store.db.delete(&mut writer, &mutation.key)?;
+                            }
+                        }
+                    }
+                }
+            }
+            writer.commit()?;
+            Ok(())
+        })
+    }
+
     // This is only needed for testing purposes
     fn size_bytes(&self) -> usize { todo!() }
 
@@ -246,21 +369,43 @@ impl Clone for LmdbKeyValueStore {
 #[cfg(test)]
 mod batched_put_tests {
     use std::collections::BTreeMap;
+    use std::ops::Deref;
 
     use heed::EnvOpenOptions;
+    use tempfile::TempDir;
 
     use super::*;
+    use crate::rust::store::key_value_store::strict_atomic_mutate;
 
-    pub(super) fn open_env() -> Arc<Env> {
-        let dir = tempfile::tempdir().unwrap();
-        // Leak the tempdir path so the Env (and its mmap) stay valid for the
-        // lifetime of the test; each test opens its own directory.
-        let path = Box::leak(Box::new(dir)).path();
+    pub(super) struct TestEnv {
+        env: Arc<Env>,
+        _dir: TempDir,
+    }
+
+    impl Deref for TestEnv {
+        type Target = Arc<Env>;
+
+        fn deref(&self) -> &Self::Target { &self.env }
+    }
+
+    pub(super) fn open_env() -> TestEnv {
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("target/shared-test-scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("lmdb-")
+            .tempdir_in(scratch)
+            .unwrap();
         let mut builder = EnvOpenOptions::new();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(4);
-        let env = unsafe { builder.open(path).unwrap() };
-        Arc::new(env)
+        let env = unsafe { builder.open(dir.path()).unwrap() };
+        TestEnv {
+            env: Arc::new(env),
+            _dir: dir,
+        }
     }
 
     pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
@@ -391,6 +536,160 @@ mod batched_put_tests {
     fn empty_input_is_a_noop() { batched_put(vec![]).unwrap(); }
 
     #[test]
+    fn strict_transaction_commits_same_environment_mutations() {
+        let env = open_env();
+        let a = open_store(&env, "strict-a");
+        let b = open_store(&env, "strict-b");
+        let mutations = [
+            AtomicStoreMutation {
+                store: &a,
+                key: b"a".to_vec(),
+                operation: AtomicStoreOperation::PutIfAbsentOrEqual(b"one".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &b,
+                key: b"b".to_vec(),
+                operation: AtomicStoreOperation::CompareAndSwap {
+                    expected: None,
+                    replacement: Some(b"two".to_vec()),
+                },
+            },
+        ];
+
+        strict_atomic_mutate(&mutations).unwrap();
+
+        assert_eq!(a.get_one(&b"a".to_vec()).unwrap(), Some(b"one".to_vec()));
+        assert_eq!(b.get_one(&b"b".to_vec()).unwrap(), Some(b"two".to_vec()));
+    }
+
+    #[test]
+    fn strict_transaction_rolls_back_every_mutation_on_conflict() {
+        let env = open_env();
+        let a = open_store(&env, "rollback-a");
+        let b = open_store(&env, "rollback-b");
+        a.put_one(b"guard".to_vec(), b"current".to_vec()).unwrap();
+        let mutations = [
+            AtomicStoreMutation {
+                store: &b,
+                key: b"uncommitted".to_vec(),
+                operation: AtomicStoreOperation::Put(b"value".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &a,
+                key: b"guard".to_vec(),
+                operation: AtomicStoreOperation::CompareAndSwap {
+                    expected: Some(b"stale".to_vec()),
+                    replacement: Some(b"next".to_vec()),
+                },
+            },
+        ];
+
+        assert!(matches!(
+            strict_atomic_mutate(&mutations),
+            Err(KvStoreError::TransactionConflict(_))
+        ));
+        assert_eq!(
+            a.get_one(&b"guard".to_vec()).unwrap(),
+            Some(b"current".to_vec())
+        );
+        assert_eq!(b.get_one(&b"uncommitted".to_vec()).unwrap(), None);
+    }
+
+    #[test]
+    fn strict_transaction_rejects_cross_environment_mutations() {
+        let env_a = open_env();
+        let env_b = open_env();
+        let a = open_store(&env_a, "cross-a");
+        let b = open_store(&env_b, "cross-b");
+        let mutations = [
+            AtomicStoreMutation {
+                store: &a,
+                key: b"a".to_vec(),
+                operation: AtomicStoreOperation::Put(b"one".to_vec()),
+            },
+            AtomicStoreMutation {
+                store: &b,
+                key: b"b".to_vec(),
+                operation: AtomicStoreOperation::Put(b"two".to_vec()),
+            },
+        ];
+
+        assert!(matches!(
+            strict_atomic_mutate(&mutations),
+            Err(KvStoreError::AtomicityUnavailable(_))
+        ));
+        assert_eq!(a.get_one(&b"a".to_vec()).unwrap(), None);
+        assert_eq!(b.get_one(&b"b".to_vec()).unwrap(), None);
+    }
+
+    #[test]
+    fn prefix_scan_is_isolated_and_lexicographically_ordered() {
+        let env = open_env();
+        let store = open_store(&env, "prefix");
+        store
+            .put(kv(&[("p/2", "two"), ("other", "x"), ("p/1", "one")]))
+            .unwrap();
+
+        let rows = store.scan_prefix(b"p/").unwrap();
+
+        assert_eq!(rows, kv(&[("p/1", "one"), ("p/2", "two")]));
+    }
+
+    #[test]
+    fn exact_length_prefix_scan_uses_the_encoded_composite_key_prefix() {
+        let env = open_env();
+        let store = open_store(&env, "composite-prefix");
+        store
+            .put(vec![
+                (vec![1, 7, 9, 1], vec![1]),
+                (vec![1, 7, 9, 0], vec![2]),
+                (vec![1, 7, 9], vec![3]),
+                (vec![1, 8, 9, 0], vec![4]),
+            ])
+            .unwrap();
+
+        let rows = store.scan_prefix_exact_len(&[1, 7], 4).unwrap();
+
+        assert_eq!(rows, vec![
+            (vec![1, 7, 9, 0], vec![2]),
+            (vec![1, 7, 9, 1], vec![1]),
+        ]);
+    }
+
+    #[test]
+    fn compare_and_swap_has_one_winner_under_concurrency() {
+        let env = open_env();
+        let store = Arc::new(open_store(&env, "cas-race"));
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let handles = (0u8..16)
+            .map(|value| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    strict_atomic_mutate(&[AtomicStoreMutation {
+                        store: store.as_ref(),
+                        key: b"winner".to_vec(),
+                        operation: AtomicStoreOperation::CompareAndSwap {
+                            expected: None,
+                            replacement: Some(vec![value]),
+                        },
+                    }])
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let winners = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(Result::is_ok)
+            .count();
+
+        assert_eq!(winners, 1);
+        assert!(store.get_one(&b"winner".to_vec()).unwrap().is_some());
+    }
+
+    #[test]
     fn single_store_batches_trivially() {
         let env = open_env();
         let a = open_store(&env, "a");
@@ -406,20 +705,26 @@ mod batched_put_tests {
 mod store_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::batched_put_tests::{kv, open_env, open_store};
+    use super::batched_put_tests::{kv, open_env, open_store, TestEnv};
     use super::*;
 
-    fn seeded_store() -> LmdbKeyValueStore {
-        let store = open_store(&open_env(), "s");
+    fn new_store() -> (TestEnv, LmdbKeyValueStore) {
+        let env = open_env();
+        let store = open_store(&env, "s");
+        (env, store)
+    }
+
+    fn seeded_store() -> (TestEnv, LmdbKeyValueStore) {
+        let (env, store) = new_store();
         store
             .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
             .unwrap();
-        store
+        (env, store)
     }
 
     #[test]
     fn get_returns_values_in_key_order_with_none_for_missing() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let results = store
             .get(&vec![b"k2".to_vec(), b"missing".to_vec(), b"k1".to_vec()])
             .unwrap();
@@ -432,7 +737,7 @@ mod store_tests {
 
     #[test]
     fn put_overwrites_existing_keys() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         store.put(kv(&[("k1", "updated")])).unwrap();
         assert_eq!(
             store.get_one(&b"k1".to_vec()).unwrap(),
@@ -442,7 +747,7 @@ mod store_tests {
 
     #[test]
     fn put_one_if_absent_inserts_once_and_keeps_first_value() {
-        let store = open_store(&open_env(), "s");
+        let (_env, store) = new_store();
         assert!(store
             .put_one_if_absent(b"k".to_vec(), b"first".to_vec())
             .unwrap());
@@ -457,7 +762,7 @@ mod store_tests {
 
     #[test]
     fn delete_returns_count_of_keys_actually_removed() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let deleted = store
             .delete(vec![b"k1".to_vec(), b"missing".to_vec(), b"k3".to_vec()])
             .unwrap();
@@ -474,14 +779,14 @@ mod store_tests {
         static VISITED: AtomicUsize = AtomicUsize::new(0);
         fn visit(_key: ByteBuffer, _value: ByteBuffer) { VISITED.fetch_add(1, Ordering::SeqCst); }
 
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         store.iterate(visit).unwrap();
         assert_eq!(VISITED.load(Ordering::SeqCst), 3);
     }
 
     #[test]
     fn iterate_while_stops_when_callback_returns_false() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let mut seen = Vec::new();
         store
             .iterate_while(&mut |key, _value| {
@@ -494,7 +799,7 @@ mod store_tests {
 
     #[test]
     fn iterate_while_propagates_callback_errors() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let result = store.iterate_while(&mut |_key, _value| {
             Err(KvStoreError::InvalidArgument("boom".to_string()))
         });
@@ -506,7 +811,7 @@ mod store_tests {
 
     #[test]
     fn to_map_and_print_store_reflect_all_entries() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let map = store.to_map().unwrap();
         assert_eq!(map.len(), 3);
         assert_eq!(map.get(b"k2".as_slice()), Some(&b"v2".to_vec()));
@@ -515,7 +820,7 @@ mod store_tests {
 
     #[test]
     fn non_empty_flips_when_first_entry_lands() {
-        let store = open_store(&open_env(), "s");
+        let (_env, store) = new_store();
         assert!(!store.non_empty().unwrap());
         store.put_one(b"k".to_vec(), b"v".to_vec()).unwrap();
         assert!(store.non_empty().unwrap());
@@ -523,7 +828,7 @@ mod store_tests {
 
     #[test]
     fn boxed_clone_shares_the_same_database() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         let boxed: Box<dyn KeyValueStore> = store.clone_box();
         let cloned = boxed.clone();
         assert_eq!(
@@ -539,7 +844,7 @@ mod store_tests {
 
     #[test]
     fn trait_contains_and_put_if_absent_defaults_work_through_lmdb() {
-        let store = seeded_store();
+        let (_env, store) = seeded_store();
         assert_eq!(
             store
                 .contains(&vec![b"k1".to_vec(), b"missing".to_vec()])

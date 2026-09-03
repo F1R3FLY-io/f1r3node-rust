@@ -39,27 +39,58 @@ From FinalizedFloor Require Import AccountableSafety.
 From FinalizedFloor Require Import Floor.
 From FinalizedFloor Require Import Merge.
 From FinalizedFloor Require Import OccurrenceDisposition.
+From FinalizedFloor Require Import DeployIdentitySeparation.
+From FinalizedFloor Require Import DeployOccurrenceStorage.
 From FinalizedFloor Require Import FinalizedOccurrenceStatus.
 From FinalizedFloor Require Import Recovery.
 From FinalizedFloor Require Import MergeRecoveryCoherence.
 From FinalizedFloor Require Import AdmissionEffectAlignment.
 From FinalizedFloor Require Import RejectionReasonConfluence.
 From FinalizedFloor Require Import ProtocolVersionLifecycle.
+From FinalizedFloor Require Import StartupMetadataPreflight.
 From FinalizedFloor Require Import ProtocolActivationCoherence.
 From FinalizedFloor Require Import Selection.
 From FinalizedFloor Require Import IntegerAdd.
 From FinalizedFloor Require Import FtExact.
+From FinalizedFloor Require Import FinalityThresholdAlignment.
+From FinalizedFloor Require Import GenesisApprovalTrust.
 From FinalizedFloor Require Import FtProvenance.
 From FinalizedFloor Require Import FinalizerProgress.
 From FinalizedFloor Require Import BootstrapReplayContext.
 From FinalizedFloor Require Import LocalFaultDeferral.
+From FinalizedFloor Require Import FundingAdmissionLifecycle.
 From FinalizedFloor Require Import EffectCausalClosure.
+From FinalizedFloor Require Import SettledEffectProbe.
 From FinalizedFloor Require Import StateEffectProvenance.
 From FinalizedFloor Require Import StateLineageFinality.
 From FinalizedFloor Require Import CertifiedFloorPromotion.
 From FinalizedFloor Require Import SnapshotFloorMaterialization.
+From FinalizedFloor Require Import CommitteeTransition.
+From FinalizedFloor Require Import ObjectiveEquivocation.
+From FinalizedFloor Require Import BondGenerationLifecycle.
+From FinalizedFloor Require Import CertifiedObjectiveEquivocation.
+From FinalizedFloor Require Import CertifiedCausalAdmission.
+From FinalizedFloor Require Import CausalFinalityProjection.
+From FinalizedFloor Require Import RestoreHorizonCertifiedContext.
 From FinalizedFloor Require Import HeartbeatFinalityBackpressure.
+From FinalizedFloor Require Import TargetDeployTerminality.
+From FinalizedFloor Require Import NodeLocalProductLifting.
+From FinalizedFloor Require Import NodeLocalTemporalLifting.
 From FinalizedFloor Require Import ParallelValidatorConsensus.
+From FinalizedFloor Require Import FinalizationAtomicity.
+From FinalizedFloor Require Import ProposalFloorReadiness.
+From FinalizedFloor Require Import FinalizerFloorMaterialization.
+From FinalizedFloor Require Import DeployLifecycleFinalization.
+From FinalizedFloor Require Import DivergentFinalizationHistories.
+From FinalizedFloor Require Import MinorityForkRecovery.
+From FinalizedFloor Require Import CandidateScopeDeployRehome.
+From FinalizedFloor Require Import RecoveryFrontierCoverage.
+From FinalizedFloor Require Import StaleSiblingRecovery.
+From FinalizedFloor Require Import CertifiedFloorCommitment.
+From FinalizedFloor Require Import FinalizationCertificateRetrieval.
+From FinalizedFloor Require Import DependencyMaintenanceRound.
+From FinalizedFloor Require Import WitnessEquivalentCarrier.
+From FinalizedFloor Require Import ObjectiveEvidenceSequenceEligibility.
 
 Theorem finalized_floor_merge_correct :
   (* T-TERM: the main-parent spine walk always reaches genesis. *)
@@ -68,10 +99,10 @@ Theorem finalized_floor_merge_correct :
        exists g, walk_spine d b (blk_num b) = Some g /\ blk_main_parent g = None)
   /\
   (* T-MONO / L-ANC: finalization is downward-closed along ancestry. *)
-  (forall d c J b b', anc_of d b' b -> Finalized d c J b -> Finalized d c J b')
+  (forall d c J b b', anc_of d b' b -> CliqueOracle.Finalized d c J b -> CliqueOracle.Finalized d c J b')
   /\
   (* L-SNAP: finalization is monotone under snapshot growth. *)
-  (forall d c J J' b, snap_extends J' J -> Finalized d c J b -> Finalized d c J' b)
+  (forall d c J J' b, snap_extends J' J -> CliqueOracle.Finalized d c J b -> CliqueOracle.Finalized d c J' b)
   /\
   (* T-CACHE: the warm frontier up-walk equals the cold down-walk (no fork). *)
   (forall pivot band, AdjDC band ->
@@ -94,6 +125,93 @@ Proof.
   - exact merge_or_perm.
   - exact merge_or_no_lost_bit.
   - exact apply_idem.
+Qed.
+
+Theorem finalized_floor_candidate_scope_rehome_correct :
+  (classify_candidate_self_chain true true false = ActiveDuplicate /\
+   should_package_candidate ActiveDuplicate = false)
+  /\
+  (classify_candidate_self_chain true false false = ExcludedBranchRehome /\
+   should_package_candidate ExcludedBranchRehome = true)
+  /\
+  (forall active_in_candidate_scope,
+    classify_candidate_self_chain true active_in_candidate_scope true = SelectedRecovery /\
+    should_package_candidate SelectedRecovery = true)
+  /\
+  (forall on_self_chain active_in_candidate_scope selected_recovery,
+    should_package_candidate
+      (classify_candidate_self_chain
+        on_self_chain active_in_candidate_scope selected_recovery) = false <->
+    on_self_chain = true /\
+    active_in_candidate_scope = true /\
+    selected_recovery = false).
+Proof.
+  split.
+  - exact active_candidate_duplicate_is_suppressed.
+  - split.
+    + exact excluded_branch_occurrence_is_rehomed.
+    + split.
+      * exact selected_recovery_preserves_authorization.
+      * exact only_active_candidate_duplicate_is_suppressed.
+Qed.
+
+Theorem finalized_floor_stale_sibling_recovery_correct :
+  In SourceA (causal_sources (finalize_majority_b accepted_siblings)) /\
+  publish_elected_recovery (finalize_majority_b accepted_siblings) = None /\
+  let settled := settle_exact_frontier (finalize_majority_b accepted_siblings) in
+  has_exact_a_tombstone settled = true /\
+  has_buffered_a settled = true /\
+  exists recovered,
+    publish_elected_recovery settled = Some recovered /\
+    selected_recovery recovered = [StaleA; FreshWork] /\
+    committed_effects recovered = [StaleA; FloorB; FreshWork].
+Proof.
+  exact stale_sibling_recovery_end_to_end_correct.
+Qed.
+
+Theorem finalized_floor_startup_metadata_preflight_correct :
+  (forall path,
+    running_event_published (complete_startup path false) = false /\
+    engine_running (complete_startup path false) = false)
+  /\
+  (forall path,
+    process_alive (complete_startup path false) = false /\
+    exit_nonzero (complete_startup path false) = true)
+  /\
+  (forall path,
+    metadata_verified (complete_startup path true) = true /\
+    running_event_published (complete_startup path true) = true /\
+    engine_running (complete_startup path true) = true /\
+    process_alive (complete_startup path true) = true /\
+    exit_nonzero (complete_startup path true) = false).
+Proof.
+  split.
+  - exact mismatch_never_publishes_running.
+  - split.
+    + exact mismatch_exits_nonzero.
+    + exact matching_startup_runs_only_after_verification.
+Qed.
+
+Theorem finalized_floor_objective_evidence_sequence_boundary_correct :
+  (forall sequence : Z,
+    (sequence < 0)%Z ->
+    persists_metadata EvidenceObjectiveRejected = true /\
+    indexes_objective_evidence EvidenceObjectiveRejected sequence = false)
+  /\
+  (forall admission (sequence : Z),
+    indexes_objective_evidence admission sequence = true ->
+    persists_metadata admission = true /\ (0 <= sequence)%Z)
+  /\
+  (forall admission (sequence : Z),
+    persists_metadata admission = true ->
+    (0 <= sequence)%Z ->
+    indexes_objective_evidence admission sequence = true).
+Proof.
+  split.
+  - exact attributable_negative_sequence_persists_without_evidence.
+  - split.
+    + exact indexed_evidence_has_attributable_nonnegative_sequence.
+    + exact nonnegative_certified_admission_is_indexable.
 Qed.
 
 Theorem finalized_floor_occurrence_correct :
@@ -120,6 +238,32 @@ Proof.
             (conj rejection_order_independent one_winner_preserved))).
 Qed.
 
+Theorem finalized_floor_deploy_identity_separation_correct :
+  (forall payload,
+    {| identity_domain := Legacy; identity_payload := payload |} <>
+    {| identity_domain := V6; identity_payload := payload |})
+  /\
+  (forall tombstones payload,
+    ~ rejected tombstones
+        {| identity_domain := Legacy; identity_payload := payload |} ->
+    ~ rejected
+        (reject tombstones
+          {| identity_domain := V6; identity_payload := payload |})
+        {| identity_domain := Legacy; identity_payload := payload |})
+  /\
+  (forall tombstones payload,
+    ~ rejected tombstones
+        {| identity_domain := V6; identity_payload := payload |} ->
+    ~ rejected
+        (reject tombstones
+          {| identity_domain := Legacy; identity_payload := payload |})
+        {| identity_domain := V6; identity_payload := payload |}).
+Proof.
+  exact (conj equal_payload_cross_domain_ids_are_distinct
+          (conj v6_rejection_preserves_equal_payload_legacy_identity
+                legacy_rejection_preserves_equal_payload_v6_identity)).
+Qed.
+
 Theorem finalized_floor_occurrence_status_scope_correct :
   (forall records record,
      In record records ->
@@ -133,10 +277,43 @@ Theorem finalized_floor_occurrence_status_scope_correct :
      secondary_example_occurrence /\
    ~ tombstoned
        (main_chain_rejection_targets [secondary_example_record])
-       secondary_example_occurrence).
+       secondary_example_occurrence)
+  /\
+  (forall active_state candidate summary,
+     freeze_active_occurrence active_state candidate = Some summary ->
+     frozen_occurrence summary = candidate /\
+     exact_active active_state candidate)
+  /\
+  (forall active_state candidate,
+     ~ exact_active active_state candidate ->
+     freeze_active_occurrence active_state candidate = None).
 Proof.
   exact (conj finalized_closure_rejection_is_authoritative
-          main_chain_only_projection_is_incomplete).
+          (conj main_chain_only_projection_is_incomplete
+            (conj terminal_summary_freezes_only_exact_active_occurrence
+                  exactly_inactive_occurrence_cannot_be_frozen))).
+Qed.
+
+Theorem terminal_occurrence_selection_correct :
+  (forall active_state candidate summary,
+     freeze_finalized_active_occurrence active_state candidate = Some summary ->
+     occurrence_in_finalized_closure candidate = true /\
+     frozen_occurrence summary = located_value candidate /\
+     exact_active active_state (located_value candidate))
+  /\
+  (forall active_state candidate,
+     occurrence_in_finalized_closure candidate = false ->
+     freeze_finalized_active_occurrence active_state candidate = None)
+  /\
+  (forall left right,
+     (ranked_height left = ranked_height right ->
+      ranked_hash left = ranked_hash right ->
+      left = right) ->
+     preferred_occurrence left right = preferred_occurrence right left).
+Proof.
+  exact (conj terminal_summary_uses_only_finalized_exact_active_occurrence
+          (conj off_floor_occurrence_cannot_be_frozen
+                preferred_occurrence_order_independent)).
 Qed.
 
 Theorem finalized_floor_recovery_admission_correct :
@@ -165,15 +342,21 @@ Qed.
 Theorem finalized_floor_recovery_leadership_correct :
   (forall validator_count finalized_height,
      validator_count > 0 ->
-     1 <= recovery_leader validator_count finalized_height <= validator_count)
+     1 <= inclusion_leader validator_count finalized_height <= validator_count)
   /\
   (forall validator_count finalized_height proposer_a proposer_b,
-     recovery_authorized validator_count finalized_height proposer_a ->
-     recovery_authorized validator_count finalized_height proposer_b ->
+     inclusion_authorized validator_count finalized_height proposer_a ->
+     inclusion_authorized validator_count finalized_height proposer_b ->
+     proposer_a = proposer_b)
+  /\
+  (forall carrier_owner proposer_a proposer_b,
+     recovery_custody_authorized carrier_owner proposer_a ->
+     recovery_custody_authorized carrier_owner proposer_b ->
      proposer_a = proposer_b).
 Proof.
-  exact (conj recovery_leader_in_validator_set
-          recovery_authorization_unique_per_finalized_view).
+  exact (conj inclusion_leader_in_validator_set
+          (conj inclusion_authorization_unique_per_finalized_view
+            recovery_custody_authorization_unique_per_carrier)).
 Qed.
 
 Theorem finalized_floor_merge_recovery_coherence_correct :
@@ -259,7 +442,7 @@ Proof.
           (conj executed_failure_retains_effect_slot
             (conj effect_projection_permutation_length
               (conj aligned_metadata_splits_exactly
-                    admission_rejection_close_block_regression)))).
+                    funding_rejection_close_block_regression)))).
 Qed.
 
 Theorem finalized_floor_rejection_reason_confluence_correct :
@@ -337,6 +520,666 @@ Proof.
                 (conj committee_is_floor_bonds scope_covers_band))))).
 Qed.
 
+Theorem committee_transition_correct :
+  (forall post_state_bonds block,
+     serialized_post_state_bonds post_state_bonds block =
+     post_state_bonds (blk_hash block))
+  /\
+  (forall floor_bonds floor_of block
+      (post_state_bonds_left post_state_bonds_right : BlockHash -> Committee),
+     authority_committee floor_bonds floor_of block =
+     authority_committee floor_bonds floor_of block)
+  /\
+  (forall floor_bonds post_state_bonds floor_of block validator,
+     ~ authorized (authority_committee floor_bonds floor_of block) validator ->
+     In validator
+       (committee_validators (serialized_post_state_bonds post_state_bonds block)) ->
+     ~ authorized (authority_committee floor_bonds floor_of block) validator)
+  /\
+  (forall floor_bonds floor_of block sender,
+     authority_context_valid floor_bonds floor_of block sender ->
+     same_validator_set
+       (justification_validators block)
+       (positive_committee_validators
+         (authority_committee floor_bonds floor_of block)))
+  /\
+  (forall floor_bonds floor_of block sender,
+     authority_context_valid floor_bonds floor_of block sender ->
+     authorized (authority_committee floor_bonds floor_of block) sender)
+  /\
+  (forall registered post_state_bonds candidate validator,
+     In validator
+       (positive_committee_validators (post_state_bonds candidate)) ->
+     In validator
+       (register_transition true registered post_state_bonds candidate))
+  /\
+  (forall registered post_state_bonds candidate validator,
+     ~ In validator registered ->
+     ~ In validator
+       (register_transition false registered post_state_bonds candidate))
+  /\
+  (forall accepted registered post_state_bonds candidate validator,
+     promotion_ready accepted registered post_state_bonds candidate ->
+     In validator
+       (positive_committee_validators (post_state_bonds candidate)) ->
+     accepted = true /\ In validator registered)
+  /\
+  (forall registered post_state_bonds candidate,
+     ~ promotion_ready false registered post_state_bonds candidate)
+  /\
+  (forall floor_bonds post_state_bonds floor_of registered source promoted validator,
+     promotion_ready true
+       (register_transition true registered post_state_bonds (blk_hash source))
+       post_state_bonds
+       (blk_hash source) ->
+     floor_of promoted = blk_hash source ->
+     floor_bonds (blk_hash source) = post_state_bonds (blk_hash source) ->
+     In validator
+       (positive_committee_validators
+         (serialized_post_state_bonds post_state_bonds source)) ->
+     authorized (authority_committee floor_bonds floor_of promoted) validator)
+  /\
+  (forall canonical_genesis block,
+     admission_valid canonical_genesis OrdinaryReceivedAdmission block ->
+     exists parent, blk_main_parent block = Some parent)
+  /\
+  (forall canonical_genesis path block,
+     admission_valid canonical_genesis path block ->
+     blk_main_parent block = None ->
+     path = ApprovedGenesisAdmission /\ blk_hash block = canonical_genesis)
+  /\
+  (forall canonical_genesis path block,
+     blk_hash block <> canonical_genesis ->
+     blk_main_parent block = None ->
+     ~ admission_valid canonical_genesis path block)
+  /\
+  (forall sender_of canonical_genesis genesis_placeholder block key cited,
+     justification_keys_valid
+       sender_of canonical_genesis genesis_placeholder block ->
+     In (key, cited) (blk_just block) ->
+     cited <> canonical_genesis ->
+     key = sender_of cited)
+  /\
+  (forall sender_of canonical_genesis genesis_placeholder block cited,
+     justification_keys_valid
+       sender_of canonical_genesis genesis_placeholder block ->
+     In (genesis_placeholder, cited) (blk_just block) ->
+     genesis_placeholder <> sender_of cited ->
+     cited = canonical_genesis)
+  /\
+  (forall canonical_genesis current post_state_bonds candidate validator,
+     In validator
+       (positive_committee_validators (post_state_bonds candidate)) ->
+     seed_registered_genesis true canonical_genesis current
+       post_state_bonds candidate validator = Some canonical_genesis)
+  /\
+  (forall canonical_genesis,
+     insert_approved_genesis_index
+       canonical_genesis canonical_genesis MissingGenesisIndex =
+     GenesisAt canonical_genesis)
+  /\
+  (forall canonical_genesis conflicting,
+     conflicting <> canonical_genesis ->
+     insert_approved_genesis_index
+       canonical_genesis conflicting (GenesisAt canonical_genesis) =
+     GenesisAt canonical_genesis)
+  /\
+  (forall canonical_genesis current_left current_right
+      post_state_bonds candidate validator,
+     In validator
+       (positive_committee_validators (post_state_bonds candidate)) ->
+     seed_registered_genesis true canonical_genesis current_left
+       post_state_bonds candidate validator = Some canonical_genesis /\
+     seed_registered_genesis true canonical_genesis current_right
+       post_state_bonds candidate validator = Some canonical_genesis)
+  /\
+  (forall registered slots sender,
+     ~ In sender registered ->
+     record_invalid_lmm registered slots sender = slots)
+  /\
+  (forall registered post_state_bonds candidate validator,
+     ~ In validator registered ->
+     ~ In validator
+       (positive_committee_validators (post_state_bonds candidate)) ->
+     ~ In validator
+       (register_transition true registered post_state_bonds candidate))
+  /\
+  (forall invalid slots validator,
+     In validator invalid ->
+     ~ In validator (finality_lmm_projection invalid slots)).
+Proof.
+  exact (conj serialized_bonds_are_post_state_bonds
+          (conj authority_ignores_same_block_post_state
+            (conj same_block_transition_does_not_grant_authority
+              (conj valid_authority_context_has_exact_justifications
+                (conj valid_authority_context_authorizes_sender
+                  (conj accepted_transition_registers_post_state_validators
+                    (conj rejected_transition_cannot_register_new_validator
+                      (conj promotion_requires_accepted_registration
+                        (conj rejected_transition_cannot_promote
+                          (conj registered_transition_is_eligible_after_floor_promotion
+                            (conj ordinary_received_block_has_parent
+                              (conj approved_genesis_is_the_only_admitted_root
+                                (conj counterfeit_root_is_not_admitted
+                                  (conj non_genesis_justification_key_matches_cited_sender
+                                    (conj placeholder_justification_cites_only_approved_genesis
+                                      (conj accepted_positive_validator_seeds_canonical_genesis
+                                        (conj duplicate_approved_genesis_backfills_legacy_index
+                                          (conj conflicting_approved_hash_preserves_canonical_index
+                                            (conj canonical_genesis_seed_is_independent_of_local_height_zero_order
+                                              (conj invalid_unregistered_sender_cannot_create_lmm_slot
+                                                (conj accepted_nonpositive_validator_cannot_create_new_slot
+                                                  invalid_lmm_never_contributes_to_finality_projection))))))))))))))))))))).
+Qed.
+
+Print Assumptions committee_transition_correct.
+
+Theorem finalized_floor_active_finality_committee_correct :
+  (forall weights active bond,
+    In bond (active_weight_committee weights active) <->
+    In bond weights /\ In (fst bond) active /\ 0 < snd bond)
+  /\
+  (forall weights active validator stake,
+    ~ In validator active ->
+    active_weight_committee ((validator, stake) :: weights) active =
+    active_weight_committee weights active).
+Proof.
+  split.
+  - exact active_weight_committee_exact.
+  - exact inactive_bond_does_not_change_active_weight_committee.
+Qed.
+
+Print Assumptions finalized_floor_active_finality_committee_correct.
+
+Theorem finalized_floor_certified_finality_authority_correct :
+  (forall floor_bonds floor_active authority_floor_of target,
+    certified_finality_committee
+      floor_bonds floor_active authority_floor_of target =
+    active_weight_committee
+      (floor_bonds (authority_floor_of target))
+      (floor_active (authority_floor_of target)))
+  /\
+  (forall floor_bonds floor_active authority_floor_of target
+    (post_state_bonds_left post_state_bonds_right : BlockHash -> Committee)
+    (post_state_active_left post_state_active_right : BlockHash -> list Validator)
+    (parent_of : Block -> BlockHash),
+    certified_finality_committee
+      floor_bonds floor_active authority_floor_of target =
+    certified_finality_committee
+      floor_bonds floor_active authority_floor_of target)
+  /\
+  (forall floor_bonds floor_active authority_floor_of target validator,
+    ~ In validator
+      (committee_validators
+        (certified_finality_committee
+          floor_bonds floor_active authority_floor_of target)) ->
+    forall post_state_bonds post_state_active parent_of,
+      In validator
+        (committee_validators
+          (parent_post_state_finality_committee
+            post_state_bonds post_state_active parent_of target)) ->
+      ~ In validator
+        (committee_validators
+          (certified_finality_committee
+            floor_bonds floor_active authority_floor_of target)))
+  /\
+  (forall claimed_floor_hash stored_floor_hash
+    claimed_floor_state stored_floor_state weights active,
+    claimed_floor_hash <> stored_floor_hash ->
+    certified_state_bound_finality_committee
+      claimed_floor_hash stored_floor_hash
+      claimed_floor_state stored_floor_state weights active = None)
+  /\
+  (forall floor_hash claimed_floor_state stored_floor_state weights active,
+    claimed_floor_state <> stored_floor_state ->
+    certified_state_bound_finality_committee
+      floor_hash floor_hash claimed_floor_state stored_floor_state
+      weights active = None)
+  /\
+  (forall floor_hash floor_state weights active,
+    certified_state_bound_finality_committee
+      floor_hash floor_hash floor_state floor_state weights active =
+    Some (active_weight_committee weights active))
+  /\
+  (forall floor_hash floor_state weights active
+    (target_committee_left target_committee_right : Committee)
+    (head_committee_left head_committee_right : Committee),
+    certified_state_bound_finality_committee
+      floor_hash floor_hash floor_state floor_state weights active =
+    Some (active_weight_committee weights active)).
+Proof.
+  split.
+  - exact certified_finality_committee_is_authority_floor_committee.
+  - split.
+    + exact parent_post_state_transition_does_not_change_certified_finality.
+    + split.
+      * exact parent_only_validator_cannot_enter_certified_finality_committee.
+      * split.
+        -- exact certified_floor_hash_mismatch_fails_closed.
+        -- split.
+           ++ exact certified_floor_state_mismatch_fails_closed.
+           ++ split.
+              ** exact exact_certified_floor_identity_selects_active_committee.
+              ** exact certified_floor_identity_ignores_ambient_committees.
+Qed.
+
+Print Assumptions finalized_floor_certified_finality_authority_correct.
+
+Theorem finalized_floor_deploy_lifecycle_decision_correct :
+  (forall history_readable failed_in_floor expiry_bound_crossed,
+    lifecycle_decision true history_readable failed_in_floor expiry_bound_crossed =
+    LifecycleFinalized)
+  /\
+  (forall failed_in_floor expiry_bound_crossed,
+    lifecycle_decision false false failed_in_floor expiry_bound_crossed =
+    LifecyclePending)
+  /\
+  (forall expiry_bound_crossed,
+    lifecycle_decision false true true expiry_bound_crossed = LifecycleFailed)
+  /\
+  (forall effect_in_floor history_readable failed_in_floor expiry_bound_crossed,
+    lifecycle_decision effect_in_floor history_readable failed_in_floor
+      expiry_bound_crossed = LifecycleExpired ->
+    effect_in_floor = false /\
+    history_readable = true /\
+    failed_in_floor = false /\
+    expiry_bound_crossed = true).
+Proof.
+  exact
+    (conj successful_floor_effect_has_priority
+      (conj unreadable_history_abstains_without_effect
+        (conj readable_adopted_failure_is_immediately_terminal
+          expiry_requires_readable_stable_absence))).
+Qed.
+
+Print Assumptions finalized_floor_deploy_lifecycle_decision_correct.
+
+Definition finalized_floor_deploy_lifecycle_anchor_correct :=
+  deploy_lifecycle_finalization_contract.
+
+Print Assumptions finalized_floor_deploy_lifecycle_anchor_correct.
+
+Definition finalized_floor_deploy_lifecycle_restore_readiness_correct :=
+  restore_readiness_contract.
+
+Print Assumptions finalized_floor_deploy_lifecycle_restore_readiness_correct.
+
+Theorem objective_equivocation_correct :
+  (forall left right,
+     canonical_evidence_pair left right =
+     canonical_evidence_pair right left)
+  /\
+  (forall left right,
+     In left (evidence_dependencies left right) /\
+     In right (evidence_dependencies left right))
+  /\
+  (forall sender_of sequence_of left right,
+     objective_equivocation sender_of sequence_of left right ->
+     objective_equivocation sender_of sequence_of right left)
+  /\
+  (forall sender_of sequence_of local_invalid left right,
+     objective_equivocation sender_of sequence_of left right ->
+     accept_objective_evidence
+       sender_of sequence_of local_invalid left right)
+  /\
+  (forall sender_of sequence_of local_left local_right left right,
+     accept_objective_evidence
+       sender_of sequence_of local_left left right <->
+     accept_objective_evidence
+       sender_of sequence_of local_right left right)
+  /\
+  (forall validity left right hash,
+     apply_objective_evidence
+       validity (canonical_evidence_pair left right) hash = validity hash)
+  /\
+  (forall equivocator voters,
+     ~ In equivocator (finality_voters equivocator voters))
+  /\
+  (forall target_incarnation incarnation_of old_hash current_left current_right,
+     incarnation_of old_hash <> target_incarnation ->
+     incarnation_of current_left = target_incarnation ->
+     incarnation_of current_right = target_incarnation ->
+     current_incarnation_pair target_incarnation incarnation_of
+       [old_hash; current_left; current_right] =
+       Some (canonical_evidence_pair current_left current_right) /\
+     current_incarnation_pair target_incarnation incarnation_of
+       [current_right; old_hash; current_left] =
+       Some (canonical_evidence_pair current_left current_right))
+  /\
+  (forall old_hash current_left current_right,
+     first_two_before_incarnation_grouping
+       [old_hash; current_left; current_right] =
+       Some (canonical_evidence_pair old_hash current_left))
+  /\
+  (forall active_incarnation evidence_incarnation equivocator voters,
+     incarnation_finality_voters
+       active_incarnation evidence_incarnation false equivocator voters = voters)
+  /\
+  (forall active_incarnation equivocator voters,
+     ~ In equivocator
+         (incarnation_finality_voters
+           active_incarnation active_incarnation true equivocator voters))
+  /\
+  (forall active_incarnation evidence_incarnation equivocator voters,
+     evidence_incarnation <> active_incarnation ->
+     incarnation_finality_voters
+       active_incarnation evidence_incarnation true equivocator voters = voters)
+  /\
+  (forall target_incarnation unary_incarnation,
+     objective_slash_authorized
+       true target_incarnation target_incarnation target_incarnation unary_incarnation = true)
+  /\
+  (forall target_incarnation old_incarnation unary_incarnation,
+     old_incarnation <> target_incarnation ->
+     objective_slash_authorized
+       true target_incarnation old_incarnation target_incarnation unary_incarnation = false)
+  /\
+  (forall target_incarnation left_incarnation right_incarnation unary_left unary_right,
+     objective_slash_authorized
+       true target_incarnation left_incarnation right_incarnation unary_left =
+     objective_slash_authorized
+       true target_incarnation left_incarnation right_incarnation unary_right)
+  /\
+  (forall validator sequence unary_eligible,
+     scoped_unary_slash_authorized
+       (validator, sequence) (validator, sequence) unary_eligible = false)
+  /\
+  (forall validator objective_sequence unary_sequence,
+     objective_sequence <> unary_sequence ->
+     scoped_unary_slash_authorized
+       (validator, objective_sequence) (validator, unary_sequence) true = true)
+  /\
+  objective_refinement_contract
+  /\
+  (forall left right,
+     restart_objective_evidence
+       (persist_objective_evidence (canonical_evidence_pair left right)) =
+     Some (canonical_evidence_pair left right)).
+Proof.
+  exact (conj canonical_evidence_pair_symmetric
+          (conj canonical_evidence_dependencies_contain_both_hashes
+            (conj objective_equivocation_is_symmetric
+              (conj equal_sequence_siblings_suffice_for_objective_acceptance
+                (conj objective_acceptance_ignores_local_invalid_flags
+                  (conj objective_evidence_does_not_retroactively_change_block_validity
+                    (conj objective_equivocator_is_excluded_from_finality_voters
+                      (conj incarnation_grouping_precedes_pair_canonicalization
+                        (conj first_two_before_grouping_can_select_cross_incarnation_pair
+                          (conj structural_pair_without_same_incarnation_evidence_preserves_voters
+                            (conj active_incarnation_evidence_excludes_equivocator
+                              (conj later_incarnation_restores_raw_public_key
+                                (conj same_current_incarnation_objective_pair_is_slash_eligible
+                                  (conj cross_incarnation_objective_pair_suppresses_unary_fallback
+                                    (conj objective_pair_slash_decision_is_independent_of_unary_arrival
+                                      (conj objective_pair_suppresses_unary_fallback_at_same_fault_key
+                                        (conj independent_unary_fault_at_other_sequence_remains_eligible
+                                          (conj objective_refinement_contract_holds
+                                            restart_preserves_canonical_objective_evidence)))))))))))))))))).
+Qed.
+
+Print Assumptions objective_equivocation_correct.
+
+Theorem objective_evidence_authorization_v5_correct :
+  (forall target_generation target_epoch generation_of epoch_of
+          old_epoch_hash current_left current_right,
+     generation_of old_epoch_hash = target_generation ->
+     generation_of current_left = target_generation ->
+     generation_of current_right = target_generation ->
+     epoch_of old_epoch_hash <> target_epoch ->
+     epoch_of current_left = target_epoch ->
+     epoch_of current_right = target_epoch ->
+     current_generation_epoch_pair
+       target_generation target_epoch generation_of epoch_of
+       [old_epoch_hash; current_left; current_right] =
+       Some (canonical_evidence_pair current_left current_right) /\
+     current_generation_epoch_pair
+       target_generation target_epoch generation_of epoch_of
+       [current_right; old_epoch_hash; current_left] =
+       Some (canonical_evidence_pair current_left current_right))
+  /\
+  (forall target_generation target_epoch generation_of epoch_of left right,
+     epoch_of left <> target_epoch ->
+     objective_pair_authorized_v5
+       target_generation target_epoch generation_of epoch_of left right = false)
+  /\
+  (forall target_generation target_epoch generation_of epoch_of left right,
+     proposer_objective_authorized_v5
+       target_generation target_epoch generation_of epoch_of left right =
+     receiver_objective_authorized_v5
+       target_generation target_epoch generation_of epoch_of left right)
+  /\
+  slash_authority_needed 0 2 = true
+  /\
+  (forall authority target_epoch sender_of sequence_of generation_of epoch_of left right,
+     proposer_objective_authorized_by_authority_v5
+       authority target_epoch sender_of sequence_of generation_of epoch_of left right =
+     receiver_objective_authorized_by_authority_v5
+       authority target_epoch sender_of sequence_of generation_of epoch_of left right)
+  /\
+  (forall authority target_epoch sender_of sequence_of generation_of epoch_of left right,
+     authority_bond authority (sender_of left) = 0 ->
+     objective_pair_authorized_by_authority_v5
+       authority target_epoch sender_of sequence_of generation_of epoch_of left right = false)
+  /\
+  (forall authority target_epoch sender_of sequence_of generation_of epoch_of left right,
+     sender_of left <> sender_of right ->
+     objective_pair_authorized_by_authority_v5
+       authority target_epoch sender_of sequence_of generation_of epoch_of left right = false)
+  /\
+  (forall authority target_epoch sender_of sequence_of generation_of epoch_of left right,
+     sequence_of left <> sequence_of right ->
+     objective_pair_authorized_by_authority_v5
+       authority target_epoch sender_of sequence_of generation_of epoch_of left right = false)
+  /\
+  (forall authority target_epoch sender_of sequence_of generation_of epoch_of left right,
+     epoch_of left <> target_epoch ->
+     objective_pair_authorized_by_authority_v5
+       authority target_epoch sender_of sequence_of generation_of epoch_of left right = false)
+  /\
+  (forall state_root bonds generations,
+     authority_state_root
+       (canonical_slash_authority_from_state state_root bonds generations) = state_root /\
+     authority_bond
+       (canonical_slash_authority_from_state state_root bonds generations) = bonds /\
+     authority_generation
+       (canonical_slash_authority_from_state state_root bonds generations) = generations).
+Proof.
+  exact (conj generation_and_epoch_grouping_precede_pair_canonicalization
+    (conj cross_epoch_objective_pair_cannot_authorize_v5
+      (conj proposer_receiver_objective_authorization_parity_v5
+        (conj pair_only_evidence_activates_slash_authority
+          (conj proposer_receiver_canonical_authority_parity_v5
+            (conj nonpositive_canonical_bond_rejects_objective_pair_v5
+              (conj mismatched_sender_rejects_objective_pair_v5
+                (conj mismatched_sequence_rejects_objective_pair_v5
+                  (conj cross_epoch_canonical_authority_pair_cannot_authorize_v5
+                    canonical_slash_authority_snapshot_is_root_bound))))))))).
+Qed.
+
+Print Assumptions objective_evidence_authorization_v5_correct.
+
+Theorem finalized_floor_atomic_commit_correct :
+  (forall ledger,
+    exists next,
+      finalization_compare_append
+        (ledger_head ledger) (S (ledger_head ledger)) ledger = Some next /\
+      committed_round next (ledger_head next) = true)
+  /\
+  (forall ledger expected candidate,
+    expected <> ledger_head ledger ->
+    finalization_compare_append expected candidate ledger = None)
+  /\
+  (forall round effects candidate,
+    finalization_apply_effect round
+      (finalization_apply_effect round effects) candidate =
+    finalization_apply_effect round effects candidate)
+  /\
+  (forall left right effects candidate,
+    finalization_apply_effect left
+      (finalization_apply_effect right effects) candidate =
+    finalization_apply_effect right
+      (finalization_apply_effect left effects) candidate)
+  /\
+  (forall candidate current,
+    current <= finalization_publish_revision candidate current)
+  /\
+  (forall node,
+    durable_state (restart_finalization_node node) = durable_state node /\
+    published_revision (restart_finalization_node node) =
+      ledger_head (durable_state node)).
+Proof. exact finalization_atomicity_contract. Qed.
+
+Print Assumptions finalized_floor_atomic_commit_correct.
+
+Theorem finalized_floor_snapshot_capture_retry_correct :
+  (forall durable projected dag_floor,
+    durable <> projected ->
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureStale)
+  /\
+  (forall durable projected dag_floor revision,
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureCoherent revision ->
+    durable = projected /\ projected = dag_floor /\ revision = durable)
+  /\
+  (forall durable projected dag_floor,
+    durable = projected ->
+    projected <> dag_floor ->
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureCorrupt)
+  /\
+  (retry_snapshot_capture [SnapshotCaptureStale] = None)
+  /\
+  (forall stale_count revision,
+    retry_snapshot_capture
+      (repeat SnapshotCaptureStale stale_count ++
+       [SnapshotCaptureCoherent revision]) = Some revision)
+  /\
+  (forall observations revision,
+    retry_snapshot_capture observations = Some revision ->
+    In (SnapshotCaptureCoherent revision) observations).
+Proof.
+  exact (conj projection_lag_classifies_as_stale
+    (conj coherent_capture_requires_one_revision
+      (conj stable_projection_mismatch_classifies_as_corruption
+        (conj stale_snapshot_capture_publishes_no_result
+          (conj finite_stale_snapshot_prefix_reaches_coherent_capture
+            snapshot_retry_returns_only_an_observed_coherent_revision))))).
+Qed.
+
+Print Assumptions finalized_floor_snapshot_capture_retry_correct.
+
+Theorem finalized_floor_worker_retry_correct :
+  (forall completed coverage,
+    worker_completed_after FinalizationWorkerFailed completed coverage = completed)
+  /\
+  (forall succeeded coverage,
+    worker_succeeded_after FinalizationWorkerFailed succeeded coverage = succeeded)
+  /\
+  (forall completed coverage,
+    completed < coverage ->
+    worker_retry_required FinalizationWorkerFailed completed coverage = true)
+  /\
+  (forall completed coverage,
+    worker_completed_after FinalizationWorkerSucceeded completed coverage =
+    worker_succeeded_after FinalizationWorkerSucceeded completed coverage)
+  /\
+  (forall completed older newer,
+    older <= newer ->
+    older <= worker_completed_after FinalizationWorkerSucceeded completed newer).
+Proof. exact finalization_worker_retry_contract. Qed.
+
+Print Assumptions finalized_floor_worker_retry_correct.
+
+Theorem finalized_floor_proposal_readiness_correct :
+  (forall permit_required permit_fresh relation slots_complete proposer_active,
+     classify_proposal_readiness permit_required permit_fresh relation
+       slots_complete proposer_active = ProposalReady ->
+     relation = MatchingContext /\
+     slots_complete = true /\
+     proposer_active = true /\
+     (permit_required = false \/ permit_fresh = true))
+  /\
+  (forall permit_required permit_fresh relation slots_complete proposer_active,
+     classify_proposal_readiness permit_required permit_fresh relation
+       slots_complete proposer_active = FloorMaterializationPending ->
+     relation = StrictStatePreservingDescendant /\
+     (permit_required = false \/ permit_fresh = true))
+  /\
+  (forall permit_required permit_fresh relation slots_complete proposer_active,
+     requests_finalization
+       (classify_proposal_readiness permit_required permit_fresh relation
+         slots_complete proposer_active) = true ->
+     materializable relation = true /\ preserves_committed_state relation = true)
+  /\
+  (forall reason,
+     reason = CandidateFloorRegression \/
+     reason = CandidateFloorConflict \/
+     reason = CertifiedContextMismatch ->
+     requests_finalization reason = false).
+Proof. exact proposal_floor_readiness_contract. Qed.
+
+Print Assumptions finalized_floor_proposal_readiness_correct.
+
+Definition finalized_floor_pending_work_readiness_correct :=
+  pending_work_readiness_contract.
+
+Print Assumptions finalized_floor_pending_work_readiness_correct.
+
+Section BoundFinalizationHeadCorrectness.
+
+Context {Block : Type}.
+Variable block_eq_dec : forall left right : Block, {left = right} + {left <> right}.
+Variable state_preserves : Block -> Block -> bool.
+
+Theorem finalized_floor_bound_head_correct :
+  (forall certificate ledger next,
+    bound_finalization_compare_append block_eq_dec state_preserves certificate ledger =
+      Some next ->
+    state_preserves (bound_head ledger) (bound_head next) = true)
+  /\
+  (forall certificate ledger,
+    certificate_revision certificate <> bound_revision ledger \/
+    certificate_base certificate <> bound_head ledger ->
+    bound_finalization_compare_append block_eq_dec state_preserves certificate ledger =
+      None)
+  /\
+  (forall first second ledger next,
+    certificate_revision first = bound_revision ledger ->
+    certificate_revision second = bound_revision ledger ->
+    bound_finalization_compare_append block_eq_dec state_preserves first ledger = Some next ->
+    bound_finalization_compare_append block_eq_dec state_preserves second next = None).
+Proof.
+  exact (bound_finalization_head_contract block_eq_dec state_preserves).
+Qed.
+
+Print Assumptions finalized_floor_bound_head_correct.
+
+End BoundFinalizationHeadCorrectness.
+
+Theorem finalized_floor_recovery_cursors_correct :
+  (forall head cursor,
+    cursor <= head ->
+    finalization_projection_step head cursor <= head)
+  /\
+  (forall cursor completed,
+    finalization_effect_cursor_step cursor completed <= S cursor)
+  /\
+  (forall cursor completed,
+    completed_prefix cursor completed ->
+    completed (S cursor) = true ->
+    completed_prefix (S cursor) completed)
+  /\
+  (forall effects_cursor compaction_cursor next,
+    finalization_compaction_step effects_cursor compaction_cursor = Some next ->
+    next <= effects_cursor)
+  /\
+  (forall cursors,
+    restart_finalization_cursors cursors = cursors).
+Proof. exact finalization_recovery_contract. Qed.
+
+Print Assumptions finalized_floor_recovery_cursors_correct.
+
 Open Scope Z_scope.
 
 Theorem finalized_floor_arithmetic_correct :
@@ -363,10 +1206,11 @@ Proof.
                 (conj checked_combine_sound supply_cap_no_launder))))).
 Qed.
 
-(* A9 exact-integer fault-tolerance DECISION (the f32 -> exact hardening). The exact
-   test `2q·den ≥ S(den+num)` the node evaluates over i128 is bit-for-bit the rational
-   test `(2q−S)/S ≥ num/den` cleared of its positive denominators, monotone in the
-   clique weight (given den ≥ 0), and overflow-free in i128 for i64-bounded stake.
+(* A9 exact-integer fault-tolerance arithmetic (the f32 -> exact hardening). The
+   runtime decision uses the strict `2q·den > S(den+num)` test. Both strict and
+   inclusive arithmetic forms are proved equivalent to their rational forms; the
+   inclusive form remains a historical boundary-bug control. Both are monotone in
+   clique weight (given den >= 0) and overflow-free for i64-bounded stake.
    The overflow envelope now covers the FULL validated ppm range num ∈ [-den, den]
    (G2 widening in FtExact.ft_exact_no_overflow), matching the runtime range-check
    and the negative-θ sentinels, not merely [0, den]. *)
@@ -375,14 +1219,31 @@ Theorem finalized_floor_ftexact_correct :
   /\ (forall q S num den : Z, ft_exact_gt q S num den <-> ft_ratio_gt q S num den)
   /\ (forall q q' S num den : Z,
         0 <= den -> q <= q' -> ft_exact_ge q S num den -> ft_exact_ge q' S num den)
+  /\ (forall q q' S num den : Z,
+        0 <= den -> q <= q' -> ft_exact_gt q S num den -> ft_exact_gt q' S num den)
   /\ (forall q S num den : Z,
         0 <= q <= S -> 0 <= S <= 2^63 -> -den <= num <= den -> den = 1000000 ->
         Z.abs (2*q*den) < 2^127 /\ Z.abs (S*(den+num)) < 2^127).
 Proof.
   exact (conj ft_exact_iff_ratio
           (conj ft_exact_iff_ratio_strict
-            (conj ft_exact_mono_q ft_exact_no_overflow))).
+            (conj ft_exact_mono_q
+              (conj ft_exact_gt_mono_q ft_exact_no_overflow)))).
 Qed.
+
+Theorem finalized_floor_threshold_alignment_correct :
+  (forall q S num den,
+    candidate_floor_certificate q S num den <->
+    durable_finalizer_certificate q S num den)
+  /\
+  (~ candidate_floor_certificate 8 16 0 1000000 /\
+   ~ durable_finalizer_certificate 8 16 0 1000000)
+  /\
+  (inclusive_candidate_control 8 16 0 1000000 /\
+   ~ durable_finalizer_certificate 8 16 0 1000000).
+Proof. exact aligned_threshold_contract. Qed.
+
+Print Assumptions finalized_floor_threshold_alignment_correct.
 
 Close Scope Z_scope.
 
@@ -460,7 +1321,7 @@ Qed.
    Strengthens the two "assumed/proxy" seams the earlier capstones rested on:
 
      C1  The node's REAL fault-tolerance decision is the exact-integer test
-         `Finalized_ft` (2q·den ≥ S(den+num), θ = num/den), not merely strict
+         `Finalized_ft` (2q·den > S(den+num), θ = num/den), not merely strict
          majority. It is ancestor- and snapshot-monotone (L-ANC/L-SNAP for the
          exact test) and REFINES the strict-majority `Finalized` proxy for
          θ ∈ (0,1) over a positive-stake committee — so every θ-finalized block
@@ -471,22 +1332,20 @@ Qed.
          preservation-only L-SNAP: `snap_extends ⇒ snap_advances`, so the original
          L-SNAP is the reflexive-descendant corollary.
 
-     C1' The num>0 refinement is VACUOUS at the DEFAULT θ = 0 and the negative-θ
-         sentinels. The node's REAL decision additionally applies a θ-INDEPENDENT
-         hard majority gate (clique_oracle.rs:79-81, `2·agreeing > S`), modelled as
-         `Finalized_ft_hg`; the gate alone yields strict-majority `Finalized` for
-         ALL num (`Finalized_ft_hg_refines_Finalized`), so θ ≤ 0 is covered too.
-         (Cache transparency at θ ≤ 0 is independently secured by
+     C1' The strict test already refines majority for θ >= 0, including the
+         default θ = 0. For negative sentinels the node's real decision additionally
+         applies a θ-independent hard majority gate (clique_oracle.rs,
+         `2·agreeing > S`), modelled as `Finalized_ft_hg`; the gate alone yields
+         strict-majority `Finalized` for all num. (Cache transparency is independently secured by
          GuardBridge.BridgeFt over `Finalized_ft` directly, via `L_ANC_ft`.)
 
    Each conjunct is discharged by `exact` against its CliqueOracle lemma, so this
    capstone introduces NO new assumptions (verify with `Print Assumptions
    finalized_floor_thetaexact_advance_correct`). The pre-existing five capstones
    are unchanged; this only ADDS coverage of the real node test and the faithful
-   advancement model. The num>0 refinement side-condition `0 < cweight c` (positive
-   committee stake) is faithful and necessary — see the NOTE in CliqueOracle.v
-   Section 7 (a zero-stake committee finalizes nothing); the C1' hard-gate
-   refinement carries NO such side-condition (it holds for all num, all committees).
+   advancement model. The strict refinement needs only num >= 0 and den > 0;
+   strictness excludes zero-stake certificates without another premise. The C1'
+   hard-gate refinement holds for all num and all committees.
    =========================================================================== *)
 Theorem finalized_floor_thetaexact_advance_correct :
   (* C1 / L-ANC: θ-exact finalization is downward-closed along ancestry. *)
@@ -497,33 +1356,28 @@ Theorem finalized_floor_thetaexact_advance_correct :
   (forall d c J J' b num den,
      snap_extends J' J -> Finalized_ft d c J b num den -> Finalized_ft d c J' b num den)
   /\
-  (* C1 / refinement (θ > 0 ONLY): the θ-test (θ = num/den, num,den > 0, positive
-     committee stake) implies the strict-majority proxy. θ CAVEAT: this conjunct is
-     VACUOUS at the DEFAULT θ = 0 (num = 0 ⇒ the exact test is only the NON-strict
-     2q ≥ S) and at the negative-θ sentinels (num < 0); the C1' conjunct below is
-     what covers θ ≤ 0. *)
+  (* C1 / refinement: the strict θ-test implies the strict-majority proxy for
+     every non-negative threshold, including θ = 0. *)
   (forall d c J b num den,
-     (0 < num)%Z -> (0 < den)%Z -> 0 < cweight c ->
-     Finalized_ft d c J b num den -> Finalized d c J b)
+     (0 <= num)%Z -> (0 < den)%Z ->
+     Finalized_ft d c J b num den -> CliqueOracle.Finalized d c J b)
   /\
   (* C5 / advancement: finalization is monotone as latest messages advance to
      DAG-descendants (generalizes the preservation-only L-SNAP). *)
   (forall d c J J' b,
-     snap_advances d J' J -> Finalized d c J b -> Finalized d c J' b)
+     snap_advances d J' J -> CliqueOracle.Finalized d c J b -> CliqueOracle.Finalized d c J' b)
   /\
   (* C5 / generalization: preservation ⇒ advancement, so the existing L-SNAP is
      the reflexive-descendant corollary of L_SNAP_advance. *)
   (forall d J' J, snap_extends J' J -> snap_advances d J' J)
   /\
-  (* C1' / θ ≤ 0 COVERAGE: the node's REAL decision is the θ-test AND the
+  (* C1' / negative-threshold coverage: the node's real decision is the θ-test and the
      θ-INDEPENDENT hard majority gate (clique_oracle.rs:79-81, `2·agreeing > S`).
      The hard gate ALONE yields the strict-majority `Finalized` for ALL num —
-     including the default θ = 0 and the negative-θ sentinels — so θ-finalization
-     refines `Finalized` WITHOUT the `0 < num` restriction the conjunct above
-     carries. (Independently, T-CACHE holds directly over `Finalized_ft` for all
+     including the negative-θ sentinels. Independently, T-CACHE holds directly over `Finalized_ft` for all
      num via GuardBridge.BridgeFt.guard_constant_committee_transparent_ft.) *)
   (forall d c J b num den,
-     Finalized_ft_hg d c J b num den -> Finalized d c J b).
+     Finalized_ft_hg d c J b num den -> CliqueOracle.Finalized d c J b).
 Proof.
   exact (conj L_ANC_ft
           (conj L_SNAP_ft
@@ -651,17 +1505,87 @@ Theorem finalized_floor_protocol_lifecycle_correct :
   /\
   (forall active_version block_version record,
     scope_admissible active_version block_version record ->
-    block_version = active_version).
+    block_version = active_version)
+  /\
+  (genesis_occurrence_identity current_protocol = ProtocolEnvelopeIdentity /\
+   genesis_execution_identity current_protocol = ProtocolEnvelopeIdentity /\
+   genesis_replay_identity current_protocol = ProtocolEnvelopeIdentity /\
+   genesis_replay_identity current_protocol =
+     genesis_execution_identity current_protocol /\
+   (forall public_key,
+     project_ground_custody (PrincipalDeployer 1 public_key) =
+     project_ground_custody (LegacyGroundDeployer public_key))).
 Proof.
   exact (conj current_ceremony_end_to_end
     (conj supported_recovery_end_to_end
       (conj unsupported_approved_fails_closed
         (conj legacy_approved_fails_closed
           (conj mismatched_candidate_is_not_approved
-            admissible_scope_uses_active_version))))).
+            (conj admissible_scope_uses_active_version
+              current_genesis_identity_end_to_end)))))).
 Qed.
 
 Print Assumptions finalized_floor_protocol_lifecycle_correct.
+
+Definition finalized_floor_funding_ground_custody_projection_correct :=
+  funding_ground_custody_projection_correct.
+
+Print Assumptions finalized_floor_funding_ground_custody_projection_correct.
+
+Definition typed_local_validation_recovery_contract : Prop :=
+  (forall history deferral artifact,
+    deferral_artifact deferral = Some artifact ->
+    certified_artifact (certify_deferral history deferral) = Some artifact)
+  /\
+  (forall history block_id state_id,
+    certify_deferral history (AwaitingBlock block_id) <>
+    certify_deferral history (AwaitingState state_id))
+  /\
+  (forall identity,
+    certify_deferral GenesisRooted (AwaitingBlock identity) =
+    LocalArtifactFault (MissingBlockArtifact identity))
+  /\
+  (forall identity,
+    certify_deferral GenesisRooted (AwaitingState identity) =
+    LocalArtifactFault (MissingStateArtifact identity))
+  /\
+  (forall history deferral,
+    certified_deferral_disposition (certify_deferral history deferral) = Pending)
+  /\
+  (forall state_id block_id,
+    recovery_releases
+      (MissingStateArtifact state_id)
+      (AwaitingBlock block_id) = false)
+  /\
+  (forall block_id state_id,
+    recovery_releases
+      (MissingBlockArtifact block_id)
+      (AwaitingState state_id) = false)
+  /\
+  (forall artifact outstanding candidate,
+    request_artifact artifact (request_artifact artifact outstanding) candidate =
+    request_artifact artifact outstanding candidate)
+  /\
+  (forall left right outstanding candidate,
+    request_artifact left (request_artifact right outstanding) candidate =
+    request_artifact right (request_artifact left outstanding) candidate).
+
+Theorem typed_local_validation_recovery_correct :
+  typed_local_validation_recovery_contract.
+Proof.
+  unfold typed_local_validation_recovery_contract.
+  exact (conj certified_deferral_preserves_artifact_identity
+    (conj block_and_state_deferrals_never_collapse
+      (conj genesis_guard_retains_typed_block_fault
+        (conj genesis_guard_retains_typed_state_fault
+          (conj typed_deferral_never_creates_objective_invalidity
+            (conj state_recovery_never_releases_block_waiter
+              (conj block_recovery_never_releases_state_waiter
+                (conj duplicate_recovery_request_is_idempotent
+                  independent_recovery_requests_commute)))))))).
+Qed.
+
+Print Assumptions typed_local_validation_recovery_correct.
 
 Theorem bootstrap_replay_and_local_fault_recovery_correct :
   (forall (Context Root : Type)
@@ -682,7 +1606,9 @@ Theorem bootstrap_replay_and_local_fault_recovery_correct :
   /\
   (forall state,
     regular_parent_satisfied state = true ->
-    validation_disposition state = Accepted).
+    validation_disposition state = LocalFaultDeferral.Accepted)
+  /\
+  typed_local_validation_recovery_contract.
 Proof.
   split.
   - intros Context Root replay history.
@@ -690,10 +1616,37 @@ Proof.
   - exact (conj local_fault_preserves_consensus_disposition
       (conj local_fault_leaves_ready_queue
         (conj failed_recovery_does_not_restore_ready_state
-          regular_child_requires_valid_parent))).
+          (conj regular_child_requires_valid_parent
+            typed_local_validation_recovery_correct)))).
 Qed.
 
 Print Assumptions bootstrap_replay_and_local_fault_recovery_correct.
+
+Theorem terminal_funding_admission_lifecycle_correct :
+  (forall supply demand,
+    supply < demand ->
+    recorded_decision (propose supply demand) = Reject /\
+    user_effects (propose supply demand) = 0 /\
+    finalize_record (propose supply demand) = RejectedFinalized)
+  /\
+  (forall record (later_supply : nat),
+    recorded_decision record = Reject ->
+    finalize_record record = RejectedFinalized /\
+    user_effects record = 0)
+  /\
+  (forall supply demand,
+    demand <= supply ->
+    validate_record
+      {| recorded_supply := supply;
+         recorded_demand := demand;
+         recorded_decision := Reject |} = false).
+Proof.
+  exact (conj underfunded_proposal_is_terminal_rejection
+    (conj later_supply_does_not_resurrect_recorded_rejection
+      fundable_deploy_cannot_be_forged_as_rejected)).
+Qed.
+
+Print Assumptions terminal_funding_admission_lifecycle_correct.
 
 Theorem finalized_floor_effect_causal_closure_correct :
   exact_effect_causal_closure_contract.
@@ -714,6 +1667,16 @@ Qed.
 
 Print Assumptions finalized_floor_state_lineage_correct.
 
+Theorem finalized_floor_settled_effect_probe_correct :
+  forall (Sig : Type) (sig_eq_dec : forall a b : Sig, {a = b} + {a <> b}),
+    settled_effect_probe_contract sig_eq_dec.
+Proof.
+  intros Sig sig_eq_dec.
+  apply settled_effect_probe_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_settled_effect_probe_correct.
+
 Theorem finalized_floor_state_effect_provenance_correct :
   state_effect_provenance_contract.
 Proof.
@@ -721,6 +1684,14 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_state_effect_provenance_correct.
+
+Theorem finalized_floor_exact_selection_correct :
+  exact_floor_selection_contract.
+Proof.
+  exact exact_floor_selection_end_to_end.
+Qed.
+
+Print Assumptions finalized_floor_exact_selection_correct.
 
 Theorem finalized_floor_rebased_parent_selection_correct :
   floor_rebased_parent_selection_contract.
@@ -974,3 +1945,513 @@ Proof.
 Qed.
 
 Print Assumptions finalized_floor_parallel_accountable_promotion_correct.
+
+Theorem validator_incarnation_consensus_correct :
+  (forall amount state event next,
+    lifecycle_step amount state event next ->
+    generation_le
+      (lifecycle_generation state)
+      (lifecycle_generation next))
+  /\
+  (forall amount state event next,
+    lifecycle_step amount state event next ->
+    lifecycle_total next = lifecycle_total state)
+  /\
+  (forall authority claim certificate,
+    sender_generation_certified authority claim certificate ->
+    certificate_generation certificate = exact_authority_generation authority /\
+    claim_generation claim = exact_authority_generation authority)
+  /\
+  (forall storage,
+    certified_index_complete (duplicate_retry_repair storage))
+  /\
+  (forall authority latest incoming exact_justifications vote,
+    In vote
+      (derive_finality_vote_projection
+        authority latest incoming exact_justifications) ->
+    In vote exact_justifications)
+  /\
+  (forall authority latest incoming exact_justifications parent,
+    In parent
+      (derive_causal_parent_projection
+        authority latest incoming exact_justifications) ->
+    In parent exact_justifications)
+  /\
+  (forall authority latest incoming exact_justifications vote,
+    In vote
+      (derive_finality_vote_projection
+        authority latest incoming exact_justifications) ->
+    In vote
+      (derive_causal_parent_projection
+        authority latest incoming exact_justifications))
+  /\
+  (forall authority latest incoming left right,
+    Permutation left right ->
+    Permutation
+      (derive_causal_parent_projection authority latest incoming left)
+      (derive_causal_parent_projection authority latest incoming right))
+  /\
+  (forall authority latest incoming left right,
+    Permutation left right ->
+    Permutation
+      (derive_finality_vote_projection authority latest incoming left)
+      (derive_finality_vote_projection authority latest incoming right))
+  /\
+  (forall base promoted authority latest exact max_sequences view delta,
+    consensus_finality_projection
+      (certify_finality_context
+        base promoted authority latest exact max_sequences view delta) =
+    derive_finality_vote_projection
+      authority latest (receiver_parent_evidence view) exact /\
+    consensus_floor
+      (certify_finality_context
+        base promoted authority latest exact max_sequences view delta) =
+    floor_from_projection base promoted
+      (derive_finality_vote_projection
+        authority latest (receiver_parent_evidence view) exact)).
+Proof.
+  exact
+    (conj lifecycle_generation_monotone
+      (conj lifecycle_step_preserves_value
+        (conj sender_certificate_generation_is_parent_derived
+          (conj duplicate_retry_repairs_metadata_index_crash_window
+            (conj finality_projection_is_subset_of_exact_justifications
+              (conj causal_parent_projection_is_subset_of_exact_justifications
+                (conj finality_projection_is_subset_of_causal_parent_projection
+                  (conj causal_parent_projection_is_permutation_invariant
+                    (conj finality_vote_projection_is_permutation_invariant
+                          candidate_delta_does_not_affect_own_floor))))))))).
+Qed.
+
+Print Assumptions validator_incarnation_consensus_correct.
+
+Theorem certified_projection_binding_and_evidence_roots_correct :
+  (forall authority latest incoming exact validator hash authority_entry latest_entry,
+    lookup_parent_authority validator authority = Some authority_entry ->
+    lookup_certified_latest validator latest = Some latest_entry ->
+    hash <> certified_latest_hash latest_entry ->
+    ~ In (validator, hash)
+      (derive_causal_parent_projection authority latest incoming exact))
+  /\
+  (forall authority latest incoming exact validator hash authority_entry latest_entry,
+    lookup_parent_authority validator authority = Some authority_entry ->
+    lookup_certified_latest validator latest = Some latest_entry ->
+    validator <> certified_latest_sender latest_entry ->
+    ~ In (validator, hash)
+      (derive_causal_parent_projection authority latest incoming exact))
+  /\
+  (forall authority latest incoming exact validator hash authority_entry latest_entry,
+    lookup_parent_authority validator authority = Some authority_entry ->
+    lookup_certified_latest validator latest = Some latest_entry ->
+    certified_latest_generation latest_entry = None ->
+    ~ In (validator, hash)
+      (derive_causal_parent_projection authority latest incoming exact))
+  /\
+  (forall authority latest incoming exact validator hash authority_entry latest_entry,
+    lookup_parent_authority validator authority = Some authority_entry ->
+    lookup_certified_latest validator latest = Some latest_entry ->
+    certified_latest_admission_accepted latest_entry = false ->
+    ~ In (validator, hash)
+      (derive_causal_parent_projection authority latest incoming exact))
+  /\
+  (forall authority latest incoming exact justification,
+    ~ In justification
+      (derive_causal_parent_projection authority latest incoming exact) ->
+    ~ In justification
+      (derive_finality_vote_projection authority latest incoming exact))
+  /\
+  (forall root_evidence floor exact evidence,
+    In evidence (root_evidence floor) ->
+    In evidence (certified_evidence_closure root_evidence floor exact))
+  /\
+  (forall root_evidence floor exact validator hash evidence,
+    In (validator, hash) exact ->
+    In evidence (root_evidence hash) ->
+    In evidence (certified_evidence_closure root_evidence floor exact)).
+Proof.
+  exact
+    (conj mismatched_hash_cannot_be_causal_parent
+      (conj mismatched_sender_cannot_be_causal_parent
+        (conj missing_generation_cannot_be_causal_parent
+          (conj nonaccepted_latest_message_cannot_be_causal_parent
+            (conj causal_exclusion_implies_vote_exclusion
+              (conj selected_floor_evidence_survives_stale_latest_messages
+                    exact_latest_evidence_is_in_certified_closure)))))).
+Qed.
+
+Print Assumptions certified_projection_binding_and_evidence_roots_correct.
+
+Theorem finalization_closure_availability_correct :
+  (forall authority latest incoming exact validator hash,
+    lookup_parent_authority validator authority = None ->
+    ~ In (validator, hash)
+      (derive_finality_vote_projection authority latest incoming exact))
+  /\
+  (forall held dependencies closure_invalid authority latest incoming exact missing,
+    capture_finality_projection
+      held dependencies closure_invalid authority latest incoming exact =
+      MissingFinalityDependency missing ->
+    In missing dependencies /\ held missing = false)
+  /\
+  (forall held dependencies closure_invalid authority latest incoming exact missing,
+    capture_finality_projection
+      held dependencies closure_invalid authority latest incoming exact =
+      MissingFinalityDependency missing ->
+    projection_from_capture
+      (capture_finality_projection
+        held dependencies closure_invalid authority latest incoming exact) = None)
+  /\
+  (forall base promoted exact max_sequences incoming delta capture missing,
+    capture = MissingFinalityDependency missing ->
+    certificate_from_projection_capture
+      base promoted exact max_sequences incoming delta capture = None)
+  /\
+  (forall base promoted exact max_sequences incoming delta capture,
+    capture = InvalidFinalityClosure ->
+    certificate_from_projection_capture
+      base promoted exact max_sequences incoming delta capture = None)
+  /\
+  (forall held dependencies authority latest incoming exact,
+    Forall (fun dependency => held dependency = true) dependencies ->
+    capture_finality_projection
+      held dependencies false authority latest incoming exact =
+      CompleteFinalityProjection
+        (derive_finality_vote_projection authority latest incoming exact))
+  /\
+  (forall base promoted exact max_sequences incoming delta capture projection,
+    capture = CompleteFinalityProjection projection ->
+    exists certificate,
+      certificate_from_projection_capture
+        base promoted exact max_sequences incoming delta capture = Some certificate /\
+      consensus_finality_projection certificate = projection).
+Proof.
+  exact
+    (conj absent_authority_cannot_vote
+      (conj missing_capture_names_exact_unheld_dependency
+        (conj incomplete_closure_has_no_projection
+          (conj incomplete_closure_has_no_certificate
+            (conj invalid_closure_has_no_certificate
+              (conj full_restoration_reproduces_complete_projection
+                    complete_capture_certifies_the_same_projection)))))).
+Qed.
+
+Print Assumptions finalization_closure_availability_correct.
+
+Theorem finalized_floor_certified_causal_admission_correct :
+  (forall left right incarnation,
+    context_join left right incarnation = context_join right left incarnation)
+  /\
+  (forall left middle right incarnation,
+    context_join (context_join left middle) right incarnation =
+    context_join left (context_join middle right) incarnation)
+  /\
+  (forall context incarnation,
+    context_join context context incarnation = context incarnation)
+  /\
+  (forall node,
+    causal_node_predecessors (with_decision node CertifiedRejected) =
+    causal_node_predecessors (with_decision node CertifiedAccepted))
+  /\
+  (forall node incarnation,
+    propagated_node_delta (with_decision node CertifiedRejected) incarnation = None)
+  /\
+  (forall inherited structural ambient_left ambient_right incarnation,
+    certified_effective_context inherited structural ambient_left incarnation =
+    certified_effective_context inherited structural ambient_right incarnation).
+Proof. exact certified_causal_admission_correct. Qed.
+
+Print Assumptions finalized_floor_certified_causal_admission_correct.
+
+Theorem finalized_floor_genesis_approval_trust_correct :
+  (forall local_minimum candidate_threshold bonded_count valid_distinct_count,
+    approval_authorized local_minimum candidate_threshold bonded_count valid_distinct_count ->
+    local_minimum <= candidate_threshold /\
+    candidate_threshold <= bonded_count /\
+    candidate_threshold <= valid_distinct_count)
+  /\
+  (forall local_minimum bonded_count,
+    approval_authorized local_minimum 0 bonded_count 0 -> local_minimum = 0)
+  /\
+  (forall local_minimum candidate_threshold bonded_count valid_distinct_count state,
+    ~ approval_authorized local_minimum candidate_threshold bonded_count valid_distinct_count ->
+    apply_approval local_minimum candidate_threshold bonded_count valid_distinct_count state = state).
+Proof. exact genesis_approval_trust_correct. Qed.
+
+Print Assumptions finalized_floor_genesis_approval_trust_correct.
+
+Theorem finalized_floor_rooted_genesis_identity_correct :
+  (forall genesis head records,
+    let store :=
+      {| stored_genesis_anchor := Some genesis;
+         stored_finalization_head := Some head;
+         stored_finalization_records := records;
+         stored_recovery_cursor_count := 3 |} in
+    ensure_genesis_identity genesis store = Some store)
+  /\
+  (forall canonical requested head records,
+    requested <> canonical ->
+    let store :=
+      {| stored_genesis_anchor := Some canonical;
+         stored_finalization_head := Some head;
+         stored_finalization_records := records;
+         stored_recovery_cursor_count := 3 |} in
+    ensure_genesis_identity requested store = None)
+  /\
+  (forall candidate store next,
+    append_rooted_finalization candidate store = Some next ->
+    stored_genesis_anchor next = stored_genesis_anchor store /\
+    stored_genesis_anchor next <> None)
+  /\
+  (forall store, restart_rooted_finalization store = store).
+Proof.
+  exact
+    (conj exact_genesis_assertion_is_write_free
+      (conj conflicting_genesis_assertion_fails_closed
+        (conj successful_rooted_append_preserves_genesis
+              restart_preserves_rooted_finalization_identity))).
+Qed.
+
+Print Assumptions finalized_floor_rooted_genesis_identity_correct.
+
+Theorem finalized_floor_live_minor_fork_recovery_correct :
+  (local_target stepped_history_head = local_target direct_history_head /\
+   local_revision stepped_history_head <> local_revision direct_history_head /\
+   local_digest stepped_history_head <> local_digest direct_history_head)
+  /\
+  (forall tip state, advertise_remote_tip tip state = state)
+  /\
+  (forall target state published,
+    run_local_finalizer target state = Some published ->
+    live_durable_head state <= live_durable_head published /\
+    live_durable_head published = live_effects_through published).
+Proof.
+  split.
+  - exact equal_finalized_target_does_not_imply_equal_local_ledger_identity.
+  - split.
+    + exact remote_tip_advertisement_cannot_mutate_local_state.
+    + intros target state published Hrun.
+      split.
+      * exact (proj1 (local_finalizer_is_monotone_and_effect_atomic
+                        target state published Hrun)).
+      * exact (proj1 (proj2 (local_finalizer_is_monotone_and_effect_atomic
+                              target state published Hrun))).
+Qed.
+
+Print Assumptions finalized_floor_live_minor_fork_recovery_correct.
+
+Theorem finalized_floor_materialization_target_alignment_correct :
+  pairwise_support trace_full_parent trace_latest
+    TraceSibling3 TraceValidator4 /\
+  ~ pairwise_support trace_main_parent trace_latest
+      TraceSibling3 TraceValidator4 /\
+  ~ trace_state_preserves TraceSibling2 TraceMerge /\
+  trace_state_preserves TraceSibling3 TraceMerge /\
+  2 * 8 <= 16 /\ 12 > 8.
+Proof.
+  exact finalizer_floor_materialization_trace_correct.
+Qed.
+
+Print Assumptions finalized_floor_materialization_target_alignment_correct.
+
+Theorem finalized_floor_target_deploy_wait_correct :
+  (forall status now last_progress_at stall_timeout absolute_timeout,
+    classify_deploy_wait
+      status now last_progress_at stall_timeout absolute_timeout =
+      WaitSucceeded ->
+    status = StatusFinalized)
+  /\
+  (forall status now last_progress_at stall_timeout absolute_timeout,
+    progress_deadline_expired
+      now last_progress_at stall_timeout absolute_timeout = false ->
+    status = StatusFailed \/ status = StatusExpired ->
+    classify_deploy_wait
+      status now last_progress_at stall_timeout absolute_timeout =
+      WaitTerminalError)
+  /\
+  (forall observation observed_at previous_progress_at,
+    observation <> ObservationStrictProgress ->
+    progress_time_after_observation
+      observation observed_at previous_progress_at = previous_progress_at)
+  /\
+  (forall observed_at previous_progress_at,
+    progress_time_after_observation
+      ObservationStrictProgress observed_at previous_progress_at = observed_at)
+  /\
+  (forall previous_height previous_hash next_height next_hash observed_at
+    previous_progress_at,
+    classify_lfb_observation
+      false previous_height previous_hash next_height next_hash =
+      ObservationBaseline /\
+    progress_time_after_observation
+      ObservationBaseline observed_at previous_progress_at = previous_progress_at)
+  /\
+  (history_corruption ObservationRegression = true /\
+   history_corruption ObservationRevision = true /\
+   history_corruption ObservationBaseline = false /\
+   history_corruption ObservationStable = false /\
+   history_corruption ObservationStrictProgress = false)
+  /\
+  (classify_lfb_wait_observation ObservationRegression =
+     WaitHistoryCorruption /\
+   classify_lfb_wait_observation ObservationRevision =
+     WaitHistoryCorruption)
+  /\
+  (classify_lfb_observation true 6 10 6 11 = ObservationRevision /\
+   classify_lfb_observation true 6 10 5 9 = ObservationRegression)
+  /\
+  (forall now last_progress_at stall_timeout absolute_timeout,
+    absolute_timeout <= now ->
+    progress_deadline_expired
+      now last_progress_at stall_timeout absolute_timeout = true)
+  /\
+  (forall status now last_progress_at stall_timeout absolute_timeout,
+    absolute_timeout <= now ->
+    classify_deploy_wait
+      status now last_progress_at stall_timeout absolute_timeout =
+      WaitTimedOut)
+  /\
+  (classify_deploy_wait StatusFinalized 8 5 3 8 = WaitTimedOut /\
+   classify_deploy_wait StatusFailed 8 5 3 8 = WaitTimedOut /\
+   classify_deploy_wait StatusExpired 8 5 3 8 = WaitTimedOut)
+  /\
+  (fixed_deadline_expired 45 45 = true /\
+   progress_deadline_expired 45 43 45 135 = false)
+  /\
+  (classify_deploy_wait StatusPending 45 43 45 135 = WaitPending /\
+   classify_deploy_wait StatusFinalized 49 43 45 135 = WaitSucceeded)
+  /\
+  (forall start stall_timeout absolute_timeout,
+    stall_timeout <= absolute_timeout ->
+    progress_deadline_expired
+      (start + stall_timeout) start stall_timeout absolute_timeout = true).
+Proof.
+  exact
+    (conj exact_success_requires_exact_finalized_status
+      (conj in_budget_failed_or_expired_is_terminal_error
+        (conj only_strict_height_progress_renews_stall_budget
+          (conj strict_height_progress_renews_stall_budget
+            (conj first_observation_establishes_baseline_without_renewal
+              (conj finalized_history_anomalies_fail_loudly
+                (conj finalized_history_anomalies_are_terminal_observer_errors
+                  (conj concrete_revision_and_regression_are_detected
+                    (conj absolute_deadline_cannot_be_renewed
+                      (conj expired_observation_cannot_report_terminal_success
+                        (conj terminal_response_at_deadline_is_timeout
+                          (conj fixed_deadline_rejects_valid_intermediate_progress_trace
+                            (conj reproduced_trace_succeeds_only_at_exact_terminality
+                                  no_progress_trace_is_stall_bounded))))))))))))).
+Qed.
+
+Print Assumptions finalized_floor_target_deploy_wait_correct.
+
+Theorem finalized_floor_node_local_product_lifting_correct :
+  forall
+    (Node LocalState Action : Type)
+    (node_eq_dec : forall left right : Node, {left = right} + {left <> right})
+    (local_step : Action -> LocalState -> LocalState)
+    (local_invariant local_goal : LocalState -> Prop)
+    (local_enabled : Action -> LocalState -> Prop),
+    node_local_product_contract
+      node_eq_dec local_step local_invariant local_goal local_enabled.
+Proof.
+  intros Node LocalState Action node_eq_dec local_step local_invariant
+    local_goal local_enabled.
+  apply node_local_product_lifting_correct.
+Qed.
+
+Print Assumptions finalized_floor_node_local_product_lifting_correct.
+
+Definition finalized_floor_node_local_temporal_lifting_correct :=
+  @node_local_temporal_product_lifting_correct.
+
+Print Assumptions finalized_floor_node_local_temporal_lifting_correct.
+
+Definition finalized_floor_certificate_retrieval_correct :=
+  @finalization_certificate_retrieval_contract.
+
+Print Assumptions finalized_floor_certificate_retrieval_correct.
+
+Definition finalized_floor_dependency_maintenance_correct :=
+  @dependency_maintenance_round_contract.
+
+Print Assumptions finalized_floor_dependency_maintenance_correct.
+
+Definition finalized_floor_witness_equivalent_carrier_correct :=
+  @witness_equivalent_carrier_contract.
+
+Print Assumptions finalized_floor_witness_equivalent_carrier_correct.
+
+Definition finalized_floor_collective_recovery_coverage_correct :=
+  @one_parent_coverage_implies_collective_coverage.
+
+Print Assumptions finalized_floor_collective_recovery_coverage_correct.
+
+Definition finalized_floor_split_recovery_frontier_correct :=
+  collective_coverage_does_not_require_one_covering_parent.
+
+Print Assumptions finalized_floor_split_recovery_frontier_correct.
+
+Definition finalized_floor_recovery_leadership_separation_correct :=
+  @retry_readiness_is_independent_of_ordinary_leadership.
+
+Print Assumptions finalized_floor_recovery_leadership_separation_correct.
+
+Definition finalized_floor_recovery_parent_order_independent :=
+  @collective_coverage_parent_permutation.
+
+Print Assumptions finalized_floor_recovery_parent_order_independent.
+
+Definition finalized_floor_recovery_latest_order_independent :=
+  @collective_coverage_latest_message_permutation.
+
+Print Assumptions finalized_floor_recovery_latest_order_independent.
+
+Definition finalized_floor_restore_reconciliation_stale_index_correct :=
+  @reconciliation_eliminates_stale_raw_index.
+
+Print Assumptions finalized_floor_restore_reconciliation_stale_index_correct.
+
+Definition finalized_floor_restore_reconciliation_materialization_correct :=
+  @reconciled_slot_is_materialized.
+
+Print Assumptions finalized_floor_restore_reconciliation_materialization_correct.
+
+Definition finalized_floor_restore_certificate_support_correct :=
+  @canonical_identity_is_always_in_certified_support.
+
+Print Assumptions finalized_floor_restore_certificate_support_correct.
+
+Definition finalized_floor_restore_first_proposal_correct :=
+  @genesis_first_proposal_is_heldness_independent.
+
+Print Assumptions finalized_floor_restore_first_proposal_correct.
+
+Definition finalized_floor_restore_first_authored_sequence_correct :=
+  @genesis_placeholder_first_authored_sequence_is_one.
+
+Print Assumptions finalized_floor_restore_first_authored_sequence_correct.
+
+Definition finalized_floor_latest_message_materialization_correct :=
+  latest_message_materialization_contract.
+
+Print Assumptions finalized_floor_latest_message_materialization_correct.
+
+Definition finalized_floor_restore_sequence_correct :=
+  @generation_change_preserves_monotonic_key_sequence.
+
+Print Assumptions finalized_floor_restore_sequence_correct.
+
+Definition finalized_floor_unequal_applied_state_rejection_correct :=
+  @unequal_applied_vector_is_invalid_without_source_resolution.
+
+Print Assumptions finalized_floor_unequal_applied_state_rejection_correct.
+
+Definition finalized_floor_exact_missing_dependency_deferral_correct :=
+  @exact_applied_vector_with_missing_dependency_is_deferred.
+
+Print Assumptions finalized_floor_exact_missing_dependency_deferral_correct.
+
+Definition finalized_floor_applied_state_acceptance_correct :=
+  @applied_state_acceptance_requires_exact_vector_and_projection.
+
+Print Assumptions finalized_floor_applied_state_acceptance_correct.

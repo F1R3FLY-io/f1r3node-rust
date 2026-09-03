@@ -33,20 +33,23 @@ continue as the active set.
 
 **Theorems exercised.** T-1, T-2, T-7, T-10. **Diagram 02.**
 
-## 11.2 Two-level slashing (collusion ends in mutual destruction)
+## 11.2 Counterfactual two-level slashing
 
 **Setup.** 4 validators `{A, B, C, D}`. A equivocates; B colludes
 by citing A's equivocation in B's next block without attaching a
 SlashDeploy.
 
-**Trace.**
+This trace applies only when `EconomicNeglectSlashing = TRUE`. The current
+protocol rejects B without creating an evidence record.
+
+**Counterfactual trace.**
 
 ```
 1-6: same as 11.1 (A is detected and recorded)
 7.  sign(B, 7, bB)   ⟶  D += bB ; bB cites b₁ (the invalid block)
                           ; bB carries no SlashDeploy
-8.  detect(bB)       = NeglectedEquivocation  ; (B is recorded too)
-9.  record(B, 6)
+8.  detect(bB)       = NeglectedEquivocation
+9.  counterfactualRecord(B, 6)
 10. propose(C, [SlashDeploy(b₁', A, ...), SlashDeploy(bB, B, ...)])
 11. executeSlash(A, true)
 12. executeSlash(B, true)
@@ -143,7 +146,8 @@ A, delaying enforcement.
 deploy self-corrects the neglect). A is slashed in B's own block.
 Liveness is strictly better.
 
-**Theorems exercised.** T-9.9, T-15 (modulo widening). **Diagram 08.**
+**Theorems exercised.** T-9.9 and the current replay-determinism obligations.
+**Diagram 08.**
 
 ## 11.6 Stake-0 bonded validator (bug #5 demo)
 
@@ -193,32 +197,17 @@ bug #6).
 ```
 1. sign(A, 5, bX)             ⟶ D += bX (regression)
 2. validate(bX) = JustificationRegression
-3. is_slashable(JustificationRegression) = TRUE
-
-   Pre-fix dispatcher (engine/multi_parent_casper/validation_dispatcher.rs:502):
-4. handle_invalid_block_effect(bX, invalid = true)
-   ⟶ DAG marks bX invalid; NO EquivocationRecord;
-      A continues with bond intact unless a future proposer
-      happens to surface A's invalid latest message.
-
-   Post-fix #3 dispatcher:
-4'. insert_equivocation_record(A, 4, ∅)
-5'. update_equivocation_record(A, 4, bX.hash)
-6'. propose(B, [SlashDeploy(bX, A, ...)])
-7'. executeSlash(A, true)
-    ⟶ allBonds[A] := 0
-    ⟶ activeValidators := {B, C}
-    ⟶ coopVaultBalance := 100
+3. is_slashable(JustificationRegression) = FALSE
+4. persist_rejection(bX, JustificationRegression)
+   ⟶ DAG marks bX rejected
+   ⟶ no EquivocationRecord is created
+   ⟶ no SlashDeploy can cite bX as economic evidence
 ```
 
-**Final state.** Pre-fix: A unpunished. Post-fix: A is slashed in
-B's next block, mirroring the AdmissibleEquivocation flow. This
-example exercises the dispatcher uniformity claim of T-9.3.
-
-The same trace generalizes to every other `is_slashable() = ⊤`
-variant (`InvalidBondsCache`, `ContainsExpiredDeploy`,
-`ContainsTimeExpiredDeploy`, `InvalidBlockNumber`, etc.) — each
-populates an EquivocationRecord under the post-fix dispatcher.
+**Final state.** The block has durable terminal metadata. The contextual
+verdict does not change A's bond. The same rule applies to
+`InvalidBondsCache`, `ContainsExpiredDeploy`,
+`ContainsTimeExpiredDeploy`, and `InvalidBlockNumber`.
 
 **Theorems exercised.** T-9.3. **Diagram 05.**
 
@@ -515,21 +504,22 @@ TLA+ `Inv_RejectedSlashWithoutEvidenceNoPending`. Rust
 `slash_authorization_regressions`.  **Diagram.** Extends Diagram 05
 with the authorize-before-replay guard.
 
-**Merge-rejected recovery refinement.** If a valid slash deploy is carried
-by a branch later rejected by multi-parent merge resolution, the merge
-reports `RejectedSlash(invalid_block_hash, issuer, source_block_hash)`.
-The next proposer reissues a single slash for that `invalid_block_hash`
-unless its own normal slashing pass already covers the same hash. The
-received block is authorized against its actual parent pre-state, so it is
-not rejected merely because another sibling already shows the offender at
-zero bond in the receiver's ambient snapshot.
+**Merge-rejected canonical reconstruction.** If a valid slash deploy is
+carried by a branch later rejected by multi-parent merge resolution, the next
+proposer scans the complete persisted invalid-block evidence index. When the
+target remains positively bonded in the exact canonical merged pre-state,
+the scan emits one canonical candidate for `(offender, bond_generation)` in the
+current activation epoch; when the slash effect survived, the zero bond emits
+none. Merge-rejection observations never authorize the candidate, and the
+receiver checks the same root-bound bond/generation predicate independently of
+its ambient snapshot.
 
 ## 11.14 Stale-evidence rebond identity (bug #13 demo)
 
-**Setup.** Validator with public key `K` bonds at epoch `e₁=5`,
-equivocates, is slashed, unbonds. Later at epoch `e₂=12` the same key
-rebonds. Adversarial proposer `Z` tries to slash `(K, e₂)` by
-replaying the still-retained evidence from `(K, e₁)`.
+**Setup.** Validator with public key `K` bonds as generation `g₁` in epoch
+`e₁=5`, equivocates, is slashed, and completes withdrawal. Later the same key
+rebonds as generation `g₂=g₁+1` in epoch `e₂=12`. Adversarial proposer `Z`
+tries to slash `(K, g₂)` by replaying retained evidence from `(K, g₁)`.
 
 **Pre-fix trace.**
 
@@ -537,26 +527,26 @@ replaying the still-retained evidence from `(K, e₁)`.
 Z.propose(b, [SlashDeploy(target=K, evidence=eq_record_e1)])
 B.replay(b)
   -- pre-fix: authorization checked key identity only
-  K is currently bonded?           ⟶ yes (rebonded at e₂)
+  K is currently bonded?           ⟶ yes (rebonded as g₂)
   evidence references K?           ⟶ yes (eq_record_e1.target = K)
-  ⟶ slash(ps, K)                    -- second slash on innocent (K, e₂)
+  ⟶ slash(ps, K)                    -- second slash on innocent (K, g₂)
 ```
 
-**Post-fix trace.** Authorization is epoch-scoped:
+**Post-fix trace.** Authorization is generation-scoped and epoch-windowed:
 
 ```
 Z.propose(b, [SlashDeploy(target=K, evidence=eq_record_e1)])
 B.replay(b)
   authorize_slash_deploy(local_view, deploy)
-    eq_record_e1.epoch == current_epoch(K)?  ⟶ e₁ ≠ e₂  ✗ — REJECT
-  ⟶ deploy ignored; (K, e₂) retains bond
+    evidence.generation == canonical_generation(K)?  ⟶ g₁ ≠ g₂  ✗ — REJECT
+  ⟶ deploy ignored; (K, g₂) retains bond
 ```
 
-**Theorems exercised.** T-9.12 (`main_T9_12_stale_evidence_not_authorized`).
-TLA+ `Inv_StaleEvidenceCannotSlashRebondedKey`. Rust
+**Theorems exercised.** T-9.12 (`main_T9_12_stale_generation_evidence_not_authorized`).
+TLA+ `Inv_StaleGenerationCannotSlashRebondedKey`. Rust
 `stale_invalid_evidence_is_not_an_authorized_slash_candidate`.
-**Diagram.** Extends Diagram 06 (validator lifecycle) with epoch
-tags on each lifetime.
+**Diagram.** Extends Diagram 06 (validator lifecycle) with generation and
+activation-epoch tags.
 
 ## 11.15 Authorized-invalid-block evidence index (bug #14 demo)
 
@@ -586,13 +576,13 @@ evidence index:
 B.prepare_slashing_deploys()
   view ← dag.authorized_invalid_evidence_index(current_epoch)
   view contains b_inv.hash for offender A  ✓
-  -- canonicalize: sort by hash, deduplicate per (offender, epoch)
+  -- canonicalize: filter generation and epoch, then sort by hash
   candidates                              ⟶ [SlashDeploy(A, b_inv.hash)]
   emit                                    ⟶ slash deploy enters block
 ```
 
 **Theorems exercised.** T-LivenessGap (`deploy_epoch_matches_target`).
-TLA+ `Inv_NoInvalidLatestLivenessGap`. Rust
+TLA+ `Inv_PendingSlashCompleteForCurrentPreState`. Rust
 `current_epoch_invalid_evidence_is_authorized_once_per_offender`.
 **Diagram.** Extends Diagram 08 with the new index path.
 
@@ -673,8 +663,7 @@ validate(b)
   if justifications.len() != justifications.iter().map(.validator)
                                             .collect::<HashSet>().len()
   ⟶ REJECT b as invalid (DuplicateJustification)
-  ⟶ b is recorded as invalid; if its sender is slashable, the dispatch
-     catch-all (bug #3 fix) inserts an equivocation record
+  ⟶ b is recorded as invalid without new economic evidence
 ```
 
 **Theorems exercised.** T-9.15 (`main_T9_15_duplicate_justifications_rejected`),

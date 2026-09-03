@@ -22,7 +22,17 @@ new
   _create,
   _systemVault,
   _transferTemplate,
-  _depositTemplate
+  _depositTemplate,
+  reserveAll,
+  refundReserved,
+  failReservation,
+  validateSettlement,
+  settleReserved,
+  splitAndDeposit,
+  prepareTransferBatch,
+  depositTransferBatch,
+  protocolQuarantineStore,
+  protocolStakeDispositionStore
 in {
   rl!(`rho:system:makeMint`, *MakeMintCh) |
   rl!(`rho:system:authKey`, *AuthKeyCh) |
@@ -36,6 +46,8 @@ in {
     new mintCh, vaultMapStore, initVault in {
       // Initializes the vaultMapStore.
       TreeHashMap!("init", 2, *vaultMapStore) |
+      protocolQuarantineStore!({}) |
+      protocolStakeDispositionStore!({}) |
       for (@vaultMap <- vaultMapStore) {
         // Called from VaultsGenerator:
         //   SystemVault!("init", *ret)
@@ -81,6 +93,544 @@ in {
               VaultAddress!("fromUnforgeable", *unf, *vaultAddrCh) |
               for (@unfVaultAddress <- vaultAddrCh) {
                 @AuthKey!("make", (*_systemVault, unfVaultAddress), *ret)
+              }
+            }
+          } |
+          contract SystemVault(@"find", @vaultAddress, retCh) = {
+            new vaultAddressValidCh, vaultAddressValidEitherCh in {
+              VaultAddress!("validate", vaultAddress, *vaultAddressValidCh) |
+              @Either!("fromNillableError <-", *vaultAddressValidCh, *vaultAddressValidEitherCh) |
+              for (@vaultAddressEither <- vaultAddressValidEitherCh) {
+                match vaultAddressEither {
+                  (false, _) => {
+                    retCh!(vaultAddressEither)
+                  }
+                  _ => {
+                    new getVaultCh in {
+                      TreeHashMap!("get", vaultMap, vaultAddress, *getVaultCh) |
+                      for (@vault <- getVaultCh) {
+                        if (vault == Nil) {
+                          retCh!((false, "Vault not found"))
+                        } else {
+                          retCh!((true, vault))
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"applyCost", @reservationId, @allocations, @charges, @feeAddress, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  new reserveCh in {
+                    reserveAll!(allocations, [], *reserveCh) |
+                    for (@reserveResult <- reserveCh) {
+                      match reserveResult {
+                        (true, reserved) => {
+                          new validationCh in {
+                            validateSettlement!(reserved, charges, *validationCh) |
+                            for (@validationResult <- validationCh) {
+                              match validationResult {
+                                (false, error) => {
+                                  failReservation!(reserved, error, *retCh)
+                                }
+                                _ => {
+                                  new feeVaultCh in {
+                                    SystemVault!("findOrCreate", feeAddress, *feeVaultCh) |
+                                    for (@feeVaultResult <- feeVaultCh) {
+                                      match feeVaultResult {
+                                        (false, error) => {
+                                          failReservation!(reserved, error, *retCh)
+                                        }
+                                        _ => {
+                                          settleReserved!(reserved, charges, feeAddress, *retCh)
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        (false, error) => {
+                          retCh!((false, error))
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized cost application"))
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"protocolMint", @targetAddress, @amount, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid and amount > 0) {
+                  new targetVaultCh in {
+                    SystemVault!("findOrCreate", targetAddress, *targetVaultCh) |
+                    for (@targetResult <- targetVaultCh) {
+                      match targetResult {
+                        (true, _) => {
+                          new mintedPurseCh, depositCh in {
+                            mint!("makePurse", amount, *mintedPurseCh) |
+                            for (@mintedPurse <- mintedPurseCh) {
+                              @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", mintedPurse, *depositCh) |
+                              for (@depositResult <- depositCh) {
+                                retCh!(depositResult)
+                              }
+                            }
+                          }
+                        }
+                        (false, error) => {
+                          retCh!((false, error))
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized or invalid protocol mint"))
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"protocolBurn", @targetAddress, @amount, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid and amount >= 0) {
+                  if (amount == 0) {
+                    retCh!((true, Nil))
+                  } else {
+                    new targetVaultCh in {
+                      SystemVault!("find", targetAddress, *targetVaultCh) |
+                      for (@targetResult <- targetVaultCh) {
+                        match targetResult {
+                          (true, _) => {
+                            new splitCh in {
+                              @{targetAddress | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                              for (@splitResult <- splitCh) {
+                                match splitResult {
+                                  [_] => { retCh!((true, Nil)) }
+                                  _ => { retCh!((false, "Protocol burn failed")) }
+                                }
+                              }
+                            }
+                          }
+                          (false, error) => { retCh!((false, error)) }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized or invalid protocol burn"))
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"protocolQuarantineAll", @validatorPk, @generation, @targetAddress, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  for (@quarantines <- protocolQuarantineStore) {
+                    new beginCh in {
+                      match quarantines.get(validatorPk) {
+                        Nil => { beginCh!(Nil) }
+                        ("Pending", storedGeneration, storedAddress, _, _) => {
+                          protocolQuarantineStore!(quarantines) |
+                          if (storedGeneration == generation and storedAddress == targetAddress) {
+                            retCh!((true, Nil))
+                          } else {
+                            retCh!((false, "Conflicting protocol quarantine"))
+                          }
+                        }
+                        ("Resolved", storedGeneration, _, _, _) => {
+                          if (generation > storedGeneration) {
+                            beginCh!(Nil)
+                          } else {
+                            protocolQuarantineStore!(quarantines) |
+                            retCh!((false, "Protocol quarantine generation is not newer"))
+                          }
+                        }
+                        _ => {
+                          protocolQuarantineStore!(quarantines) |
+                          retCh!((false, "Malformed protocol quarantine record"))
+                        }
+                      } |
+                      for (_ <- beginCh) {
+                      new vaultCh in {
+                        SystemVault!("find", targetAddress, *vaultCh) |
+                        for (@vaultResult <- vaultCh) {
+                          match vaultResult {
+                            (true, vault) => {
+                              new balanceCh in {
+                                @vault!("balance", *balanceCh) |
+                                for (@balance <- balanceCh) {
+                                  if (balance == 0) {
+                                    protocolQuarantineStore!(quarantines.set(validatorPk, ("Pending", generation, targetAddress, 0, Nil))) |
+                                    retCh!((true, Nil))
+                                  } else {
+                                    new splitCh in {
+                                      @{targetAddress | bundle0{*_systemVault}}!("_costSplit", balance, *splitCh) |
+                                      for (@splitResult <- splitCh) {
+                                        match splitResult {
+                                          [quarantinedPurse] => {
+                                            protocolQuarantineStore!(quarantines.set(validatorPk, ("Pending", generation, targetAddress, balance, quarantinedPurse))) |
+                                            retCh!((true, Nil))
+                                          }
+                                          _ => {
+                                            protocolQuarantineStore!(quarantines) |
+                                            retCh!((false, "Protocol quarantine failed"))
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            (false, error) => {
+                              protocolQuarantineStore!(quarantines) |
+                              retCh!((false, error))
+                            }
+                          }
+                        }
+                      }
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized protocol quarantine"))
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"protocolApplyStakeDisposition", @validatorPk, @generation, @sourceAddress, @outcome, @penaltyAddress, @amount, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  for (@dispositions <- protocolStakeDispositionStore) {
+                    new applyCh in {
+                      match dispositions.get(validatorPk) {
+                        Nil => { applyCh!(Nil) }
+                        (storedGeneration, storedSource, storedOutcome, storedPenaltyAddress, storedAmount) => {
+                          if (
+                            storedGeneration == generation and
+                            storedSource == sourceAddress and
+                            storedOutcome == outcome and
+                            storedPenaltyAddress == penaltyAddress and
+                            storedAmount == amount
+                          ) {
+                            protocolStakeDispositionStore!(dispositions) |
+                            retCh!((true, Nil))
+                          } else if (generation > storedGeneration) {
+                            applyCh!(Nil)
+                          } else {
+                            protocolStakeDispositionStore!(dispositions) |
+                            retCh!((false, "Conflicting protocol stake disposition"))
+                          }
+                        }
+                        _ => {
+                          protocolStakeDispositionStore!(dispositions) |
+                          retCh!((false, "Malformed protocol stake disposition"))
+                        }
+                      } |
+                      for (_ <- applyCh) {
+                        match outcome {
+                          "Vindicated" => {
+                            if (amount == 0) {
+                              protocolStakeDispositionStore!(dispositions.set(
+                                validatorPk,
+                                (generation, sourceAddress, outcome, penaltyAddress, amount)
+                              )) |
+                              retCh!((true, Nil))
+                            } else {
+                              protocolStakeDispositionStore!(dispositions) |
+                              retCh!((false, "Vindication cannot move stake"))
+                            }
+                          }
+                          "Guilty" => {
+                            if (amount < 0) {
+                              protocolStakeDispositionStore!(dispositions) |
+                              retCh!((false, "Invalid guilty stake disposition"))
+                            } else if (amount == 0) {
+                              protocolStakeDispositionStore!(dispositions.set(
+                                validatorPk,
+                                (generation, sourceAddress, outcome, penaltyAddress, amount)
+                              )) |
+                              retCh!((true, Nil))
+                            } else {
+                              new sourceVaultCh, penaltyVaultCh in {
+                                SystemVault!("find", sourceAddress, *sourceVaultCh) |
+                                SystemVault!("find", penaltyAddress, *penaltyVaultCh) |
+                                for (@sourceVaultResult <- sourceVaultCh & @penaltyVaultResult <- penaltyVaultCh) {
+                                  match (sourceVaultResult, penaltyVaultResult) {
+                                    ((true, _), (true, _)) => {
+                                      new splitCh in {
+                                        @{sourceAddress | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                                        for (@splitResult <- splitCh) {
+                                          match splitResult {
+                                            [penaltyPurse] => {
+                                              new depositCh in {
+                                                @{penaltyAddress | bundle0{*_systemVault}}!("_costDeposit", penaltyPurse, *depositCh) |
+                                                for (@depositResult <- depositCh) {
+                                                  match depositResult {
+                                                    (true, _) => {
+                                                      protocolStakeDispositionStore!(dispositions.set(
+                                                        validatorPk,
+                                                        (generation, sourceAddress, outcome, penaltyAddress, amount)
+                                                      )) |
+                                                      retCh!((true, Nil))
+                                                    }
+                                                    (false, error) => {
+                                                      protocolStakeDispositionStore!(dispositions) |
+                                                      retCh!((false, error))
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                            _ => {
+                                              protocolStakeDispositionStore!(dispositions) |
+                                              retCh!((false, "Stake penalty split failed"))
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                    _ => {
+                                      protocolStakeDispositionStore!(dispositions) |
+                                      retCh!((false, "Stake disposition vault not found"))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          "Burned" => {
+                            if (amount < 0) {
+                              protocolStakeDispositionStore!(dispositions) |
+                              retCh!((false, "Invalid burned stake disposition"))
+                            } else if (amount == 0) {
+                              protocolStakeDispositionStore!(dispositions.set(
+                                validatorPk,
+                                (generation, sourceAddress, outcome, penaltyAddress, amount)
+                              )) |
+                              retCh!((true, Nil))
+                            } else {
+                              new sourceVaultCh in {
+                                SystemVault!("find", sourceAddress, *sourceVaultCh) |
+                                for (@sourceVaultResult <- sourceVaultCh) {
+                                  match sourceVaultResult {
+                                    (true, _) => {
+                                      new splitCh in {
+                                        @{sourceAddress | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                                        for (@splitResult <- splitCh) {
+                                          match splitResult {
+                                            [_] => {
+                                              protocolStakeDispositionStore!(dispositions.set(
+                                                validatorPk,
+                                                (generation, sourceAddress, outcome, penaltyAddress, amount)
+                                              )) |
+                                              retCh!((true, Nil))
+                                            }
+                                            _ => {
+                                              protocolStakeDispositionStore!(dispositions) |
+                                              retCh!((false, "Stake burn split failed"))
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                    (false, error) => {
+                                      protocolStakeDispositionStore!(dispositions) |
+                                      retCh!((false, error))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          _ => {
+                            protocolStakeDispositionStore!(dispositions) |
+                            retCh!((false, "Unknown protocol stake disposition"))
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized protocol stake disposition"))
+                }
+              }
+            }
+          } |
+          contract SystemVault(@"protocolResolveQuarantine", @validatorPk, @generation, @outcome, @penaltyAddress, @penalty, @sysAuthToken, retCh) = {
+            new sysAuthTokenOps(`sys:authToken:ops`), isValidTokenCh in {
+              sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+              for (@isValid <- isValidTokenCh) {
+                if (isValid) {
+                  for (@quarantines <- protocolQuarantineStore) {
+                    match quarantines.get(validatorPk) {
+                      Nil => {
+                        protocolQuarantineStore!(quarantines) |
+                        retCh!((false, "Protocol quarantine not found"))
+                      }
+                      ("Resolved", storedGeneration, storedOutcome, storedPenaltyAddress, storedPenalty) => {
+                        protocolQuarantineStore!(quarantines) |
+                        if (
+                          storedGeneration == generation and
+                          storedOutcome == outcome and
+                          storedPenaltyAddress == penaltyAddress and
+                          storedPenalty == penalty
+                        ) {
+                          retCh!((true, Nil))
+                        } else {
+                          retCh!((false, "Conflicting protocol quarantine resolution"))
+                        }
+                      }
+                      ("Pending", storedGeneration, sourceAddress, amount, quarantinedPurse) => {
+                        if (storedGeneration != generation) {
+                          protocolQuarantineStore!(quarantines) |
+                          retCh!((false, "Protocol quarantine generation mismatch"))
+                        } else {
+                          match outcome {
+                            "Vindicated" => {
+                              if (amount == 0) {
+                                protocolQuarantineStore!(quarantines.set(
+                                  validatorPk,
+                                  ("Resolved", generation, outcome, penaltyAddress, penalty)
+                                )) |
+                                retCh!((true, Nil))
+                              } else {
+                                new sourceVaultCh in {
+                                  SystemVault!("find", sourceAddress, *sourceVaultCh) |
+                                  for (@sourceVaultResult <- sourceVaultCh) {
+                                    match sourceVaultResult {
+                                      (true, _) => {
+                                        new returnCh in {
+                                          @{sourceAddress | bundle0{*_systemVault}}!("_costDeposit", quarantinedPurse, *returnCh) |
+                                          for (@returnResult <- returnCh) {
+                                            match returnResult {
+                                              (true, _) => {
+                                                protocolQuarantineStore!(quarantines.set(
+                                                  validatorPk,
+                                                  ("Resolved", generation, outcome, penaltyAddress, penalty)
+                                                )) |
+                                                retCh!((true, Nil))
+                                              }
+                                              (false, error) => {
+                                                protocolQuarantineStore!(quarantines) |
+                                                retCh!((false, error))
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                      (false, error) => {
+                                        protocolQuarantineStore!(quarantines) |
+                                        retCh!((false, error))
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            "Guilty" => {
+                              if (penalty < 0) {
+                                protocolQuarantineStore!(quarantines) |
+                                retCh!((false, "Invalid fuel penalty"))
+                              } else {
+                                new penaltyAmountCh, sourceVaultCh, penaltyVaultCh in {
+                                  if (penalty >= amount) { penaltyAmountCh!(amount) } else { penaltyAmountCh!(penalty) } |
+                                  SystemVault!("find", sourceAddress, *sourceVaultCh) |
+                                  SystemVault!("find", penaltyAddress, *penaltyVaultCh) |
+                                  for (@penaltyAmount <- penaltyAmountCh &
+                                       @sourceVaultResult <- sourceVaultCh &
+                                       @penaltyVaultResult <- penaltyVaultCh) {
+                                    match (sourceVaultResult, penaltyVaultResult) {
+                                      ((true, _), (true, _)) => {
+                                        new penaltyCh in {
+                                          splitAndDeposit!(quarantinedPurse, penaltyAddress, penaltyAmount, *penaltyCh) |
+                                          for (@penaltyResult <- penaltyCh) {
+                                            match penaltyResult {
+                                              (true, _) => {
+                                                if (amount == penaltyAmount) {
+                                                  protocolQuarantineStore!(quarantines.set(
+                                                    validatorPk,
+                                                    ("Resolved", generation, outcome, penaltyAddress, penalty)
+                                                  )) |
+                                                  retCh!((true, Nil))
+                                                } else {
+                                                  new returnCh in {
+                                                    @{sourceAddress | bundle0{*_systemVault}}!("_costDeposit", quarantinedPurse, *returnCh) |
+                                                    for (@returnResult <- returnCh) {
+                                                      match returnResult {
+                                                        (true, _) => {
+                                                          protocolQuarantineStore!(quarantines.set(
+                                                            validatorPk,
+                                                            ("Resolved", generation, outcome, penaltyAddress, penalty)
+                                                          )) |
+                                                          retCh!((true, Nil))
+                                                        }
+                                                        (false, error) => {
+                                                          protocolQuarantineStore!(quarantines) |
+                                                          retCh!((false, error))
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                              (false, error) => {
+                                                protocolQuarantineStore!(quarantines) |
+                                                retCh!((false, error))
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => {
+                                        protocolQuarantineStore!(quarantines) |
+                                        retCh!((false, "Fuel resolution vault not found"))
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            "Burned" => {
+                              protocolQuarantineStore!(quarantines.set(
+                                validatorPk,
+                                ("Resolved", generation, outcome, penaltyAddress, penalty)
+                              )) |
+                              retCh!((true, Nil))
+                            }
+                            _ => {
+                              protocolQuarantineStore!(quarantines) |
+                              retCh!((false, "Unknown protocol quarantine outcome"))
+                            }
+                          }
+                        }
+                      }
+                      _ => {
+                        protocolQuarantineStore!(quarantines) |
+                        retCh!((false, "Malformed protocol quarantine record"))
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Unauthorized protocol quarantine resolution"))
+                }
               }
             }
           } |
@@ -200,6 +750,42 @@ in {
                   }
                 }
               } |
+              contract systemVault(@"transferBatch", @transfers, authKey, ret) = {
+                new authKeyValidCh in {
+                  @AuthKey!("check", *authKey, (*_systemVault, ownVaultAddress), *authKeyValidCh) |
+                  for (@authKeyValid <- authKeyValidCh) {
+                    if (authKeyValid) {
+                      new prepareCh in {
+                        prepareTransferBatch!(transfers, [], Set(), 0, *prepareCh) |
+                        for (@prepareResult <- prepareCh) {
+                          match prepareResult {
+                            (true, prepared, total) => {
+                              new splitCh in {
+                                purse!("split", total, *splitCh) |
+                                for (@splitResult <- splitCh) {
+                                  match splitResult {
+                                    [reservedPurse] => {
+                                      depositTransferBatch!(reservedPurse, prepared, *ret)
+                                    }
+                                    _ => {
+                                      ret!((false, "Insufficient funds"))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                            (false, error, _) => {
+                              ret!((false, error))
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      ret!((false, "Invalid AuthKey"))
+                    }
+                  }
+                }
+              } |
               // Set to Nil to disable logging
               contract systemVault(@"setLog", logCh, authKey, ret) = {
                 new authKeyValidCh in {
@@ -225,6 +811,250 @@ in {
               // Internal SystemVault method for making deposits between purses.
               contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_deposit", depositPurse, retCh) = {
                 _depositTemplate!(*purse, *depositPurse, *retCh)
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costSplit", @amount, retCh) = {
+                purse!("split", amount, *retCh)
+              } |
+              contract @{ownVaultAddress | bundle0{*_systemVault}}(@"_costDeposit", depositPurse, retCh) = {
+                _depositTemplate!(*purse, *depositPurse, *retCh)
+              }
+            }
+          } |
+          contract reserveAll(@pending, @reserved, retCh) = {
+            match pending {
+              [(address, amount) ...tail] => {
+                if (amount > 0) {
+                  new getVaultCh, splitCh in {
+                    TreeHashMap!("get", vaultMap, address, *getVaultCh) |
+                    for (@vault <- getVaultCh) {
+                      if (vault == Nil) {
+                        failReservation!(reserved, "Funding vault not found", *retCh)
+                      } else {
+                        @{address | bundle0{*_systemVault}}!("_costSplit", amount, *splitCh) |
+                        for (@splitResult <- splitCh) {
+                          match splitResult {
+                            [reservedPurse] => {
+                              reserveAll!(tail, reserved ++ [(address, amount, reservedPurse)], *retCh)
+                            }
+                            _ => {
+                              failReservation!(reserved, "Insufficient funds", *retCh)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else {
+                  failReservation!(reserved, "Cost reservation amount must be positive", *retCh)
+                }
+              }
+              _ => {
+                retCh!((true, reserved))
+              }
+            }
+          } |
+          contract refundReserved(@reserved, retCh) = {
+            match reserved {
+              [(address, _, reservedPurse) ...tail] => {
+                new depositCh in {
+                  @{address | bundle0{*_systemVault}}!("_costDeposit", reservedPurse, *depositCh) |
+                  for (@depositResult <- depositCh) {
+                    match depositResult {
+                      (true, _) => {
+                        refundReserved!(tail, *retCh)
+                      }
+                      (false, error) => {
+                        retCh!((false, error))
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {
+                retCh!((true, Nil))
+              }
+            }
+          } |
+          contract failReservation(@reserved, @error, retCh) = {
+            new refundCh in {
+              refundReserved!(reserved, *refundCh) |
+              for (@refundResult <- refundCh) {
+                match refundResult {
+                  (true, _) => {
+                    retCh!((false, error))
+                  }
+                  (false, refundError) => {
+                    retCh!((false, "Cost reservation rollback failed: " ++ refundError))
+                  }
+                }
+              }
+            }
+          } |
+          contract validateSettlement(@reserved, @charges, retCh) = {
+            match reserved {
+              [(reservedAddress, reservedAmount, _) ...reservedTail] => {
+                match charges {
+                  [(chargeAddress, burn, fee) ...chargeTail] => {
+                    if (reservedAddress == chargeAddress and burn >= 0 and fee >= 0 and burn + fee <= reservedAmount) {
+                      validateSettlement!(reservedTail, chargeTail, *retCh)
+                    } else {
+                      retCh!((false, "Invalid cost settlement allocation"))
+                    }
+                  }
+                  _ => {
+                    retCh!((false, "Cost settlement allocations do not match reservation"))
+                  }
+                }
+              }
+              _ => {
+                match charges {
+                  [] => {
+                    retCh!((true, Nil))
+                  }
+                  _ => {
+                    retCh!((false, "Cost settlement allocations do not match reservation"))
+                  }
+                }
+              }
+            }
+          } |
+          contract settleReserved(@reserved, @charges, @feeAddress, retCh) = {
+            match reserved {
+              [(sourceAddress, reservedAmount, reservedPurse) ...reservedTail] => {
+                match charges {
+                  [(sourceAddress, burn, fee) ...chargeTail] => {
+                    new feeCh in {
+                      splitAndDeposit!(reservedPurse, feeAddress, fee, *feeCh) |
+                      for (@feeResult <- feeCh) {
+                        match feeResult {
+                          (true, _) => {
+                            new refundCh in {
+                              splitAndDeposit!(reservedPurse, sourceAddress, reservedAmount - burn - fee, *refundCh) |
+                              for (@refundResult <- refundCh) {
+                                match refundResult {
+                                  (true, _) => {
+                                    settleReserved!(reservedTail, chargeTail, feeAddress, *retCh)
+                                  }
+                                  (false, error) => {
+                                    retCh!((false, error))
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          (false, error) => {
+                            retCh!((false, error))
+                          }
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    retCh!((false, "Cost settlement allocations do not match reservation"))
+                  }
+                }
+              }
+              _ => {
+                retCh!((true, Nil))
+              }
+            }
+          } |
+          contract splitAndDeposit(purse, @targetAddress, @amount, retCh) = {
+            if (amount == 0) {
+              retCh!((true, Nil))
+            } else {
+              new splitCh in {
+                purse!("split", amount, *splitCh) |
+                for (@splitResult <- splitCh) {
+                  match splitResult {
+                    [splitPurse] => {
+                      new depositCh in {
+                        @{targetAddress | bundle0{*_systemVault}}!("_costDeposit", splitPurse, *depositCh) |
+                        for (@depositResult <- depositCh) {
+                          retCh!(depositResult)
+                        }
+                      }
+                    }
+                    _ => {
+                      retCh!((false, "Cost settlement purse split failed"))
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract prepareTransferBatch(@pending, @prepared, @seen, @total, retCh) = {
+            match pending {
+              [(targetAddress, amount) ...tail] => {
+                if (seen.contains(targetAddress)) {
+                  retCh!((false, "Transfer targets must be distinct", 0))
+                } else if (amount > 0 and total <= 9223372036854775807 - amount) {
+                  new validCh in {
+                    VaultAddress!("validate", targetAddress, *validCh) |
+                    for (@valid <- validCh) {
+                      if (valid == Nil) {
+                        prepareTransferBatch!(
+                          tail,
+                          prepared ++ [(targetAddress, amount)],
+                          seen.add(targetAddress),
+                          total + amount,
+                          *retCh
+                        )
+                      } else {
+                        retCh!((false, "Invalid target vault address", 0))
+                      }
+                    }
+                  }
+                } else {
+                  retCh!((false, "Transfer amount must be positive and bounded", 0))
+                }
+              }
+              [] => {
+                if (prepared.length() > 0) {
+                  retCh!((true, prepared, total))
+                } else {
+                  retCh!((false, "Transfer batch must not be empty", 0))
+                }
+              }
+              _ => {
+                retCh!((false, "Malformed transfer batch", 0))
+              }
+            }
+          } |
+          contract depositTransferBatch(reservedPurse, @pending, retCh) = {
+            match pending {
+              [(targetAddress, amount) ...tail] => {
+                new targetVaultCh in {
+                  SystemVault!("findOrCreate", targetAddress, *targetVaultCh) |
+                  for (@targetVaultResult <- targetVaultCh) {
+                    match targetVaultResult {
+                      (true, _) => {
+                        new depositCh in {
+                          splitAndDeposit!(*reservedPurse, targetAddress, amount, *depositCh) |
+                          for (@depositResult <- depositCh) {
+                            match depositResult {
+                              (true, _) => {
+                                depositTransferBatch!(*reservedPurse, tail, *retCh)
+                              }
+                              (false, error) => {
+                                retCh!((false, error))
+                              }
+                            }
+                          }
+                        }
+                      }
+                      (false, error) => {
+                        retCh!((false, error))
+                      }
+                    }
+                  }
+                }
+              }
+              [] => {
+                retCh!((true, Nil))
+              }
+              _ => {
+                retCh!((false, "Malformed prepared transfer batch"))
               }
             }
           } |

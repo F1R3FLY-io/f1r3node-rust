@@ -10,7 +10,7 @@ name: Slashing test suite
 # Job catalogue:
 #   PR-gate (must pass to merge):
 #     • example-based       — UC-* example + integration tests
-#     • property-based      — T-* proptests at PROPTEST_CASES=10000
+#     • property-based      — T-* bulk proptests at 2,000 cases and serial triple-bisimulation at 25 cases
 #     • pre-fix-regressions — out-of-band per-bug counter-examples (matrix 1..11)
 #     • loom-interleavings  — exhaustive 2-thread T-9.2 atomic-RMW model check
 #     • tla-model-check     — TLC against every post-fix MC_*.cfg under formal/tlaplus/
@@ -18,7 +18,7 @@ name: Slashing test suite
 #     • search-horizon-smoke — scripts/ci/slashing-search-horizon.sh smoke tier
 #   Nightly only (schedule / workflow_dispatch):
 #     • mutation-coverage        — cargo-mutants survival rate (Track 6)
-#     • nightly-extended-proptest — PROPTEST_CASES=100000
+#     • nightly-extended-proptest — bulk proptests at 10,000 cases and serial triple-bisimulation at 100 cases
 #     • search-horizon-nightly   — 1M-run fuzz tier
 
 on:
@@ -314,7 +314,7 @@ jobs:
         run: cargo mutants --in-place --no-shuffle --timeout 120 --baseline=skip
 
   nightly-extended-proptest:
-    name: Nightly extended proptest (PROPTEST_CASES=100000)
+    name: Nightly extended proptest (10,000 bulk cases)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 240

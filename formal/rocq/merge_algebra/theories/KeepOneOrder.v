@@ -15,7 +15,7 @@
        5. composite chain identity ASCENDING
 
    The terminal key models the tuple compared by Rust after the priority tiers:
-   deploy sequence, source_block_hash, effect_indices, and witness mode. It is
+   deploys_with_cost, source_block_hash, effect_indices, and witness mode. It is
    the INJECTIVE Eq/Hash identity. Because keys 1-4 are functions of the complete
    entry, `cmp a b = Eq` holds iff the entries are Eq. Hence no distinct chains tie.
 

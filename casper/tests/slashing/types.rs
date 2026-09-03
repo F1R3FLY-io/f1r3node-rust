@@ -47,8 +47,8 @@ pub struct BlockMeta {
     /// (validator, latest-block-hash) pairs cited by this block.
     pub justifications: Vec<(ValidatorId, BlockHash)>,
     /// Validators this block targets with a SlashDeploy. Used to
-    /// detect Level-2 neglect: a block that cites an equivocator
-    /// without slashing them is itself slashable. Mirrors the
+    /// detect neglect: a block that cites an equivocator without
+    /// slashing them is rejected without new economic evidence. Mirrors the
     /// `slash_deploys` field of the production BlockMessage's
     /// system_deploys.
     pub slash_targets: Vec<ValidatorId>,
@@ -124,18 +124,27 @@ impl PoSState {
 
 /// Detection-status enum exposed by `harness.detect(...)`. Mirrors
 /// `casper::rust::block_status::InvalidBlock` projected to the
-/// equivocation-relevant variants the test plan uses (other slashable
-/// variants are tested via the dispatcher catch-all in UC-28..UC-36).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// equivocation-relevant variants the test plan uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Valid,
     AdmissibleEquivocation,
     IgnorableEquivocation,
     NeglectedEquivocation,
     JustificationRegression,
-    /// Catch-all for the 14 other slashable `InvalidBlock` variants
-    /// (UC-28..UC-36 + a few audit-tier cases).
-    SlashableOther,
+    /// Catch-all for other certified rejection reasons.
+    RejectedOther,
+}
+
+impl Status {
+    pub fn is_rejected(&self) -> bool { !matches!(self, Self::Valid) }
+
+    pub fn is_slash_evidence_eligible(&self) -> bool {
+        matches!(
+            self,
+            Self::AdmissibleEquivocation | Self::IgnorableEquivocation
+        )
+    }
 }
 
 /// Outcome of `harness.execute_slash(...)`. Mirrors the

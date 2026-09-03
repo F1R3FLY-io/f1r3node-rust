@@ -32,20 +32,20 @@ fn uc_63_chain_neglect_closure_stabilizes_at_n() {
     // v5 is the direct offender.
     let _v5a = harness.sign_block("v5", 5);
     let bad = harness.sign_block_distinct("v5", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
     assert!(harness.has_record("v5", 4));
 
     // Build chain v0→v1→v2→v3→v4→v5 of cite-without-slash.
     let v4_neg = harness.sign_block_citing("v4", 6, bad);
-    let _ = harness.dispatch(v4_neg);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(v4_neg);
     let v3_neg = harness.sign_block_citing("v3", 7, v4_neg);
-    let _ = harness.dispatch(v3_neg);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(v3_neg);
     let v2_neg = harness.sign_block_citing("v2", 8, v3_neg);
-    let _ = harness.dispatch(v2_neg);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(v2_neg);
     let v1_neg = harness.sign_block_citing("v1", 9, v2_neg);
-    let _ = harness.dispatch(v1_neg);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(v1_neg);
     let v0_neg = harness.sign_block_citing("v0", 10, v1_neg);
-    let s0 = harness.dispatch(v0_neg);
+    let s0 = harness.dispatch_counterfactual_neglect_evidence(v0_neg);
     assert_eq!(s0, Status::NeglectedEquivocation);
 
     // Fixed-point: every validator has a record (closure complete).

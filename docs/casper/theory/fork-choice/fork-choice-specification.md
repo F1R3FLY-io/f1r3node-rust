@@ -1,117 +1,313 @@
-# Fork-Choice ("Ghosting") — Normative Specification
+# Fork-choice certified-context specification
 
-This is the **normative** contract for casper's LMD-GHOST fork-choice estimator: *what
-must hold*, independent of *how it is checked*. The companion
-[verification dossier](./fork-choice-verification.md) records the mechanized proofs,
-models, and tests that discharge each requirement; the
-[glossary](./fork-choice-glossary.md) defines every symbol and term used below (read it
-first if any notation is unfamiliar). Rendered diagrams are in
-[`diagrams/`](./diagrams/).
-
-Requirement levels **MUST / MUST NOT / SHOULD** are used in the RFC-2119 sense.
-
----
+This document is the normative contract for the Casper fork-choice estimator. The
+[glossary](./fork-choice-glossary.md) defines its terms, and the
+[verification dossier](./fork-choice-verification.md) maps every requirement to
+executable evidence. `MUST`, `MUST NOT`, and `SHOULD` have their RFC 2119 meanings.
 
 ## 1. Scope
 
-The fork-choice estimator selects the canonical tip(s) of the block DAG — the main
-parent a new block builds on, and the secondary parents it merges. It is the
-GHOST-style heaviest-subtree rule with a slashing-aware weight filter. Source:
-`casper/src/rust/estimator.rs` (the estimator), `casper/src/rust/util/proto_util.rs`
-(`weight_from_validator_by_dag`), `casper/src/rust/util/dag_operations.rs` (the LCA),
-`shared/src/rust/shared/list_ops.rs` (`sort_by_with_decreasing_order`, the tie-break),
-`casper/src/rust/engine/multi_parent_casper/snapshot.rs` (main-parent selection), and
-`casper/src/rust/validate.rs` (`parents`, the validator-side bound check).
+Fork choice selects the ranked block-DAG tips from which a proposer chooses parents.
+It is an LMD-GHOST calculation over one certified finalized-floor context, not a
+calculation over whichever mutable indices happen to exist at the receiving node.
 
-## 2. The fork-choice rule (normative)
+The consensus-critical implementation is split across:
 
-Given a DAG `d` and a frozen `latest_messages` map (validator → their latest block):
+- `casper/src/rust/causal_equivocation.rs`, which constructs and digests the certified
+  context and its distinct causal-parent and finality-vote projections;
+- `casper/src/rust/estimator.rs`, which computes the LCA, frozen-stake scores, ranking,
+  and parent bounds from that context;
+- `casper/src/rust/engine/multi_parent_casper/snapshot.rs`, which consumes the ranked
+  result when creating a proposal snapshot;
+- `casper/src/rust/validate.rs`, which validates the declared parent structure; and
+- `shared/src/rust/shared/list_ops.rs`, which implements the total ranking order.
 
-- **R-FILTER.** Latest messages of **slashed / invalid** validators MUST be removed
-  before scoring, so they contribute **zero** weight to fork choice (the T-10 property,
-  proven for slashing). No dropped validator may influence the outcome.
-- **R-LCA.** The estimator MUST compute a lowest universal common ancestor `lca` of the
-  (depth-filtered) latest messages, and score relative to it. A latest message deeper
-  than `LATEST_MESSAGE_MAX_DEPTH` below the top MUST be filtered out **deterministically**
-  (a pure function of the DAG), bounding the scored band.
-- **R-SCORE.** Each block's score MUST be the **sum** of the weights of the validators
-  whose latest message supports it (i.e. descends from it), accumulated down the
-  supporting chains to the `lca`. The accumulation MUST be order-independent
-  (associative + commutative).
-- **R-GHOST.** The head MUST come from a descent that commits, at each fork, to the
-  main-parent child of **maximum cumulative score** (the heaviest subtree) and stops
-  at the frontier; the descent's endpoint is the canonical main tip. Ranking tips by
-  their own scores is NOT a conforming implementation: a tip's own score is only its
-  owner's weight, so concurrent proposal ties every tip and the head falls to hash
-  order.
-- **R-TOTAL.** The tie-break MUST be a **total order** on distinct blocks: score
-  descending, then block-hash ascending. This makes the ranked head **unique**.
+## 2. Certified round input
 
-## 3. Determinism (normative — the safety core)
+For one incoming finalized floor `F`, a `CertifiedConsensusContext` contains:
 
-- **R-DET.** Every honest node MUST compute the **identical** fork-choice
-  `(tips, lca, main_parent)` from the identical `(DAG, latest_messages)`. Fork-choice
-  divergence is a consensus fork (safety **S1**).
-- **R-DET** decomposes into three obligations the implementation MUST meet:
-  1. **Total tie-break** (R-TOTAL): the ranked argmax is a pure function of the scored
-     tip *set*, so the `HashSet`/`HashMap` iteration order that produced it can never
-     leak into the result.
-  2. **Integer weights**: scores MUST be computed in exact integer (`i64`) arithmetic
-     read from block-structural bonds (the main parent's on-chain weight map) — never a
-     node-local view and never floating-point. (Contrast: finalization's `f32` ratio is
-     a separate, disclosed precision residual; fork choice has no such residual.)
-  3. **Deterministic LCA** (R-LCA): the depth filter and LCA MUST be pure functions of
-     the DAG (structural top height), identical across nodes.
+- the hash and post-state hash of `F`;
+- the exact active-validator set at `F`;
+- each active validator's positive frozen stake and bond generation at `F`;
+- exactly one latest-message slot for every active validator;
+- inherited, generation-scoped objective-equivocation evidence;
+- the causal-parent projection `C` and finality-vote projection `V` derived once from
+  those fields; and
+- a canonical digest committing to all of the above.
 
-## 4. Bounds and truncation (normative)
+### R-CONTEXT
 
-- **R-COUNT.** At most `max_number_of_parents` tips MUST be returned. The **main tip
-  (head) MUST be preserved** by any truncation. The "unlimited" sentinels — the
-  estimator's `i32::MAX` and the config wire convention `-1` — MUST both be treated as
-  *unlimited* explicitly (take all), not by relying on integer-cast wraparound.
-- **R-DEPTH.** Secondary parents deeper than `max_parent_depth` below the main tip MAY
-  be dropped; the main tip MUST NOT be dropped by depth filtering.
-- **R-NOPANIC.** An empty ranked-tip set MUST surface a typed error, never a panic
-  (`filter_deep_parents` split-first guard).
+Every consensus consumer in one proposal or validation round MUST use the same
+certified context. The estimator and finalizer MUST NOT independently derive a second
+projection from receiver-local state.
 
-## 5. Robustness (normative)
+The active set, stake map, generation map, and exact latest-message keys MUST agree
+exactly. Fork choice MUST fail closed if any active-validator slot is absent. Extra
+non-authority slots do not become eligible votes.
 
-- **R-B1.** Reading a validator's weight MUST NOT panic when a traversed block or its
-  main parent is momentarily absent from the metadata index (a sync/prune window); it
-  MUST return a typed error.
-- **R-B3.** Score accumulation MUST NOT silently overflow; an overflow (reachable only
-  if cumulative bonded weight exceeds `i64::MAX`, a supply-cap violation) MUST surface a
-  typed error, never a wrapped score.
+### R-CAUSAL-PROJECTION
 
-## 6. Explicit non-requirement (design boundary)
+An exact latest message belongs to the causal-parent projection `C` only when all of
+these conditions hold:
 
-- **N-VALID.** Validators do **NOT** recompute the fork-choice of a received block.
-  `Validate::parents` bound-checks the *declared* parents (count, depth, progress) only;
-  consensus safety of parents is anchored by the finalized-floor committee/bonds
-  validation, not by re-running the estimator (`snapshot.rs`: "validators replay
-  declared parents, not fork-choice"). Therefore the correct proposer↔validator bridge
-  is **bound-consistency** (an honest proposer's depth-filtered parents MUST pass
-  `Validate::parents`) plus observer-level determinism (R-DET), not fork-choice
-  equality. Any implementation MUST NOT be specified or tested as if validators
-  recompute fork choice.
+1. its slot belongs to an active validator with positive frozen stake;
+2. the cited block exists and is intrinsically valid;
+3. except for the approved-genesis placeholder, its sender equals the slot validator;
+4. its certified sender generation equals the validator's frozen generation;
+5. that generation has no inherited objective-equivocation evidence; and
+6. objective admission accepted the cited block in the certified dependency closure.
 
-## 7. Safety invariants — MUST NEVER happen
+The finality-vote projection is the floor-descending subset:
 
-| ID | Must never |
+```math
+V = \{m \in C \mid m = F \lor F \preceq m\}
+```
+
+The two projections MUST be deterministic and MUST record a stable exclusion reason
+for each rejected slot. Receiver-local invalid caches, latest-message maps, finalized
+flags, ambient DAG height, iteration order, and arrival order MUST NOT change them.
+The implementation MUST NOT use `V` as the proposal's complete state-dependency set:
+doing so can drop an accepted sibling merely because the finalized floor advanced on
+another branch.
+
+### R-RESTORE-HORIZON
+
+Each active validator MUST retain one exact latest-message slot and its frozen
+stake. A slot MAY cite the canonical genesis hash for a validator that has not
+produced a later block. The certified projection MUST classify that identity as
+the genesis placeholder on both full-history and restored nodes.
+
+A restored node MAY omit the canonical genesis body after it persists the
+immutable genesis hash. This omission MUST NOT change the exact slots, stake
+denominator, projection, context digest, replay state, or cost state. A missing
+noncanonical latest-message body MUST return a typed dependency error. The node
+MUST NOT convert an arbitrary unheld hash into an abstention.
+
+## 3. LMD-GHOST rule
+
+### R-LCA
+
+The estimator MUST compute the lowest universal common ancestor of every eligible
+latest message. It MUST NOT discard a certified message because a receiver has learned
+an unrelated taller block. If no message is eligible, the approved genesis is the
+scoring root.
+
+There is deliberately no receiver-local `LATEST_MESSAGE_MAX_DEPTH` projection. Such a
+projection makes the LCA depend on ambient DAG height and can make closure-equivalent
+validators choose different roots.
+
+### R-SCORE
+
+For each validator represented in `V`, its frozen-floor stake `A(v)` is added exactly once to
+every block in the supporting ancestry of `lm(v)` down to the LCA:
+
+```math
+score(b) = \sum_{v : b \preceq lm(v)} A(v)
+```
+
+The same `A(v)` MUST be used along the entire supporting chain. Candidate or
+unfinalized bond maps MUST NOT reweight an already certified round. Each validator's
+support traversal MAY execute in parallel, but contributions MUST be reduced with
+checked integer addition in a deterministic order. Overflow MUST return a typed error.
+
+### R-GHOST
+
+Fork choice has two concurrent-preserving lanes with different purposes.
+
+The head lane starts at the LCA and repeatedly selects the scored child that is first
+under score-descending, hash-ascending order. It stops at the first block with no
+scored child. This terminal block `g` is the greedy GHOST head.
+
+The frontier lane starts at the same LCA. It may expand scored nonterminal blocks in
+any order, replacing each with all of its scored children. It retains blocks with no
+scored child and deduplicates shared children. On termination it MUST equal the exact
+scored terminal frontier `T`; expansion order MUST NOT affect `T`.
+
+The estimator MUST compose the two lanes as:
+
+```math
+ranked = [g] \mathbin{++} sort_{score\downarrow,hash\uparrow}(T \setminus \{g\})
+```
+
+It MUST NOT select the head by globally sorting `T`. For example, if one root child
+has score `60` split between terminal descendants of scores `30` and `30`, while a
+second root child and its only terminal descendant have score `40`, GHOST enters the
+score-`60` subtree. The score-`40` terminal is a secondary tip, not the head.
+
+Every traversed child edge MUST strictly increase block height. A non-advancing edge,
+cycle, missing child, or greedy head absent from `T` MUST produce a typed error.
+
+### R-TOTAL
+
+Distinct siblings during greedy descent and distinct members of the secondary
+terminal frontier MUST be ordered by score descending and then block hash ascending.
+This is a total order. The ranked list's first position is reserved for `g`; only its
+tail is globally score-sorted.
+
+### R-PROPOSAL-PARENTS
+
+The proposal parent candidates are the unique block hashes in `C`. If no candidate
+equals or descends from `F`, the proposer MUST add `F` as an explicit backstop. It
+MUST then remove every candidate covered by another candidate, producing the complete
+reachability-maximal antichain. This compaction may remove an ancestor only when a
+retained parent covers it; it may not select an arbitrary subset.
+
+When `V` is nonempty, `g` MUST be a member of the compacted causal-parent set and MUST
+remain the first declared parent. When `V` is empty, `F` is the first declared parent.
+Deploy presence, pending-work policy, recovery policy, or input enumeration MUST NOT
+replace this main parent. Recovery may narrow to the main parent only when it descends
+from `F` and covers every live causal tip.
+
+The evidence closure is rooted at the exact latest-message hashes and `F`, independently
+of which causal tips survive proposal-parent depth expiry. Therefore expiration of an
+old branch cannot erase equivocation evidence or the certified floor.
+
+## 4. Cross-validator determinism
+
+### R-EXTENSIONAL
+
+For certified contexts with the same digest and DAG closures containing every cited
+block, fork choice MUST be extensionally equal:
+
+```math
+C_1.digest = C_2.digest
+\land closure(D_1, C_1) = closure(D_2, C_2)
+\Longrightarrow FC(D_1, C_1) = FC(D_2, C_2)
+```
+
+Local blocks outside that closure and every receiver-local index are observationally
+irrelevant. Parallel validator execution and message arrival may change when a round
+can be evaluated, but never its result.
+
+## 5. Parent bounds
+
+### R-COUNT
+
+Exactly `-1` and the estimator sentinel `i32::MAX` mean unlimited; zero and every
+value below `-1` are invalid configuration. The implementation MUST NOT rely on
+signed-to-unsigned wrapping.
+
+The ranked vote frontier may cap secondary estimator results while retaining its head.
+The proposal's causal-parent antichain MUST NOT be silently truncated. Let $`P`$
+be the complete, depth-expired, reachability-maximal parent frontier derived from
+one frozen proposal snapshot, including the finalized-floor backstop when needed.
+A finite `max-number-of-parents` value $`c`$ admits that snapshot exactly when:
+
+```math
+|P| \le c
+```
+
+If $`|P| > c`$, proposal construction MUST return a typed deferred result before
+block creation or signing. It MUST retain the complete evidence and pending work,
+and MUST NOT truncate $`P`$ or select a receiver-local subset.
+
+Let $`M`$ be `number-of-active-validators`. The provisioning rule
+$`c \ge M + 1`$ is a sufficient worst-case bound: it reserves one distinct tip per
+configured active-validator slot plus an independent floor backstop. It is not a
+necessary admission condition because $`M`$ is a future committee ceiling while
+the current committee may be smaller, validators may share a latest block, and
+reachability compaction may cover multiple tips with one parent. Startup SHOULD
+warn when a finite cap is below this worst-case bound, but MUST reject only
+syntactically invalid bounds. Runtime admission is authoritative because it checks
+the exact frozen frontier.
+
+### R-DEPTH
+
+For ranked candidates `R = [g] ++ S`, let `H` be the maximum block height in `R`.
+Finite-depth filtering MUST return:
+
+```math
+F_D(R) = [g] \mathbin{++} [p \in S \mid H - height(p) \le D]
+```
+
+The selected first parent `g` is unconditional and remains first. Every secondary is
+measured from the freshest original candidate. A secondary outside the horizon expires
+from the current live causal frontier deterministically on every validator; it remains
+in the exact evidence closure. This expiry is the liveness mechanism for a permanently
+disjoint old unfinalized branch and is not an arbitrary omission.
+The receiver computes the same `H` over declared parents, exempts only index zero and
+the universally available approved genesis, and checks every other parent against
+`D + depth_buffer`. It does not recompute fork choice.
+
+### R-NONEMPTY
+
+An empty ranked-tip set or an empty bounded-parent result MUST return a typed consensus
+error. It MUST NOT panic and MUST NOT silently produce a parentless ordinary block.
+
+## 6. Robustness
+
+- Missing metadata for a context-cited message, LCA, scored ancestor, or declared
+  parent MUST produce a typed error rather than silently shrinking the calculation.
+  The canonical genesis placeholder is the only body-absence exception.
+- The certificate support manifest MUST include each noncanonical exact latest
+  message. A restored node MUST materialize that block before context derivation.
+- Every score addition and parent-count conversion MUST be checked.
+- Parallel score traversal MUST not mutate the DAG or the certified context.
+- Parallel or asynchronous frontier traversal MUST converge to the same exact,
+  duplicate-free terminal set.
+- A selected hash subset MUST NOT be used to rerun fork choice after parent pruning;
+  pruning preserves the already selected GHOST first parent.
+
+## 7. Validator boundary
+
+Validators replay the block's declared parents and validate their structural and
+certified-context constraints. They do not require a Byzantine proposer to have chosen
+the same policy-preferred parent that the local proposer would choose. This preserves
+Casper's accepted language while making the proposal-to-receiver depth-bound bridge
+explicit and deterministic.
+
+Let $`J`$ be the frozen justification set. Let $`P`$ be the declared parent set.
+Let $`F`$ be the signed finalized-floor commitment.
+
+The proposer derives its preferred frontier from $`J`$ and one frozen DAG view.
+The receiver does not repeat that policy choice. The receiver evaluates these independent inputs:
+
+- $`P`$ selects the replay state.
+- $`J`$ selects votes, evidence, and authority.
+- $`F`$ sets the durable state floor.
+
+For each parent $`p`$, let $`\phi(p)`$ be its effective committed floor.
+Let $`\preceq_D`$ mean DAG ancestry. Let $`\sqsubseteq_S`$ mean state containment.
+The receiver-side floor check is:
+
+```math
+\begin{aligned}
+\mathsf{Admit}(F,P) \equiv{}& P \ne \varnothing \\
+&\land \exists p \in P.\; F \preceq_D p \\
+&\land \forall p \in P.\; \phi(p) \preceq_D F
+                         \land \phi(p) \sqsubseteq_S F \\
+&\land \forall p,q \in P.\;
+  \phi(p) \preceq_D \phi(q) \lor \phi(q) \preceq_D \phi(p).
+\end{aligned}
+```
+
+An honest preferred frontier implies $`\mathsf{Admit}(F,P)`$.
+The converse does not hold. A declared subset can omit a justified sibling and remain valid.
+The subset remains valid only when a declared parent carries $`F`$.
+
+This boundary preserves asynchronous Casper behavior. Exact receiver-side frontier equality would reject replay-safe blocks and reduce liveness.
+
+## 8. Safety invariants
+
+| ID | Forbidden state |
 |---|---|
-| **S1** | Two honest nodes disagree on the fork-choice tips/main-parent for the same DAG (violates R-DET/R-TOTAL). |
-| **S2** | A slashed/invalid validator influences fork choice (violates R-FILTER). |
-| **S3** | The main tip is dropped by count/depth truncation (violates R-COUNT/R-DEPTH). |
-| **S4** | The estimator panics on a missing-metadata or empty-tips edge (violates R-NOPANIC/R-B1). |
-| **S5** | A wrapped (overflowed) score changes the ranking (violates R-B3). |
-| **S6** | The LCA/depth filter differs across nodes for the same DAG (violates R-LCA). |
+| S1 | Closure-equivalent honest validators derive different LCA, scores, ranking, or head from one certified context. |
+| S2 | A missing, wrong-generation, equivocating, intrinsically invalid, sender-mismatched, non-authority, or outside-floor message contributes stake. |
+| S3 | Candidate bonds or receiver-local indices change a frozen round's scores or projection. |
+| S4 | Fork choice proceeds with an incomplete active-validator slot set. |
+| S5 | Count or depth handling removes or replaces the selected first parent, silently truncates a live causal antichain, or expires a tip nondeterministically. |
+| S6 | Missing metadata, empty output, integer overflow, or invalid conversion panics or silently changes the result. |
+| S7 | An honest proposal's secondary parents fail the buffered receive-side depth predicate. |
+| S8 | A globally largest terminal leaf replaces the greedy heaviest-subtree head. |
+| S9 | Frontier expansion order, a multi-parent diamond, or a malformed non-advancing edge changes or prevents the ranked result. |
+| S10 | A receiver accepts a parent frontier without committed-floor ancestry, or requires equality with its local preferred frontier. |
+| S11 | Deploy or recovery policy replaces the GHOST main parent without proving floor ancestry and complete causal-tip coverage. |
+| S12 | Evidence closure omits the captured finalized floor or an exact latest message because proposal-parent compaction or expiry removed it. |
 
-## 8. Conformance
+## 9. Conformance
 
-An implementation conforms iff every **R-** requirement holds, no **S-** invariant is
-reachable, and **N-VALID** is respected. The
-[verification dossier](./fork-choice-verification.md) maps each requirement/invariant to
-its mechanized artifact (Rocq axiom-free capstones, TLA⁺ models, Z3/Sage/Wolfram
-cross-witnesses) and Rust regression tests; run them locally with
-`scripts/check-fork-choice-ALL.sh` (formal verification is **local-only** — never wired
-into CI).
+An implementation conforms only when every requirement above is represented in the
+Rocq refinement, a TLA+ model with a falsifying negative control, Rust
+example/property tests against production code, and the local verification gate. Run
+`scripts/check-fork-choice-ALL.sh` and the certified-context portion of
+`scripts/check-finalized-floor-ALL.sh` for the authoritative evidence set.

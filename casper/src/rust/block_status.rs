@@ -1,6 +1,11 @@
 // See casper/src/main/scala/coop/rchain/casper/BlockStatus.scala
 
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::{
+    AdmissionRejectionReason, CertifiedAdmissionOutcome, CertifiedSenderAuthority,
+};
+use models::rust::casper::protocol::casper_message::BlockMessage;
+use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::errors::CasperError;
@@ -99,6 +104,7 @@ pub enum InvalidBlock {
     NeglectedEquivocation,
     InvalidTransaction,
     InvalidBondsCache,
+    InvalidEquivocationEvidence,
     InvalidBlockHash,
     // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
     // fails the authorization predicate (wrong epoch, missing/non-invalid
@@ -120,6 +126,211 @@ pub enum InvalidBlock {
     LowDeployCost,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EquivocationObservation {
+    RequestedDependency,
+    Unsolicited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationDisposition {
+    Accept,
+    ObjectiveInvalid,
+    MissingDependency,
+    LocalFault,
+    AlreadyProcessed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ValidationDeferral {
+    AlreadyBuffered,
+    AwaitingBlock(BlockHash),
+    AwaitingState(rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash),
+}
+
+impl ValidationDeferral {
+    pub fn status(&self) -> BlockError {
+        match self {
+            Self::AlreadyBuffered => BlockError::MissingBlocks,
+            Self::AwaitingBlock(hash) => BlockError::Undecidable(hash.clone()),
+            Self::AwaitingState(root) => BlockError::AwaitingState(root.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum CertifiedBlockValidation {
+    Accepted {
+        sender_authority: CertifiedSenderAuthority,
+        admission_outcome: CertifiedAdmissionOutcome,
+        equivocation_observation: Option<EquivocationObservation>,
+    },
+    ObjectiveRejected {
+        invalid: InvalidBlock,
+        sender_authority: CertifiedSenderAuthority,
+        admission_outcome: CertifiedAdmissionOutcome,
+    },
+    UnattributableRejected {
+        invalid: InvalidBlock,
+    },
+    MissingDependency(ValidationDeferral),
+    LocalFault(CasperError),
+    CasperBusy,
+    AlreadyProcessed,
+}
+
+impl CertifiedBlockValidation {
+    pub fn unattributable(invalid: InvalidBlock) -> Self {
+        Self::UnattributableRejected { invalid }
+    }
+
+    pub fn local_fault(error: CasperError) -> Self { Self::LocalFault(error) }
+
+    pub fn from_uncertified_error(error: BlockError) -> Result<Self, CasperError> {
+        match error {
+            BlockError::Invalid(invalid) => Ok(Self::unattributable(invalid)),
+            BlockError::MissingBlocks => {
+                Ok(Self::MissingDependency(ValidationDeferral::AlreadyBuffered))
+            }
+            BlockError::Undecidable(hash) => Ok(Self::MissingDependency(
+                ValidationDeferral::AwaitingBlock(hash),
+            )),
+            BlockError::AwaitingState(root) => Ok(Self::MissingDependency(
+                ValidationDeferral::AwaitingState(root),
+            )),
+            BlockError::AdmittedSettled => Ok(Self::AlreadyProcessed),
+            BlockError::BlockException(error) => Ok(Self::LocalFault(error)),
+            BlockError::CasperIsBusy => Ok(Self::CasperBusy),
+            BlockError::Processed => Ok(Self::AlreadyProcessed),
+        }
+    }
+
+    pub fn certified(
+        block: &BlockMessage,
+        status: Either<BlockError, ValidBlock>,
+        sender_authority: CertifiedSenderAuthority,
+    ) -> Result<Self, CasperError> {
+        Self::certified_with_observation(block, status, sender_authority, None)
+    }
+
+    pub fn certified_with_observation(
+        block: &BlockMessage,
+        status: Either<BlockError, ValidBlock>,
+        sender_authority: CertifiedSenderAuthority,
+        equivocation_observation: Option<EquivocationObservation>,
+    ) -> Result<Self, CasperError> {
+        match status {
+            Either::Right(ValidBlock::Valid) => {
+                let admission_outcome =
+                    CertifiedAdmissionOutcome::accepted(block, &sender_authority)
+                        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                Ok(Self::Accepted {
+                    sender_authority,
+                    admission_outcome,
+                    equivocation_observation,
+                })
+            }
+            Either::Left(BlockError::Invalid(invalid)) => {
+                let admission_outcome = CertifiedAdmissionOutcome::rejected(
+                    block,
+                    &sender_authority,
+                    AdmissionRejectionReason::from(&invalid),
+                )
+                .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+                Ok(Self::ObjectiveRejected {
+                    invalid,
+                    sender_authority,
+                    admission_outcome,
+                })
+            }
+            Either::Left(error) => Self::from_uncertified_error(error),
+        }
+    }
+
+    pub fn status(&self) -> Either<BlockError, ValidBlock> {
+        match self {
+            Self::Accepted { .. } => Either::Right(ValidBlock::Valid),
+            Self::ObjectiveRejected { invalid, .. } | Self::UnattributableRejected { invalid } => {
+                Either::Left(BlockError::Invalid(invalid.clone()))
+            }
+            Self::MissingDependency(deferral) => Either::Left(deferral.status()),
+            Self::LocalFault(error) => Either::Left(BlockError::BlockException(error.clone())),
+            Self::CasperBusy => Either::Left(BlockError::CasperIsBusy),
+            Self::AlreadyProcessed => Either::Left(BlockError::Processed),
+        }
+    }
+
+    pub fn sender_authority(&self) -> Option<&CertifiedSenderAuthority> {
+        match self {
+            Self::Accepted {
+                sender_authority, ..
+            }
+            | Self::ObjectiveRejected {
+                sender_authority, ..
+            } => Some(sender_authority),
+            _ => None,
+        }
+    }
+
+    pub fn admission_outcome(&self) -> Option<&CertifiedAdmissionOutcome> {
+        match self {
+            Self::Accepted {
+                admission_outcome, ..
+            }
+            | Self::ObjectiveRejected {
+                admission_outcome, ..
+            } => Some(admission_outcome),
+            _ => None,
+        }
+    }
+
+    pub fn equivocation_observation(&self) -> Option<EquivocationObservation> {
+        match self {
+            Self::Accepted {
+                equivocation_observation,
+                ..
+            } => *equivocation_observation,
+            _ => None,
+        }
+    }
+}
+
+impl From<&InvalidBlock> for AdmissionRejectionReason {
+    fn from(value: &InvalidBlock) -> Self {
+        match value {
+            InvalidBlock::AdmissibleEquivocation => Self::AdmissibleEquivocation,
+            InvalidBlock::IgnorableEquivocation => Self::IgnorableEquivocation,
+            InvalidBlock::InvalidFormat => Self::InvalidFormat,
+            InvalidBlock::InvalidSignature => Self::InvalidSignature,
+            InvalidBlock::InvalidSender => Self::InvalidSender,
+            InvalidBlock::InvalidVersion => Self::InvalidVersion,
+            InvalidBlock::InvalidTimestamp => Self::InvalidTimestamp,
+            InvalidBlock::DeployNotSigned => Self::DeployNotSigned,
+            InvalidBlock::InvalidBlockNumber => Self::InvalidBlockNumber,
+            InvalidBlock::InvalidRepeatDeploy => Self::InvalidRepeatDeploy,
+            InvalidBlock::InvalidParents => Self::InvalidParents,
+            InvalidBlock::InvalidFollows => Self::InvalidFollows,
+            InvalidBlock::InvalidSequenceNumber => Self::InvalidSequenceNumber,
+            InvalidBlock::InvalidShardId => Self::InvalidShardId,
+            InvalidBlock::JustificationRegression => Self::JustificationRegression,
+            InvalidBlock::NeglectedInvalidBlock => Self::NeglectedInvalidBlock,
+            InvalidBlock::NeglectedEquivocation => Self::NeglectedEquivocation,
+            InvalidBlock::InvalidTransaction => Self::InvalidTransaction,
+            InvalidBlock::InvalidBondsCache => Self::InvalidBondsCache,
+            InvalidBlock::InvalidEquivocationEvidence => Self::InvalidEquivocationEvidence,
+            InvalidBlock::InvalidBlockHash => Self::InvalidBlockHash,
+            InvalidBlock::UnauthorizedSlashDeploy => Self::UnauthorizedSlashDeploy,
+            InvalidBlock::InvalidRejectedDeploy => Self::InvalidRejectedDeploy,
+            InvalidBlock::PrematureDeployRetry => Self::PrematureDeployRetry,
+            InvalidBlock::ContainsExpiredDeploy => Self::ContainsExpiredDeploy,
+            InvalidBlock::ContainsTimeExpiredDeploy => Self::ContainsTimeExpiredDeploy,
+            InvalidBlock::ContainsFutureDeploy => Self::ContainsFutureDeploy,
+            InvalidBlock::NotOfInterest => Self::NotOfInterest,
+            InvalidBlock::LowDeployCost => Self::LowDeployCost,
+        }
+    }
+}
+
 impl BlockStatus {
     pub fn valid() -> ValidBlock { ValidBlock::Valid }
 
@@ -127,15 +338,9 @@ impl BlockStatus {
 
     pub fn casper_is_busy() -> BlockError { BlockError::CasperIsBusy }
 
+    pub fn exception(ex: CasperError) -> BlockError { BlockError::BlockException(ex) }
+
     pub fn missing_blocks() -> BlockError { BlockError::MissingBlocks }
-
-    pub fn admissible_equivocation() -> BlockError {
-        BlockError::Invalid(InvalidBlock::AdmissibleEquivocation)
-    }
-
-    pub fn ignorable_equivocation() -> BlockError {
-        BlockError::Invalid(InvalidBlock::IgnorableEquivocation)
-    }
 
     pub fn invalid_format() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidFormat) }
 
@@ -226,6 +431,26 @@ impl BlockStatus {
             _ => false,
         }
     }
+
+    pub fn disposition(&self) -> ValidationDisposition {
+        match self {
+            BlockStatus::Valid(_) => ValidationDisposition::Accept,
+            BlockStatus::Error(BlockError::Invalid(_)) => ValidationDisposition::ObjectiveInvalid,
+            BlockStatus::Error(BlockError::MissingBlocks) => {
+                ValidationDisposition::MissingDependency
+            }
+            BlockStatus::Error(BlockError::Undecidable(_))
+            | BlockStatus::Error(BlockError::AwaitingState(_)) => {
+                ValidationDisposition::MissingDependency
+            }
+            BlockStatus::Error(BlockError::AdmittedSettled) => {
+                ValidationDisposition::AlreadyProcessed
+            }
+            BlockStatus::Error(BlockError::BlockException(_))
+            | BlockStatus::Error(BlockError::CasperIsBusy) => ValidationDisposition::LocalFault,
+            BlockStatus::Error(BlockError::Processed) => ValidationDisposition::AlreadyProcessed,
+        }
+    }
 }
 
 impl InvalidBlock {
@@ -307,6 +532,7 @@ impl InvalidBlock {
             | InvalidBlock::NeglectedEquivocation
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache
+            | InvalidBlock::InvalidEquivocationEvidence
             | InvalidBlock::InvalidBlockHash
             | InvalidBlock::UnauthorizedSlashDeploy
             | InvalidBlock::ContainsExpiredDeploy
@@ -408,6 +634,35 @@ mod tests {
              stays in the exception class"
         );
     }
+
+    #[test]
+    fn certified_deferrals_preserve_the_named_artifact() {
+        use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+        let missing = BlockHash::from(vec![0x41; 32]);
+        let block = CertifiedBlockValidation::from_uncertified_error(BlockError::Undecidable(
+            missing.clone(),
+        ))
+        .expect("block deferral");
+        assert_eq!(
+            block.status(),
+            Either::Left(BlockError::Undecidable(missing))
+        );
+
+        let root = Blake2b256Hash::from_bytes(vec![0x42; 32]);
+        let state = CertifiedBlockValidation::from_uncertified_error(BlockError::AwaitingState(
+            root.clone(),
+        ))
+        .expect("state deferral");
+        assert_eq!(
+            state.status(),
+            Either::Left(BlockError::AwaitingState(root))
+        );
+
+        let buffered = CertifiedBlockValidation::from_uncertified_error(BlockError::MissingBlocks)
+            .expect("buffered deferral");
+        assert_eq!(buffered.status(), Either::Left(BlockError::MissingBlocks));
+    }
 }
 
 #[cfg(test)]
@@ -430,5 +685,37 @@ mod floor_data_tests {
 
         assert_eq!(status, BlockError::Undecidable(missing));
         assert!(!matches!(status, BlockError::Invalid(_)));
+    }
+}
+
+#[cfg(test)]
+mod validation_disposition_tests {
+    use super::*;
+
+    #[test]
+    fn local_faults_and_missing_dependencies_are_never_objective_invalidity() {
+        let local = BlockStatus::Error(BlockError::BlockException(CasperError::RuntimeError(
+            "unknown local root".to_string(),
+        )));
+        let missing = BlockStatus::Error(BlockError::MissingBlocks);
+
+        assert_eq!(local.disposition(), ValidationDisposition::LocalFault);
+        assert_eq!(
+            missing.disposition(),
+            ValidationDisposition::MissingDependency
+        );
+        assert!(!local.is_in_dag());
+        assert!(!missing.is_in_dag());
+    }
+
+    #[test]
+    fn only_explicit_invalidity_is_objective() {
+        let invalid = BlockStatus::Error(BlockError::Invalid(InvalidBlock::InvalidTransaction));
+
+        assert_eq!(
+            invalid.disposition(),
+            ValidationDisposition::ObjectiveInvalid
+        );
+        assert!(invalid.is_in_dag());
     }
 }

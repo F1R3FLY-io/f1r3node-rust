@@ -3,9 +3,8 @@
 ## 1 · Summary
 
 Companion to Bug #4 (slash-side transfer failure), Bug #10 is on
-the **withdrawal** side. Pre-fix, the Rholang `payWithdraw` flow inside
-`removeQuarantinedWithdrawers` in `PoS.rhox` removed the validator's
-`withdrawers` entry
+the **withdrawal** side. Pre-fix, the Rholang `payWithdraw` flow at
+`PoS.rhox:835-861` removed the validator's `withdrawers` entry
 *before* the `posVault.transfer` had completed; if the transfer
 failed, the validator's entry was already gone but the transfer
 had not credited the receiver. The validator's funds were

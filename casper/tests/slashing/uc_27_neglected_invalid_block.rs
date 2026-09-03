@@ -3,28 +3,23 @@
 // Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-27.
 // Theorems: T-3, T-6, T-9.3.
 //
-// Scenario: a block is classified `NeglectedInvalidBlock` (the
-// "block cites an invalid block in its justifications without
-// slashing the offender" variant). The post-fix catch-all dispatcher
-// mints a record so the proposing layer can later issue a SlashDeploy.
+// Scenario: a block cites a rejected dependency. The dispatcher persists the
+// derived rejection without creating recursive economic evidence.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
 
 #[test]
-fn uc_27_neglected_invalid_block_dispatches_record() {
+fn uc_27_neglected_invalid_block_persists_without_evidence() {
     let mut harness = SlashingTestHarness::new(3, 100);
     let hash = harness.sign_block("v1", 9);
 
-    // The harness models NeglectedInvalidBlock under the
-    // `SlashableOther` umbrella; the production code uses the
-    // dedicated InvalidBlock::NeglectedInvalidBlock variant.
-    let status = harness.dispatch_with_status(hash, Status::SlashableOther);
-    assert_eq!(status, Status::SlashableOther);
+    let status = harness.dispatch_with_status(hash, Status::RejectedOther);
+    assert_eq!(status, Status::RejectedOther);
 
     assert!(
-        harness.has_record("v1", 8),
-        "post-fix #3: dispatcher mints record for NeglectedInvalidBlock"
+        !harness.has_record("v1", 8),
+        "NeglectedInvalidBlock must not mint economic evidence"
     );
     assert!(harness.dag.invalid.contains(&hash));
 }

@@ -35,14 +35,14 @@ fn uc_70_amplification_outside_closure_bound() {
     // v2 is the direct offender (stake=1).
     let _v2a = harness.sign_block("v2", 5);
     let bad = harness.sign_block_distinct("v2", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
 
     // Chain: v0 → v1 → v2 (v0 cites v1 cites v2).
     let v1_neg = harness.sign_block_citing("v1", 6, bad);
-    let s1 = harness.dispatch(v1_neg);
+    let s1 = harness.dispatch_counterfactual_neglect_evidence(v1_neg);
     assert_eq!(s1, Status::NeglectedEquivocation);
     let v0_neg = harness.sign_block_citing("v0", 7, v1_neg);
-    let s0 = harness.dispatch(v0_neg);
+    let s0 = harness.dispatch_counterfactual_neglect_evidence(v0_neg);
     assert_eq!(s0, Status::NeglectedEquivocation);
 
     // Closure: {v0, v1, v2}. Total slashed stake = 3+3+1 = 7;

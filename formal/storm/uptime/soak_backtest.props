@@ -1,0 +1,2 @@
+"observed_or_worse_probability": P=? [ F<=ITERATIONS "observed_or_worse" ];
+"expected_failures": R{"final_failure_count"}=? [ I=ITERATIONS ];

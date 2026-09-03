@@ -1,8 +1,11 @@
 //! Authorization predicate for `Slash` system deploys.
 //!
 //! Every `Slash` system deploy carried in a block must reference current-epoch
-//! invalid-block evidence whose offender is positively bonded. This module
-//! provides both halves of that contract:
+//! evidence whose offender is positively bonded. Unary evidence names a
+//! locally invalid block. Objective equivocation evidence names a canonical
+//! pair of distinct blocks from one sender at one sequence number and does not
+//! depend on either block's local invalid flag. This module provides both
+//! halves of that contract:
 //!
 //! * [`authorized_slash_candidates`] — the proposer-side enumeration the block
 //!   creator uses to decide which slashes to mint.
@@ -10,11 +13,12 @@
 //!   the predicate and rejects unauthorized slashes with
 //!   `InvalidBlock::UnauthorizedSlashDeploy`.
 //!
-//! The conjunctive predicate `received_slash_deploy_authorized` (current epoch
-//! ∧ matching evidence epoch ∧ positive bond ∧ block flagged invalid) is the
-//! precondition proven sufficient by Theorem T-9.13 (see
-//! `formal/rocq/slashing/theories/BugFixSlashAuthorization.v` and
-//! `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14`).
+//! The unary predicate `received_slash_deploy_authorized` retains the
+//! current-epoch, matching-evidence-epoch, matching-bond-generation,
+//! positive-bond, and locally-invalid requirements proven sufficient by
+//! Theorem T-9.13. Objective pairs replace the final local predicate with an
+//! immutable same-sender/same-sequence relation proven in
+//! `ObjectiveEquivocation.v`.
 //!
 //! Boundary helpers (`checked_base_seq`, `checked_next_seq`,
 //! `epoch_for_block_number`) live here because their failure modes feed back
@@ -27,18 +31,22 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::epoch::Epoch;
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 /// Phase 9 (C-6): typed domain-level failure reasons for the epoch
 /// arithmetic primitives. Replaces the prior `Option<i64>` /
@@ -73,7 +81,9 @@ impl From<DomainError> for SlashAuthError {
 /// variant per conjunct.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SlashAuthError {
-    #[error("slash deploy issuer does not match block sender (block={block_hash}, issuer={issuer}, sender={sender})")]
+    #[error(
+        "slash deploy issuer does not match block sender (block={block_hash}, issuer={issuer}, sender={sender})"
+    )]
     IssuerMismatch {
         block_hash: String,
         issuer: String,
@@ -85,6 +95,12 @@ pub enum SlashAuthError {
     ReferencesUnknownBlock { hash: String },
     #[error("slash deploy references a valid block {hash}")]
     ReferencesValidBlock { hash: String },
+    #[error("slash deploy references a rejection that is not slash evidence {hash}")]
+    ReferencesIneligibleRejection { hash: String },
+    #[error("equivocation evidence pair is not in canonical hash order ({first}, {second})")]
+    NonCanonicalEquivocationPair { first: String, second: String },
+    #[error("equivocation evidence blocks do not share one sender and sequence")]
+    EquivocationEvidenceMismatch,
     #[error("invalid epoch length {0}")]
     InvalidEpochLength(i32),
     #[error("negative block number {0}")]
@@ -102,10 +118,20 @@ pub enum SlashAuthError {
         "slash deploy is not authorized by current invalid-block evidence (validator {validator})"
     )]
     NotAuthorizedByEvidence { validator: String },
-    #[error("duplicate slash deploy target in block (validator {validator}, epoch {epoch})")]
-    DuplicateTarget { validator: String, epoch: Epoch },
+    #[error(
+        "duplicate slash deploy target in block (validator {validator}, generation {generation}, epoch {epoch})"
+    )]
+    DuplicateTarget {
+        validator: String,
+        generation: BondGeneration,
+        epoch: Epoch,
+    },
     #[error("negative block sequence number {seq_num} (block {block_hash})")]
     NegativeSequenceNumber { block_hash: String, seq_num: i32 },
+    #[error(
+        "slash deploy bond generation does not match certified evidence or current PoS state (validator {validator})"
+    )]
+    BondGenerationMismatch { validator: String },
 }
 
 // Phase 9 (R-2): `From<SlashAuthError> for CasperError` now lives in
@@ -117,9 +143,10 @@ pub enum SlashAuthError {
 pub struct AuthorizedSlashCandidate {
     pub offender: Validator,
     pub invalid_block_hash: BlockHash,
+    pub equivocation_block_hash: Option<BlockHash>,
     /// Epoch under which the slash takes effect. By construction this equals
-    /// the epoch of the offender's invalid block at commit time — the
-    /// receiver reconstructs it from that evidence (see
+    /// the epoch of every evidence block at commit time. The receiver
+    /// reconstructs it from that evidence (see
     /// `slash_evidence_epoch_matches_target`), so the proposer cannot move the
     /// slash to a different epoch.
     ///
@@ -127,6 +154,88 @@ pub struct AuthorizedSlashCandidate {
     /// conversion at the protobuf boundary uses
     /// `Epoch::from(slash_deploy.target_activation_epoch)`.
     pub target_activation_epoch: Epoch,
+    pub target_bond_generation: BondGeneration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalSlashAuthority {
+    state_hash: StateHash,
+    bonds: HashMap<Validator, i64>,
+    generations: HashMap<Validator, BondGeneration>,
+}
+
+impl CanonicalSlashAuthority {
+    pub async fn load(
+        runtime_manager: &RuntimeManager,
+        state_hash: &StateHash,
+    ) -> Result<Self, CasperError> {
+        let (bonds, generations) = tokio::try_join!(
+            runtime_manager.compute_bonds(state_hash),
+            runtime_manager.compute_bond_generations(state_hash)
+        )?;
+        let bonds = bonds
+            .into_iter()
+            .map(|bond| (bond.validator, bond.stake))
+            .collect();
+        let generations = generations
+            .into_iter()
+            .map(|(validator, generation)| {
+                BondGeneration::try_from(generation)
+                    .map(|generation| (validator, generation))
+                    .map_err(|error| {
+                        CasperError::RuntimeError(format!(
+                            "PoS returned an invalid bond generation: {error}"
+                        ))
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+        Self::new_checked(state_hash.clone(), bonds, generations)
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn from_parts(
+        state_hash: StateHash,
+        bonds: HashMap<Validator, i64>,
+        generations: HashMap<Validator, BondGeneration>,
+    ) -> Result<Self, CasperError> {
+        Self::new_checked(state_hash, bonds, generations)
+    }
+
+    fn new_checked(
+        state_hash: StateHash,
+        bonds: HashMap<Validator, i64>,
+        generations: HashMap<Validator, BondGeneration>,
+    ) -> Result<Self, CasperError> {
+        if let Some((validator, _)) = bonds
+            .iter()
+            .find(|(validator, bond)| **bond > 0 && !generations.contains_key(*validator))
+        {
+            return Err(CasperError::RuntimeError(format!(
+                "PoS state {} has a positive bond without a bond generation for validator {}",
+                hex::encode(&state_hash),
+                hex::encode(validator)
+            )));
+        }
+        Ok(Self {
+            state_hash,
+            bonds,
+            generations,
+        })
+    }
+
+    pub fn state_hash(&self) -> &StateHash { &self.state_hash }
+
+    pub fn bonds(&self) -> &HashMap<Validator, i64> { &self.bonds }
+
+    pub fn generations(&self) -> &HashMap<Validator, BondGeneration> { &self.generations }
+
+    pub fn bond(&self, validator: &Validator) -> i64 {
+        self.bonds.get(validator).copied().unwrap_or(0)
+    }
+
+    pub fn generation(&self, validator: &Validator) -> Option<BondGeneration> {
+        self.generations.get(validator).copied()
+    }
 }
 
 /// Phase 9 (C-6): returns a typed [`DomainError`] when the input
@@ -193,28 +302,30 @@ pub fn slash_target_has_positive_bond(bond: i64) -> bool { bond > 0 }
 
 pub fn slash_target_key(
     offender: &Validator,
-    target_activation_epoch: Epoch,
-) -> (Validator, Epoch) {
-    (offender.clone(), target_activation_epoch)
+    target_bond_generation: BondGeneration,
+) -> (Validator, BondGeneration) {
+    (offender.clone(), target_bond_generation)
 }
 
 pub fn slash_target_key_collides<T: Eq>(
     left_offender: &T,
-    left_epoch: Epoch,
+    left_generation: BondGeneration,
     right_offender: &T,
-    right_epoch: Epoch,
+    right_generation: BondGeneration,
 ) -> bool {
-    left_offender == right_offender && left_epoch == right_epoch
+    left_offender == right_offender && left_generation == right_generation
 }
 
 /// Core authorization predicate: a `Slash` system deploy is admissible iff
-/// all four conditions hold simultaneously —
+/// all six conditions hold simultaneously —
 /// 1. the deploy's `target_activation_epoch` equals the *current* epoch
 ///    (computed from `reference_block_number`),
 /// 2. the *evidence* block's epoch equals the same `target_activation_epoch`
 ///    (so the proposer cannot reuse stale evidence under a fresh epoch label),
-/// 3. the offender carries a positive bond, and
-/// 4. the referenced block is flagged invalid in the DAG.
+/// 3. the evidence generation equals the deploy generation,
+/// 4. the canonical PoS generation equals the deploy generation,
+/// 5. the offender carries a positive bond, and
+/// 6. the referenced block is flagged invalid in the DAG.
 ///
 /// Returns `None` only when the domain conditions of `epoch_for_block_number`
 /// fail (non-positive `epoch_length` or negative block number). The
@@ -226,6 +337,9 @@ pub fn received_slash_deploy_authorized(
     evidence_block_number: i64,
     target_activation_epoch: Epoch,
     epoch_length: i32,
+    evidence_bond_generation: Option<BondGeneration>,
+    target_bond_generation: BondGeneration,
+    canonical_bond_generation: Option<BondGeneration>,
     bond: i64,
     invalid: bool,
 ) -> Result<bool, DomainError> {
@@ -239,37 +353,97 @@ pub fn received_slash_deploy_authorized(
         target_activation_epoch,
         epoch_length,
     )?;
-    Ok(current && evidence && slash_target_has_positive_bond(bond) && invalid)
+    Ok(current
+        && evidence
+        && evidence_bond_generation == Some(target_bond_generation)
+        && canonical_bond_generation == Some(target_bond_generation)
+        && slash_target_has_positive_bond(bond)
+        && invalid)
 }
 
 fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, DomainError> {
     epoch_for_block_number(metadata.block_number, epoch_length)
 }
 
+fn objective_evidence_pair_authorized(
+    first_hash: &BlockHash,
+    first: &BlockMetadata,
+    second_hash: &BlockHash,
+    second: &BlockMetadata,
+    target_epoch: Epoch,
+    target_generation: BondGeneration,
+    epoch_length: i32,
+    authority: &CanonicalSlashAuthority,
+) -> Result<(), SlashAuthError> {
+    if first_hash >= second_hash {
+        return Err(SlashAuthError::NonCanonicalEquivocationPair {
+            first: hex::encode(first_hash),
+            second: hex::encode(second_hash),
+        });
+    }
+    if first.sender != second.sender
+        || first.sequence_number != second.sequence_number
+        || first.sequence_number < 0
+    {
+        return Err(SlashAuthError::EquivocationEvidenceMismatch);
+    }
+    if first.sender_bond_generation() != Some(target_generation)
+        || second.sender_bond_generation() != Some(target_generation)
+        || authority.generation(&first.sender) != Some(target_generation)
+    {
+        return Err(SlashAuthError::BondGenerationMismatch {
+            validator: hex::encode(&first.sender),
+        });
+    }
+    for metadata in [first, second] {
+        let epoch = evidence_epoch(metadata, epoch_length).map_err(SlashAuthError::from)?;
+        if epoch != target_epoch {
+            return Err(SlashAuthError::EvidenceEpochMismatch {
+                evidence_epoch: epoch,
+                target_epoch,
+            });
+        }
+    }
+    if authority.bond(&first.sender) <= 0 {
+        return Err(SlashAuthError::TargetNotBonded {
+            validator: hex::encode(&first.sender),
+        });
+    }
+    Ok(())
+}
+
+pub fn has_slash_evidence(snapshot: &CasperSnapshot) -> bool {
+    snapshot
+        .dag
+        .invalid_blocks()
+        .iter()
+        .any(BlockMetadata::is_slash_evidence_eligible)
+        || snapshot
+            .dag
+            .equivocation_observations()
+            .values()
+            .any(|hashes| hashes.len() >= 2)
+}
+
 /// Proposer-side enumeration of slash candidates for the block being built.
 ///
-/// At most one candidate per offender is emitted, even when the DAG contains
-/// multiple invalid blocks from the same validator in the current epoch — the
-/// receiver is required to enforce that uniqueness, so the proposer must
-/// mirror it. When two evidence blocks tie, we keep the one with the
-/// lexicographically smallest `invalid_block_hash`; this tie-break is
-/// load-bearing for cross-node replay determinism (every node must select the
-/// same candidate set from the same snapshot).
+/// At most one candidate per offender is emitted. A canonical objective pair
+/// takes precedence over unary local-invalid evidence. Once a structural pair
+/// exists, unary fallback from that `(offender, sequence)` is suppressed even
+/// when the pair crosses an epoch boundary and is therefore ineligible. An
+/// independent unary fault at another sequence remains eligible. Eligible
+/// pairs and unary candidates use lexicographic tie-breaking so every node
+/// selects the same candidate set from the same immutable evidence.
 ///
-/// `max_block_num + 1` is the block number of the block we are *about to
-/// propose*, not the latest existing block — so `current_epoch` is the epoch
-/// the new block will land in. Slashing decisions belong to that epoch.
+/// `proposed_block_num` is the actual number of the block being built, so
+/// `current_epoch` is the epoch the new block will land in. Slashing decisions
+/// belong to that epoch and never infer it from a mutable snapshot maximum.
 pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
+    proposed_block_num: i64,
+    authority: &CanonicalSlashAuthority,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
     let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
-    // P2-9: surface overflow on `max_block_num + 1` as a typed error.
-    let proposed_block_num = snapshot.max_block_num.checked_add(1).ok_or_else(|| {
-        CasperError::RuntimeError(format!(
-            "max_block_num overflow: {} + 1 wraps i64",
-            snapshot.max_block_num
-        ))
-    })?;
     // Phase 9 (C-6): `epoch_for_block_number` now returns
     // `Result<i64, DomainError>`. Map directly to the corresponding
     // `SlashAuthError` (and on into `CasperError::SlashAuth` via the
@@ -304,8 +478,100 @@ pub fn authorized_slash_candidates(
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
+    let mut objective_authorized_offenders = BTreeSet::new();
+    let structural_equivocation_keys = snapshot.dag.structural_equivocation_keys();
+    for ((validator, generation, sequence), hashes) in snapshot.dag.equivocation_observations() {
+        if hashes.len() < 2
+            || sequence < 0
+            || authority.generation(&validator) != Some(generation)
+            || authority.bond(&validator) <= 0
+        {
+            continue;
+        }
+        let mut current_epoch_evidence = Vec::new();
+        for hash in hashes {
+            let metadata = snapshot
+                .dag
+                .lookup(&hash)
+                .map_err(CasperError::from)?
+                .ok_or_else(|| {
+                    CasperError::KvStoreError(KvStoreError::InvalidArgument(format!(
+                        "equivocation evidence index references unknown block {}",
+                        hex::encode(&hash)
+                    )))
+                })?;
+            if metadata.sender != validator
+                || metadata.sender_bond_generation() != Some(generation)
+                || metadata.sequence_number != sequence
+            {
+                return Err(CasperError::KvStoreError(KvStoreError::InvalidArgument(
+                    format!(
+                        "equivocation evidence index key disagrees with block metadata for {}",
+                        hex::encode(&hash)
+                    ),
+                )));
+            }
+            let Ok(epoch) = evidence_epoch(&metadata, epoch_length) else {
+                continue;
+            };
+            if epoch == current_epoch {
+                current_epoch_evidence.push((hash, metadata));
+            }
+        }
+        if current_epoch_evidence.len() < 2 {
+            continue;
+        }
+        let (first_hash, first) = &current_epoch_evidence[0];
+        let (second_hash, second) = &current_epoch_evidence[1];
+        objective_evidence_pair_authorized(
+            first_hash,
+            first,
+            second_hash,
+            second,
+            current_epoch,
+            generation,
+            epoch_length,
+            authority,
+        )
+        .map_err(CasperError::from)?;
+        let candidate = AuthorizedSlashCandidate {
+            offender: validator.clone(),
+            invalid_block_hash: first_hash.clone(),
+            equivocation_block_hash: Some(second_hash.clone()),
+            target_activation_epoch: current_epoch,
+            target_bond_generation: generation,
+        };
+        match by_offender.entry(validator) {
+            Entry::Vacant(entry) => {
+                entry.insert(candidate);
+            }
+            Entry::Occupied(mut entry) => {
+                let existing = entry.get();
+                if (
+                    &candidate.invalid_block_hash,
+                    &candidate.equivocation_block_hash,
+                ) < (
+                    &existing.invalid_block_hash,
+                    &existing.equivocation_block_hash,
+                ) {
+                    entry.insert(candidate);
+                }
+            }
+        }
+        objective_authorized_offenders.insert(first.sender.clone());
+    }
     for metadata in snapshot.dag.invalid_blocks() {
-        if !metadata.invalid {
+        if !metadata.is_slash_evidence_eligible() {
+            continue;
+        }
+        if structural_equivocation_keys.contains(&(
+            metadata.sender.clone(),
+            metadata
+                .sender_bond_generation()
+                .unwrap_or(BondGeneration::GENESIS),
+            metadata.sequence_number,
+        )) || objective_authorized_offenders.contains(&metadata.sender)
+        {
             continue;
         }
         // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
@@ -332,19 +598,22 @@ pub fn authorized_slash_candidates(
         if target_activation_epoch != current_epoch {
             continue;
         }
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
+        let Some(target_bond_generation) = metadata.sender_bond_generation() else {
+            continue;
+        };
+        if authority.generation(&metadata.sender) != Some(target_bond_generation) {
+            continue;
+        }
+        let bond = authority.bond(&metadata.sender);
         if bond <= 0 {
             continue;
         }
         let candidate = AuthorizedSlashCandidate {
             offender: metadata.sender.clone(),
             invalid_block_hash: metadata.block_hash.clone(),
+            equivocation_block_hash: None,
             target_activation_epoch,
+            target_bond_generation,
         };
         match by_offender.entry(metadata.sender.clone()) {
             Entry::Vacant(entry) => {
@@ -364,24 +633,28 @@ pub fn authorized_slash_candidates(
 }
 
 /// Receive-side mirror of [`authorized_slash_candidates`]. Every successful
-/// `Slash` system deploy in `block` must satisfy seven rules; any violation
-/// returns `Err` and the caller (`Validate::slash_deploy_authorization`)
-/// collapses that into `InvalidBlock::UnauthorizedSlashDeploy`:
+/// `Slash` system deploy in `block` must satisfy the common authorization
+/// rules below. Any violation returns `Err` and the caller
+/// (`Validate::slash_deploy_authorization`) collapses it into
+/// `InvalidBlock::UnauthorizedSlashDeploy`:
 ///
 /// 1. The deploy issuer must equal the block sender.
 /// 2. `target_activation_epoch` must equal the *current* epoch of the
 ///    receiving block (so a slash cannot reference a different epoch's rules).
-/// 3. `invalid_block_hash` must resolve to a known block in the DAG.
-/// 4. That block must be flagged `invalid`.
-/// 5. The evidence block's own epoch must equal `target_activation_epoch`.
-/// 6. The offender must currently carry a positive bond.
-/// 7. No two slashes in the same block may share `(offender, target_epoch)`.
+/// 3. Every evidence hash must resolve to a known block in the DAG.
+/// 4. Unary evidence must be locally invalid; pair evidence must be distinct,
+///    canonically ordered, and identify one sender and sequence number.
+/// 5. Every evidence block's epoch must equal `target_activation_epoch`.
+/// 6. The evidence generation must equal the canonical pre-state generation.
+/// 7. The offender must carry a positive bond at that same pre-state root.
+/// 8. No two slashes in the same block may share `(offender, target_generation)`.
 ///
 /// See `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14` and
 /// the Rocq proof in `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
     snapshot: &CasperSnapshot,
+    authority: &CanonicalSlashAuthority,
 ) -> Result<(), CasperError> {
     let has_slash_deploy = block.body.system_deploys.iter().any(|system_deploy| {
         matches!(system_deploy, ProcessedSystemDeploy::Succeeded {
@@ -399,9 +672,8 @@ pub fn validate_received_slash_deploys(
     let current_epoch = epoch_for_block_number(block.body.state.block_number, epoch_length)
         .map_err(SlashAuthError::from)?;
     // BTreeMap gives deterministic iteration order for the error path; the
-    // key `(offender, target_epoch)` is the uniqueness rule from item (7).
-    // Phase 10 (C-5): typed `Epoch` key replaces raw `i64`.
-    let mut seen = BTreeMap::<(Validator, Epoch), BlockHash>::new();
+    // key `(offender, target_generation)` is the uniqueness rule from item 8.
+    let mut seen = BTreeMap::<(Validator, BondGeneration), BlockHash>::new();
 
     // Defensive check — block sequence numbers must be non-negative.
     // `debug_assert!` would compile out in release; a tampered wire-protocol
@@ -424,8 +696,10 @@ pub fn validate_received_slash_deploys(
             system_deploy:
                 SystemDeployData::Slash {
                     invalid_block_hash,
+                    equivocation_block_hash,
                     issuer_public_key,
                     target_activation_epoch,
+                    target_bond_generation,
                 },
             ..
         } = system_deploy
@@ -473,55 +747,86 @@ pub fn validate_received_slash_deploys(
                 hash: hex::encode(invalid_block_hash),
             })?;
 
-        if !metadata.invalid {
-            return Err(SlashAuthError::ReferencesValidBlock {
-                hash: hex::encode(invalid_block_hash),
+        if let Some(equivocation_block_hash) = equivocation_block_hash {
+            let conflicting = snapshot
+                .dag
+                .lookup(equivocation_block_hash)
+                .map_err(CasperError::from)?
+                .ok_or_else(|| SlashAuthError::ReferencesUnknownBlock {
+                    hash: hex::encode(equivocation_block_hash),
+                })?;
+            objective_evidence_pair_authorized(
+                invalid_block_hash,
+                &metadata,
+                equivocation_block_hash,
+                &conflicting,
+                target_activation_epoch,
+                *target_bond_generation,
+                epoch_length,
+                authority,
+            )?;
+        } else {
+            if !metadata.is_rejected() {
+                return Err(SlashAuthError::ReferencesValidBlock {
+                    hash: hex::encode(invalid_block_hash),
+                }
+                .into());
             }
-            .into());
+            if !metadata.is_slash_evidence_eligible() {
+                return Err(SlashAuthError::ReferencesIneligibleRejection {
+                    hash: hex::encode(invalid_block_hash),
+                }
+                .into());
+            }
+            if metadata.sender_bond_generation() != Some(*target_bond_generation)
+                || authority.generation(&metadata.sender) != Some(*target_bond_generation)
+            {
+                return Err(SlashAuthError::BondGenerationMismatch {
+                    validator: hex::encode(&metadata.sender),
+                }
+                .into());
+            }
+            let evidence_epoch =
+                evidence_epoch(&metadata, epoch_length).map_err(SlashAuthError::from)?;
+            if evidence_epoch != target_activation_epoch {
+                return Err(SlashAuthError::EvidenceEpochMismatch {
+                    evidence_epoch,
+                    target_epoch: target_activation_epoch,
+                }
+                .into());
+            }
+            let bond = authority.bond(&metadata.sender);
+            if bond <= 0 {
+                return Err(SlashAuthError::TargetNotBonded {
+                    validator: hex::encode(&metadata.sender),
+                }
+                .into());
+            }
+            let authorized = received_slash_deploy_authorized(
+                block.body.state.block_number,
+                metadata.block_number,
+                target_activation_epoch,
+                epoch_length,
+                metadata.sender_bond_generation(),
+                *target_bond_generation,
+                authority.generation(&metadata.sender),
+                bond,
+                metadata.is_slash_evidence_eligible(),
+            )
+            .map_err(SlashAuthError::from)?;
+            if !authorized {
+                return Err(SlashAuthError::NotAuthorizedByEvidence {
+                    validator: hex::encode(&metadata.sender),
+                }
+                .into());
+            }
         }
 
-        let evidence_epoch =
-            evidence_epoch(&metadata, epoch_length).map_err(SlashAuthError::from)?;
-        if evidence_epoch != target_activation_epoch {
-            return Err(SlashAuthError::EvidenceEpochMismatch {
-                evidence_epoch,
-                target_epoch: target_activation_epoch,
-            }
-            .into());
-        }
-
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
-            return Err(SlashAuthError::TargetNotBonded {
-                validator: hex::encode(&metadata.sender),
-            }
-            .into());
-        }
-        let authorized = received_slash_deploy_authorized(
-            block.body.state.block_number,
-            metadata.block_number,
-            target_activation_epoch,
-            epoch_length,
-            bond,
-            metadata.invalid,
-        )
-        .map_err(SlashAuthError::from)?;
-        if !authorized {
-            return Err(SlashAuthError::NotAuthorizedByEvidence {
-                validator: hex::encode(&metadata.sender),
-            }
-            .into());
-        }
-
-        let key = slash_target_key(&metadata.sender, target_activation_epoch);
+        let key = (metadata.sender.clone(), *target_bond_generation);
         if seen.insert(key, invalid_block_hash.clone()).is_some() {
             return Err(SlashAuthError::DuplicateTarget {
                 validator: hex::encode(&metadata.sender),
+                generation: *target_bond_generation,
                 epoch: target_activation_epoch,
             }
             .into());
@@ -647,6 +952,9 @@ mod kani_proofs {
             evidence_block_number,
             Epoch::new(target_activation_epoch),
             epoch_length,
+            Some(BondGeneration::GENESIS),
+            BondGeneration::GENESIS,
+            Some(BondGeneration::GENESIS),
             bond,
             invalid
         )
@@ -659,6 +967,11 @@ mod kani_proofs {
         let evidence_block_number: u16 = kani::any();
         let target_activation_epoch: i16 = kani::any();
         let epoch_length: u8 = kani::any();
+        let evidence_generation: u8 = kani::any();
+        let target_generation: u8 = kani::any();
+        let canonical_generation: u8 = kani::any();
+        let evidence_generation_present: bool = kani::any();
+        let canonical_generation_present: bool = kani::any();
         let bond: i16 = kani::any();
         let invalid: bool = kani::any();
         kani::assume(epoch_length > 0);
@@ -667,10 +980,20 @@ mod kani_proofs {
         let target_activation_epoch_raw = i64::from(target_activation_epoch);
         let target_activation_epoch = Epoch::new(target_activation_epoch_raw);
         let epoch_length = i32::from(epoch_length);
+        let evidence_generation = evidence_generation_present.then(|| {
+            BondGeneration::new(i64::from(evidence_generation)).expect("nonnegative generation")
+        });
+        let target_generation =
+            BondGeneration::new(i64::from(target_generation)).expect("nonnegative generation");
+        let canonical_generation = canonical_generation_present.then(|| {
+            BondGeneration::new(i64::from(canonical_generation)).expect("nonnegative generation")
+        });
         let bond = i64::from(bond);
         let expected = target_activation_epoch_raw
             == reference_block_number / i64::from(epoch_length)
             && target_activation_epoch_raw == evidence_block_number / i64::from(epoch_length)
+            && evidence_generation == Some(target_generation)
+            && canonical_generation == Some(target_generation)
             && bond > 0
             && invalid;
         assert_eq!(
@@ -679,6 +1002,9 @@ mod kani_proofs {
                 evidence_block_number,
                 target_activation_epoch,
                 epoch_length,
+                evidence_generation,
+                target_generation,
+                canonical_generation,
                 bond,
                 invalid
             ),
@@ -711,6 +1037,9 @@ mod kani_proofs {
                 evidence_block_number,
                 Epoch::new(target_epoch_raw),
                 epoch_length,
+                Some(BondGeneration::GENESIS),
+                BondGeneration::GENESIS,
+                Some(BondGeneration::GENESIS),
                 i64::from(bond),
                 true
             ),
@@ -737,6 +1066,9 @@ mod kani_proofs {
                 evidence_block_number,
                 Epoch::new(target_epoch_raw),
                 epoch_length,
+                Some(BondGeneration::GENESIS),
+                BondGeneration::GENESIS,
+                Some(BondGeneration::GENESIS),
                 i64::from(bond),
                 false
             ),
@@ -764,6 +1096,9 @@ mod kani_proofs {
                 evidence_block_number,
                 Epoch::new(target_epoch_raw),
                 epoch_length,
+                Some(BondGeneration::GENESIS),
+                BondGeneration::GENESIS,
+                Some(BondGeneration::GENESIS),
                 i64::from(bond),
                 true
             ),
@@ -790,7 +1125,60 @@ mod kani_proofs {
                 evidence_block_number,
                 Epoch::new(target_epoch_raw),
                 epoch_length,
+                Some(BondGeneration::GENESIS),
+                BondGeneration::GENESIS,
+                Some(BondGeneration::GENESIS),
                 i64::from(bond),
+                true
+            ),
+            Ok(false)
+        );
+    }
+
+    #[kani::proof]
+    fn received_authorization_requires_matching_evidence_generation() {
+        let target_generation_raw: u8 = kani::any();
+        let evidence_generation_raw: u8 = kani::any();
+        kani::assume(target_generation_raw != evidence_generation_raw);
+        let target_generation =
+            BondGeneration::new(i64::from(target_generation_raw)).expect("nonnegative generation");
+        let evidence_generation = BondGeneration::new(i64::from(evidence_generation_raw))
+            .expect("nonnegative generation");
+        assert_eq!(
+            received_slash_deploy_authorized(
+                0,
+                0,
+                Epoch::new(0),
+                1,
+                Some(evidence_generation),
+                target_generation,
+                Some(target_generation),
+                1,
+                true
+            ),
+            Ok(false)
+        );
+    }
+
+    #[kani::proof]
+    fn received_authorization_requires_matching_canonical_generation() {
+        let target_generation_raw: u8 = kani::any();
+        let canonical_generation_raw: u8 = kani::any();
+        kani::assume(target_generation_raw != canonical_generation_raw);
+        let target_generation =
+            BondGeneration::new(i64::from(target_generation_raw)).expect("nonnegative generation");
+        let canonical_generation = BondGeneration::new(i64::from(canonical_generation_raw))
+            .expect("nonnegative generation");
+        assert_eq!(
+            received_slash_deploy_authorized(
+                0,
+                0,
+                Epoch::new(0),
+                1,
+                Some(target_generation),
+                target_generation,
+                Some(canonical_generation),
+                1,
                 true
             ),
             Ok(false)
@@ -801,16 +1189,20 @@ mod kani_proofs {
     fn slash_target_key_collides_matches_pair_equality() {
         let left_offender: u8 = kani::any();
         let right_offender: u8 = kani::any();
-        let left_epoch: i16 = kani::any();
-        let right_epoch: i16 = kani::any();
+        let left_generation: u8 = kani::any();
+        let right_generation: u8 = kani::any();
+        let left_generation =
+            BondGeneration::new(i64::from(left_generation)).expect("nonnegative generation");
+        let right_generation =
+            BondGeneration::new(i64::from(right_generation)).expect("nonnegative generation");
         assert_eq!(
             slash_target_key_collides(
                 &left_offender,
-                Epoch::new(i64::from(left_epoch)),
+                left_generation,
                 &right_offender,
-                Epoch::new(i64::from(right_epoch))
+                right_generation
             ),
-            left_offender == right_offender && left_epoch == right_epoch
+            left_offender == right_offender && left_generation == right_generation
         );
     }
 }

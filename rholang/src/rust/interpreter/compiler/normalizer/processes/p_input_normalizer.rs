@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use models::rhoapi::{Par, Receive, ReceiveBind};
+use models::rhoapi::{CostSignature, Par, Receive, ReceiveBind};
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Bind, Name, Proc, Receipts, Source};
 use rholang_parser::{SourcePos, SourceSpan};
@@ -13,6 +13,10 @@ use crate::rust::interpreter::compiler::exports::{
     FreeMap, NameVisitInputs, NameVisitOutputs, ProcVisitInputs, ProcVisitOutputs,
 };
 use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::pattern_guard::reject_cost_syntax_in_name_pattern;
+use crate::rust::interpreter::compiler::normalizer::cost_accounting::sig::{
+    signature_to_wire, wire_signature_connective_used, wire_signature_locally_free,
+};
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
@@ -64,7 +68,7 @@ pub fn normalize_p_input<'ast>(
     let head_receipt = &receipts[0][0];
 
     let receipt_contains_complex_source = match head_receipt {
-        Bind::Linear { rhs, .. } => match rhs {
+        Bind::Linear { rhs, .. } | Bind::Signed { rhs, .. } => match rhs {
             Source::Simple { .. } => false,
             _ => true,
         },
@@ -91,7 +95,11 @@ pub fn normalize_p_input<'ast>(
                 ),
                 |(sends, continuation), bind| {
                     match bind {
-                        Bind::Linear { lhs, rhs } => {
+                        Bind::Linear { lhs, rhs } | Bind::Signed { lhs, rhs, .. } => {
+                            let signature = match bind {
+                                Bind::Signed { sig, .. } => Some(sig.clone()),
+                                _ => None,
+                            };
                             let identifier = Uuid::new_v4().to_string();
                             // Create temporary variable - point to binding site
                             // TODO: Update zero span
@@ -115,12 +123,14 @@ pub fn normalize_p_input<'ast>(
                                     let mut new_names = lhs.names.clone();
                                     new_names.push(temp_var.clone());
 
-                                    list_linear_bind.push(Bind::Linear {
-                                        lhs: rholang_parser::ast::Names {
-                                            names: new_names,
-                                            remainder: lhs.remainder.clone(),
-                                        },
-                                        rhs: Source::Simple { name: *name },
+                                    let lhs = rholang_parser::ast::Names {
+                                        names: new_names,
+                                        remainder: lhs.remainder.clone(),
+                                    };
+                                    let rhs = Source::Simple { name: *name };
+                                    list_linear_bind.push(match signature {
+                                        Some(sig) => Bind::Signed { lhs, rhs, sig },
+                                        None => Bind::Linear { lhs, rhs },
                                     });
 
                                     // Add send: temp!()
@@ -154,11 +164,13 @@ pub fn normalize_p_input<'ast>(
                                         uri: None,
                                     });
 
-                                    list_linear_bind.push(Bind::Linear {
-                                        lhs: lhs.clone(),
-                                        rhs: Source::Simple {
-                                            name: temp_var.clone(),
-                                        },
+                                    let lhs = lhs.clone();
+                                    let rhs = Source::Simple {
+                                        name: temp_var.clone(),
+                                    };
+                                    list_linear_bind.push(match signature {
+                                        Some(sig) => Bind::Signed { lhs, rhs, sig },
+                                        None => Bind::Linear { lhs, rhs },
                                     });
 
                                     // Prepend temp variable to inputs
@@ -254,17 +266,33 @@ pub fn normalize_p_input<'ast>(
                         }
                     };
 
-                    Ok(((names, remainder), source_name))
+                    Ok(((names, remainder), (source_name, None)))
                 }
                 Bind::Repeated { lhs, rhs } => {
                     let names: Vec<_> = lhs.names.iter().collect();
                     let remainder = &lhs.remainder;
-                    Ok(((names, remainder), rhs))
+                    Ok(((names, remainder), (rhs, None)))
                 }
                 Bind::Peek { lhs, rhs } => {
                     let names: Vec<_> = lhs.names.iter().collect();
                     let remainder = &lhs.remainder;
-                    Ok(((names, remainder), rhs))
+                    Ok(((names, remainder), (rhs, None)))
+                }
+                Bind::Signed { lhs, rhs, sig } => {
+                    let names: Vec<_> = lhs.names.iter().collect();
+                    let remainder = &lhs.remainder;
+
+                    let source_name = match rhs {
+                        Source::Simple { name } => name,
+                        _ => {
+                            return Err(InterpreterError::ParserError(
+                                "Only simple sources supported in current implementation"
+                                    .to_string(),
+                            ))
+                        }
+                    };
+
+                    Ok(((names, remainder), (source_name, Some(sig))))
                 }
             })
             .collect();
@@ -276,6 +304,10 @@ pub fn normalize_p_input<'ast>(
             Bind::Linear { .. } => (false, false),
             Bind::Repeated { .. } => (true, false),
             Bind::Peek { .. } => (false, true),
+            // A cost-accounted signed bind is the linear-receive form (non-
+            // persistent, non-peek); the signature decorates, it does not change
+            // the COMM shape (W1, recognition-only in Phase 1).
+            Bind::Signed { .. } => (false, false),
         };
 
         // Extract patterns and sources
@@ -283,17 +315,28 @@ pub fn normalize_p_input<'ast>(
 
         // Process sources using new AST name normalizer
         fn process_sources<'ast>(
-            sources: Vec<&'ast rholang_parser::ast::Name<'ast>>,
+            sources: Vec<(
+                &'ast rholang_parser::ast::Name<'ast>,
+                Option<&'ast rholang_parser::ast::Signature<'ast>>,
+            )>,
             input: ProcVisitInputs,
             env: &HashMap<String, Par>,
             parser: &'ast rholang_parser::RholangParser<'ast>,
-        ) -> Result<(Vec<Par>, FreeMap<VarSort>, BitSet, bool), InterpreterError> {
+        ) -> Result<
+            (
+                Vec<(Par, Option<CostSignature>)>,
+                FreeMap<VarSort>,
+                BitSet,
+                bool,
+            ),
+            InterpreterError,
+        > {
             let mut vector_par = Vec::new();
             let mut current_known_free = input.free_map;
             let mut locally_free = Vec::new();
             let mut connective_used = false;
 
-            for name in sources {
+            for (name, signature) in sources {
                 let NameVisitOutputs {
                     par,
                     free_map: updated_known_free,
@@ -307,13 +350,30 @@ pub fn normalize_p_input<'ast>(
                     parser,
                 )?;
 
-                vector_par.push(par.clone());
                 current_known_free = updated_known_free;
                 locally_free = union(
                     locally_free,
                     par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
                 );
-                connective_used = connective_used || par.clone().connective_used(par);
+                connective_used = connective_used || par.clone().connective_used(par.clone());
+                let signature = match signature {
+                    Some(signature) => {
+                        let (signature, updated_known_free) = signature_to_wire(
+                            signature,
+                            &input.bound_map_chain,
+                            current_known_free,
+                            env,
+                            parser,
+                        )?;
+                        current_known_free = updated_known_free;
+                        locally_free = union(locally_free, wire_signature_locally_free(&signature));
+                        connective_used =
+                            connective_used || wire_signature_connective_used(&signature);
+                        Some(signature)
+                    }
+                    None => None,
+                };
+                vector_par.push((par, signature));
             }
 
             Ok((
@@ -349,6 +409,12 @@ pub fn normalize_p_input<'ast>(
                     let mut locally_free = Vec::new();
 
                     for name in names {
+                        // Reject cost syntax in receive-bind pattern position (W1
+                        // §1.5): a signed term / token stack inside a bound name
+                        // `@{...}` is a process form (recognized + metered), not a
+                        // receive pattern.
+                        reject_cost_syntax_in_name_pattern(name)?;
+
                         let NameVisitOutputs {
                             par,
                             free_map: updated_known_free,
@@ -395,7 +461,7 @@ pub fn normalize_p_input<'ast>(
                 .into_iter()
                 .zip(sources_par)
                 .into_iter()
-                .map(|((a, b, c, _), e)| (a, b, e, c))
+                .map(|((a, b, c, _), (e, signature))| (a, b, e, c, signature))
                 .collect(),
         )?;
 
@@ -597,6 +663,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_signature: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(1, create_bit_vector(&[1]), false),
@@ -699,6 +766,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -808,6 +876,7 @@ mod tests {
                 source: Some(Par::default()),
                 remainder: None,
                 free_count: 2,
+                cost_signature: None,
             }],
             body: Some({
                 let mut inner_par = Par::default();
@@ -820,6 +889,7 @@ mod tests {
                         source: Some(new_gint_par(1, Vec::new(), false)),
                         remainder: None,
                         free_count: 2,
+                        cost_signature: None,
                     }],
                     body: Some({
                         let mut par = Par::default().with_sends(vec![

@@ -10,7 +10,7 @@
 ' the cost-accounting verification doc §11.2 traceability table style.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/10-component-formal-correspondence.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/10-component-formal-correspondence.puml
 
 @startuml 10-component-formal-correspondence
 !theme plain

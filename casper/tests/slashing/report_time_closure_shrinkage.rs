@@ -29,12 +29,12 @@ fn uc_67_report_removes_neglect_edge() {
     // v0 equivocates.
     let _v0a = harness.sign_block("v0", 5);
     let bad = harness.sign_block_distinct("v0", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
 
     // v1 publishes a NEGLECTING block (cite without slash) —
     // creates an active neglect edge.
     let v1_neg = harness.sign_block_citing("v1", 6, bad);
-    let s_neg = harness.dispatch(v1_neg);
+    let s_neg = harness.dispatch_counterfactual_neglect_evidence(v1_neg);
     assert_eq!(s_neg, Status::NeglectedEquivocation);
     assert!(
         harness.has_record("v1", 5),
@@ -45,7 +45,7 @@ fn uc_67_report_removes_neglect_edge() {
     // suppresses the same evidence at report time. v2's edge
     // is reported; v2 stays Valid.
     let v2_honest = harness.sign_block_citing_with_slash("v2", 7, bad, "v0");
-    let s_honest = harness.dispatch(v2_honest);
+    let s_honest = harness.dispatch_counterfactual_neglect_evidence(v2_honest);
     assert_eq!(
         s_honest,
         Status::Valid,

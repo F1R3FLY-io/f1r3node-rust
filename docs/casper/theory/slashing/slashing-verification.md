@@ -12,22 +12,37 @@
 > name for traceability.
 >
 > The development is **closed under the global context**: every
-> theorem from `main_bisimilarity_theorem` downward depends only on
-> Rocq's standard library and the slashing theories — zero `Admitted`,
-> zero custom `Axiom`. This is verified via `Print Assumptions` (§14)
-> against the mechanization in `formal/rocq/slashing/`.
+> theorem from `main_slashing_algorithm_correct` downward depends only
+> on Rocq's standard library and the slashing theories — zero
+> `Admitted`, zero custom `Axiom`. This is verified via
+> `Print Assumptions` (§14) against the mechanization in
+> `formal/rocq/slashing/`.
 >
 > **Contributions.** This article proves three principal results:
-> (i) the Rust slashing pipeline is observationally equivalent (weak
-> barbed bisimilarity) to its Scala antecedent, modulo a closed set of
-> sixteen documented bug fixes (Theorems T-13a/b/c, T-14, T-15a/b);
-> (ii) two-level slash closure terminates in at most `|V|−1` rounds
-> and preserves a Byzantine-fault-tolerant quorum under explicit fault
-> hypotheses (Theorems T-11, T-12 and the T-12 letter-suffix family);
+> (i) the Rust slashing pipeline is *correct*.
+> `main_slashing_algorithm_correct` covers every detected admissible or ignorable equivocation.
+> It proves bond zeroing, witness recording, fork-choice exclusion, stake quarantine,
+> and a mint halt. The Coop vault stays unchanged before adjudication.
+> (ii) the counterfactual two-level slash closure terminates in at most
+> `|V|−1` rounds and preserves a Byzantine-fault-tolerant quorum under
+> explicit fault hypotheses (Theorems T-11, T-12, and the T-12 family);
 > (iii) the authorization, withdrawal, arithmetic, and projection
 > theorems (T-9.10..T-9.16, T-Auth, T-LivenessGap) close the
 > previously open evidence-domain attack surface flagged by the
 > Sage/Hypothesis traceability passes.
+>
+> **Removed (2026-05-29).** An earlier version of this article also
+> proved the Rust slashing pipeline observationally bisimilar to the
+> Scala original (T-13a/b/c, T-14, T-15a/b). That result — a
+> bug-finding differential device whose purpose is complete — is
+> obsolete under the cost-accounted-rho migration and has been removed;
+> see the §8 removal note and DR-6.
+
+> **Normative policy.** The current protocol records economic evidence only
+> for `AdmissibleEquivocation` and `IgnorableEquivocation`. The protocol
+> persists `NeglectedEquivocation` as a terminal rejection without new
+> evidence. The two-level closure proves properties of a counterfactual
+> policy. It does not describe the current economic transition.
 
 ---
 
@@ -39,8 +54,8 @@
 4. [Equivocation detection — semantics and correctness](#4--equivocation-detection--semantics-and-correctness)
 5. [EquivocationRecord — algebraic structure](#5--equivocationrecord--algebraic-structure)
 6. [The PoS slash effect](#6--the-pos-slash-effect)
-7. [Two-level slashing closure](#7--two-level-slashing-closure)
-8. [Bisimilarity Rust ≈ Scala (modulo bug fixes)](#8--bisimilarity-rust--scala-modulo-bug-fixes)
+7. [Counterfactual two-level slashing closure](#7--counterfactual-two-level-slashing-closure)
+8. [Differential divergence calculus](#8--differential-divergence-calculus)
 9. [Bug-fix proofs](#9--bug-fix-proofs)
 10. [TLA+ correctness model](#10--tla-correctness-model)
 11. [Sage-driven exploratory verification](#11--sage-driven-exploratory-verification)
@@ -76,15 +91,14 @@ The contribution split:
 |-------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | **(a)** Direct mechanizations             | `bm_slash`, `bm_lookup`, `equivocates_ptr` (detector notion) / `equivocates_b` (auxiliary), `is_slashable`, `detect`, `slash`, `prepare_slashing_deploys`, `filter_slashed`, `slash_step`, `atomic_record_or_update`, `received_slash_deploy_authorized` / `validate_block_slash_deploys`, `checked_pred`, `checked_succ_bounded`           |
 | **(b)** Verifications of paper algorithms | T-1, T-2, T-3, T-4, T-5, T-6, T-7, T-8, T-Idem (slash idempotence; alias T-9), T-10                                                                                                                                                                     |
-| **(c)** Proof-original extensions         | T-11, T-12 (with letter-suffix family T-12-{W, F, C, I, G, A, V, RPT, EID, HYP, AMP, PF, R, D, RET}), T-13a/b/c, T-14, T-15a/b, T-9.1–T-9.15 (including T-9.10', T-9.10″), T-Auth (auth-token guard, §9.16), T-LivenessGap (authorized-index proposer derivation, §9.16) |
+| **(c)** Proof-original extensions         | T-11, T-12 (with letter-suffix family T-12-{W, F, C, I, G, A, V, RPT, EID, HYP, AMP, PF, R, D, RET}), T-9.1–T-9.15 (including T-9.10', T-9.10″), T-Auth (auth-token guard, §9.16), T-LivenessGap (authorized-index proposer derivation, §9.16) |
 | **(d)** Citable-axiom-gated               | None — all theorems are closed under the global context                                                                                                                                                                                                 |
 
 ### 1.3 Scale and module DAG
 
-26 Rocq modules, ~7,700 lines total (including BugFixSlashAuthorization,
-BugFixSeqArithmetic, BugFixDuplicateJustifications, ValidatorLifetime,
-BugFixWithdrawTransferFailure). The dependency DAG matches the one
-in `_CoqProject` (see also `slashing-specification.md` §1.7):
+The Rocq project contains 30 modules.
+`_CoqProject` is the authoritative module list.
+The dependency DAG matches that list (see also `slashing-specification.md` §1.7):
 
 ```
                  ┌──────────────┐
@@ -116,10 +130,6 @@ in `_CoqProject` (see also `slashing-specification.md` §1.7):
         └────────────┬───────────┘
                      ▼
         ┌────────────────────────┐
-        │   Bisimulation         │
-        └────────────┬───────────┘
-                     ▼
-        ┌────────────────────────┐
         │ BugFix* (13 modules) + │
         │ ValidatorLifetime      │
         └────────────┬───────────┘
@@ -148,10 +158,10 @@ proves soundness and completeness of equivocation detection
 transfer (T-8), idempotence (T-Idem, alias T-9), and fork-choice
 exclusion (T-10).
 
-**Two-level closure** (collusion is mutually destructive). §7 proves
-termination of the slash closure in at most `|V|−1` iterations
-(T-11) and Byzantine-fault-tolerant quorum preservation under the
-explicit precondition `|Sl| ≤ ⌊(n−1)/3⌋` (T-12). §7.10 develops the
+**Counterfactual two-level closure.** §7 proves termination of this
+policy operator in at most `|V|−1` iterations (T-11). It also proves
+quorum preservation under the explicit precondition
+`|Sl| ≤ ⌊(n−1)/3⌋` (T-12). §7.10 develops the
 T-12 letter-suffix family — fifteen corollaries (T-12-W weighted,
 T-12-F fixed point, T-12-C closure-depth, T-12-I initial-graph
 monotone, T-12-G graph equivalence, T-12-A anti-monotone reports,
@@ -163,24 +173,22 @@ analog, T-12-RET temporal retention) — each carrying its own
 mechanized proof and at least one Sage-derived counter-example
 showing the hypothesis is necessary.
 
-**Cross-implementation bisimilarity** (the Rust port is observationally
-equivalent to the Scala antecedent). §8 develops the five projection
-bisims (`bonds_bisim`, `records_bisim_strong`, `slashed_bisim`,
-`vault_bisim`, `forkchoice_bisim`), proves their reflexivity,
-symmetry, transitivity, and preservation under the slash transition
-(T-13a/b/c, T-14), and composes them into the weak barbed
-equivalence over the full pipeline (T-15a/b). §8.8 develops the
-divergence calculus — the formal classification of *which*
-Rust↔Scala disagreements are admissible (Theorems 8.8–8.11) — so
-the bisimilarity claim is *modulo* a closed set of permitted
-deltas, not a blanket equivalence.
+**Differential divergence calculus.** §8 develops the divergence
+calculus — the formal classification of *which* differential-search
+disagreements are admissible (Properties 8.8–8.12) — distinguishing
+permitted bug-fix deltas from protocol-hypothesis boundaries and
+forbidden, must-triage disagreements. (An earlier version of §8 also
+proved a Rust ↔ Scala observational-bisimilarity result, T-13a/b/c,
+T-14, T-15a/b; that bug-finding device is obsolete under the
+cost-accounted-rho migration and was removed — see the §8 removal note
+and DR-6.)
 
-**Bug-fix proofs** (the deltas closing the bisimilarity). §9
-discharges the sixteen documented bug-fix theorems in cadence: T-9.1
-through T-9.16 plus T-Auth and T-LivenessGap. Each subsection
-follows the canonical structure of "pre-fix counter-example → new
-invariant → post-fix theorem → ∎ → worked example", citing the
-relevant `BugFix*.v` Rocq module and `MC_*.cfg` TLA+ invariant.
+**Bug-fix proofs.** §9 discharges the sixteen documented bug-fix
+theorems in cadence: T-9.1 through T-9.16 plus T-Auth and
+T-LivenessGap. Each subsection follows the canonical structure of
+"pre-fix counter-example → new invariant → post-fix theorem → ∎ →
+worked example", citing the relevant `BugFix*.v` Rocq module and
+`MC_*.cfg` TLA+ invariant.
 
 **Complementary formal evidence.** §10 establishes the
 Rocq ↔ TLA+ correspondence at every shared invariant and reports
@@ -202,8 +210,8 @@ literatures. §17 concludes by restating the three principal
 results and lists the four future-work directions. §18 collects
 the references.
 
-A reader interested only in the bisimilarity headline may read §1,
-§2, §3, §8, §17 in that order. A reader checking a specific bug
+A reader interested only in the correctness headline may read §1,
+§2, §3, §6, §17 in that order. A reader checking a specific bug
 fix may go directly to §9.k for that bug. A reviewer evaluating the
 soundness of the development should read §14 (trust base) before
 any proof section.
@@ -246,9 +254,6 @@ references added.
 | `EqRec`        | `EqRec` (record)                         | Equivocation evidence                                 |
 | `D, I, E, B`   | `DAGState` (record)                      | DAG snapshot                                          |
 | `slash(ps, v)` | `slash : PoSState → V → PoSState × bool` | PoS slash transition                                  |
-| `~_b`          | `bonds_bisim`                            | Bond-map bisimulation                                 |
-| `~_r`          | `records_bisim`                          | Records bisimulation (modulo iter order)              |
-| `~_s`          | `slashed_bisim`                          | Slashed-set bisimulation (mutual containment)         |
 
 ### 2.2 Notation
 
@@ -256,12 +261,7 @@ references added.
 |-----------------------------------|-----------------------------------------------------|----------------------------|
 | `→`                               | LTS transition (single step)                        |                            |
 | `→*`                              | LTS transition (multi-step)                         |                            |
-| `~`                               | Strong bisimilarity                                 |                            |
-| `≈`                               | Weak bisimilarity                                   |                            |
 | `≡_α`                             | α-equivalence (modulo bound-name renaming)          | [MR05a]                    |
-| `↓ℓ`                              | Barb (state can immediately perform observable `ℓ`) |                            |
-| `⇓ℓ`                              | Weak barb (perform `ℓ` after some `τ`-steps)        |                            |
-| `≈ₓ`                              | Weak barbed equivalence mod barbs `x`               |                            |
 | `⊥`                               | Boolean false / terminal absorbing state            |                            |
 | `⊤`                               | Boolean true                                        |                            |
 | `⟹`                               | Logical implication                                 |                            |
@@ -713,7 +713,11 @@ remain in `latest_messages` without being marked invalid).
 
 ---
 
-## 7 · Two-level slashing closure
+## 7 · Counterfactual two-level slashing closure
+
+This section analyzes an optional economic policy. The current protocol does
+not create evidence from a `NeglectedEquivocation` rejection. The proofs below
+remain useful because they bound the policy if governance enables it later.
 
 ### 7.1 Theorem 7.1 (T-11, Level-2 termination)
 
@@ -954,15 +958,14 @@ abort-on-first-failure batch slash execution is order-dependent, unlike
 successful `bm_slash_many`. `er_key_injective` and
 `canonical_key_pair_injective` prove the canonical record-key encoding;
 `naive_record_key_projection_collision` records a non-injective
-projection witness. `classify_divergence_reason` in `Bisimulation.v`
-classifies evidence-view, epoch-carryover, and projection divergences as
-candidate boundaries requiring review. The stateful semantic-campaign
-frontier is mirrored by `semantic_campaign_boundary_reasons_require_review`;
-the adversarial scheduler frontier is mirrored by
-`adversarial_scheduler_boundary_reasons_require_review`; and the
-expanded partition/gossip, objective-guided, Rust-replay,
-precondition-fuzzing, and deep-threat classifications are mirrored by
-`frontier_expansion_reasons_require_review`.
+projection witness. `classify` in the Rust mirror
+`casper/tests/slashing/divergence_class.rs` (§8.8) classifies
+evidence-view, epoch-carryover, and projection divergences as
+candidate boundaries requiring review. The stateful semantic-campaign,
+adversarial-scheduler, and expanded partition/gossip, objective-guided,
+Rust-replay, precondition-fuzzing, and deep-threat classifications are
+all checked by the same `classify` / `divergence_allowed` /
+`frontier_classification_ok` functions.
 
 **Metamorphic properties.** `duplicate_edge_graph_equiv_hypothesis_minimized`
 and `duplicate_edge_slash_iter_equiv_hypothesis_minimized` specialize
@@ -1280,152 +1283,38 @@ counter-example, but no hypothesis is redundant.
 
 ---
 
-## 8 · Bisimilarity Rust ~~ Scala (modulo bug fixes)
+## 8 · Differential divergence calculus
 
-### 8.1 The relation R
-
-**Definition 8.1.** *(Per-component bisimulations.)*
-
-```
-  bonds_bisim(b₁, b₂)    ⇔  ∀v. bm_lookup(b₁, v) = bm_lookup(b₂, v)
-  records_bisim(s₁, s₂)  ⇔  ∀k. hashes(s₁, k) ⊆ hashes(s₂, k)
-                                ∧ hashes(s₂, k) ⊆ hashes(s₁, k)
-  slashed_bisim(s₁, s₂)  ⇔  s₁ ⊆ s₂ ∧ s₂ ⊆ s₁
-  vault_bisim(n₁, n₂)    ⇔  n₁ = n₂
-```
-
-These are reflexive, symmetric (and the bonds and vault ones are also
-transitive). Proofs in `Bisimulation.v` §2.
-
-### 8.2 Theorem 8.1 (T-13a, Strong bisimilarity baseline — bonds projection)
-
-**Statement.** *(`t_13_bm_slash_preserves_bonds_bisim`,
-`Bisimulation.v:116`.)* For every `b₁, b₂` and offender `v`,
-
-```
-  bonds_bisim(b₁, b₂) ⟹ bonds_bisim(bm_slash(b₁, v), bm_slash(b₂, v))
-```
-
-**Proof.** Pointwise. For lookup at `v` itself, both sides return 0 by
-`bm_slash_lookup`. For lookup at `v' ≠ v`, both sides return
-`bm_lookup(bᵢ, v')` by `bm_slash_other`, which agree by hypothesis. ∎
-
-### 8.3 Theorem 8.2 (T-15b, Composed bisimulation closure)
-
-**Statement.** *(`main_bisimilarity_theorem`, `MainTheorem.v:598`.)*
-For every component triple `(b₁, b₂, v₁, v₂, sl₁, sl₂, offender)` with
-component-wise R-equivalence as the hypothesis,
-
-```
-  bonds_bisim(b₁, b₂)
-∧ slashed_bisim(sl₁, sl₂)
-∧ vault_bisim(v₁, v₂) ⟹
-    bonds_bisim   (bm_slash(b₁, off), bm_slash(b₂, off))
-  ∧ slashed_bisim (off :: sl₁, off :: sl₂)
-  ∧ vault_bisim   (v₁ + bm_lookup(b₁, off), v₂ + bm_lookup(b₂, off))
-```
-
-**Proof.** Three sub-claims:
-
-1. Bonds: T-13 directly.
-2. Slashed: prepending the same offender preserves mutual containment
-   (`t_15_slashed_append_consistent`, `Bisimulation.v:174`).
-3. Vault: `v₁ = v₂` and `bm_lookup(b₁, off) = bm_lookup(b₂, off)` (by
-   bonds bisimulation), so `v₁ + bm_lookup(b₁, off) = v₂ +
-   bm_lookup(b₂, off)`. ∎
-
-### 8.4 Theorem 8.3 (T-13b, Records-bisim monotonicity, Audit Gap 1 closure)
-
-**Statement.** *(`records_bisim_monotone_update`, `Bisimulation.v:314` (§8).)*
-
-```
-  records_bisim_strong(s₁, s₂) ⟹
-    ∀ k h k', incl(hashes_at_key(s₁, k'),
-                   hashes_at_key(update_record(s₂, k, h), k'))
-```
-
-Where `records_bisim_strong` strengthens `records_bisim` with key
-alignment: `∀ k, has_key(s₁, k) = has_key(s₂, k)`. The companion
-theorem `records_bisim_strong_keys_preserved` shows key alignment is
-preserved across the same update on both sides.
-
-**Proof.** By Theorem 4.3 (`t_4_record_monotone_update`, T-4 alias),
-the update preserves hash-set inclusion at key `k'`: for all `k'`,
-`incl(hashes_at_key(s₂, k'), hashes_at_key(update_record(s₂, k, h), k'))`.
-By the bisim hypothesis `records_bisim_strong(s₁, s₂)`, the hash sets at
-`k'` agree before the update:
-`hashes_at_key(s₁, k') = hashes_at_key(s₂, k')`. Composing the two
-inclusions by transitivity of `⊆` over hash sets gives the conclusion
-`incl(hashes_at_key(s₁, k'), hashes_at_key(update_record(s₂, k, h), k'))`. ∎
-
-### 8.5 Theorem 8.4 (T-13c, Forkchoice-bisim preserves filter, Audit Gap 2 closure)
-
-**Statement.** *(`forkchoice_bisim_preserves_filter`, `Bisimulation.v` §9.)*
-
-```
-  forkchoice_bisim(lm₁, lm₂) ∧ bonds_bisim(b₁, b₂) ⟹
-    ∀ v, fc_lookup(filter_slashed(lm₁, b₁), v) =
-         fc_lookup(filter_slashed(lm₂, b₂), v)
-```
-
-**Proof.** Via the helper `fc_lookup_filter_slashed` which characterizes
-the filter result as the per-bond conditional. ∎
-
-This adds the fifth `R`-component (`forkChoiceLatestMessages`) to the
-bisimilarity claim, closing Audit Gap 2.
-
-### 8.6 Theorem 8.5 (T-14, Weak barbed equivalence, Audit Gap 3 closure)
-
-**Statement.** *(`weak_barbed_equiv` and `weak_barbed_equiv_refl`,
-`Bisimulation.v` §10.)* The full observational equivalence over the five
-components is
-
-```
-  weak_barbed_equiv(b₁,b₂, rs₁,rs₂, sl₁,sl₂, v₁,v₂, lm₁,lm₂)
-    := bonds_bisim(b₁,b₂)
-     ∧ records_bisim_strong(rs₁,rs₂)
-     ∧ slashed_bisim(sl₁,sl₂)
-     ∧ vault_bisim(v₁,v₂)
-     ∧ forkchoice_bisim(lm₁,lm₂)
-```
-
-Companion theorems `weak_barbed_equiv_refl`, `weak_barbed_equiv_sym`,
-and `weak_barbed_equiv_trans` establish reflexivity, symmetry, and
-transitivity.
-
-**Proof.** Conjunction of per-component equivalence
-properties. ∎
-
-### 8.7 Theorem 8.6 (T-15a, Pipeline composition, Audit Gap 8 closure)
-
-**Statement.** *(`t_15_pipeline_step_preserves_R`, `MainTheorem.v` §8.)*
-Define a pipeline step as the composition
-
-```
-  pipeline_step(b, rs, sl, v, lm, offender, baseSeq, h)
-    := (bm_slash(b, offender),
-        update_record(rs, (offender, baseSeq), h),
-        offender :: sl,
-        v + bm_lookup(b, offender),
-        filter_slashed(lm, bm_slash(b, offender)))
-```
-
-Then under the strong bisimulation `R`, applying `pipeline_step`
-consistently on both sides preserves all five components.
-
-**Proof.** Composition of T-13, the full
-`records_bisim_strong_preserved_update` theorem, the
-slashed-append-consistent lemma, the vault-increment consistency lemma,
-and the forkchoice-bisim filter preservation. ∎
+> **Removed (2026-05-29): Rust ~~ Scala bisimilarity (former §8.1–§8.7,
+> §8.9; theorems T-13a/b/c, T-14, T-15a/b).** The migration to the
+> cost-accounted-rho architecture makes the Rust and Scala slashing
+> implementations no longer structurally comparable, so the
+> Rust ↔ Scala observational-bisimilarity result — whose purpose was
+> to find bugs by differential comparison against the Scala original,
+> a purpose now complete — is obsolete and has been removed together
+> with its Rocq mechanization (`Bisimulation.v`) and Rust property
+> tests (`prop_t_13*`, `prop_t_14`, `prop_t_15`). Git preserves the
+> full history. The headline mechanized result is now
+> `main_slashing_algorithm_correct` (§6 of `MainTheorem.v`): every
+> detected admissible/ignorable equivocation yields bond zeroing,
+> witness recording, fork-choice exclusion, and stake transfer to the
+> Coop vault, under all documented bug fixes. See decision record
+> DR-6 in `design/15-decision-records.md`.
+>
+> The **divergence calculus** below (former §8.8) is retained: it is a
+> differential-search classification tool, independent of the removed
+> bisimilarity proof, and survives in the Rust mirror
+> `casper/tests/slashing/divergence_class.rs` (its former Rocq
+> formalization lived in the now-deleted `Bisimulation.v`).
 
 ### 8.8 Divergence calculus
 
-The bisimilarity claims T-13a/b/c, T-14, T-15a/b establish that the
-Rust and Scala implementations agree at every observable component
-*on the unperturbed pipeline*. The slashing protocol has, however,
-shipped sixteen bug fixes (§9); some of those fixes (e.g. T-9.9, the
-self-correcting widening) intentionally make the Rust accept blocks
-Scala rejects. The article must therefore distinguish:
+The protocol has shipped sixteen bug fixes (§9); some of those fixes
+(e.g. T-9.9, the self-correcting widening) intentionally make the Rust
+implementation accept blocks the Scala original rejected. To classify
+the disagreements surfaced by the differential search corpus
+(`formal/sage/slashing/`, Hypothesis, fuzzing), the methodology
+distinguishes:
 
 - *Permitted* divergences — Rust ↔ Scala disagrees because a Rust
   bug fix corrects Scala behavior, and the fix is mechanized.
@@ -1436,16 +1325,18 @@ Scala rejects. The article must therefore distinguish:
 - *Forbidden* divergences — unclassified disagreement that must
   be triaged before acceptance.
 
-`Bisimulation.v:520–660` formalizes this taxonomy. Eighteen
+The Rust mirror `casper/tests/slashing/divergence_class.rs`
+formalizes this taxonomy (its former Rocq encoding lived in the
+now-removed `Bisimulation.v`; see the §8 removal note). Eighteen
 divergence *reasons* are enumerated; a classification function
 maps each reason to one of four *classes*; and an admissibility
-predicate distinguishes the classes the article *permits* from the
+predicate distinguishes the classes the methodology *permits* from the
 classes that require human review.
 
 #### 8.8.1 Definition 8.8 (Divergence class)
 
 **Definition 8.8** *(`DivergenceClass`).*
-*(`Bisimulation.v:520`.)* The inductive type with four
+*(`divergence_class.rs`.)* The enum with four
 constructors:
 ```
   DivergenceClass ::=
@@ -1457,8 +1348,8 @@ constructors:
 
 #### 8.8.2 Definition 8.9 (Classification of divergence reasons)
 
-**Definition 8.9** *(`classify_divergence_reason`).*
-*(`Bisimulation.v:547`.)* A total function from one of eighteen
+**Definition 8.9** *(`classify`).*
+*(`divergence_class.rs`.)* A total function from one of eighteen
 divergence reasons to its class. The reasons partition into:
 
 - **PermittedBugFix:** `DRTrackerAtomicity` (T-9.2),
@@ -1482,18 +1373,18 @@ in the audit corpus on `analysis/slashing` (under
 #### 8.8.3 Definition 8.10 (Admissibility)
 
 **Definition 8.10** *(`divergence_allowed`).*
-*(`Bisimulation.v:570`.)*
+*(`divergence_class.rs`.)*
 ```
   divergence_allowed(c)  ≜  (c = Bisimilar)  ∨  (c = PermittedBugFix) .
 ```
-The article *permits* `Bisimilar` and `PermittedBugFix`
+The methodology *permits* `Bisimilar` and `PermittedBugFix`
 disagreements; `CandidateBoundaryDivergence` requires explicit
 hypothesis review; `UnexpectedDivergence` is forbidden.
 
-#### 8.8.4 Theorem 8.8 (Bisimilar is admissible)
+#### 8.8.4 Property 8.8 (Bisimilar is admissible)
 
-**Statement.** *(`bisimilar_divergence_allowed`,
-`Bisimulation.v:573`.)*
+**Statement.** *(`divergence_allowed(Bisimilar)`,
+`divergence_class.rs`.)*
 ```
   divergence_allowed(Bisimilar) .
 ```
@@ -1501,10 +1392,10 @@ hypothesis review; `UnexpectedDivergence` is forbidden.
 **Proof.** By definition of `divergence_allowed`: the left disjunct
 holds by reflexivity. ∎
 
-#### 8.8.5 Theorem 8.9 (Permitted bug-fix is admissible)
+#### 8.8.5 Property 8.9 (Permitted bug-fix is admissible)
 
-**Statement.** *(`permitted_bug_fix_divergence_allowed`,
-`Bisimulation.v:579`.)*
+**Statement.** *(`divergence_allowed(PermittedBugFix)`,
+`divergence_class.rs`.)*
 ```
   divergence_allowed(PermittedBugFix) .
 ```
@@ -1512,10 +1403,10 @@ holds by reflexivity. ∎
 **Proof.** By definition of `divergence_allowed`: the right
 disjunct holds by reflexivity. ∎
 
-#### 8.8.6 Theorem 8.10 (Candidate-boundary divergence requires review)
+#### 8.8.6 Property 8.10 (Candidate-boundary divergence requires review)
 
-**Statement.** *(`candidate_boundary_divergence_requires_review`,
-`Bisimulation.v:585`.)*
+**Statement.** *(`!divergence_allowed(CandidateBoundaryDivergence)`,
+`divergence_class.rs`.)*
 ```
   ¬ divergence_allowed(CandidateBoundaryDivergence) .
 ```
@@ -1525,7 +1416,7 @@ disjunct holds by reflexivity. ∎
 definition of `divergence_allowed`, either
 `CandidateBoundaryDivergence = Bisimilar` or
 `CandidateBoundaryDivergence = PermittedBugFix`. Both equalities
-discriminate (constructor injectivity for the inductive type
+discriminate (constructor distinctness for the enum
 `DivergenceClass`), contradiction. ∎
 
 **Interpretation.** Candidate-boundary divergences are not
@@ -1536,63 +1427,50 @@ production deployment must either (a) prove the hypothesis holds
 in its operational environment, or (b) accept the boundary as a
 known scope limit.
 
-#### 8.8.7 Theorem 8.11 (Unexpected divergence is forbidden)
+#### 8.8.7 Property 8.11 (Unexpected divergence is forbidden)
 
-**Statement.** *(`unexpected_divergence_forbidden`,
-`Bisimulation.v:591`.)*
+**Statement.** *(`!divergence_allowed(UnexpectedDivergence)`,
+`divergence_class.rs`.)*
 ```
   ¬ divergence_allowed(UnexpectedDivergence) .
 ```
 
-**Proof.** As in Theorem 8.10. Both disjuncts of
+**Proof.** As in Property 8.10. Both disjuncts of
 `divergence_allowed(UnexpectedDivergence)` discriminate. ∎
 
-**Interpretation.** Any observed Rust ↔ Scala disagreement
-labeled `DRUnexpected` is a triage event: the cause must be
+**Interpretation.** Any observed disagreement labeled
+`DRUnexpected` is a triage event: the cause must be
 identified and reclassified into one of the seventeen named
 reasons before the disagreement is accepted.
 
-#### 8.8.8 Theorem 8.12 (Frontier expansion classes are boundaries)
+#### 8.8.8 Property 8.12 (Frontier expansion classes are boundaries)
 
-**Statement.** *(`semantic_campaign_boundary_reasons_require_review`,
-`Bisimulation.v:639`; `adversarial_scheduler_boundary_reasons_require_review`,
-`Bisimulation.v:656`; `frontier_expansion_reasons_require_review`,
-`Bisimulation.v:669`.)* Every divergence reason produced by the
-semantic-campaign, adversarial-scheduler, and broader
-frontier-expansion families classifies as
-`CandidateBoundaryDivergence` (and therefore requires review by
-Theorem 8.10).
+**Statement.** *(the semantic-campaign, adversarial-scheduler, and
+broader frontier-expansion reason families, `divergence_class.rs`.)*
+Every divergence reason produced by the semantic-campaign,
+adversarial-scheduler, and broader frontier-expansion families
+classifies as `CandidateBoundaryDivergence` (and therefore requires
+review by Property 8.10).
 
-**Proof.** Each of the three theorems is a finite case-analysis on
-its reason variants. For `semantic_campaign_*`, the variants are
+**Proof.** Each family is a finite case-analysis on its reason
+variants. For the semantic-campaign family, the variants are
 `DREvidenceViewBoundary`, `DREpochCarryoverBoundary`,
 `DRPartitionGossipBoundary`, `DRObjectiveGuidedBoundary`; each
-maps to `CandidateBoundaryDivergence` by
-`classify_divergence_reason`. Apply Theorem 8.10 to conclude.
-Similarly for the other two theorems. ∎
+maps to `CandidateBoundaryDivergence` by `classify`. Apply
+Property 8.10 to conclude. Similarly for the other two families. ∎
 
 **Counter-example.** Sage findings row 91 — semantic-campaign (preserved on `analysis/slashing` under `formal/sage/slashing/FINDINGS.md`)
 boundary, four-validator partition).
 
-#### 8.8.9 Corollary 8.13 (Bisimilarity is *modulo* a closed class)
+### 8.9 Why this classification is the right notion
 
-The composition of T-15a/b with Theorems 8.8–8.12 yields the
-*ultimate* bisimilarity statement of this article: the Rust
-implementation is weakly barbed bisimilar to the Scala
-antecedent, *modulo* the union of (a) the sixteen
-PermittedBugFix deltas mechanized in §9, and (b) the sixteen
-CandidateBoundaryDivergence classes whose hypotheses are
-documented in §11 and the design suite §02.7.1. Every other
-observed disagreement is a triage event.
-
-### 8.9 Why this is the right notion
-
-Bisimilarity at the component level matches the audit objective: two
-node operators on Rust and Scala — given the same input event sequence
-— observe the same bonds, the same records (modulo iter order), the
-same slashed set, the same Coop-vault balance, and the same fork-choice
-latest messages. Per the discussion in §13 of `slashing-specification.md`,
-byte-level encoding differences are intentionally outside scope.
+The divergence calculus matches the audit objective: a differential
+search over Rust against a reference implementation surfaces
+disagreements, and each disagreement must be triaged into one of the
+four classes before acceptance. `PermittedBugFix` and `Bisimilar`
+disagreements are accepted; `CandidateBoundaryDivergence` reasons each
+carry a documented protocol-hypothesis caveat (§11, design §02.7.1);
+`UnexpectedDivergence` is forbidden until reclassified.
 
 ---
 
@@ -1604,46 +1482,35 @@ provides a mathematical statement of the proof. All are mechanized in
 
 ### 9.1 T-9.1 — IgnorableEquivocation safety
 
-**Statement.** *(`post_fix_ignorable_implies_equivocation`,
-`BugFixIgnorable.v`.)* If the detector emits `DSIgnorable`, then
-`IBIgnorableEquivocation` is in the post-fix slashable set AND the
-arriving block's creator justification really disagreed with the sender's
-latest message (`equivocates_ptr(cj, lm) = true` — a genuine pointer
-equivocation). Hence no honest validator is wrongly slashed.
+**Historical abstraction statement.** *(`post_fix_ignorable_implies_equivocation`,
+`BugFixIgnorable.v`.)* If the abstract detector emits `DSIgnorable`, then the
+arriving block's creator justification disagrees with the sender's latest
+message. The original fix placed `IBIgnorableEquivocation` in the abstract
+post-fix slashable set so the dispatcher could not silently discard it.
 
-**Proof.** Combining `ignorable_post_fix_slashable`
-(T-3 specialization) with `ignorable_only_on_real_equivocation`
-(T-1 specialization, over the pointer notion). ∎
+**Current production refinement.** Rust records each certified sibling hash
+under `(validator, bond_generation, sequence)`. Two distinct hashes create
+objective evidence. Admission can also return the typed equivocation rejection
+reasons. The current proof obligations are
+`ObjectiveEquivocation.v`, `CertifiedObjectiveEquivocation.v`, and
+`ObjectiveEvidenceSequenceEligibility.v`; together they establish
+generation separation, order independence, certified identity binding, and
+the non-negative-sequence boundary. Thus the historical theorem is retained
+as a detector-level attribution lemma, while consensus/slashing authority uses
+the stronger two-sibling certified relation. See
+[`objective-equivocation-evidence.md`](./objective-equivocation-evidence.md).
 
-**Honest restatement (FV audit #1).** Adding the 27th slashable variant
-`UnauthorizedSlashDeploy` makes the naïve "every slashable variant is
-pre-fix-slashable ∨ IgnorableEquivocation" statement **false**. The
-corrected capstone `bug_fix_ignorable_safety` (re-exported as
-`main_T9_1_slashable_attributable`) is:
+**Current statement.** The capstone `bug_fix_ignorable_safety` is re-exported
+as `main_T9_1_slashable_attributable`:
 
 ```
   is_slashable(ib) = true ⟹
-      is_slashable_pre_fix(ib) = true
+      ib = IBAdmissibleEquivocation
     ∨ ib = IBIgnorableEquivocation
-    ∨ ib = IBUnauthorizedSlashDeploy
 ```
 
-Every disjunct is an *attributable* offense, so the honest-validator
-safety conclusion still holds. Under the current narrowed taxonomy (§4.4)
-the slashable set is `{Admissible, Ignorable}` — a subset of the
-disjunction — so the capstone's conclusion survives the narrowing, but the
-model's 19-variant `is_slashable` and the `UnauthorizedSlashDeploy`
-branch below describe the bug-fix era: `UnauthorizedSlashDeploy` is
-demoted (rejected, no evidence minted), and its empty-record machinery is
-inactive. The historical result: the empty record minted for that branch
-(`EquivocationRecord::new(V, seq-1, {})`) resolves to
-`EquivocationOblivious` for an honest bonded sender by
-`unauth_record_honest_oblivious`
-(`BugFixDispatcher.v`, re-exported `main_T9_1_unauth_record_oblivious`) —
-so minting it did not, on its own, corrupt neglected-equivocation
-detection. (The related *observer-hash stamping while the offender is
-unbonded* mechanism — a distinct fork, FV audit #6 — is now RESOLVED; see
-§9.1a below and `design/12-failure-modes.md §12.2.1a`.)
+Both variants represent objective equivocation evidence. All other certified
+rejections remain invalid without creating slash evidence.
 
 ### 9.1a T-9.1a — Unbonded-window record pollution fork (FV audit #6)
 
@@ -2055,51 +1922,80 @@ is admissible. See §4.7 for the four sub-theorems
 
 ### 9.12 T-9.12 — Stale evidence not authorized
 
-**Pre-fix counter-example.** Validator with public key `K` bonds
-at epoch `e₁`, equivocates, is slashed, unbonds; the same key
-rebonds at epoch `e₂ > e₁`. The pre-fix authorization function
-compared *public-key identity only*: stale `(K, e₁)` evidence
-would authorize a slash on `(K, e₂)`, double-charging `K` for a
-single offence. Worked example:
-`design/11-worked-examples.md §11.14`.
+**Pre-fix counterexample.** Validator `K` completes generation `g₀` and withdraws.
+The same key later bonds as generation `g₁`.
 
-#### 9.12.1 Definition 9.12 (Epoch-scoped lifetime identity)
+The old authorization used only the public key.
+Thus, evidence for `(K, g₀)` could slash `(K, g₁)`.
+The fault could charge one event twice.
 
-**Definition 9.12** *(`ValidatorLifetime`).*
-*(`ValidatorLifetime.v:11`.)* A validator lifetime is the pair
-`(v, eₖ)` where `v : Validator` is the public-key identity and
-`eₖ : Epoch` is the activation epoch (assigned by the most recent
-`bond` transition). Two lifetimes `(v, e₁)` and `(v, e₂)` with
-`e₁ ≠ e₂` are *distinct lifetimes of the same key*. Slash
-authorization is keyed on lifetimes, not on raw public keys.
+#### 9.12.1 Definition 9.12 (Bond-generation lifetime identity)
+
+**Definition 9.12.** A validator lifetime is the pair `(v, g)`.
+Here, `v` is the public key and `g` is the monotonic bond generation.
+
+The first successful bond uses generation zero.
+An ordinary epoch change preserves the generation.
+Pending withdrawal and active withdrawal also preserve the generation.
+
+A completed withdrawal removes the live generation but retains its number.
+A later successful bond increments the retained generation.
+Generation exhaustion rejects the bond instead of wrapping the value.
+
+`ValidatorLifetime.v` defines the identity and checked successor.
+`BondGenerationLifecycle.v` defines every lifecycle transition.
 
 #### 9.12.2 Theorem 9.12 (Stale evidence rejected)
 
-**Statement.** *(`stale_evidence_not_authorized`,
-`ValidatorLifetime.v:31`; also `main_T9_12_stale_evidence_not_authorized`
-in `MainTheorem.v:204`.)*
-```
-  evidence_epoch(ev) ≠ current_epoch
-  ⟹  ¬ authorized(ev, deploy) .
+**Statement.** Evidence for one generation cannot authorize another generation.
+
+```math
+g_{evidence} \ne g_{target}
+\Longrightarrow
+\neg authorized(evidence, target).
 ```
 
-**Proof.** By unfolding `authorized`. The authorization predicate
-is the conjunction:
-```
-  issuer(deploy) = block_sender(deploy)
-  ∧ evidence_hash(ev) ∈ local.invalid_blocks
-  ∧ evidence_epoch(ev) = current_epoch       ← the relevant conjunct
-  ∧ parent_pre_state_bond(target(deploy)) > 0
-  ∧ unique_target_per_epoch(deploy) .
-```
-The third conjunct fails directly under the hypothesis
-`evidence_epoch(ev) ≠ current_epoch`, so the conjunction is `⊥`
-and `¬ authorized(ev, deploy)`. ∎
+The activation epoch is a separate authorization window.
+It does not identify a validator lifetime.
 
-**Example 9.12.** See `design/11-worked-examples.md §11.14`.
+```math
+epoch(evidence) \ne epoch(block)
+\Longrightarrow
+\neg authorized(evidence, block).
+```
 
-**TLA+ mirror.** `Inv_StaleEvidenceCannotSlashRebondedKey` in
-`MC_AuthorizedSlashFlow.cfg`.
+**Proof.** `stale_generation_evidence_not_authorized` proves the first result.
+`generation_changes_only_on_successful_fresh_bond` proves lifecycle stability.
+`successful_rebond_strictly_increases_generation` proves fresh identity.
+
+`generation_scoped_slash_stale_noop` proves that stale evidence changes neither lifecycle nor PoS state.
+`generation_scoped_slash_locked_zeros_and_quarantines` proves the current-generation effect.
+
+The current effect zeros the bond and quarantines the stake.
+It also halts minting and preserves the Coop vault before adjudication.
+
+**TLA+ mirror.** `AuthorizedSlashFlow.tla` checks the lifecycle under concurrent validator observations.
+Each behavior binds authority to one immutable block root.
+
+The checked invariants include:
+
+- `Inv_GenerationEqualsSuccessfulBondCount`
+- `Inv_AtMostOneLiveGenerationPerKey`
+- `Inv_GenerationChangesOnlyOnSuccessfulFreshBond`
+- `Inv_StaleGenerationCannotSlashRebondedKey`
+- `Inv_OldEpochEvidenceCannotAuthorizeCurrentWindow`
+- `Inv_SlashedIdentityIsGenerationScoped`
+- `Inv_SlashedGenerationNeverExceedsCurrent`
+- `Inv_ReplayUsesCommittedSlashIdentity`
+
+The unsafe configurations remove one rule at a time.
+Each configuration must reproduce its named counterexample.
+
+**Rust evidence.** `slash_authorization_regressions` checks current, stale, withdrawn, and rebonded roots.
+Its future-generation property rejects every slash whose generation exceeds the canonical root generation.
+The real RSpace lifecycle test loads generation-zero and generation-one authority concurrently.
+It proves that bonds and generations never mix across roots.
+The Loom lifecycle model checks every bounded slash, withdrawal, and rebond interleaving.
 
 ### 9.13 T-9.13 — Unknown evidence is no-op
 
@@ -2116,7 +2012,7 @@ honest. Worked example: `design/11-worked-examples.md §11.13`.
 
 **Statement.** *(`unauthorized_unknown_execution_noop`,
 `BugFixSlashAuthorization.v:32`; also
-`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:280`.)*
+`main_T9_13_unknown_slash_evidence_noop` in `MainTheorem.v:292`.)*
 ```
   evidence_hash(ev) ∉ local.invalid_blocks
   ⟹  apply_slash_deploy(state, ev) = state .
@@ -2136,77 +2032,176 @@ the authorization-rejection branch has identity post-image on
 **TLA+ mirror.** `Inv_RejectedSlashWithoutEvidenceNoPending` in
 `MC_AuthorizedSlashFlow.cfg`.
 
-#### 9.13.2 Theorem 9.13′ (Parent-pre-state bond authorization)
+#### 9.13.2 Theorem 9.13′ (Canonical merged-pre-state authorization and origin parity)
 
-**Statement.** *(`positive_parent_bond_authorizes_matching_candidate`,
-`zero_parent_bond_not_authorized_candidate`; also
-`main_T9_13_positive_parent_bond_authorizes_matching_candidate` and
-`main_T9_13_zero_parent_bond_not_authorized`.)*
+**Statement.** *(`matching_generation_current_window_positive_bond_authorized`,
+`zero_canonical_bond_not_authorized_candidate`,
+`proposer_receiver_authorization_parity`, and
+`same_pre_state_root_same_authorization`; also the corresponding
+`main_T9_13_*` capstones.)*
 ```
   evidence_hash(deploy) = h
-  ∧ local.invalid_blocks[h] = offender
+  ∧ local.invalid_blocks[h] = (offender, generation)
   ∧ evidence_epoch(h) = target_epoch(deploy) = current_epoch(block)
-  ∧ parent_pre_state_bond(offender) > 0
+  ∧ evidence_generation(h) = target_generation(deploy) = generation
+  ∧ canonical_generation(block.pre_state_hash, offender) = generation
+  ∧ canonical_bond(block.pre_state_hash, offender) > 0
   ⟹ authorized(deploy).
 
-  parent_pre_state_bond(offender) = 0
+  canonical_bond(block.pre_state_hash, offender) = 0
   ⟹ ¬ authorized(deploy).
+
+  proposer.pre_state_hash = receiver.pre_state_hash
+  ⟹ proposer.authorized(deploy) = receiver.authorized(deploy).
 ```
 
-**Proof.** The Rocq predicate uses the parent bond map as an explicit
-argument to `authorized_slash_candidate`. The positive case reduces to
-`Nat.ltb_lt`; the zero-bond case reduces to the false right conjunct of
-the authorization conjunction. The strengthened wrapper
-`authorized_slash_candidate_with_ambient` makes the receiver's ambient
-snapshot an explicit but unused argument, proving that an already-zero
-ambient bond cannot reject a deploy authorized by the block's actual
-parent pre-state. ∎
+**Proof.** The Rocq predicate takes canonical bond and generation maps.
+Both maps represent the same merged pre-state root.
 
-**TLA+ mirror.** `Authorized` in `AuthorizedSlashFlow.tla` and
-`Inv_OnlyAuthorizedSlashCanBePending`,
-`Inv_AuthorizationUsesParentPreState`,
-`Inv_AmbientZeroDoesNotBlockParentPositiveAuth`, and
-`Inv_ParentZeroRejectsEvenAmbientPositive` in
-`MC_AuthorizedSlashFlow.cfg`.
+The positive-bond case reduces to `Nat.ltb_lt`.
+Each generation equality reduces to `Nat.eqb_eq`.
+The zero-bond case makes the conjunction false.
 
-**Rust realization (why no `ambient ≠ parent` fixture is needed).** The Rocq
-`authorized_slash_candidate_with_ambient` takes both `ambient_bonds` and `parent_bonds`
-precisely so it can *prove* the ambient argument is unused. The Rust receive gate
-`validate_received_slash_deploys` (`slashing_authorization.rs`) is handed a **single**
-snapshot whose `bonds_map` **is** the block's parent pre-state — the ambient view is never
-a parameter — so ambient-independence is enforced *structurally by the function signature*,
-a strictly stronger guarantee than any runtime fixture could give. The two directions of the
-theorem are already covered by `current_epoch_received_slash_deploy_is_accepted`
-(parent-positive ⟹ authorize) and `received_slash_deploy_rejects_unbonded_target`
-(parent-zero ⟹ reject) in `casper/tests/slashing/slash_authorization_regressions.rs`
-(gate `[4/5]`). A discriminating `ambient ≠ parent` fixture therefore has no Rust seam to
-exercise — class **(F)** (a model-level distinction that the realization makes structurally
-impossible to violate).
+The ambient snapshot is an explicit unused argument.
+Thus, ambient state cannot change the root-bound verdict.
+Equal roots produce equal bond maps, generation maps, and verdicts. ∎
 
-#### 9.13.3 Theorem 9.13″ (Merge-rejected slash recovery dedup)
+**TLA+ mirror.** `AuthorizedSlashFlow.tla` checks these invariants:
 
-**Statement.** *(`recoverable_rejected_slash_hashes_nodup`,
-`own_detected_hash_not_recovered`,
-`uncovered_rejected_hash_recovered`; also the corresponding
-`main_T9_13_*` wrappers.)*
+- `Inv_CanonicalAuthorityMatchesLifecycleState`
+- `Inv_PendingSlashBoundToCurrentPreState`
+- `Inv_PendingSlashCompleteForCurrentPreState`
+- `Inv_ProposerAuthorizationMatchesCanonical`
+- `Inv_ReceiverAuthorizationMatchesCanonical`
+- `Inv_ProposerReceiverAuthorizationParity`
+
+The detached-root and split-authority controls violate root equality.
+The ambient proposer and receiver controls violate authorization parity.
+
+**Rust realization.** `CanonicalSlashAuthority::load` reads both maps from one root.
+The proposer uses the merged pre-state root.
+The receiver uses the verified block pre-state root.
+
+Self-created and received blocks share the dispatcher path.
+The concurrent-root regression uses generation-zero and generation-one RSpace roots.
+It rejects every mixed bond-generation pair.
+The objective-equivocation Loom model recomputes the complete canonical pair after every authority-generation change.
+
+#### 9.13.3 Theorem 9.13″ (Slash evidence is a required dependency)
+
+**Statement.** *(`every_slash_target_is_a_dependency`,
+`unavailable_declared_slash_waits_for_evidence`,
+`tracker_witness_does_not_satisfy_slash_evidence_dependency`; also the
+corresponding `main_T9_13_*` capstones.)*
+
+```math
+sd \in slashDeploys(b)
+\Longrightarrow targetHash(sd) \in D(b).
 ```
-  recoverable = current_evidence_filter(dedup_by_invalid_hash(rejected \ own_detected))
-  ⟹ NoDup(recoverable)
-     ∧ own_detected_hash ∉ recoverable
-     ∧ recovered hash has current invalid evidence
-     ∧ current uncovered rejected hash ∈ recoverable.
+
+```math
+targetHash(sd) \notin availableMetadata
+\Longrightarrow receive(sd) = WaitingForDependencies.
 ```
 
-**Proof.** Rocq projects rejected slash records to `invalid_block_hash`,
-filters hashes present in the proposer's own-detected set, and applies
-`nodup hash_eq_dec`. The current-evidence refinement then filters the
-survivors by the current invalid-evidence hash set. `NoDup_nodup`,
-`filter_In`, and the boolean membership lemma for `hash_member` establish
-the clauses. ∎
+The second conclusion is unchanged when the target hash is present in an
+equivocation-tracker witness set but its block metadata is absent.
 
-**TLA+ mirror.** `Inv_RecoveredSlashHasEvidence`,
-`Inv_RecoveredSlashCoveredByPendingOrExecuted`, and
-`Inv_PendingSlashHashUnique` in `MC_AuthorizedSlashFlow.cfg`.
+**Proof.** `slash_evidence_dependencies` is the duplicate-free image of
+`sd_target_hash` over the successful slash-deploy list. Membership follows
+from `in_map` and is preserved by `nodup`. The receive disposition first
+checks actual block-metadata availability. If absent, membership in the
+declared dependency set selects `SlashDependencyWaiting`; the local-absence
+rejection constructor is unreachable. The tracker-aware refinement ignores
+tracker witnesses for this decision because those witnesses do not contain
+the sender, block number, and invalidity data required by authorization. ∎
+
+**TLA+ mirror.** `SlashEvidenceDependency.tla` models submission, buffering,
+request, fetch, resume, and classification. The safe configuration checks
+`Inv_NoCanonicalEvidenceRejectedForLocalAbsence`, dependency tracking,
+classification disjointness, and the temporal property
+`Live_SubmittedSlashEventuallyClassified`. The omitted-dependency unsafe
+configuration reproduces receiver-local rejection. The tracker-only unsafe
+configuration reproduces the same fault when tracker membership incorrectly
+satisfies slash dependency readiness.
+
+**Rust realization.** `dependencies_hashes_of` unions parents,
+justifications, historical unary evidence, both members of every objective
+evidence pair, and both members of every header-certified evidence pair. The
+direct block processor and buffered-block resolver use the same admitted DAG
+metadata predicate. Neither equivocation-tracker membership nor the derived
+invalid-block index is accepted as a substitute. The property test
+`dependencies_hashes_of_returns_exact_block_dependency_set` checks exact set
+projection, deduplication, and origin-order invariance.
+`slash_evidence_is_fetched_before_block_validation` exercises missing and
+fetched rejected metadata, while
+`objective_pair_requires_both_admitted_metadata_records` proves that one pair
+member plus tracker hints remains buffered.
+`tracker_witness_alone_does_not_suppress_block_admission` establishes the
+dual ingress property: tracker-only knowledge cannot masquerade as a DAG or
+buffer commit and discard the block before its metadata is admitted. Rocq
+capstones this separation as
+`main_T9_13_tracker_witness_not_processed_block`.
+
+`ProtocolV5DependencyReadiness.tla` exhausts independent metadata, tracker,
+invalid-index, direct-resolver, and buffer-resolver interleavings. Its safe
+configuration requires complete admitted metadata and resolver parity. Four
+unsafe configurations independently reproduce invalid-index substitution,
+tracker substitution, omission of the second objective hash, and buffered-path
+projection drift. Rocq module `ProtocolV5DependencyReadiness.v` proves exact
+origin membership, pair completeness, decidable readiness, hint
+noninterference, permutation invariance, and direct/buffer parity for arbitrary
+finite dependency lists. The Loom model
+`loom_protocol_v5_dependency_readiness.rs` checks the production memory-order
+boundary under concurrent metadata and hint publication.
+
+#### 9.13.4 Theorem 9.13‴ (Canonical slash reconstruction)
+
+**Statement.** *(`merge_rejected_hint_subsumed_by_authorized_scan`,
+`zero_bond_candidate_not_selected`, `selected_target_keys_nodup`; also the
+corresponding `main_T9_13_*` wrappers.)*
+
+Let `C` be the canonical candidate list produced from the complete current
+invalid-evidence index, with unique `(offender, generation)` keys, and let
+`select(C, B, e)` filter `C` by current epoch `e` and positive canonical
+merged-pre-state bond map `B`. Then:
+
+```math
+h \in rejectedHints \land h \in C \land authorized(B,e,h)
+\Longrightarrow h \in select(C,B,e),
+```
+
+```math
+B[offender(h)] = 0 \Longrightarrow h \notin select(C,B,e),
+```
+
+```math
+NoDup(map\ key\ C)
+\Longrightarrow NoDup(map\ key\ (select(C,B,e))).
+```
+
+The first implication deliberately does not use membership in
+`rejectedHints` to establish authority: the complete evidence scan already
+contains every independently authorized candidate. The second prevents a
+rejected hint from reviving a slash whose effect survived the merge. The third
+forbids two evidence hashes for one active `(offender, generation)` from
+becoming two system deploys. The older unary theorem represents the single
+current-epoch projection; `ObjectiveEquivocation.v` and
+`ObjectiveEvidenceAuthorization.tla` refine it with explicit generation
+identity and one-root bond/generation authority.
+
+**Proof.** `selected_slash_candidates` is `filter candidate_authorized C`.
+The hint-subsumption theorem reduces to `filter_In`; the zero-bond theorem
+reduces `Nat.ltb 0 0` to contradiction; and
+`mapped_keys_of_filter_nodup` proves that filtering preserves key uniqueness.
+No merge-rejection record appears in the authorization predicate. ∎
+
+**TLA+ mirror.** `Inv_MergeRejectedSlashCoveredByCanonicalScan`,
+`Inv_MergeRejectedSlashCannotAuthorizeZeroBond`,
+`Inv_PendingSlashHashUnique`, and `Inv_PendingSlashTargetUnique` in
+`MC_AuthorizedSlashFlow.cfg`. `SlashFlow.tla` independently checks
+`Inv_PendingSlashTargetUnique` and `Inv_PendingSlashAuthorized` through the
+effect lifecycle.
 
 ### 9.14 T-9.14 — Checked sequence arithmetic
 
@@ -2219,6 +2214,34 @@ then ill-formed; the tracker insertion either panicked under
 Symmetrically, proposer-side `seq + 1` near `i32::MAX` would wrap
 into a negative sequence and corrupt block validation downstream.
 Worked example: `design/11-worked-examples.md §11.16`.
+
+A related storage boundary is now explicit. A correctly signed block with a
+negative sequence can still be attributed to its bonded sender and must be
+persisted as an objective invalid admission. It cannot be indexed as objective
+equivocation evidence, whose identity requires a nonnegative sequence. The
+runtime therefore treats metadata persistence and evidence eligibility as two
+decisions: the former succeeds for `ObjectiveRejected`, while the latter checks
+$`\operatorname{sequence} \ge 0`$. The previous implementation attempted both as one operation,
+so recording `InvalidSequenceNumber` failed with a storage error.
+
+`ObjectiveEvidenceSequenceEligibility.v` proves the signed-domain refinement:
+
+```math
+\operatorname{seq} < 0
+\Longrightarrow
+\operatorname{persist}(\operatorname{ObjectiveRejected})
+\land
+\neg\operatorname{indexEvidence}(\operatorname{seq}).
+```
+
+`CertifiedObjectiveEquivocation.tla` explores admission, evidence persistence,
+crash, duplicate retry, and reconciliation on two replicas. The safe sequence-
+boundary configuration excludes the negative sequence in every interleaving;
+the pre-fix control violates
+`Inv_IneligibleSequenceNeverBecomesEvidence` by indexing it immediately after
+durable admission. The Casper integration regression then submits a valid-shard,
+current-version child whose only fault is acknowledging that invalid
+justification and requires `NeglectedInvalidBlock`.
 
 #### 9.14.1 Definition 9.14 (Checked arithmetic operations)
 
@@ -2357,7 +2380,7 @@ index*, closing the original Bug #14 liveness gap.
 
 **Statement.** *(`execute_invalid_auth_token_noop`,
 `SlashDeploy.v:142`; also
-`main_TAuth_invalid_token_noop` in `MainTheorem.v:375`.)*
+`main_TAuth_invalid_token_noop` in `MainTheorem.v:441`.)*
 ```
   auth_token(deploy) is invalid
   ⟹  apply_slash_deploy(state, deploy) = state .
@@ -2377,7 +2400,7 @@ on `state` follows. ∎
 
 **Statement.** *(`execute_valid_auth_token_equiv`,
 `SlashDeploy.v:149`; also
-`main_TAuth_valid_token_equiv` in `MainTheorem.v:380`.)*
+`main_TAuth_valid_token_equiv` in `MainTheorem.v:446`.)*
 ```
   auth_token(deploy) is valid
   ⟹  apply_slash_deploy(state, deploy)
@@ -2394,7 +2417,8 @@ behavior for valid ones. ∎
 
 **Statement.** *(`deploy_epoch_matches_target`,
 `SlashDeploy.v:88`; modelled in TLA+ as
-`Inv_NoInvalidLatestLivenessGap` in
+`Inv_PendingSlashCompleteForCurrentPreState` and
+`Inv_PendingSlashHashUnique` in
 `MC_AuthorizedSlashFlow.cfg`.)*
 ```
   proposer.prepare_slashing_deploys(snapshot) = candidates
@@ -2425,8 +2449,9 @@ construction.
 
 The Rust call site at
 `casper/src/rust/slashing_authorization.rs:183` (invoked from
-`block_creator.rs:498`) is the operational realisation of this fold
-and is verified to match by the bisimulation result of §8. ∎
+`block_creator.rs:498`) is the operational realisation of this fold;
+the harness ↔ oracle cross-implementation agreement test (UC-39,
+§15) exercises it against the mechanized definition. ∎
 
 Deterministic slash-seed construction is tracked separately:
 `deploy_seed_uses_invalid_block_hash` proves every emitted
@@ -2500,7 +2525,7 @@ Live_* == (* temporal properties *)
 | `TwoLevelSlashing`     | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | T-12W                                          |
 | `TwoLevelSlashing`     | `Inv_FilteredClosureInCurrentValidators`                                             | T-12F                                          |
 | `TwoLevelSlashing`     | `Inv_NeglectEdgesVisibleUnreported`                                                  | T-12F                                          |
-| `TwoLevelSlashing`     | `Inv_NoUnexpectedDifferentialDivergence`                                             | T-15 class                                     |
+| `TwoLevelSlashing`     | `Inv_NoUnexpectedDifferentialDivergence`                                             | T-15D (divergence calculus, §8.8)              |
 | `TwoLevelSlashing`     | `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary`                    | arithmetic boundary                            |
 | `TwoLevelSlashing`     | `Inv_ActiveQuorumsIntersect`                                                         | quorum intersection                            |
 | `TwoLevelSlashing`     | `Inv_ActiveStakeQuorumsIntersect`                                                    | weighted quorum intersection                   |
@@ -2522,17 +2547,18 @@ The original `EquivocationDetector` spec completed 14.9M distinct
 *safety* states then OOMed during *liveness-graph construction* (the
 liveness graph itself reached ~120M distinct nodes before exhausting
 the 32 GB heap; see §10.5 for the breakdown). We provide an
-equivalence-preserving rewrite
+property-preserving quotient
 `EquivocationDetectorEager.tla` that combines three orthogonal
 optimizations:
 
 **1. Truly eager detection.** `SignAndDetect` atomically (a) signs the new
 block and (b) reclassifies *every existing sibling* at the same `(v, s)`.
 There is no reachable state where two siblings co-exist with inconsistent
-classifications. This is observationally equivalent to the original
-spec's eventual-classification semantics because no observable barb
-distinguishes "classification has happened" from "classification will
-happen on the next step".
+classifications. This matches the production admission step, which classifies
+an arrival before it becomes observable as admitted detector state. It is not
+claimed to preserve the original model's scheduler-visible pending states or
+its exact admissible-versus-ignorable history; those are checked exhaustively
+in the original local state machine.
 
 **2. Liveness as safety.** Under truly-eager detection, the temporal
 property `[](real-equivocation ~> non-valid)` reduces to the safety
@@ -2553,45 +2579,46 @@ space by validator permutations.
 | Configuration                               | Distinct states                                 | Time         | Liveness verified |
 |---------------------------------------------|-------------------------------------------------|--------------|-------------------|
 | Original safety + temporal at 2v×2s×2b      | Safety: 14.9M; liveness graph: ~120M before OOM | 65 min → OOM | ✗                 |
-| Original safety only at 2v×2s×2b            | 22,667,121                                      | 2 min 26 s   | n/a               |
-| **Eager + symmetry + Inv_LivenessAsSafety** | **2,080**                                       | **<1 s**     | ✅                |
+| Original local safety at 1v×2s×2b           | 53,824                                          | 1 s          | n/a               |
+| **Eager + symmetry + Inv_LivenessAsSafety** | **52,650**                                      | **1 s**      | ✅                |
 
-The state reduction is **22,667,121 / 2,080 ≈ 10,898×** (older
-drafts quoted 10,896×; the recomputed ratio rounds to 10,898 or,
-conservatively, ≈10,900×). The reduction is the product of:
-- Symmetry reduction: ~2×
-- Removed sibling-reclassification interleavings: ~80×
-- Removed dependency-flag interleavings (atomic): ~70×
+The verification does not rely on a bisimulation claim. It uses three
+independent obligations: TLC exhausts every local pending-state interleaving;
+Rocq `DetectorProduct.detector_product_steps_preserve_pointwise_invariant`
+lifts every locally preserved pointwise invariant through arbitrary
+interleavings of any validator product; and the eager multi-validator model
+checks the production-atomic abstraction, including completion as safety.
 
-The rewrite is observationally bisimilar to the original (every reachable
-state of the original maps to one in the rewrite via the natural
-projection that classifies pending blocks).
+### 10.5 Model-checking results (verified through 2026-08-31 run)
 
-### 10.5 Model-checking results (verified through 2026-05-22 run)
-
-Run command: `systemd-run --user --scope -p MemoryMax=32G tlc -workers 8 ...`;
-for the 2026-05-22 focused reruns, `MC_SlashFlow` and
-`MC_AuthorizedSlashFlow` used `tlc -workers 1`.
+The latest authorization run used an 8 GiB memory ceiling, four workers, and seed `20260831`.
+The complete graph used 2.5 GiB peak memory.
 
 | Spec                                                                                                                    | Result                                                                                                     | States explored                                                      |
 |-------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------|
 | `MC_TwoLevelSlashing` (`EnforceClosureBound=TRUE`, weighted closure bound, quorum-intersection, fixed-point, epoch, visibility/report, evidence-view, carryover, retention, canonical-key, batch-projection, proposer-fairness, semantic-campaign, scheduler, assumption-classification, arithmetic-stress, and arithmetic-envelope invariants) | ✅ Exhausted, 0 violations on 2026-05-05 with `tlc -workers 1`                                             | 73,728 generated; **30,720 distinct**                                |
 | `MC_ConcurrentTracker` (Locked=TRUE)                                                                                    | ✅ Exhausted, 0 violations                                                                                 | **37 distinct**                                                      |
 | `MC_ConcurrentTracker` (Locked=FALSE)                                                                                   | ✅ **Correctly violates `Inv_RecordMonotone`** (counter-example for bug #2)                                | 90 generated, 71 distinct, terminating at depth 6                    |
-| `MC_SlashFlow` (full invariants incl. rejected-slash recovery, zero-bond no-transfer, slash-seed injectivity, `Inv_ForfeitedToCoopVault`, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-05-22                                                                   | 1,591,417 generated; **238,328 distinct**; depth 28                  |
-| `MC_AuthorizedSlashFlow` (current evidence, parent-pre-state authorization, ambient-zero receiver state, and merge-rejected recovery) | ✅ Exhausted, 0 violations on 2026-05-22                                                                   | 141,058,049 generated; **4,943,872 distinct**; depth 21              |
+| `MC_SlashFlow` (positive-bond authorized pending candidates, one candidate per target, slash-seed injectivity, quarantine accounting, and `Inv_StakeConservation`) | ✅ Exhausted, 0 violations on 2026-08-12 with `tlc -workers 1`; the tiny redemption cross-check also passed | Full instance: 4,421,761 generated; **883,600 distinct**; depth 28. Tiny instance: 477 generated; **196 distinct**; depth 11 |
+| `MC_AuthorizedSlashFlow` (generation lifecycle, immutable-root authority, complete canonical selection, replay identity, and proposer-receiver parity) | ✅ Exhausted, 0 violations on 2026-08-31 | 383,414,514 generated; **9,487,424 distinct**; depth 21; zero states left |
+| `MC_SlashEvidenceDependency` (slash-target dependency projection, tracker separation, fair fetch and resume) | ✅ Exhausted, 0 violations on 2026-08-12; both unsafe controls reproduce local-evidence rejection | 639 generated; **121 distinct**; depth 13 |
 | `MC_EquivocationDetector` (combined safety + `Live_DetectionComplete`, 2v × 2s × 2b)                                    | ⚠️ JVM heap exhausted at 14.9M distinct states during liveness graph construction (after 65 min, 32 GB cap) | Liveness graph hit ~120M distinct states before OOM                  |
-| `MC_EquivocationDetector_safety` (full bounds, safety only)                                                             | ✅ Exhausted, 0 violations                                                                                 | **191,849,257 generated; 22,667,121 distinct**; depth 29; 2 min 26 s |
-| `MC_EquivocationDetector_liveness` (1v × 1s × 2b, safety + temporal)                                                    | ✅ Exhausted, 0 violations                                                                                 | 147 generated; **69 distinct**; depth 8                              |
+| `MC_EquivocationDetector_local_safety` (1v × 2s × 2b, all original safety interleavings)                              | ✅ Exhausted, 0 violations on 2026-08-12                                                                  | 317,377 generated; **53,824 distinct**; depth 19; 1 s                |
+| `MC_EquivocationDetector_liveness` (1v × 1s × 2b, safety + temporal)                                                    | ✅ Exhausted, 0 violations on 2026-08-12                                                                  | 685 generated; **232 distinct**; depth 10                            |
+| `MC_EquivocationDetectorEager` (2v × 2s × 2b, symmetry, completion-as-safety)                                          | ✅ Exhausted, 0 violations on 2026-08-12                                                                  | 351,001 generated; **52,650 distinct**; depth 25; 1 s                |
 
-The split between `MC_EquivocationDetector_safety` and
-`MC_EquivocationDetector_liveness` reflects the standard formal-
-verification practice: at full bounds the liveness-graph construction is
-exponential and exceeds heap capacity, so safety is verified
-exhaustively at full bounds (22.7M distinct states) and liveness is
-verified exhaustively at reduced bounds (69 distinct states). The
-universal liveness statement (T-2 `detection_complete`) is proven for
-all DAG sizes in the Rocq mechanization.
+Apalache discharged 67 authorization verification conditions through length six.
+Its base and step checks also prove `Safety` inductive over the configured domain.
+All ten TLC controls and all ten Apalache controls reproduce their named violations.
+
+The original transition system is a product of validator-local transitions,
+and every detector invariant is pointwise in the validator. TLC therefore
+exhausts the complete 2-sequence/2-block local machine rather than enumerating
+the redundant asynchronous Cartesian product. The axiom-free Rocq product
+theorem proves preservation under an arbitrary number and ordering of
+validator-local steps. The temporal liveness automaton is exhausted at its
+small bound, while the universal detection-completeness theorem
+`detection_complete` covers all pointer values and dependency flags.
 
 **Bug #2 is formally demonstrated** by the `Locked=FALSE` violation
 trace; the post-fix `Locked=TRUE` configuration removes the violation,
@@ -2609,13 +2636,12 @@ confirming the fix.
 | `Inv_DetectedHashDetects`                                                            | `fixed_detectable_detected_hash_true`                                     | yes            |
 | `Inv_RecordMonotone` (Locked=⊤)                                                      | `t_9_2_atomic_no_overwrite`                                               | yes            |
 | `Inv_BondsZeroAfterSlash`                                                            | `slash_zeros_bond`                                                        | yes            |
-| `Inv_ZeroBondSlashNoTransfer`                                                        | `slash_zero_bond_noop`                                                     | yes            |
 | `Inv_SlashedExcludedFromFC`                                                          | `fork_choice_exclusion`                                                   | yes            |
 | `Inv_LevelClosureTerminates`                                                         | `t_11_level_2_termination`                                                | yes            |
 | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | `weighted_slash_iter_quorum_preservation`                                 | yes            |
 | `Inv_FilteredClosureInCurrentValidators`                                             | `restricted_closure_only_from_current_direct_offenders`                   | yes            |
 | `Inv_NeglectEdgesVisibleUnreported`                                                  | `visible_unreported_graph_in`                                             | yes            |
-| `Inv_NoUnexpectedDifferentialDivergence`                                             | `divergence_allowed` classification in `Bisimulation.v`                   | yes            |
+| `Inv_NoUnexpectedDifferentialDivergence`                                             | `divergence_allowed` classification in `divergence_class.rs` (§8.8)       | Rust mirror    |
 | `Inv_UnsignedArithmeticBoundary` / `Inv_SignedArithmeticBoundary`                    | `unsigned_overflow_boundary_exact` / `signed_overflow_boundary_exact`     | yes            |
 | `Inv_ActiveQuorumsIntersect`                                                         | `quorum_intersection_by_size`                                             | yes            |
 | `Inv_ActiveStakeQuorumsIntersect`                                                    | `weighted_quorum_intersection_from_disjoint_bound`                        | yes            |
@@ -2631,8 +2657,10 @@ confirming the fix.
 | `Inv_CanonicalRecordKeyInjective`                                                    | `canonical_key_pair_injective`                                            | yes            |
 | `Inv_BatchNoFailureOrderIndependent` / `Inv_PartialBatchFailureRequiresAtomicPolicy` | `bm_slash_many_order_independent` / `bm_slash_many_abort_order_dependent` | yes            |
 | `Inv_ProposerFairnessForBoundedLiveness`                                             | `proposer_fairness_boundary_requires_review`                              | yes            |
-| `Inv_AuthorizationUsesParentPreState` / `Inv_AmbientZeroDoesNotBlockParentPositiveAuth` / `Inv_ParentZeroRejectsEvenAmbientPositive` | `ambient_bonds_do_not_affect_authorization`; `parent_pre_state_authorizes_when_ambient_zero`; `parent_zero_rejects_even_if_ambient_positive` | yes |
-| `Inv_RecoveredSlashHasEvidence` / `Inv_RecoveredSlashCoveredByPendingOrExecuted`      | `recoverable_rejected_slash_requires_current_evidence`; `current_uncovered_rejected_hash_recovered` | yes |
+| `Inv_AuthorizationUsesCanonicalPreState` / `Inv_AmbientZeroDoesNotBlockCanonicalPositiveAuth` / `Inv_CanonicalZeroRejectsEvenAmbientPositive` / `Inv_ProposerReceiverAuthorizationParity` | `ambient_bonds_do_not_affect_authorization`; `canonical_pre_state_authorizes_when_ambient_differs`; `canonical_zero_rejects_even_if_ambient_positive`; `proposer_receiver_authorization_parity`; `same_pre_state_root_same_authorization` | yes |
+| `Inv_MergeRejectedSlashCoveredByCanonicalScan` / `Inv_MergeRejectedSlashCannotAuthorizeZeroBond` / `Inv_PendingSlashTargetUnique` | `merge_rejected_hint_subsumed_by_authorized_scan`; `zero_bond_candidate_not_selected`; `selected_target_keys_nodup` | yes |
+| `Inv_PendingSlashCompleteForCurrentPreState` | `authorized_candidate_selected`; `merge_rejected_hint_subsumed_by_authorized_scan` | yes |
+| `Inv_SlashedGenerationNeverExceedsCurrent` | `stale_generation_slash_is_noninterfering`; `generation_scoped_slash_stale_noop` | yes |
 
 The table lists the safety invariants with the closest 1:1 Rocq
 counterparts. Additional TLA+ invariants —
@@ -2645,8 +2673,8 @@ record contains its witness hash),
 `Inv_ActiveSetAboveQuorum` (`TwoLevelSlashing.tla`, checked under
 `EnforceClosureBound=TRUE` and mirrored by T-12
 `t_12_bft_quorum_preservation`),
-`Inv_ForfeitedToCoopVault` (`SlashFlow.tla`, corollary of T-8
-`slash_transfers_stake`),
+`Inv_StakeInQuarantineAfterSlash` (`SlashFlow.tla`, corresponding to the
+Stage-C quarantine theorems),
 `Inv_StakeConservation` (`SlashFlow.tla`, corollary of T-7 + T-8),
 and `Inv_SlashedRemoved` (`SlashFlow.tla`, projection of T-7
 `slash_zeros_bond` onto the active-set difference) — are
@@ -2707,9 +2735,9 @@ universes, (ii) *Hypothesis-style property-based search* with
 shrinking, (iii) *MIP-backed objective-guided search* for damage
 optimisation, and (iv) *frontier-expansion search* that grows the
 parameter space adaptively. Every witness that Sage emits is
-labelled with a `DivergenceReason` from `Bisimulation.v:526`
-(see §8.8); the labelling is the bridge from a Sage finding to its
-treatment in the Rocq mechanization.
+labelled with a `DivergenceReason` from the divergence calculus
+(`divergence_class.rs`; see §8.8); the labelling is the bridge from a
+Sage finding to its classification treatment.
 
 The *witness-not-authority* policy is foundational: a Sage finding
 becomes a Rust source change only after the witness is reproduced
@@ -2765,8 +2793,8 @@ matrix and §2.2 attack tree).
 `objective_frontier_model.sage`,
 `scenario_schema.sage`, plus the `hypothesis_search/` and
 `scenario_search/` subdirectories. These probe the boundaries
-of the proof hypotheses and feed the `frontier_expansion_*`
-divergence-classification theorems in `Bisimulation.v:669`.
+of the proof hypotheses and feed the frontier-expansion
+divergence-classification checks in `divergence_class.rs` (§8.8).
 
 ### 11.3 Promoted findings — overview
 
@@ -2814,7 +2842,7 @@ maintains the production ledger; here we sketch the headline promotions.
 | 86 | `evidence_timing_attack_search.sage` | `Inv_FixedDetectorTotal` | `MC_EquivocationDetector.cfg` |
 | 88 | `evidence_visibility_model.sage` | `Inv_ProposerFairnessForBoundedLiveness` | `MC_TwoLevelSlashing.cfg` |
 | 93 | `epoch_lifecycle_model.sage` | `Inv_TemporalWindowBoundary` | `MC_TwoLevelSlashing.cfg` |
-| 95 | `epoch_churn_attack_model.sage` | `Inv_StaleEvidenceCannotSlashRebondedKey` | `MC_AuthorizedSlashFlow.cfg` |
+| 95 | `epoch_churn_attack_model.sage` | `Inv_StaleGenerationCannotSlashRebondedKey` | `MC_AuthorizedSlashFlow.cfg` |
 
 **Findings classified as assumption-counterexamples.**
 
@@ -2837,8 +2865,7 @@ none of the individual closure or projection models can isolate.
 The campaigns produce no `unexpected` divergences in their
 configured bounds; every observed disagreement classifies as
 `candidate_boundary` and is recorded with a corresponding
-divergence-reason constructor in `Bisimulation.v` (preserved on
-`analysis/slashing`). The campaign infrastructure is
+divergence-reason constructor in `divergence_class.rs` (§8.8). The campaign infrastructure is
 `objective_frontier_model.sage` (objective selection),
 `scenario_schema.sage` (witness shape),
 `scenario_search/corpus_generator.sage` (corpus emission), and
@@ -2966,9 +2993,11 @@ combines `SignBlock + DetectArrival + ReclassifySibling` into one
 atomic `SignAndDetect` action. Under truly-eager classification, the
 temporal property `Live_DetectionComplete` reduces to the safety
 invariant `Inv_LivenessAsSafety`, eliminating the liveness-graph
-construction. Combined with `SYMMETRY Permutations(Validators)`, this
-yields a ≈10,898× state-space reduction (22,667,121 → 2,080) and runs
-in <1 s.
+construction. Combined with `SYMMETRY Permutations(Validators)`, the current
+2-validator eager instance exhausts 52,650 states in one second. The original
+pending-state machine is checked independently at its full 1-validator,
+2-sequence, 2-block local bound (53,824 states), and the Rocq product-locality
+theorem lifts pointwise safety through arbitrary validator interleavings.
 
 **Implication.** Liveness checking does not scale to even modest
 bounds for spec patterns with universally-quantified eventually-detect
@@ -3014,6 +3043,77 @@ accompanied by the DAG-level theorem, not just the Boolean.
 
 ---
 
+### 12.7 Objective equivocation must not depend on local invalid flags
+
+The CI disagreement in Bug #19 was not a failure of the abstract
+same-sender/same-sequence definition. It was a refinement failure between
+parallel validation and unary slash authorization. Two siblings can both
+complete validation as normal against stale snapshots and then enter the DAG
+in opposite durable orders at different replicas. Any rule naming only the
+locally second or locally invalid block is therefore arrival-dependent.
+
+[`ObjectiveEquivocation.tla`](../../../../formal/tlaplus/finalized_floor/ObjectiveEquivocation.tla)
+models validation and durable insertion as separate transitions. Two replicas
+insert fixed siblings in opposite orders, carry asymmetric local-invalid flags,
+restart from durable metadata, and apply the same epoch-lifetime restriction.
+The safe model establishes:
+
+```text
+canonical pair agreement
+∧ both-hash dependency closure
+∧ local-invalid-independent acceptance
+∧ affected-lifetime voter exclusion
+∧ cross-epoch unary-fallback suppression
+∧ epoch-first pair selection
+∧ restart persistence
+```
+
+TLC explored 61 generated and 36 distinct states to depth 11. Each of six
+unsafe configurations violates its named invariant. Apalache independently
+checked the safe model through bound 8 and reproduced all six controls through
+bound 6. The finite bounds establish exhaustive coverage of this model, not an
+unbounded proof of arbitrary DAG size.
+
+[`ObjectiveEquivocation.v`](../../../../formal/rocq/finalized_floor/theories/ObjectiveEquivocation.v)
+proves the unbounded algebraic obligations, including canonical symmetry, both-hash
+sufficiency, local-invalid independence, non-retroactive validity, voter
+exclusion, same-current eligibility, cross-epoch fallback suppression, unary
+arrival independence, and restart persistence. Its capstone is closed under
+Rocq's global context. Loom and Rust tests bind the abstract transitions to
+concurrent insertion, lifetime grouping, persistent reconciliation, protobuf encoding,
+dependency extraction, seed derivation, proposer selection, and receive-side
+authorization. The normative protocol is documented in
+[Objective equivocation evidence](objective-equivocation-evidence.md).
+
+The production authorization boundary is checked separately by
+[`ObjectiveEvidenceAuthorization.tla`](../../../../formal/tlaplus/finalized_floor/ObjectiveEvidenceAuthorization.tla).
+It does not assume that pair selection, activation epoch, generation, stake,
+or proposal/receipt predicates share an authority source. Instead, the safe
+model requires generation and epoch filtering before pair canonicalization,
+positive bond and generation from one canonical merged-pre-state root,
+pair-only activation, exact fault-key unary suppression, and predicate parity.
+TLC exhausts 769 generated and 256 distinct states to depth 17. Apalache checks
+the same safe projection through bound 12. Seven TLC and Apalache controls each
+restore one defect and must violate the exact corresponding invariant:
+
+| Control | Required violation |
+|---|---|
+| `epoch_after_min_unsafe` | epoch filtering after canonical pair selection |
+| `cross_epoch_unsafe` | receipt of a pair with an old-epoch member |
+| `snapshot_generation_unsafe` | generation authority from a stale snapshot |
+| `snapshot_bond_unsafe` | stake authority from a stale snapshot |
+| `offender_wide_suppression_unsafe` | suppression of an independent unary fault key |
+| `pair_only_disabled_unsafe` | failure to activate without a local invalid-index entry |
+| `predicate_drift_unsafe` | proposal and receipt using different predicates |
+
+The Rocq authority record binds root, bond, and generation, then proves positive
+bond, same sender and sequence, both evidence epochs, generation equality,
+pair-only activation, and proposer/receiver identity without axioms. The Loom
+suite exhausts six concrete Rust interleaving models with sequence identity and
+scoped unary suppression. The differential fuzzers independently derive
+canonical evidence deltas and both unary and paired slash verdicts from
+certified synthetic DAG metadata.
+
 ## 13 · Module reference
 
 The component-to-artifact correspondence is shown visually in Diagram 10
@@ -3027,15 +3127,18 @@ and Rust file that realize it):
 All directories below are present in this repository.
 
 ```
-formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
+formal/rocq/slashing/theories/                 (30 Rocq modules; cf. §1.3)
 ├── Validator.v                       (foundations: BondMap algebra)
-├── ValidatorLifetime.v               (Bug #13: epoch-scoped lifetime identity)
+├── ValidatorLifetime.v               (Bug #13 unary epoch window; refined by PoS generation identity)
+├── BondGenerationLifecycle.v         (bond-generation transition proofs)
 ├── Block.v                           (Block, Justification, equivocation predicate)
-├── InvalidBlock.v                    (27-variant taxonomy + is_slashable — models the bug-fix-era 19-slashable set; the normative set is now the 2-variant equivocation class, §4.4)
+├── InvalidBlock.v                    (29-reason taxonomy, historical predicate, and normative 2-reason evidence predicate)
 ├── EquivocationRecord.v              (EqStore, T-4, T-5)
 ├── DAGState.v                        (DAG snapshot + equivocates predicate)
 ├── EquivocationDetector.v            (detect, T-1, T-2, T-6, T-9.11)
+├── DetectorProduct.v                 (local-to-product detector invariant lifting)
 ├── PoSContract.v                     (slash transition, T-7, T-8, T-Idem)
+├── ValidatorRedemption.v             (Stage-C adjudication and conservation)
 ├── SlashDeploy.v                     (system-deploy execution; T-LivenessGap support)
 ├── BlockCreator.v                    (prepare_slashing_deploys)
 ├── ForkChoice.v                      (filter_slashed, T-10)
@@ -3052,16 +3155,18 @@ formal/rocq/slashing/theories/                 (26 Rocq modules; cf. §1.3)
 ├── BugFixSlashAuthorization.v        (T-9.12, T-9.13, T-Auth)
 ├── BugFixSeqArithmetic.v             (T-9.14)
 ├── BugFixDuplicateJustifications.v   (T-9.15)
-├── Bisimulation.v                    (T-13 components + divergence calculus §8.8)
-└── MainTheorem.v                     (composition; main_bisimilarity_theorem)
+├── BugFixAtomicBufferDagTransition.v (T-9.20 restart reconciliation)
+├── ProtocolV5DependencyReadiness.v   (slash-evidence dependency readiness)
+└── MainTheorem.v                     (composition; main_slashing_algorithm_correct)
 
-formal/tlaplus/slashing/               (19 TLA+ specs + 13 MC configs; cf. §10.3)
+formal/tlaplus/slashing/               (28 TLA+ modules + 21 MC configs; cf. §10.3)
 ├── EquivocationDetector.tla, EquivocationDetectorEager.tla
 ├── ConcurrentTracker.tla
 ├── SlashFlow.tla
 ├── TwoLevelSlashing.tla
 ├── WithdrawFlow.tla
 ├── AuthorizedSlashFlow.tla
+├── SlashEvidenceDependency.tla
 └── JustificationProjection.tla
    (each paired with MC_*.tla + MC_*.cfg model-check harness)
 
@@ -3088,9 +3193,8 @@ formal/sage/slashing/                  (32 Sage models; cf. §11.2)
 | §4 Detection semantics          | `EquivocationDetector.v`                                  |
 | §5 PoS slash transition         | `PoSContract.v`                                           |
 | §6 Validator lifecycle          | composition of `PoSContract.v` and `EquivocationRecord.v` |
-| §7 Pipeline                     | `MainTheorem.v` (main_bisimilarity_theorem)               |
+| §7 Pipeline                     | `MainTheorem.v` (main_slashing_algorithm_correct)         |
 | §8 Two-level slashing           | `TwoLevelSlashing.v`                                      |
-| §9 Bisimilarity                 | `Bisimulation.v`                                          |
 | §10.1 Bug fix #1                | `BugFixIgnorable.v`                                       |
 | §10.2 Bug fix #2                | `BugFixAtomicTracker.v` + TLA+ counter-example            |
 | §10.3 Bug fix #3                | `BugFixDispatcher.v`                                      |
@@ -3124,15 +3228,9 @@ Running
 ```
 echo 'From Slashing Require Import MainTheorem.
 From Slashing Require Import TwoLevelSlashing.
-From Slashing Require Import Bisimulation.
-Print Assumptions main_bisimilarity_theorem.
-Print Assumptions main_bisimilarity_strong.
-Print Assumptions main_T14_weak_barbed_equiv_refl.
-Print Assumptions main_T14_weak_barbed_equiv_trans.
+Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions main_T12_bft_quorum.
 Print Assumptions main_T9_2_n_threads.
-Print Assumptions main_T15_pipeline_step.
-Print Assumptions main_slashing_algorithm_correct.
 Print Assumptions main_T6_detect_neglected_sound.
 Print Assumptions main_T9_6_dag.
 Print Assumptions slash_iter_reachability_characterization.
@@ -3143,9 +3241,7 @@ Print Assumptions slash_iter_graph_equiv.
 Print Assumptions slash_iter_validator_renaming_equiv.
 Print Assumptions no_reachability_no_level2_slash.
 Print Assumptions unsigned_overflow_boundary_exact.
-Print Assumptions signed_overflow_boundary_exact.
-Print Assumptions candidate_boundary_divergence_requires_review.
-Print Assumptions unexpected_divergence_forbidden.' \
+Print Assumptions signed_overflow_boundary_exact.' \
   | coqtop -Q theories Slashing
 ```
 
@@ -3170,19 +3266,19 @@ hand) — additionally re-verifies the whole library through the trusted kernel:
 `coqchk -Q theories Slashing Slashing.MainTheorem` ⇒ *"Modules were successfully
 checked"*. The gate is **authoritative on Rocq** (it auto-generates a
 `Print Assumptions` for *every* `main_*` capstone in `MainTheorem.v` and asserts
-the count of *"Closed under the global context"* equals the capstone count — 70
+the count of *"Closed under the global context"* equals the capstone count — 96
 at this writing — so a newly-added theorem that is not axiom-free fails the gate),
-and **fail-soft on TLA⁺**: the fast concurrent-tracker, slash-flow, 1v
+and **mandatory on TLA⁺**: the fast concurrent-tracker, slash-flow, 1v
 detector-liveness (exercising all detector safety invariants plus
 `Live_DetectionComplete`), and — added in the P0–P3 coverage sweep — the **eager
 liveness-as-safety** model (**C8**, `MC_EquivocationDetectorEager.cfg`: folds
 liveness into the `Inv_LivenessAsSafety` invariant and quotients the 2v space by
 validator symmetry, exhausting fast at 52 650 states) must pass, the pre-fix
-tracker cfg must reproduce its race counterexample, and the heavy exhaustive 2v
-detector-safety run (§10.5, §12.4) is budgeted (`SL_DETECTOR_SAFETY_BUDGET`,
-default 300 s ⇒ skip-with-note; `0` ⇒ run to completion) since Rocq is
-authoritative for detection soundness (T-1/T-6) and that run is defense-in-depth.
-A further **fail-soft Apalache tier** (**C9**) proves `IndInv = TypeOK ∧
+tracker cfg must reproduce its race counterexample, and the local-safety model
+must exhaust the complete 2-sequence/2-block original state machine. Rocq
+`main_T2_detector_product_locality` lifts each locally preserved pointwise
+invariant through arbitrary validator-product interleavings.
+A further **mandatory Apalache tier** (**C9**) proves `IndInv = TypeOK ∧
 Inv_DetectionSound ∧ Inv_TaxonomyCorrect ∧ Inv_NeglectedHasDetectableView ∧
 Inv_RecordHasWitness ∧ Inv_LivenessAsSafety` **INDUCTIVE** (BASE `Init ⊨ IndInv` +
 STEP `Next` preserves `IndInv`) on `EquivocationDetectorEager_apalache.tla` at
@@ -3191,8 +3287,8 @@ strictly beyond the bounded TLC 2v/2s/2b, and certifying a 3-validator bound whe
 explicit TLC enumeration blows up; non-vacuous (breaking eager atomicity ⇒ STEP
 counterexample-to-induction). The `Canonical*`/`DetectorTraversal*` invariants are
 excluded from `IndInv` (state-independent pure-math over `RECURSIVE` helpers,
-unsupported by Apalache; TLC continues to validate them). SKIPs fail-soft if no
-`apalache-mc` on PATH. POLICY: this gate is **local-only** — it is never wired into
+unsupported by Apalache; TLC continues to validate them). Absence of
+`apalache-mc` fails the gate. POLICY: this gate is **local-only** — it is never wired into
 `.github/workflows/*` (an earlier formal-CI workflow was deliberately removed).
 
 The complete theorem set (after all eleven audit-gap closures plus the
@@ -3201,14 +3297,13 @@ sixteen-bug-fix completion in §9.10..§9.16) covers:
 - **Detection layer** (T-1, T-2, T-3, T-4 via `detect_neglected_*`)
 - **Record persistence** (T-4, T-5)
 - **Slash effect** (T-7, T-8, T-Idem — including `ps_active`, T-10)
-- **Two-level slashing** (T-11, T-12 list-length, T-12 BFT-style,
+- **Counterfactual two-level slashing** (T-11, T-12 list-length, T-12 BFT-style,
   reachability characterization, weighted quorum, current-validator
   filtering, evidence visibility, graph edge cases, arithmetic boundaries,
   and the fifteen-corollary T-12 letter-suffix family of §7.10)
-- **Bisimilarity** (T-13 strong baseline, T-13 records monotonicity,
-  T-13 forkchoice filter, T-14 weak barbed equivalence reflexivity,
-  symmetry, and transitivity, T-15 pipeline composition, divergence
-  calculus of §8.8)
+- **Headline correctness** (`main_slashing_algorithm_correct`:
+  detection ⇒ slash effect + witness record + fork-choice exclusion +
+  stake transfer, composing the layers above and the bug fixes below)
 - **Bug fixes** (T-9.1 through T-9.15 — including the strengthened
   T-9.2 n-thread schedule, T-9.6 DAG-level, T-9.10 triple, T-9.11
   detector totality/distinct-child lemmas, T-9.12 stale-evidence,
@@ -3221,7 +3316,7 @@ All return "Closed under the global context".
 
 | Item                                          | Why                                                                                                                                                             |
 |-----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Byte-level on-disk equality                   | Bisimilarity is value-level; iteration order is a non-observable.                                                                                               |
+| Byte-level on-disk equality                   | Reasoning is value-level; iteration order (BTreeSet vs Set) is a non-observable.                                                                                |
 | Rholang interpreter semantics                 | The `slash` Rholang contract is shared between Rust and Scala; we treat the Rholang execution as an abstract function `slash : PoSState → V → PoSState × bool`. |
 | Network-level message-passing                 | Out of scope; the LTS is on local state.                                                                                                                        |
 | Cryptographic signatures                      | Validators are abstract `nat`s; the PoS auth-token check is modeled as a Boolean oracle around slash-deploy execution.                                          |
@@ -3253,7 +3348,7 @@ The verification policy is:
 
 ```
 finite witness ≠ proof authority
-finite witness ≠ Rust source bug
+finite witness ≠ Rust implementation bug
 ```
 
 A witness can justify a production Rust source change only after it is
@@ -3329,21 +3424,22 @@ T-12-AMP, T-12-PF). The PBFT line of work [CL99] treats the bound
 operationally; we treat it as a *hypothesis space* whose boundary is
 mapped by the corollaries.
 
-### 16.4 Bisimulation and the choice of equivalence
+### 16.4 The divergence calculus and the choice of classification
 
-The bisimulation tradition originates in Milner's CCS [Mil89], extends
-through the π-calculus [Mil99], [SW01], and develops the *up-to*
-proof method that we use implicitly in §8 [San98]. Our weak barbed
-equivalence (Theorem 8.5 = T-14) is the standard weak bisimulation
-over a five-component state projection
-`(bonds, records, slashed, vault, fork-choice)`.
+An earlier version of this article carried a weak-barbed-bisimulation
+result relating the Rust port to the Scala original, drawing on the
+bisimulation tradition of Milner's CCS [Mil89], the π-calculus
+[Mil99], [SW01], and the *up-to* proof method [San98]. That result
+was a bug-finding differential device; under the cost-accounted-rho
+migration the two implementations are no longer comparable, so it has
+been removed (see the §8 removal note and DR-6).
 
-The contribution over the standard treatment is the *divergence
-calculus* of §8.8: a formal classification of which Rust ↔ Scala
+What remains and is the lasting contribution is the *divergence
+calculus* of §8.8: a formal classification of which differential-search
 disagreements are admissible. The divergence-allowed predicate
-(Definition 8.10) makes "bisimilarity modulo bug fixes" a precise
-mathematical notion, not an informal qualifier. We are not aware of
-prior formal treatments of bisimilarity-modulo-fixes in the
+(Definition 8.10) makes "permitted modulo documented deltas" a precise
+notion, not an informal qualifier. We are not aware of prior formal
+treatments of differential-divergence classification in the
 consensus-protocol literature.
 
 ### 16.5 TLA+ and model-checking-driven verification
@@ -3437,28 +3533,34 @@ This article has presented mechanized proofs for the slashing protocol
 of the F1r3fly CBC-Casper consensus implementation. We established
 three principal results.
 
-**Bisimilarity Rust ≈ Scala.** The Rust slashing pipeline is weakly
-barbed bisimilar to the Scala antecedent over the five-component
-observable state `(bonds, records, slashed, vault, fork-choice)`,
-modulo a closed set of sixteen documented bug-fix deltas. The
-bisimilarity is mechanized in Rocq as `main_bisimilarity_theorem`
-(Theorem 8.2 = T-15b) and composed via `t_15_pipeline_step_preserves_R`
-(Theorem 8.6 = T-15a). The divergence calculus of §8.8 makes "modulo
-a closed set" precise: the sixteen permitted deltas are exactly the
-elements of `PermittedBugFix` under the classification function
-`classify_divergence_reason`, and every other class either classifies
-as `CandidateBoundaryDivergence` (requires hypothesis review) or
-`UnexpectedDivergence` (forbidden).
+**Slashing-pipeline correctness.** The Rust slashing pipeline is correct.
+`main_slashing_algorithm_correct` (§6 of `MainTheorem.v`) covers each detected
+admissible or ignorable equivocation. The effect zeros the offender's bond
+and retains the witnessing hash. It excludes the offender from fork choice,
+quarantines positive stake, and halts minting. The Coop vault stays unchanged
+before adjudication.
+The differential divergence calculus of §8.8 classifies which
+differential-search disagreements are admissible: `PermittedBugFix`
+and `Bisimilar` are accepted, `CandidateBoundaryDivergence` requires
+hypothesis review, and `UnexpectedDivergence` is forbidden.
 
-**Two-level slash closure preserves BFT quorum.** The slash closure
+(An earlier version of this article also proved the Rust pipeline
+weakly barbed bisimilar to the Scala original. That bug-finding
+differential result is obsolete under the cost-accounted-rho migration
+and has been removed; see the §8 removal note and DR-6.)
+
+**Counterfactual two-level slash closure preserves BFT quorum.** The slash closure
 operator terminates in at most `|V| − 1` iterations (Theorem 7.2 =
 T-11) and preserves the active set above quorum under the BFT
 precondition `|slashed| ≤ ⌊(n−1)/3⌋` (Theorem 7.3 = T-12). The fifteen
 letter-suffix corollaries of §7.10 develop the hypothesis space of
-T-12: each corollary either strengthens the conclusion under a side
+T-12. Each corollary either strengthens the conclusion under a side
 condition (T-12-W weighted, T-12-V view-merge) or exhibits the finite
 counter-example that the hypothesis is not optional (T-12-HYP,
 T-12-AMP, T-12-PF).
+
+These closure results do not authorize current protocol slashes. Current
+economic evidence requires one of the two objective equivocation reasons.
 
 **Authorization, withdrawal, arithmetic, and projection surfaces
 closed.** The Rust-source-confirmed authorization vulnerabilities
@@ -3516,11 +3618,11 @@ The article has aimed at *journal-article quality* rather than
 *proof-artifact thoroughness*: every theorem statement is followed
 by a prose proof, every headline theorem cites a worked example,
 every bug-fix proof exhibits the pre-fix counter-example that
-motivated it, and the divergence calculus of §8.8 makes the "modulo"
-qualifier of T-15 a first-class formal object. The Rocq mechanization
-under `formal/rocq/slashing/theories/` remains the authoritative source
-of truth; this article is the English shadow that makes the
-development *readable* without sacrificing *precision*.
+motivated it, and the divergence calculus of §8.8 makes the
+"permitted modulo documented deltas" qualifier a first-class object.
+The Rocq mechanization under `formal/rocq/slashing/theories/` remains
+the authoritative source of truth; this article is the English shadow
+that makes the development *readable* without sacrificing *precision*.
 
 ---
 

@@ -49,7 +49,7 @@ use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 ///
 /// * `BlockDagKeyValueStorage::insert` / `insert_internal`
 /// * `BlockDagKeyValueStorage::record_directly_finalized`
-/// * `BlockDagKeyValueStorage::propagate_ft_to_finalized_blocks`
+/// * `BlockDagKeyValueStorage::reconcile_finalization_projection`
 /// * `BlockDagKeyValueStorage::get_representation`
 ///
 /// Doing so will deadlock the `parking_lot::RwLock<()>`-based

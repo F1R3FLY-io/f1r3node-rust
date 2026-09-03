@@ -1,7 +1,8 @@
 // See rspace/src/main/scala/coop/rchain/rspace/merger/StateChange.scala
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 use rayon::prelude::*;
@@ -16,6 +17,86 @@ use crate::rspace::hashing::stable_hash_provider;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
 
+#[derive(Debug, Clone)]
+pub struct FrozenMap<K, V>(Arc<BTreeMap<K, V>>);
+
+impl<K, V> Default for FrozenMap<K, V> {
+    fn default() -> Self { Self(Arc::new(BTreeMap::new())) }
+}
+
+impl<K: Ord, V> FrozenMap<K, V> {
+    pub fn from_map<M>(map: M) -> Self
+    where M: IntoIterator<Item = (K, V)> {
+        Self(Arc::new(map.into_iter().collect()))
+    }
+
+    fn from_dash_map(map: DashMap<K, V>) -> Self
+    where K: Eq + Hash {
+        Self::from_map(map.into_iter())
+    }
+
+    pub fn len(&self) -> usize { self.0.len() }
+
+    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+
+    pub fn get(&self, key: &K) -> Option<&V> { self.0.get(key) }
+
+    pub fn iter(&self) -> FrozenMapIter<'_, K, V> { FrozenMapIter(self.0.iter()) }
+}
+
+impl<K: Clone + Ord, V: Clone> FrozenMap<K, V> {
+    fn into_owned(self) -> BTreeMap<K, V> {
+        Arc::try_unwrap(self.0).unwrap_or_else(|shared| (*shared).clone())
+    }
+}
+
+impl<K: Ord, V: PartialEq> PartialEq for FrozenMap<K, V> {
+    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+}
+
+impl<K: Ord, V: Eq> Eq for FrozenMap<K, V> {}
+
+impl<K: Ord, V: Ord> Ord for FrozenMap<K, V> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.iter().cmp(other.0.iter()) }
+}
+
+impl<K: Ord, V: Ord> PartialOrd for FrozenMap<K, V> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+
+impl<K: Ord + Hash, V: Hash> Hash for FrozenMap<K, V> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.len().hash(state);
+        for (key, value) in self.0.iter() {
+            key.hash(state);
+            value.hash(state);
+        }
+    }
+}
+
+pub struct FrozenMapEntry<'a, K, V> {
+    key: &'a K,
+    value: &'a V,
+}
+
+impl<'a, K, V> FrozenMapEntry<'a, K, V> {
+    pub fn key(&self) -> &'a K { self.key }
+
+    pub fn value(&self) -> &'a V { self.value }
+}
+
+pub struct FrozenMapIter<'a, K, V>(std::collections::btree_map::Iter<'a, K, V>);
+
+impl<'a, K, V> Iterator for FrozenMapIter<'a, K, V> {
+    type Item = FrozenMapEntry<'a, K, V>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0
+            .next()
+            .map(|(key, value)| FrozenMapEntry { key, value })
+    }
+}
+
 /**
  * Datum changes are referenced by channel, continuation changes are
  * references by consume. In addition, map from consume channels to binary
@@ -26,226 +107,29 @@ use crate::rspace::history::instances::rspace_history_reader_impl::RSpaceHistory
  */
 #[derive(Debug, Clone)]
 pub struct StateChange {
-    pub datums_changes: DashMap<Blake2b256Hash, ChannelChange<Vec<u8>>>,
-    pub cont_changes: DashMap<Vec<Blake2b256Hash>, ChannelChange<Vec<u8>>>,
-    pub consume_channels_to_join_serialized_map: DashMap<Vec<Blake2b256Hash>, Vec<u8>>,
+    pub datums_changes: FrozenMap<Blake2b256Hash, ChannelChange<Vec<u8>>>,
+    pub cont_changes: FrozenMap<Vec<Blake2b256Hash>, ChannelChange<Vec<u8>>>,
+    pub consume_channels_to_join_serialized_map: FrozenMap<Vec<Blake2b256Hash>, Vec<u8>>,
 }
 
 impl PartialEq for StateChange {
     fn eq(&self, other: &Self) -> bool {
-        // Compare by counting entries and checking if all keys and values match
-        // This is an approximate equality check since DashMap doesn't implement
-        // PartialEq
-
-        // Check if maps have same size
-        if self.datums_changes.len() != other.datums_changes.len() ||
-            self.cont_changes.len() != other.cont_changes.len() ||
-            self.consume_channels_to_join_serialized_map.len() !=
-                other.consume_channels_to_join_serialized_map.len()
-        {
-            return false;
-        }
-
-        // Check all datums_changes match
-        for entry in self.datums_changes.iter() {
-            let key = entry.key();
-            let value = entry.value();
-
-            if let Some(other_value) = other.datums_changes.get(key) {
-                if value.added != other_value.added || value.removed != other_value.removed {
-                    return false;
-                }
-            } else {
-                return false;
-            }
-        }
-
-        // Check all cont_changes match
-        for entry in self.cont_changes.iter() {
-            let key = entry.key();
-            let value = entry.value();
-
-            // Find matching key in other.cont_changes
-            let found = other.cont_changes.iter().any(|other_entry| {
-                let other_key = other_entry.key();
-                let other_value = other_entry.value();
-
-                key == other_key &&
-                    value.added == other_value.added &&
-                    value.removed == other_value.removed
-            });
-
-            if !found {
-                return false;
-            }
-        }
-
-        // Check all join maps match
-        for entry in self.consume_channels_to_join_serialized_map.iter() {
-            let key = entry.key();
-            let value = entry.value();
-
-            // Find matching key in other.consume_channels_to_join_serialized_map
-            let found = other
-                .consume_channels_to_join_serialized_map
-                .iter()
-                .any(|other_entry| {
-                    let other_key = other_entry.key();
-                    let other_value = other_entry.value();
-
-                    key == other_key && value == other_value
-                });
-
-            if !found {
-                return false;
-            }
-        }
-
-        true
+        self.datums_changes == other.datums_changes &&
+            self.cont_changes == other.cont_changes &&
+            self.consume_channels_to_join_serialized_map ==
+                other.consume_channels_to_join_serialized_map
     }
 }
 
 impl PartialOrd for StateChange {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        // Implement a custom ordering based on sizes
-        // This is a simple implementation that treats StateChange as comparable
-        // For a real implementation, you'd need to define a sensible ordering
-
-        // Compare by the number of entries in each map
-        let self_total = self.datums_changes.len() +
-            self.cont_changes.len() +
-            self.consume_channels_to_join_serialized_map.len();
-        let other_total = other.datums_changes.len() +
-            other.cont_changes.len() +
-            other.consume_channels_to_join_serialized_map.len();
-
-        self_total.partial_cmp(&other_total)
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 
 impl Hash for StateChange {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hash datums_changes
-        let mut datum_keys_and_values = Vec::new();
-        for entry in self.datums_changes.iter() {
-            let key = entry.key().clone();
-            let value = entry.value();
-
-            let mut key_hasher = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut key_hasher);
-            let key_hash = key_hasher.finish();
-
-            let added = value.added.clone();
-            let removed = value.removed.clone();
-
-            datum_keys_and_values.push((key_hash, added, removed));
-        }
-
-        // Sort for deterministic hashing
-        datum_keys_and_values.sort_by_key(|k| k.0);
-        for (key_hash, added, removed) in datum_keys_and_values {
-            key_hash.hash(state);
-
-            // Hash added values
-            let mut added_hashes = Vec::new();
-            for item in added {
-                let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
-                item.hash(&mut item_hasher);
-                added_hashes.push(item_hasher.finish());
-            }
-            added_hashes.sort_unstable();
-            for h in added_hashes {
-                h.hash(state);
-            }
-
-            // Hash removed values
-            let mut removed_hashes = Vec::new();
-            for item in removed {
-                let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
-                item.hash(&mut item_hasher);
-                removed_hashes.push(item_hasher.finish());
-            }
-            removed_hashes.sort_unstable();
-            for h in removed_hashes {
-                h.hash(state);
-            }
-        }
-
-        // Hash cont_changes
-        let mut cont_keys_and_values = Vec::new();
-        for entry in self.cont_changes.iter() {
-            let key = entry.key().clone();
-            let value = entry.value();
-
-            // Hash the collection of Blake2b256Hash
-            let mut key_hasher = std::collections::hash_map::DefaultHasher::new();
-            for hash in &key {
-                hash.hash(&mut key_hasher);
-            }
-            let key_hash = key_hasher.finish();
-
-            let added = value.added.clone();
-            let removed = value.removed.clone();
-
-            cont_keys_and_values.push((key_hash, added, removed));
-        }
-
-        // Sort for deterministic hashing
-        cont_keys_and_values.sort_by_key(|k| k.0);
-        for (key_hash, added, removed) in cont_keys_and_values {
-            key_hash.hash(state);
-
-            // Hash added values
-            let mut added_hashes = Vec::new();
-            for item in added {
-                let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
-                item.hash(&mut item_hasher);
-                added_hashes.push(item_hasher.finish());
-            }
-            added_hashes.sort_unstable();
-            for h in added_hashes {
-                h.hash(state);
-            }
-
-            // Hash removed values
-            let mut removed_hashes = Vec::new();
-            for item in removed {
-                let mut item_hasher = std::collections::hash_map::DefaultHasher::new();
-                item.hash(&mut item_hasher);
-                removed_hashes.push(item_hasher.finish());
-            }
-            removed_hashes.sort_unstable();
-            for h in removed_hashes {
-                h.hash(state);
-            }
-        }
-
-        // Hash consume_channels_to_join_serialized_map
-        let mut join_keys_and_values = Vec::new();
-        for entry in self.consume_channels_to_join_serialized_map.iter() {
-            let key = entry.key().clone();
-            let value = entry.value().clone();
-
-            // Hash the collection of Blake2b256Hash
-            let mut key_hasher = std::collections::hash_map::DefaultHasher::new();
-            for hash in &key {
-                hash.hash(&mut key_hasher);
-            }
-            let key_hash = key_hasher.finish();
-
-            let mut value_hasher = std::collections::hash_map::DefaultHasher::new();
-            value.hash(&mut value_hasher);
-            let value_hash = value_hasher.finish();
-
-            join_keys_and_values.push((key_hash, value_hash));
-        }
-
-        // Sort for deterministic hashing
-        join_keys_and_values.sort_by_key(|k| k.0);
-        for (key_hash, value_hash) in join_keys_and_values {
-            key_hash.hash(state);
-            value_hash.hash(state);
-        }
+        self.datums_changes.hash(state);
+        self.cont_changes.hash(state);
+        self.consume_channels_to_join_serialized_map.hash(state);
     }
 }
 
@@ -253,16 +137,13 @@ impl Eq for StateChange {}
 
 impl Ord for StateChange {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Implement total ordering consistent with partial_cmp
-        // Compare by the number of entries in each map
-        let self_total = self.datums_changes.len() +
-            self.cont_changes.len() +
-            self.consume_channels_to_join_serialized_map.len();
-        let other_total = other.datums_changes.len() +
-            other.cont_changes.len() +
-            other.consume_channels_to_join_serialized_map.len();
-
-        self_total.cmp(&other_total)
+        self.datums_changes
+            .cmp(&other.datums_changes)
+            .then_with(|| self.cont_changes.cmp(&other.cont_changes))
+            .then_with(|| {
+                self.consume_channels_to_join_serialized_map
+                    .cmp(&other.consume_channels_to_join_serialized_map)
+            })
     }
 }
 
@@ -362,28 +243,48 @@ impl StateChange {
                 let post = post_state_reader.get_joins(&history_pointer)?;
 
                 // find join which match channels
-                let join = pre
-                    .into_iter()
-                    .chain(post)
-                    .find(|join| {
-                        let mut join_channels = join
-                            .iter()
-                            .map(|item| stable_hash_provider::hash(item))
-                            .collect::<Vec<_>>();
-                        // sorting is required because channels of a consume in event log and
-                        // channels of a join in history might not be
-                        // ordered the same way
-                        consume_channels.sort();
-                        join_channels.sort();
-                        *consume_channels == join_channels
-                    })
-                    .expect(
-                        "Tuple space inconsistency found: channel of consume does not contain \
-                         join record corresponding to the consume channels.",
-                    );
+                let join_opt = pre.into_iter().chain(post).find(|join| {
+                    let mut join_channels = join
+                        .iter()
+                        .map(|item| stable_hash_provider::hash(item))
+                        .collect::<Vec<_>>();
+                    // sorting is required because channels of a consume in event log and
+                    // channels of a join in history might not be
+                    // ordered the same way
+                    consume_channels.sort();
+                    join_channels.sort();
+                    *consume_channels == join_channels
+                });
 
-                let raw_join = bincode::serialize(&join).expect("Unable to serialize join");
-                joins_map.insert(consume_channels, raw_join);
+                // A consume can be "affected" by the event-log set algebra yet have ZERO net
+                // tuple-space effect (created-and-resolved within the block, or a peek /
+                // immediate match leaving no residue), in which case neither pre nor post
+                // state holds a join for it. Such a no-op consume carries no join change:
+                // the `cont_diff.retain(...)` below drops it from the continuation diff, and
+                // `state_change_merger` consults this join map ONLY for consumes that have a
+                // (non-no-op) continuation change. So skip it rather than `.expect()`-
+                // panicking — the panic was a craftable validator-crash on attacker-
+                // influenceable input, and it fired during eager per-branch indexing.
+                // A genuine surviving/destroyed consume always has its join written in
+                // lockstep with its continuation, so it cannot reach pre==post==empty; were
+                // one ever to, the downstream merger degrades to a deterministic
+                // `HistoryError::MergeError` rather than a silent wrong state.
+                match join_opt {
+                    Some(join) => {
+                        let raw_join = bincode::serialize(&join).expect("Unable to serialize join");
+                        joins_map.insert(consume_channels, raw_join);
+                    }
+                    None => {
+                        tracing::warn!(
+                            target: "rspace.merger",
+                            "state_change: affected consume has no join record in pre or post \
+                             state (net-zero-effect / no-op consume); skipping its join entry. \
+                             This is expected for created-and-resolved or peek consumes and is \
+                             NOT a tuple-space inconsistency. channels={:?}",
+                            consume_channels
+                        );
+                    }
+                }
                 Ok::<(), HistoryError>(())
             })?;
 
@@ -403,9 +304,9 @@ impl StateChange {
         );
 
         Ok(Self {
-            datums_changes: datums_diff,
-            cont_changes: cont_diff,
-            consume_channels_to_join_serialized_map: joins_map,
+            datums_changes: FrozenMap::from_dash_map(datums_diff),
+            cont_changes: FrozenMap::from_dash_map(cont_diff),
+            consume_channels_to_join_serialized_map: FrozenMap::from_dash_map(joins_map),
         })
     }
 
@@ -498,13 +399,46 @@ impl StateChange {
             "creating empty StateChange",
         );
         Self {
-            datums_changes: DashMap::new(),
-            cont_changes: DashMap::new(),
-            consume_channels_to_join_serialized_map: DashMap::new(),
+            datums_changes: FrozenMap::default(),
+            cont_changes: FrozenMap::default(),
+            consume_channels_to_join_serialized_map: FrozenMap::default(),
+        }
+    }
+
+    pub fn from_parts(
+        datums_changes: HashMap<Blake2b256Hash, ChannelChange<Vec<u8>>>,
+        cont_changes: HashMap<Vec<Blake2b256Hash>, ChannelChange<Vec<u8>>>,
+        consume_channels_to_join_serialized_map: HashMap<Vec<Blake2b256Hash>, Vec<u8>>,
+    ) -> Self {
+        Self {
+            datums_changes: FrozenMap::from_map(datums_changes),
+            cont_changes: FrozenMap::from_map(cont_changes),
+            consume_channels_to_join_serialized_map: FrozenMap::from_map(
+                consume_channels_to_join_serialized_map,
+            ),
         }
     }
 
     pub fn combine(self, other: Self) -> Self {
+        self.merge(other, true, false)
+            .expect("legacy StateChange merge cannot fail")
+    }
+
+    pub fn join(self, other: Self) -> Self {
+        self.merge(other, false, false)
+            .expect("legacy StateChange join cannot fail")
+    }
+
+    pub fn additive_join(self, other: Self) -> Result<Self, HistoryError> {
+        self.merge(other, false, true)
+    }
+
+    fn merge(
+        self,
+        other: Self,
+        normalize_channels: bool,
+        additive_channels: bool,
+    ) -> Result<Self, HistoryError> {
         tracing::debug!(
             target: "f1r3fly.merge.step",
             step = "StateChange::combine.ENTER",
@@ -514,17 +448,19 @@ impl StateChange {
             other_datums = other.datums_changes.len(),
             other_conts = other.cont_changes.len(),
             other_joins = other.consume_channels_to_join_serialized_map.len(),
+            normalize_channels,
             "combining two StateChanges (multiset union per channel)",
         );
 
-        let datums_changes = self.datums_changes;
-        let cont_changes = self.cont_changes;
-        let consume_channels_to_join_serialized_map = self.consume_channels_to_join_serialized_map;
+        let mut datums_changes = self.datums_changes.into_owned();
+        let mut cont_changes = self.cont_changes.into_owned();
+        let mut consume_channels_to_join_serialized_map =
+            self.consume_channels_to_join_serialized_map.into_owned();
 
         // Combine datum changes via ChannelChange::combine (multiset union)
-        for (key, value) in other.datums_changes {
+        for (key, value) in other.datums_changes.into_owned() {
             match datums_changes.entry(key) {
-                dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
                     let current = std::mem::replace(entry.get_mut(), ChannelChange::empty());
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
@@ -538,7 +474,13 @@ impl StateChange {
                             "datum channel present on both sides -> accumulating",
                         );
                     }
-                    let merged = current.combine(value);
+                    let merged = if additive_channels {
+                        current.additive_join(value)
+                    } else if normalize_channels {
+                        current.combine(value)
+                    } else {
+                        current.join(value)
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -551,7 +493,7 @@ impl StateChange {
                     }
                     *entry.get_mut() = merged;
                 }
-                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                std::collections::btree_map::Entry::Vacant(entry) => {
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -568,9 +510,9 @@ impl StateChange {
         }
 
         // Combine continuation changes via ChannelChange::combine (multiset union)
-        for (key, value) in other.cont_changes {
+        for (key, value) in other.cont_changes.into_owned() {
             match cont_changes.entry(key) {
-                dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
                     let current = std::mem::replace(entry.get_mut(), ChannelChange::empty());
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
@@ -586,7 +528,13 @@ impl StateChange {
                             "cont consume present on both sides -> accumulating",
                         );
                     }
-                    let merged = current.combine(value);
+                    let merged = if additive_channels {
+                        current.additive_join(value)
+                    } else if normalize_channels {
+                        current.combine(value)
+                    } else {
+                        current.join(value)
+                    };
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -600,7 +548,7 @@ impl StateChange {
                     }
                     *entry.get_mut() = merged;
                 }
-                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                std::collections::btree_map::Entry::Vacant(entry) => {
                     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
                         tracing::debug!(
                             target: "f1r3fly.merge.step",
@@ -618,20 +566,34 @@ impl StateChange {
             }
         }
 
-        // Combine join maps (newer values take precedence)
-        for (key, value) in other.consume_channels_to_join_serialized_map {
-            consume_channels_to_join_serialized_map.insert(key, value);
+        for (key, value) in other.consume_channels_to_join_serialized_map.into_owned() {
+            if additive_channels {
+                match consume_channels_to_join_serialized_map.entry(key) {
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        if entry.get() != &value {
+                            return Err(HistoryError::MergeError(format!(
+                                "inconsistent serialized join for consume channels {:?}",
+                                entry.key()
+                            )));
+                        }
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(value);
+                    }
+                }
+            } else {
+                consume_channels_to_join_serialized_map.insert(key, value);
+            }
         }
 
         if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-            for entry in datums_changes.iter() {
-                let value = entry.value();
+            for (channel, value) in &datums_changes {
                 let added_bytes: usize = value.added.iter().map(|d| d.len()).sum();
                 let removed_bytes: usize = value.removed.iter().map(|d| d.len()).sum();
                 tracing::debug!(
                     target: "f1r3fly.merge.step",
                     step = "StateChange::combine.EXIT_DATUM",
-                    channel = %hex::encode(entry.key().clone().bytes()),
+                    channel = %hex::encode(channel.clone().bytes()),
                     added = value.added.len(),
                     added_bytes,
                     removed = value.removed.len(),
@@ -650,16 +612,142 @@ impl StateChange {
             "combined StateChange",
         );
 
+        Ok(Self {
+            datums_changes: FrozenMap::from_map(datums_changes),
+            cont_changes: FrozenMap::from_map(cont_changes),
+            consume_channels_to_join_serialized_map: FrozenMap::from_map(
+                consume_channels_to_join_serialized_map,
+            ),
+        })
+    }
+
+    pub fn normalized(self) -> Self {
+        let mut datums_changes = self.datums_changes.into_owned();
+        let mut cont_changes = self.cont_changes.into_owned();
+        let joins = self.consume_channels_to_join_serialized_map.into_owned();
+        for change in datums_changes.values_mut() {
+            let current = std::mem::replace(change, ChannelChange::empty());
+            *change = current.canonicalized();
+        }
+        for change in cont_changes.values_mut() {
+            let current = std::mem::replace(change, ChannelChange::empty());
+            *change = current.canonicalized();
+        }
+        datums_changes.retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
+        cont_changes.retain(|_, change| !(change.added.is_empty() && change.removed.is_empty()));
         Self {
-            datums_changes,
-            cont_changes,
-            consume_channels_to_join_serialized_map,
+            datums_changes: FrozenMap::from_map(datums_changes),
+            cont_changes: FrozenMap::from_map(cont_changes),
+            consume_channels_to_join_serialized_map: FrozenMap::from_map(joins),
+        }
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        let mut total = std::mem::size_of::<Self>();
+        for entry in self.datums_changes.iter() {
+            total = total
+                .saturating_add(std::mem::size_of::<Blake2b256Hash>())
+                .saturating_add(channel_change_retained_bytes(entry.value()));
+        }
+        for entry in self.cont_changes.iter() {
+            total = total
+                .saturating_add(
+                    entry
+                        .key()
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Blake2b256Hash>()),
+                )
+                .saturating_add(channel_change_retained_bytes(entry.value()));
+        }
+        for entry in self.consume_channels_to_join_serialized_map.iter() {
+            total = total
+                .saturating_add(
+                    entry
+                        .key()
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Blake2b256Hash>()),
+                )
+                .saturating_add(entry.value().capacity());
+        }
+        total
+    }
+}
+
+fn channel_change_retained_bytes(change: &ChannelChange<Vec<u8>>) -> usize {
+    change
+        .added
+        .iter()
+        .chain(change.removed.iter())
+        .fold(std::mem::size_of::<ChannelChange<Vec<u8>>>(), |total, item| {
+            total.saturating_add(item.capacity())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+    use std::collections::hash_map::DefaultHasher;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn datum_change(channel: u8, datum: u8) -> StateChange {
+        StateChange::from_parts(
+            HashMap::from([(Blake2b256Hash::from_bytes(vec![channel; 32]), ChannelChange {
+                added: vec![vec![datum]],
+                removed: Vec::new(),
+            })]),
+            HashMap::new(),
+            HashMap::new(),
+        )
+    }
+
+    #[test]
+    fn combining_a_shared_snapshot_does_not_mutate_the_original() {
+        let original = datum_change(1, 10);
+        let combined = original.clone().combine(datum_change(2, 20));
+
+        assert_eq!(original.datums_changes.len(), 1);
+        assert_eq!(combined.datums_changes.len(), 2);
+    }
+
+    #[test]
+    fn ordering_distinguishes_equal_sized_state_changes() {
+        let left = datum_change(1, 10);
+        let right = datum_change(2, 10);
+
+        assert_ne!(left, right);
+        assert_ne!(left.cmp(&right), Ordering::Equal);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn frozen_map_equality_order_and_hash_ignore_insertion_order(
+            entries in prop::collection::btree_map(any::<u8>(), any::<u16>(), 0..64)
+        ) {
+            let forward = entries.iter().map(|(key, value)| (*key, *value)).collect::<Vec<_>>();
+            let reverse = forward.iter().rev().copied().collect::<Vec<_>>();
+            let left = FrozenMap::from_map(forward);
+            let right = FrozenMap::from_map(reverse);
+            let mut left_hash = DefaultHasher::new();
+            let mut right_hash = DefaultHasher::new();
+
+            left.hash(&mut left_hash);
+            right.hash(&mut right_hash);
+
+            prop_assert_eq!(&left, &right);
+            prop_assert_eq!(left.cmp(&right), Ordering::Equal);
+            prop_assert_eq!(left_hash.finish(), right_hash.finish());
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+mod behavior_tests {
+    use std::collections::HashMap;
     use std::collections::hash_map::DefaultHasher;
 
     use super::*;
@@ -680,18 +768,20 @@ mod tests {
         conts: Vec<(u8, ChannelChange<Vec<u8>>)>,
         joins: Vec<(u8, u8)>,
     ) -> StateChange {
-        let sc = StateChange::empty();
-        for (ch, c) in datums {
-            sc.datums_changes.insert(mk_hash(ch), c);
-        }
-        for (ch, c) in conts {
-            sc.cont_changes.insert(vec![mk_hash(ch)], c);
-        }
-        for (ch, j) in joins {
-            sc.consume_channels_to_join_serialized_map
-                .insert(vec![mk_hash(ch)], bytes(j));
-        }
-        sc
+        StateChange::from_parts(
+            datums
+                .into_iter()
+                .map(|(ch, c)| (mk_hash(ch), c))
+                .collect::<HashMap<_, _>>(),
+            conts
+                .into_iter()
+                .map(|(ch, c)| (vec![mk_hash(ch)], c))
+                .collect::<HashMap<_, _>>(),
+            joins
+                .into_iter()
+                .map(|(ch, join)| (vec![mk_hash(ch)], bytes(join)))
+                .collect::<HashMap<_, _>>(),
+        )
     }
 
     fn hash_of(sc: &StateChange) -> u64 {

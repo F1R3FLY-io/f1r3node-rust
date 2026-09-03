@@ -29,10 +29,16 @@ FUZZ_RUSTFLAGS="${FUZZ_RUSTFLAGS:--C target-feature=+aes,+sse2}"
 KANI_RUSTFLAGS="${KANI_RUSTFLAGS:--Aexplicit-builtin-cfgs-in-flags --cfg target_feature=\"aes\" --cfg target_feature=\"sse2\"}"
 MIRI_RUSTFLAGS="${MIRI_RUSTFLAGS:-$FUZZ_RUSTFLAGS}"
 MIRI_CACHE_HOME="${MIRI_CACHE_HOME:-$PWD/target/miri-cache}"
-SYSTEMD_MEMORY_MAX="${SYSTEMD_MEMORY_MAX:-}"
+# Default to a real memory ceiling (was unbounded when unset). Caps the
+# fuzz / mutants / apalache runs below so a runaway can't OOM the host;
+# override to widen. The TLA+ MODEL checks delegate to
+# scripts/ci/check-tla-invariants.sh, which has its own per-run envelope
+# via scripts/lib/tlc-run.sh.
+SYSTEMD_MEMORY_MAX="${SYSTEMD_MEMORY_MAX:-32G}"
 SYSTEMD_CPU_QUOTA="${SYSTEMD_CPU_QUOTA:-}"
 KANI_HARNESSES=(
-    checked_base_seq_matches_i32_predecessor
+    checked_base_seq_rejects_nonpositive
+    checked_base_seq_matches_positive_i32_predecessor
     checked_next_seq_matches_i32_successor
     epoch_for_block_number_rejects_invalid_domain
     epoch_for_block_number_matches_bounded_floor_division
@@ -45,6 +51,8 @@ KANI_HARNESSES=(
     received_authorization_requires_invalid_evidence_on_bounded_domain
     received_authorization_requires_current_epoch_on_bounded_domain
     received_authorization_requires_evidence_epoch_on_bounded_domain
+    received_authorization_requires_matching_evidence_generation
+    received_authorization_requires_matching_canonical_generation
     slash_target_key_collides_matches_pair_equality
 )
 FUZZ_TARGETS=(
@@ -58,7 +66,7 @@ FUZZ_TARGETS=(
 
 run_limited() {
     if [[ -n "$SYSTEMD_MEMORY_MAX" ]] && command -v systemd-run >/dev/null 2>&1; then
-        local args=(--user --scope -p "MemoryMax=$SYSTEMD_MEMORY_MAX")
+        local args=(--user --scope -p "MemoryMax=$SYSTEMD_MEMORY_MAX" -p "MemorySwapMax=0")
         if [[ -n "$SYSTEMD_CPU_QUOTA" ]]; then
             args+=(-p "CPUQuota=$SYSTEMD_CPU_QUOTA")
         fi
@@ -176,8 +184,13 @@ run_apalache() {
         echo "SKIP Apalache: apalache-mc not found"
         return
     fi
-    apalache-mc check formal/tlaplus/slashing/MC_AuthorizedSlashFlow.tla
-    apalache-mc check formal/tlaplus/slashing/MC_TwoLevelSlashing.tla
+    local model="formal/tlaplus/slashing/EquivocationDetectorEager_apalache.tla"
+    local output_dir="$SEARCH_OUTPUT_DIR/apalache"
+    mkdir -p "$output_dir"
+    run_limited apalache-mc check --init=Init --inv=IndInv --length=0 --cinit=CInit \
+        --out-dir="$output_dir" "$model"
+    run_limited apalache-mc check --init=IndInv --inv=IndInv --length=1 --cinit=CInit \
+        --out-dir="$output_dir" "$model"
 }
 
 write_run_metadata

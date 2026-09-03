@@ -34,7 +34,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
-    compute_deploys_checkpoint, compute_parents_post_state,
+    compute_deploys_checkpoint_cosigned, compute_parents_post_state,
 };
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -43,6 +43,7 @@ use dashmap::DashSet;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
+use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
@@ -98,7 +99,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         .put_block_message(&genesis_block)
         .expect("store genesis");
     dag_storage
-        .insert(&genesis_block, InsertMode::Approved)
+        .insert(&genesis_block, InsertMode::ApprovedGenesis)
         .expect("dag genesis");
 
     let now_millis = || -> i64 {
@@ -132,6 +133,7 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
             bonds_map,
+            bond_generations: HashMap::from([(validator.clone(), BondGeneration::GENESIS)]),
             active_validators: vec![validator.clone()],
         };
         snapshot.deploys_in_scope = Arc::new(DashSet::new());
@@ -152,10 +154,15 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         None,
         Some(construct_deploy::DEFAULT_SEC.clone()),
         None,
-        None,
+        Some(shard_name.clone()),
     )
     .expect("build deploy_x");
-    let sig_x = deploy_x.sig.clone();
+    let envelope_x = construct_deploy::envelope_from_deploy_data(
+        deploy_x.data.clone(),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+    )
+    .expect("build deploy_x envelope");
+    let sig_x = envelope_x.envelope_commitment().expect("deploy_x identity");
 
     // The unique-to-each-block deploys: each consumes the shared produce.
     // The consume depends on deploy_x's produce in event-log terms, so
@@ -171,10 +178,15 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         None,
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         None,
-        None,
+        Some(shard_name.clone()),
     )
     .expect("build deploy_v");
-    let sig_v = deploy_v.sig.clone();
+    let envelope_v = construct_deploy::envelope_from_deploy_data(
+        deploy_v.data.clone(),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+    )
+    .expect("build deploy_v envelope");
+    let sig_v = envelope_v.envelope_commitment().expect("deploy_v identity");
 
     // Sleep keeps the timestamp distinct so deploy_w's sig differs from
     // deploy_v's even though they share a Rholang body.
@@ -185,10 +197,15 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         None,
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         None,
-        None,
+        Some(shard_name.clone()),
     )
     .expect("build deploy_w");
-    let sig_w = deploy_w.sig.clone();
+    let envelope_w = construct_deploy::envelope_from_deploy_data(
+        deploy_w.data.clone(),
+        Some(construct_deploy::DEFAULT_SEC2.clone()),
+    )
+    .expect("build deploy_w envelope");
+    let sig_w = envelope_w.envelope_commitment().expect("deploy_w identity");
     assert_ne!(
         sig_v, sig_w,
         "deploy_v and deploy_w must have distinct sigs"
@@ -201,38 +218,33 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(deploy_v.clone()),
+            ProcessedDeploy::empty_from_cosigned(&envelope_x),
+            ProcessedDeploy::empty_from_cosigned(&envelope_v),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_a = compute_deploys_checkpoint(
+    let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_a_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![envelope_x.clone(), envelope_v],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
         BlockData::from_block(&block_a_raw),
         HashMap::new(),
         None,
-        None,
-        None,
     )
     .await
     .expect("compute block_a checkpoint");
-    for pd in &checkpoint_a.deploys {
+    for pd in &pd_a {
         assert!(
             !pd.is_failed,
             "deploy in block_a must execute cleanly (sig {}): {:?}",
@@ -241,10 +253,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         );
     }
     let mut block_a = block_a_raw;
-    block_a.body.state.post_state_hash = checkpoint_a.post_state_hash.clone();
-    block_a.body.deploys = checkpoint_a.deploys;
-    block_a.body.system_deploys = checkpoint_a.system_deploys;
-    block_a.body.state.bonds = checkpoint_a.bonds;
+    block_a.body.state.post_state_hash = post_state_a.clone();
+    block_a.body.deploys = pd_a;
+    block_a.body.system_deploys = sys_pd_a;
+    block_a.body.state.bonds = bonds_a;
     block_store.put_block_message(&block_a).expect("store A");
     dag_storage
         .insert(&block_a, InsertMode::Normal)
@@ -257,38 +269,33 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         Some(genesis_state.clone()),
         Some(StateHash::default()),
         Some(validator.clone()),
-        Some(1),
+        Some(casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION),
         Some(now_millis()),
         Some(vec![genesis_hash.clone()]),
         Some(Vec::new()),
         Some(vec![
-            ProcessedDeploy::empty(deploy_x.clone()),
-            ProcessedDeploy::empty(deploy_w.clone()),
+            ProcessedDeploy::empty_from_cosigned(&envelope_x),
+            ProcessedDeploy::empty_from_cosigned(&envelope_w),
         ]),
         Some(Vec::new()),
         Some(genesis_bonds.clone()),
         Some(shard_name.clone()),
         None,
     );
-    let checkpoint_b = compute_deploys_checkpoint(
+    let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_cosigned(
         &mut block_store,
         vec![genesis_block.clone()],
-        proto_util::deploys(&block_b_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect(),
+        vec![envelope_x, envelope_w],
         Vec::<SystemDeployEnum>::new(),
         &mk_snapshot(&genesis_hash),
         &rm,
         BlockData::from_block(&block_b_raw),
         HashMap::new(),
         None,
-        None,
-        None,
     )
     .await
     .expect("compute block_b checkpoint");
-    for pd in &checkpoint_b.deploys {
+    for pd in &pd_b {
         assert!(
             !pd.is_failed,
             "deploy in block_b must execute cleanly (sig {}): {:?}",
@@ -297,10 +304,10 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         );
     }
     let mut block_b = block_b_raw;
-    block_b.body.state.post_state_hash = checkpoint_b.post_state_hash.clone();
-    block_b.body.deploys = checkpoint_b.deploys;
-    block_b.body.system_deploys = checkpoint_b.system_deploys;
-    block_b.body.state.bonds = checkpoint_b.bonds;
+    block_b.body.state.post_state_hash = post_state_b.clone();
+    block_b.body.deploys = pd_b;
+    block_b.body.system_deploys = sys_pd_b;
+    block_b.body.state.bonds = bonds_b;
     block_store.put_block_message(&block_b).expect("store B");
     dag_storage
         .insert(&block_b, InsertMode::Normal)
@@ -334,24 +341,15 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
         None,
         Some(&rejected_deploy_buffer),
         None,
-        // The buffer populate is owner-scoped: this test models the node of
-        // the carriers' sender, the deploy's recovery owner.
         Some(&validator),
     )
     .await
     .expect("compute_parents_post_state over [block_a, block_b]");
 
-    assert!(
-        merged.rejected_slashes.is_empty(),
-        "no system slashes are involved in this fixture; rejected_slashes \
-         must be empty (got {} entries)",
-        merged.rejected_slashes.len()
-    );
-
-    let rejected_set: HashSet<prost::bytes::Bytes> = merged
-        .rejected_user
+    let rejected_sigs = merged.rejected_user;
+    let rejected_set: HashSet<prost::bytes::Bytes> = rejected_sigs
         .iter()
-        .map(|record| record.sig.clone())
+        .map(|rejected| prost::bytes::Bytes::copy_from_slice(rejected.deploy_id()))
         .collect();
     let v_orphaned = rejected_set.contains(&sig_v);
     let w_orphaned = rejected_set.contains(&sig_w);
@@ -365,19 +363,18 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
          lines ~563-573) is not reaching the merge output",
         v_orphaned,
         w_orphaned,
-        merged
-            .rejected_user
+        rejected_sigs
             .iter()
-            .map(|record| hex::encode(&record.sig[..std::cmp::min(8, record.sig.len())]))
+            .map(|s| hex::encode(&s.deploy_id()[..std::cmp::min(8, s.deploy_id().len())]))
             .collect::<Vec<_>>()
     );
     assert!(
-        !rejected_set.contains(&sig_x),
-        "the shared deploy_x is not orphaned — it has a fresher copy in \
-         the retained chain, so it must NOT be in collateral_lost_pairs. \
-         If this fires, the orphan classification in dag_merger is \
-         flagging shared deploys as collateral, which would cause them to \
-         be re-proposed unnecessarily"
+        rejected_sigs.iter().any(|rejected| {
+            rejected.deploy_id() == sig_x.as_ref()
+                && rejected.reason
+                    == models::rust::casper::protocol::casper_message::RejectedDeployReason::DuplicateOccurrence
+        }),
+        "the stale source occurrence of deploy_x must be recorded without making the retained occurrence recoverable"
     );
 
     // The orphaned sig must be admitted to the buffer. The catchup gate
@@ -388,7 +385,7 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     let buffer_contains = {
         let guard = rejected_deploy_buffer.lock().expect("buffer lock");
         guard
-            .contains_sig(orphaned_sig)
+            .contains_id(&crate::current_deploy_id(orphaned_sig))
             .expect("buffer.contains_sig")
     };
     assert!(
@@ -405,7 +402,9 @@ for(@_v <- @"dedup-orphan-shared") { Nil }
     // copy and isn't a recovery candidate.
     let buffer_has_x = {
         let guard = rejected_deploy_buffer.lock().expect("buffer lock");
-        guard.contains_sig(&sig_x).expect("buffer.contains_sig")
+        guard
+            .contains_id(&crate::current_deploy_id(&sig_x))
+            .expect("buffer.contains_sig")
     };
     assert!(
         !buffer_has_x,

@@ -1,7 +1,8 @@
 # nextest configuration.
 #
 # `pos_spec` is by far the heaviest genesis-contract RhoSpec test: it runs the full
-# 16-test PoSTest.rho suite through the interpreter over a CUSTOM-parameter genesis
+# 12-test PoSTest.rho suite (16 minus the four precharge-era tests tombstoned by
+# D3) through the interpreter over a CUSTOM-parameter genesis
 # (minimum_bond=2 / maximum_bond=100000 => a GENESIS_CACHE miss => a full genesis
 # rebuild every run, unlike the default-param specs which hit the warm cache). Once the
 # RhoSpec harness was made to actually enforce assertions, this became ~50s of real
@@ -16,6 +17,11 @@
 [[profile.default.overrides]]
 filter = 'test(/genesis::contracts::pos_spec::pos_spec/)'
 threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'test(unmetered_longslow_evaluation_has_bounded_work)'
+threads-required = "num-cpus"
+slow-timeout = { period = "100s", terminate-after = 2 }
 
 # `soft_checkpoint_cost_does_not_scale_with_accumulated_store_size` is a
 # timing-invariant regression guard (issue-43: O(store-size) HotStore

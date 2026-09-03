@@ -7,11 +7,11 @@
 
        result = (max_clique_weight * 2.0 - total_stake) / total_stake   (an f32)
 
-   and finalizes when `result >= theta`. Floating point makes the finalization
+   and finalizes when `result > theta`. Floating point makes the finalization
    frontier NODE-DEPENDENT (rounding differs across builds), which is a fork
    hazard (S1). The A9 fix replaces the ratio test by the EXACT-INTEGER test
 
-       2 * q * den  >=  S * (den + num)
+       2 * q * den  >  S * (den + num)
 
    over `Z` (i128 in Rust), which is bit-for-bit identical on every node.
 
@@ -39,11 +39,11 @@
    <=> 2*q*den          >= S*den + S*num
    <=> 2*q*den          >= S*(den + num)                   (= `ft_exact_ge`)
 
-   So `ft_ratio_ge` is exactly `(2q - S)/S >= num/den` cleared of its (positive)
-   denominators, and `ft_exact_ge` is that regrouped. `ft_exact_iff_ratio` proves
-   the two are literally the same test; the exact test is what the node evaluates.
-   The strict variants (`_gt`) are the LFB (last-finalized-block) finalizer's
-   strict clearance (`> theta`, no boundary finalization).
+   So `ft_ratio_ge` is exactly `(2q - S)/S >= num/den` cleared of its positive
+   denominators, and `ft_exact_ge` is that regrouped. The strict variants (`_gt`)
+   are the node's candidate-floor and durable-LFB decision (`> theta`, no boundary
+   finalization). The inclusive variants and their equivalence are retained only
+   as arithmetic controls for the historical boundary bug.
 
    The i128 envelope: with `den = 1_000_000` and stake bounded by `2^63` (an i64
    weight sum widened to i128), both sides of the exact test stay far below
@@ -100,6 +100,12 @@ Lemma ft_exact_mono_q :
     0 <= den ->
     q <= q' -> ft_exact_ge q S num den -> ft_exact_ge q' S num den.
 Proof. intros q q' S num den Hden Hqq. unfold ft_exact_ge. nia. Qed.
+
+Lemma ft_exact_gt_mono_q :
+  forall q q' S num den,
+    0 <= den ->
+    q <= q' -> ft_exact_gt q S num den -> ft_exact_gt q' S num den.
+Proof. intros q q' S num den Hden Hqq. unfold ft_exact_gt. nia. Qed.
 
 (* i128 envelope: with the ppm denominator (den = 1e6) and an i64-bounded stake
    (S <= 2^63, q <= S), BOTH sides of the exact test have absolute value < 2^127,

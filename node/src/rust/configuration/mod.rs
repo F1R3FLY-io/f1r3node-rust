@@ -148,6 +148,25 @@ pub mod builder {
             .genesis_block_data
             .validate_native_token()
             .map_err(|e| eyre::eyre!("native token config invalid: {}", e))?;
+        node_conf
+            .casper
+            .genesis_block_data
+            .validate_cost_accounting_parameters()
+            .map_err(|e| eyre::eyre!("cost-accounting genesis config invalid: {}", e))?;
+        node_conf
+            .casper
+            .validate_parent_bounds()
+            .map_err(|e| eyre::eyre!("parent-bound config invalid: {}", e))?;
+        node_conf
+            .casper
+            .validate_finalization_certificate_capacity()
+            .map_err(|e| eyre::eyre!("finalization-certificate config invalid: {}", e))?;
+        if let Some(warning) = node_conf
+            .casper
+            .parent_frontier_worst_case_capacity_warning()
+        {
+            warnings.push(warning);
+        }
 
         // The proposer computes its recovery cap as
         // `max(pending_deploy_max_lag, deploy_recovery_max_lag)`. When
@@ -413,6 +432,23 @@ mod embedded_defaults_tests {
             cfg.api_server.exploratory_deploy_execution_timeout,
             Duration::from_secs(15)
         );
+        assert_eq!(
+            cfg.casper.genesis_block_data.max_cosigners_per_deploy,
+            casper::rust::casper_conf::DEFAULT_MAX_COSIGNERS_PER_DEPLOY
+        );
+        assert_eq!(
+            cfg.casper.genesis_block_data.initial_phlogiston,
+            casper::rust::casper_conf::DEFAULT_INITIAL_PHLOGISTON
+        );
+        assert_eq!(
+            cfg.casper.genesis_block_data.epoch_phlogiston,
+            casper::rust::casper_conf::DEFAULT_EPOCH_PHLOGISTON
+        );
+        assert!(cfg
+            .casper
+            .genesis_block_data
+            .client_fuel_allocations
+            .is_empty());
     }
 
     /// A negative fault-tolerance threshold weakens "finalized" from a BFT

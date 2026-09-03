@@ -21,6 +21,7 @@ tokio = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = "0.12"
 serde = { workspace = true, features = ["derive"] }
+bincode = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 metrics = { workspace = true }
@@ -37,7 +38,10 @@ default = []
 test-internals = []
 
 [dev-dependencies]
+async-trait = { workspace = true }
+heed = { workspace = true }
 proptest = { workspace = true }
+tempfile = { workspace = true }
 # Exhaustive thread-interleaving model checker for the
 # `access_equivocations_tracker` non-reentrancy contract (P2-13).
 # See block-storage/tests/loom_equivocations_tracker.rs.
@@ -61,5 +65,11 @@ name = "loom_equivocations_tracker"
 # See block-storage/tests/loom_frontier_floor_cache.rs.
 [[test]]
 name = "loom_frontier_floor_cache"
+
+[[test]]
+name = "loom_certificate_dependency_resolution"
+
+[[test]]
+name = "loom_deploy_occurrence_store"
 
 [build-dependencies]

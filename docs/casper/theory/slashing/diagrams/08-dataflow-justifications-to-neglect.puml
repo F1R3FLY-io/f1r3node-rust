@@ -8,7 +8,7 @@
 ' Source of truth for Figure 8.2 in slashing-specification.md.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/08-dataflow-justifications-to-neglect.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/08-dataflow-justifications-to-neglect.puml
 
 @startuml 08-dataflow-justifications-to-neglect
 !theme plain

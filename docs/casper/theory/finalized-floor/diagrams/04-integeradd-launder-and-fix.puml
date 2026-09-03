@@ -14,10 +14,10 @@
 ' deprecated here and emits an in-image warning banner).
 '
 ' Source of truth for the IntegerAdd launder finding in
-' docs/theory/finalized-floor/finalized-floor-verification.md (section 6).
+' docs/casper/theory/finalized-floor/finalized-floor-verification.md (section 6).
 '
 ' Render:
-'   plantuml -tsvg docs/theory/finalized-floor/diagrams/04-integeradd-launder-and-fix.puml
+'   plantuml -tsvg docs/casper/theory/finalized-floor/diagrams/04-integeradd-launder-and-fix.puml
 
 @startuml 04-integeradd-launder-and-fix
 !theme plain

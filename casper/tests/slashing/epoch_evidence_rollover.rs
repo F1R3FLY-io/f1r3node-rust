@@ -32,7 +32,7 @@ fn uc_64_stale_evidence_does_not_propagate() {
     // v0 publishes a block citing a stale "v4" hash. No record
     // for v4 means no neglect — v0's block is Valid.
     let v0_block = harness.sign_block("v0", 5);
-    let _ = harness.dispatch(v0_block);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(v0_block);
     assert!(
         !harness.has_record("v0", 4),
         "T-12 epoch filter: stale evidence does not propagate"
@@ -46,12 +46,12 @@ fn uc_64_fresh_evidence_propagates() {
     // Fresh current-epoch evidence: v0 equivocates.
     let _v0a = harness.sign_block("v0", 5);
     let bad = harness.sign_block_distinct("v0", 5);
-    let _ = harness.dispatch(bad);
+    let _ = harness.dispatch_counterfactual_neglect_evidence(bad);
 
     // v1 cites v0's bad block without slashing → fresh evidence
     // propagates to v1's record.
     let v1_neg = harness.sign_block_citing("v1", 6, bad);
-    let s = harness.dispatch(v1_neg);
+    let s = harness.dispatch_counterfactual_neglect_evidence(v1_neg);
     assert_eq!(s, Status::NeglectedEquivocation);
     assert!(harness.has_record("v1", 5));
 }

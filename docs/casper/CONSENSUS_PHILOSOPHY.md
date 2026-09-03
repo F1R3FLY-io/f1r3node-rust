@@ -40,45 +40,94 @@ Four facts about the implementation shape every remedy. Function names are the s
 3. **The merge base has a deterministic fallback rule.** The base is the main parent. When the state of the main parent does not hold the settled content of the floor, the base falls back to the floor (`compute_parents_post_state`). Validators recompute the choice from the recorded justifications of the block.
 4. **Per-scope inclusion leadership exists.** `deploy_inclusion_progress` elects a deterministic leader with a lease-based liveness escape. The mechanism runs only on the proposer side. The recovery path deliberately dropped leader election in favor of owner-scoped buffers plus the floor-paced retry gate.
 
+Protocol 6 adds one candidate-specific boundary to fact 1.
+A declared parent must carry the block's signed finalized floor.
+The receiver still does not require equality with its local preferred frontier.
+Frozen justifications remain independent vote and authority inputs.
+
+Protocol 6 also makes restore-horizon handling identity-based. The canonical
+genesis hash can remain in a silent validator's exact slot when a restored node
+does not retain the genesis body. The node retains the slot and frozen stake.
+Any other missing latest-message body remains a dependency error. Node-local
+heldness cannot change a certified context.
+
 ### 4.1 Adversarial surface of the phase-1 mechanism
 
 Phase 1 ranks a chain by its prior on-DAG losses. Users can influence the history that produces those losses. Principle P4 is unchanged because fork choice does not read the count. The count reaches only the three merge adjudication sites.
 
 **Cost of a manufactured loss.** A rejection record needs a conflicting winner on the same key. The rejected deploy does not pay execution cost. An attacker can also acquire rejection history against honest hot-key traffic. PR #216 does not yet define a price for this strategy.
 
-**Delay evidence.** The test `manufactured_loss_lead_delays_victim_by_exactly_lead_rounds` shows that a fixed lead is consumed one round at a time. The test does not bound continued lead farming or all valid schedules.
+**Delay evidence.** The test `three_validator_neutral_base_applies_prior_loss_priority` shows that one recorded loss wins a later equal conflict. The test does not bound continued lead farming or all valid schedules.
 
 **Window bound.** A merge counts only kept records from the scope and base-lineage window. Records older than `deploy_lifespan` do not count.
 
 **Conflict scope.** Each deploy signature owns its prior-rejection count. A dependency chain uses the maximum count among its members. This rule prevents chain length from multiplying priority.
 
-**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. A missing required block returns `BlockNotHeld` instead of an empty history. The test `scope_counts_fail_on_missing_visible_block` provides refusal evidence.
+**Determinism requirement.** The count is consensus input because it shapes the rejection set. Every validator must derive the count from the identical block set. The production scan returns `BlockNotHeld` when required DAG metadata or a block body is absent.
 
 **Ratified ordering.** Prior-rejection count strictly outranks cost. Cost and the deterministic content order decide equal-count cases. A fixed cap is not part of phase 1 because saturation can restore deterministic starvation.
 
 **Residual exposure and escalation.** Continued loss farming remains a known risk. Phase 1 does not guarantee termination for all valid schedules. Soak evidence controls later escalation.
 
-### 4.2 User Contract Concurrency waiver
+### 4.2 User Contract Concurrency gate
 
-PR #299 waives User Contract Concurrency as a merge gate. The job is disabled, and the suite does not fail on starvation. The neutral-base integration test supplies the phase-1 system evidence.
+User Contract Concurrency runs in dedicated amd64 jobs for the Docker and subprocess providers. The integration aggregators require both jobs.
 
-A follow-up change must enable the job and fail when contention expires a valid deploy. The acceptance gate must pass three consecutive runs.
+The suite checks strict finalization and node agreement for concurrent contracts. A missing terminal result or inconsistent finalized state fails the job.
 
 ### 4.3 Rejection-history scan budget
 
 The scan must stay `O(B + R)`. `B` is the unique block count, and `R` is the rejection-record count. The implementation must load each unique block body no more than once.
 
-The benchmark uses a floor distance of 256 blocks and a visible scope of 512 blocks. The p95 latency and peak memory must stay within 10 percent of `dev`.
+A future benchmark must use a 256-block floor distance and a 512-block visible scope. Its p95 latency and peak memory must stay within 10 percent of `dev`.
 
-The benchmark is a release gate. Node-local timing must never control block validity or consensus admission.
+No executable benchmark currently enforces this budget. Treat it as an open release criterion. Node-local timing must never control block validity or consensus admission.
 
-### 4.4 Repeat-deploy scan and the signature-index fast path
+### 4.4 Repeat-deploy scan and the carrier-index fast path
 
-The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block. Under sustained load this scan is the residual cost of issue #24. The remedy is the repeat-deploy signature index (see the glossary): a per-signature carrier record over valid, invalid, and approved blocks.
+The repeat-deploy ancestor scan is `O(DAG-in-window)` for each validated block.
+Under sustained load, this scan is the residual cost of issue #24. The remedy
+is the [repeat-deploy carrier index](GLOSSARY.md#repeat-deploy-carrier-index).
 
-The fast path preserves the ratified predicate exactly. An index absence inside the expiration window skips the scan for that signature. An index hit routes to window and parent-scope verification, never directly to a verdict. An index read failure or an incomplete index falls back to the unchanged ancestor scan. This refusal rule follows the same principle as the `BlockNotHeld` precedent in section 4.1: unreadable history is no information, never an absence proof.
+The index records carrier blocks by protocol-tagged deploy identity. A legacy
+identity contains a signature. A protocol-v6 identity contains an envelope
+commitment. Equal payload bytes in these domains remain different keys.
 
-A node-local index may decide a verdict only when it is a provably complete cache of the on-chain data that the ratified predicate reads. Completeness requires crash-safe write ordering (index entries before DAG visibility) and a persisted height watermark: the height since which every insert has recorded carriers on this database. The fast path engages only for scan windows that start at or above the watermark, so no backfill walk exists and no walk-completeness state exists to certify or to forge. The index lives in a dedicated store: it must never share a keyspace with rows that unverified wire data can key (the PR #382 review demonstrated a completeness-marker forgery through an unverified `rejected_deploys` signature landing in a shared table). The verdict-equivalence obligation is testable: index-served verdicts must equal scan-served verdicts for every block, and one test must pin engagement itself (a verdict reachable only through the skip).
+The fast path preserves the ratified predicate. An in-window absence skips the
+scan for that deploy identity. A hit always routes to exact window and
+parent-scope verification. A fork-only carrier cannot invalidate a legal
+re-inclusion.
+
+An index read failure routes to the same exact scan. Missing metadata or a
+missing block body then fails validation. Unreadable history is no information,
+not proof of absence. This rule follows the `BlockNotHeld` precedent in section
+4.1.
+
+Completeness requires crash-safe write ordering. Each insert records carrier
+rows before the block becomes visible in the in-memory DAG. Protocol-v6
+admission atomically commits all applicable carrier, metadata, occurrence, and
+lifecycle rows.
+Legacy admission writes carrier rows before metadata visibility.
+
+A persisted watermark records the first complete index height. The fast path
+engages only when the scan window starts at or above that watermark. Existing
+databases therefore need no backfill or forgeable backfill-completion marker.
+
+Finalized-floor advances prune rows below the expiration cutoff. Strided
+pruning can retain old rows, but it cannot remove rows in the active window.
+
+The persistent carrier index uses a dedicated store. It must not share a
+keyspace with rows keyed by unverified wire data. The exact scan uses a bounded,
+in-process decoded-identity cache. One block-store instance owns the cache, and
+its clones share the cache. That cache does not supply consensus authority.
+
+The verdict-equivalence obligation is testable. Index-served and scan-served
+verdicts must agree for every block. One test must also prove that the absence
+fast path skipped the exact scan.
+
+The formal basis is
+[`DeployIdentitySeparation`](theory/deploy-occurrence/deploy-occurrence-verification.md#carrier-index-refinement).
+That model prohibits legacy and v6 key aliasing after wire decoding.
 
 ## 5. The remedy ladder for base-bias starvation
 
@@ -92,12 +141,12 @@ The fork-choice tie-break is the stake score, then the ascending block hash. The
 - **Cons:** Liveness becomes probabilistic. The retry gate paces re-proposals on floor settlement, so a deploy gets two or three attempts inside its 50-block window. The observed failure had exactly two rejections. An even chance per attempt leaves an expiry probability that is too high for a liveness claim.
 - **Verdict:** This option is necessary as the test-evidence component. It is not sufficient alone.
 
-### Option B1 — merged-frontier retry packaging (recommended next step)
+### Option B1 — merged-frontier retry packaging (implemented)
 
-The owner packages a gated retry only when one selected parent covers all valid latest messages (the canonical predicate — see the glossary entry [Merged-frontier retry packaging](./GLOSSARY.md#merged-frontier-retry-packaging), which matches the implemented gate in `block_creator.rs`). The retry then executes fresh and sequentially on top of the settled contention. It does not race as a sibling. When an unseen contender still races in, loss-aware adjudication covers the adjudicable subset.
+The carrier owner packages a floor-authorized retry when the complete selected parent set covers every valid latest message. Each latest message can have a different covering parent. The candidate therefore uses the existing multi-parent merge without waiting for a serial coalescing block. An unseen contender can still race with the candidate. Loss-aware adjudication handles the adjudicable subset in that case.
 
-- **Pros:** The policy is node-local. It needs no consensus change, no wire change, and no upgrade coordination. The diff in `prepare_user_deploys_with_policy` is small. Ground Truth 2 makes the deferral safe from peer rejection.
-- **Cons:** The policy is a heuristic, not a guarantee. Under saturated contention, a merged frontier without contenders never occurs. Each deferral spends validity window to increase the success probability. The policy does not influence merges that other validators build.
+- **Pros:** The policy is proposer-local. It needs no validation change, wire change, global lock, or validator serialization. Collective coverage preserves multi-parent concurrency. Parent order and latest-message order do not change the decision.
+- **Cons:** An incomplete selected frontier defers retry before the bounded lease expires. The lease bypasses only frontier readiness. It does not bypass floor authorization, owner custody, lifespan checks, or replay validation.
 
 ### Option B2 — per-key contender serialization
 
@@ -141,7 +190,7 @@ This option biases fork-choice scoring by starved-retry priority.
 
 ```mermaid
 flowchart TD
-    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - proposed:\nB1 merged-frontier retry packaging\n+ A rotating-proposer test shape]
+    P1[Phase 1 - shipped:\nloss-aware adjudication\nat all three merge sites] --> B1[Phase 2 - implemented:\ncollective B1 parent coverage\n+ bounded retry lease]
     B1 -->|soak or SI evidence\nshows residual expiries| C1[Escalation:\nC1 loss-aware main-parent declaration\nbehind soak evidence]
     C1 -->|still insufficient| C2[Reserve:\nC2 loss-aware base fallback\nlockstep consensus change]
     C2 -.-> C3[C3 fork-choice weights:\nrejected - griefing vector]
@@ -218,7 +267,7 @@ The method of this document also follows the CBC spirit. CBC derives protocols s
 | 2026-08-22 | User Contract Concurrency is waived as a PR #299 merge gate | Ratified with a separate enablement and assertion follow-up. |
 | 2026-08-22 | Four production artifacts form the mandatory Correct by Construction scope | Ratified. Formal discharge remains in PR #311. |
 | 2026-08-22 | The scan benchmark uses the 256-block floor limit, 512 visible blocks, and a 10-percent regression limit | Ratified. Measurement remains a merge gate. |
-| 2026-09-01 | The repeat-deploy signature index is a consensus-complete carrier cache over valid, invalid, and approved blocks. An in-window absence skips the ancestor scan, a hit requires scope verification, and a read failure falls back to the scan. | Proposed in the issue #24 fast-path PR. Pending ratification. |
+| 2026-09-01 | The repeat-deploy carrier index is a consensus-complete cache over valid, invalid, and approved blocks. Keys retain the protocol-tagged deploy identity. An in-window absence skips the ancestor scan. A hit or read failure routes to the exact scan. | Proposed in the issue #24 fast-path PR. Pending ratification. |
 
 The phase-2 working record lives in the TDD plan
 [`docs/tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md`](../tdd-plans/key-contention-starvation-2026-08-20T04-52-46Z.md).

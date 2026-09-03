@@ -82,17 +82,17 @@ async fn late_carrier_past_window_is_rejected_with_record_and_without_effect() {
         Some(shard_id.clone()),
     )
     .expect("build late deploy");
-    let late_sig: Bytes = late_deploy.sig.clone();
     let carrier = nodes[0]
         .add_block_from_deploys(std::slice::from_ref(&late_deploy))
         .await
         .expect("validator 1 proposes carrier");
+    let late_sig = Bytes::copy_from_slice(carrier.body.deploys[0].deploy_id());
     assert!(
         carrier
             .body
             .deploys
             .iter()
-            .any(|pd| pd.deploy.sig == late_sig && !pd.is_failed),
+            .any(|pd| pd.deploy_id() == &late_sig && !pd.is_failed),
         "carrier must execute the deploy cleanly at height {}",
         carrier.body.state.block_number
     );
@@ -109,11 +109,11 @@ async fn late_carrier_past_window_is_rejected_with_record_and_without_effect() {
         Some(shard_id.clone()),
     )
     .expect("build keep deploy");
-    let keep_sig: Bytes = keep_deploy.sig.clone();
-    nodes[1]
+    let keep_block = nodes[1]
         .add_block_from_deploys(std::slice::from_ref(&keep_deploy))
         .await
         .expect("validator 2 proposes keep block");
+    let keep_sig = Bytes::copy_from_slice(keep_block.body.deploys[0].deploy_id());
     {
         let (b, c) = nodes.split_at_mut(2);
         c[0].sync_with_one(&mut b[1])
@@ -205,7 +205,7 @@ async fn late_carrier_past_window_is_rejected_with_record_and_without_effect() {
         .body
         .rejected_deploys
         .iter()
-        .map(|rd| rd.sig.clone())
+        .map(|rd| Bytes::copy_from_slice(rd.deploy_id()))
         .collect();
     assert!(
         rejected_sigs.contains(&late_sig),

@@ -33,6 +33,21 @@ lag further. The planned remediation batches the walk and memoizes
 segments. This claim pins the semantics that any such optimization must
 preserve exactly.
 
+## Protocol scope
+
+This claim specifies the signature projection used by legacy settlement probes.
+It does not define protocol-6 finalized-floor state containment.
+
+Protocol 6 identifies each committed state effect by its source block and
+execution index. Two effects can share one deploy identity without sharing one
+state-effect identity. Finality, proposal readiness, replay-base selection, and
+durable LFB publication use exact state-effect identities.
+
+`applied_from_scope` contains only the user-deploy projection of
+`applied_state_effects`. System effects remain exact state effects, but they do
+not enter that user-deploy projection. Validators recompute this equality during
+replay validation.
+
 ## Specification (reference semantics)
 
 `effect_in_state_of(store, h, sig, min_height)` answers TRUE iff some
@@ -41,12 +56,16 @@ min_height`, applied the sig:
 
 ```text
 applied(B, sig) :=
-     (exists pd in B.body.deploys : pd.deploy.sig = sig AND NOT pd.is_failed)
+     (exists pd in B.body.deploys : pd.deploy.sig = sig AND
+        pd.has_committed_state_effect())
   OR (sig in B.body.applied_from_scope)
 
 settled(h, sig, min_height) :=
   exists B on state_lineage(h) : block_number(B) >= min_height AND applied(B, sig)
 ```
+
+A committed state effect is a successful body or a failed body with verified
+SystemVault settlement. Admission rejection and legacy failure have no effect.
 
 The state lineage steps as follows. Each rule is exact:
 
@@ -123,6 +142,10 @@ it covered and the bound it was computed under.
 | `collect seg` | `settled_sigs_of_lineage` (one walk, every sig) |
 | per-floor short-circuit scan | `FloorSettledProbe::settled` (in-order lazy per-floor sets) |
 | `walk_memo_false_stable` premise | `checked_below` early stop (`effect_in_state_of_above`) |
+
+The protocol-6 exact-state refinement is specified separately in
+`StateEffectProvenance.v` and `ExactFloorSelection.tla`. Those artifacts prevent
+signature equality from authorizing an exact finality decision.
 
 The per-block `LineageStep` cache stores content-addressed per-block
 facts, never answers, so cache hits stay inside C2's equivalence. A hit

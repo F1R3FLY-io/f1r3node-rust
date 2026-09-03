@@ -9,35 +9,31 @@
 #      `main_*` capstone in MainTheorem.v is axiom-free (`Print Assumptions` ⇒
 #      "Closed under the global context"), then re-checks the whole library through
 #      the trusted kernel (`coqchk`). Any failure fails the gate.
-#   2. TLA+  (fail-soft) — TLC (BOUNDED, explicit-state) on the slashing safety cfgs
+#   2. TLA+  — TLC (BOUNDED, explicit-state) on the slashing safety cfgs
 #      (equivocation detector, concurrent tracker, slash flow) + the pre-fix
 #      counterexample cfgs (must reproduce their violation). Exhaustive only at the
 #      cfg bounds (detector eager: 2v/2s/2b). SKIPPED if no TLC jar.
-#   3. Apalache (fail-soft) — UNBOUNDED symbolic (SMT) inductive-invariant check on the
-#      EAGER equivocation detector, COMPLEMENTING the bounded TLC run: proves IndInv ==
-#      TypeOK /\ the five state-dependent safety invariants (Inv_DetectionSound,
-#      Inv_TaxonomyCorrect, Inv_NeglectedHasDetectableView, Inv_RecordHasWitness,
-#      Inv_LivenessAsSafety) is INDUCTIVE (holds on ALL reachable states, NO finite
-#      horizon) via BASE (Init |= IndInv) + STEP (Next preserves IndInv) on the
-#      type-annotated wrapper EquivocationDetectorEager_apalache.tla. Runs at 3v/3s/3b,
-#      strictly beyond the gate's 2v/2s/2b TLC run on every dimension (the inductive
-#      check is O(1) in trajectory length, so it scales where TLC's explicit 3-validator
-#      enumeration would blow up). Apalache ignores fairness, so the EAGER model
-#      (liveness-as-safety) is the right target. SKIPPED if apalache-mc is absent.
-#   4. Deep tiers (fail-soft) — points at scripts/ci/slashing-search-horizon.sh for
+#   3. Apalache — symbolic inductive-invariant checks for the eager detector and
+#      AuthorizedSlashFlow. Each model must pass its base and preservation checks.
+#      AuthorizedSlashFlow also passes a bounded length-six reachability check.
+#      Unsafe authority controls must reproduce their named violations.
+#      Apalache ignores fairness. The eager detector encodes liveness as safety.
+#   4. Deep tiers — points at scripts/ci/slashing-search-horizon.sh for
 #      the Kani / Miri / fuzz / Sage economic-safety tiers (heavier; run separately).
 #
 # POLICY: LOCAL-ONLY. Do NOT wire this (or any Rocq/TLA+/Apalache step) into
 # .github/workflows/* — an earlier formal-CI workflow was deliberately removed.
 #
-# Env knobs: ROCQ_MEMMAX=16G (systemd MemoryMax for the Rocq build).
+# Env knobs: ROCQ_MEMMAX=8G (systemd MemoryMax for each heavy command).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SL_DIR="$REPO_ROOT/formal/rocq/slashing"
 TLA_DIR="$REPO_ROOT/formal/tlaplus/slashing"
-ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
+ROCQ_MEMMAX="${ROCQ_MEMMAX:-8G}"
+LOG_DIR="$REPO_ROOT/target/verification/slashing"
+mkdir -p "$LOG_DIR"
 
 rc=0
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
@@ -45,11 +41,8 @@ fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; rc=1; }
 skip() { printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 
 capped() {
-  if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope true >/dev/null 2>&1; then
-    systemd-run --user --scope -p "MemoryMax=$ROCQ_MEMMAX" -p CPUQuota=1800% -p TasksMax=200 "$@"
-  else
-    "$@"
-  fi
+  command -v systemd-run >/dev/null 2>&1 || return 125
+  systemd-run --user --scope -p "MemoryMax=$ROCQ_MEMMAX" -p MemorySwapMax=0 -p CPUQuota=1800% -p TasksMax=200 "$@"
 }
 
 echo "== [1/5] Rocq (authoritative) =="
@@ -57,11 +50,11 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
   # shellcheck disable=SC1090
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$SL_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
-  if capped make -C "$SL_DIR" -j1 >/tmp/sl_rocq_build.log 2>&1; then
+  if capped make -C "$SL_DIR" -j1 >"$LOG_DIR/sl_rocq_build.log" 2>&1; then
     pass "Rocq build (slashing: $(grep -c '^theories/' "$SL_DIR/_CoqProject") modules)"
     # Every `main_*` capstone in MainTheorem.v must be axiom-free. The list is
     # generated from the source so the gate never drifts from the theorem count.
-    tmpd=$(mktemp -d); chk="$tmpd/GateCheck.v"
+    tmpd=$(mktemp -d "$LOG_DIR/gate-check.XXXXXX"); chk="$tmpd/GateCheck.v"
     thms=$(grep -oE '^Theorem main_[A-Za-z0-9_]+' "$SL_DIR/theories/MainTheorem.v" | sed 's/^Theorem //')
     n_thm=$(wc -l <<<"$thms")
     { echo "From Slashing Require Import MainTheorem."
@@ -75,21 +68,27 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
     fi
     # Independent kernel re-check.
     if capped coqchk -Q "$SL_DIR/theories" Slashing Slashing.MainTheorem \
-         >/tmp/sl_coqchk.log 2>&1 && grep -q "Modules were successfully checked" /tmp/sl_coqchk.log; then
+         >"$LOG_DIR/sl_coqchk.log" 2>&1 && grep -q "Modules were successfully checked" "$LOG_DIR/sl_coqchk.log"; then
       pass "coqchk kernel re-check (MainTheorem + all deps)"
     else
-      fail "coqchk kernel re-check FAILED (see /tmp/sl_coqchk.log)"; tail -10 /tmp/sl_coqchk.log | sed 's/^/      /'
+      fail "coqchk kernel re-check FAILED (see $LOG_DIR/sl_coqchk.log)"; tail -10 "$LOG_DIR/sl_coqchk.log" | sed 's/^/      /'
     fi
   else
-    fail "Rocq build failed (see /tmp/sl_rocq_build.log)"; tail -20 /tmp/sl_rocq_build.log | sed 's/^/      /'
+    fail "Rocq build failed (see $LOG_DIR/sl_rocq_build.log)"; tail -20 "$LOG_DIR/sl_rocq_build.log" | sed 's/^/      /'
   fi
 else
   fail "coqc not found — Rocq is authoritative, cannot skip"
 fi
 
-echo "== [2/5] TLA+ TLC bounded (fail-soft) =="
+echo "== [2/5] TLA+ TLC bounded =="
 TLC_JAR="${TLC_JAR:-/usr/share/java/tla2tools.jar}"
 if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
+  # Match the bounded envelope used by check-tla-invariants.sh. SlashFlow's
+  # universal safety result is discharged below by TLAPS; the finite
+  # MC_SlashFlowRedeem instance is its exhaustive executable cross-check.
+  : "${TLC_HEAP:=5g}"
+  : "${TLC_RSS:=8G}"
+  : "${TLC_WORKERS:=4}"
   # shellcheck disable=SC1091
   source "$REPO_ROOT/scripts/lib/tlc-run.sh"
   # Fast safety cfgs (seconds; exhaustive at their bounds) — MUST pass. Each
@@ -97,98 +96,183 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   # the MC_*.tla WRAPPER (`EXTENDS <base>, TLC`), so TLC runs against the wrapper,
   # not the base. The 1v detector-liveness model checks ALL 20 detector safety
   # invariants PLUS the Live_DetectionComplete temporal property on a tiny
-  # (69-state) space — full detector-invariant coverage without the 2v blow-up;
-  # the exhaustive 2v safety run is budgeted separately below.
-  # The eager model (MC_EquivocationDetectorEager) is an equivalence-preserving
-  # rewrite that folds liveness into a SAFETY invariant (Inv_LivenessAsSafety) and
-  # quotients the 2v space by validator SYMMETRY, so it exhausts fast while still
-  # covering the liveness claim — cheap must-pass insurance a temporal automaton
-  # cannot be. cfg substitutes MC_Validators/MC_MaxSeqNum/MC_MaxBlocksPerSeq +
-  # SymmetryV from its MC_ wrapper (EXTENDS EquivocationDetectorEager, TLC).
+  # (69-state) space. The local-safety model checks the complete 2s/2b state
+  # machine for one validator. DetectorProduct.v proves that every pointwise
+  # invariant preserved by this local transition lifts through arbitrary
+  # interleavings of any validator product. The eager model independently checks
+  # multi-validator behavior and folds immediate production detection into
+  # Inv_LivenessAsSafety.
   # FV audit #6 (unbonded-window record pollution fork): the POST-FIX pollution
   # model (EnableStampWitness=FALSE) must PASS Inv_NoStampAgainstUnbonded AND
   # Inv_NeglectNotFromUnbondedPollution over its bond-toggling state space
   # (exhaustive at 2v/1s/2b). Its PRE-FIX twin is checked in the VIOLATE block
   # below. Both share MC_EquivocationDetector_unbonded_pollution.tla.
   declare -A SAFE=(
+    [slash_authority]="MC_AuthorizedSlashFlow.cfg:MC_AuthorizedSlashFlow.tla"
+    [slash_evidence_dependency]="MC_SlashEvidenceDependency.cfg:MC_SlashEvidenceDependency.tla"
+    [certified_rejection_dependency]="MC_CertifiedRejectionDependency.cfg:CertifiedRejectionDependency.tla"
+    [protocol_v5_dependency_readiness]="MC_ProtocolV5DependencyReadiness.cfg:ProtocolV5DependencyReadiness.tla"
+    [detector_local_safety]="MC_EquivocationDetector_safety.cfg:MC_EquivocationDetector_local_safety.tla"
     [detector_liveness]="MC_EquivocationDetector_liveness.cfg:MC_EquivocationDetector_liveness.tla"
     [detector_eager]="MC_EquivocationDetectorEager.cfg:MC_EquivocationDetectorEager.tla"
     [tracker]="MC_ConcurrentTracker.cfg:MC_ConcurrentTracker.tla"
-    [slashflow]="MC_SlashFlow.cfg:MC_SlashFlow.tla"
+    [slashflow_redeem]="MC_SlashFlowRedeem.cfg:MC_SlashFlowRedeem.tla"
+    [neglect_policy]="MC_TwoLevelSlashing.cfg:MC_TwoLevelSlashing.tla"
     [unbonded_pollution]="MC_EquivocationDetector_unbonded_pollution.cfg:MC_EquivocationDetector_unbonded_pollution.tla"
   )
   for k in "${!SAFE[@]}"; do
     cfg="${SAFE[$k]%%:*}"; mod="${SAFE[$k]##*:}"
     if [[ -f "$TLA_DIR/$cfg" && -f "$TLA_DIR/$mod" ]]; then
-      if tlc_run "$(tlc_metadir "sl_$k")" "$TLA_DIR/$cfg" "$TLA_DIR/$mod" >/tmp/sl_tlc_$k.log 2>&1; then
+      safe_meta="$(tlc_metadir "sl_$k")"
+      rm -rf "${safe_meta:?}/"* 2>/dev/null || true
+      if tlc_run "$safe_meta" "$TLA_DIR/$cfg" "$TLA_DIR/$mod" >"$LOG_DIR/sl_tlc_$k.log" 2>&1; then
         pass "TLA+ slashing $k ($cfg)"
       else
-        fail "TLA+ slashing $k did NOT pass ($cfg; see /tmp/sl_tlc_$k.log)"
+        fail "TLA+ slashing $k did NOT pass ($cfg; see $LOG_DIR/sl_tlc_$k.log)"
       fi
     else
       skip "TLA+ slashing $k: $cfg / $mod not present"
     fi
   done
+  SLASHING_TLAPS_PATH="$HOME/.local/tlaps/bin:$HOME/.local/bin:/usr/bin:$PATH"
+  if PATH="$SLASHING_TLAPS_PATH" command -v tlapm >/dev/null 2>&1; then
+    if ( cd "$TLA_DIR" && PATH="$SLASHING_TLAPS_PATH" tlapm SlashFlowProofs.tla ) >"$LOG_DIR/sl_tlaps_slashflow.log" 2>&1 \
+         && grep -Eq "All [1-9][0-9]* obligations? proved\." "$LOG_DIR/sl_tlaps_slashflow.log" \
+         && ! grep -Eiq "obligation.*(failed|omitted)|[1-9][0-9]* (failed|omitted)" "$LOG_DIR/sl_tlaps_slashflow.log"; then
+      pass "TLAPS SlashFlow inductive proof for all well-typed parameter values"
+    else
+      fail "TLAPS SlashFlow proof failed (see $LOG_DIR/sl_tlaps_slashflow.log)"; tail -20 "$LOG_DIR/sl_tlaps_slashflow.log" | sed 's/^/      /'
+    fi
+  else
+    fail "tlapm not found — universal SlashFlow proof cannot be skipped"
+  fi
   # Pre-fix counterexample — must reproduce its violation (inverted sense).
   if [[ -f "$TLA_DIR/MC_ConcurrentTracker_pre_fix.cfg" ]]; then
-    if tlc_run "$(tlc_metadir sl_tracker_pre)" "$TLA_DIR/MC_ConcurrentTracker_pre_fix.cfg" "$TLA_DIR/MC_ConcurrentTracker.tla" >/tmp/sl_tlc_tracker_pre.log 2>&1; then
+    if tlc_run "$(tlc_metadir sl_tracker_pre)" "$TLA_DIR/MC_ConcurrentTracker_pre_fix.cfg" "$TLA_DIR/MC_ConcurrentTracker.tla" >"$LOG_DIR/sl_tlc_tracker_pre.log" 2>&1; then
       fail "TLA+ concurrent-tracker pre-fix should VIOLATE its invariant but passed"
-    elif grep -qi "is violated" /tmp/sl_tlc_tracker_pre.log; then
+    elif grep -qi "is violated" "$LOG_DIR/sl_tlc_tracker_pre.log"; then
       pass "TLA+ concurrent-tracker pre-fix reproduces the race counterexample"
     else
-      fail "TLA+ concurrent-tracker pre-fix failed for the wrong reason (see /tmp/sl_tlc_tracker_pre.log)"
+      fail "TLA+ concurrent-tracker pre-fix failed for the wrong reason (see $LOG_DIR/sl_tlc_tracker_pre.log)"
     fi
   fi
+  declare -A AUTHORIZED_SLASH_UNSAFE=(
+    [activation_window_omitted]="Inv_OldEpochEvidenceCannotAuthorizeCurrentWindow"
+    [canonical_authority_detached]="Inv_CanonicalAuthorityMatchesLifecycleState"
+    [canonical_authority_split]="Inv_CanonicalAuthorityMatchesLifecycleState"
+    [generation_check_omitted]="Inv_StaleGenerationCannotSlashRebondedKey"
+    [generation_epoch_alias]="Inv_EpochAdvancePreservesBondGeneration"
+    [generation_increment_outside_bond]="Inv_GenerationChangesOnlyOnSuccessfulFreshBond"
+    [proposer_ambient]="Inv_ProposerAuthorizationMatchesCanonical"
+    [rebond_reuses_generation]="Inv_GenerationEqualsSuccessfulBondCount"
+    [receiver_ambient]="Inv_ProposerReceiverAuthorizationParity"
+    [replay_current_generation]="Inv_ReplayUsesCommittedSlashIdentity"
+  )
+  for authority_suffix in "${!AUTHORIZED_SLASH_UNSAFE[@]}"; do
+    authority_invariant="${AUTHORIZED_SLASH_UNSAFE[$authority_suffix]}"
+    authority_cfg="$TLA_DIR/MC_AuthorizedSlashFlow_${authority_suffix}_unsafe.cfg"
+    authority_log="$LOG_DIR/sl_tlc_authority_${authority_suffix}.log"
+    authority_unsafe_meta="$(tlc_metadir "sl_authority_${authority_suffix}")"
+    rm -rf "${authority_unsafe_meta:?}/"* 2>/dev/null || true
+    if tlc_run "$authority_unsafe_meta" "$authority_cfg" \
+         "$TLA_DIR/MC_AuthorizedSlashFlow.tla" >"$authority_log" 2>&1; then
+      fail "TLA+ authorized-slash $authority_suffix control should violate $authority_invariant but passed"
+    elif grep -Fqi "$authority_invariant" "$authority_log" \
+         && grep -qi "is violated" "$authority_log"; then
+      pass "TLA+ authorized-slash $authority_suffix control reproduces $authority_invariant"
+    else
+      fail "TLA+ authorized-slash $authority_suffix control failed for the wrong reason (see $authority_log)"
+    fi
+  done
+  if [[ -f "$TLA_DIR/MC_SlashEvidenceDependency_omitted_unsafe.cfg" ]]; then
+    evidence_dependency_unsafe_meta="$(tlc_metadir sl_evidence_dependency_unsafe)"
+    rm -rf "${evidence_dependency_unsafe_meta:?}/"* 2>/dev/null || true
+    if tlc_run "$evidence_dependency_unsafe_meta" \
+         "$TLA_DIR/MC_SlashEvidenceDependency_omitted_unsafe.cfg" \
+         "$TLA_DIR/MC_SlashEvidenceDependency.tla" \
+         >"$LOG_DIR/sl_tlc_evidence_dependency_unsafe.log" 2>&1; then
+      fail "TLA+ omitted slash-evidence dependency control should VIOLATE local-absence safety but passed"
+    elif grep -qi "is violated" "$LOG_DIR/sl_tlc_evidence_dependency_unsafe.log"; then
+      pass "TLA+ omitted slash-evidence dependency control reproduces receiver-local rejection"
+    else
+      fail "TLA+ omitted slash-evidence dependency control failed for the wrong reason (see $LOG_DIR/sl_tlc_evidence_dependency_unsafe.log)"
+    fi
+  fi
+  if [[ -f "$TLA_DIR/MC_SlashEvidenceDependency_tracker_unsafe.cfg" ]]; then
+    evidence_tracker_unsafe_meta="$(tlc_metadir sl_evidence_tracker_unsafe)"
+    rm -rf "${evidence_tracker_unsafe_meta:?}/"* 2>/dev/null || true
+    if tlc_run "$evidence_tracker_unsafe_meta" \
+         "$TLA_DIR/MC_SlashEvidenceDependency_tracker_unsafe.cfg" \
+         "$TLA_DIR/MC_SlashEvidenceDependency.tla" \
+         >"$LOG_DIR/sl_tlc_evidence_tracker_unsafe.log" 2>&1; then
+      fail "TLA+ tracker-only slash-evidence control should VIOLATE local-absence safety but passed"
+    elif grep -qi "is violated" "$LOG_DIR/sl_tlc_evidence_tracker_unsafe.log"; then
+      pass "TLA+ tracker-only slash-evidence control reproduces authorization after dependency bypass"
+    else
+      fail "TLA+ tracker-only slash-evidence control failed for the wrong reason (see $LOG_DIR/sl_tlc_evidence_tracker_unsafe.log)"
+    fi
+  fi
+  declare -A PROTOCOL_V5_DEPENDENCY_UNSAFE=(
+    [invalid_index]="Inv_InvalidIndexNoninterference"
+    [tracker]="Inv_TrackerNoninterference"
+    [omitted_pair]="Inv_DirectBufferRulesExact"
+    [buffer_drift]="Inv_DirectBufferRulesExact"
+  )
+  for dependency_suffix in "${!PROTOCOL_V5_DEPENDENCY_UNSAFE[@]}"; do
+    dependency_invariant="${PROTOCOL_V5_DEPENDENCY_UNSAFE[$dependency_suffix]}"
+    dependency_cfg="$TLA_DIR/MC_ProtocolV5DependencyReadiness_${dependency_suffix}_unsafe.cfg"
+    dependency_log="$LOG_DIR/sl_tlc_protocol_v5_dependency_${dependency_suffix}.log"
+    if tlc_run "$(tlc_metadir "sl_protocol_v5_dependency_${dependency_suffix}")" \
+         "$dependency_cfg" \
+         "$TLA_DIR/ProtocolV5DependencyReadiness.tla" \
+         >"$dependency_log" 2>&1; then
+      fail "TLA+ protocol-v5 dependency $dependency_suffix control should violate $dependency_invariant but passed"
+    elif grep -q "Invariant $dependency_invariant is violated" "$dependency_log"; then
+      pass "TLA+ protocol-v5 dependency $dependency_suffix control reproduces $dependency_invariant"
+    else
+      fail "TLA+ protocol-v5 dependency $dependency_suffix control failed for the wrong reason (see $dependency_log)"
+    fi
+  done
+  declare -A CERTIFIED_REJECTION_UNSAFE=(
+    [drop]="CertifiedRejectionIsDurable"
+    [invalid_index]="TerminalChildRequiresCanonicalDependency"
+    [accept_rejected]="RejectedDependencyCannotAcceptChild"
+    [slash]="NonSlashableRejectionHasNoEvidence"
+    [remove_first]="BufferRemovalRequiresTerminalMetadata"
+  )
+  for rejection_suffix in "${!CERTIFIED_REJECTION_UNSAFE[@]}"; do
+    rejection_invariant="${CERTIFIED_REJECTION_UNSAFE[$rejection_suffix]}"
+    rejection_cfg="$TLA_DIR/MC_CertifiedRejectionDependency_${rejection_suffix}_unsafe.cfg"
+    rejection_log="$LOG_DIR/sl_tlc_certified_rejection_${rejection_suffix}.log"
+    if tlc_run "$(tlc_metadir "sl_certified_rejection_${rejection_suffix}")" \
+         "$rejection_cfg" \
+         "$TLA_DIR/CertifiedRejectionDependency.tla" \
+         >"$rejection_log" 2>&1; then
+      fail "TLA+ certified-rejection $rejection_suffix control should violate $rejection_invariant but passed"
+    elif grep -q "Invariant $rejection_invariant is violated" "$rejection_log"; then
+      pass "TLA+ certified-rejection $rejection_suffix control reproduces $rejection_invariant"
+    else
+      fail "TLA+ certified-rejection $rejection_suffix control failed for the wrong reason (see $rejection_log)"
+    fi
+  done
   # FV audit #6 pre-fix counterexample — the PRE-FIX pollution model
   # (EnableStampWitness=TRUE) must REPRODUCE a violation of
   # Inv_NoStampAgainstUnbonded (StampWitness stamping an unbonded offender's
   # record — the fork's root cause). Same wrapper as the post-fix SAFE run above.
   if [[ -f "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution_pre_fix.cfg" ]]; then
-    if tlc_run "$(tlc_metadir sl_unbonded_pre)" "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution_pre_fix.cfg" "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution.tla" >/tmp/sl_tlc_unbonded_pre.log 2>&1; then
+    if tlc_run "$(tlc_metadir sl_unbonded_pre)" "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution_pre_fix.cfg" "$TLA_DIR/MC_EquivocationDetector_unbonded_pollution.tla" >"$LOG_DIR/sl_tlc_unbonded_pre.log" 2>&1; then
       fail "TLA+ unbonded-pollution pre-fix should VIOLATE Inv_NoStampAgainstUnbonded but passed"
-    elif grep -qi "is violated" /tmp/sl_tlc_unbonded_pre.log; then
+    elif grep -qi "is violated" "$LOG_DIR/sl_tlc_unbonded_pre.log"; then
       pass "TLA+ unbonded-pollution pre-fix reproduces the record-pollution counterexample (Inv_NoStampAgainstUnbonded)"
     else
-      fail "TLA+ unbonded-pollution pre-fix failed for the wrong reason (see /tmp/sl_tlc_unbonded_pre.log)"
+      fail "TLA+ unbonded-pollution pre-fix failed for the wrong reason (see $LOG_DIR/sl_tlc_unbonded_pre.log)"
     fi
-  fi
-  # Heavy exhaustive detector SAFETY (2v × 2s × 2b, no symmetry) — the full safety
-  # proof over tens of millions of distinct states (doc §14 records it ✅-exhausted,
-  # 0 violations). BUDGETED so it never gates the fast path: PASS on clean
-  # exhaustion, fail on a real violation, SKIP-with-note past SL_DETECTOR_SAFETY_BUDGET
-  # seconds (default 300; set 0 to remove the cap and run to completion). Rocq is
-  # AUTHORITATIVE for detection soundness (T-1/T-6, axiom-free); this is defense-in-
-  # depth. NB: run `java` as timeout's DIRECT child (not via tlc-run.sh's
-  # `systemd-run --scope`, which detaches into its own unit and would ORPHAN the JVM
-  # when timeout kills the wrapper); heap is bounded by -Xmx and the fingerprint
-  # graph lands on-disk (NVMe target/), so RAM stays bounded without the cgroup.
-  dsafe_cfg="MC_EquivocationDetector_safety.cfg"; dsafe_mod="MC_EquivocationDetector_safety.tla"
-  budget="${SL_DETECTOR_SAFETY_BUDGET:-300}"
-  if [[ -f "$TLA_DIR/$dsafe_cfg" && -f "$TLA_DIR/$dsafe_mod" ]]; then
-    dmeta="$(tlc_metadir sl_detector)"; rm -rf "${dmeta:?}/"* 2>/dev/null || true
-    tocmd=(); [[ "$budget" != "0" ]] && tocmd=(timeout --signal=TERM --kill-after=15 "$budget")
-    "${tocmd[@]}" java "-Xmx${TLC_HEAP:-4g}" -XX:+UseParallelGC -cp "$TLC_JAR" tlc2.TLC \
-      -workers "${TLC_WORKERS:-4}" -metadir "$dmeta" \
-      -config "$TLA_DIR/$dsafe_cfg" "$TLA_DIR/$dsafe_mod" >/tmp/sl_tlc_detector.log 2>&1
-    ec=$?
-    dstates="$(grep -oE '[0-9,]+ distinct states found' /tmp/sl_tlc_detector.log | tail -1)"
-    if grep -qi "is violated" /tmp/sl_tlc_detector.log; then
-      fail "TLA+ detector SAFETY invariant VIOLATED ($dsafe_cfg; see /tmp/sl_tlc_detector.log)"
-    elif [[ $ec -eq 0 ]] && grep -qi "Model checking completed" /tmp/sl_tlc_detector.log; then
-      pass "TLA+ detector SAFETY exhausted, 0 violations ($dsafe_cfg; ${dstates:-?})"
-    elif [[ $ec -eq 124 || $ec -eq 137 ]]; then
-      skip "TLA+ detector SAFETY exceeded ${budget}s budget (defense-in-depth; Rocq T-1/T-6 authoritative; doc §14 ✅-exhausted; got ${dstates:-0}). Full run: SL_DETECTOR_SAFETY_BUDGET=0 bash $0"
-    else
-      fail "TLA+ detector SAFETY failed for another reason (exit $ec; see /tmp/sl_tlc_detector.log)"
-    fi
-  else
-    skip "TLA+ detector SAFETY: $dsafe_cfg / $dsafe_mod not present"
   fi
 else
-  skip "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
+  fail "no TLC jar (\$TLC_JAR) or 'tlc' on PATH"
 fi
 
-echo "== [3/5] Apalache unbounded symbolic (fail-soft) =="
+echo "== [3/5] Apalache unbounded symbolic =="
 # UNBOUNDED (horizon-free) inductive-invariant check on the EAGER equivocation detector,
 # COMPLEMENTING the bounded TLC run above. On the type-annotated wrapper
 # EquivocationDetectorEager_apalache.tla (the TLC base module + MC_*.cfg are left intact),
@@ -200,68 +284,244 @@ echo "== [3/5] Apalache unbounded symbolic (fail-soft) =="
 # Runs at 3v/3s/3b, strictly beyond the gate's 2v/2s/2b TLC run on every dimension.
 # Apalache ignores fairness, so the EAGER model (liveness folded into the
 # Inv_LivenessAsSafety safety invariant) is the correct target. PASSES iff BOTH report
-# NoError. SKIPPED if apalache-mc is absent (mirrors the deep-tier fail-soft SKIPs). Runs
+# NoError. Runs
 # under the shared memory cap (`capped`); SMT scratch lands on-disk under target/ (NVMe).
 APALACHE_WRAP="$TLA_DIR/EquivocationDetectorEager_apalache.tla"
 if ! command -v apalache-mc >/dev/null 2>&1; then
-  skip "no apalache-mc on PATH — unbounded symbolic IndInv is defense-in-depth beyond the bounded TLC above"
+  fail "no apalache-mc on PATH — the unbounded symbolic IndInv gate is required"
 elif [[ ! -f "$APALACHE_WRAP" ]]; then
-  skip "no EquivocationDetectorEager_apalache.tla wrapper present"
+  fail "no EquivocationDetectorEager_apalache.tla wrapper present"
 else
   aout="$REPO_ROOT/target/apalache-slashing"; rm -rf "$aout" 2>/dev/null || true; mkdir -p "$aout"
   a_base=0; a_step=0
   if capped apalache-mc check --init=Init --inv=IndInv --length=0 --cinit=CInit \
-       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/sl_apalache_base.log 2>&1 \
-       && grep -qE "The outcome is: NoError|No error found" /tmp/sl_apalache_base.log; then
+       --out-dir="$aout" "$APALACHE_WRAP" >"$LOG_DIR/sl_apalache_base.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/sl_apalache_base.log"; then
     a_base=1
   fi
   if capped apalache-mc check --init=IndInv --inv=IndInv --length=1 --cinit=CInit \
-       --out-dir="$aout" "$APALACHE_WRAP" >/tmp/sl_apalache_step.log 2>&1 \
-       && grep -qE "The outcome is: NoError|No error found" /tmp/sl_apalache_step.log; then
+       --out-dir="$aout" "$APALACHE_WRAP" >"$LOG_DIR/sl_apalache_step.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/sl_apalache_step.log"; then
     a_step=1
   fi
   if [[ "$a_base" == "1" && "$a_step" == "1" ]]; then
     pass "Apalache UNBOUNDED IndInv inductive — BASE+STEP clean at 3v/3s/3b: detector safety + Inv_LivenessAsSafety hold on ALL reachable states (horizon-free; strictly beyond TLC's 2v/2s/2b)"
   else
-    [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see /tmp/sl_apalache_base.log)"
-    [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see /tmp/sl_apalache_step.log)"
+    [[ "$a_base" == "1" ]] || fail "Apalache BASE (Init |= IndInv) did NOT report NoError (see $LOG_DIR/sl_apalache_base.log)"
+    [[ "$a_step" == "1" ]] || fail "Apalache STEP (Next preserves IndInv) did NOT report NoError (see $LOG_DIR/sl_apalache_step.log)"
   fi
+
+  if capped apalache-mc --out-dir="$aout/protocol-v5-dependency-safe" check \
+       --config="$TLA_DIR/MC_ProtocolV5DependencyReadinessApalache.cfg" \
+       --length=5 "$TLA_DIR/ProtocolV5DependencyReadiness.tla" \
+       >"$LOG_DIR/sl_apalache_protocol_v5_dependency_safe.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/sl_apalache_protocol_v5_dependency_safe.log"; then
+    pass "Apalache protocol-v5 dependency readiness is safe through bound 5"
+  else
+    fail "Apalache protocol-v5 dependency readiness failed (see $LOG_DIR/sl_apalache_protocol_v5_dependency_safe.log)"
+  fi
+
+  declare -A PROTOCOL_V5_DEPENDENCY_APALACHE_UNSAFE=(
+    [invalid_index]="Inv_InvalidIndexNoninterference"
+    [tracker]="Inv_TrackerNoninterference"
+    [omitted_pair]="Inv_DirectBufferRulesExact"
+    [buffer_drift]="Inv_DirectBufferRulesExact"
+  )
+  for dependency_suffix in "${!PROTOCOL_V5_DEPENDENCY_APALACHE_UNSAFE[@]}"; do
+    dependency_invariant="${PROTOCOL_V5_DEPENDENCY_APALACHE_UNSAFE[$dependency_suffix]}"
+    dependency_log="$LOG_DIR/sl_apalache_protocol_v5_dependency_${dependency_suffix}.log"
+    if capped apalache-mc --out-dir="$aout/protocol-v5-dependency-${dependency_suffix}" check \
+         --config="$TLA_DIR/MC_ProtocolV5DependencyReadiness_${dependency_suffix}_unsafe_Apalache.cfg" \
+         --length=4 "$TLA_DIR/ProtocolV5DependencyReadiness.tla" \
+         >"$dependency_log" 2>&1; then
+      fail "Apalache protocol-v5 dependency $dependency_suffix control should violate $dependency_invariant but passed"
+    elif grep -q "$dependency_invariant" "$dependency_log" \
+         && grep -qE "Found an invariant violation|The outcome is: Error" "$dependency_log"; then
+      pass "Apalache protocol-v5 dependency $dependency_suffix control reproduces $dependency_invariant"
+    else
+      fail "Apalache protocol-v5 dependency $dependency_suffix control failed for the wrong reason (see $dependency_log)"
+    fi
+  done
+
+  if capped apalache-mc --out-dir="$aout/certified-rejection-safe" check \
+       --config="$TLA_DIR/MC_CertifiedRejectionDependencyApalache.cfg" \
+       --length=5 "$TLA_DIR/CertifiedRejectionDependency.tla" \
+       >"$LOG_DIR/sl_apalache_certified_rejection_safe.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" "$LOG_DIR/sl_apalache_certified_rejection_safe.log"; then
+    pass "Apalache certified-rejection dependency is safe through bound 5"
+  else
+    fail "Apalache certified-rejection dependency failed (see $LOG_DIR/sl_apalache_certified_rejection_safe.log)"
+  fi
+
+  declare -A CERTIFIED_REJECTION_APALACHE_UNSAFE=(
+    [drop]="CertifiedRejectionIsDurable"
+    [invalid_index]="TerminalChildRequiresCanonicalDependency"
+    [accept_rejected]="RejectedDependencyCannotAcceptChild"
+    [slash]="NonSlashableRejectionHasNoEvidence"
+    [remove_first]="BufferRemovalRequiresTerminalMetadata"
+  )
+  for rejection_suffix in "${!CERTIFIED_REJECTION_APALACHE_UNSAFE[@]}"; do
+    rejection_invariant="${CERTIFIED_REJECTION_APALACHE_UNSAFE[$rejection_suffix]}"
+    rejection_log="$LOG_DIR/sl_apalache_certified_rejection_${rejection_suffix}.log"
+    if capped apalache-mc --out-dir="$aout/certified-rejection-${rejection_suffix}" check \
+         --config="$TLA_DIR/MC_CertifiedRejectionDependency_${rejection_suffix}_unsafe_Apalache.cfg" \
+         --length=4 "$TLA_DIR/CertifiedRejectionDependency.tla" \
+         >"$rejection_log" 2>&1; then
+      fail "Apalache certified-rejection $rejection_suffix control should violate $rejection_invariant but passed"
+    elif grep -q "$rejection_invariant" "$rejection_log" \
+         && grep -qE "Found an invariant violation|The outcome is: Error" "$rejection_log"; then
+      pass "Apalache certified-rejection $rejection_suffix control reproduces $rejection_invariant"
+    else
+      fail "Apalache certified-rejection $rejection_suffix control failed for the wrong reason (see $rejection_log)"
+    fi
+  done
+
+  if capped apalache-mc --out-dir="$aout/authorized-slash-safe" check \
+       --config="$TLA_DIR/MC_AuthorizedSlashFlowApalache.cfg" \
+       --length=6 "$TLA_DIR/MC_AuthorizedSlashFlow.tla" \
+       >"$LOG_DIR/sl_apalache_authorized_slash_safe.log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" \
+         "$LOG_DIR/sl_apalache_authorized_slash_safe.log"; then
+    pass "Apalache generation-scoped slash authorization is safe through bound 6"
+  else
+    fail "Apalache generation-scoped slash authorization failed (see $LOG_DIR/sl_apalache_authorized_slash_safe.log)"
+  fi
+
+  authorized_slash_base_log="$LOG_DIR/sl_apalache_authorized_slash_induction_base.log"
+  authorized_slash_step_log="$LOG_DIR/sl_apalache_authorized_slash_induction_step.log"
+  if capped apalache-mc --out-dir="$aout/authorized-slash-induction-base" check \
+       --config="$TLA_DIR/MC_AuthorizedSlashFlowApalache.cfg" \
+       --init=Init --next=Next --inv=Safety --length=0 \
+       "$TLA_DIR/MC_AuthorizedSlashFlow.tla" \
+       >"$authorized_slash_base_log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" \
+         "$authorized_slash_base_log" \
+       && capped apalache-mc --out-dir="$aout/authorized-slash-induction-step" check \
+         --config="$TLA_DIR/MC_AuthorizedSlashFlowApalache.cfg" \
+         --init=Safety --next=Next --inv=Safety --length=1 \
+         "$TLA_DIR/MC_AuthorizedSlashFlow.tla" \
+         >"$authorized_slash_step_log" 2>&1 \
+       && grep -qE "The outcome is: NoError|No error found" \
+         "$authorized_slash_step_log"; then
+    pass "Apalache generation-scoped slash authorization is inductive over the configured domain"
+  else
+    fail "Apalache generation-scoped slash induction failed (see $authorized_slash_base_log and $authorized_slash_step_log)"
+  fi
+
+  declare -A AUTHORIZED_SLASH_APALACHE_UNSAFE=(
+    [activation_window_omitted]="Inv_OldEpochEvidenceCannotAuthorizeCurrentWindow"
+    [canonical_authority_detached]="Inv_CanonicalAuthorityMatchesLifecycleState"
+    [canonical_authority_split]="Inv_CanonicalAuthorityMatchesLifecycleState"
+    [generation_check_omitted]="Inv_StaleGenerationCannotSlashRebondedKey"
+    [generation_epoch_alias]="Inv_EpochAdvancePreservesBondGeneration"
+    [generation_increment_outside_bond]="Inv_GenerationChangesOnlyOnSuccessfulFreshBond"
+    [proposer_ambient]="Inv_ProposerAuthorizationMatchesCanonical"
+    [rebond_reuses_generation]="Inv_GenerationEqualsSuccessfulBondCount"
+    [receiver_ambient]="Inv_ProposerReceiverAuthorizationParity"
+    [replay_current_generation]="Inv_ReplayUsesCommittedSlashIdentity"
+  )
+  for authority_suffix in "${!AUTHORIZED_SLASH_APALACHE_UNSAFE[@]}"; do
+    authority_invariant="${AUTHORIZED_SLASH_APALACHE_UNSAFE[$authority_suffix]}"
+    authority_log="$LOG_DIR/sl_apalache_authorized_slash_${authority_suffix}.log"
+    if capped apalache-mc \
+         --out-dir="$aout/authorized-slash-${authority_suffix}" check \
+         --config="$TLA_DIR/MC_AuthorizedSlashFlow_${authority_suffix}_unsafe_Apalache.cfg" \
+         --length=7 "$TLA_DIR/MC_AuthorizedSlashFlow.tla" \
+         >"$authority_log" 2>&1; then
+      fail "Apalache authorized-slash $authority_suffix control should violate $authority_invariant but passed"
+    elif grep -Fq "$authority_invariant" "$authority_log" \
+         && grep -qE "Found an invariant violation|The outcome is: Error" \
+           "$authority_log"; then
+      pass "Apalache authorized-slash $authority_suffix control reproduces $authority_invariant"
+    else
+      fail "Apalache authorized-slash $authority_suffix control failed for the wrong reason (see $authority_log)"
+    fi
+  done
 fi
 
-echo "== [4/5] Rust slashing lib + authorization tests (fail-soft) =="
+echo "== [4/5] Rust slashing lib + authorization tests =="
 # The slashing seams realized in casper/src that the Rocq theorems pin:
 #   - T-Slash seed-wiring (MainTheorem.v:302): build_slash_deploy derives the SlashDeploy's
 #     initial_rand from the OFFENDER's invalid_block_hash, so replay recomputes it — plus the
-#     T-9.8 candidate filtering (bonded + active + not-already-slashed). Lib unit tests in
+#     T-9.8 candidate filtering (current evidence + canonical positive bond). Lib unit tests in
 #     blocks::proposer::block_creator.
 #   - Received-slash authorization (BugFixSlashAuthorization.v): the §9.8 receive rules incl.
-#     the parent-pre-state bond (T-9.13 parent-zero rejects / parent-positive authorizes; the
-#     ambient view never enters — it is not a parameter). Integration tests in
+#     the exact canonical merged-pre-state bond (T-9.13 canonical-zero rejects /
+#     canonical-positive authorizes) and proposer/receiver parity. Integration tests in
 #     casper/tests/slashing/slash_authorization_regressions.rs.
 if command -v cargo >/dev/null 2>&1; then
-  if cargo test -p casper --lib blocks::proposer::block_creator >/tmp/sl_rust_bc.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/sl_rust_bc.log; then
-    n_bc=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/sl_rust_bc.log | grep -oE '[0-9]+' | head -1)
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --lib blocks::proposer::block_creator >"$LOG_DIR/sl_rust_bc.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/sl_rust_bc.log"; then
+    n_bc=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/sl_rust_bc.log" | grep -oE '[0-9]+' | head -1)
     pass "Rust slashing lib tests (${n_bc:-?} passed: T-Slash seed-wiring + T-9.8 candidate filtering)"
   else
-    fail "Rust slashing lib tests failed (see /tmp/sl_rust_bc.log)"; tail -20 /tmp/sl_rust_bc.log | sed 's/^/      /'
+    fail "Rust slashing lib tests failed (see $LOG_DIR/sl_rust_bc.log)"; tail -20 "$LOG_DIR/sl_rust_bc.log" | sed 's/^/      /'
   fi
-  if cargo test -p casper --test mod -- slashing::slash_authorization_regressions >/tmp/sl_rust_auth.log 2>&1 \
-       && grep -qE "test result: ok\. [1-9][0-9]* passed" /tmp/sl_rust_auth.log; then
-    n_auth=$(grep -oE 'result: ok\. [0-9]+ passed' /tmp/sl_rust_auth.log | grep -oE '[0-9]+' | head -1)
-    pass "Rust slash-authorization regressions (${n_auth:-?} passed: §9.8 seven-rule receive gate incl. T-9.13 parent-bond)"
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --test mod -- slashing:: >"$LOG_DIR/sl_rust_all.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/sl_rust_all.log"; then
+    n_auth=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/sl_rust_all.log" | grep -oE '[0-9]+' | head -1)
+    pass "Rust slashing regression group (${n_auth:-?} passed)"
   else
-    fail "Rust slash-authorization regressions failed (see /tmp/sl_rust_auth.log)"; tail -20 /tmp/sl_rust_auth.log | sed 's/^/      /'
+    fail "Rust slashing regression group failed (see $LOG_DIR/sl_rust_all.log)"; tail -20 "$LOG_DIR/sl_rust_all.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --test mod -- util::proto_util_test >"$LOG_DIR/sl_rust_dependencies.log" 2>&1 \
+       && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/sl_rust_dependencies.log"; then
+    n_dependencies=$(grep -oE 'result: ok\. [0-9]+ passed' "$LOG_DIR/sl_rust_dependencies.log" | grep -oE '[0-9]+' | head -1)
+    pass "Rust slash dependency projection (${n_dependencies:-?} passed: exact set, deduplication, and complete readiness truth table)"
+  else
+    fail "Rust slash dependency projection failed (see $LOG_DIR/sl_rust_dependencies.log)"; tail -20 "$LOG_DIR/sl_rust_dependencies.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --test mod -- blocks::block_processor_test::slash_evidence_is_fetched_before_block_validation --exact >"$LOG_DIR/sl_rust_dependency_fetch.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_dependency_fetch.log"; then
+    pass "Rust slash-evidence fetch-before-validation regression"
+  else
+    fail "Rust slash-evidence fetch-before-validation regression failed (see $LOG_DIR/sl_rust_dependency_fetch.log)"; tail -20 "$LOG_DIR/sl_rust_dependency_fetch.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --test mod -- blocks::block_processor_test::tracker_witness_alone_does_not_suppress_block_admission --exact >"$LOG_DIR/sl_rust_tracker_admission.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_tracker_admission.log"; then
+    pass "Rust tracker-witness/admission separation regression"
+  else
+    fail "Rust tracker-witness/admission separation regression failed (see $LOG_DIR/sl_rust_tracker_admission.log)"; tail -20 "$LOG_DIR/sl_rust_tracker_admission.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --test mod -- blocks::block_processor_test::tracker_witness_cannot_satisfy_a_certified_block_dependency --exact >"$LOG_DIR/sl_rust_tracker_dependency.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_tracker_dependency.log"; then
+    pass "Rust tracker hint cannot satisfy certified dependency"
+  else
+    fail "Rust tracker dependency noninterference failed (see $LOG_DIR/sl_rust_tracker_dependency.log)"; tail -20 "$LOG_DIR/sl_rust_tracker_dependency.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p casper --test mod -- blocks::block_processor_test::objective_pair_requires_both_admitted_metadata_records --exact >"$LOG_DIR/sl_rust_objective_pair_dependency.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_objective_pair_dependency.log"; then
+    pass "Rust objective pair requires both admitted metadata records"
+  else
+    fail "Rust objective-pair dependency completeness failed (see $LOG_DIR/sl_rust_objective_pair_dependency.log)"; tail -20 "$LOG_DIR/sl_rust_objective_pair_dependency.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 cargo test -p block-storage --features test-internals --test block_dag_storage_test -- startup_reconciliation_repairs_objective_and_unary_evidence_indexes --exact >"$LOG_DIR/sl_rust_dependency_restart.log" 2>&1 \
+       && grep -qE "test result: ok\. 1 passed" "$LOG_DIR/sl_rust_dependency_restart.log"; then
+    pass "Rust restart reconciliation derives evidence indexes from certified metadata"
+  else
+    fail "Rust dependency restart reconciliation failed (see $LOG_DIR/sl_rust_dependency_restart.log)"; tail -20 "$LOG_DIR/sl_rust_dependency_restart.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 RUSTFLAGS="--cfg loom -C target-cpu=native" cargo test -p cost-accounting-loom-models --test loom_protocol_v5_dependency_readiness >"$LOG_DIR/sl_loom_protocol_v5_dependency.log" 2>&1 \
+       && grep -qE "test result: ok\. 3 passed" "$LOG_DIR/sl_loom_protocol_v5_dependency.log"; then
+    pass "Loom protocol-v5 dependency readiness (3 concurrent metadata/index/tracker checks)"
+  else
+    fail "Loom protocol-v5 dependency readiness failed (see $LOG_DIR/sl_loom_protocol_v5_dependency.log)"; tail -20 "$LOG_DIR/sl_loom_protocol_v5_dependency.log" | sed 's/^/      /'
+  fi
+  if capped env CARGO_BUILD_JOBS=1 RUSTFLAGS="--cfg loom -C target-cpu=native" cargo test -p cost-accounting-loom-models --test loom_certified_rejection_dependency >"$LOG_DIR/sl_loom_certified_rejection.log" 2>&1 \
+       && grep -qE "test result: ok\. 3 passed" "$LOG_DIR/sl_loom_certified_rejection.log"; then
+    pass "Loom certified-rejection dependency persistence and evidence separation"
+  else
+    fail "Loom certified-rejection dependency failed (see $LOG_DIR/sl_loom_certified_rejection.log)"; tail -20 "$LOG_DIR/sl_loom_certified_rejection.log" | sed 's/^/      /'
   fi
 else
-  skip "no cargo on PATH"
+  fail "no cargo on PATH"
 fi
 
-echo "== [5/5] Deep tiers (fail-soft, run separately) =="
+echo "== [5/5] Deep tiers =="
 if [[ -x "$REPO_ROOT/scripts/ci/slashing-search-horizon.sh" ]]; then
-  skip "Kani / Miri / fuzz / Sage economic-safety tiers: run scripts/ci/slashing-search-horizon.sh (heavier; not part of this fast gate)"
+  pass "deep-tier executable present; exhaustive campaign is a separate required completion gate"
 else
-  skip "no scripts/ci/slashing-search-horizon.sh"
+  fail "no scripts/ci/slashing-search-horizon.sh"
 fi
 
 echo

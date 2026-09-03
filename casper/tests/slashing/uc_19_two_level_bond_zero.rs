@@ -1,4 +1,4 @@
-// UC-19 — Two-level slash where the neglecter has zero bond.
+// UC-19 — Neglect rejection where the signer has zero bond.
 //
 // Maps to: docs/casper/theory/slashing/slashing-specification.md §12 UC-19.
 // Theorems: T-11, T-9.5.
@@ -6,10 +6,10 @@
 //
 // Scenario: validator A equivocates. Validator B (already slashed,
 // so bond=0) cites A's invalid block without including a SlashDeploy.
-// B is classified `NeglectedEquivocation` post-fix; the slash
-// transition against B is a no-op (T-Idem) since the bond is
-// already zero, but the invariant `active_implies_bonded` (T-9.5)
-// is preserved throughout — B is no longer in the active set.
+// B is classified `NeglectedEquivocation` post-fix without new economic
+// evidence. A separately authorized slash transition against B is a no-op
+// (T-Idem) because the bond is already zero. The `active_implies_bonded`
+// invariant (T-9.5) remains true because B is not active.
 
 use super::harness::SlashingTestHarness;
 use super::types::Status;
@@ -29,16 +29,16 @@ fn uc_19_two_level_with_bond_zero_neglecter() {
     let _ = harness.dispatch(a1_prime);
     assert!(harness.has_record("v0", 4));
 
-    // v1 (bond 0) cites v0 without slashing — second-level neglect.
+    // v1 (bond 0) cites v0 without slashing and receives a neglect rejection.
     let b_negligent = harness.sign_block_citing("v1", 7, a1_prime);
     let s = harness.dispatch(b_negligent);
     assert_eq!(
         s,
         Status::NeglectedEquivocation,
-        "T-11 still fires even when the neglecter is already bond-zero"
+        "neglect detection still fires when the signer is already bond-zero"
     );
 
-    // Slash transition against bond-zero v1 is a no-op (T-Idem) but
+    // A separately authorized slash against bond-zero v1 is a no-op (T-Idem) but
     // the active_implies_bonded invariant (T-9.5) holds: v1 is not
     // active, so bond-zero is fine; v0 will be slashed next.
     let _ = harness.execute_slash("v1"); // already slashed; no-op

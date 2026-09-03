@@ -16,7 +16,7 @@
 //! needs it. The walk and the membership checks are lazy: single-parent
 //! operations and empty heartbeat blocks never pay for them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
@@ -24,8 +24,8 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::deploy_id::DeployLookupId;
 use models::rust::validator::Validator;
-use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use super::floor::{self, Floor};
@@ -36,7 +36,9 @@ use crate::rust::safety::clique_oracle::FtThreshold;
 /// latest disposition, the latest kept rejection record, and the first
 /// carrier (see `interpreter_util::SigDisposition`).
 pub(crate) type CanonicalDispositions =
-    Arc<HashMap<Bytes, crate::rust::util::rholang::interpreter_util::SigDisposition>>;
+    Arc<HashMap<DeployLookupId, crate::rust::util::rholang::interpreter_util::SigDisposition>>;
+
+type CanonicalDispositionSets = Arc<(HashSet<DeployLookupId>, HashSet<DeployLookupId>)>;
 
 /// The retry gate's verdict with its basis. Closed splits into the three
 /// distinguishable conditions: the sig has no canonical disposition in the
@@ -62,15 +64,17 @@ pub struct FloorContext {
     /// against exactly this set.
     pub settled_floors: Vec<Floor>,
     parents: Vec<BlockHash>,
+    protocol_version: i64,
     /// Disposition walks memoized per scan bound. Bounds are data-dependent
     /// (each consumer derives its own from the deploys it holds), so equal
     /// bounds share one walk and distinct bounds pay their own — no walk's
     /// verdict is ever synthesized from a differently-bounded walk.
     dispositions: parking_lot::Mutex<HashMap<i64, CanonicalDispositions>>,
+    disposition_sets: parking_lot::Mutex<HashMap<i64, CanonicalDispositionSets>>,
     /// Effect-in-floor-state membership answers, shared across every
     /// consumer of this operation (the merge's settled-sig dedup and the
     /// buffer purge ask about the same sigs against the same state).
-    effect_memo: parking_lot::Mutex<HashMap<Bytes, bool>>,
+    effect_memo: parking_lot::Mutex<HashMap<DeployLookupId, bool>>,
 }
 
 impl FloorContext {
@@ -84,6 +88,7 @@ impl FloorContext {
         parents: &[BlockHash],
         latest_messages: &BTreeMap<Validator, BlockHash>,
         ftt: FtThreshold,
+        protocol_version: i64,
     ) -> Result<Self, CasperError> {
         let (floor, settled_floors) =
             floor::finalized_floor_with_candidates(dag, block_store, parents, latest_messages, ftt)
@@ -100,7 +105,9 @@ impl FloorContext {
             floor_state,
             settled_floors,
             parents: parents.to_vec(),
+            protocol_version,
             dispositions: parking_lot::Mutex::new(HashMap::new()),
+            disposition_sets: parking_lot::Mutex::new(HashMap::new()),
             effect_memo: parking_lot::Mutex::new(HashMap::new()),
         })
     }
@@ -134,19 +141,40 @@ impl FloorContext {
         Ok(walked)
     }
 
+    fn disposition_sets(
+        &self,
+        block_store: &KeyValueBlockStore,
+        earliest_block_number: i64,
+    ) -> Result<CanonicalDispositionSets, CasperError> {
+        if let Some(cached) = self.disposition_sets.lock().get(&earliest_block_number) {
+            return Ok(cached.clone());
+        }
+        let sets = Arc::new(
+            crate::rust::util::rholang::interpreter_util::canonical_disposition_sets_at_floor(
+                block_store,
+                &self.floor.hash,
+                &self.parents,
+                earliest_block_number,
+                self.protocol_version,
+            )?,
+        );
+        self.disposition_sets
+            .lock()
+            .insert(earliest_block_number, sets.clone());
+        Ok(sets)
+    }
+
     /// Sigs whose latest canonical disposition over the operation's parents
     /// is a WIN — their effect is in the base the proposal builds on.
     pub fn won_sigs(
         &self,
         block_store: &KeyValueBlockStore,
         earliest_block_number: i64,
-    ) -> Result<std::collections::HashSet<Bytes>, CasperError> {
+    ) -> Result<std::collections::HashSet<DeployLookupId>, CasperError> {
         Ok(self
-            .dispositions(block_store, earliest_block_number)?
-            .iter()
-            .filter(|(_, disposition)| disposition.won())
-            .map(|(sig, _)| sig.clone())
-            .collect())
+            .disposition_sets(block_store, earliest_block_number)?
+            .0
+            .clone())
     }
 
     /// Sigs whose latest canonical disposition over the operation's parents
@@ -155,13 +183,11 @@ impl FloorContext {
         &self,
         block_store: &KeyValueBlockStore,
         earliest_block_number: i64,
-    ) -> Result<std::collections::HashSet<Bytes>, CasperError> {
+    ) -> Result<std::collections::HashSet<DeployLookupId>, CasperError> {
         Ok(self
-            .dispositions(block_store, earliest_block_number)?
-            .iter()
-            .filter(|(_, disposition)| !disposition.won())
-            .map(|(sig, _)| sig.clone())
-            .collect())
+            .disposition_sets(block_store, earliest_block_number)?
+            .1
+            .clone())
     }
 
     /// Latest kept rejection height per sig, resolved against ONE
@@ -170,8 +196,8 @@ impl FloorContext {
         &self,
         block_store: &KeyValueBlockStore,
         earliest_block_number: i64,
-        sigs: impl IntoIterator<Item = &'a Bytes>,
-    ) -> Result<std::collections::HashMap<Bytes, Option<i64>>, CasperError> {
+        sigs: impl IntoIterator<Item = &'a DeployLookupId>,
+    ) -> Result<std::collections::HashMap<DeployLookupId, Option<i64>>, CasperError> {
         let dispositions = self.dispositions(block_store, earliest_block_number)?;
         Ok(sigs
             .into_iter()
@@ -220,7 +246,7 @@ impl FloorContext {
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         earliest_block_number: i64,
-        sig: &Bytes,
+        sig: &DeployLookupId,
     ) -> Result<bool, CasperError> {
         Ok(matches!(
             self.retry_gate_basis(dag, block_store, earliest_block_number, sig)?,
@@ -236,7 +262,7 @@ impl FloorContext {
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         earliest_block_number: i64,
-        sig: &Bytes,
+        sig: &DeployLookupId,
     ) -> Result<RetryGateBasis, CasperError> {
         let dispositions = self.dispositions(block_store, earliest_block_number)?;
         let Some(disposition) = dispositions.get(sig) else {
@@ -269,7 +295,7 @@ impl FloorContext {
         &self,
         block_store: &KeyValueBlockStore,
         min_height: i64,
-        sig: &Bytes,
+        sig: &DeployLookupId,
     ) -> Result<bool, CasperError> {
         if let Some(cached) = self.effect_memo.lock().get(sig) {
             return Ok(*cached);

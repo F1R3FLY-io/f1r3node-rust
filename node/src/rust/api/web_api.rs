@@ -15,7 +15,6 @@ use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
 #[cfg(feature = "schnorr_secp256k1_experimental")]
 use crypto::rust::signatures::{
     frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
@@ -156,17 +155,17 @@ pub struct DeployFinalizationStatusJson {
     /// Hex-encoded block hash. Absent (`null`) when the deploy has never
     /// been included in any block.
     pub latest_block_hash: Option<String>,
+    pub finalized_floor_hash: Option<String>,
+    pub finalized_floor_height: Option<i64>,
 }
 
 /// JSON-serializable view of a single pending deploy.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct PendingDeployJson {
+    #[serde(rename = "deployId")]
+    pub deploy_id: String,
     pub term: String,
     pub timestamp: i64,
-    #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
-    #[serde(rename = "phloLimit")]
-    pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
     pub valid_after_block_number: i64,
     #[serde(rename = "shardId")]
@@ -334,9 +333,14 @@ impl WebApiImpl {
                 let transfers_by_deploy =
                     extract_transfers_from_report(&report, &self.transfer_unforgeable);
                 for deploy in deploys {
+                    let deploy_id = if deploy.deploy_id.is_empty() {
+                        &deploy.sig
+                    } else {
+                        &deploy.deploy_id
+                    };
                     deploy.transfers = Some(
                         transfers_by_deploy
-                            .get(&deploy.sig)
+                            .get(deploy_id)
                             .cloned()
                             .unwrap_or_default()
                             .into_iter()
@@ -458,27 +462,16 @@ impl WebApi for WebApiImpl {
             .map(|message| message.sequence_number)
             .unwrap_or(-1);
 
-        let names = if let Some(req) = request {
-            let deployer_bytes = hex::decode(&req.deployer)
-                .map_err(|e| eyre!("Deployer is not valid hex format: {}", e))?;
-            let name_bytes =
-                BlockAPI::preview_private_names(&deployer_bytes, req.timestamp, req.name_qty)?;
-            name_bytes.into_iter().map(hex::encode).collect()
-        } else {
-            vec![]
-        };
+        let names = prepare_deploy_names(request.as_ref())?;
 
         Ok(PrepareResponse { names, seq_number })
     }
 
     async fn deploy(&self, request: DeployRequest) -> Result<String> {
-        // Convert request to signed deploy
-        let signed_deploy = to_signed_deploy(&request)?;
-
-        // Deploy using BlockAPI
-        BlockAPI::deploy(
+        let cosigned_deploy = to_cosigned_deploy(&request)?;
+        BlockAPI::deploy_cosigned(
             &self.engine_cell,
-            signed_deploy,
+            cosigned_deploy,
             &self.trigger_propose_f,
             self.min_phlo_price,
             self.is_node_read_only,
@@ -549,6 +542,8 @@ impl WebApi for WebApiImpl {
                 deploy_id
             )))
         })?;
+        let deploy_lookup_id =
+            BlockAPI::deploy_lookup_id(&self.engine_cell, &deploy_id_bytes).await?;
 
         let retry_interval_ms = find_deploy_retry_interval_ms();
         let max_attempts = find_deploy_max_attempts();
@@ -557,7 +552,7 @@ impl WebApi for WebApiImpl {
         let light_block: LightBlockInfo = {
             let mut attempt: u16 = 1;
             loop {
-                match BlockAPI::find_deploy(&self.engine_cell, &deploy_id_bytes).await {
+                match BlockAPI::find_deploy(&self.engine_cell, &deploy_lookup_id).await {
                     Ok(block) => break block,
                     Err(err) => {
                         let not_found = err.downcast_ref::<DeployNotFoundError>().is_some();
@@ -594,18 +589,21 @@ impl WebApi for WebApiImpl {
             .as_ref()
             .ok_or_else(|| eyre!("Block {} returned without deploys", light_block.block_hash))?;
 
-        let deploy = deploys.iter().find(|d| d.sig == deploy_id).ok_or_else(|| {
-            eyre!(
-                "Deploy {} found in block {} but not in deploy list",
-                deploy_id,
-                light_block.block_hash
-            )
-        })?;
+        let deploy = deploys
+            .iter()
+            .find(|candidate| candidate.deploy_id == deploy_id)
+            .ok_or_else(|| {
+                eyre!(
+                    "Deploy {} found in block {} but not in deploy list",
+                    deploy_id,
+                    light_block.block_hash
+                )
+            })?;
 
         let is_full = view == ViewMode::Full;
         let finalization = BlockAPI::deploy_finalization_status_with_known_block(
             &self.engine_cell,
-            &deploy_id_bytes,
+            &deploy_lookup_id,
             Some(&known_block_hash),
         )
         .await?;
@@ -632,16 +630,6 @@ impl WebApi for WebApiImpl {
             },
             system_deploy_error: if is_full {
                 Some(deploy.system_deploy_error.clone())
-            } else {
-                None
-            },
-            phlo_price: if is_full {
-                Some(deploy.phlo_price)
-            } else {
-                None
-            },
-            phlo_limit: if is_full {
-                Some(deploy.phlo_limit)
             } else {
                 None
             },
@@ -726,11 +714,14 @@ impl WebApi for WebApiImpl {
                 deploy_sig_hex
             )))
         })?;
-        let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &sig).await?;
+        let deploy_id = BlockAPI::deploy_lookup_id(&self.engine_cell, &sig).await?;
+        let status = BlockAPI::deploy_finalization_status(&self.engine_cell, &deploy_id).await?;
         Ok(DeployFinalizationStatusJson {
             state: deploy_state_json_label(status.state).to_string(),
             rejection_count: status.rejection_count,
             latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+            finalized_floor_hash: status.finalized_floor_hash.map(|h| hex::encode(&h)),
+            finalized_floor_height: status.finalized_floor_height,
         })
     }
 
@@ -755,13 +746,20 @@ impl WebApi for WebApiImpl {
         let deploys = snapshot
             .deploys
             .into_iter()
-            .map(|(signed, is_rejected)| {
-                let dd = &signed.data;
+            .map(|(envelope, is_rejected)| {
+                let dd = envelope.data();
+                let signed = envelope.primary();
+                let deploy_id = if envelope.is_envelope_bound() {
+                    envelope
+                        .envelope_commitment()
+                        .expect("validated protocol-v6 envelope")
+                } else {
+                    signed.sig.clone()
+                };
                 PendingDeployJson {
+                    deploy_id: hex::encode(deploy_id),
                     term: dd.term.clone(),
                     timestamp: dd.time_stamp,
-                    phlo_price: dd.phlo_price,
-                    phlo_limit: dd.phlo_limit,
                     valid_after_block_number: dd.valid_after_block_number,
                     shard_id: dd.shard_id.clone(),
                     deployer: hex::encode(&signed.pk.bytes),
@@ -1265,6 +1263,8 @@ pub enum RhoUnforg {
     UnforgPrivate { data: String },
     UnforgDeploy { data: String },
     UnforgDeployer { data: String },
+    UnforgAuthority { data: String },
+    UnforgPrincipal { key_family: u32, data: String },
     UnforgSysAuthToken,
 }
 
@@ -1272,10 +1272,34 @@ pub enum RhoUnforg {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeployRequest {
     pub data: DeployData,
+    /// Primary signer's public key (hex-encoded).
     pub deployer: String,
+    /// Primary signer's signature (hex-encoded).
     pub signature: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
+    /// Additional protocol-v6 policy members beyond the first member.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cosigners: Vec<CosignerJson>,
+    /// Selected-signature quorum. Omission encodes AllOf over every member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u32>,
+}
+
+/// JSON shape for one cosigner in a multi-signature [`DeployRequest`].
+/// Mirrors the wire `CompoundSigner` proto message (proto field 14 inside
+/// `DeployDataProto`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct CosignerJson {
+    /// Cosigner public key (hex-encoded).
+    pub pk: String,
+    /// Signature over the protocol-v6 envelope signing hash. Empty for an
+    /// unselected threshold-policy member.
+    pub signature: String,
+    #[serde(rename = "sigAlgorithm")]
+    pub sig_algorithm: String,
+    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
+    // pool Σ⟦s⟧, not an envelope escrow share.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1362,6 +1386,23 @@ pub struct PrepareResponse {
     pub names: Vec<String>,
     #[serde(rename = "seqNumber")]
     pub seq_number: i32,
+}
+
+fn prepare_deploy_names(request: Option<&PrepareRequest>) -> Result<Vec<String>> {
+    match request {
+        Some(request) => {
+            let deployer = hex::decode(&request.deployer)
+                .map_err(|error| eyre!("Deployer is not valid hex format: {}", error))?;
+            BlockAPI::preview_private_names(
+                &deployer,
+                request.timestamp,
+                request.name_qty,
+                casper::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            )
+            .map(|names| names.into_iter().map(hex::encode).collect())
+        }
+        None => Ok(Vec::new()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -1456,10 +1497,8 @@ pub struct DeployResponse {
     pub term: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
-    pub phlo_price: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
-    pub phlo_limit: Option<i64>,
+    // D3 (DR-9): phloPrice / phloLimit removed from the deploy response — a
+    // deploy's cost is the per-COMM token count (in `cost`), no escrow.
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
     pub sig_algorithm: Option<String>,
     #[serde(
@@ -1632,47 +1671,74 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 
 // Conversion functions
 
-/// Convert DeployRequest to Signed DeployData
-fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
-    // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
-
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
-
-    // Create public key
-    let pk = PublicKey::from_bytes(&pk_bytes);
-
-    // Look up signature algorithm by name
-    let sig_alg: Box<dyn SignaturesAlg> = match request.sig_algorithm.as_str() {
-        "secp256k1" => Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-        "secp256k1-eth" => Box::new(crypto::rust::signatures::secp256k1_eth::Secp256k1Eth),
-        "ed25519" => Box::new(crypto::rust::signatures::ed25519::Ed25519),
+/// Look up a signature algorithm by name, supporting all wire-recognized
+/// algorithms. Shared between `to_signed_deploy` and `to_cosigned_deploy`.
+fn lookup_sig_algorithm(name: &str) -> Result<Box<dyn SignaturesAlg>> {
+    match name {
+        "secp256k1" => Ok(Box::new(crypto::rust::signatures::secp256k1::Secp256k1)),
+        crypto::rust::signatures::secp256k1_eth::Secp256k1Eth::NAME
+        | crypto::rust::signatures::secp256k1_eth::Secp256k1Eth::LEGACY_NAME => Ok(Box::new(
+            crypto::rust::signatures::secp256k1_eth::Secp256k1Eth,
+        )),
+        "ed25519" => Ok(Box::new(crypto::rust::signatures::ed25519::Ed25519)),
         #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "schnorr-secp256k1" => Box::new(SchnorrSecp256k1),
+        "schnorr-secp256k1" => Ok(Box::new(SchnorrSecp256k1)),
         #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "frost-secp256k1" => Box::new(FrostSecp256k1),
-        _ => {
-            return Err(eyre!(
-                "Signature algorithm not supported: {}",
-                request.sig_algorithm
-            ))
-        }
-    };
+        "frost-secp256k1" => Ok(Box::new(FrostSecp256k1)),
+        _ => Err(eyre!("Signature algorithm not supported: {}", name)),
+    }
+}
 
-    // Create DeployData (use the data from request)
-    let deploy_data = request.data.clone();
+/// Convert DeployRequest to a protocol-v6 [`Cosigned<DeployData>`] envelope.
+/// Invariants enforced by `Cosigned::from_envelope_signed_data_threshold`:
+///
+/// - Every selected signature verifies against the scheme-bound envelope hash.
+/// - Canonical principal ordering with no duplicate ground authority.
+///
+/// D3 (DR-9): no per-signer phlo_share and no share-sum invariant — funding is
+/// the per-signature supply pool Σ⟦s⟧.
+fn to_cosigned_deploy(
+    request: &DeployRequest,
+) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>> {
+    use crypto::rust::signatures::signed::{Cosigned, Cosigner};
 
-    // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+    let primary_pk_bytes = hex::decode(&request.deployer)
+        .map_err(|e| eyre!("Primary public key is not valid base16: {}", e))?;
+    let primary_sig_bytes = hex::decode(&request.signature)
+        .map_err(|e| eyre!("Primary signature is not valid base16: {}", e))?;
+
+    // D3 (DR-9): no per-signer phlo_share — funding is the per-signature supply
+    // pool Σ⟦s⟧, not an envelope escrow share.
+    let mut signers = Vec::with_capacity(1 + request.cosigners.len());
+    signers.push(Cosigner {
+        pk: PublicKey::from_bytes(&primary_pk_bytes),
+        sig: primary_sig_bytes.into(),
+        sig_algorithm: lookup_sig_algorithm(&request.sig_algorithm)?,
+    });
+    for (i, cs) in request.cosigners.iter().enumerate() {
+        let pk_bytes = hex::decode(&cs.pk)
+            .map_err(|e| eyre!("Cosigner {} public key is not valid base16: {}", i, e))?;
+        let sig_bytes = hex::decode(&cs.signature)
+            .map_err(|e| eyre!("Cosigner {} signature is not valid base16: {}", i, e))?;
+        signers.push(Cosigner {
+            pk: PublicKey::from_bytes(&pk_bytes),
+            sig: sig_bytes.into(),
+            sig_algorithm: lookup_sig_algorithm(&cs.sig_algorithm)?,
+        });
+    }
+
+    let threshold = request
+        .threshold
+        .unwrap_or_else(|| signers.len().try_into().unwrap_or(u32::MAX));
+    Cosigned::from_envelope_signed_data_threshold(request.data.clone(), signers, threshold)
+        .map_err(|e| eyre!("Cosigned envelope validation failed: {}", e))
 }
 
 // Conversion functions for protobuf generated types
 use models::rhoapi::g_unforgeable::UnfInstance;
-use models::rhoapi::{Bundle, Expr, GDeployId, GDeployerId, GPrivate, GUnforgeable, Par};
+use models::rhoapi::{
+    Bundle, Expr, GAuthorityId, GDeployId, GDeployerId, GPrincipalId, GPrivate, GUnforgeable, Par,
+};
 
 /// Convert RhoUnforg to protobuf GUnforgeable.
 /// Hex decode errors produce empty bytes with a warning log.
@@ -1691,6 +1757,15 @@ fn unforg_to_unforg_proto(unforg: RhoUnforg) -> eyre::Result<UnfInstance> {
         RhoUnforg::UnforgDeployer { data } => UnfInstance::GDeployerIdBody(GDeployerId {
             public_key: decode_hex(&data)?.into(),
         }),
+        RhoUnforg::UnforgAuthority { data } => UnfInstance::GAuthorityIdBody(GAuthorityId {
+            id: decode_hex(&data)?.into(),
+        }),
+        RhoUnforg::UnforgPrincipal { key_family, data } => {
+            UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family,
+                public_key: decode_hex(&data)?.into(),
+            })
+        }
         RhoUnforg::UnforgSysAuthToken => {
             use models::rhoapi::GSysAuthToken;
             UnfInstance::GSysAuthTokenBody(GSysAuthToken {})
@@ -1976,6 +2051,17 @@ fn unforg_from_proto(unforg: GUnforgeable) -> Option<RhoExpr> {
                 data: hex::encode(&deployer_id.public_key),
             },
         },
+        UnfInstance::GAuthorityIdBody(authority_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgAuthority {
+                data: hex::encode(&authority_id.id),
+            },
+        },
+        UnfInstance::GPrincipalIdBody(principal_id) => RhoExpr::ExprUnforg {
+            data: RhoUnforg::UnforgPrincipal {
+                key_family: principal_id.key_family,
+                data: hex::encode(&principal_id.public_key),
+            },
+        },
         UnfInstance::GSysAuthTokenBody(_) => RhoExpr::ExprUnforg {
             data: RhoUnforg::UnforgSysAuthToken,
         },
@@ -2012,6 +2098,10 @@ fn extract_key_from_expr(expr: &RhoExpr) -> String {
             RhoUnforg::UnforgPrivate { data } => data.clone(),
             RhoUnforg::UnforgDeploy { data } => data.clone(),
             RhoUnforg::UnforgDeployer { data } => data.clone(),
+            RhoUnforg::UnforgAuthority { data } => data.clone(),
+            RhoUnforg::UnforgPrincipal { key_family, data } => {
+                format!("{}:{}", key_family, data)
+            }
             RhoUnforg::UnforgSysAuthToken => "SysAuthToken".to_string(),
         },
         // Complex types: serialize to JSON string
@@ -2047,6 +2137,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prepare_deploy_get_keeps_the_empty_name_list() {
+        assert!(prepare_deploy_names(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn prepare_deploy_post_fails_closed_for_protocol_v6() {
+        let request = PrepareRequest {
+            deployer: hex::encode([2; 33]),
+            timestamp: 1,
+            name_qty: 1,
+        };
+        let error = prepare_deploy_names(Some(&request)).expect_err("preview must fail closed");
+
+        assert!(error.to_string().contains("authenticated deploy envelope"));
+    }
+
+    #[test]
+    fn deploy_finalization_status_serializes_distinct_occurrence_and_state_anchors() {
+        let response = DeployFinalizationStatusJson {
+            state: "Finalized".to_string(),
+            rejection_count: 2,
+            latest_block_hash: Some("aa".to_string()),
+            finalized_floor_hash: Some("bb".to_string()),
+            finalized_floor_height: Some(42),
+        };
+
+        let json = serde_json::to_value(response).expect("status JSON");
+
+        assert_eq!(json["latest_block_hash"], "aa");
+        assert_eq!(json["finalized_floor_hash"], "bb");
+        assert_eq!(json["finalized_floor_height"], 42);
+    }
+
+    #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
         let response = DeployResponse {
             deploy_id: "abc123".to_string(),
@@ -2061,8 +2185,6 @@ mod tests {
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
-            phlo_price: Some(10),
-            phlo_limit: Some(100000),
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
             transfers: Some(vec![]),
@@ -2079,8 +2201,9 @@ mod tests {
         assert_eq!(json["rejectionCount"], 0);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
-        assert!(json.get("phloLimit").is_some());
+        // D3 (DR-9): no phloPrice / phloLimit in the response.
+        assert!(json.get("phloPrice").is_none());
+        assert!(json.get("phloLimit").is_none());
         assert!(json.get("transfers").is_some());
     }
 
@@ -2099,8 +2222,6 @@ mod tests {
             deployer: None,
             term: None,
             system_deploy_error: None,
-            phlo_price: None,
-            phlo_limit: None,
             sig_algorithm: None,
             valid_after_block_number: None,
             transfers: None,
@@ -2131,16 +2252,18 @@ mod tests {
         let request = DeployRequest {
             data: DeployData {
                 term: "contract".to_string(),
+                language: "rholang".to_string(),
                 time_stamp: 1234567890,
-                phlo_price: 1,
-                phlo_limit: 1000000,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
+                authority_presentations: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
             sig_algorithm: "secp256k1".to_string(),
+            cosigners: Vec::new(),
+            threshold: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -2149,6 +2272,68 @@ mod tests {
         assert_eq!(request.deployer, deserialized.deployer);
         assert_eq!(request.signature, deserialized.signature);
         assert_eq!(request.sig_algorithm, deserialized.sig_algorithm);
+        assert_eq!(request.threshold, deserialized.threshold);
+    }
+
+    #[test]
+    fn rest_deploy_request_consumes_protocol_v61_threshold_signatures() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../test-vectors/deploy-envelope-v6.1.json"
+        ))
+        .expect("v6.1 vectors");
+        let vector = &vectors["positive"]["threshold2Of3Selected0And2"];
+        let members = vector["members"].as_array().expect("members");
+        let request = DeployRequest {
+            data: DeployData {
+                term: vector["term"].as_str().expect("term").to_string(),
+                language: vector["language"].as_str().expect("language").to_string(),
+                time_stamp: vector["timestamp"].as_i64().expect("timestamp"),
+                valid_after_block_number: vector["validAfterBlockNumber"]
+                    .as_i64()
+                    .expect("valid after"),
+                shard_id: vector["shardId"].as_str().expect("shard").to_string(),
+                expiration_timestamp: Some(
+                    vector["expirationTimestamp"].as_i64().expect("expiration"),
+                ),
+                authority_presentations: Vec::new(),
+            },
+            deployer: members[0]["publicKeyHex"]
+                .as_str()
+                .expect("public key")
+                .to_string(),
+            signature: members[0]["signatureHex"]
+                .as_str()
+                .expect("signature")
+                .to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+            cosigners: members[1..]
+                .iter()
+                .map(|member| CosignerJson {
+                    pk: member["publicKeyHex"]
+                        .as_str()
+                        .expect("public key")
+                        .to_string(),
+                    signature: member["signatureHex"]
+                        .as_str()
+                        .expect("signature")
+                        .to_string(),
+                    sig_algorithm: "secp256k1".to_string(),
+                })
+                .collect(),
+            threshold: Some(2),
+        };
+        let envelope = to_cosigned_deploy(&request).expect("v6.1 REST envelope");
+        assert!(envelope.is_envelope_bound());
+        assert_eq!(envelope.cosigner_threshold(), 2);
+        assert_eq!(envelope.selected_signers_v61().expect("selected").len(), 2);
+        assert_eq!(
+            hex::encode(envelope.envelope_commitment().expect("deploy id")),
+            vector["deployIdHex"].as_str().expect("deploy id")
+        );
+
+        let mut insufficient = request;
+        insufficient.threshold = Some(3);
+        assert!(to_cosigned_deploy(&insufficient).is_err());
     }
 
     #[test]
@@ -2446,6 +2631,42 @@ mod tests {
             }
             _ => panic!("Expected ExprUnforg with UnforgDeployer"),
         }
+    }
+
+    #[test]
+    fn test_unforg_from_proto_authority() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GAuthorityIdBody(GAuthorityId {
+                id: vec![0x0a, 0x0b, 0x0c],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgAuthority { ref data }
+            }) if data == "0a0b0c"
+        ));
+    }
+
+    #[test]
+    fn test_unforg_from_proto_principal() {
+        let unforg = GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrincipalIdBody(GPrincipalId {
+                key_family: 1,
+                public_key: vec![0x0d, 0x0e, 0x0f],
+            })),
+        };
+        let result = unforg_from_proto(unforg);
+        assert!(matches!(
+            result,
+            Some(RhoExpr::ExprUnforg {
+                data: RhoUnforg::UnforgPrincipal {
+                    key_family: 1,
+                    ref data
+                }
+            }) if data == "0d0e0f"
+        ));
     }
 
     #[test]
@@ -2958,56 +3179,68 @@ mod tests {
     fn sample_deploy_data() -> DeployData {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
+            language: "rholang".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
-            phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            authority_presentations: Vec::new(),
         }
     }
 
     #[test]
-    fn test_to_signed_deploy_accepts_a_correctly_signed_request() {
+    fn test_to_cosigned_deploy_accepts_a_correctly_signed_request() {
         use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signed::Cosigned;
 
         let (sk, _pk) = Secp256k1.new_key_pair();
-        let signed = Signed::create(sample_deploy_data(), Box::new(Secp256k1), sk).unwrap();
+        let envelope =
+            Cosigned::create_single_envelope(sample_deploy_data(), Box::new(Secp256k1), sk)
+                .unwrap();
+        let signer = &envelope.signers()[0];
 
         let request = DeployRequest {
-            data: signed.data.clone(),
-            deployer: hex::encode(&signed.pk.bytes),
-            signature: hex::encode(&signed.sig),
+            data: envelope.data().clone(),
+            deployer: hex::encode(&signer.pk.bytes),
+            signature: hex::encode(&signer.sig),
             sig_algorithm: "secp256k1".to_string(),
+            cosigners: Vec::new(),
+            threshold: Some(1),
         };
 
-        let result = to_signed_deploy(&request).unwrap();
-        assert_eq!(result.sig, signed.sig);
-        assert_eq!(result.pk.bytes, signed.pk.bytes);
+        let result = to_cosigned_deploy(&request).unwrap();
+        assert_eq!(result.signers()[0].sig, signer.sig);
+        assert_eq!(result.signers()[0].pk.bytes, signer.pk.bytes);
+        assert_eq!(
+            result.envelope_commitment().unwrap(),
+            envelope.envelope_commitment().unwrap()
+        );
     }
 
     #[test]
-    fn test_to_signed_deploy_error_paths() {
+    fn test_to_cosigned_deploy_error_paths() {
         let base = DeployRequest {
             data: sample_deploy_data(),
             deployer: "zz".to_string(),
             signature: "00".to_string(),
             sig_algorithm: "secp256k1".to_string(),
+            cosigners: Vec::new(),
+            threshold: Some(1),
         };
-        assert!(to_signed_deploy(&base)
+        assert!(to_cosigned_deploy(&base)
             .unwrap_err()
             .to_string()
-            .contains("Public key is not valid base16"));
+            .contains("Primary public key is not valid base16"));
 
         let bad_sig_hex = DeployRequest {
             deployer: "00".to_string(),
             signature: "zz".to_string(),
             ..base.clone()
         };
-        assert!(to_signed_deploy(&bad_sig_hex)
+        assert!(to_cosigned_deploy(&bad_sig_hex)
             .unwrap_err()
             .to_string()
-            .contains("Signature is not valid base16"));
+            .contains("Primary signature is not valid base16"));
 
         let unsupported_alg = DeployRequest {
             deployer: "00".to_string(),
@@ -3015,7 +3248,7 @@ mod tests {
             sig_algorithm: "rot13".to_string(),
             ..base.clone()
         };
-        assert!(to_signed_deploy(&unsupported_alg)
+        assert!(to_cosigned_deploy(&unsupported_alg)
             .unwrap_err()
             .to_string()
             .contains("Signature algorithm not supported"));
@@ -3026,7 +3259,7 @@ mod tests {
             signature: "0011".to_string(),
             ..base
         };
-        assert!(to_signed_deploy(&wrong_sig).is_err());
+        assert!(to_cosigned_deploy(&wrong_sig).is_err());
     }
 
     #[test]

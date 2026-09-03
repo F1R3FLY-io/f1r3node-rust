@@ -1,0 +1,43 @@
+@startuml
+skinparam backgroundColor #FCFCFF
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #334155
+  LifeLineBorderColor #475569
+  LifeLineBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+  ParticipantFontColor #0F172A
+}
+
+actor "Validator" as Validator #DBEAFE
+participant "Block admission" as Admission #BFDBFE
+database "Metadata" as Metadata #E0E7FF
+database "Tagged occurrence store" as Occurrence #DCFCE7
+database "Lifecycle store" as Lifecycle #FEF3C7
+participant "Finalizer" as Finalizer #FED7AA
+actor "API client" as Client #EDE9FE
+
+Validator -> Admission: validated protocol-v6 block
+Admission -> Admission: derive typed DeployIdV6 and evidence
+Admission -> Metadata: prepare immutable metadata
+Admission -> Occurrence: prepare archive and canonical summary
+Admission -> Lifecycle: prepare inclusion events
+Admission -> Metadata: commit one strict transaction
+Metadata -> Occurrence: same storage environment
+Occurrence -> Lifecycle: same storage environment
+Lifecycle --> Admission: atomic success or rollback
+Admission --> Validator: admitted or typed failure
+
+Finalizer -> Lifecycle: prepare write-once terminal verdict
+Finalizer -> Occurrence: prepare terminal summary and hot-state deletion
+Finalizer -> Lifecycle: commit one strict transaction
+Lifecycle -> Occurrence: preserve permanent archive
+Occurrence --> Finalizer: terminal survivor
+
+Client -> Lifecycle: terminal status lookup
+Lifecycle --> Client: source-aware carrier and state anchor
+Client -> Occurrence: archive representative lookup
+Occurrence --> Client: open or terminal archive representative
+Client -> Occurrence: exact source lookup
+Occurrence --> Client: permanent archive rows
+@enduml

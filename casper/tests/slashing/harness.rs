@@ -254,7 +254,7 @@ impl SlashingTestHarness {
 
     /// Detects the equivocation/validation status of `hash`. Mirrors
     /// `EquivocationDetector::check_equivocations` plus the
-    /// non-equivocation slashable-variant classifier.
+    /// contextual rejection classifier.
     pub fn detect(&self, hash: BlockHash) -> Status {
         let block = match self.dag.blocks.get(&hash) {
             Some(b) => b,
@@ -292,7 +292,7 @@ impl SlashingTestHarness {
         if self_regress {
             return Status::JustificationRegression;
         }
-        // Level-2 neglect: the block cites a validator who has an
+        // Neglect rejection: the block cites a validator who has an
         // EquivocationRecord, but does not include a SlashDeploy for
         // that validator. Mirrors design §08 and Rocq theorem T-11.
         let neglected = block.justifications.iter().any(|(v, _h)| {
@@ -322,47 +322,55 @@ impl SlashingTestHarness {
         self.tracker.insert_or_update(record);
     }
 
-    /// Mirrors `MultiParentCasperImpl::handle_invalid_block` post-fix
-    /// behaviour: classifies the block, mints an EquivocationRecord for
-    /// every slashable status (bug fixes #1 + #3), and adds the block
-    /// to the invalid index. Returns the classification.
+    /// Mirrors `MultiParentCasperImpl::handle_invalid_block`: classifies the
+    /// block, persists each rejection, and records direct equivocation evidence.
     pub fn dispatch(&mut self, hash: BlockHash) -> Status {
         let status = self.detect(hash);
         self.apply_dispatch_effect(hash, &status);
         status
     }
 
-    /// Mirrors the dispatcher with a *forced* classification — useful
-    /// for testing the catch-all arm against the 14 non-equivocation
-    /// slashable variants (UC-28..UC-36) without simulating each
-    /// validation rule. The provided `status` plays the role of the
-    /// upstream validator's verdict.
+    pub fn dispatch_counterfactual_neglect_evidence(&mut self, hash: BlockHash) -> Status {
+        let status = self.dispatch(hash);
+        if status == Status::NeglectedEquivocation {
+            let (sender, maybe_base) = {
+                let block = self
+                    .dag
+                    .blocks
+                    .get(&hash)
+                    .expect("dispatch: block exists in DAG");
+                (block.sender.clone(), base_seq_from_seq(block.seq))
+            };
+            if let Some(base) = maybe_base {
+                self.record_equivocation(&sender, base, hash);
+            }
+        }
+        status
+    }
+
+    /// Mirrors the dispatcher with a forced classification. The provided
+    /// status represents the upstream validator's certified verdict.
     pub fn dispatch_with_status(&mut self, hash: BlockHash, status: Status) -> Status {
         self.apply_dispatch_effect(hash, &status);
         status
     }
 
     fn apply_dispatch_effect(&mut self, hash: BlockHash, status: &Status) {
-        match status {
-            Status::AdmissibleEquivocation
-            | Status::IgnorableEquivocation
-            | Status::NeglectedEquivocation
-            | Status::JustificationRegression
-            | Status::SlashableOther => {
-                let (sender, maybe_base) = {
-                    let block = self
-                        .dag
-                        .blocks
-                        .get(&hash)
-                        .expect("dispatch: block exists in DAG");
-                    (block.sender.clone(), base_seq_from_seq(block.seq))
-                };
-                if let Some(base) = maybe_base {
-                    self.record_equivocation(&sender, base, hash);
-                }
-                self.dag.invalid.insert(hash);
+        if status.is_slash_evidence_eligible() {
+            let (sender, maybe_base) = {
+                let block = self
+                    .dag
+                    .blocks
+                    .get(&hash)
+                    .expect("dispatch: block exists in DAG");
+                (block.sender.clone(), base_seq_from_seq(block.seq))
+            };
+            if let Some(base) = maybe_base {
+                self.record_equivocation(&sender, base, hash);
             }
-            Status::Valid => {}
+        }
+        if status.is_rejected() {
+            self.dag.invalid.insert(hash);
         }
     }
 
@@ -477,7 +485,7 @@ impl SlashingTestHarness {
             return Err("Bond amount must be positive.".to_string());
         }
         if self.pos_state.bonds.contains_key(validator) {
-            return Err("Public key is already bonded.".to_string());
+            return Err("Public key already has a live or burned bond lifecycle.".to_string());
         }
         if self.pos_state.slashed.contains(validator) {
             return Err("Validator is slashed; cannot re-bond.".to_string());

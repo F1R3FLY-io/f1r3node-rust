@@ -235,17 +235,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_mergeable_entry_should_not_block_finished_state() {
-        let st = ST::new(HashSet::from([10]), None, None);
-        let (st, _) = st.get_next(false);
-        let (st, _) = st.received(10, 100, None);
-        let st = st.done(10).mergeable_pending(10);
-
-        assert!(!st.mergeable_d.is_empty());
-        assert!(st.is_finished());
-    }
-
-    #[test]
     fn from_start_to_finish_should_receive_one_item() {
         let st = ST::new(
             {

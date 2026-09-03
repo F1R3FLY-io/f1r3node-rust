@@ -31,7 +31,7 @@ fi
 # anchors, with no gate firing. A model that cites a line which no longer says what
 # it claims is a silently-false model. Widening the scope converts that whole class
 # from invisible to gated.
-DOCS_DIR="${REPO}/docs/theory"
+DOCS_DIR="${REPO}/docs/casper/theory"
 QUIET=0
 if [[ "${1:-}" == "--quiet" ]]; then QUIET=1; fi
 

@@ -43,7 +43,7 @@ that promotion.
 
 ## Module dependency graph
 
-```text
+```
                    ┌──────────────┐
                    │  Validator   │
                    └──────┬───────┘

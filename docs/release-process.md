@@ -1,6 +1,6 @@
 # Release Process and Deployment Train Strategy
 
-**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments)  
+**Status:** Ratified 2026-08-19 (all Section 19 items; two items carry recorded amendments)
 **Last updated:** 2026-08-19
 
 ## 1. Purpose

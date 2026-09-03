@@ -11,7 +11,7 @@
 ' Color palette: see Diagram 02 header for the legend.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/03-seq-ignorable-equivocation-fixed.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/03-seq-ignorable-equivocation-fixed.puml
 
 @startuml 03-seq-ignorable-equivocation-fixed
 !theme plain

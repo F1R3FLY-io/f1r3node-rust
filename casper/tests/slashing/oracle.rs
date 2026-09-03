@@ -79,7 +79,7 @@ pub fn oracle_detect(dag: &DagState, hash: BlockHash) -> Status {
 
 /// Mirrors the post-fix `handle_invalid_block` dispatcher: returns the
 /// updated tracker and DAG (with `hash` added to the invalid index).
-/// For slashable statuses, mints an EquivocationRecord at
+/// For direct-equivocation statuses, mints an EquivocationRecord at
 /// `(sender(hash), seq(hash) - 1)` if not already present and folds
 /// `hash` into its witness set.
 pub fn oracle_dispatch(
@@ -90,29 +90,24 @@ pub fn oracle_dispatch(
 ) -> (DagState, EqRecordSet) {
     let mut new_dag = dag.clone();
     let mut new_tracker = tracker.clone();
-    match classification {
-        Status::AdmissibleEquivocation
-        | Status::IgnorableEquivocation
-        | Status::NeglectedEquivocation
-        | Status::JustificationRegression
-        | Status::SlashableOther => {
-            if let Some(block) = dag.blocks.get(&hash) {
-                if let Some(base) = base_seq_from_seq(block.seq) {
-                    let record = EqRecord {
-                        equivocator: block.sender.clone(),
-                        base_seq: base,
-                        witnesses: {
-                            let mut s = BTreeSet::new();
-                            s.insert(hash);
-                            s
-                        },
-                    };
-                    new_tracker.insert_or_update(record);
-                }
-                new_dag.invalid.insert(hash);
+    if classification.is_slash_evidence_eligible() {
+        if let Some(block) = dag.blocks.get(&hash) {
+            if let Some(base) = base_seq_from_seq(block.seq) {
+                let record = EqRecord {
+                    equivocator: block.sender.clone(),
+                    base_seq: base,
+                    witnesses: {
+                        let mut s = BTreeSet::new();
+                        s.insert(hash);
+                        s
+                    },
+                };
+                new_tracker.insert_or_update(record);
             }
         }
-        Status::Valid => {}
+    }
+    if classification.is_rejected() {
+        new_dag.invalid.insert(hash);
     }
     (new_dag, new_tracker)
 }
@@ -139,7 +134,7 @@ pub fn oracle_slash(pos_state: &PoSState, validator: &str) -> (PoSState, SlashRe
     })
 }
 
-/// Mirrors `TwoLevelSlashing.neglect`: computes the closure of
+/// Models the counterfactual `TwoLevelSlashing.neglect` closure of
 /// validators that should be slashed for either (a) equivocating
 /// directly or (b) citing an equivocator's invalid block in their
 /// justifications without issuing a SlashDeploy.
@@ -148,10 +143,8 @@ pub fn oracle_slash(pos_state: &PoSState, validator: &str) -> (PoSState, SlashRe
 /// EquivocationRecord) and a citation graph mapping each block hash
 /// to (sender, justified_validators_with_records).
 ///
-/// The harness does not currently track the slash-deploy column, so
-/// this function captures only level-1 (direct) closure here. Level-2
-/// is exercised through `uc_04_neglect_two_level.rs` which extends
-/// the harness with explicit `record_neglect(...)` calls.
+/// This function returns the normative direct-evidence set. Counterfactual
+/// closure tests use explicit neglect-policy operations.
 pub fn oracle_neglect_closure_level_1(tracker: &EqRecordSet) -> BTreeSet<ValidatorId> {
     tracker.records.keys().map(|(v, _)| v.clone()).collect()
 }

@@ -11,7 +11,7 @@
 ' Source of truth for Figure 6.1 in slashing-specification.md.
 '
 ' Render:
-'   plantuml -tsvg docs/theory/slashing/diagrams/06-state-validator-lifecycle.puml
+'   plantuml -tsvg docs/casper/theory/slashing/diagrams/06-state-validator-lifecycle.puml
 
 @startuml 06-state-validator-lifecycle
 !theme plain

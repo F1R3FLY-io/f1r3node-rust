@@ -12,7 +12,7 @@ use models::rhoapi::{
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime};
-use rholang::rust::interpreter::system_processes::DeployData;
+use rholang::rust::interpreter::system_processes::{DeployAuthority, DeployData};
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -31,7 +31,7 @@ async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_id_and_
 
     let deploy_data = DeployData {
         timestamp,
-        deployer_id: key.clone(),
+        authority: DeployAuthority::Legacy(key.clone()),
         deploy_id: sig.clone(),
     };
 
