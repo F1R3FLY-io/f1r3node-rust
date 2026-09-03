@@ -90,7 +90,9 @@ fn ack_channel_hash(ack: &Par) -> [u8; 32] {
 /// its own sidecar key.  Both sides derive the same key from the
 /// shared ack channel + entry's canonical path:
 ///
-///     Blake2b256(ack_channel_hash(ack) || 0xFE || path_bytes)
+/// ```text
+/// Blake2b256(ack_channel_hash(ack) || 0xFE || path_bytes)
+/// ```
 ///
 /// The `0xFE` separator prevents accidental collision with the
 /// standard `ack_channel_hash(ack)` used for single-entry ops
