@@ -47,6 +47,7 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
+use crate::rspace::persistence::ContentTransition;
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -72,6 +73,7 @@ const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 pub(crate) struct PendingDeltas {
     pub data: Option<BagDelta>,
     pub continuations: Option<BagDelta>,
+    pub continuation_content: Option<PathMap<ContentTransition>>,
     pub joins: Option<BagDelta>,
 }
 
@@ -104,11 +106,15 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// Return normalized continuation-record path changes, or `None` when the
     /// implementation has no continuation journal capability.
     fn pending_continuation_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    fn pending_continuation_content(
+        &self,
+    ) -> Result<Option<PathMap<ContentTransition>>, RSpaceError>;
     /// Capture all supported revision-local journals as one store snapshot.
     fn pending_deltas(&self) -> Result<PendingDeltas, RSpaceError> {
         Ok(PendingDeltas {
             data: self.pending_data_delta()?,
             continuations: self.pending_continuation_delta()?,
+            continuation_content: self.pending_continuation_content()?,
             joins: self.pending_join_delta()?,
         })
     }
@@ -117,6 +123,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         &self,
         data: BagDelta,
         continuations: BagDelta,
+        continuation_content: PathMap<ContentTransition>,
         joins: BagDelta,
     ) -> Result<(), RSpaceError>;
     fn apply_accepted_match(
@@ -852,11 +859,25 @@ where
         ))
     }
 
+    fn pending_continuation_content(
+        &self,
+    ) -> Result<Option<PathMap<ContentTransition>>, RSpaceError> {
+        Ok(Some(
+            self.state
+                .read()
+                .expect("hot store state read lock")
+                .continuations
+                .pending_content()
+                .clone(),
+        ))
+    }
+
     fn pending_deltas(&self) -> Result<PendingDeltas, RSpaceError> {
         let state = self.state.read().expect("hot store state read lock");
         Ok(PendingDeltas {
             data: Some(state.data.pending_delta().clone()),
             continuations: Some(state.continuations.pending_delta().clone()),
+            continuation_content: Some(state.continuations.pending_content().clone()),
             joins: Some(state.joins.pending_delta().clone()),
         })
     }
@@ -865,11 +886,15 @@ where
         &self,
         data: BagDelta,
         continuations: BagDelta,
+        continuation_content: PathMap<ContentTransition>,
         joins: BagDelta,
     ) -> Result<(), RSpaceError> {
         let mut state = hot_state_write(&self.state);
         state.data.restore_pending_delta(data);
         state.continuations.restore_pending_delta(continuations);
+        state
+            .continuations
+            .restore_pending_content(continuation_content);
         state.joins.restore_pending_delta(joins);
         Ok(())
     }

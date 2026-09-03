@@ -26,6 +26,44 @@ use super::rho_path::{RhoPathEncode, RhoPathV1};
 use super::serializers::serializers::{
     encode_continuation_identity, encode_continuation_source_into, encode_join_record,
 };
+use crate::rspace::persistence::{
+    CanonicalBlob, CanonicalBlobKind, ContentTransition, ObjectRefV1,
+};
+
+fn continuation_source_ref(identity: &[u8], canonical: &[u8]) -> ObjectRefV1 {
+    let source = canonical
+        .get(identity.len()..)
+        .expect("a continuation record contains its complete identity prefix");
+    CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source.to_vec())
+        .expect("a continuation source payload is a valid canonical blob")
+        .object_ref()
+}
+
+fn record_content_transition(
+    journal: &mut PathMap<ContentTransition>,
+    path: &[u8],
+    before: Option<ObjectRefV1>,
+    after: Option<ObjectRefV1>,
+) {
+    if let Some(previous) = journal.get(path).copied() {
+        assert_eq!(previous.after(), before, "continuation journal transition is discontinuous");
+        if previous.before() == after {
+            journal.remove_val_at(path, true);
+        } else {
+            journal.insert(
+                path,
+                ContentTransition::new(previous.before(), after)
+                    .expect("a non-cancelled continuation transition is non-noop"),
+            );
+        }
+    } else if before != after {
+        journal.insert(
+            path,
+            ContentTransition::new(before, after)
+                .expect("a new continuation transition is non-noop"),
+        );
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RecordIndexError {
@@ -327,6 +365,7 @@ pub(crate) struct StoredRecord<R> {
     value: R,
     canonical_len: usize,
     orders: Arc<[u64]>,
+    source_ref: Option<ObjectRefV1>,
 }
 
 struct PendingRecord<R> {
@@ -335,6 +374,7 @@ struct PendingRecord<R> {
     value: R,
     canonical_len: usize,
     orders: Vec<u64>,
+    source_ref: Option<ObjectRefV1>,
 }
 
 impl<R> StoredRecord<R> {
@@ -433,6 +473,24 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         records: Vec<(Vec<u8>, Vec<u8>, R)>,
         preserve_duplicates: bool,
     ) -> Result<(), RecordIndexError> {
+        self.set_group_with_refs(
+            prefix,
+            key,
+            records
+                .into_iter()
+                .map(|(identity, canonical, value)| (identity, canonical, value, None))
+                .collect(),
+            preserve_duplicates,
+        )
+    }
+
+    fn set_group_with_refs(
+        &mut self,
+        prefix: &[u8],
+        key: Arc<[G]>,
+        records: Vec<(Vec<u8>, Vec<u8>, R, Option<ObjectRefV1>)>,
+        preserve_duplicates: bool,
+    ) -> Result<(), RecordIndexError> {
         let mut replacement = self.clone();
         if let Some(previous) = replacement.groups.remove(prefix) {
             replacement.remove_group_records(prefix, previous.len);
@@ -452,7 +510,9 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             .map_err(|_| RecordIndexError::AllocationFailure(total))?;
         let mut pending_records = PathMap::<usize>::new();
         let mut pending_identities = PathMap::<usize>::new();
-        for (index, (identity, canonical_bytes, value)) in records.into_iter().enumerate() {
+        for (index, (identity, canonical_bytes, value, source_ref)) in
+            records.into_iter().enumerate()
+        {
             let framed_len = (u64::BITS / 8) as u128 + canonical_bytes.len() as u128;
             let order = u64::try_from(total - index).map_err(|_| {
                 RecordIndexError::EncodedCardinalityOverflow((total - index) as u128)
@@ -497,6 +557,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
                 value,
                 canonical_len: canonical_bytes.len(),
                 orders: vec![order],
+                source_ref,
             });
             stored = stored
                 .checked_add(1)
@@ -513,6 +574,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
                 value: record.value,
                 canonical_len: record.canonical_len,
                 orders: record.orders.into(),
+                source_ref: record.source_ref,
             }));
         }
         replacement.groups.insert(
@@ -656,9 +718,17 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         identity: &[u8],
         canonical_bytes: Vec<u8>,
         value: R,
+        source_ref: Option<ObjectRefV1>,
     ) -> Result<bool, RecordIndexError> {
         let mut replacement = self.clone();
-        if !replacement.insert_in_place(prefix, key, identity, canonical_bytes, value)? {
+        if !replacement.insert_in_place(
+            prefix,
+            key,
+            identity,
+            canonical_bytes,
+            value,
+            source_ref,
+        )? {
             return Ok(false);
         }
         *self = replacement;
@@ -674,6 +744,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         identity: &[u8],
         canonical_bytes: Vec<u8>,
         value: R,
+        source_ref: Option<ObjectRefV1>,
     ) -> Result<bool, RecordIndexError> {
         if !self.is_loaded(prefix) {
             self.groups.insert(
@@ -725,6 +796,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             value,
             canonical_len: canonical_bytes.len(),
             orders: Arc::from([group.next_order]),
+            source_ref,
         };
         self.publish_record(Arc::new(record));
 
@@ -1044,6 +1116,7 @@ pub(crate) struct RSpaceContinuationStore<
     resting: OrderedGroupStore<C, WaitingContinuation<P, K>, true>,
     installed: PathMap<Arc<(Arc<[C]>, WaitingContinuation<P, K>)>>,
     pending_delta: BagDelta,
+    pending_content: PathMap<ContentTransition>,
 }
 
 impl<C, P, K> Default for RSpaceContinuationStore<C, P, K>
@@ -1057,6 +1130,7 @@ where
             resting: OrderedGroupStore::default(),
             installed: PathMap::new(),
             pending_delta: BagDelta::new(),
+            pending_content: PathMap::new(),
         }
     }
 }
@@ -1086,11 +1160,12 @@ where
                 let identity = encode_continuation_identity(&continuation);
                 let mut canonical = identity.clone();
                 encode_continuation_source_into(&continuation, &mut canonical);
-                (identity, canonical, continuation)
+                let source_ref = continuation_source_ref(&identity, &canonical);
+                (identity, canonical, continuation, Some(source_ref))
             })
             .collect();
         self.resting
-            .set_group(&prefix, Arc::from(channels), records, false)
+            .set_group_with_refs(&prefix, Arc::from(channels), records, false)
             .expect("typed continuation records must have an injective frozen encoding");
     }
 
@@ -1103,14 +1178,28 @@ where
     ) -> bool {
         let prefix = RhoPathV1::continuation_prefix(channels);
         let record_path = RhoPathV1::collection_record_path(&prefix, &canonical);
+        let source_ref = continuation_source_ref(&identity, &canonical);
         let inserted = self
             .resting
-            .insert(&prefix, Arc::from(channels), &identity, canonical, continuation)
+            .insert(
+                &prefix,
+                Arc::from(channels),
+                &identity,
+                canonical,
+                continuation,
+                Some(source_ref),
+            )
             .expect("typed continuation records must have an injective frozen encoding");
         if inserted {
             self.pending_delta
                 .record_addition(&record_path, Multiplicity::new(1).expect("one is nonzero"))
                 .expect("a successful continuation insertion is representable");
+            record_content_transition(
+                &mut self.pending_content,
+                &record_path,
+                None,
+                Some(source_ref),
+            );
         }
         inserted
     }
@@ -1149,6 +1238,9 @@ where
         channels: &[C],
         path: &[u8],
     ) -> Option<WaitingContinuation<P, K>> {
+        let record = self
+            .resting
+            .get_path(&RhoPathV1::continuation_prefix(channels), path);
         let removed = self
             .resting
             .remove_path(&RhoPathV1::continuation_prefix(channels), path);
@@ -1156,6 +1248,10 @@ where
             self.pending_delta
                 .record_removal(path, Multiplicity::new(1).expect("one is nonzero"))
                 .expect("a successful continuation removal is representable");
+            let source_ref = record
+                .and_then(|record| record.source_ref)
+                .expect("a continuation record carries its source reference");
+            record_content_transition(&mut self.pending_content, path, Some(source_ref), None);
         }
         removed
     }
@@ -1244,12 +1340,19 @@ where
 
     pub(crate) fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
+    pub(crate) fn pending_content(&self) -> &PathMap<ContentTransition> { &self.pending_content }
+
+    pub(crate) fn restore_pending_content(&mut self, content: PathMap<ContentTransition>) {
+        self.pending_content = content;
+    }
+
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
 
     pub(crate) fn clear(&mut self) {
         self.resting.clear();
         self.installed = PathMap::new();
         self.pending_delta = BagDelta::new();
+        self.pending_content = PathMap::new();
     }
 }
 
@@ -1320,6 +1423,7 @@ where C: Clone + RhoPathEncode + Send + Sync
                 &identity,
                 identity.clone(),
                 join.to_vec(),
+                None,
             )
             .expect("typed join records must have an injective frozen encoding");
         if inserted {
@@ -1341,6 +1445,7 @@ where C: Clone + RhoPathEncode + Send + Sync
                 &identity,
                 identity.clone(),
                 join.to_vec(),
+                None,
             )
             .expect("typed join records must have an injective frozen encoding")
     }
@@ -1549,9 +1654,17 @@ mod tests {
         assert!(store.put_prepared(&channels, value, identity, canonical));
         assert_eq!(store.pending_delta().additions().count(&path), 1);
         assert!(store.pending_delta().removals().is_empty());
+        let transition = store
+            .pending_content()
+            .get(&path)
+            .copied()
+            .expect("continuation content transition");
+        assert!(transition.before().is_none());
+        assert!(transition.after().is_some());
 
         assert!(store.remove_path(&channels, &path).is_some());
         assert!(store.pending_delta().is_empty());
+        assert!(store.pending_content().is_empty());
     }
 
     #[test]
