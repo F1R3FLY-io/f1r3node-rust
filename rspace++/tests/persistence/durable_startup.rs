@@ -262,6 +262,12 @@ fn read_authority_view_reopens_the_authenticated_catalog_state() {
         .expect("manifest lookup must be admitted")
         .expect("catalog manifest must be indexed");
     assert_eq!(manifest.len() as u64, view.manifest().encoded_len());
+    let missing = crate::rspace::persistence::ObjectDigest::from_array([0xA5; 32]);
+    assert!(
+        view.get_object_bounded(&missing, 1024)
+            .expect("an absent digest is a valid lookup result")
+            .is_none()
+    );
 }
 
 #[test]
