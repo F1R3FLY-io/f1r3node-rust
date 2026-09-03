@@ -1717,12 +1717,18 @@ mod tests {
         // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
         // Prior anchor: f120b393 (pre-Fs.revoke, 2026-09-02: 9c-iii Buffer
         //   pairwise-merge + PB-B-5 Buffer versioned URN + prior).
-        // 2026-09-03: Fs.revoke() ambient-authority off-switch adds
-        //   `fsRevokedP` module-level cell, initializer, revoke() method,
-        //   and gates on openFile/openDir/stdin/stdout/stderr.  New
-        //   FSERR_REVOKED (code 15) at the Rust layer.  Rholang source
+        // Prior anchor: c7884a9f (Fs.revoke ambient-authority off-switch,
+        //   2026-09-03).
+        // 2026-09-03: DD-RemoveDirReplyShape — Dir.rho::removeDir now
+        //   unwraps the native reply to `[true, nDeleted]` (success) or
+        //   `[false, code, msg, nDeletedBeforeError]` (failure) at the
+        //   Rholang boundary.  Native handler emits uniform count-carrying
+        //   shape on every code path (non-recursive, recursive Oracular,
+        //   recursive Consensus); the Consensus recursive branch keeps
+        //   the per-entry manifest at position 2/4 as an implementation-
+        //   side channel for R5(b) follower re-execution.  Dir.rho source
         //   change rolls the composed FsGenesis hash.
-        const EXPECTED: &str = "c7884a9ff11c220fed65fadfcbc5a9dc826ae7a57dc1b728d5f37227c0e0881a";
+        const EXPECTED: &str = "2040b957cd315fdc74c8dc2902c3e0d2321ab90a36c1a465e44de87d9d687e18";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

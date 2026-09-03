@@ -656,4 +656,76 @@ mod tests {
         );
         assert!(c < expected_removedir + 6000);
     }
+
+    /// DD-RemoveDirReplyShape (2026-09-03) closer: recursive Oracular
+    /// removeDir now charges per-entry supplement, symmetric with
+    /// Consensus recursive.  Before the shape change, the Oracular
+    /// recursive reply had no `nDeleted` slot and cost helper
+    /// returned 0 for that path — a hostile Oracular deploy could
+    /// delete a million-entry subtree for a flat 200-phlo cost.
+    /// Post-shape-change, `remove_dir_recursive` returns the count
+    /// and `extract_removedir_n_deleted` reads it from position 1
+    /// of the reply, so Oracular recursive bills `200 + 32 * n`
+    /// same as Consensus recursive.
+    ///
+    /// Test shape mirrors `fs_remove_dir_recursive_consensus_charges_
+    /// supplement_at_runtime` — same 4-entry subtree, same expected
+    /// cost, only the `cmode` arg differs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_remove_dir_recursive_oracular_charges_supplement_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        // Same 4-entry subtree as the Consensus version:
+        //   top/a.txt, top/nested/b.txt, top/nested, top.
+        std::fs::create_dir(root.join("top")).unwrap();
+        std::fs::write(root.join("top/a.txt"), b"").unwrap();
+        std::fs::create_dir(root.join("top/nested")).unwrap();
+        std::fs::write(root.join("top/nested/b.txt"), b"").unwrap();
+
+        let runtime = create_metered_runtime().await;
+        let term = format!(
+            r#"
+            new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`), r in {{
+              fsRemoveDir!("{root}", "top", true, "oracular", *r) |
+              for (@_reply <- r) {{ Nil }}
+            }}
+            "#,
+            root = root.display(),
+        );
+        let result = runtime
+            .evaluate(
+                &term,
+                Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                std::collections::HashMap::new(),
+                rand(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.errors.is_empty(),
+            "removeDir must complete cleanly; got errors: {:?}",
+            result.errors,
+        );
+        let c = result.cost.value;
+        let expected_removedir =
+            fs_remove_dir_cost(0).value + fs_remove_dir_per_entry_supplement_cost(4).value;
+        assert!(
+            c >= expected_removedir,
+            "DD-RemoveDirReplyShape (2026-09-03) DoS-closer regression: \
+             recursive Oracular removeDir on 4-entry subtree must charge at \
+             least {expected_removedir} (base {} + supplement for 4 = {}); \
+             got {c}.  Pre-shape-change, this path charged flat 200 (base \
+             only) regardless of subtree size — the DoS opening the shape \
+             change was designed to close.  A regression to that flat-200 \
+             pricing would fail this lower bound.",
+            fs_remove_dir_cost(0).value,
+            fs_remove_dir_per_entry_supplement_cost(4).value,
+        );
+        assert!(
+            c < expected_removedir + 6000,
+            "recursive-oracular removeDir consumed {c}, which is more than \
+             6000 above the expected {expected_removedir}.  Either harness \
+             overhead ballooned or a cost coefficient drifted."
+        );
+    }
 }

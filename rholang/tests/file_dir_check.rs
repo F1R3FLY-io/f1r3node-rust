@@ -462,16 +462,21 @@ fn with_libs(test_snippet: &str) -> String {
 
           // fs_removeDir — records (root, rel, recursive, cmode).
           // H-29-3 lift complete post-2026-08-26 slice 2: consensus
-          // succeeds.  The real handler's recursive Consensus path
-          // returns [true, [[path, kind], ...]] carrying a deletion
-          // manifest; this mock keeps the reply shape simple and
-          // returns [true] uniformly.  Manifest-shape observation is
-          // covered in fs_wal_spec.rs against the real handler.
+          // succeeds.  DD-RemoveDirReplyShape (2026-09-03): unified
+          // per-entry count `[true, nDeleted]` on every removeDir
+          // code path.  Mock returns `[true, 1]` (fake count of 1)
+          // regardless of `recursive`; Dir.rho's unwrap falls
+          // through to the pass-through arm for the 2-element
+          // shape.  Real handler's recursive Consensus path
+          // returns `[true, nDeleted, [[path, kind], ...]]` at the
+          // native layer; Dir.rho unwraps to `[true, nDeleted]`
+          // upward.  Manifest-shape observation is covered in
+          // fs_wal_spec.rs against the real handler.
           rmDirLog!([]) |
           contract fsRemoveDir(@root, @rel, @recursive, @cmode, ret) = {{
             for (@log <- rmDirLog) {{
               rmDirLog!(log ++ [(root, rel, recursive, cmode)]) |
-              ret!([true])
+              ret!([true, 1])
             }}
           }} |
 

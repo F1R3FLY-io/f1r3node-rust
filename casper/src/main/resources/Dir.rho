@@ -378,19 +378,26 @@ new Dir, rootP, cmodeP in {
         r /\ String => {
           match recursive {
             b /\ Bool => {
-              // H-29-3 lift slice 2 (2026-08-26): Consensus caps now
-              // supported.  Non-recursive Consensus emits a single
-              // RemoveDir WAL entry; recursive Consensus emits one
-              // WAL entry per subtree entry (RemoveFile / RemoveDir)
-              // in sorted post-order and packs the manifest into
-              // the reply so a follower on `is_replay` can journal
-              // symmetrically without a live filesystem walk.  Reply
-              // shape for recursive Consensus success:
-              //   [true, [[path1, "file"], [path2, "dir"], ...]]
-              // Recursive Consensus failure:
-              //   [false, code, msg, [[...manifest of successful]]]
-              // Non-recursive and Oracular replies unchanged
-              // ([true] / [false, code, msg]).
+              // DD-RemoveDirReplyShape (2026-09-03): unified per-entry-
+              // count reply.  Every removeDir code path (non-recursive,
+              // recursive Oracular, recursive Consensus) returns
+              // `[true, nDeleted]` on success and
+              // `[false, code, msg, nDeletedBeforeError]` on failure
+              // at the Rholang boundary.
+              //
+              // Consensus recursive additionally carries a per-entry
+              // manifest at the native layer for follower re-execution
+              // (R5(b) reply protocol): native returns
+              //   `[true, nDeleted, [[path, kind], ...]]`
+              //   `[false, code, msg, nDeleted, [[path, kind], ...]]`
+              // This method truncates the reply to the first 2 (success)
+              // or 4 (failure) elements before forwarding upward, so
+              // callers see a uniform shape regardless of cmode +
+              // recursive.
+              //
+              // Prior H-29-3-lift shape (surfaced the manifest at the
+              // Rholang boundary) was superseded by DD-RemoveDirReplyShape
+              // — see FIP §Dir.removeDir + design-decisions.md.
               for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
                 match params {
                   (canonRoot, subPath, dirMode, _fileCtor) => {
@@ -401,23 +408,33 @@ new Dir, rootP, cmodeP in {
                           for (@joined <- joinedCh) {
                             new retCh in {
                               fsRemoveDir!(canonRoot, joined, b, cmode, *retCh) |
-                              for (@reply <- retCh) { return!(reply) }
+                              for (@reply <- retCh) {
+                                // Unwrap the 5-element Consensus recursive
+                                // replies to the 4-element uniform failure
+                                // shape (or 2-element uniform success).
+                                match reply {
+                                  [true, n /\ Int, _manifest] => return!([true, n])
+                                  [false, code, msg, n /\ Int, _manifest] =>
+                                    return!([false, code, msg, n])
+                                  _ => return!(reply)
+                                }
+                              }
                             }
                           }
                         }
                       }
                       _ => return!([false, "FSERR_UNSUPPORTED",
-                        "removeDir requires \"rw\" Dir mode"])
+                        "removeDir requires \"rw\" Dir mode", 0])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
+                  _ => return!([false, "FSERR_IO", "root params malformed", 0])
                 }
               }
             }
-            _ => return!([false, "FSERR_BAD_ARG", "recursive must be a Bool"])
+            _ => return!([false, "FSERR_BAD_ARG", "recursive must be a Bool", 0])
           }
         }
-        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
+        _ => return!([false, "FSERR_BAD_ARG", "rel must be a String", 0])
       }
     } |
 

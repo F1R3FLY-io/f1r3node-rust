@@ -929,56 +929,54 @@ fn fs_entries_charges_supplement_on_both_branches() {
     );
 }
 
-/// **Slice 9b-iv follow-up pin — fs_remove_dir stays setup-only,
-/// pending reply-shape change.**
+/// **fs_remove_dir has full two-branch charge post
+/// DD-RemoveDirReplyShape (2026-09-03).**
 ///
-/// Narrowed 2026-08-25 (streaming-backing slice Step 8): the sibling
-/// `fs_entries_stream` deferral cleared when Steps 1-5 landed the
-/// real streaming backing via three new natives (`fs_entries_stream_open`
-/// / `_next` / `_close`), each of which now charges its own two-branch
-/// setup + per-entry supplement.  The arity-3 `fs_entries_stream`
-/// handler at handlers.rs:2450 remains as an FSERR_UNSUPPORTED stub
-/// for URN backward-compatibility but is no longer the pinned
-/// deferral — the runtime pin
-/// `fs_entries_stream_streams_five_children_charges_supplement_at_runtime`
-/// in `fileio_cost_runtime_spec.rs` now covers the streaming
-/// per-entry charge end-to-end.
+/// Superseded the pre-DD-RemoveDirReplyShape pin
+/// `remove_dir_charges_setup_only_pending_reply_shape_change`
+/// (which held the deferral while the reply shape lacked `nDeleted`).
+/// Post-shape-change, every removeDir code path — non-recursive
+/// (any cmode), recursive Oracular, recursive Consensus — returns
+/// `nDeleted` at position 1 of the success reply / position 3 of the
+/// failure reply.  Cost helpers (`fs_remove_dir_supplement_count` +
+/// `fs_remove_dir_supplement_count_from_previous`) read the count
+/// directly from the reply via `extract_removedir_n_deleted`; both
+/// leader (from fresh reply) and follower (from `previous`) derive
+/// the same value.  Oracular recursive now bills per-entry
+/// symmetrically with Consensus recursive, closing the DoS opening.
 ///
-/// `fs_remove_dir` is the remaining deferral: the recursive-remove
-/// reply is `[true]` on success with no count, so leader and replay
-/// have no shared value to derive `n` from.  Unblocking requires
-/// either (a) instrumenting `remove_dir_recursive` to count and
-/// threading the count into the reply as `[true, n_deleted]` (with
-/// Dir.rho + file_dir_check + fs_generator callers updated to accept
-/// the new shape), or (b) capping recursive removeDir at a fixed
-/// subtree entry budget and charging that flat.  Supplement helper
-/// `fs_remove_dir_per_entry_supplement_cost` is already exported by
-/// `costs.rs` so wiring is a one-line change once the blocker
-/// resolves.
-///
-/// This pin holds the deferral by requiring the exact `fs_remove_dir_cost(0)`
-/// call site.  A future PR that silently "upgrades" to
-/// `fs_remove_dir_cost(some_expression)` without also wiring the paired
-/// supplement on the reciprocal branch would trip this pin — forcing
-/// the author to either (a) revert, or (b) land the full two-branch
-/// pattern AND replace this pin with the
-/// `_charges_supplement_on_both_branches` shape (see the fs_entries
-/// pin above for the template).
+/// Pin shape: handler body must contain BOTH the setup call
+/// (`costs::fs_remove_dir_cost(0)`) AND the per-entry supplement call
+/// (`costs::fs_remove_dir_per_entry_supplement_cost(`) on both
+/// branches.  A single-branch charge (leader-only or replay-only) is
+/// a leader/follower consensus divergence trap.
 #[test]
-fn remove_dir_charges_setup_only_pending_reply_shape_change() {
+fn fs_remove_dir_charges_supplement_on_both_branches() {
     let src = include_str!("../src/rust/interpreter/io/handlers.rs");
     let signature_prefix = "    pub async fn fs_remove_dir(";
     let body = method_body(src, signature_prefix).expect("fs_remove_dir handler must exist");
-    let expected = "costs::fs_remove_dir_cost(0)";
+
     assert!(
-        body.contains(expected),
-        "slice 9b-iv deferred-charge regression: fs_remove_dir handler must \
-         charge `costs::fs_remove_dir_cost(0)` — setup weight only — pending \
-         reply-shape change to expose `n_deleted` for two-branch counting.  \
-         If you're landing the fix, wire the paired supplement charge \
-         (`costs::fs_remove_dir_per_entry_supplement_cost`) on BOTH branches \
-         (leader from fresh reply, replay from `previous`) AND replace this \
-         pin with the `_charges_supplement_on_both_branches` shape."
+        body.contains("costs::fs_remove_dir_cost(0)"),
+        "DD-RemoveDirReplyShape regression: fs_remove_dir must retain its \
+         setup-only `costs::fs_remove_dir_cost(0)` charge at handler entry \
+         — the per-entry supplement is layered on top, not a replacement."
+    );
+
+    let supplement_call = "costs::fs_remove_dir_per_entry_supplement_cost(";
+    let n_supplement = body.matches(supplement_call).count();
+    assert!(
+        n_supplement >= 2,
+        "DD-RemoveDirReplyShape regression: fs_remove_dir must charge \
+         `{supplement_call}` on BOTH the replay and leader branches \
+         (currently {n_supplement} call site(s)).  A single-branch \
+         charge is a leader/follower consensus divergence: the two \
+         validators compute different `authority_cost_witness.realized` \
+         values and reject each other's blocks.  Preserve two \
+         `reserve_incremental_primitive(costs::fs_remove_dir_per_entry_supplement_cost(n))?;` \
+         call sites — one after `if is_replay {{` extracts n from \
+         `previous`, one after the leader's `spawn_blocking` completes \
+         extracting n from the fresh reply."
     );
 }
 

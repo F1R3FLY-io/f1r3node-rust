@@ -296,7 +296,8 @@ in {{
     );
 }
 
-/// `Dir.removeDir("subdir", true)` on an rw-mode Dir returns `[true]`
+/// `Dir.removeDir("subdir", true)` on an rw-mode Dir returns
+/// `[true, nDeleted]` per DD-RemoveDirReplyShape (2026-09-03).
 /// AND the entire subdirectory subtree is gone from disk.  Seeds a
 /// two-file subdirectory so a non-recursive `unlinkat(AT_REMOVEDIR)`
 /// would fail with ENOTEMPTY — verifies the recursive walker is
@@ -343,8 +344,10 @@ in {{
     contract test_remove_dir_recursive(rhoSpec, _, ackCh) = {{
       for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
         for(@r <- @d!?("removeDir", "subdir", true)) {{
-          rhoSpec!("assert", (r, "==", [true]),
-            "Dir.removeDir('subdir', true) → [true]", *ackCh)
+          // DD-RemoveDirReplyShape: subdir contains 2 files + subdir itself
+          // = 3 filesystem entries removed.
+          rhoSpec!("assert", (r, "==", [true, 3]),
+            "Dir.removeDir('subdir', true) → [true, nDeleted=3]", *ackCh)
         }}
       }}
     }}

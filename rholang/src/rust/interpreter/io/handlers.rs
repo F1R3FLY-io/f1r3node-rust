@@ -227,19 +227,28 @@ unsafe fn unlink_manifest_entry(
     }
 }
 
-/// H-29-3 lift slice 2: parse the recursive-removeDir reply
-/// manifest into `(PathBuf, RemoveKind)` tuples.
+/// Post DD-RemoveDirReplyShape (2026-09-03): parse the recursive-
+/// removeDir reply manifest into `(PathBuf, RemoveKind)` tuples.
 ///
-/// Reply shapes:
-///   * `[true, [[path, kind], ...]]` — success with N deleted.
-///   * `[false, code, msg, [[path, kind], ...]]` — partial success
-///     followed by failure; the inner list contains only what was
-///     successfully deleted before the failing entry.
+/// Reply shapes (Consensus recursive only; other paths have no
+/// manifest and this returns an empty Vec):
+///   * `[true, nDeleted, [[path, kind], ...]]` — success.
+///   * `[false, code, msg, nDeletedBeforeError, [[path, kind], ...]]`
+///     — partial success followed by failure; the inner list
+///     contains only what was successfully deleted before the
+///     failing entry.
 ///
-/// Returns an empty Vec for any other shape (bare `[true]` from
-/// non-recursive Consensus, Oracular replies, error replies with
-/// no manifest, or malformed input).  The caller uses an empty
-/// Vec to mean "no per-entry journaling needed".
+/// Returns an empty Vec for any other shape (any 4-element non-
+/// Consensus-recursive reply, or malformed input).
+///
+/// Kept as `#[allow(dead_code)]` because the R5(b) follower reads
+/// its own manifest via `collect_recursive_manifest` rather than
+/// consuming the leader's, and cost accounting reads `nDeleted`
+/// directly from the reply via `extract_removedir_n_deleted`.
+/// The manifest still ships in the Consensus recursive reply as
+/// an implementation-side channel; keeping this parser lets
+/// diagnostics + future consumers extract it without re-walking.
+#[allow(dead_code)]
 fn extract_removedir_manifest(previous: &[Par]) -> Vec<(std::path::PathBuf, RemoveKind)> {
     let head = match previous.first() {
         Some(h) => h,
@@ -253,18 +262,18 @@ fn extract_removedir_manifest(previous: &[Par]) -> Vec<(std::path::PathBuf, Remo
         Some(models::rhoapi::expr::ExprInstance::EListBody(l)) => l,
         _ => return Vec::new(),
     };
-    // Manifest lives at index 1 (success) or 3 (failure).  Detect
-    // via the head bool.
+    // Manifest lives at index 2 (success) or 4 (failure) post
+    // DD-RemoveDirReplyShape.  Detect via the head bool.
     let ok_par = match outer.ps.first() {
         Some(p) => p,
         None => return Vec::new(),
     };
     let manifest_par = match RhoBoolean::unapply(ok_par) {
-        Some(true) => match outer.ps.get(1) {
+        Some(true) => match outer.ps.get(2) {
             Some(p) => p,
             None => return Vec::new(),
         },
-        Some(false) => match outer.ps.get(3) {
+        Some(false) => match outer.ps.get(4) {
             Some(p) => p,
             None => return Vec::new(),
         },
@@ -310,8 +319,35 @@ fn extract_removedir_manifest(previous: &[Par]) -> Vec<(std::path::PathBuf, Remo
     out
 }
 
-/// H-29-3 lift slice 2: build the `[true, [[path, kind], ...]]`
-/// success reply for a recursive removeDir on a Consensus cap.
+/// DD-RemoveDirReplyShape (2026-09-03): success reply carrying
+/// `nDeleted` at position 1.  Used by `fs_remove_dir` for
+/// non-recursive success (`[true, 1]`) and Oracular recursive
+/// success (`[true, n]`).  See design-decisions.md.
+fn ok_with_count(n_deleted: u64) -> Par {
+    list_par_2(bool_par_true(), RhoNumber::create_par(n_deleted as i64))
+}
+
+/// DD-RemoveDirReplyShape (2026-09-03): failure reply carrying
+/// `nDeletedBeforeError` at position 3.  Used by `fs_remove_dir`
+/// for non-recursive failure (n=0) and Oracular recursive failure
+/// (n = count-before-error).  See design-decisions.md.
+fn err_with_count(code: &str, msg: impl Into<String>, n_deleted: u64) -> Par {
+    let items = vec![
+        bool_par_false(),
+        RhoString::create_par(code.to_string()),
+        RhoString::create_par(msg.into()),
+        RhoNumber::create_par(n_deleted as i64),
+    ];
+    list_par_from(items)
+}
+
+/// DD-RemoveDirReplyShape (2026-09-03): success reply for a
+/// recursive removeDir on a Consensus cap.  Shape:
+/// `[true, nDeleted, [[path, kind], ...]]`.  `nDeleted` at
+/// position 1 (uniform with all other removeDir success shapes);
+/// the manifest at position 2 is the implementation-side channel
+/// for R5(b) follower re-execution.  Dir.rho unwraps to
+/// `[true, nDeleted]` at the Rholang boundary.
 fn ok_recursive_manifest(deleted: &[(std::path::PathBuf, RemoveKind)]) -> Par {
     let inner: Vec<Par> = deleted
         .iter()
@@ -323,12 +359,40 @@ fn ok_recursive_manifest(deleted: &[(std::path::PathBuf, RemoveKind)]) -> Par {
             )
         })
         .collect();
-    list_par_2(bool_par_true(), list_par_from(inner))
+    let items = vec![
+        bool_par_true(),
+        RhoNumber::create_par(deleted.len() as i64),
+        list_par_from(inner),
+    ];
+    list_par_from(items)
 }
 
-/// H-29-3 lift slice 2: build the
-/// `[false, code, msg, [[path, kind], ...]]` failure reply carrying
-/// the partial-success manifest for a recursive Consensus removeDir.
+/// DD-RemoveDirReplyShape (2026-09-03): early-failure reply picker
+/// for `fs_remove_dir`.  Non-recursive OR Oracular → 4-element
+/// `[false, code, msg, 0]`.  Consensus recursive → 5-element
+/// `[false, code, msg, 0, []]` (empty manifest, no deletions
+/// before this early error).  Used at pre-walk failure sites in
+/// both the leader and follower spawn_blocking closures where the
+/// walk didn't get far enough to have a partial manifest to report.
+fn early_err_for_remove_dir(
+    recursive: bool,
+    cmode: ConsensusMode,
+    code: &str,
+    msg: impl Into<String>,
+) -> Par {
+    if recursive && cmode == ConsensusMode::Consensus {
+        err_with_manifest(code, msg, &[])
+    } else {
+        err_with_count(code, msg, 0)
+    }
+}
+
+/// DD-RemoveDirReplyShape (2026-09-03): failure reply for a
+/// recursive removeDir on a Consensus cap.  Shape:
+/// `[false, code, msg, nDeletedBeforeError, [[path, kind], ...]]`.
+/// `nDeletedBeforeError` at position 3; manifest at position 4.
+/// Dir.rho unwraps to `[false, code, msg, nDeletedBeforeError]`
+/// at the Rholang boundary.
 fn err_with_manifest(
     code: &str,
     msg: impl Into<String>,
@@ -348,6 +412,7 @@ fn err_with_manifest(
         bool_par_false(),
         RhoString::create_par(code.to_string()),
         RhoString::create_par(msg.into()),
+        RhoNumber::create_par(deleted.len() as i64),
         list_par_from(inner),
     ];
     list_par_from(items)
@@ -379,59 +444,74 @@ fn bool_par_false() -> Par { Par::default().with_exprs(vec![RhoBoolean::create_e
 /// need the numeric FSERR code without a string round-trip.
 fn io_err_code_u32(e: &std::io::Error) -> u32 { fserr_to_code(io_err_code(e)) }
 
-/// H-29-3 lift follow-up (2026-08-27): count for the fs_remove_dir
-/// per-entry cost supplement (LEADER path — reply is the fresh
-/// syscall reply).
+/// Post DD-RemoveDirReplyShape (2026-09-03): read `nDeleted` from
+/// a removeDir reply Par.  Reads position 1 (success) or position 3
+/// (failure) — both indices carry the count uniformly across every
+/// removeDir code path (non-recursive, recursive Oracular, recursive
+/// Consensus).  Returns 0 for any malformed / non-list reply so
+/// cost accounting fails safe.
 ///
-/// Semantics (both sides must agree deterministically for D3):
-/// * `parsed = None` (arg-shape error before dispatch): 0.
-/// * Non-recursive (any cmode): 1 attempted entry — the target.
-/// * Recursive + Consensus: `len(reply.manifest)` — number of
-///   entries the leader actually deleted before returning.  Both
-///   success (`[true, [manifest]]`) and partial-failure
-///   (`[false, code, msg, [manifest]]`) shapes carry the manifest.
-/// * Recursive + Oracular: 0.  The Oracular reply doesn't carry a
-///   subtree count and we don't want to change the reply shape;
-///   both sides pick 0 based on args-visible `(recursive=true,
-///   cmode=Oracular)`.  Consequence: Oracular recursive removeDir
-///   under-charges relative to the true workload; documented as
-///   an Oracular-scope pricing choice ("per-validator local cost").
-fn fs_remove_dir_supplement_count(
-    parsed: &Option<(String, String, bool)>,
-    cmode: ConsensusMode,
-    reply: &Par,
-) -> u64 {
-    let Some((_, _, recursive)) = parsed else {
-        return 0;
+/// Superseded the pre-DD-RemoveDirReplyShape branch-on-
+/// (recursive, cmode) helpers `fs_remove_dir_supplement_count` +
+/// `_from_previous` which had to derive the count from the manifest
+/// (Consensus recursive only) or hard-code it (non-recursive = 1,
+/// Oracular recursive = 0).  Post-shape-change the reply itself is
+/// the canonical count source on every code path — including
+/// Oracular recursive, which now bills per-entry symmetrically
+/// with Consensus recursive.
+fn extract_removedir_n_deleted(reply: &Par) -> u64 {
+    let expr = match reply.exprs.first() {
+        Some(e) => e,
+        None => return 0,
     };
-    if !*recursive {
-        return 1;
+    let outer = match &expr.expr_instance {
+        Some(models::rhoapi::expr::ExprInstance::EListBody(l)) => l,
+        _ => return 0,
+    };
+    let ok_par = match outer.ps.first() {
+        Some(p) => p,
+        None => return 0,
+    };
+    let n_par = match RhoBoolean::unapply(ok_par) {
+        Some(true) => match outer.ps.get(1) {
+            Some(p) => p,
+            None => return 0,
+        },
+        Some(false) => match outer.ps.get(3) {
+            Some(p) => p,
+            None => return 0,
+        },
+        None => return 0,
+    };
+    match RhoNumber::unapply(n_par) {
+        Some(n) if n >= 0 => n as u64,
+        _ => 0,
     }
-    if cmode == ConsensusMode::Oracular {
-        return 0;
-    }
-    extract_removedir_manifest(std::slice::from_ref(reply)).len() as u64
 }
 
-/// Follower-path counterpart of `fs_remove_dir_supplement_count`.
-/// Same semantics but the count comes from `previous` instead of a
-/// fresh reply.  Split from the leader helper so callers can't
-/// accidentally slice-of-Par vs. Par-ref-swap the two.
+/// Leader-path cost supplement count — read from fresh reply Par.
+/// Post DD-RemoveDirReplyShape: single helper reads `nDeleted`
+/// directly from the reply on every code path.
+fn fs_remove_dir_supplement_count(
+    _parsed: &Option<(String, String, bool)>,
+    _cmode: ConsensusMode,
+    reply: &Par,
+) -> u64 {
+    extract_removedir_n_deleted(reply)
+}
+
+/// Follower-path counterpart — read from `previous[0]`.  Same
+/// helper; the split is preserved so callers can't accidentally
+/// slice-of-Par vs. Par-ref-swap.
 fn fs_remove_dir_supplement_count_from_previous(
-    parsed: &Option<(String, String, bool)>,
-    cmode: ConsensusMode,
+    _parsed: &Option<(String, String, bool)>,
+    _cmode: ConsensusMode,
     previous: &[Par],
 ) -> u64 {
-    let Some((_, _, recursive)) = parsed else {
-        return 0;
-    };
-    if !*recursive {
-        return 1;
+    match previous.first() {
+        Some(reply) => extract_removedir_n_deleted(reply),
+        None => 0,
     }
-    if cmode == ConsensusMode::Oracular {
-        return 0;
-    }
-    extract_removedir_manifest(previous).len() as u64
 }
 
 /// Cap on `fs_entries` output size — prevents a malicious caller pointing
@@ -3701,9 +3781,13 @@ impl FsProcesses {
         let cmode = match resolve_cmode(cmode_par) {
             Some(m) => m,
             None => {
-                let out = vec![err(
+                // DD-RemoveDirReplyShape: bad-cmode 4-element shape
+                // (recursive is unknown here; the generic count-
+                // carrying failure form is safe for Dir.rho unwrap).
+                let out = vec![err_with_count(
                     FSERR_BAD_ARG,
                     "cmode must be String \"oracular\" or \"consensus\"",
+                    0,
                 )];
                 produce(&out, ack).await?;
                 return Ok(out);
@@ -3746,7 +3830,10 @@ impl FsProcesses {
                         .await
                         .is_err()
                     {
-                        let out = vec![err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded")];
+                        // DD-RemoveDirReplyShape: non-recursive
+                        // Consensus WAL-cap failure — 4-element
+                        // count-carrying failure with n=0.
+                        let out = vec![err_with_count(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded", 0)];
                         produce(&out, ack).await?;
                         return Ok(out);
                     }
@@ -3766,7 +3853,10 @@ impl FsProcesses {
                             Ok(p) => p,
                             Err(qe) => {
                                 let (c, m) = quarantine_err_reply(&qe);
-                                return err(c, m);
+                                // DD-RemoveDirReplyShape: quarantine
+                                // failure in follower non-recursive
+                                // Consensus branch.
+                                return err_with_count(c, m, 0);
                             }
                         };
                         let target_dev_inode = target_dev_inode_at(&parent);
@@ -3778,9 +3868,10 @@ impl FsProcesses {
                         // spawned runtimes means both sides observe
                         // the same lock state).
                         if target_is_locked {
-                            return err(
+                            return err_with_count(
                                 FSERR_BUSY,
                                 "cannot remove: lock held on target (dev, inode)",
+                                0,
                             );
                         }
                         let rc = unsafe {
@@ -3791,14 +3882,20 @@ impl FsProcesses {
                             )
                         };
                         if rc == 0 {
-                            ok_bare()
+                            // DD-RemoveDirReplyShape: non-recursive success
+                            // deletes exactly one entry (the target itself).
+                            ok_with_count(1)
                         } else {
                             let e = std::io::Error::last_os_error();
-                            err(io_err_code(&e), io_msg_scrub(&e))
+                            // DD-RemoveDirReplyShape: non-recursive failure
+                            // → 0 entries deleted before the error.
+                            err_with_count(io_err_code(&e), io_msg_scrub(&e), 0)
                         }
                     })
                     .await
-                    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"));
+                    .unwrap_or_else(|_je| {
+                        err_with_count(FSERR_IO, "spawn_blocking task failed", 0)
+                    });
                     // Verify + finalize.
                     let supp_n =
                         fs_remove_dir_supplement_count_from_previous(&parsed, cmode, &previous);
@@ -3817,12 +3914,15 @@ impl FsProcesses {
                             return Ok(out);
                         }
                         Err(reason) => {
-                            let divergence_reply = err(
+                            // DD-RemoveDirReplyShape: non-recursive
+                            // Consensus divergence — 4-element failure.
+                            let divergence_reply = err_with_count(
                                 FSERR_CONSENSUS_DIVERGENCE,
                                 format!(
                                     "fs_remove_dir follower re-execute diverges from leader: \
                                      {reason}",
                                 ),
+                                0,
                             );
                             self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                             let out = vec![divergence_reply];
@@ -3888,7 +3988,10 @@ impl FsProcesses {
                             Ok(p) => p,
                             Err(qe) => {
                                 let (c, m) = quarantine_err_reply(&qe);
-                                return err(c, m);
+                                // DD-RemoveDirReplyShape: recursive Consensus
+                                // quarantine failure — 5-element with empty
+                                // manifest (walk didn't start).
+                                return err_with_manifest(c, m, &[]);
                             }
                         };
                         let target_dev_inode = target_dev_inode_at(&parent);
@@ -3896,9 +3999,10 @@ impl FsProcesses {
                             .map(|di| lock_registry.is_locked(di, (0, u64::MAX)))
                             .unwrap_or(false);
                         if target_is_locked {
-                            return err(
+                            return err_with_manifest(
                                 FSERR_BUSY,
                                 "cannot remove: lock held on target (dev, inode)",
+                                &[],
                             );
                         }
                         let canon_target =
@@ -3906,7 +4010,7 @@ impl FsProcesses {
                         let manifest = match collect_recursive_manifest(&canon_target) {
                             Ok(m) => m,
                             Err(e) => {
-                                return err(io_err_code(&e), io_msg_scrub(&e));
+                                return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &[]);
                             }
                         };
                         let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
@@ -3988,7 +4092,12 @@ impl FsProcesses {
                         ok_recursive_manifest(&deleted)
                     })
                     .await
-                    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"));
+                    .unwrap_or_else(|_je| {
+                        // DD-RemoveDirReplyShape: spawn_blocking task
+                        // failure on recursive Consensus path — 5-element
+                        // with empty manifest.
+                        err_with_manifest(FSERR_IO, "spawn_blocking task failed", &[])
+                    });
                     let supp_n = fs_remove_dir_supplement_count(&parsed, cmode, &fresh_reply);
                     self.metering.reserve_incremental_primitive(
                         costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
@@ -4000,12 +4109,15 @@ impl FsProcesses {
                             return Ok(out);
                         }
                         Err(reason) => {
-                            let divergence_reply = err(
+                            // DD-RemoveDirReplyShape: recursive Consensus
+                            // divergence — 5-element failure.
+                            let divergence_reply = err_with_manifest(
                                 FSERR_CONSENSUS_DIVERGENCE,
                                 format!(
                                     "fs_remove_dir recursive follower re-execute \
                                      diverges from leader: {reason}",
                                 ),
+                                &[],
                             );
                             let out = vec![divergence_reply];
                             produce(&out, ack).await?;
@@ -4069,7 +4181,10 @@ impl FsProcesses {
                             Ok(p) => p,
                             Err(qe) => {
                                 let (c, m) = quarantine_err_reply(&qe);
-                                return err(c, m);
+                                // DD-RemoveDirReplyShape: pre-walk quarantine
+                                // failure — shape picker picks 4- vs 5-element
+                                // based on (recursive, cmode).
+                                return early_err_for_remove_dir(recursive, cmode, c, m);
                             }
                         };
                     let target_dev_inode = target_dev_inode_at(&parent);
@@ -4080,7 +4195,9 @@ impl FsProcesses {
                     // slice 1 removeFile pattern).  Oracular + locked
                     // proceeds with a log-warn.
                     if cmode == ConsensusMode::Consensus && target_is_locked {
-                        return err(
+                        return early_err_for_remove_dir(
+                            recursive,
+                            cmode,
                             FSERR_BUSY,
                             "cannot remove: lock held on target (dev, inode)",
                         );
@@ -4141,7 +4258,8 @@ impl FsProcesses {
                                 ack_channel_hash(&ack_clone),
                             );
                             if e.is_err() {
-                                return err(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded");
+                                // Non-recursive Consensus WAL cap.
+                                return err_with_count(FSERR_QUOTA_EXCEEDED, "WAL cap exceeded", 0);
                             }
                         }
                         let rc = unsafe {
@@ -4152,7 +4270,9 @@ impl FsProcesses {
                             )
                         };
                         if rc == 0 {
-                            return ok_bare();
+                            // DD-RemoveDirReplyShape: non-recursive success
+                            // deletes exactly one entry (the target itself).
+                            return ok_with_count(1);
                         }
                         let e = std::io::Error::last_os_error();
                         if cmode == ConsensusMode::Consensus {
@@ -4163,15 +4283,22 @@ impl FsProcesses {
                                 },
                             );
                         }
-                        return err(io_err_code(&e), io_msg_scrub(&e));
+                        return err_with_count(io_err_code(&e), io_msg_scrub(&e), 0);
                     }
                     // Recursive path.
                     if cmode == ConsensusMode::Oracular {
                         // Oracular: existing readdir-loop unlinker, no
-                        // WAL, reply-shape unchanged.
+                        // WAL, count-carrying reply per
+                        // DD-RemoveDirReplyShape (2026-09-03).  The
+                        // walker now returns (n_deleted) on success
+                        // and (n_before_error, io_error) on partial
+                        // failure so we can bill per-entry cost
+                        // symmetrically with Consensus recursive.
                         match remove_dir_recursive(parent.as_raw_fd(), parent.leaf_ptr()) {
-                            Ok(()) => ok_bare(),
-                            Err(e) => err(io_err_code(&e), io_msg_scrub(&e)),
+                            Ok(n) => ok_with_count(n),
+                            Err((n_before, e)) => {
+                                err_with_count(io_err_code(&e), io_msg_scrub(&e), n_before)
+                            }
                         }
                     } else {
                         // Consensus + recursive: sorted-post-order walk
@@ -4186,7 +4313,10 @@ impl FsProcesses {
                         let manifest = match collect_recursive_manifest(&canon_target) {
                             Ok(m) => m,
                             Err(e) => {
-                                return err(io_err_code(&e), io_msg_scrub(&e));
+                                // DD-RemoveDirReplyShape: manifest-walk
+                                // failure on recursive Consensus (walk
+                                // didn't start → empty deleted list).
+                                return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &[]);
                             }
                         };
                         let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
@@ -4267,9 +4397,24 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
+                .unwrap_or_else(|_je| {
+                    // DD-RemoveDirReplyShape: shape picker based on
+                    // (recursive, cmode) so the reply-hash verify path
+                    // stays symmetric with the follower.
+                    early_err_for_remove_dir(
+                        recursive,
+                        cmode,
+                        FSERR_IO,
+                        "spawn_blocking task failed",
+                    )
+                })
             }
-            None => err(FSERR_BAD_ARG, "expected (String, String, Bool, String)"),
+            None => {
+                // DD-RemoveDirReplyShape: parsed=None means args are
+                // wrong-shape; recursive is unknown so pick the generic
+                // 4-element count-carrying failure.
+                err_with_count(FSERR_BAD_ARG, "expected (String, String, Bool, String)", 0)
+            }
         };
         // H-29-3 lift follow-up (2026-08-27): per-entry cost
         // supplement.  Non-recursive → 1 attempted entry.  Consensus
@@ -5931,7 +6076,21 @@ fn collect_recursive_manifest(
 /// Recursive symlink-safe rmdir.  Descends from `parent` into `leaf`
 /// (must be a directory; ELOOP if symlink), unlinks every entry, then
 /// removes the directory itself.
-fn remove_dir_recursive(parent_fd: libc::c_int, leaf: *const libc::c_char) -> std::io::Result<()> {
+/// Recursive removeDir walker used by the Oracular recursive branch
+/// of `fs_remove_dir`.  Post DD-RemoveDirReplyShape (2026-09-03),
+/// returns the count of filesystem entries actually deleted:
+/// `Ok(n)` on full success; `Err((n_before_error, io_error))` on
+/// partial failure where `n_before_error` is the count of entries
+/// successfully removed before the error terminated the walk.
+///
+/// The counter increments on every successful `unlinkat` — includes
+/// files, subdirectories (via nested recursive call return), and
+/// the final `AT_REMOVEDIR` for the target directory itself.
+fn remove_dir_recursive(
+    parent_fd: libc::c_int,
+    leaf: *const libc::c_char,
+) -> Result<u64, (u64, std::io::Error)> {
+    let mut n_deleted: u64 = 0;
     unsafe {
         let dir_fd = libc::openat(
             parent_fd,
@@ -5939,7 +6098,7 @@ fn remove_dir_recursive(parent_fd: libc::c_int, leaf: *const libc::c_char) -> st
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         );
         if dir_fd < 0 {
-            return Err(std::io::Error::last_os_error());
+            return Err((n_deleted, std::io::Error::last_os_error()));
         }
         // Dup dir_fd so we can readdir on one copy and use the other for
         // unlinkat.  L-3 fix (2026-08-06): F_DUPFD_CLOEXEC — see the
@@ -5948,14 +6107,14 @@ fn remove_dir_recursive(parent_fd: libc::c_int, leaf: *const libc::c_char) -> st
         if dup_fd < 0 {
             let e = std::io::Error::last_os_error();
             libc::close(dir_fd);
-            return Err(e);
+            return Err((n_deleted, e));
         }
         let dir = libc::fdopendir(dup_fd);
         if dir.is_null() {
             let e = std::io::Error::last_os_error();
             libc::close(dir_fd);
             libc::close(dup_fd);
-            return Err(e);
+            return Err((n_deleted, e));
         }
         loop {
             errno_reset();
@@ -5967,7 +6126,7 @@ fn remove_dir_recursive(parent_fd: libc::c_int, leaf: *const libc::c_char) -> st
                 }
                 libc::closedir(dir);
                 libc::close(dir_fd);
-                return Err(e);
+                return Err((n_deleted, e));
             }
             let name_ptr = (*ent).d_name.as_ptr();
             let name_c = std::ffi::CStr::from_ptr(name_ptr);
@@ -5978,28 +6137,35 @@ fn remove_dir_recursive(parent_fd: libc::c_int, leaf: *const libc::c_char) -> st
             // Try file first; if it's a directory, recurse.
             let file_rc = libc::unlinkat(dir_fd, name_ptr, 0);
             if file_rc == 0 {
+                n_deleted += 1;
                 continue;
             }
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::EISDIR) || e.raw_os_error() == Some(libc::EPERM) {
-                if let Err(inner) = remove_dir_recursive(dir_fd, name_ptr) {
-                    libc::closedir(dir);
-                    libc::close(dir_fd);
-                    return Err(inner);
+                match remove_dir_recursive(dir_fd, name_ptr) {
+                    Ok(inner_n) => {
+                        n_deleted = n_deleted.saturating_add(inner_n);
+                    }
+                    Err((inner_n, inner_e)) => {
+                        libc::closedir(dir);
+                        libc::close(dir_fd);
+                        return Err((n_deleted.saturating_add(inner_n), inner_e));
+                    }
                 }
                 continue;
             }
             libc::closedir(dir);
             libc::close(dir_fd);
-            return Err(e);
+            return Err((n_deleted, e));
         }
         libc::closedir(dir);
         libc::close(dir_fd);
         // Finally remove the directory itself.
         if libc::unlinkat(parent_fd, leaf, libc::AT_REMOVEDIR) < 0 {
-            return Err(std::io::Error::last_os_error());
+            return Err((n_deleted, std::io::Error::last_os_error()));
         }
-        Ok(())
+        n_deleted += 1;
+        Ok(n_deleted)
     }
 }
 

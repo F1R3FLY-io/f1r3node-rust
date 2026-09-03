@@ -63,6 +63,18 @@ relative paths) is a hard fork.
 
 Notable shape decisions currently in force:
 
+- **fs_remove_dir reply shape** (DD-RemoveDirReplyShape, 2026-09-03):
+  every code path returns `nDeleted` at position 1 (success) or
+  position 3 (failure).  Native shapes:
+    - Non-recursive: `[true, 1]` / `[false, code, msg, 0]`.
+    - Recursive Oracular: `[true, nDeleted]` / `[false, code, msg,
+      nDeletedBeforeError]`.
+    - Recursive Consensus: `[true, nDeleted, [[path, kind], ...]]` /
+      `[false, code, msg, nDeletedBeforeError, [[path, kind], ...]]`
+      — the manifest at position 2/4 is an implementation-side
+      channel for R5(b) follower re-execution; `Dir.rho`'s
+      `removeDir` method unwraps to the 2- or 4-element uniform
+      shape at the Rholang boundary.
 - **fs_remove_dir recursive manifest** (R5): relative paths from
   the requested removeDir root.  Follower walks its own subdir
   and produces byte-identical relative-path manifest for verify.
