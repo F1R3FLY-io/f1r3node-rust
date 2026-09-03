@@ -31,12 +31,16 @@ use crate::rspace::persistence::closure::{
     StructuralClosureLedgerV1, StructuralClosureReport, StructuralValidationLimits,
     verify_structural_closure_in_ledger_with_limits,
 };
+use crate::rspace::persistence::mutation::MutationBatchViewV1;
 use crate::rspace::persistence::retention::RetentionManifestView;
 use crate::rspace::persistence::semantic::{
     SemanticProfile, SemanticValidationLimits, SemanticValidationReport,
     SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
 };
 use crate::rspace::persistence::store::ImmutableObjectStore;
+use crate::rspace::persistence::transaction::{
+    DagTransactionError, DagTransactionLimits, OpenDagTransaction,
+};
 use crate::rspace::persistence::wal::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectPlanError, LogPackObjectPlanV1,
     LogPackSequence, PreparedLogPackTransactionV1, TerminalCommitViewV1,
@@ -1153,6 +1157,21 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
 
     pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
         self.source.retained_closure()
+    }
+
+    /// Open the checked transaction adapter over this exact admitted
+    /// authority. The returned transaction borrows the pinned indexed store,
+    /// so callers cannot detach it from the catalog token that authenticated
+    /// its base state.
+    pub(crate) fn open_transaction<'writer, 'mutation>(
+        &'writer self,
+        mutation: MutationBatchViewV1<'mutation>,
+        limits: DagTransactionLimits,
+    ) -> Result<
+        OpenDagTransaction<'writer, 'mutation, DurableIndexedObjectStoreV1, P>,
+        DagTransactionError<DurableObjectReadErrorV1>,
+    > {
+        OpenDagTransaction::new(self.source.verified_state(), mutation, limits)
     }
 
     pub(crate) fn get_object_bounded(
