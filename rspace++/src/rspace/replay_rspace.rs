@@ -352,21 +352,19 @@ where
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
         let curr_produce_counter =
             std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
-        let pending_data_delta = self
+        let pending = self
             .get_store()
-            .pending_data_delta()
-            .expect("replay hot store journal read")
+            .pending_deltas()
+            .expect("replay hot store journal snapshot");
+        let pending_data_delta = pending
+            .data
             .expect("replay hot store must expose a data journal for soft checkpoints");
-        let pending_join_delta = self
-            .get_store()
-            .pending_join_delta()
-            .expect("replay hot store join journal read")
-            .expect("replay hot store must expose a join journal for soft checkpoints");
-        let pending_continuation_delta = self
-            .get_store()
-            .pending_continuation_delta()
-            .expect("replay hot store continuation journal read")
+        let pending_continuation_delta = pending
+            .continuations
             .expect("replay hot store must expose a continuation journal for soft checkpoints");
+        let pending_join_delta = pending
+            .joins
+            .expect("replay hot store must expose a join journal for soft checkpoints");
 
         SoftCheckpoint {
             cache_snapshot,

@@ -62,6 +62,19 @@ const MAX_HISTORY_STORE_CACHE_JOIN_ITEMS: usize = 8192;
 const HOT_STORE_STATE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 const HOT_STORE_HISTORY_CACHE_METRICS_UPDATE_INTERVAL_MS: u64 = 250;
 
+/// Revision-local journals captured as one coherent hot-store observation.
+///
+/// The optional fields preserve the capability distinction: an implementation
+/// that cannot expose a namespace journal returns `None`, never an invented
+/// empty journal. Implementations with one shared state lock should override
+/// `HotStore::pending_deltas` to read all three roots under that lock.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PendingDeltas {
+    pub data: Option<BagDelta>,
+    pub continuations: Option<BagDelta>,
+    pub joins: Option<BagDelta>,
+}
+
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
 pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + Send {
     fn get_continuations(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>>;
@@ -91,6 +104,14 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// Return normalized continuation-record path changes, or `None` when the
     /// implementation has no continuation journal capability.
     fn pending_continuation_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    /// Capture all supported revision-local journals as one store snapshot.
+    fn pending_deltas(&self) -> Result<PendingDeltas, RSpaceError> {
+        Ok(PendingDeltas {
+            data: self.pending_data_delta()?,
+            continuations: self.pending_continuation_delta()?,
+            joins: self.pending_join_delta()?,
+        })
+    }
     /// Restore revision-local journals captured by a soft checkpoint.
     fn restore_pending_deltas(
         &self,
@@ -829,6 +850,15 @@ where
                 .pending_delta()
                 .clone(),
         ))
+    }
+
+    fn pending_deltas(&self) -> Result<PendingDeltas, RSpaceError> {
+        let state = self.state.read().expect("hot store state read lock");
+        Ok(PendingDeltas {
+            data: Some(state.data.pending_delta().clone()),
+            continuations: Some(state.continuations.pending_delta().clone()),
+            joins: Some(state.joins.pending_delta().clone()),
+        })
     }
 
     fn restore_pending_deltas(
