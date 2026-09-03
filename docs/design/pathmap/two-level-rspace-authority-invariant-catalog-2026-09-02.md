@@ -153,6 +153,8 @@ after refusal. `an_accepted_match_preserves_a_persistent_continuation` covers th
 successful lifecycle rule: persistent continuation and join state survive while the selected datum
 is consumed. `an_accepted_match_can_remove_the_selected_datum_and_publish_a_new_arrival` verifies
 the same atomic successor can remove the selected datum and publish a distinct fresh arrival.
+`a_datum_only_accepted_match_commits_without_a_continuation_capability` covers the optional-
+continuation branch and requires a committed datum-only successor.
 
 Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 

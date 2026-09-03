@@ -396,3 +396,37 @@ fn an_accepted_match_can_remove_the_selected_datum_and_publish_a_new_arrival() {
     assert_eq!(after.data.get(&channels[0]), Some(&vec![arrival]));
     assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 0);
 }
+
+#[test]
+fn a_datum_only_accepted_match_commits_without_a_continuation_capability() {
+    let channels = vec!["datum-only".to_owned()];
+    let datum = Datum::create(&channels[0], "payload".to_owned(), false);
+    let initial = HotStoreState {
+        continuations: HashMap::new(),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channels[0].clone(), vec![datum.clone()])]),
+        joins: HashMap::new(),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture removal fits u64");
+
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels,
+            continuation: None,
+            datum_delta,
+            required_persistent_paths: Vec::new(),
+            join_channels: Vec::new(),
+        })
+        .expect("datum-only transition is valid");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: None }));
+    assert_eq!(store.snapshot().data.values().map(Vec::len).sum::<usize>(), 0);
+}
