@@ -349,6 +349,55 @@ fn a_missing_required_persistent_path_is_stale_before_any_mutation() {
 }
 
 #[test]
+fn a_present_required_persistent_path_allows_the_atomic_transition() {
+    let channels = vec!["present-witness".to_owned()];
+    let selected_datum = Datum::create(&channels[0], "selected".to_owned(), false);
+    let witness = Datum::create(&channels[0], "witness".to_owned(), true);
+    let selected = continuation(11, "present-witness");
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(
+            channels[0].clone(),
+            vec![selected_datum.clone(), witness.clone()],
+        )]),
+        joins: HashMap::new(),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, _) = store.get_continuations_versioned(&channels);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &selected_datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture removal fits u64");
+
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: ContinuationAddress::new(version, 0),
+                source: selected.source.clone(),
+                persist: selected.persist,
+                peeks: selected.peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths: vec![Arc::from(
+                RSpaceDataIndex::datum_path(&channels[0], &witness),
+            )],
+            join_channels: Vec::new(),
+        })
+        .expect("the present witness authorizes the transition");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    let after = store.snapshot();
+    assert_eq!(after.data.get(&channels[0]), Some(&vec![witness]));
+    assert!(after.continuations.get(&channels).is_some_and(Vec::is_empty));
+}
+
+#[test]
 fn an_accepted_match_preserves_a_persistent_continuation() {
     let channels = vec!["persistent".to_owned()];
     let datum = Datum::create(&channels[0], "payload".to_owned(), false);
