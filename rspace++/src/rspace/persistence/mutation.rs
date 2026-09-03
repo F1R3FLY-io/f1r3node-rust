@@ -22,6 +22,7 @@ use super::canonical::{
     checked_len, checked_sum, parse_envelope, write_envelope_header, write_u64,
 };
 use super::manifest::SemanticNamespace;
+use crate::rspace::bag::{Bag, BagDelta};
 use crate::rspace::rho_path::{RhoPathError, RhoPathStreamValidatorV1, RhoPathV1};
 
 const MUTATION_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Mut\0\0\0";
@@ -967,6 +968,8 @@ pub enum MutationError {
         namespace: SemanticNamespace,
         source: RhoPathError,
     },
+    DeltaCountOverflow,
+    DeltaCountUnderflow,
 }
 
 impl Display for MutationError {
@@ -1014,6 +1017,12 @@ impl Display for MutationError {
             }
             Self::InvalidKey { namespace, source } => {
                 write!(formatter, "invalid {} mutation key: {source}", namespace.name())
+            }
+            Self::DeltaCountOverflow => {
+                formatter.write_str("BagDelta addition exceeds the u64 multiplicity domain")
+            }
+            Self::DeltaCountUnderflow => {
+                formatter.write_str("BagDelta removal exceeds the authoritative multiplicity")
             }
         }
     }
@@ -1093,6 +1102,32 @@ impl RSpaceMutationBatchV1 {
             .and_then(|()| record_count(&mut self.data, path, before, after));
         self.poisoned |= result.is_err();
         result
+    }
+
+    /// Record a data-root transition directly from an authoritative Bag and
+    /// its normalized PathMap delta.  The Bag remains the source of truth;
+    /// this method only emits exact compare-and-swap endpoints into the
+    /// mutation trie.  No entry projection or sorting is performed.
+    pub fn record_data_delta(
+        &mut self,
+        base: &Bag,
+        delta: &BagDelta,
+    ) -> Result<(), MutationError> {
+        for (path, amount) in delta.additions().iter() {
+            let before = base.count(&path);
+            let after = before
+                .checked_add(amount.get())
+                .ok_or(MutationError::DeltaCountOverflow)?;
+            self.record_data(&path, before, after)?;
+        }
+        for (path, amount) in delta.removals().iter() {
+            let before = base.count(&path);
+            let after = before
+                .checked_sub(amount.get())
+                .ok_or(MutationError::DeltaCountUnderflow)?;
+            self.record_data(&path, before, after)?;
+        }
+        Ok(())
     }
 
     pub fn record_join(
