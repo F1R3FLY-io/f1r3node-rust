@@ -251,7 +251,7 @@ mod batched_put_tests {
 
     use super::*;
 
-    fn open_env() -> Arc<Env> {
+    pub(super) fn open_env() -> Arc<Env> {
         let dir = tempfile::tempdir().unwrap();
         // Leak the tempdir path so the Env (and its mmap) stay valid for the
         // lifetime of the test; each test opens its own directory.
@@ -263,14 +263,14 @@ mod batched_put_tests {
         Arc::new(env)
     }
 
-    fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
+    pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some(name)).unwrap();
         wtxn.commit().unwrap();
         LmdbKeyValueStore::new(env.clone(), db)
     }
 
-    fn kv(pairs: &[(&str, &str)]) -> Vec<(ByteBuffer, ByteBuffer)> {
+    pub(super) fn kv(pairs: &[(&str, &str)]) -> Vec<(ByteBuffer, ByteBuffer)> {
         pairs
             .iter()
             .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
@@ -399,5 +399,164 @@ mod batched_put_tests {
 
         assert_eq!(a.get_one(&b"k1".to_vec()).unwrap(), Some(b"v1".to_vec()));
         assert_eq!(a.get_one(&b"k2".to_vec()).unwrap(), Some(b"v2".to_vec()));
+    }
+}
+
+#[cfg(test)]
+mod store_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::batched_put_tests::{kv, open_env, open_store};
+    use super::*;
+
+    fn seeded_store() -> LmdbKeyValueStore {
+        let store = open_store(&open_env(), "s");
+        store
+            .put(kv(&[("k1", "v1"), ("k2", "v2"), ("k3", "v3")]))
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn get_returns_values_in_key_order_with_none_for_missing() {
+        let store = seeded_store();
+        let results = store
+            .get(&vec![b"k2".to_vec(), b"missing".to_vec(), b"k1".to_vec()])
+            .unwrap();
+        assert_eq!(results, vec![
+            Some(b"v2".to_vec()),
+            None,
+            Some(b"v1".to_vec())
+        ]);
+    }
+
+    #[test]
+    fn put_overwrites_existing_keys() {
+        let store = seeded_store();
+        store.put(kv(&[("k1", "updated")])).unwrap();
+        assert_eq!(
+            store.get_one(&b"k1".to_vec()).unwrap(),
+            Some(b"updated".to_vec())
+        );
+    }
+
+    #[test]
+    fn put_one_if_absent_inserts_once_and_keeps_first_value() {
+        let store = open_store(&open_env(), "s");
+        assert!(store
+            .put_one_if_absent(b"k".to_vec(), b"first".to_vec())
+            .unwrap());
+        assert!(!store
+            .put_one_if_absent(b"k".to_vec(), b"second".to_vec())
+            .unwrap());
+        assert_eq!(
+            store.get_one(&b"k".to_vec()).unwrap(),
+            Some(b"first".to_vec())
+        );
+    }
+
+    #[test]
+    fn delete_returns_count_of_keys_actually_removed() {
+        let store = seeded_store();
+        let deleted = store
+            .delete(vec![b"k1".to_vec(), b"missing".to_vec(), b"k3".to_vec()])
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(store.get_one(&b"k1".to_vec()).unwrap(), None);
+        assert_eq!(
+            store.get_one(&b"k2".to_vec()).unwrap(),
+            Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn iterate_visits_every_entry() {
+        static VISITED: AtomicUsize = AtomicUsize::new(0);
+        fn visit(_key: ByteBuffer, _value: ByteBuffer) { VISITED.fetch_add(1, Ordering::SeqCst); }
+
+        let store = seeded_store();
+        store.iterate(visit).unwrap();
+        assert_eq!(VISITED.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn iterate_while_stops_when_callback_returns_false() {
+        let store = seeded_store();
+        let mut seen = Vec::new();
+        store
+            .iterate_while(&mut |key, _value| {
+                seen.push(key);
+                Ok(seen.len() < 2)
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn iterate_while_propagates_callback_errors() {
+        let store = seeded_store();
+        let result = store.iterate_while(&mut |_key, _value| {
+            Err(KvStoreError::InvalidArgument("boom".to_string()))
+        });
+        assert_eq!(
+            result,
+            Err(KvStoreError::InvalidArgument("boom".to_string()))
+        );
+    }
+
+    #[test]
+    fn to_map_and_print_store_reflect_all_entries() {
+        let store = seeded_store();
+        let map = store.to_map().unwrap();
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(b"k2".as_slice()), Some(&b"v2".to_vec()));
+        store.print_store().unwrap();
+    }
+
+    #[test]
+    fn non_empty_flips_when_first_entry_lands() {
+        let store = open_store(&open_env(), "s");
+        assert!(!store.non_empty().unwrap());
+        store.put_one(b"k".to_vec(), b"v".to_vec()).unwrap();
+        assert!(store.non_empty().unwrap());
+    }
+
+    #[test]
+    fn boxed_clone_shares_the_same_database() {
+        let store = seeded_store();
+        let boxed: Box<dyn KeyValueStore> = store.clone_box();
+        let cloned = boxed.clone();
+        assert_eq!(
+            cloned.get_one(&b"k1".to_vec()).unwrap(),
+            Some(b"v1".to_vec())
+        );
+        cloned.put_one(b"k4".to_vec(), b"v4".to_vec()).unwrap();
+        assert_eq!(
+            store.get_one(&b"k4".to_vec()).unwrap(),
+            Some(b"v4".to_vec())
+        );
+    }
+
+    #[test]
+    fn trait_contains_and_put_if_absent_defaults_work_through_lmdb() {
+        let store = seeded_store();
+        assert_eq!(
+            store
+                .contains(&vec![b"k1".to_vec(), b"missing".to_vec()])
+                .unwrap(),
+            vec![true, false]
+        );
+
+        store
+            .put_if_absent(kv(&[("k1", "clobbered"), ("k9", "fresh")]))
+            .unwrap();
+        assert_eq!(
+            store.get_one(&b"k1".to_vec()).unwrap(),
+            Some(b"v1".to_vec())
+        );
+        assert_eq!(
+            store.get_one(&b"k9".to_vec()).unwrap(),
+            Some(b"fresh".to_vec())
+        );
     }
 }

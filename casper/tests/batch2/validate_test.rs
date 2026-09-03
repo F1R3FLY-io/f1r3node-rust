@@ -1045,6 +1045,200 @@ async fn repeat_deploy_accepts_fresh_deploys_in_block_not_yet_inserted() {
     .await
 }
 
+/// Fast-path equivalence, repeat case: with the carrier index certified
+/// complete, a row hit routes to the exact scan and the repeat is flagged
+/// exactly as the uncertified path flags it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_still_flags_a_repeated_deploy() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let block1 = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![deploy]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result = Validate::repeat_deploy(&block1, &mut casper_snapshot, &block_store, 50, None);
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy))
+        );
+    })
+    .await
+}
+
+/// Fast-path equivalence, fresh case: with the carrier index certified
+/// complete, a fresh sig's absence proof skips the ancestor scan and the
+/// verdict stays Valid — identical to the uncertified path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_accepts_fresh_deploys() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![genesis.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut casper_snapshot = mk_casper_snapshot(dag);
+
+        let result =
+            Validate::repeat_deploy(&candidate, &mut casper_snapshot, &block_store, 50, None);
+        assert_eq!(result, Either::Right(ValidBlock::Valid));
+    })
+    .await
+}
+
+/// Fast-path soundness on the invalid-carrier gap that made the removed
+/// deploy_index fast path unportable: a sig carried ONLY by an INVALID
+/// ancestor is still a repeat (the ancestor scan reads bodies without a
+/// validity qualifier), and the certified index must reach the same
+/// verdict — the `CarriedInvalid` row routes the sig to the exact scan
+/// instead of proving absence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_still_flags_a_repeat_via_an_invalid_ancestor() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let carried = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let invalid_carrier = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![genesis.block_hash.clone()],
+            &genesis,
+            None,
+            None,
+            None,
+            Some(vec![carried.clone()]),
+            None,
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+        );
+
+        let candidate = build_block(
+            vec![invalid_carrier.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![carried]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut uncertified_snapshot = mk_casper_snapshot(dag);
+        let scan_verdict = Validate::repeat_deploy(
+            &candidate,
+            &mut uncertified_snapshot,
+            &block_store,
+            50,
+            None,
+        );
+        assert_eq!(
+            scan_verdict,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+            "the ancestor scan flags a repeat carried by an invalid ancestor"
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut certified_snapshot = mk_casper_snapshot(dag);
+        let index_verdict =
+            Validate::repeat_deploy(&candidate, &mut certified_snapshot, &block_store, 50, None);
+        assert_eq!(
+            index_verdict, scan_verdict,
+            "index-served and scan-served verdicts must be equal"
+        );
+    })
+    .await
+}
+
 /// The duplicate scan walks the block's ancestry, and a storage failure during
 /// that walk used to be swallowed: the expansion returned nothing, the walk ended
 /// early, and the block passed. So a DAG that cannot be read all the way down —
@@ -1123,6 +1317,104 @@ async fn repeat_deploy_validation_should_surface_a_storage_failure_not_admit_the
              reports the gap; whether this node may act on it is decided by the block \
              processor, which alone knows if its own history is cut short. Got {:?}",
             result
+        );
+    })
+    .await
+}
+
+/// Fast-path ENGAGEMENT pin: the three certified-index tests above assert
+/// verdicts that are identical whether the scan ran or was skipped, so a
+/// regression that silently disables the fast path would ship clean past
+/// them. This test makes the skip itself observable: the candidate's
+/// ancestry contains an unreadable parent, so the exact scan CANNOT
+/// succeed (the uncertified control below proves it errors) — a Valid
+/// verdict is therefore only reachable through the engaged absence proof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_certified_index_engagement_skips_the_scan() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let genesis_deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            Some(vec![genesis_deploy]),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // An ancestor the walk cannot expand sits between the candidate
+        // and genesis, so any scan of the candidate's ancestry fails.
+        let mid = create_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            vec![
+                genesis.block_hash.clone(),
+                Bytes::from(b"ancestor-absent-from-this-dag".to_vec()),
+            ],
+            &genesis,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let fresh_deploy = construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let candidate = build_block(
+            vec![mid.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![fresh_deploy]),
+            None,
+            None,
+            None,
+            Some(1),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut uncertified_snapshot = mk_casper_snapshot(dag);
+        let scan_verdict = Validate::repeat_deploy(
+            &candidate,
+            &mut uncertified_snapshot,
+            &block_store,
+            50,
+            None,
+        );
+        assert!(
+            matches!(scan_verdict, Either::Left(_)),
+            "control: with the fast path off, the unreadable ancestry must fail the scan; \
+             got {:?}",
+            scan_verdict
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        let mut certified_snapshot = mk_casper_snapshot(dag);
+        let result =
+            Validate::repeat_deploy(&candidate, &mut certified_snapshot, &block_store, 50, None);
+        assert_eq!(
+            result,
+            Either::Right(ValidBlock::Valid),
+            "a fresh sig's absence proof must skip the scan entirely — this Valid is \
+             unreachable through the scan path"
         );
     })
     .await

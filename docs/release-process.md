@@ -586,10 +586,10 @@ Implementation adds or changes these components.
 
 | Component | Change |
 |---|---|
-| `.github/workflows/ci.yml` | Add report-only per-crate line coverage to pull-request runs |
-| `.github/scripts/coverage-summary.sh` | Aggregate per-crate JSON summaries into one percentage table |
-| `.github/scripts/test-coverage-summary.sh` | Verify aggregation, weighted totals, and missing-report behavior |
-| `scripts/coverage.sh`, `Justfile` | Provide a local coverage command that mirrors CI |
+| `.github/workflows/ci.yml` | Run unit-test line coverage on pull requests and enforce the 80% gates |
+| `.github/scripts/coverage-summary.sh` | Enforce 80% line coverage for each crate and the weighted workspace total |
+| `.github/scripts/test-coverage-summary.sh` | Verify thresholds, weighted totals, and fail-closed missing-report behavior |
+| `scripts/coverage.sh`, `Justfile` | Provide a local unit-test coverage gate that mirrors CI |
 | `.github/workflows/canary-publish.yml` | Publish immutable canaries from tested CI artifacts on run completion |
 | `.github/workflows/release.yml` | Replace branch auto-bump behavior with exact-candidate promotion |
 | `.github/workflows/merge-recovery-soak.yml` | Add candidate image-digest mode and exact soak evidence |
@@ -622,7 +622,15 @@ flowchart TD
     SI --> TN["Test net<br/>soaking node becomes an Anchor"]
 ```
 
-Pull-request runs add a parallel coverage matrix after lint. The matrix measures each crate with cargo-llvm-cov and cargo-nextest. The summary job publishes percentages and retains JSON and LCOV artifacts for 30 days. Push and workflow-dispatch runs skip both coverage jobs. Therefore, candidate creation uses the same required full-CI gates as before.
+Pull-request runs add a parallel coverage matrix after lint. The matrix measures every in-crate test target with cargo-llvm-cov over nextest, the same runner as the test matrix. The measured denominator excludes src-shipped test scaffolding and node's process bootstrap and wiring (the exact file set is the shared regex in `scripts/coverage.sh` and ci.yml).
+
+The summary job requires 80% line coverage for each crate. The summary job also requires an 80% weighted workspace total.
+
+A missing or malformed crate report fails the summary job. The workflow retains JSON, LCOV, and summary artifacts for 30 days.
+
+Push and workflow-dispatch runs skip both coverage jobs. On pull requests, the required `Test (casper)` check also requires a successful `Coverage Summary` result.
+
+Add `Coverage Summary` directly to `devProtect` and `masterProtect` when the repository token has ruleset write access.
 
 A same-repository pull request can upload LCOV data to Codecov when a maintainer enables the integration. Fork pull requests skip Codecov and cannot access its token.
 

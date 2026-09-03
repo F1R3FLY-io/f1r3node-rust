@@ -574,6 +574,9 @@ pub mod test_helpers {
                 lifecycle: Arc::new(RwLock::new(
                     block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
                 )),
+                carrier_index: Arc::new(RwLock::new(
+                    block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
+                )),
             };
 
             CasperSnapshot::new(dag)

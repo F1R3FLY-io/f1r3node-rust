@@ -251,6 +251,14 @@ impl BlockMetadataStore {
         self.store.get_one(&BlockHashSerde(hash.clone()))
     }
 
+    /// Test-only corruption helper: deletes the persisted row while the
+    /// in-memory `dag_state` still lists the hash (simulates a DAG set /
+    /// metadata inconsistency for fail-closed tests).
+    #[doc(hidden)]
+    pub fn delete_kv_row_for_tests(&self, hash: &BlockHash) -> Result<(), KvStoreError> {
+        self.store.delete(vec![BlockHashSerde(hash.clone())])
+    }
+
     pub fn get_unsafe(&self, hash: &BlockHash) -> Result<BlockMetadata, KvStoreError> {
         self.get(hash)?.ok_or_else(|| {
             KvStoreError::KeyNotFound(format!(
@@ -418,5 +426,230 @@ impl BlockMetadataStore {
             });
 
         Self::validate_dag_state(dag_state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for `BlockMetadataStore` DAG state maintenance: index and
+    //! relation accessors, height-map exclusion of invalid blocks, finalized
+    //! ancestry marking with LFB advancement, monotone finality-target
+    //! updates, and restart recovery of in-memory state from persisted
+    //! metadata. Every test builds its store over an `InMemoryKeyValueStore`,
+    //! so no filesystem setup or teardown is required.
+
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
+    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
+
+    use super::*;
+
+    fn block(number: i64, parents: Vec<BlockHash>) -> BlockMessage {
+        get_random_block(
+            Some(number),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(parents),
+            Some(vec![]),
+            None,
+            None,
+            Some(vec![]),
+            None,
+            None,
+        )
+    }
+
+    fn meta(block: &BlockMessage) -> BlockMetadata {
+        BlockMetadata::from_block(block, false, None, None)
+    }
+
+    fn store_over(kv: Arc<InMemoryKeyValueStore>) -> BlockMetadataStore {
+        BlockMetadataStore::new(KeyValueTypedStoreImpl::new(kv))
+    }
+
+    #[test]
+    fn add_indexes_relations_and_accessors_expose_them() {
+        let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
+        let genesis = block(0, vec![]);
+        let mut child = block(1, vec![genesis.block_hash.clone()]);
+        child.justifications = vec![Justification {
+            validator: child.sender.clone(),
+            latest_block_hash: genesis.block_hash.clone(),
+        }];
+
+        store.add(meta(&genesis)).unwrap();
+        store.add(meta(&child)).unwrap();
+
+        assert!(store.contains(&genesis.block_hash));
+        assert!(store.contains(&child.block_hash));
+        assert!(!store.contains(&BlockHash::from(vec![0u8; 32])));
+        assert_eq!(store.dag_set().len(), 2);
+
+        let children = store.child_map().get(&genesis.block_hash).cloned().unwrap();
+        assert!(children.contains(&child.block_hash));
+        assert!(store.child_map().get(&child.block_hash).unwrap().is_empty());
+
+        assert!(store
+            .height_map()
+            .get(&0)
+            .unwrap()
+            .contains(&genesis.block_hash));
+        assert!(store
+            .height_map()
+            .get(&1)
+            .unwrap()
+            .contains(&child.block_hash));
+        assert_eq!(store.block_number_map().get(&child.block_hash), Some(&1));
+        assert_eq!(
+            store.main_parent_map().get(&child.block_hash),
+            Some(&genesis.block_hash)
+        );
+        assert_eq!(
+            store.self_justification_map().get(&child.block_hash),
+            Some(&genesis.block_hash)
+        );
+
+        assert_eq!(store.get(&child.block_hash).unwrap(), Some(meta(&child)));
+        assert_eq!(store.get_unsafe(&child.block_hash).unwrap(), meta(&child));
+        assert!(matches!(
+            store.get_unsafe(&BlockHash::from(vec![0u8; 32])),
+            Err(KvStoreError::KeyNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_blocks_stay_out_of_the_height_map() {
+        let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
+        let invalid = block(5, vec![]);
+        store
+            .add(BlockMetadata::from_block(&invalid, true, None, None))
+            .unwrap();
+
+        assert!(store.contains(&invalid.block_hash));
+        assert!(store.height_map().get(&5).is_none());
+    }
+
+    #[test]
+    fn record_finalized_marks_blocks_and_advances_the_lfb() {
+        let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
+        let genesis = block(0, vec![]);
+        let b1 = block(1, vec![genesis.block_hash.clone()]);
+        let b2 = block(2, vec![b1.block_hash.clone()]);
+        for b in [&genesis, &b1, &b2] {
+            store.add(meta(b)).unwrap();
+        }
+
+        store
+            .record_finalized(
+                b2.block_hash.clone(),
+                HashSet::from([genesis.block_hash.clone(), b1.block_hash.clone()]),
+                0.5,
+            )
+            .unwrap();
+
+        assert_eq!(store.last_finalized_block(), b2.block_hash);
+        let finalized = store.finalized_block_hashes();
+        for b in [&genesis, &b1, &b2] {
+            assert!(finalized.contains(&b.block_hash));
+            assert!(store.finalized_block_set().contains(&b.block_hash));
+        }
+
+        let b2_meta = store.get_unsafe(&b2.block_hash).unwrap();
+        assert!(b2_meta.finalized);
+        assert!(b2_meta.directly_finalized);
+        assert_eq!(b2_meta.fault_tolerance_value, 0.5);
+
+        let b1_meta = store.get_unsafe(&b1.block_hash).unwrap();
+        assert!(b1_meta.finalized);
+        assert!(!b1_meta.directly_finalized);
+        assert_eq!(b1_meta.fault_tolerance_value, 0.5);
+
+        store
+            .record_finalized(genesis.block_hash.clone(), HashSet::new(), 0.7)
+            .unwrap();
+        assert_eq!(
+            store.last_finalized_block(),
+            b2.block_hash,
+            "a lower-height finalization must not regress the LFB"
+        );
+        assert_eq!(
+            store
+                .get_unsafe(&genesis.block_hash)
+                .unwrap()
+                .fault_tolerance_value,
+            0.7
+        );
+    }
+
+    #[test]
+    fn update_ft_if_higher_only_raises() {
+        let mut store = store_over(Arc::new(InMemoryKeyValueStore::new()));
+        let genesis = block(0, vec![]);
+        store.add(meta(&genesis)).unwrap();
+        store
+            .record_finalized(genesis.block_hash.clone(), HashSet::new(), 0.5)
+            .unwrap();
+
+        store
+            .update_ft_if_higher(HashSet::from([genesis.block_hash.clone()]), 0.9)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_unsafe(&genesis.block_hash)
+                .unwrap()
+                .fault_tolerance_value,
+            0.9
+        );
+
+        store
+            .update_ft_if_higher(HashSet::from([genesis.block_hash.clone()]), 0.1)
+            .unwrap();
+        assert_eq!(
+            store
+                .get_unsafe(&genesis.block_hash)
+                .unwrap()
+                .fault_tolerance_value,
+            0.9
+        );
+    }
+
+    #[test]
+    fn restart_recreates_dag_state_from_persisted_metadata() {
+        let kv = Arc::new(InMemoryKeyValueStore::new());
+        let genesis = block(0, vec![]);
+        let b1 = block(1, vec![genesis.block_hash.clone()]);
+        {
+            let mut store = store_over(kv.clone());
+            store.add(meta(&genesis)).unwrap();
+            store.add(meta(&b1)).unwrap();
+            store
+                .record_finalized(
+                    b1.block_hash.clone(),
+                    HashSet::from([genesis.block_hash.clone()]),
+                    0.8,
+                )
+                .unwrap();
+        }
+
+        let restored = store_over(kv);
+        assert!(restored.contains(&genesis.block_hash));
+        assert!(restored.contains(&b1.block_hash));
+        assert_eq!(restored.last_finalized_block(), b1.block_hash);
+        assert!(restored.finalized_block_set().contains(&genesis.block_hash));
+        assert!(restored.finalized_block_set().contains(&b1.block_hash));
+        assert!(restored
+            .child_map()
+            .get(&genesis.block_hash)
+            .unwrap()
+            .contains(&b1.block_hash));
+        assert!(restored
+            .height_map()
+            .get(&1)
+            .unwrap()
+            .contains(&b1.block_hash));
     }
 }
