@@ -291,3 +291,58 @@ fn a_missing_required_persistent_path_is_stale_before_any_mutation() {
     assert_same_state(&before, &store.snapshot());
     assert_eq!(before_checkpoint, store.checkpoint_changes().expect("checkpoint projection"));
 }
+
+#[test]
+fn an_accepted_match_preserves_a_persistent_continuation() {
+    let channels = vec!["persistent".to_owned()];
+    let datum = Datum::create(&channels[0], "payload".to_owned(), false);
+    let selected = WaitingContinuation {
+        patterns: Arc::new(vec!["pattern-persistent".to_owned()]),
+        continuation: Arc::new("continuation-persistent".to_owned()),
+        persist: true,
+        peeks: BTreeSet::new(),
+        source: Consume {
+            channel_hashes: Vec::new(),
+            hash: Blake2b256Hash::from_bytes(vec![7; 32]),
+            persistent: true,
+        },
+    };
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channels[0].clone(), vec![datum.clone()])]),
+        joins: HashMap::from([(channels[0].clone(), vec![channels.clone()])]),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, loaded) = store.get_continuations_versioned(&channels);
+    assert_eq!(loaded, vec![selected.clone()]);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture multiplicity fits u64");
+
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: ContinuationAddress::new(version, 0),
+                source: selected.source.clone(),
+                persist: selected.persist,
+                peeks: selected.peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths: Vec::new(),
+            join_channels: channels.clone(),
+        })
+        .expect("the persistent transition is valid");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    let after = store.snapshot();
+    assert_eq!(after.data.values().map(Vec::len).sum::<usize>(), 0);
+    assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 1);
+    assert_eq!(after.joins.values().map(Vec::len).sum::<usize>(), 1);
+}

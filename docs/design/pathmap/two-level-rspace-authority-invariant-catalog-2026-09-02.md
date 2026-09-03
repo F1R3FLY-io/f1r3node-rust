@@ -149,7 +149,9 @@ evidence, but it is not yet the exhaustive generated differential required by th
 transaction capstone. `an_insufficient_datum_delta_is_stale_and_failure_atomic` and
 `a_missing_required_persistent_path_is_stale_before_any_mutation` add causal underflow and missing
 witness controls; both compare the complete hot-store state and checkpoint projection before and
-after refusal.
+after refusal. `an_accepted_match_preserves_a_persistent_continuation` covers the complementary
+successful lifecycle rule: persistent continuation and join state survive while the selected datum
+is consumed.
 
 Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 
