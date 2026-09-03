@@ -1782,3 +1782,50 @@ fn read_optional_ref(cursor: &mut ReadCursor<'_>) -> Result<Option<ObjectRefV1>,
         tag => Err(MutationError::InvalidPresenceTag(tag)),
     }
 }
+
+#[cfg(test)]
+mod bag_delta_tests {
+    use super::*;
+    use crate::rspace::bag::Multiplicity;
+
+    fn state() -> StateVersionV1 {
+        let digest = ObjectDigest::from_array([7; OBJECT_DIGEST_LEN]);
+        let manifest = ObjectRefV1::new(digest, OBJECT_ENVELOPE_HEADER_LEN).unwrap();
+        StateVersionV1::new(7, manifest)
+    }
+
+    fn key(label: &[u8]) -> Vec<u8> { RhoPathV1::datum_key(&7_u64, b"shape", label) }
+
+    #[test]
+    fn conversion_emits_exact_authoritative_endpoints() {
+        let path = key(b"delta");
+        let mut base = Bag::new();
+        base.insert_many(&path, Multiplicity::new(2).unwrap())
+            .unwrap();
+        let mut delta = BagDelta::new();
+        delta
+            .record_addition(&path, Multiplicity::new(3).unwrap())
+            .unwrap();
+
+        let mut batch = RSpaceMutationBatchV1::new(state()).unwrap();
+        batch.record_data_delta(&base, &delta).unwrap();
+        let transition = batch.data_transition(&path).unwrap();
+        assert_eq!(transition.before(), 2);
+        assert_eq!(transition.after(), 5);
+    }
+
+    #[test]
+    fn conversion_rejects_removal_beyond_authoritative_multiplicity() {
+        let path = key(b"underflow");
+        let mut delta = BagDelta::new();
+        delta
+            .record_removal(&path, Multiplicity::new(1).unwrap())
+            .unwrap();
+
+        let mut batch = RSpaceMutationBatchV1::new(state()).unwrap();
+        assert_eq!(
+            batch.record_data_delta(&Bag::new(), &delta),
+            Err(MutationError::DeltaCountUnderflow)
+        );
+    }
+}
