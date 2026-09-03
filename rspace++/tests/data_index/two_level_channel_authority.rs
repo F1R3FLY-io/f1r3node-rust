@@ -139,6 +139,33 @@ fn candidate_availability_shares_the_channel_bag_anchor() {
 }
 
 #[test]
+fn empty_catalog_is_distinct_and_unrelated_channels_do_not_supply_candidates() {
+    let empty = "catalog-empty".to_owned();
+    let populated = "catalog-populated".to_owned();
+    let value = datum(12);
+    let mut store = RSpaceDataStore::new();
+    store.set_channel(empty.clone(), []).unwrap();
+    store.set_channel(populated.clone(), [value.clone()]).unwrap();
+
+    let empty_pool = store
+        .channel_pool(&empty)
+        .unwrap()
+        .expect("a loaded empty channel has an explicit candidate catalog");
+    assert!(empty_pool.is_empty());
+    assert_eq!(empty_pool.stored_availability().distinct_len(), 0);
+    assert_eq!(empty_pool.stored_availability().cardinality(), 0);
+    assert!(empty_pool.candidate(0).is_none());
+
+    let populated_pool = store
+        .channel_pool(&populated)
+        .unwrap()
+        .expect("the populated channel has a candidate catalog");
+    assert_eq!(populated_pool.stored_availability().count(&RSpaceDataIndex::relative_datum_path(&value)), 1);
+    assert_eq!(populated_pool.candidate(0).map(|(datum, _)| datum), Some(&value));
+    assert_eq!(store.loaded_channel_count(), 2);
+}
+
+#[test]
 fn incremental_catalog_updates_retain_the_authoritative_inner_anchor() {
     let channel = "incremental-catalog".to_owned();
     let channel_marker = marker(&channel);
