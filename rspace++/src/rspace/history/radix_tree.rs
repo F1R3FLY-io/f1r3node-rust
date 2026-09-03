@@ -1676,7 +1676,33 @@ impl RadixTreeImpl {
 
     pub fn print_tree(&self, node: &Node, prefix: Vec<u8>) -> Result<String, RadixTreeError> {
         let mut output = String::new();
-        for item in node.iter() {
+        // Keep diagnostic traversal stack-safe for arbitrarily deep history
+        // chains. The explicit worklist preserves the original depth-first,
+        // byte-slot order without relying on the native call stack.
+        struct PrintFrame {
+            node: Node,
+            prefix: Vec<u8>,
+            next_item: usize,
+        }
+
+        let mut work = vec![PrintFrame {
+            node: node.clone(),
+            prefix,
+            next_item: 0,
+        }];
+        while !work.is_empty() {
+            if work.last().expect("non-empty print worklist").next_item ==
+                work.last().expect("non-empty print worklist").node.len()
+            {
+                work.pop();
+                continue;
+            }
+            let (item, current_prefix) = {
+                let frame = work.last_mut().expect("non-empty print worklist");
+                let item = frame.node[frame.next_item].clone();
+                frame.next_item += 1;
+                (item, frame.prefix.clone())
+            };
             match item {
                 Item::EmptyItem => {
                     // Skip empty items
@@ -1685,7 +1711,7 @@ impl RadixTreeImpl {
                     prefix: leaf_prefix,
                     value,
                 } => {
-                    let full_prefix = [prefix.clone(), leaf_prefix.clone()].concat();
+                    let full_prefix = [current_prefix, leaf_prefix].concat();
                     let prefix_str = format!("{:02X?}", full_prefix);
                     let value_str = format!("{:02X?}", value);
                     output.push_str(&format!("Leaf at prefix:{}: data: {}", prefix_str, value_str));
@@ -1694,7 +1720,7 @@ impl RadixTreeImpl {
                     prefix: node_prefix,
                     ptr,
                 } => {
-                    let full_prefix = [prefix.clone(), node_prefix.clone()].concat();
+                    let full_prefix = [current_prefix, node_prefix].concat();
                     let prefix_str = format!("{:02X?}", full_prefix);
                     output.push_str(&format!("NodePtr at {}: ", prefix_str));
 
@@ -1710,7 +1736,11 @@ impl RadixTreeImpl {
                                     "Radix Tree: Failed to deserialize".to_string(),
                                 )
                             })?;
-                            output.push_str(&self.print_tree(&child_node, full_prefix)?);
+                            work.push(PrintFrame {
+                                node: child_node,
+                                prefix: full_prefix,
+                                next_item: 0,
+                            });
                         }
                     }
                 }
