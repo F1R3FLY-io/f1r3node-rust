@@ -45,5 +45,6 @@ theories/TwoLevelRSpaceContinuationAuthorityMutants.v
 theories/TwoLevelRSpaceMatchPreparation.v
 theories/TwoLevelRSpaceMatchTransaction.v
 theories/TwoLevelRSpaceMatchTransactionMutants.v
+theories/TwoLevelRSpaceCurrentPublication.v
 theories/TwoLevelRSpaceCheckpointRecovery.v
 theories/TwoLevelRSpaceCheckpointRecoveryMutants.v
