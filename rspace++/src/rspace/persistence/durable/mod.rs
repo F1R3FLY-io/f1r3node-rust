@@ -58,7 +58,7 @@ pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, Durabl
 pub use pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
 pub(crate) use publication::{
     GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
-    IncrementalAppendErrorV1, append_incremental_prepare_and_index,
+    IncrementalAppendErrorV1, IncrementalPublicationErrorV1, append_incremental_prepare_and_index,
 };
 #[cfg(test)]
 pub(crate) use publication::{

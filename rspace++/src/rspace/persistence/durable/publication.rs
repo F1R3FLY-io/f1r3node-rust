@@ -39,7 +39,8 @@ use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GenerationCheckpointCommitRecordV1,
     GenerationCheckpointPrepareIdentityV1, GenerationCheckpointPrepareWriteErrorV1, LogPackAddress,
     LogPackDecodeLimits, LogPackFormatError, LogPackWriteError, PackId, PrepareRecordIdentityV1,
-    PreparedGenerationCheckpointV1, PreparedLogPackTransactionV1,
+    PreparedGenerationCheckpointV1, PreparedLogPackTransactionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
+    TransactionCommitRecordV1,
 };
 
 #[cfg(test)]
@@ -241,6 +242,39 @@ pub(crate) enum IncrementalAppendErrorV1 {
     Io(DurableIoError),
     LogPack(Box<LogPackFormatError>),
     Index(Box<IndexFormatError>),
+}
+
+#[derive(Debug)]
+pub(crate) enum IncrementalPublicationErrorV1 {
+    Append(IncrementalAppendErrorV1),
+    Io(DurableIoError),
+    LogPack(Box<LogPackFormatError>),
+    Durable(Box<super::DurableFormatError>),
+    CatalogCompareAndSwap,
+    PublishedCatalogDirectory(DurableIoError),
+    PublishedRecovery(Box<DurableStartupErrorV1>),
+    PublishedAdmission(Box<DurableAdmissionErrorV1>),
+    BaseStateMismatch {
+        expected: crate::rspace::persistence::StateVersionV1,
+        actual: crate::rspace::persistence::StateVersionV1,
+    },
+    ProfileMismatch,
+}
+
+impl From<IncrementalAppendErrorV1> for IncrementalPublicationErrorV1 {
+    fn from(error: IncrementalAppendErrorV1) -> Self { Self::Append(error) }
+}
+
+impl From<DurableIoError> for IncrementalPublicationErrorV1 {
+    fn from(error: DurableIoError) -> Self { Self::Io(error) }
+}
+
+impl From<LogPackFormatError> for IncrementalPublicationErrorV1 {
+    fn from(error: LogPackFormatError) -> Self { Self::LogPack(Box::new(error)) }
+}
+
+impl From<super::DurableFormatError> for IncrementalPublicationErrorV1 {
+    fn from(error: super::DurableFormatError) -> Self { Self::Durable(Box::new(error)) }
 }
 
 impl From<DurableIoError> for IncrementalAppendErrorV1 {
@@ -661,6 +695,98 @@ fn prepare_and_write_successor_generation<P: SemanticProfile>(
 }
 
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+    /// Publish one sealed transaction into the active generation. The old
+    /// authority remains the recovery source until the catalog CAS succeeds.
+    pub(crate) fn publish_incremental_transaction_v1(
+        self,
+        prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+        recovery_limits: DurableLimits,
+        wal_limits: LogPackDecodeLimits,
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, IncrementalPublicationErrorV1> {
+        let (mut lease, source) = self.into_parts();
+        let authority = source.authority().clone();
+        let current = authority.slot();
+        let receipt = prepared.receipt();
+        if receipt.base() != current.state() {
+            return Err(IncrementalPublicationErrorV1::BaseStateMismatch {
+                expected: current.state(),
+                actual: receipt.base(),
+            });
+        }
+        if receipt.profile_id() != P::ID {
+            return Err(IncrementalPublicationErrorV1::ProfileMismatch);
+        }
+
+        let (prepare_address, prepare_identity, index_tail) =
+            append_incremental_prepare_and_index(&mut lease, current, prepared)?;
+        let commit_address = LogPackAddress::from_pack(
+            prepare_address.pack_id(),
+            prepare_address.end(),
+            TRANSACTION_COMMIT_RECORD_LEN_V1,
+        )?;
+        let retained_bytes = current
+            .pack()
+            .retained_canonical_bytes()
+            .checked_add(prepared.inline_object_bytes())
+            .ok_or(LogPackFormatError::ByteInventory {
+                current_state: prepared.current_state_canonical_bytes(),
+                retained: u64::MAX,
+            })?;
+        let publication = crate::rspace::persistence::CommitPublicationV1::new(
+            current.pack().first_live_pack(),
+            current.pack().index_generation(),
+            index_tail,
+            current.pack().retention_manifest(),
+            prepared.current_state_canonical_bytes(),
+            retained_bytes,
+        )?;
+        let commit = TransactionCommitRecordV1::new(
+            receipt,
+            current.store_id(),
+            current.commit_digest(),
+            prepare_address,
+            prepare_identity,
+            publication,
+        )?;
+        {
+            let mut pack = lease.open_pack(prepare_address.pack_id())?;
+            pack.require_length(FileLengthExpectation::Exact(prepare_address.end()))?;
+            pack.write_all_at(prepare_address.end(), commit.canonical_bytes())?;
+            pack.require_length(FileLengthExpectation::Exact(commit_address.end()))?;
+            pack.sync_all()?;
+        }
+        lease.sync_directory()?;
+
+        let pack = CatalogPackStateV1::new(
+            current.pack().first_live_pack(),
+            current.pack().active_pack(),
+            commit_address.end(),
+            current.pack().index_generation(),
+            index_tail,
+            publication.retention_manifest(),
+            publication.current_state_canonical_bytes(),
+            publication.retained_canonical_bytes(),
+        )?;
+        let successor = current.successor(
+            current.state(),
+            receipt.target(),
+            commit.digest(),
+            prepare_identity.sequence(),
+            commit_address,
+            pack,
+        )?;
+        let successor_image = authority.successor_image(successor)?;
+        publish_catalog_slot_compare_and_swap(&mut lease, &authority, successor_image)?;
+        lease
+            .sync_catalog_directory()
+            .map_err(IncrementalPublicationErrorV1::PublishedCatalogDirectory)?;
+        let physical = recover_physical_with_lease_v1(lease, recovery_limits, wal_limits)
+            .map_err(|error| IncrementalPublicationErrorV1::PublishedRecovery(Box::new(error)))?;
+        admit_physical_writer::<P>(physical, admission_limits)
+            .map_err(|error| IncrementalPublicationErrorV1::PublishedAdmission(Box::new(error)))
+    }
+
     pub(crate) fn publish_generation_checkpoint_v1(
         self,
         recovery_limits: DurableLimits,
@@ -959,4 +1085,31 @@ fn publish_catalog_compare_and_swap(
     catalog
         .sync_catalog_all()
         .map_err(GenerationCheckpointPublicationErrorV1::CatalogCommitIndeterminate)
+}
+
+fn publish_catalog_slot_compare_and_swap(
+    lease: &mut DurableWriterLeaseV1,
+    authority: &CatalogAuthorityTokenV1,
+    successor_image: [u8; CATALOG_IMAGE_LEN],
+) -> Result<(), IncrementalPublicationErrorV1> {
+    let mut catalog = lease.open_catalog()?;
+    let observed = catalog.read_catalog_image()?;
+    if !authority.matches_exactly(&observed) {
+        return Err(IncrementalPublicationErrorV1::CatalogCompareAndSwap);
+    }
+    let inactive = match authority.selection().inactive_slot_index() {
+        0 => CatalogSlotIndexV1::First,
+        1 => CatalogSlotIndexV1::Second,
+        _ => unreachable!("a two-slot catalog has exactly two slot indices"),
+    };
+    let offset = authority.selection().inactive_slot_index() * CATALOG_SLOT_LEN;
+    let slot: &[u8; CATALOG_SLOT_LEN] = successor_image[offset..offset + CATALOG_SLOT_LEN]
+        .try_into()
+        .expect("successor image contains one exact inactive catalog slot");
+    catalog
+        .write_catalog_slot(inactive, slot)
+        .map_err(IncrementalPublicationErrorV1::Io)?;
+    catalog
+        .sync_catalog_all()
+        .map_err(IncrementalPublicationErrorV1::Io)
 }

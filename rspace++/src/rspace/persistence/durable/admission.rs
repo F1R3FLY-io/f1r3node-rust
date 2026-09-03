@@ -1143,6 +1143,10 @@ impl std::fmt::Display for DurableTransactionPreparationError {
 impl std::error::Error for DurableTransactionPreparationError {}
 
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
+    pub(crate) fn into_parts(self) -> (DurableWriterLeaseV1, AdmittedCheckpointSourceV1<P>) {
+        (self.lease, self.source)
+    }
+
     pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         self.source.verified_state()
     }
