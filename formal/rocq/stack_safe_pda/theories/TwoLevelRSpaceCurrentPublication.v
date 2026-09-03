@@ -91,6 +91,11 @@ Record CurrentPreparedPublication : Type := CurrentPreparedPublicationState {
     preparation_observed_authority current_publication_input =
       search_observed_authority
         (accepted_proposal_search current_publication_proposal);
+  current_publication_selected_candidates_are_exact :
+    preparation_selected_candidates current_publication_input =
+      selected_ordinal_values
+        (accepted_selected_ordinals
+          (accepted_proposal_acceptance current_publication_proposal));
   current_publication_preparation : PreparedMatchChanges;
   current_publication_prepare_is_exact :
     prepare_match_changes current_publication_input =
