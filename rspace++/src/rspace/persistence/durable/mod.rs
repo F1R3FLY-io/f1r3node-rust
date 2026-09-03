@@ -117,7 +117,9 @@ pub(crate) fn recover_read_authority<P: SemanticProfile>(
     admission_limits: DurableAdmissionLimitsV1,
 ) -> Result<DurableAuthorityViewV1<P>, DurableAdmissionErrorV1> {
     let directory = io::DurableDirectoryV1::open(path)
-        .map_err(DurableAdmissionErrorV1::Io)?;
+        .map_err(|error| {
+            DurableAdmissionErrorV1::Startup(startup::DurableStartupErrorV1::Io(error))
+        })?;
     let writer = directory.recover_and_admit_v1::<P>(
         recovery_limits,
         wal_limits,
