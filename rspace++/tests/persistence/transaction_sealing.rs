@@ -13,8 +13,9 @@ use crate::rspace::persistence::{
     ImmutableObjectStore, IncrementalClosureLimits, IncrementalSemanticLimits, LegacyHistoryRoot,
     MutableObjectStore, MutationBatchViewV1, ObjectAdmission, ObjectDigest, ObjectRefV1,
     OpenDagTransaction, RSpaceMutationBatchV1, RewriteError, SemanticRoots,
-    SemanticStateManifestV1, SemanticValidationLimits, StagingStoreError, StagingStoreLimits,
-    StateVersionV1, StructuralValidationLimits, VerifiedDagState,
+    RSpaceSemanticProfile, SemanticProfile, SemanticStateManifestV1, SemanticValidationLimits,
+    StagingStoreError, StagingStoreLimits, StateVersionV1, StructuralValidationLimits,
+    VerifiedDagState,
 };
 use crate::rspace::rho_path::RhoPathV1;
 use crate::rspace::serializers::serializers::{
@@ -617,4 +618,15 @@ fn hundred_thousand_byte_transition_seals_on_a_small_native_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn production_profile_binds_all_rspace_codec_roles() {
+    type Profile = RSpaceSemanticProfile<String, String, String, String>;
+
+    assert_eq!(Profile::ID.as_bytes(), b"RSpace.Rust.V1\0\0");
+    assert_eq!(
+        <Profile as SemanticProfile>::ID,
+        RSpaceSemanticProfile::<String, String, String, String>::ID
+    );
 }
