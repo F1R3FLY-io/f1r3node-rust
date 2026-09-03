@@ -1,0 +1,109 @@
+// fileio_cross_fs_isolation.rho — Phase 10 canonical example (10e)
+//
+// Demonstrates FIP §867's isolation invariant: Alice's manipulation
+// of her `File` cap (including wrapping it in a revocable membrane
+// forwarder) cannot affect a subordinate who obtained an independent
+// cap for the same logical name.  Under slice-27 fresh-mint semantics,
+// every `openFile` call yields a structurally distinct `File` agent
+// with an independent kernel fd; membranes wrap SPECIFIC instances,
+// not the underlying file, so revoking Alice's membrane leaves Bob's
+// independently-minted cap unaffected.
+//
+// Simplification vs. the plan-doc's original "two Fs instances via
+// stub Powerbox with distinct deployerIds" framing: under the shared-
+// Fs MVP (see plan §Publication + PB-M-1 resolution 2026-07-30 in
+// FIPS/fileio/.../powerbox-requirements.md), all deploys hold the
+// same Fs cap, but per-open fresh-mint gives Alice and Bob distinct
+// File caps.  The isolation property therefore holds without needing
+// per-principal Fs instances — the powerbox would ADD per-principal
+// bundles (a stronger property), but the core §867 invariant is
+// exercisable via a single Fs today.
+//
+// Sequence:
+//   1. Look up the ambient Fs.
+//   2. Alice opens "shared" — receives fA (fresh cap A).
+//   3. Bob opens "shared" — receives fB (fresh cap B, structurally
+//      distinct from fA per slice-27 semantics).
+//   4. Alice wraps fA in a `tellMembrane` forwarder + a private
+//      `revoked` switch (the FIP §Ocap-patterns membrane idiom).
+//   5. Pre-revoke: Alice's membrane forwards `tell()` to fA and
+//      returns [true, 0].
+//   6. Alice flips the revocation switch.
+//   7. Post-revoke: Alice's membrane returns [false, "FSERR_REVOKED", _].
+//   8. Bob calls fB!?("tell") DIRECTLY (not through Alice's
+//      membrane) — receives [true, 0].  Alice's manipulation
+//      invisible to Bob.
+//
+// Prerequisite: node publishes a bundled File named "shared".
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_cross_fs_membrane_invisible_to_bob.
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh,
+  revoked,
+  tellMembrane
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    // Alice and Bob each obtain a fresh File cap for the same
+    // logical name.  Slice-27 fresh-mint guarantees fA and fB are
+    // structurally distinct with independent cursors + kernel fds.
+    for(@[true, fA] <- @fs!?("openFile", "shared", {"mode": "r"});
+        @[true, fB] <- @fs!?("openFile", "shared", {"mode": "r"})) {
+
+      // Alice wraps fA in a revocable membrane, retaining the
+      // `revoked` switch (private, kept in Alice's scope).  A
+      // subordinate holding *tellMembrane sees only the forwarder
+      // method, not the switch, per spec §Ocap patterns > Membranes.
+      revoked!(false) |
+      contract tellMembrane(returnCh) = {
+        for (@r <<- revoked) {
+          match r {
+            true => returnCh!([false, "FSERR_REVOKED", "capability revoked"])
+            false => {
+              for (@reply <- @fA!?("tell")) {
+                returnCh!(reply)
+              }
+            }
+          }
+        }
+      } |
+
+      // Pre-revoke smoke: the membrane forwards to fA and returns
+      // fA's tell reply.
+      new preCh in {
+        tellMembrane!(*preCh) |
+        for(@preReply <- preCh) {
+          stdout!(("Alice's membrane pre-revoke tell:", preReply)) |
+
+          // Alice flips the revocation switch: consume the current
+          // value, re-publish `true`.
+          for(@_ <- revoked) {
+            revoked!(true) |
+
+            // Post-revoke: the membrane returns FSERR_REVOKED
+            // without ever calling into fA.
+            new postCh in {
+              tellMembrane!(*postCh) |
+              for(@postReply <- postCh) {
+                stdout!(("Alice's membrane post-revoke tell:", postReply)) |
+
+                // Bob calls fB directly (not through Alice's
+                // membrane).  Alice's revocation is invisible to Bob:
+                // fB is an independent agent with its own cursor.
+                for(@bobReply <- @fB!?("tell")) {
+                  stdout!(("Bob's independent cap post-Alice-revoke:", bobReply))
+                  // Expected: [true, 0] — Bob's fresh cap starts
+                  // at cursor 0, unaffected by anything Alice did.
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

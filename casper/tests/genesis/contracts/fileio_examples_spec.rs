@@ -681,6 +681,188 @@ in {{
     spec.run_tests().await.expect("fileio_membrane spec failed");
 }
 
+/// Slice 10e: canonical example `fileio_cross_fs_isolation.rho`.
+///
+/// Exercises FIP §867's isolation invariant: Alice's manipulation of
+/// her File cap — including wrapping it in a revocable membrane and
+/// flipping the revocation switch — cannot affect a subordinate who
+/// obtained an independent cap for the same logical name via a fresh
+/// `openFile` call.
+///
+/// Under slice-27 fresh-mint semantics (2026-08-04), every `openFile`
+/// call yields a structurally distinct `File` agent with its own
+/// cursor and its own kernel fd.  Membranes wrap SPECIFIC instances,
+/// so revoking Alice's membrane over `fA` leaves `fB` (obtained by
+/// Bob via a second `openFile`) completely untouched.
+///
+/// Framing note: earlier plan-doc references had 10e "blocked on
+/// Powerbox stub" because the FIP-style demonstration would ideally
+/// give Alice and Bob distinct `Fs` instances (per PB-M-1's original
+/// per-principal Fs framing).  That framing was superseded by the
+/// PB-M-1 resolution (2026-07-30 — shared Fs is safe under uniform-
+/// per-bucket bundles + no cache) combined with slice-27 fresh-mint.
+/// The core §867 property is fully demonstrable under the shared-Fs
+/// MVP; the Powerbox stub would ADD per-principal bundle scoping
+/// (a stronger claim), but is not required for the isolation
+/// invariant.
+///
+/// Sequence:
+///   1. Alice opens "shared" → fA.
+///   2. Bob opens "shared" → fB.  Slice-27 fresh-mint ⇒ fA ≠ fB.
+///   3. Alice wraps fA in a `tellMembrane` + private `revoked` switch
+///      (FIP §Ocap patterns idiom).
+///   4. Pre-revoke: Alice's membrane forwards `tell()` to fA.
+///   5. Alice flips revocation switch.
+///   6. Post-revoke: Alice's membrane returns FSERR_REVOKED.
+///   7. Bob calls fB!?("tell") directly — succeeds with [true, 0].
+///
+/// The regression asserts (7): Bob's independent cap continues to
+/// work after Alice's revocation, proving membrane invisibility
+/// across independent fresh-mints.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fileio_cross_fs_membrane_invisible_to_bob() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file_path = dir.path().join("shared.dat");
+    std::fs::write(&file_path, b"cross-fs isolation test payload").expect("seed file");
+    let canon = std::fs::canonicalize(&file_path).expect("canonicalize");
+
+    let entry = BundleEntry::try_new(
+        "shared".to_string(),
+        canon,
+        BundleEntryKind::File,
+        "r".to_string(),
+        BundleConsensusMode::Oracular,
+    )
+    .expect("bundle entry construction");
+
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_cross_fs_membrane_invisible_to_bob
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [
+        ("Alice's revoked membrane is invisible to Bob's independent cap",
+         *test_cross_fs_membrane_invisible_to_bob)
+      ])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_cross_fs_membrane_invisible_to_bob(rhoSpec, _, ackCh) = {{
+      // Alice and Bob each obtain a fresh File cap for the same
+      // logical name.  Slice-27 fresh-mint => fA and fB are distinct
+      // agents with independent cursors + kernel fds.
+      for(@[true, fA] <- @fs!?("openFile", "shared", {{"mode": "r"}});
+          @[true, fB] <- @fs!?("openFile", "shared", {{"mode": "r"}})) {{
+
+        new revoked, tellMembrane in {{
+          // Alice wraps fA in a revocable forwarder.  The `revoked`
+          // switch is kept private to Alice's scope.
+          revoked!(false) |
+          contract tellMembrane(returnCh) = {{
+            for (@r <<- revoked) {{
+              match r {{
+                true => returnCh!([false, "FSERR_REVOKED", "capability revoked"])
+                false => {{
+                  for (@reply <- @fA!?("tell")) {{
+                    returnCh!(reply)
+                  }}
+                }}
+              }}
+            }}
+          }} |
+
+          // Sanity: pre-revoke, the membrane forwards correctly.
+          new preCh in {{
+            tellMembrane!(*preCh) |
+            for(@preReply <- preCh) {{
+              match preReply {{
+                [true, _pos] => {{
+                  // Alice flips the revocation switch: consume + republish.
+                  for(@_ <- revoked) {{
+                    revoked!(true) |
+
+                    // Post-revoke: membrane returns FSERR_REVOKED
+                    // (checked implicitly by the follow-up: Bob's
+                    // independent cap must not observe Alice's
+                    // revocation).
+                    new postCh in {{
+                      tellMembrane!(*postCh) |
+                      for(@postReply <- postCh) {{
+                        match postReply {{
+                          [false, "FSERR_REVOKED", _] => {{
+                            // Now the actual isolation assertion:
+                            // Bob's fB (obtained by a fresh openFile,
+                            // not through Alice's membrane) must
+                            // continue to work.  Alice's manipulation
+                            // is invisible to Bob's independently-
+                            // obtained cap.
+                            for(@bobReply <- @fB!?("tell")) {{
+                              match bobReply {{
+                                [true, _bobPos] => {{
+                                  rhoSpec!("assert", (true, "==", true),
+                                    "Bob's independent cap unaffected by Alice's revoke",
+                                    *ackCh)
+                                }}
+                                _ => {{
+                                  rhoSpec!("assert",
+                                    (bobReply, "==", "[true, _pos]"),
+                                    "Bob's tell must succeed post-Alice-revoke",
+                                    *ackCh)
+                                }}
+                              }}
+                            }}
+                          }}
+                          _ => {{
+                            rhoSpec!("assert",
+                              (postReply, "==", "[false, FSERR_REVOKED, _]"),
+                              "membrane must return FSERR_REVOKED after revoke",
+                              *ackCh)
+                          }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+                _ => {{
+                  rhoSpec!("assert", (preReply, "==", "[true, _pos]"),
+                    "pre-revoke membrane tell must succeed", *ackCh)
+                }}
+              }}
+            }}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "FileioCrossFsIsolationSpec".to_string(),
+    )
+    .expect("compile fileio_cross_fs_isolation test source");
+
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("fileio_cross_fs_isolation spec failed");
+}
+
 /// Slice 10a-5: canonical example `fileio_readonly_forwarder.rho`.
 ///
 /// A File cap is wrapped in a forwarder that whitelists specific
