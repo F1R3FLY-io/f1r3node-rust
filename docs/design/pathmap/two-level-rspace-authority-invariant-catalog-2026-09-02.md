@@ -133,11 +133,17 @@ Formal correction: `TwoLevelRSpaceMatchTransaction.v` now treats request catalog
 
 ### TLRS-PROP-06 — Authoritative stack-safe match transaction
 
-Status: **GAP**
+Status: **PARTIAL**
 
 Formal owner set: all 14 MatchTransaction invariants. Exact lookup and loaded-empty consequences are exercised through TLRS-PROP-01; order through TLRS-PROP-03; catalog consequences through TLRS-PROP-05. This family exclusively owns the end-to-end composition: exact outer lookup, canonical inner candidates, stack-safe PDA match, positive multiplicity, selected `BagDelta`, strict scan progress, exactly one accepted publication, and refusal atomicity.
 
-Current executable evidence: candidate continuation, reservation, catalog, and delta tests exercise components independently. They do not prove the formal transaction capstone against one production entry point.
+Current executable evidence: candidate continuation, reservation, catalog, and delta tests exercise components independently. The normal (non-feature-gated) hot-store property
+`an_accepted_match_atomically_removes_the_selected_datum_continuation_and_join` now drives
+`HotStore::apply_accepted_match` through a successful one-channel transaction and checks the
+committed outcome, selected datum consumption, one-shot continuation consumption, and empty-join
+cleanup. The companion cross-group stale-capability property checks refusal atomicity. This is
+concrete production-entry-point evidence, but it is not yet the exhaustive generated differential
+required by the formal transaction capstone.
 
 Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 

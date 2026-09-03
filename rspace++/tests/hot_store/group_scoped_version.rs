@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
+use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::history_reader::HistoryReaderBase;
 use crate::rspace::trace::event::Consume;
@@ -85,4 +86,64 @@ fn a_cross_group_continuation_capability_is_stale_before_any_state_change() {
     assert!(matches!(outcome, AcceptedMatchOutcome::Stale));
     assert_same_state(&before_state, &store.snapshot());
     assert_eq!(before_checkpoint, store.checkpoint_changes().expect("checkpoint projection"));
+}
+
+#[test]
+fn an_accepted_match_atomically_removes_the_selected_datum_continuation_and_join() {
+    let channels = vec!["channel".to_owned()];
+    let datum = Datum::create(&channels[0], "payload".to_owned(), false);
+    let continuation = continuation(3, "selected");
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![continuation.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channels[0].clone(), vec![datum.clone()])]),
+        joins: HashMap::from([(channels[0].clone(), vec![channels.clone()])]),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, loaded) = store.get_continuations_versioned(&channels);
+    assert_eq!(loaded, vec![continuation.clone()]);
+
+    let datum_path = RSpaceDataIndex::datum_path(&channels[0], &datum);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(&datum_path, super::super::bag::Multiplicity::ONE)
+        .expect("fixture multiplicity fits u64");
+    let before = store.snapshot();
+
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: ContinuationAddress::new(version, 0),
+                source: continuation.source.clone(),
+                persist: continuation.persist,
+                peeks: continuation.peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths: Vec::new(),
+            join_channels: channels.clone(),
+        })
+        .expect("the accepted transition is valid");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    let after = store.snapshot();
+    assert_ne!(before.data, after.data);
+    assert_eq!(
+        after.data.values().map(Vec::len).sum::<usize>(),
+        0,
+        "the selected datum must be consumed"
+    );
+    assert_eq!(
+        after.continuations.values().map(Vec::len).sum::<usize>(),
+        0,
+        "the one-shot continuation must be consumed"
+    );
+    assert_eq!(
+        after.joins.values().map(Vec::len).sum::<usize>(),
+        0,
+        "the now-empty join group must be removed"
+    );
+    assert!(after.installed_continuations.is_empty());
+    assert!(after.installed_joins.is_empty());
 }
