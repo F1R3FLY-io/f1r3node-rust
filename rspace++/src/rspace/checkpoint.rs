@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::hash::Hash;
 
+use super::bag::BagDelta;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hot_store::HotStoreState;
 use super::trace::Log;
@@ -12,6 +13,8 @@ pub struct SoftCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
     pub cache_snapshot: HotStoreState<C, P, A, K>,
     pub log: Log,
     pub produce_counter: BTreeMap<Produce, i32>,
+    pub pending_data_delta: BagDelta,
+    pub pending_join_delta: BagDelta,
 }
 
 pub struct Checkpoint {

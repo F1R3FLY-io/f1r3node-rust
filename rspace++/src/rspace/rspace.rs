@@ -384,11 +384,23 @@ where
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
         let curr_produce_counter =
             std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
+        let pending_data_delta = self
+            .get_store()
+            .pending_data_delta()
+            .expect("live hot store journal read")
+            .unwrap_or_default();
+        let pending_join_delta = self
+            .get_store()
+            .pending_join_delta()
+            .expect("live hot store join journal read")
+            .unwrap_or_default();
 
         SoftCheckpoint {
             cache_snapshot,
             log: curr_event_log,
             produce_counter: curr_produce_counter,
+            pending_data_delta,
+            pending_join_delta,
         }
     }
 
@@ -436,6 +448,8 @@ where
         );
 
         *self.store.write().expect("store write lock") = Arc::new(hot_store);
+        self.get_store()
+            .restore_pending_deltas(checkpoint.pending_data_delta, checkpoint.pending_join_delta)?;
         self.retained_set_automata.clear();
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
         *self.produce_counter.lock().expect("produce counter lock") = checkpoint.produce_counter;

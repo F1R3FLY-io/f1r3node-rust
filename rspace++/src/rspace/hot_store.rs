@@ -88,6 +88,8 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// Return normalized resting-join path changes, or `None` when the
     /// implementation has no join-journal capability.
     fn pending_join_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    /// Restore revision-local journals captured by a soft checkpoint.
+    fn restore_pending_deltas(&self, data: BagDelta, joins: BagDelta) -> Result<(), RSpaceError>;
     fn apply_accepted_match(
         &self,
         transition: AcceptedMatch<C>,
@@ -808,6 +810,13 @@ where
                 .pending_delta()
                 .clone(),
         ))
+    }
+
+    fn restore_pending_deltas(&self, data: BagDelta, joins: BagDelta) -> Result<(), RSpaceError> {
+        let mut state = hot_state_write(&self.state);
+        state.data.restore_pending_delta(data);
+        state.joins.restore_pending_delta(joins);
+        Ok(())
     }
 
     fn apply_accepted_match(

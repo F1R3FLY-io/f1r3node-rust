@@ -1951,6 +1951,8 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
 
     pub fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
+    pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
+
     pub fn is_loaded(&self, channel: &C) -> bool
     where C: RhoPathEncode {
         self.index
@@ -2517,7 +2519,9 @@ mod candidate_identity_order_tests {
     fn pending_delta_tracks_and_cancels_path_mutations_without_projection() {
         let mut store = RSpaceDataStore::<String, String>::new();
         let channel = "journal-channel".to_owned();
-        store.set_channel(channel.clone(), []).expect("load empty channel");
+        store
+            .set_channel(channel.clone(), [])
+            .expect("load empty channel");
         let datum = Datum {
             a: Arc::new("journal-payload".to_owned()),
             persist: false,

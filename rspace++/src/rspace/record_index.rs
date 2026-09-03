@@ -1348,6 +1348,8 @@ where C: Clone + RhoPathEncode + Send + Sync
 
     pub(crate) fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
+    pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
+
     pub(crate) fn loaded_records(&self) -> Vec<(C, Vec<Vec<C>>)> {
         self.resting
             .loaded_records()
