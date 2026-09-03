@@ -262,6 +262,14 @@ fn read_authority_view_reopens_the_authenticated_catalog_state() {
         .expect("manifest lookup must be admitted")
         .expect("catalog manifest must be indexed");
     assert_eq!(manifest.len() as u64, view.manifest().encoded_len());
+    let too_small = view.manifest().encoded_len() - 1;
+    assert!(matches!(
+        view.get_object_bounded(&view.manifest().digest(), too_small),
+        Err(crate::rspace::persistence::durable::DurableObjectReadErrorV1::MaterializationLimit {
+            limit,
+            ..
+        }) if limit == too_small
+    ));
     let missing = crate::rspace::persistence::ObjectDigest::from_array([0xA5; 32]);
     assert!(
         view.get_object_bounded(&missing, 1024)
