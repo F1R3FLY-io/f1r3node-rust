@@ -355,6 +355,7 @@ where
     }
 
     async fn take_event_log(&self) -> Log {
+        let _operation_guard = self.operation_gate.write().await;
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
         let _ = std::mem::take(&mut *self.produce_counter.lock().expect("produce counter lock"));
         curr_event_log
