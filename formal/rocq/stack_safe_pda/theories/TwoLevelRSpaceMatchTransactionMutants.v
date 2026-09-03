@@ -1,286 +1,413 @@
 From Stdlib Require Import Bool List Arith Lia NArith.
 From StackSafePDA Require Import
-  StackSafePDA PathMapCanonicalStreamPublication
-  TwoLevelRSpaceAuthority TwoLevelRSpaceOperations TwoLevelRSpaceDelta
-  SpatialMatcher CandidateProductPathContinuation CandidateCatalogAuthorityIsolation
-  PathMapPhysicalOwnership TwoLevelRSpaceMatchTransaction.
+  StackSafePDA SpatialMatcher PathMapCanonicalStreamPublicationBase
+  TwoLevelRSpaceAuthority
+  TwoLevelRSpaceOperations TwoLevelRSpaceMatchPreparation
+  TwoLevelRSpaceMatchTransaction.
 
 Import ListNotations.
 Import TwoLevelRSpaceAuthority.
 Import TwoLevelRSpaceOperations.
-Import TwoLevelRSpaceDelta.
-Import CandidateProductPathContinuation.
-Import CandidateCatalogAuthorityIsolation.
-Import PathMapPhysicalOwnership.
+Import TwoLevelRSpaceMatchPreparation.
 Import TwoLevelRSpaceMatchTransaction.
 Set Implicit Arguments.
-Open Scope nat_scope.
+Local Open Scope nat_scope.
 
-(** Executable causal negative controls for the two-level match transaction.
-    Each witness changes one production choice and is rejected by the matching
-    invariant. None merely assumes the negation of its target property. *)
+(** Executable causal negative controls for the independent candidate selector.
+    Each mutant changes one production choice and exposes a concrete bad
+    observation. Candidate lists are proof observations of ordered PathMap
+    cursors, never a proposed production representation. *)
 Module TwoLevelRSpaceMatchTransactionMutants.
 
-Definition fixture_first : Entry := ([1], 2%N).
-Definition fixture_second : Entry := ([2], 3%N).
-Definition fixture_inner : ChannelBag := [fixture_first; fixture_second].
-Definition fixture_other_inner : ChannelBag := [([7], 1%N)].
 Definition fixture_authority : TwoLevelAuthority :=
-  [([9], fixture_inner); ([9; 1], fixture_other_inner); ([10], fixture_inner)].
+  [([9], [([1], 2%N)])].
 
-Definition accepting_program (_ : Entry) : @tree matcher_label :=
-  @StackSafePDA.Node matcher_label (Exact 0 0) (@StackSafePDA.FNil matcher_label).
+Definition fixture_stored : MatchCandidate :=
+  MatchCandidateState (StoredAddress [9; 1]) [9] [1] [] [11] [] false 2%N.
 
-Definition rejecting_program (_ : Entry) : @tree matcher_label :=
-  @StackSafePDA.Node matcher_label (Exact 0 1) (@StackSafePDA.FNil matcher_label).
+Definition fixture_stored_alias : MatchCandidate :=
+  MatchCandidateState (StoredAddress [9; 1]) [90] [10] [7] [12] [13] false 2%N.
 
-Definition fixture_request : MatchRequest :=
-  MatchRequestState [9] 11 7 accepting_program [].
+Definition fixture_persistent : MatchCandidate :=
+  MatchCandidateState (StoredAddress [9; 1]) [9] [1] [] [11] [] true 2%N.
 
-Definition fixture_rejecting_request : MatchRequest :=
-  MatchRequestState [9] 11 7 rejecting_program [].
+Definition fixture_fresh : MatchCandidate :=
+  MatchCandidateState FreshAddress [9] [1] [] [14] [] false 1%N.
 
-Definition fixture_query_authority : candidate_authority :=
-  CandidateAuthority 7
-    (CandidateProductPathContinuation.Node (Some tt) [])
-    (CandidateProductPathContinuation.Node (Some 0) []).
+Definition fixture_first : OrdinalCandidate :=
+  OrdinalCandidateState 0%N fixture_stored.
+Definition fixture_second : OrdinalCandidate :=
+  OrdinalCandidateState 1%N fixture_stored_alias.
+Definition fixture_persistent_ordinal : OrdinalCandidate :=
+  OrdinalCandidateState 0%N fixture_persistent.
+Definition fixture_fresh_ordinal : OrdinalCandidate :=
+  OrdinalCandidateState 0%N fixture_fresh.
 
-Definition fixture_isolated_catalog : isolated_candidate_catalog :=
-  build_isolated_catalog 21 22 [] [] fixture_query_authority [].
+Definition accepting_tree : @tree matcher_label :=
+  @StackSafePDA.Node matcher_label (Exact 0 0)
+    (@StackSafePDA.FNil matcher_label).
 
-Definition fixture_pool : isolated_candidate_pool :=
-  issue_candidate_pool fixture_isolated_catalog.
+Definition accepting_program : MatchProgram :=
+  MatchProgramState (fun _ _ => accepting_tree) (fun _ => true).
 
-Definition fixture_catalog : MatchCatalog.
+Definition rejecting_guard_program : MatchProgram :=
+  MatchProgramState (fun _ _ => accepting_tree) (fun _ => false).
+
+Lemma subsequence_reflexive : forall A (values : list A),
+  OrderPreservingSubsequence values values.
 Proof.
-  refine (MatchCatalogState 11 fixture_pool [] _). reflexivity.
+  intros A values. induction values as [|head tail IH].
+  - constructor.
+  - now constructor.
+Qed.
+
+Lemma equal_length_subsequence_is_equal : forall A (selected full : list A),
+  OrderPreservingSubsequence selected full ->
+  length selected = length full -> selected = full.
+Proof.
+  intros A selected full Hsub. induction Hsub; intro Hlength.
+  - reflexivity.
+  - pose proof (@subsequence_length_is_bounded A selected full Hsub).
+    simpl in Hlength. lia.
+  - simpl in Hlength. f_equal. apply IHHsub. lia.
+Qed.
+
+Definition identity_query_scan
+    (program : MatchProgram) (channel : Path) (full : list OrdinalCandidate)
+    : QueryPrunedScan program channel full.
+Proof.
+  refine {| query_pruned_projection := full;
+    query_pruned_order_is_preserved := subsequence_reflexive full;
+    query_pruned_is_match_complete := _ |}.
+  intros candidate bindings next Hin _. exact Hin.
 Defined.
 
-Definition fixture_catalogs (channel : Path) : option MatchCatalog :=
-  if path_eq_dec channel [9]
-  then Some fixture_catalog
-  else if path_eq_dec channel [10]
-       then Some fixture_catalog
-       else None.
+Definition empty_catalogs : CandidateCatalogSet :=
+  CandidateCatalogSetState [] [] [].
 
-Definition fixture_store : MatchStoreState :=
-  TransactionalStoreState fixture_authority 3 fixture_catalogs [fixture_pool] 4.
+Definition fixture_search_with_program (program : MatchProgram)
+    : CandidateSearch.
+Proof.
+  refine {| search_observed_authority := fixture_authority;
+            search_requested_channels := [];
+            search_catalogs := empty_catalogs;
+            search_arrival := None;
+            search_excluded_count := fun _ => 0%N;
+            search_fresh_available := true;
+            search_program := program;
+            search_scan := fun channel catalog =>
+              identity_query_scan program channel
+                (combined_candidate_projection None catalog) |}.
+  - intros channel catalog candidate Hlookup _. discriminate Hlookup.
+  - intros channel catalog candidate Hlookup _. discriminate Hlookup.
+  - intros channel catalog fresh Hlookup _ _. discriminate Hlookup.
+Defined.
 
-Definition fixture_exhausted_authority : TwoLevelAuthority :=
-  [([9], [fixture_second]);
-   ([9; 1], fixture_other_inner);
-   ([10], fixture_inner)].
+Definition fixture_search : CandidateSearch :=
+  fixture_search_with_program accepting_program.
 
-Definition fixture_exhausted_store : MatchStoreState :=
-  TransactionalStoreState
-    fixture_exhausted_authority 3 fixture_catalogs [fixture_pool] 4.
+Definition fixture_rejecting_guard_search : CandidateSearch :=
+  fixture_search_with_program rejecting_guard_program.
 
-(** 1. Prefix acceptance at the outer level confuses a loaded ancestor with
-    an unloaded exact descendant. *)
-Fixpoint mutant_prefix_outer_lookup
-    (selected : Path) (authority : TwoLevelAuthority) : option ChannelBag :=
-  match authority with
-  | [] => None
-  | (channel, contents) :: tail =>
-      if path_prefixb channel selected
-      then Some contents
-      else mutant_prefix_outer_lookup selected tail
-  end.
+Definition zero_reservations : ReservationAuthority := fun _ => 0%N.
 
-Example exact_outer_lookup_rejects_prefix_lookup_mutant :
-  lookup_channel [9; 2] fixture_authority = None /\
-  mutant_prefix_outer_lookup [9; 2] fixture_authority = Some fixture_inner.
+(** 1. Reversing cursor output does not preserve canonical subsequence order. *)
+Definition mutant_reverse_pruning {A : Type} (values : list A) : list A :=
+  rev values.
+
+Example pruned_order_rejects_reverse_mutant :
+  OrderPreservingSubsequence [1; 2] [1; 2] /\
+  ~ OrderPreservingSubsequence (mutant_reverse_pruning [1; 2]) [1; 2].
+Proof.
+  split; [apply subsequence_reflexive|].
+  intro H.
+  pose proof (@equal_length_subsequence_is_equal nat [2; 1] [1; 2]
+    H eq_refl) as Hequal.
+  discriminate Hequal.
+Qed.
+
+(** 2. Dropping an accepted candidate violates match completeness. *)
+Definition mutant_drop_pruned_candidates
+    (_ : list OrdinalCandidate) : list OrdinalCandidate := [].
+
+Example pruned_completeness_rejects_drop_mutant :
+  In fixture_first [fixture_first] /\
+  mutant_drop_pruned_candidates [fixture_first] = [] /\
+  ~ In fixture_first (mutant_drop_pruned_candidates [fixture_first]).
+Proof. simpl. intuition. Qed.
+
+(** 3. A replay exclusion strictly between zero and capacity is partial. *)
+Definition mutant_partial_replay_exclusion : Multiplicity := 1%N.
+
+Example replay_all_or_none_rejects_partial_mutant :
+  mutant_partial_replay_exclusion <> 0%N /\
+  mutant_partial_replay_exclusion <>
+    candidate_capacity fixture_search fixture_first.
+Proof. vm_compute. split; discriminate. Qed.
+
+(** 4. Fresh eligibility comes from replay authority, not query pruning. *)
+Definition mutant_fresh_available_after_pruning
+    (retained_by_query : bool) : bool := retained_by_query.
+
+Example fresh_eligibility_rejects_pruning_coupling_mutant :
+  candidate_available fixture_search [9] fixture_fresh_ordinal
+      zero_reservations = true /\
+  mutant_fresh_available_after_pruning false = false.
+Proof. vm_compute. auto. Qed.
+
+(** 5. Persistence does not make a live candidate ineligible. *)
+Definition mutant_persistent_candidates_are_ineligible
+    (candidate : OrdinalCandidate) : bool :=
+  negb (candidate_persistent (ordinal_candidate_value candidate)).
+
+Example persistent_eligibility_rejects_ineligible_mutant :
+  candidate_available fixture_search [9] fixture_persistent_ordinal
+      zero_reservations = true /\
+  mutant_persistent_candidates_are_ineligible fixture_persistent_ordinal = false.
+Proof. vm_compute. auto. Qed.
+
+(** 6. Persistent candidates create no reservation ticket or count change. *)
+Definition mutant_reserve_persistent
+    (reservations : ReservationAuthority) (candidate : OrdinalCandidate)
+    : ReservationAuthority :=
+  set_reservation_count reservations (candidate_reservation_key candidate)
+    (N.succ (reservations (candidate_reservation_key candidate))).
+
+Example persistent_no_reservation_rejects_increment_mutant :
+  reserve_candidate fixture_search [9] fixture_persistent_ordinal
+      zero_reservations = Some (zero_reservations, None) /\
+  mutant_reserve_persistent zero_reservations fixture_persistent_ordinal
+      (candidate_reservation_key fixture_persistent_ordinal) = 1%N.
+Proof. vm_compute. auto. Qed.
+
+(** 7. Bag multiplicity permits exactly two reservations at capacity two. *)
+Definition reservation_after_first : ReservationAuthority :=
+  set_reservation_count zero_reservations
+    (candidate_reservation_key fixture_first) 1%N.
+
+Definition reservation_after_second : ReservationAuthority :=
+  set_reservation_count reservation_after_first
+    (candidate_reservation_key fixture_first) 2%N.
+
+Definition mutant_presence_only_capacity (_ : OrdinalCandidate) : Multiplicity :=
+  1%N.
+
+Example multiplicity_reservation_rejects_presence_only_mutant :
+  reserve_candidate fixture_search [9] fixture_first zero_reservations =
+    Some (reservation_after_first,
+      Some (ReservationTicketState (candidate_reservation_key fixture_first)
+        0%N zero_reservations)) /\
+  reserve_candidate fixture_search [9] fixture_first reservation_after_first =
+    Some (reservation_after_second,
+      Some (ReservationTicketState (candidate_reservation_key fixture_first)
+        1%N reservation_after_first)) /\
+  mutant_presence_only_capacity fixture_first = 1%N /\
+  candidate_capacity fixture_search fixture_first = 2%N.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+(** 8. Rollback restores the exact prior authority, not the incremented one. *)
+Definition fixture_ticket : ReservationTicket :=
+  ReservationTicketState (candidate_reservation_key fixture_first)
+    0%N zero_reservations.
+
+Definition mutant_rollback_keeps_increment
+    (_ : option ReservationTicket) (current : ReservationAuthority)
+    : ReservationAuthority := current.
+
+Example exact_rollback_rejects_keep_increment_mutant :
+  rollback_reservation (Some fixture_ticket) reservation_after_first
+      (candidate_reservation_key fixture_first) = 0%N /\
+  mutant_rollback_keeps_increment (Some fixture_ticket) reservation_after_first
+      (candidate_reservation_key fixture_first) = 1%N.
+Proof. vm_compute. auto. Qed.
+
+(** 9. Reservation sharing is keyed by absolute semantic address, not cursor
+    ordinal or decoded channel/datum projections. *)
+Definition mutant_ordinal_reservation_identity
+    (candidate : OrdinalCandidate) : N := ordinal_candidate_index candidate.
+
+Example semantic_reservation_rejects_ordinal_identity_mutant :
+  candidate_reservation_key fixture_first =
+    candidate_reservation_key fixture_second /\
+  mutant_ordinal_reservation_identity fixture_first <>
+    mutant_ordinal_reservation_identity fixture_second.
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+(** 10. The guard is evaluated only after all requested channels are chosen. *)
+Definition mutant_guard_before_channel_lookup
+    (search : CandidateSearch) : CandidateSearchResult :=
+  if match_program_guard (search_program search) empty_free_map
+  then SearchAccepted [] empty_free_map else SearchRefused GuardRejected.
+
+Example leaf_only_guard_rejects_eager_guard_mutant :
+  recursive_candidate_search fixture_rejecting_guard_search [[9]]
+      zero_reservations empty_free_map = SearchRefused NoSpatialMatch /\
+  mutant_guard_before_channel_lookup fixture_rejecting_guard_search =
+      SearchRefused GuardRejected.
+Proof. vm_compute. auto. Qed.
+
+(** 11. Spatial exhaustion and reached-leaf guard rejection are distinct. *)
+Definition mutant_collapse_failure (_ : SearchFailure) : SearchFailure :=
+  NoSpatialMatch.
+
+Example failure_distinction_rejects_collapse_mutant :
+  failure_reached_leaf NoSpatialMatch = false /\
+  failure_reached_leaf GuardRejected = true /\
+  mutant_collapse_failure GuardRejected = NoSpatialMatch.
 Proof. repeat split; reflexivity. Qed.
 
-(** 2. Reversing the already canonical cursor order changes first-match
-    choice. *)
-Definition mutant_reversed_candidate_order request contents :=
-  find (candidate_accepts request) (rev contents).
+(** 12. Reversing a scan chooses a different first admissible candidate. *)
+Definition accept_candidate (candidate : OrdinalCandidate)
+    : CandidateSearchResult := SearchAccepted [([9], candidate)] empty_free_map.
 
-Example canonical_order_rejects_reverse_mutant :
-  first_accepted_candidate fixture_request fixture_inner = Some fixture_first /\
-  mutant_reversed_candidate_order fixture_request fixture_inner =
-    Some fixture_second.
-Proof. repeat split; reflexivity. Qed.
+Definition mutant_reverse_scan
+    (candidates : list OrdinalCandidate) : CandidateSearchResult :=
+  scan_reference accept_candidate (rev candidates) false.
 
-(** 3. Treating every retained endpoint as a match bypasses the generated
-    spatial matcher PDA. *)
-Definition mutant_accept_without_matcher
-    (_ : MatchRequest) (_ : Entry) : bool := true.
+Example first_selection_rejects_reverse_scan_mutant :
+  scan_reference accept_candidate [fixture_first; fixture_second] false =
+    SearchAccepted [([9], fixture_first)] empty_free_map /\
+  mutant_reverse_scan [fixture_first; fixture_second] =
+    SearchAccepted [([9], fixture_second)] empty_free_map.
+Proof. vm_compute. auto. Qed.
 
-Example pda_authority_rejects_unconditional_accept_mutant :
-  candidate_accepts fixture_rejecting_request fixture_first = false /\
-  mutant_accept_without_matcher fixture_rejecting_request fixture_first = true.
-Proof. repeat split; reflexivity. Qed.
+(** 13. Retaining a control state is a non-progressing PDA cycle. *)
+Definition mutant_stationary_walk (_ : CandidateSearch)
+    (control : CandidateWalkControl) : CandidateWalkControl := control.
 
-(** 4. A zero-valued endpoint violates Bag representation even if a matcher
-    would accept its path. *)
-Definition fixture_zero_candidate : Entry := ([1], 0%N).
+Example strict_work_rejects_stationary_walk_mutant :
+  candidate_walk_work fixture_search
+      (candidate_walk_step fixture_search
+        (initial_walk_control fixture_search)) = 1%nat /\
+  candidate_walk_work fixture_search
+      (mutant_stationary_walk fixture_search
+        (initial_walk_control fixture_search)) = 2%nat.
+Proof. vm_compute. auto. Qed.
 
-Example positive_multiplicity_rejects_zero_endpoint_mutant :
-  multiplicity_valid (entry_multiplicity fixture_zero_candidate) = false /\
-  first_accepted_candidate fixture_request [fixture_zero_candidate] =
-    Some fixture_zero_candidate.
-Proof. repeat split; reflexivity. Qed.
+(** 14. Unconditional recursive failure breaks exact generated-PDA equality. *)
+Definition mutant_recursive_spatial_failure
+    (_ : MatchProgram) (_ : Path) (_ : OrdinalCandidate) (_ : free_map)
+    : option free_map := None.
 
-(** 5. Consuming the selected endpoint's entire count rather than one
-    occurrence turns Bag matching into set deletion. *)
-Definition mutant_remove_all_selected
-    (request : MatchRequest) (selected : Entry) : BagDelta :=
-  {| bag_delta_removal_mode := StrictSubtract;
-     bag_delta_subtractions := [selected];
-     bag_delta_deletions := [];
-     bag_delta_additions := request_additions request |}.
+Example spatial_equivalence_rejects_failure_mutant :
+  candidate_spatial_result accepting_program [9] fixture_first empty_free_map =
+      Some empty_free_map /\
+  mutant_recursive_spatial_failure accepting_program [9] fixture_first
+      empty_free_map = None.
+Proof. vm_compute. auto. Qed.
 
-Example selected_delta_rejects_remove_all_mutant :
-  bag_delta_subtractions (selected_match_delta fixture_request fixture_first) =
-    [([1], 1%N)] /\
-  bag_delta_subtractions (mutant_remove_all_selected fixture_request fixture_first) =
-    [([1], 2%N)] /\
-  apply_bag_delta fixture_inner
-      (selected_match_delta fixture_request fixture_first) =
-    Some [([1], 1%N); fixture_second] /\
-  apply_bag_delta fixture_inner
-      (mutant_remove_all_selected fixture_request fixture_first) =
-    Some [fixture_second].
-Proof. repeat split; reflexivity. Qed.
+(** 15. Returning no result loses the generated PDA's exact oracle result. *)
+Definition mutant_generated_pda_returns_none
+    (_ : CandidateSearch) : option CandidateSearchResult := None.
 
-(** 6. Trusting an issued candidate snapshot without checking its exact live
-    multiplicity lets an exhausted selection authorize work.  Catalog identity
-    changes are intentionally not the gate: unrelated same-channel changes may
-    leave this exact selection valid. *)
-Definition mutant_selected_authority_gate_ignores_live_multiplicity
-    (_ : MatchStoreState) (_ : MatchRequest) (_ : Entry) : bool := true.
+Example generated_pda_equivalence_rejects_none_mutant :
+  pda_candidate_search fixture_search =
+      Some (SearchAccepted [] empty_free_map) /\
+  mutant_generated_pda_returns_none fixture_search = None.
+Proof. vm_compute. auto. Qed.
 
-Example selected_authority_freshness_rejects_snapshot_only_mutant :
-  selected_authority_gate fixture_store fixture_request fixture_first = true /\
-  selected_authority_gate
-    fixture_exhausted_store fixture_request fixture_first = false /\
-  mutant_selected_authority_gate_ignores_live_multiplicity
-    fixture_exhausted_store fixture_request fixture_first = true.
-Proof. repeat split; reflexivity. Qed.
+(** 16. Three uses of a multiplicity-two endpoint cannot replay exactly. *)
+Definition over_capacity_selection : OrdinalSelection :=
+  [([9], fixture_first); ([9], fixture_first); ([9], fixture_first)].
 
-(** 7. Keeping the touched catalog after authority mutation leaves stale
-    candidate authority live. *)
-Definition mutant_keep_touched_catalog
-    (_ : Path) (catalogs : @CatalogAuthority MatchCatalog)
-    : @CatalogAuthority MatchCatalog := catalogs.
+Definition mutant_accept_without_reservation_replay
+    (_ : OrdinalSelection) : bool := true.
 
-Example touched_invalidation_rejects_keep_mutant :
-  invalidate_one_catalog [9] fixture_catalogs [9] = None /\
-  mutant_keep_touched_catalog [9] fixture_catalogs [9] = Some fixture_catalog.
-Proof. repeat split; reflexivity. Qed.
+Example reservation_feasibility_rejects_over_capacity_mutant :
+  replay_selection_reservations fixture_search over_capacity_selection
+      zero_reservations = None /\
+  mutant_accept_without_reservation_replay over_capacity_selection = true.
+Proof. vm_compute. auto. Qed.
 
-(** 8. Prefix-wide replacement mutates an exact descendant that was not part
-    of the accepted match. *)
-Fixpoint mutant_prefix_update
-    (selected : Path) (replacement : ChannelBag)
-    (authority : TwoLevelAuthority) : TwoLevelAuthority :=
-  match authority with
-  | [] => []
-  | (channel, contents) :: tail =>
-      (channel,
-        if path_prefixb selected channel then replacement else contents) ::
-      mutant_prefix_update selected replacement tail
-  end.
+(** 17. Deduplicating selected channels destroys the exact request vector. *)
+Definition repeated_selection : OrdinalSelection :=
+  [([9], fixture_first); ([9], fixture_second)].
 
-Example exact_channel_isolation_rejects_prefix_update_mutant :
-  lookup_channel [9; 1]
-      (upsert_channel_exact [9] [] fixture_authority) =
-    Some fixture_other_inner /\
-  lookup_channel [9; 1]
-      (mutant_prefix_update [9] [] fixture_authority) = Some [].
-Proof. repeat split; reflexivity. Qed.
+Definition mutant_deduplicate_selected_channels (selected : OrdinalSelection)
+    : list Path := nodup path_eq_dec (selected_ordinal_channels selected).
 
-(** 9. Invalidating every catalog discards an untouched sibling identity. *)
-Definition mutant_invalidate_all_catalogs
-    (_ : Path) (_ : @CatalogAuthority MatchCatalog)
-    : @CatalogAuthority MatchCatalog := fun _ => None.
+Example exact_channel_vector_rejects_dedup_mutant :
+  selected_ordinal_channels repeated_selection = [[9]; [9]] /\
+  mutant_deduplicate_selected_channels repeated_selection = [[9]].
+Proof. vm_compute. auto. Qed.
 
-Example untouched_catalog_isolation_rejects_global_invalidation_mutant :
-  invalidate_one_catalog [9] fixture_catalogs [10] = Some fixture_catalog /\
-  mutant_invalidate_all_catalogs [9] fixture_catalogs [10] = None.
-Proof. repeat split; reflexivity. Qed.
+(** 18. A requested channel with no exact catalog cannot satisfy the
+    well-formed-search catalog obligation. *)
+Definition mutant_missing_requested_catalogs : CandidateCatalogSet :=
+  CandidateCatalogSetState [[9]] [[9]] [].
 
-(** 10. Dropping already issued immutable pools during publication violates
-    their observation lifetime. *)
-Definition mutant_drop_issued_pools
-    (_ : list isolated_candidate_pool) : list isolated_candidate_pool := [].
+Example requested_catalog_presence_rejects_missing_mutant :
+  In [9] (candidate_catalog_requested_channels
+    mutant_missing_requested_catalogs) /\
+  lookup_catalog [9] mutant_missing_requested_catalogs = None /\
+  ~ exists catalog,
+      lookup_catalog [9] mutant_missing_requested_catalogs = Some catalog.
+Proof.
+  split; [now left|]. split; [reflexivity|].
+  intros [catalog Hcatalog]. discriminate Hcatalog.
+Qed.
 
-Example issued_pool_preservation_rejects_drop_mutant :
-  mutant_drop_issued_pools [fixture_pool] = [] /\
-  [fixture_pool] <> [].
-Proof. split; [reflexivity | discriminate]. Qed.
+Inductive independent_match_mutant_id : Type :=
+| MutantReversePruning
+| MutantDropAcceptedCandidate
+| MutantPartialReplayExclusion
+| MutantFreshEligibilityDependsOnPruning
+| MutantPersistentIneligible
+| MutantPersistentReservation
+| MutantPresenceOnlyMultiplicity
+| MutantInexactRollback
+| MutantOrdinalReservationIdentity
+| MutantEagerGuard
+| MutantCollapsedFailure
+| MutantReverseFirstSelection
+| MutantStationaryWalk
+| MutantSpatialFailure
+| MutantGeneratedPdaNone
+| MutantSkipReservationReplay
+| MutantDeduplicateChannelVector
+| MutantMissingRequestedCatalog.
 
-(** 11. A second public root swap is observable even if both roots encode the
-    same logical authority. *)
-Definition mutant_double_publication_count : nat := 2.
+Definition independent_match_mutant_catalog :=
+  [MutantReversePruning;
+   MutantDropAcceptedCandidate;
+   MutantPartialReplayExclusion;
+   MutantFreshEligibilityDependsOnPruning;
+   MutantPersistentIneligible;
+   MutantPersistentReservation;
+   MutantPresenceOnlyMultiplicity;
+   MutantInexactRollback;
+   MutantOrdinalReservationIdentity;
+   MutantEagerGuard;
+   MutantCollapsedFailure;
+   MutantReverseFirstSelection;
+   MutantStationaryWalk;
+   MutantSpatialFailure;
+   MutantGeneratedPdaNone;
+   MutantSkipReservationReplay;
+   MutantDeduplicateChannelVector;
+   MutantMissingRequestedCatalog].
 
-Example exactly_one_publication_rejects_double_publish_mutant :
-  mutant_double_publication_count <> 1%nat.
-Proof. discriminate. Qed.
-
-(** 12. Refusal that applies a private candidate is not strongly atomic. *)
-Definition mutant_refusal_authority : TwoLevelAuthority :=
-  upsert_channel_exact [9] [] fixture_authority.
-
-Example refusal_atomicity_rejects_mutating_refusal_mutant :
-  mutant_refusal_authority <> fixture_authority.
-Proof. discriminate. Qed.
-
-(** 13. Deleting the outer endpoint loses the loaded-empty distinction. *)
-Example loaded_empty_rejects_unload_mutant :
-  lookup_channel [9] (upsert_channel_exact [9] [] fixture_authority) = Some [] /\
-  lookup_channel [9] (delete_channel_exact [9] fixture_authority) = None.
-Proof. repeat split; reflexivity. Qed.
-
-(** 14. Retaining the same cursor after a rejected candidate introduces a
-    non-progressing traversal cycle. *)
-Definition mutant_nonprogressing_scan_step
-    (_ : MatchRequest) (control : CandidateScanControl) : CandidateScanControl :=
-  control.
-
-Example strict_progress_rejects_stationary_scan_mutant :
-  mutant_nonprogressing_scan_step fixture_rejecting_request
-      (ScanCursor [fixture_first]) = ScanCursor [fixture_first] /\
-  candidate_scan_work
-      (mutant_nonprogressing_scan_step fixture_rejecting_request
-        (ScanCursor [fixture_first])) =
-    candidate_scan_work (ScanCursor [fixture_first]).
-Proof. repeat split; reflexivity. Qed.
-
-Inductive match_transaction_mutant_id : Type :=
-| MutantPrefixOuterLookup | MutantReverseOrder | MutantBypassMatcher
-| MutantZeroMultiplicity | MutantRemoveAllMultiplicity
-| MutantStaleSelectionAuthority | MutantKeepTouchedCatalog | MutantPrefixUpdate
-| MutantInvalidateAllCatalogs | MutantDropIssuedPools
-| MutantDoublePublication | MutantMutatingRefusal
-| MutantUnloadEmpty | MutantStationaryScan.
-
-Definition match_transaction_mutant_catalog :
-    list match_transaction_mutant_id :=
-  [MutantPrefixOuterLookup; MutantReverseOrder; MutantBypassMatcher;
-   MutantZeroMultiplicity; MutantRemoveAllMultiplicity;
-   MutantStaleSelectionAuthority;
-   MutantKeepTouchedCatalog; MutantPrefixUpdate; MutantInvalidateAllCatalogs;
-   MutantDropIssuedPools; MutantDoublePublication; MutantMutatingRefusal;
-   MutantUnloadEmpty; MutantStationaryScan].
-
-Theorem match_transaction_mutant_catalog_is_duplicate_free_and_exact :
-  NoDup match_transaction_mutant_catalog /\
-  length match_transaction_mutant_catalog = 14%nat /\
-  length match_transaction_mutant_catalog =
-    length match_transaction_invariant_catalog.
+Theorem independent_match_mutant_catalog_is_duplicate_free_and_exact :
+  NoDup independent_match_mutant_catalog /\
+  length independent_match_mutant_catalog = 18%nat /\
+  length independent_match_mutant_catalog =
+    length independent_match_invariant_catalog.
 Proof.
   split.
   - repeat constructor; simpl; intuition discriminate.
   - split; reflexivity.
 Qed.
 
-Print Assumptions exact_outer_lookup_rejects_prefix_lookup_mutant.
-Print Assumptions selected_delta_rejects_remove_all_mutant.
-Print Assumptions selected_authority_freshness_rejects_snapshot_only_mutant.
-Print Assumptions exact_channel_isolation_rejects_prefix_update_mutant.
-Print Assumptions match_transaction_mutant_catalog_is_duplicate_free_and_exact.
+Print Assumptions pruned_order_rejects_reverse_mutant.
+Print Assumptions replay_all_or_none_rejects_partial_mutant.
+Print Assumptions multiplicity_reservation_rejects_presence_only_mutant.
+Print Assumptions exact_rollback_rejects_keep_increment_mutant.
+Print Assumptions semantic_reservation_rejects_ordinal_identity_mutant.
+Print Assumptions leaf_only_guard_rejects_eager_guard_mutant.
+Print Assumptions first_selection_rejects_reverse_scan_mutant.
+Print Assumptions strict_work_rejects_stationary_walk_mutant.
+Print Assumptions generated_pda_equivalence_rejects_none_mutant.
+Print Assumptions reservation_feasibility_rejects_over_capacity_mutant.
+Print Assumptions independent_match_mutant_catalog_is_duplicate_free_and_exact.
 
 End TwoLevelRSpaceMatchTransactionMutants.
