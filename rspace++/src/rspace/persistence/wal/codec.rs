@@ -413,6 +413,10 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 
     pub(crate) const fn inline_count(&self) -> u64 { self.object_plan.inline_count() }
 
+    /// Canonical bytes physically inlined by this prepare record. Reused
+    /// objects are excluded from the inventory.
+    pub(crate) const fn inline_object_bytes(&self) -> u64 { self.object_plan.inline_object_bytes() }
+
     pub(crate) fn object_layouts(&self) -> PreparedObjectLayoutIter<'_> {
         let first_record_offset = PREPARE_HEADER_LEN
             .checked_add(self.mutation_len)
