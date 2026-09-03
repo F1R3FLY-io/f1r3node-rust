@@ -11606,6 +11606,31 @@ No Rholang value, datum identity, multiplicity, candidate order, matcher result,
 protobuf/bincode/EPM1/RMP2 byte, hash, COMM schedule, compute/storage charge, PathMap algebra,
 accepted program, or parallel execution order changes.
 
+### 5.61 Current accepted-match publication certificate [SS-C34]
+
+SS-C34 adds the missing formal boundary between the certified candidate-search/preparation
+models and a current publication record. Formal verification precedes any runtime wiring. The
+Rocq unit `formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceCurrentPublication.v` models one
+`CurrentAcceptedProposal` whose requested channel vector and selected ordinal values are exact,
+then binds `CurrentPreparedPublication` to the observed authority, the selected-candidate vector,
+the typed `PreparationReady` result, the strict-subtraction/no-deletion Bag delta, and exact datum
+and continuation successors. Refusal is represented as an atomic non-publication phase rather than
+as a partially applied state.
+
+The certificate is intentionally a proof boundary, not a claim that the durable backend is already
+activated beneath production RSpace. It consumes the existing PathMap-native authorities and does
+not reconstruct a `Vec<Par>`, sort trie entries, or introduce a second semantic representation.
+The exact selected-candidate equality added in commit `ecce8a8a5` closes the remaining gap in which
+PREPARE could be shown well formed without proving that it consumed the same candidate vector that
+the accepted PDA selected; `129289adc` introduced the certificate and `9be709237`, `3a54fdf39`,
+and `65ba2b370` provide the typed recovery, preparation, and negative-control dependencies.
+
+Capped `coqc` and `coqchk` both pass for the registered unit with no `Admitted`, `admit`, `Abort`,
+or axiom-based shortcut. The formal result proves exactness of the current publication inputs, not
+filesystem durability, runtime integration, compaction, migration, or LMDB parity; those remain
+separate gates in pgmcp (6361/6362, 5684, and 5688/6189). No Rholang value, PathMap topology,
+protobuf/bincode byte, hash, COMM schedule, or accounting rule changes in this certificate.
+
 ---
 
 ## 6. Discussion
