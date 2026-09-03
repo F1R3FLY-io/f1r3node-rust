@@ -1108,11 +1108,7 @@ impl RSpaceMutationBatchV1 {
     /// its normalized PathMap delta.  The Bag remains the source of truth;
     /// this method only emits exact compare-and-swap endpoints into the
     /// mutation trie.  No entry projection or sorting is performed.
-    pub fn record_data_delta(
-        &mut self,
-        base: &Bag,
-        delta: &BagDelta,
-    ) -> Result<(), MutationError> {
+    pub fn record_data_delta(&mut self, base: &Bag, delta: &BagDelta) -> Result<(), MutationError> {
         for (path, amount) in delta.additions().iter() {
             let before = base.count(&path);
             let after = before
@@ -1133,11 +1129,7 @@ impl RSpaceMutationBatchV1 {
     /// Record a JoinBag transition directly from an authoritative BagDelta.
     /// Join paths are validated against the join namespace, while endpoint
     /// arithmetic remains identical to the data-root conversion.
-    pub fn record_join_delta(
-        &mut self,
-        base: &Bag,
-        delta: &BagDelta,
-    ) -> Result<(), MutationError> {
+    pub fn record_join_delta(&mut self, base: &Bag, delta: &BagDelta) -> Result<(), MutationError> {
         for (path, amount) in delta.additions().iter() {
             let before = base.count(&path);
             let after = before
@@ -1859,7 +1851,8 @@ mod bag_delta_tests {
         let mut path = RhoPathV1::join_prefix(&7_u64);
         path.extend_from_slice(&RhoPathV1::collection_record_path(&[], b"join"));
         let mut base = Bag::new();
-        base.insert_many(&path, Multiplicity::new(1).unwrap()).unwrap();
+        base.insert_many(&path, Multiplicity::new(1).unwrap())
+            .unwrap();
         let mut delta = BagDelta::new();
         delta
             .record_addition(&path, Multiplicity::new(2).unwrap())

@@ -65,7 +65,9 @@ fn concurrent_rspace_architecture_repro_join_matching_must_have_channel_group_lo
 fn concurrent_rspace_architecture_repro_checkpoint_gate_must_exclude_transitions() {
     let rspace = source("src/rspace/rspace.rs");
 
-    for method in ["create_checkpoint", "reset", "create_soft_checkpoint", "revert_to_soft_checkpoint"] {
+    for method in
+        ["create_checkpoint", "reset", "create_soft_checkpoint", "revert_to_soft_checkpoint"]
+    {
         let marker = format!("async fn {method}");
         let start = rspace
             .find(&marker)
@@ -78,7 +80,9 @@ fn concurrent_rspace_architecture_repro_checkpoint_gate_must_exclude_transitions
     }
 
     assert_eq!(
-        rspace.matches("let _operation_guard = self.operation_gate.read().await;").count(),
+        rspace
+            .matches("let _operation_guard = self.operation_gate.read().await;")
+            .count(),
         5,
         "consume, produce, install, and both remove-all mutation paths must hold shared permits"
     );
