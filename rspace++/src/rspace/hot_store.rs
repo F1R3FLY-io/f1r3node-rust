@@ -48,7 +48,8 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
 use crate::rspace::persistence::{
-    ContentTransition, MutationError, RSpaceMutationBatchV1, StateVersionV1,
+    CanonicalFormatError, ContentTransition, DagTransactionError, ImmutableObjectStore,
+    MutationError, OpenDagTransaction, RSpaceMutationBatchV1, SemanticProfile, StateVersionV1,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -103,6 +104,30 @@ pub(crate) fn mutation_batch_from_pending(
         return Err(MutationError::EmptyBatch);
     }
     Ok(batch)
+}
+
+/// Stage the exact continuation sources retained by one coherent journal
+/// snapshot. Missing journal capabilities are rejected rather than treated as
+/// empty, and source bytes flow directly to transaction admission.
+pub(crate) fn stage_pending_continuation_sources<'store, 'mutation, S, P>(
+    transaction: &mut OpenDagTransaction<'store, 'mutation, S, P>,
+    pending: &PendingDeltas,
+) -> Result<(), DagTransactionError<S::Error>>
+where
+    S: ImmutableObjectStore,
+    P: SemanticProfile,
+{
+    let transitions = pending.continuation_content.as_ref().ok_or_else(|| {
+        CanonicalFormatError::SemanticCoherence {
+            detail: "continuation transition journal capability is unavailable".to_owned(),
+        }
+    })?;
+    let source_bytes = pending.continuation_source_bytes.as_ref().ok_or_else(|| {
+        CanonicalFormatError::SemanticCoherence {
+            detail: "continuation source-byte journal capability is unavailable".to_owned(),
+        }
+    })?;
+    transaction.stage_continuation_source_journal(transitions, source_bytes)
 }
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
