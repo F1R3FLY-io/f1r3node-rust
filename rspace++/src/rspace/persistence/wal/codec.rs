@@ -407,6 +407,8 @@ impl<'transaction, 'mutation, P: SemanticProfile>
 
     pub const fn record_len(&self) -> u64 { self.record_len }
 
+    pub const fn receipt(&self) -> SealedTransitionV1 { self.transaction.receipt() }
+
     pub(crate) const fn store_id(&self) -> StoreId { self.store_id }
 
     pub(crate) const fn sequence(&self) -> LogPackSequence { self.sequence }
