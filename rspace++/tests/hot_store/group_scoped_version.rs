@@ -430,3 +430,55 @@ fn a_datum_only_accepted_match_commits_without_a_continuation_capability() {
     assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: None }));
     assert_eq!(store.snapshot().data.values().map(Vec::len).sum::<usize>(), 0);
 }
+
+#[test]
+fn replaying_a_committed_one_shot_match_is_stale_and_nonmutating() {
+    let channels = vec!["replay".to_owned()];
+    let datum = Datum::create(&channels[0], "payload".to_owned(), false);
+    let selected = continuation(9, "replay");
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channels[0].clone(), vec![datum.clone()])]),
+        joins: HashMap::new(),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, _) = store.get_continuations_versioned(&channels);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture removal fits u64");
+    let transition = AcceptedMatch {
+        channels: channels.clone(),
+        continuation: Some(StoredContinuationCommit {
+            address: ContinuationAddress::new(version, 0),
+            source: selected.source.clone(),
+            persist: selected.persist,
+            peeks: selected.peeks.clone(),
+        }),
+        datum_delta,
+        required_persistent_paths: Vec::new(),
+        join_channels: Vec::new(),
+    };
+
+    let first = store
+        .apply_accepted_match(transition.clone())
+        .expect("the first replay attempt is valid");
+    assert!(matches!(first, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    let after_first = store.snapshot();
+    let checkpoint_after_first = store.checkpoint_changes().expect("checkpoint projection");
+
+    let second = store
+        .apply_accepted_match(transition)
+        .expect("replay is an ordinary stale outcome");
+    assert!(matches!(second, AcceptedMatchOutcome::Stale));
+    assert_same_state(&after_first, &store.snapshot());
+    assert_eq!(
+        checkpoint_after_first,
+        store.checkpoint_changes().expect("checkpoint projection")
+    );
+}
