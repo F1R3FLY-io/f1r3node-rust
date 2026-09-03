@@ -14,6 +14,7 @@ pub struct SoftCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
     pub log: Log,
     pub produce_counter: BTreeMap<Produce, i32>,
     pub pending_data_delta: BagDelta,
+    pub pending_continuation_delta: BagDelta,
     pub pending_join_delta: BagDelta,
 }
 

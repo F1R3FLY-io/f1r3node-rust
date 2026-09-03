@@ -362,12 +362,18 @@ where
             .pending_join_delta()
             .expect("replay hot store join journal read")
             .expect("replay hot store must expose a join journal for soft checkpoints");
+        let pending_continuation_delta = self
+            .get_store()
+            .pending_continuation_delta()
+            .expect("replay hot store continuation journal read")
+            .expect("replay hot store must expose a continuation journal for soft checkpoints");
 
         SoftCheckpoint {
             cache_snapshot,
             log: curr_event_log,
             produce_counter: curr_produce_counter,
             pending_data_delta,
+            pending_continuation_delta,
             pending_join_delta,
         }
     }
@@ -392,8 +398,11 @@ where
         );
 
         *self.store.write().expect("store write lock") = Arc::new(hot_store);
-        self.get_store()
-            .restore_pending_deltas(checkpoint.pending_data_delta, checkpoint.pending_join_delta)?;
+        self.get_store().restore_pending_deltas(
+            checkpoint.pending_data_delta,
+            checkpoint.pending_continuation_delta,
+            checkpoint.pending_join_delta,
+        )?;
         *self.event_log.lock().expect("event log lock") = checkpoint.log;
         *self.produce_counter.lock().expect("produce counter lock") = checkpoint.produce_counter;
 

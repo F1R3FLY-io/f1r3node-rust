@@ -88,8 +88,16 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// Return normalized resting-join path changes, or `None` when the
     /// implementation has no join-journal capability.
     fn pending_join_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    /// Return normalized continuation-record path changes, or `None` when the
+    /// implementation has no continuation journal capability.
+    fn pending_continuation_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
     /// Restore revision-local journals captured by a soft checkpoint.
-    fn restore_pending_deltas(&self, data: BagDelta, joins: BagDelta) -> Result<(), RSpaceError>;
+    fn restore_pending_deltas(
+        &self,
+        data: BagDelta,
+        continuations: BagDelta,
+        joins: BagDelta,
+    ) -> Result<(), RSpaceError>;
     fn apply_accepted_match(
         &self,
         transition: AcceptedMatch<C>,
@@ -812,9 +820,26 @@ where
         ))
     }
 
-    fn restore_pending_deltas(&self, data: BagDelta, joins: BagDelta) -> Result<(), RSpaceError> {
+    fn pending_continuation_delta(&self) -> Result<Option<BagDelta>, RSpaceError> {
+        Ok(Some(
+            self.state
+                .read()
+                .expect("hot store state read lock")
+                .continuations
+                .pending_delta()
+                .clone(),
+        ))
+    }
+
+    fn restore_pending_deltas(
+        &self,
+        data: BagDelta,
+        continuations: BagDelta,
+        joins: BagDelta,
+    ) -> Result<(), RSpaceError> {
         let mut state = hot_state_write(&self.state);
         state.data.restore_pending_delta(data);
+        state.continuations.restore_pending_delta(continuations);
         state.joins.restore_pending_delta(joins);
         Ok(())
     }

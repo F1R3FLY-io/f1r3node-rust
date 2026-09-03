@@ -1043,6 +1043,7 @@ pub(crate) struct RSpaceContinuationStore<
 > {
     resting: OrderedGroupStore<C, WaitingContinuation<P, K>, true>,
     installed: PathMap<Arc<(Arc<[C]>, WaitingContinuation<P, K>)>>,
+    pending_delta: BagDelta,
 }
 
 impl<C, P, K> Default for RSpaceContinuationStore<C, P, K>
@@ -1055,6 +1056,7 @@ where
         Self {
             resting: OrderedGroupStore::default(),
             installed: PathMap::new(),
+            pending_delta: BagDelta::new(),
         }
     }
 }
@@ -1100,9 +1102,17 @@ where
         canonical: Vec<u8>,
     ) -> bool {
         let prefix = RhoPathV1::continuation_prefix(channels);
-        self.resting
+        let record_path = RhoPathV1::collection_record_path(&prefix, &canonical);
+        let inserted = self
+            .resting
             .insert(&prefix, Arc::from(channels), &identity, canonical, continuation)
-            .expect("typed continuation records must have an injective frozen encoding")
+            .expect("typed continuation records must have an injective frozen encoding");
+        if inserted {
+            self.pending_delta
+                .record_addition(&record_path, Multiplicity::new(1).expect("one is nonzero"))
+                .expect("a successful continuation insertion is representable");
+        }
+        inserted
     }
 
     pub(crate) fn resting_records(
@@ -1139,8 +1149,15 @@ where
         channels: &[C],
         path: &[u8],
     ) -> Option<WaitingContinuation<P, K>> {
-        self.resting
-            .remove_path(&RhoPathV1::continuation_prefix(channels), path)
+        let removed = self
+            .resting
+            .remove_path(&RhoPathV1::continuation_prefix(channels), path);
+        if removed.is_some() {
+            self.pending_delta
+                .record_removal(path, Multiplicity::new(1).expect("one is nonzero"))
+                .expect("a successful continuation removal is representable");
+        }
+        removed
     }
 
     pub(crate) fn install(&mut self, channels: &[C], continuation: WaitingContinuation<P, K>) {
@@ -1225,9 +1242,14 @@ where
 
     pub(crate) fn installed_count(&self) -> usize { self.installed.val_count() }
 
+    pub(crate) fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
+
+    pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
+
     pub(crate) fn clear(&mut self) {
         self.resting.clear();
         self.installed = PathMap::new();
+        self.pending_delta = BagDelta::new();
     }
 }
 
