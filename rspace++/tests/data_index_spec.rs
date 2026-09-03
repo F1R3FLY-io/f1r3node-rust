@@ -6,7 +6,7 @@ use rspace_plus_plus::rspace::bag::{BagDelta, Multiplicity};
 use rspace_plus_plus::rspace::data_index::{DataIndexError, RSpaceDataIndex, RSpaceDataStore};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::internal::{Datum, DatumAddress};
+use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum, DatumAddress, stored_datum_removal_delta};
 use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
 use rspace_plus_plus::rspace::serializers::cold_store_decode::{
     ColdStoreDecode, ColdStoreDecodeError, legacy_prefix,
@@ -43,6 +43,46 @@ fn datum(value: &str, persist: bool, discriminator: u8) -> Datum<String> {
             persist,
         ),
     }
+}
+
+#[test]
+fn stored_datum_removal_delta_aggregates_only_nonpersistent_stored_occurrences() {
+    let channel = "delta-oracle".to_owned();
+    let selected = datum("selected", false, 1);
+    let persistent = datum("persistent", true, 2);
+    let selected_path = RSpaceDataIndex::datum_path(&channel, &selected);
+    let persistent_path = RSpaceDataIndex::datum_path(&channel, &persistent);
+    let candidates = vec![
+        ConsumeCandidate {
+            channel: channel.clone(),
+            datum: selected.clone(),
+            removed_datum: Arc::clone(&selected.a),
+            address: DatumAddress::Stored(Arc::from(selected_path.clone())),
+        },
+        ConsumeCandidate {
+            channel: channel.clone(),
+            datum: selected.clone(),
+            removed_datum: Arc::clone(&selected.a),
+            address: DatumAddress::Stored(Arc::from(selected_path.clone())),
+        },
+        ConsumeCandidate {
+            channel: channel.clone(),
+            datum: persistent,
+            removed_datum: Arc::new("persistent".to_owned()),
+            address: DatumAddress::Stored(Arc::from(persistent_path.clone())),
+        },
+        ConsumeCandidate {
+            channel,
+            datum: selected,
+            removed_datum: Arc::new("fresh".to_owned()),
+            address: DatumAddress::Fresh,
+        },
+    ];
+
+    let delta = stored_datum_removal_delta(&candidates).expect("fixture paths are valid");
+    assert!(delta.additions().is_empty());
+    assert_eq!(delta.removals().count(&selected_path), 2);
+    assert_eq!(delta.removals().count(&persistent_path), 0);
 }
 
 #[test]
