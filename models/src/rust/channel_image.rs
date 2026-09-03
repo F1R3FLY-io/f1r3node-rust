@@ -36,6 +36,7 @@ use std::sync::Arc;
 
 use rspace_plus_plus::rspace::bag::{Bag, Multiplicity, SortedUniqueBagError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as legacy_channel_hash;
 
 use super::par_bag::{
     validate_canonical_key, CanonicalKeyMetadata, CanonicalParBagAccumulator, ParBagCodecError,
@@ -239,6 +240,39 @@ impl ChannelImageV2 {
     /// prefix is inside the hashed bytes. The digest is never a structural-key
     /// substitute; every collision path must compare `as_bytes()`.
     pub fn digest(&self) -> Blake2b256Hash { Blake2b256Hash::new(self.as_bytes()) }
+}
+
+/// The paired identity carried while RSpace migrates from legacy channel
+/// digests to RCI2.  The two values are deliberately retained side by side:
+/// `image` is the injective structural identity, while `legacy_digest` is the
+/// frozen consensus/history key.  A digest match never substitutes for an
+/// image comparison; callers crossing a legacy boundary must compare the
+/// complete image bytes when more than one image shares a digest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelIdentityV2 {
+    image: ChannelImageV2,
+    legacy_digest: Blake2b256Hash,
+}
+
+impl ChannelIdentityV2 {
+    /// Construct both identities from one resident `Par` without changing the
+    /// legacy hash algorithm or consulting top-level `locally_free` in RCI2.
+    pub fn from_par(par: &Par) -> Result<Self, ChannelImageError> {
+        Ok(Self {
+            image: ChannelImageV2::from_par(par)?,
+            legacy_digest: legacy_channel_hash(par),
+        })
+    }
+
+    pub const fn image(&self) -> &ChannelImageV2 { &self.image }
+
+    pub const fn legacy_digest(&self) -> &Blake2b256Hash { &self.legacy_digest }
+
+    /// The legacy digest is only a routing/index hint.  Full structural
+    /// equality remains an image-byte comparison.
+    pub fn legacy_digest_matches(&self, digest: &Blake2b256Hash) -> bool {
+        &self.legacy_digest == digest
+    }
 }
 
 impl AsRef<[u8]> for ChannelImageV2 {

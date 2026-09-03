@@ -5,7 +5,8 @@ use std::sync::Arc;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::channel_image::{
-    ChannelImageError, ChannelImageV2, ValidatedChannelImage, CHANNEL_IMAGE_V2_DOMAIN,
+    ChannelIdentityV2, ChannelImageError, ChannelImageV2, ValidatedChannelImage,
+    CHANNEL_IMAGE_V2_DOMAIN,
 };
 use models::rust::par_bag::PAR_BAG_KEY_DOMAIN;
 use proptest::prelude::*;
@@ -144,6 +145,30 @@ fn image_is_exactly_a_function_of_par_equality() {
             "connective image: {label}"
         );
     }
+}
+
+#[test]
+fn paired_identity_keeps_structural_image_separate_from_legacy_digest() {
+    let par = par_corpus::gint(7);
+    let paired = ChannelIdentityV2::from_par(&par).expect("resident Par has both identities");
+    let same_semantics = par.with_locally_free(vec![0xDE, 0xAD]);
+    let paired_same = ChannelIdentityV2::from_par(&same_semantics)
+        .expect("semantic equal Par remains admissible");
+
+    assert_eq!(paired.image(), paired_same.image());
+    assert_eq!(paired.legacy_digest(), paired_same.legacy_digest());
+    assert!(paired.legacy_digest_matches(paired_same.legacy_digest()));
+
+    let different_connective = par.with_connective_used(!par.connective_used());
+    let paired_different = ChannelIdentityV2::from_par(&different_connective)
+        .expect("connective-separated Par has both identities");
+    assert_ne!(paired.image(), paired_different.image());
+    // The legacy digest remains an independent compatibility value; callers
+    // must not infer structural equality from a digest-routing match.
+    assert_eq!(
+        paired.legacy_digest(),
+        &rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&par)
+    );
 }
 
 #[test]
