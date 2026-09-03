@@ -97,3 +97,43 @@ fn fresh_prepend_refuses_to_shift_positions_during_selection() {
     assert!(pool.reserve(0));
     assert!(!pool.prepend_fresh(Datum::default()));
 }
+
+#[test]
+fn replay_exclusion_reduces_capacity_without_rewriting_authority() {
+    let left = &[2, 0x10][..];
+    let right = &[2, 0x20][..];
+    let mut pool = pool(&[(left, 3), (right, 1)]);
+    let authority = pool.authority.clone();
+    pool.excluded.set_count(
+        left,
+        Some(Multiplicity::new(1).expect("test multiplicity is positive")),
+    );
+
+    assert_eq!(pool.authority, authority);
+    assert!(pool.reserve(0));
+    assert!(pool.reserve(0));
+    assert!(!pool.reserve(0), "replay exclusion leaves exactly two reservations");
+    assert!(pool.reserve(1), "an unrelated identity retains its own capacity");
+    assert_eq!(pool.authority.count(left), 3);
+    assert_eq!(pool.reserved.count(left), 2);
+    assert_eq!(pool.reserved.count(right), 1);
+
+    assert!(pool.release(0));
+    assert!(pool.release(0));
+    assert!(pool.release(1));
+    assert_eq!(pool.reserved, Bag::new());
+    assert_eq!(pool.authority, authority);
+}
+
+#[test]
+fn fresh_candidate_has_one_reversible_capacity_slot() {
+    let mut pool = pool(&[(&[3, 1, 4], 2)]);
+    assert!(pool.prepend_fresh(Datum::default()));
+    assert!(pool.is_available(0));
+    assert!(pool.reserve(0));
+    assert!(!pool.is_available(0));
+    assert!(!pool.reserve(0), "fresh candidates have exactly one capacity slot");
+    assert!(pool.release(0));
+    assert!(pool.is_available(0));
+    assert!(!pool.release(0), "double fresh release must not manufacture capacity");
+}
