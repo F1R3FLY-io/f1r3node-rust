@@ -385,7 +385,7 @@ impl<R> StoredRecord<R> {
     /// Return the complete canonical record bytes embedded in this endpoint.
     /// The prefix and suffix share the authoritative PathMap allocation; the
     /// caller can keep the returned record alive while handing this borrowed
-    /// slice to a durable staging sink.
+    /// slice to a durable staging sink, avoiding decode/re-encode work.
     pub(crate) fn canonical_bytes(&self) -> &[u8] {
         &self.path[self.prefix_len..self.prefix_len + self.canonical_len]
     }

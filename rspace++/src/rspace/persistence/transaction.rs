@@ -244,9 +244,11 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
     }
 
     /// Stage every newly introduced continuation source from the authoritative
-    /// transition journal. The resolver is expected to return the existing
-    /// canonical suffix allocation held by the live PathMap record; this method
-    /// never decodes a continuation or reconstructs a typed record.
+    /// transition journal. The resolver supplies the canonical suffix bytes
+    /// held by the live PathMap record; this method never decodes a
+    /// continuation or reconstructs a typed record. A staging-owned byte
+    /// allocation is made only when the transaction admission API requires an
+    /// owned `Arc<[u8]>`.
     pub fn stage_continuation_sources<F>(
         &mut self,
         transitions: &PathMap<ContentTransition>,
