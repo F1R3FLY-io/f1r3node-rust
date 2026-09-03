@@ -85,6 +85,43 @@ An index absence is an absence proof only for scan windows that start at or abov
 
 Index-served repeat-deploy verdicts must equal ancestor-scan verdicts for every block. Index retention must never drop an entry at or above any future scan window's start.
 
+### Validation and finalization progress
+
+Each validation stage must state its work bound as a function of authenticated input size and configured protocol bounds.
+
+The carrier-index absence path must use at most one index probe for each distinct signature. It must read no ancestor body after engagement.
+
+A carrier hit can use the reference ancestor scan until a scope-aware replacement has a discharged equivalence claim.
+
+Replay and merge optimizations must produce the same post-state root, rejected-deploy records, and validation verdict as their reference paths.
+
+Node-local time must not control block validity, admission, parent choice, or finality.
+
+The validation path must report these carrier-index counters:
+
+- watermark gate engaged
+- watermark gate not ready
+- index absence
+- index hit
+- index read failure
+- fallback scan
+- ancestor metadata visited
+- ancestor bodies read
+
+The merge path must report separate work and time measurements for scope construction, relation construction, conflict construction, rejection selection, and state application.
+
+The replay path must report separate work and time measurements for runtime creation, user deploys, system deploys, checkpoint, and reset.
+
+Counters and timers are diagnostic outputs. They are not authenticated consensus inputs.
+
+A candidate issue #24 repair must run with the carrier fast path forced on and forced off against identical generated DAG fixtures.
+
+The two modes must produce identical verdicts. The test must also prove that the absence path reads no ancestor bodies.
+
+A completed soak must use the repository's fixed workload profile and existing finalization limit. Infrastructure termination does not erase earlier product-test failures.
+
+Do not close issue #24 until completed soaks have no finalization-limit failures and the measured bottleneck has the claimed bound.
+
 ### Replay
 
 Each execution record must bind its pre-state root and post-state root.
@@ -155,6 +192,10 @@ flowchart LR
 ```
 
 The RED result must reproduce a production failure, a proof gap, or an expected model counterexample.
+
+A passing model for behavior that production already has is baseline evidence. It is not the RED test for a new repair.
+
+For issue #24, write one production-facing work-bound property after telemetry identifies the bottleneck. The property must fail current production for the expected reason.
 
 The GREEN result must include the production test and the related formal check.
 
