@@ -99,6 +99,9 @@ pub struct RSpace<C, P, A, K> {
     matcher: Arc<Box<dyn Match<P, A, K>>>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    /// Shared permits protect ordinary mutations; exclusive permits protect
+    /// checkpoint/reset authority transitions without serializing mutations.
+    operation_gate: Arc<tokio::sync::RwLock<()>>,
     /// Live single-step COMM observer (MeTTaIL reactive stepper). `None` in
     /// production: the `log_comm` seam then pays only one branch-predicted
     /// `is_none` check per COMM — zero allocation, no vtable. Installed via
@@ -266,6 +269,7 @@ where
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         // Span[F].withMarks("create-checkpoint") from Scala - works because this is NOT
         // async
         let _span = tracing::info_span!(target: "f1r3fly.rspace", "create-checkpoint").entered();
@@ -309,6 +313,7 @@ where
     }
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         let _span = tracing::info_span!(target: "f1r3fly.rspace", RESET_SPAN).entered();
         let next_history = self.get_history_repository().reset(root)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
@@ -346,6 +351,7 @@ where
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         let len = self.get_store().get_data(channel).len();
         for index in (0..len).rev() {
             self.get_store().remove_datum(channel, index as i32)?;
@@ -354,6 +360,7 @@ where
     }
 
     async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         let len = self.get_store().get_continuations(&channels).len();
         for index in (0..len).rev() {
             let _ = self
@@ -372,6 +379,7 @@ where
     async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
+        let _operation_guard = self.operation_gate.write().await;
         let cache_snapshot = self.get_store().snapshot();
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
         let curr_produce_counter =
@@ -416,6 +424,7 @@ where
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,
     ) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         let _span =
             tracing::info_span!(target: "f1r3fly.rspace", REVERT_SOFT_CHECKPOINT_SPAN).entered();
         let history = self.get_history_repository();
@@ -441,6 +450,7 @@ where
         persist: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<MaybeConsumeResult<C, P, A, K>, RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         // ★ A MALFORMED CONSUME IS A DECIDABLE NEGATIVE, NOT AN INVARIANT
         // VIOLATION — so it is REFUSED, through the `Result` this signature has
         // always carried, rather than aborting the process.
@@ -509,6 +519,7 @@ where
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         let produce_ref = Produce::create(&channel, &data, persist);
 
         let lock_start = Instant::now();
@@ -533,6 +544,7 @@ where
         patterns: Vec<P>,
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         metrics::counter!("rspace.install.calls", "source" => RSPACE_METRICS_SOURCE).increment(1);
         let start = Instant::now();
         let result = self.locked_install_internal(channels, patterns, continuation, true);
@@ -659,6 +671,7 @@ where
             produce_counter: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            operation_gate: Arc::new(tokio::sync::RwLock::new(())),
             step_observer: None,
             retained_set_automata: Arc::new(DashMap::new()),
         }
