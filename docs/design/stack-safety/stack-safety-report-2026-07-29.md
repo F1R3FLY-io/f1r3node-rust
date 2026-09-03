@@ -12797,6 +12797,39 @@ Add the row to [§0](#0-the-fix-register--the-scannable-index) **in the same com
 
 ---
 
+## 2026-09-03 verification addendum — formal gate closure and resource bounds
+
+The campaign proof gate was re-executed after the formal sources gained additional
+causal witnesses. Four report-count assertions in
+`scripts/check-stack-safe-pda-proofs.sh` were stale; they were corrected in commit
+`cc55ab4d4` to match the current Rocq artifacts:
+
+| formal unit | closed-context reports | gate result |
+|---|---:|---|
+| `TwoLevelRSpaceContinuationAuthorityMutants.v` | 16 | passed |
+| `TwoLevelRSpaceMatchPreparation.v` | 24 | passed |
+| `TwoLevelRSpaceMatchTransaction.v` | 15 | passed |
+| `TwoLevelRSpaceMatchTransactionMutants.v` | 11 | passed |
+
+The concrete EPM1 ACT proof pair has a larger checked term environment than the
+ordinary stack-safe PDA units. Its two invocations now use an explicit bounded
+`MemoryHigh=3G`, `MemoryMax=4G`, zero-swap scope; all other proof invocations retain
+the tighter default cap. The isolated EPM1 proof compiled successfully under that
+bound. The complete gate then reported:
+
+```text
+stack-safe-pda: Rocq, Verus, Z3, TLC, and mCRL2 verification passed
+```
+
+TLC invariant violations visible in the captured log belong to intentionally faulty
+mutant models and are the expected causal witnesses; no production model failure was
+reported. The captured run was `/tmp/stack-safe-pda-proofs-final.log` on the host
+where the gate executed. This addendum records measured verification state only; it
+does not close the separate persistent-DAG, LMDB migration, or consensus-epoch
+obligations.
+
+---
+
 ## Appendix G — the maintenance contract
 
 1. **A stack-safety fix lands $`\rightarrow`$ a §0 row and an Appendix F body land in the same commit**, with
