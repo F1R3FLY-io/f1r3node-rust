@@ -39,6 +39,7 @@ theories/TwoLevelRSpaceDeltaMutants.v
 theories/TwoLevelRSpaceRepresentationMutants.v
 theories/TwoLevelRSpaceGuardedOwnershipMutants.v
 theories/TwoLevelRSpaceCheckpointMutants.v
+theories/RhoPathV1Datum.v
 theories/TwoLevelRSpaceContinuationAuthority.v
 theories/TwoLevelRSpaceContinuationAuthorityMutants.v
 theories/TwoLevelRSpaceMatchPreparation.v

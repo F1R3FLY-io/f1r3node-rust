@@ -231,10 +231,13 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceCheckpointMutants.v 3 \
   "the RBA1 codec, streaming, and compatibility causal controls"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthority.v 10 \
+  theories/RhoPathV1Datum.v 21 \
+  "the exact RhoPath V1 datum-key schema and partition"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceContinuationAuthority.v 11 \
   "the exact two-level RSpace continuation and join authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 11 \
+  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 14 \
   "the continuation and join authority causal controls"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchPreparation.v 19 \
@@ -266,6 +269,7 @@ rocq_reject_placeholders \
   theories/TwoLevelRSpaceRepresentationMutants.v \
   theories/TwoLevelRSpaceGuardedOwnershipMutants.v \
   theories/TwoLevelRSpaceCheckpointMutants.v \
+  theories/RhoPathV1Datum.v \
   theories/TwoLevelRSpaceContinuationAuthority.v \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v \
   theories/TwoLevelRSpaceMatchPreparation.v \
@@ -288,6 +292,7 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceRepresentationMutants \
   StackSafePDA.TwoLevelRSpaceGuardedOwnershipMutants \
   StackSafePDA.TwoLevelRSpaceCheckpointMutants \
+  StackSafePDA.RhoPathV1Datum \
   StackSafePDA.TwoLevelRSpaceContinuationAuthority \
   StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants \
   StackSafePDA.TwoLevelRSpaceMatchPreparation \
