@@ -39,7 +39,7 @@ use crate::rspace::persistence::semantic::{
 use crate::rspace::persistence::store::ImmutableObjectStore;
 use crate::rspace::persistence::wal::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectPlanError, LogPackObjectPlanV1,
-    TerminalCommitViewV1,
+    LogPackSequence, PreparedLogPackTransactionV1, TerminalCommitViewV1,
 };
 use crate::rspace::persistence::{
     CatalogAuthorityTokenV1, DurableLimits, LogPackDecodeLimits, ObjectIndexRecordV1, PackId,
@@ -1121,6 +1121,23 @@ pub(crate) struct SemanticallyAdmittedDurableWriterV1<P: SemanticProfile> {
     source: AdmittedCheckpointSourceV1<P>,
 }
 
+#[derive(Debug)]
+pub(crate) enum DurableTransactionPreparationError {
+    ObjectPlan(LogPackObjectPlanError<DurableObjectReadErrorV1>),
+    Format(crate::rspace::persistence::LogPackFormatError),
+}
+
+impl std::fmt::Display for DurableTransactionPreparationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ObjectPlan(error) => write!(formatter, "WAL object planning failed: {error}"),
+            Self::Format(error) => write!(formatter, "WAL transaction preflight failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DurableTransactionPreparationError {}
+
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         self.source.verified_state()
@@ -1155,6 +1172,31 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         transaction: &crate::rspace::persistence::SealedDagTransaction<'_, P>,
     ) -> Result<LogPackObjectPlanV1, LogPackObjectPlanError<DurableObjectReadErrorV1>> {
         LogPackObjectPlanV1::classify(transaction, &self.source.store)
+    }
+
+    /// Build the checked, zero-copy WAL prepare plan for one sealed
+    /// transaction. Object dispositions are classified exactly once against
+    /// the admitted index, then bound to its authenticated receipt and limits.
+    pub(crate) fn prepare_transaction<'transaction, 'mutation>(
+        &'transaction self,
+        transaction: &'transaction crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
+        sequence: LogPackSequence,
+        limits: crate::rspace::persistence::LogPackDecodeLimits,
+    ) -> Result<
+        PreparedLogPackTransactionV1<'transaction, 'mutation, P>,
+        DurableTransactionPreparationError,
+    > {
+        let plan = self
+            .classify_transaction_objects(transaction)
+            .map_err(DurableTransactionPreparationError::ObjectPlan)?;
+        PreparedLogPackTransactionV1::new(
+            transaction,
+            plan,
+            self.authority().slot().store_id(),
+            sequence,
+            limits,
+        )
+        .map_err(DurableTransactionPreparationError::Format)
     }
 
     pub(crate) fn into_checkpoint_publication(self) -> CheckpointPublicationAuthorityV1<P> {
