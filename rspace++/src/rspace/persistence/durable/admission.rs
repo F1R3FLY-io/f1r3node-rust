@@ -38,7 +38,8 @@ use crate::rspace::persistence::semantic::{
 };
 use crate::rspace::persistence::store::ImmutableObjectStore;
 use crate::rspace::persistence::wal::{
-    CommittedObjectComparison, CommittedObjectLookup, TerminalCommitViewV1,
+    CommittedObjectComparison, CommittedObjectLookup, LogPackObjectPlanError, LogPackObjectPlanV1,
+    TerminalCommitViewV1,
 };
 use crate::rspace::persistence::{
     CatalogAuthorityTokenV1, DurableLimits, LogPackDecodeLimits, ObjectIndexRecordV1, PackId,
@@ -1143,6 +1144,17 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         max_encoded_len: u64,
     ) -> Result<Option<Box<[u8]>>, DurableObjectReadErrorV1> {
         self.source.store.get_bounded(digest, max_encoded_len)
+    }
+
+    /// Classify sealed canonical objects against the authenticated pinned
+    /// index. Complete bytes are compared after every digest hit, so the plan
+    /// is safe for direct WAL writing without a digest-only shortcut or a
+    /// second semantic projection.
+    pub(crate) fn classify_transaction_objects(
+        &self,
+        transaction: &crate::rspace::persistence::SealedDagTransaction<'_, P>,
+    ) -> Result<LogPackObjectPlanV1, LogPackObjectPlanError<DurableObjectReadErrorV1>> {
+        LogPackObjectPlanV1::classify(transaction, &self.source.store)
     }
 
     pub(crate) fn into_checkpoint_publication(self) -> CheckpointPublicationAuthorityV1<P> {
