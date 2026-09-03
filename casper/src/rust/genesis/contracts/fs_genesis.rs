@@ -1102,6 +1102,77 @@ mod tests {
         );
     }
 
+    /// Slice 9c-iii pin (2026-09-02): Buffer.rho's `gatherChunks`
+    /// helper must use the divide-and-conquer pairwise merge
+    /// (Θ(ℓ log ν) cost per §Cost accounting > Buffers), NOT the
+    /// pre-9c-iii right-fold (Θ(ℓν)) or a `List.fold(concatBytes)`
+    /// shape.
+    ///
+    /// The specific regressions this catches:
+    ///   1. Right-fold — recurses on `(lo + 1, hi)` after concating
+    ///      chunks[lo] with the tail.  Cost: Θ(ℓν).  Signature:
+    ///      the string `gatherChunks!(privateName, chunkPName, lo + 1, hi,`
+    ///      appears verbatim.
+    ///   2. Left-fold — mirror of (1), recurses on `(lo, hi - 1)`.
+    ///      Same cost class.
+    ///   3. `List.fold(concatBytes)` refactor — a subtly cleaner-
+    ///      looking rewrite would use `List.fold` over the chunk
+    ///      range and reduce with `concatBytes`, which is
+    ///      equivalent to (1) in cost.  Signature: `List.fold(` in
+    ///      gatherChunks's body.
+    ///
+    /// The positive-shape check pins the midpoint-split signature
+    /// `(lo + hi) / 2` that IS the pairwise merge — a refactor that
+    /// keeps the balanced merge but uses a different split (e.g.,
+    /// `(hi - lo) / 2 + lo`) would need the pin updated but is
+    /// asymptotically equivalent.
+    #[test]
+    fn buffer_gather_chunks_uses_divide_and_conquer_pairwise_merge() {
+        let src = include_str!("../../../main/resources/Buffer.rho");
+        let fn_start = src
+            .find("contract gatherChunks(")
+            .expect("Buffer.rho missing gatherChunks definition");
+        // Bound the window at the next `contract` or module-end `}`.
+        let after = &src[fn_start..];
+        let fn_end = after
+            .split("contract ")
+            .nth(1)
+            .map(|_| after.find("contract ").unwrap() + 8)
+            .and_then(|s| after[s..].find("contract ").map(|off| s + off))
+            .unwrap_or(after.len());
+        let body = &after[..fn_end];
+
+        // Positive-shape assertion: midpoint split is present.
+        assert!(
+            body.contains("(lo + hi) / 2"),
+            "gatherChunks must use divide-and-conquer with midpoint \
+             split `(lo + hi) / 2` for Θ(ℓ log ν) cost.  Refactor \
+             detection: right-fold or List.fold shape has Θ(ℓν) cost — \
+             would silently quadruple cost between ν=64 and ν=512.  \
+             Body window scanned:\n{body}",
+        );
+
+        // Negative-shape assertions: the known-bad shapes.
+        assert!(
+            !body.contains("gatherChunks!(privateName, chunkPName, lo + 1, hi,"),
+            "gatherChunks must NOT use right-fold `recurse(lo+1, hi)` \
+             shape — Θ(ℓν) cost regression.  Pre-9c-iii shape."
+        );
+        assert!(
+            !body.contains("gatherChunks!(privateName, chunkPName, lo, hi - 1,"),
+            "gatherChunks must NOT use left-fold `recurse(lo, hi-1)` \
+             shape — Θ(ℓν) cost regression."
+        );
+        assert!(
+            !body.contains("List.fold("),
+            "gatherChunks must NOT use `List.fold(concatBytes)` shape \
+             — cost-equivalent to right-fold (Θ(ℓν)).  If a future \
+             refactor introduces List.fold FOR A DIFFERENT PURPOSE \
+             elsewhere in the helper, tighten this pin to be a \
+             positional regex on the reduce operator."
+        );
+    }
+
     #[test]
     fn fs_native_urn_suffixes_covers_composed_source() {
         // Every URN listed in FS_NATIVE_URN_SUFFIXES must be bound in
@@ -1638,7 +1709,7 @@ mod tests {
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
         // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
-        const EXPECTED: &str = "477d6ccab56eb7d53072891f67e2913c6087a84081d5a3e0c70b75b28023af41";
+        const EXPECTED: &str = "f120b3930a2cb262bce00641ff2a78e8373dc3b8f42d81c98c3d204ee2b281fd";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

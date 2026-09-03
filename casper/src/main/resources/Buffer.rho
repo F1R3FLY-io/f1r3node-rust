@@ -12,11 +12,18 @@
 //     (§Buffer > Reads / Writes / Lifecycle).
 //   - Publication to a fixed registry URN (currently the allocator is
 //     minted but not published — tests scope it via inline `new`).
-//   - The pairwise-merge helper `mergePairs` — for the MVP the `read`
-//     method inlines a right-fold chunk gather.  A follow-up will
-//     replace with the Θ(ℓ log ν) balanced pairwise merge required by
-//     §Cost accounting > Buffers (currently Θ(ℓ ν) for ν chunks; still
-//     correct, just costlier).
+//   - ~~The pairwise-merge helper `mergePairs`~~ **LANDED 2026-09-02
+//     (slice 9c-iii)**: `gatherChunks` (module-level helper called
+//     from `read` / `toByteArray`) now uses a divide-and-conquer
+//     balanced merge (split at midpoint, recurse on both halves in
+//     parallel, concatBytes the two results) giving Θ(ℓ log ν) cost
+//     for ν chunks summing to ℓ bytes — matches the §Cost accounting
+//     > Buffers requirement.  Pinned by
+//     `buffer_gather_chunks_cost_scales_logarithmically_with_chunks`
+//     in `fileio_cost_runtime_spec.rs`: measures cost at ν ∈ {8, 64,
+//     512} and asserts the growth ratio 512/8 stays under a pairwise-
+//     friendly ceiling (would fail dramatically under a regression
+//     to right-fold or `List.fold(concatBytes)`).
 //
 // State layout (spec §Buffers > Implementation notes):
 //   metadata @[*private, *metaP]   — a 7-tuple or "REVOKED"
@@ -938,30 +945,47 @@ new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
   //
   // Takes `privateName` and `chunkPName` as parameters so it can
   // access an instance's chunks (the caller passes `*private, *chunkP`).
-  // Uses a right-fold — cost is Θ(ℓ ν) not the spec-mandated
-  // Θ(ℓ log ν).  A follow-up commit substitutes the balanced pairwise
-  // merge via concatBytes.
+  //
+  // Cost shape (slice 9c-iii, 2026-09-02): balanced divide-and-
+  // conquer pairwise merge — Θ(ℓ log ν) for ν chunks summing to ℓ
+  // bytes, matching §Cost accounting > Buffers.  Recursion splits
+  // `[lo, hi)` at the midpoint, dispatches both halves in parallel,
+  // and concats the two returned ByteArrays at each internal node.
+  // log ν levels; each level's concatBytes calls together copy
+  // exactly ℓ bytes; total O(ℓ log ν) copies.  Pre-9c-iii the impl
+  // was a right-fold with the same operation count but Θ(ℓν) total
+  // copies (each earlier chunk got copied on every subsequent
+  // concat).
   //
   // Storage-neutral: reads each chunk with a linear receive and
   // immediately re-parks it, so `hi - lo` chunks remain on the
-  // tuplespace after this returns.
+  // tuplespace after this returns.  Each chunk is touched exactly
+  // once regardless of the merge strategy — only the ν=1 base case
+  // does a receive, and every chunk is at exactly one such leaf.
   // ==================================================================
   contract gatherChunks(@privateName, @chunkPName, @lo, @hi, ret) = {
     match hi - lo {
       0 => ret!("".hexToBytes())
       _ => {
-        // Read chunk `lo`, re-park, then recurse on [lo+1, hi).
-        for (@seg <- @[privateName, chunkPName, lo]) {
-          @[privateName, chunkPName, lo]!(seg) |
-          match hi - lo == 1 {
-            true  => ret!(seg)
-            false => {
-              new tailCh in {
-                gatherChunks!(privateName, chunkPName, lo + 1, hi, *tailCh) |
-                for (@tail <- tailCh) {
-                  // Concat via the linear-charged primitive.
-                  ret!([seg, tail].concatBytes())
-                }
+        match hi - lo == 1 {
+          true => {
+            // ν=1 leaf: read chunk `lo`, re-park, reply.
+            for (@seg <- @[privateName, chunkPName, lo]) {
+              @[privateName, chunkPName, lo]!(seg) |
+              ret!(seg)
+            }
+          }
+          false => {
+            // ν>1: split at midpoint, recurse on both halves in
+            // parallel, concat results.  Integer division rounds
+            // toward zero — for hi-lo odd, the left half gets the
+            // floor half and the right half gets the ceiling half.
+            // Balance is asymptotically fine either way.
+            new leftCh, rightCh in {
+              gatherChunks!(privateName, chunkPName, lo, (lo + hi) / 2, *leftCh) |
+              gatherChunks!(privateName, chunkPName, (lo + hi) / 2, hi, *rightCh) |
+              for (@leftBytes <- leftCh; @rightBytes <- rightCh) {
+                ret!([leftBytes, rightBytes].concatBytes())
               }
             }
           }
