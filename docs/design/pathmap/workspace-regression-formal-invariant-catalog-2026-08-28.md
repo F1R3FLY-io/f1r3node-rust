@@ -154,15 +154,15 @@ properties cover these grammars so one parser cannot hide behind the aggregate:
 
 | ID | Parser/property family | Domain |
 |---|---|---|
-| PT-01 | checkpoint descriptor | arbitrary 0--1,023-byte input |
-| PT-02 | generation PREPARE preflight | arbitrary 0--1,023-byte input |
-| PT-03 | generation PREPARE view | arbitrary 0--1,023-byte input |
-| PT-04 | generation COMMIT | arbitrary 0--1,023-byte input |
-| PT-05 | object index | arbitrary 0--1,023-byte input |
-| PT-06 | pack header | arbitrary 0--1,023-byte input |
-| PT-07 | retention manifest | arbitrary 0--1,023-byte input |
-| PT-08 | two-slot catalog selection | every arbitrary exact 672-byte catalog image |
-| PT-09 | aggregate WAL-05/RES-01 compatibility family | all eight calls in one generated case |
+| PT-01 | checkpoint descriptor — `arbitrary_checkpoint_descriptor_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-02 | generation PREPARE preflight — `arbitrary_generation_prepare_preflight_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-03 | generation PREPARE view — `arbitrary_generation_prepare_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-04 | generation COMMIT — `arbitrary_generation_commit_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-05 | object index — `arbitrary_object_index_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-06 | pack header — `arbitrary_pack_header_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-07 | retention manifest — `arbitrary_retention_manifest_bytes_are_total` | arbitrary 0--1,023-byte input |
+| PT-08 | two-slot catalog selection — `arbitrary_exact_catalog_images_are_total` | every arbitrary exact 672-byte catalog image |
+| PT-09 | aggregate WAL-05/RES-01 compatibility family — `arbitrary_checkpoint_wire_bytes_are_total` | all eight calls in one generated case |
 
 Every parser is total over bytes by returning success or a typed error. None uses panicking as an
 accepted outcome.

@@ -138,6 +138,54 @@ const FFI_BINDINGS: [Binding; 13] = [
     ),
 ];
 
+const PT_BINDINGS: [Binding; 9] = [
+    (
+        "PT-01",
+        "arbitrary_checkpoint_descriptor_bytes_are_total",
+        "arbitrary_checkpoint_descriptor_bytes_are_total",
+    ),
+    (
+        "PT-02",
+        "arbitrary_generation_prepare_preflight_bytes_are_total",
+        "arbitrary_generation_prepare_preflight_bytes_are_total",
+    ),
+    (
+        "PT-03",
+        "arbitrary_generation_prepare_bytes_are_total",
+        "arbitrary_generation_prepare_bytes_are_total",
+    ),
+    (
+        "PT-04",
+        "arbitrary_generation_commit_bytes_are_total",
+        "arbitrary_generation_commit_bytes_are_total",
+    ),
+    (
+        "PT-05",
+        "arbitrary_object_index_bytes_are_total",
+        "arbitrary_object_index_bytes_are_total",
+    ),
+    (
+        "PT-06",
+        "arbitrary_pack_header_bytes_are_total",
+        "arbitrary_pack_header_bytes_are_total",
+    ),
+    (
+        "PT-07",
+        "arbitrary_retention_manifest_bytes_are_total",
+        "arbitrary_retention_manifest_bytes_are_total",
+    ),
+    (
+        "PT-08",
+        "arbitrary_exact_catalog_images_are_total",
+        "arbitrary_exact_catalog_images_are_total",
+    ),
+    (
+        "PT-09",
+        "arbitrary_checkpoint_wire_bytes_are_total",
+        "arbitrary_checkpoint_wire_bytes_are_total",
+    ),
+];
+
 fn configured_obligations(config: &str) -> BTreeSet<&str> {
     config
         .lines()
@@ -191,6 +239,48 @@ fn verify_bindings(config: &str, bindings: &[Binding], sources: &str, catalog: &
     }
 }
 
+fn verify_executable_only_bindings(bindings: &[Binding], sources: &str, catalog: &str) {
+    let ids = bindings
+        .iter()
+        .map(|(id, _, _)| *id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids.len(), bindings.len(), "executable-only IDs must be unique");
+
+    let targets = bindings
+        .iter()
+        .map(|(_, _, target)| *target)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        targets.len(),
+        bindings.len(),
+        "executable-only parser targets must be unique",
+    );
+
+    for (id, symbol, target) in bindings {
+        assert_eq!(
+            catalog.matches(&format!("| {id} |" )).count(),
+            1,
+            "catalog row {id} must exist exactly once",
+        );
+        assert!(
+            catalog.contains(&format!("`{symbol}`")),
+            "catalog row {id} must cite executable property {symbol}",
+        );
+        let marker = format!("fn {target}(");
+        let offset = sources
+            .find(&marker)
+            .unwrap_or_else(|| panic!("parser row {id} names missing target {target}"));
+        let prefix = &sources[..offset];
+        let attribute = prefix
+            .rfind("#[test]")
+            .unwrap_or_else(|| panic!("parser row {id} target {target} is not a test"));
+        assert!(
+            !prefix[attribute..].contains("#[ignore]"),
+            "parser row {id} target {target} is ignored",
+        );
+    }
+}
+
 #[test]
 fn every_workspace_regression_formal_obligation_has_an_executable_property() {
     let catalog = include_str!(
@@ -216,6 +306,12 @@ fn every_workspace_regression_formal_obligation_has_an_executable_property() {
         include_str!("../../formal/tlaplus/stack_safe_pda/RSpaceStateImportFfiBoundary.cfg"),
         &FFI_BINDINGS,
         ffi_sources,
+        catalog,
+    );
+
+    verify_executable_only_bindings(
+        &PT_BINDINGS,
+        include_str!("../../rspace++/tests/persistence/generation_checkpoint_properties.rs"),
         catalog,
     );
 }
