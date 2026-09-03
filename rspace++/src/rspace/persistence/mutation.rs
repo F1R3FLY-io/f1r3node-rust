@@ -1201,6 +1201,19 @@ impl RSpaceMutationBatchV1 {
         self.record_continuation(path, before, after_ref)
     }
 
+    /// Record an already-normalized continuation transition trie. The trie is
+    /// the authoritative PathMap journal; only its exact content references
+    /// are copied into this batch, with no continuation decode or re-encode.
+    pub fn record_continuation_transitions(
+        &mut self,
+        transitions: &PathMap<ContentTransition>,
+    ) -> Result<(), MutationError> {
+        for (path, transition) in transitions.iter() {
+            self.record_continuation(&path, transition.before(), transition.after())?;
+        }
+        Ok(())
+    }
+
     /// Produce an immutable, preflighted streaming plan.  No semantic-state
     /// scan, entry projection, or sort occurs.
     pub fn plan(&self) -> Result<MutationBatchPlanV1, MutationError> {
@@ -1884,6 +1897,23 @@ mod bag_delta_tests {
             .record_continuation_blob(&path, None, Some(&blob))
             .unwrap();
         assert_eq!(batch.continuation_transition(&path).unwrap().after(), Some(expected));
+    }
+
+    #[test]
+    fn normalized_continuation_trie_conversion_preserves_content_endpoints() {
+        let path = RhoPathV1::collection_record_path(
+            &RhoPathV1::continuation_prefix(&[7_u64]),
+            b"identity",
+        );
+        let blob = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, b"source".to_vec())
+            .unwrap();
+        let transition = ContentTransition::new(None, Some(blob.object_ref())).unwrap();
+        let mut transitions = PathMap::new();
+        transitions.insert(path.clone(), transition);
+
+        let mut batch = RSpaceMutationBatchV1::new(state()).unwrap();
+        batch.record_continuation_transitions(&transitions).unwrap();
+        assert_eq!(batch.continuation_transition(&path).unwrap(), transition);
     }
 
     #[test]
