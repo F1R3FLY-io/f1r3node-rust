@@ -4,6 +4,9 @@
 //! identify which verified root is current and where its immutable objects are
 //! stored; they never redefine RSpace semantics.
 
+use crate::rspace::persistence::semantic::SemanticProfile;
+use crate::rspace::persistence::LogPackDecodeLimits;
+
 mod admission;
 mod catalog;
 mod error;
@@ -75,3 +78,42 @@ pub(crate) use startup::{
 };
 #[cfg(test)]
 pub(crate) use startup::{DurableStartupHookPointV1, arm_durable_startup_hook};
+
+/// Restart-recovered semantic authority exposed as a read-only view.
+///
+/// The underlying admitted writer retains its affine lease and therefore
+/// prevents a second process from mutating the same durable directory. This
+/// façade deliberately exposes no publication or filesystem mutation method;
+/// it is the first production-safe seam for wiring recovery into RSpace while
+/// differential migration work is still in progress.
+pub(crate) struct DurableAuthorityViewV1<P: SemanticProfile> {
+    writer: SemanticallyAdmittedDurableWriterV1<P>,
+}
+
+impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
+    pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
+        self.writer.authority().slot().state()
+    }
+
+    pub(crate) fn manifest(&self) -> crate::rspace::persistence::ObjectRefV1 {
+        self.state().manifest()
+    }
+
+    pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.writer.report() }
+}
+
+pub(crate) fn recover_read_authority<P: SemanticProfile>(
+    path: impl Into<std::path::PathBuf>,
+    recovery_limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+    admission_limits: DurableAdmissionLimitsV1,
+) -> Result<DurableAuthorityViewV1<P>, DurableAdmissionErrorV1> {
+    let directory = io::DurableDirectoryV1::open(path)
+        .map_err(DurableAdmissionErrorV1::Io)?;
+    let writer = directory.recover_and_admit_v1::<P>(
+        recovery_limits,
+        wal_limits,
+        admission_limits,
+    )?;
+    Ok(DurableAuthorityViewV1 { writer })
+}
