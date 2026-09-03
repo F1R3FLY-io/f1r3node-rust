@@ -573,7 +573,7 @@ mod tests {
         fn chain() -> Blake2b512Random {
             let mut rand = Blake2b512Random::create_from_bytes(b"deep");
             for i in 0..130 {
-                rand = rand.split_byte((i % 127) as i8);
+                rand = rand.split_byte((i % 127) as u8);
             }
             rand
         }
