@@ -47,7 +47,9 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
-use crate::rspace::persistence::ContentTransition;
+use crate::rspace::persistence::{
+    ContentTransition, MutationError, RSpaceMutationBatchV1, StateVersionV1,
+};
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -75,6 +77,31 @@ pub(crate) struct PendingDeltas {
     pub continuations: Option<BagDelta>,
     pub continuation_content: Option<PathMap<ContentTransition>>,
     pub joins: Option<BagDelta>,
+}
+
+/// Build one exact three-namespace mutation batch from a coherent hot-store
+/// journal snapshot. The caller supplies authoritative base Bags; no typed
+/// record projection or continuation re-encoding occurs here.
+pub(crate) fn mutation_batch_from_pending(
+    base: StateVersionV1,
+    data_base: &super::bag::Bag,
+    join_base: &super::bag::Bag,
+    pending: &PendingDeltas,
+) -> Result<RSpaceMutationBatchV1, MutationError> {
+    let data = pending.data.as_ref().ok_or(MutationError::EmptyBatch)?;
+    let continuations = pending
+        .continuation_content
+        .as_ref()
+        .ok_or(MutationError::EmptyBatch)?;
+    let joins = pending.joins.as_ref().ok_or(MutationError::EmptyBatch)?;
+    let mut batch = RSpaceMutationBatchV1::new(base)?;
+    batch.record_data_delta(data_base, data)?;
+    batch.record_continuation_transitions(continuations)?;
+    batch.record_join_delta(join_base, joins)?;
+    if batch.is_empty() {
+        return Err(MutationError::EmptyBatch);
+    }
+    Ok(batch)
 }
 
 // See rspace/src/main/scala/coop/rchain/rspace/HotStore.scala
