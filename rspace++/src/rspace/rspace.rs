@@ -397,6 +397,9 @@ where
         let pending_continuation_content = pending
             .continuation_content
             .expect("live hot store must expose continuation content transitions");
+        let pending_continuation_source_bytes = pending
+            .continuation_source_bytes
+            .expect("live hot store must expose continuation source bytes");
         let pending_join_delta = pending
             .joins
             .expect("live hot store must expose a join journal for soft checkpoints");
@@ -408,6 +411,7 @@ where
             pending_data_delta,
             pending_continuation_delta,
             pending_continuation_content,
+            pending_continuation_source_bytes,
             pending_join_delta,
         }
     }
@@ -460,6 +464,7 @@ where
             checkpoint.pending_data_delta,
             checkpoint.pending_continuation_delta,
             checkpoint.pending_continuation_content,
+            checkpoint.pending_continuation_source_bytes,
             checkpoint.pending_join_delta,
         )?;
         self.retained_set_automata.clear();

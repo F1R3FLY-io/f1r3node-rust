@@ -27,16 +27,20 @@ use super::serializers::serializers::{
     encode_continuation_identity, encode_continuation_source_into, encode_join_record,
 };
 use crate::rspace::persistence::{
-    CanonicalBlob, CanonicalBlobKind, ContentTransition, ObjectRefV1,
+    CanonicalBlob, CanonicalBlobKind, CanonicalEncode, ContentTransition, ObjectRefV1,
 };
 
-fn continuation_source_ref(identity: &[u8], canonical: &[u8]) -> ObjectRefV1 {
+fn continuation_source(identity: &[u8], canonical: &[u8]) -> (ObjectRefV1, Arc<[u8]>) {
     let source = canonical
         .get(identity.len()..)
         .expect("a continuation record contains its complete identity prefix");
-    CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source.to_vec())
-        .expect("a continuation source payload is a valid canonical blob")
-        .object_ref()
+    let blob = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source.to_vec())
+        .expect("a continuation source payload is a valid canonical blob");
+    let reference = blob.object_ref();
+    let bytes = blob
+        .try_canonical_bytes()
+        .expect("a continuation source blob is canonically encodable");
+    (reference, bytes.into())
 }
 
 fn record_content_transition(
@@ -825,6 +829,11 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         (record.prefix_len == prefix.len() && path.starts_with(prefix)).then(|| Arc::clone(record))
     }
 
+    fn get_identity_path(&self, prefix: &[u8], path: &[u8]) -> Option<Arc<StoredRecord<R>>> {
+        let record = self.identities.get(path)?;
+        (record.prefix_len == prefix.len() && path.starts_with(prefix)).then(|| Arc::clone(record))
+    }
+
     fn remove_path(&mut self, prefix: &[u8], path: &[u8]) -> Option<R> {
         let mut replacement = self.clone();
         let removed = replacement.remove_path_in_place(prefix, path)?;
@@ -1125,6 +1134,7 @@ pub(crate) struct RSpaceContinuationStore<
     installed: PathMap<Arc<(Arc<[C]>, WaitingContinuation<P, K>)>>,
     pending_delta: BagDelta,
     pending_content: PathMap<ContentTransition>,
+    pending_source_bytes: PathMap<Arc<[u8]>>,
 }
 
 impl<C, P, K> Default for RSpaceContinuationStore<C, P, K>
@@ -1139,6 +1149,7 @@ where
             installed: PathMap::new(),
             pending_delta: BagDelta::new(),
             pending_content: PathMap::new(),
+            pending_source_bytes: PathMap::new(),
         }
     }
 }
@@ -1168,7 +1179,7 @@ where
                 let identity = encode_continuation_identity(&continuation);
                 let mut canonical = identity.clone();
                 encode_continuation_source_into(&continuation, &mut canonical);
-                let source_ref = continuation_source_ref(&identity, &canonical);
+                let (source_ref, _) = continuation_source(&identity, &canonical);
                 (identity, canonical, continuation, Some(source_ref))
             })
             .collect();
@@ -1185,13 +1196,13 @@ where
         canonical: Vec<u8>,
     ) -> bool {
         let prefix = RhoPathV1::continuation_prefix(channels);
-        // The primary continuation trie is keyed by the complete raw
-        // canonical record bytes.  The framed collection path is reserved for
-        // the source-free identity trie and must not enter the semantic
-        // mutation journal.
-        let mut record_path = prefix.clone();
-        record_path.extend_from_slice(&canonical);
-        let source_ref = continuation_source_ref(&identity, &canonical);
+        // The live primary trie and its multiplicity delta are keyed by the
+        // complete canonical record bytes. The semantic ContinuationMap
+        // content journal uses the separate framed, source-free identity path.
+        let mut primary_record_path = prefix.clone();
+        primary_record_path.extend_from_slice(&canonical);
+        let identity_path = RhoPathV1::collection_record_path(&prefix, &identity);
+        let (source_ref, source_bytes) = continuation_source(&identity, &canonical);
         let inserted = self
             .resting
             .insert(
@@ -1205,14 +1216,19 @@ where
             .expect("typed continuation records must have an injective frozen encoding");
         if inserted {
             self.pending_delta
-                .record_addition(&record_path, Multiplicity::new(1).expect("one is nonzero"))
+                .record_addition(
+                    &primary_record_path,
+                    Multiplicity::new(1).expect("one is nonzero"),
+                )
                 .expect("a successful continuation insertion is representable");
             record_content_transition(
                 &mut self.pending_content,
-                &record_path,
+                &identity_path,
                 None,
                 Some(source_ref),
             );
+            self.pending_source_bytes
+                .insert(&identity_path, source_bytes);
         }
         inserted
     }
@@ -1256,7 +1272,7 @@ where
         path: &[u8],
     ) -> Option<Arc<StoredRecord<WaitingContinuation<P, K>>>> {
         let prefix = RhoPathV1::continuation_prefix(channels);
-        self.resting.get_path(&prefix, path)
+        self.resting.get_identity_path(&prefix, path)
     }
 
     pub(crate) fn remove_path(
@@ -1267,6 +1283,9 @@ where
         let record = self
             .resting
             .get_path(&RhoPathV1::continuation_prefix(channels), path);
+        let identity_path = record
+            .as_ref()
+            .and_then(|record| record.identity_path.clone());
         let removed = self
             .resting
             .remove_path(&RhoPathV1::continuation_prefix(channels), path);
@@ -1277,7 +1296,16 @@ where
             let source_ref = record
                 .and_then(|record| record.source_ref)
                 .expect("a continuation record carries its source reference");
-            record_content_transition(&mut self.pending_content, path, Some(source_ref), None);
+            let identity_path = identity_path
+                .as_deref()
+                .expect("a continuation record carries its identity path");
+            record_content_transition(
+                &mut self.pending_content,
+                identity_path,
+                Some(source_ref),
+                None,
+            );
+            self.pending_source_bytes.remove_val_at(identity_path, true);
         }
         removed
     }
@@ -1368,8 +1396,14 @@ where
 
     pub(crate) fn pending_content(&self) -> &PathMap<ContentTransition> { &self.pending_content }
 
+    pub(crate) fn pending_source_bytes(&self) -> &PathMap<Arc<[u8]>> { &self.pending_source_bytes }
+
     pub(crate) fn restore_pending_content(&mut self, content: PathMap<ContentTransition>) {
         self.pending_content = content;
+    }
+
+    pub(crate) fn restore_pending_source_bytes(&mut self, bytes: PathMap<Arc<[u8]>>) {
+        self.pending_source_bytes = bytes;
     }
 
     pub(crate) fn restore_pending_delta(&mut self, delta: BagDelta) { self.pending_delta = delta; }
@@ -1379,6 +1413,7 @@ where
         self.installed = PathMap::new();
         self.pending_delta = BagDelta::new();
         self.pending_content = PathMap::new();
+        self.pending_source_bytes = PathMap::new();
     }
 }
 
@@ -1673,13 +1708,15 @@ mod tests {
         let identity = encode_continuation_identity(&value);
         let mut canonical = identity.clone();
         encode_continuation_source_into(&value, &mut canonical);
+        let expected_canonical = canonical.clone();
         let prefix = RhoPathV1::continuation_prefix(&channels);
-        let mut path = prefix.clone();
-        path.extend_from_slice(&canonical);
+        let path = RhoPathV1::collection_record_path(&prefix, &identity);
+        let mut primary_path = prefix.clone();
+        primary_path.extend_from_slice(&expected_canonical);
         let mut store = RSpaceContinuationStore::new();
 
         assert!(store.put_prepared(&channels, value, identity, canonical));
-        assert_eq!(store.pending_delta().additions().count(&path), 1);
+        assert_eq!(store.pending_delta().additions().count(&primary_path), 1);
         assert!(store.pending_delta().removals().is_empty());
         let transition = store
             .pending_content()
@@ -1691,9 +1728,9 @@ mod tests {
         let source_record = store
             .source_record(&channels, &path)
             .expect("inserted continuation source record");
-        assert_eq!(source_record.canonical_bytes(), &path[prefix.len()..]);
+        assert_eq!(source_record.canonical_bytes(), expected_canonical.as_slice());
 
-        assert!(store.remove_path(&channels, &path).is_some());
+        assert!(store.remove_path(&channels, &primary_path).is_some());
         assert!(store.pending_delta().is_empty());
         assert!(store.pending_content().is_empty());
     }

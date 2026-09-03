@@ -19,6 +19,7 @@ pub struct SoftCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
     pub pending_data_delta: BagDelta,
     pub pending_continuation_delta: BagDelta,
     pub pending_continuation_content: PathMap<ContentTransition>,
+    pub pending_continuation_source_bytes: PathMap<std::sync::Arc<[u8]>>,
     pub pending_join_delta: BagDelta,
 }
 

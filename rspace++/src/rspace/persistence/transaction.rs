@@ -275,6 +275,17 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
         Ok(())
     }
 
+    /// Stage continuation sources from the revision-local byte journal. This
+    /// is the normal production adapter path; the source map is derived from
+    /// the authoritative live trie and contains no typed continuation values.
+    pub fn stage_continuation_source_journal(
+        &mut self,
+        transitions: &PathMap<ContentTransition>,
+        source_bytes: &PathMap<Arc<[u8]>>,
+    ) -> Result<(), DagTransactionError<S::Error>> {
+        self.stage_continuation_sources(transitions, |path| source_bytes.get(path).cloned())
+    }
+
     pub fn seal(self) -> Result<SealedDagTransaction<'mutation, P>, DagTransactionError<S::Error>> {
         self.content_ready()?
             .rewrite()?
