@@ -82,10 +82,9 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_datum_path(&self, path: &[u8]) -> Result<(), RSpaceError>;
     fn apply_datum_delta(&self, delta: &BagDelta) -> Result<(), RSpaceError>;
     /// Return the normalized datum-path changes retained since the current
-    /// hot-store revision was created. Implementations may return an empty
-    /// delta when they do not expose a journal; callers must not treat that
-    /// as proof that the underlying store is semantically empty.
-    fn pending_data_delta(&self) -> BagDelta { BagDelta::new() }
+    /// hot-store revision was created. `None` means this implementation does
+    /// not expose a journal; it must never be interpreted as an empty journal.
+    fn pending_data_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
     fn apply_accepted_match(
         &self,
         transition: AcceptedMatch<C>,
@@ -786,13 +785,15 @@ where
             .map_err(Into::into)
     }
 
-    fn pending_data_delta(&self) -> BagDelta {
-        self.state
-            .read()
-            .expect("hot store state read lock")
-            .data
-            .pending_delta()
-            .clone()
+    fn pending_data_delta(&self) -> Result<Option<BagDelta>, RSpaceError> {
+        Ok(Some(
+            self.state
+                .read()
+                .expect("hot store state read lock")
+                .data
+                .pending_delta()
+                .clone(),
+        ))
     }
 
     fn apply_accepted_match(
