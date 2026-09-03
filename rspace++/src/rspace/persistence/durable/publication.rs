@@ -259,6 +259,7 @@ pub(crate) enum IncrementalPublicationErrorV1 {
         actual: crate::rspace::persistence::StateVersionV1,
     },
     ProfileMismatch,
+    RetentionManifestStateMismatch,
 }
 
 impl From<IncrementalAppendErrorV1> for IncrementalPublicationErrorV1 {
@@ -716,6 +717,13 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         }
         if receipt.profile_id() != P::ID {
             return Err(IncrementalPublicationErrorV1::ProfileMismatch);
+        }
+        let retention = crate::rspace::persistence::retention::RetentionManifestView::parse(
+            source.retention_manifest_bytes(),
+        )
+        .map_err(|error| IncrementalPublicationErrorV1::Durable(Box::new(error.into())))?;
+        if retention.current().state() != receipt.target() {
+            return Err(IncrementalPublicationErrorV1::RetentionManifestStateMismatch);
         }
 
         let (prepare_address, prepare_identity, index_tail) =
