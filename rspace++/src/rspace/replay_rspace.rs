@@ -99,6 +99,29 @@ where
         + Send,
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
+    async fn reset_inner(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
+        let next_history = self.get_history_repository().reset(root)?;
+        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
+
+        *self.event_log.lock().expect("event log lock") = Vec::new();
+        *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
+        self.phase_a_locks.clear();
+        self.phase_b_locks.clear();
+
+        let history_reader = self.get_history_repository().get_history_reader(root)?;
+        self.create_new_hot_store(history_reader);
+        self.restore_installs();
+        self.replay_waiting_continuations_estimate
+            .store(0, Ordering::Relaxed);
+        metrics::gauge!(
+            REPLAY_WAITING_CONTINUATIONS_ESTIMATE_METRIC,
+            "source" => REPLAY_RSPACE_METRICS_SOURCE
+        )
+        .set(0.0);
+
+        Ok(())
+    }
+
     pub fn get_store(&self) -> Arc<Box<dyn HotStore<C, P, A, K>>> {
         self.store.read().expect("store read lock").clone()
     }
@@ -271,29 +294,6 @@ where
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
         let _operation_guard = self.operation_gate.write().await;
         self.reset_inner(root).await
-    }
-
-    async fn reset_inner(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
-        let next_history = self.get_history_repository().reset(root)?;
-        *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
-
-        *self.event_log.lock().expect("event log lock") = Vec::new();
-        *self.produce_counter.lock().expect("produce counter lock") = BTreeMap::new();
-        self.phase_a_locks.clear();
-        self.phase_b_locks.clear();
-
-        let history_reader = self.get_history_repository().get_history_reader(root)?;
-        self.create_new_hot_store(history_reader);
-        self.restore_installs();
-        self.replay_waiting_continuations_estimate
-            .store(0, Ordering::Relaxed);
-        metrics::gauge!(
-            REPLAY_WAITING_CONTINUATIONS_ESTIMATE_METRIC,
-            "source" => REPLAY_RSPACE_METRICS_SOURCE
-        )
-        .set(0.0);
-
-        Ok(())
     }
 
     async fn consume_result(
