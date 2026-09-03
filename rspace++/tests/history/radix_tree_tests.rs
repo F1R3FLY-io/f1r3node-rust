@@ -14,14 +14,13 @@ fn print_tree_handles_a_deep_history_chain_without_native_recursion() {
             let store = Arc::new(InMemoryKeyValueStore::new());
             let tree = RadixTreeImpl::new(store.clone());
 
-            let mut child_key = Vec::new();
             let mut leaf = empty_node();
             leaf[0] = Item::Leaf {
                 prefix: Vec::new(),
                 value: vec![0; 32],
             };
             let leaf_bytes = bincode::serialize::<Node>(&leaf).expect("serialize leaf node");
-            child_key = Blake2b256Hash::new(&leaf_bytes).bytes();
+            let mut child_key = Blake2b256Hash::new(&leaf_bytes).bytes();
             store
                 .put_one(child_key.clone(), leaf_bytes)
                 .expect("store leaf node");
