@@ -256,12 +256,19 @@ fn a_missing_required_persistent_path_is_stale_before_any_mutation() {
     let initial = HotStoreState {
         continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
         installed_continuations: HashMap::new(),
-        data: HashMap::from([(channels[0].clone(), vec![datum])]),
+        data: HashMap::from([(channels[0].clone(), vec![datum.clone()])]),
         joins: HashMap::new(),
         installed_joins: HashMap::new(),
     };
     let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
     let (version, _) = store.get_continuations_versioned(&channels);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture multiplicity fits u64");
     let before = store.snapshot();
     let before_checkpoint = store.checkpoint_changes().expect("checkpoint projection");
 
@@ -274,7 +281,7 @@ fn a_missing_required_persistent_path_is_stale_before_any_mutation() {
                 persist: selected.persist,
                 peeks: selected.peeks.clone(),
             }),
-            datum_delta: BagDelta::new(),
+            datum_delta,
             required_persistent_paths: vec![Arc::from([0xFF_u8, 0x00_u8])],
             join_channels: Vec::new(),
         })
