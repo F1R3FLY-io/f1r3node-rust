@@ -31,8 +31,7 @@ Inductive CurrentContinuationUse : Type :=
 | CurrentImmediateContinuation (record : ContinuationRecord)
 | CurrentStoredContinuation
     (observed : ContinuationAuthority)
-    (capability : ContinuationCapability)
-    (expected : ContinuationExpectation).
+    (capability : ContinuationCapability).
 
 Record CurrentAcceptedProposal : Type := CurrentAcceptedProposalState {
   current_proposal_search : CandidateSearch;
@@ -91,7 +90,9 @@ Definition exact_preparation_input
   (forall absolute,
     search_excluded_count (current_proposal_search proposal)
       (StoredReservation absolute) =
-    flat_lookup absolute (preparation_replay_exclusions input)).
+    flat_lookup absolute (preparation_replay_exclusions input)) /\
+  search_excluded_count (current_proposal_search proposal) FreshReservation =
+    if preparation_fresh_available input then 0%N else 1%N.
 
 Definition bag_delta_exactly_refines_prepared_flat
     (flat : FlatBagDelta) (delta : BagDelta) : Prop :=
@@ -127,18 +128,46 @@ Definition execute_current_continuation
     : option (ContinuationAuthority * ContinuationRecord) :=
   match use with
   | CurrentImmediateContinuation record => Some (before, record)
-  | CurrentStoredContinuation observed capability expected =>
-      match resolve_exact_continuation
-          observed before channels capability expected with
+  | CurrentStoredContinuation observed capability =>
+      match issue_continuation_expectation observed channels capability with
       | None => None
-      | Some target =>
-          match commit_exact_continuation
-              observed before channels capability expected channels with
+      | Some expected =>
+          match resolve_exact_continuation
+              observed before channels capability expected with
           | None => None
-          | Some after => Some (after, target_record target)
+          | Some target =>
+              match commit_exact_continuation
+                  observed before channels capability expected channels with
+              | None => None
+              | Some after => Some (after, target_record target)
+              end
           end
       end
   end.
+
+Theorem stored_continuation_execution_uses_issued_expectation : forall
+    before channels observed capability after record,
+  execute_current_continuation before channels
+      (CurrentStoredContinuation observed capability) = Some (after, record) ->
+  exists expected target,
+    issue_continuation_expectation observed channels capability = Some expected /\
+    resolve_exact_continuation observed before channels capability expected =
+      Some target /\
+    commit_exact_continuation observed before channels capability expected
+      channels = Some after /\
+    record = target_record target.
+Proof.
+  intros before channels observed capability after record Hexecute.
+  unfold execute_current_continuation in Hexecute.
+  destruct (issue_continuation_expectation observed channels capability)
+    as [expected|] eqn:Hissued; [|discriminate].
+  destruct (resolve_exact_continuation observed before channels capability expected)
+    as [target|] eqn:Hresolved; [|discriminate].
+  destruct (commit_exact_continuation observed before channels capability expected
+    channels) as [committed|] eqn:Hcommitted; [|discriminate].
+  inversion Hexecute; subst committed record.
+  exists expected, target. repeat split; assumption.
+Qed.
 
 Record ExactContinuationSuccessor
     (before : ContinuationAuthority) (channels : list Path)
@@ -442,6 +471,7 @@ Theorem current_publication_uses_exact_prepared_successors : forall
 Proof. intros. repeat split; reflexivity. Qed.
 
 Print Assumptions current_accepted_proposal_preserves_requested_channel_vector.
+Print Assumptions stored_continuation_execution_uses_issued_expectation.
 Print Assumptions current_publication_preparation_is_exact.
 Print Assumptions current_publication_successors_are_executable.
 Print Assumptions current_refusal_is_strongly_atomic.
