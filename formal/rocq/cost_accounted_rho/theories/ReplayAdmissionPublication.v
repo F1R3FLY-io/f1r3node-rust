@@ -158,6 +158,37 @@ Definition peer_bytes_cannot_publish
 
 Definition cache_store := nat -> option nat.
 
+Definition cache_insert
+  (key value : nat)
+  (cache : cache_store)
+  : cache_store :=
+  fun query => if Nat.eq_dec query key then Some value else cache query.
+
+Definition replay_publication_state := (evidence_store * cache_store)%type.
+
+Definition publish_validated_state
+  (artifacts : validated_replay_artifacts)
+  (state : replay_publication_state)
+  : replay_publication_state :=
+  match publish_validated artifacts (fst state) with
+  | Published durable =>
+      (durable,
+       cache_insert
+         (replay_execution_id artifacts)
+         (replay_evidence artifacts)
+         (snd state))
+  | PublicationConflict durable => (durable, snd state)
+  end.
+
+Definition validate_post_state_and_publish
+  (declared_post_state computed_post_state : nat)
+  (artifacts : validated_replay_artifacts)
+  (state : replay_publication_state)
+  : replay_publication_state :=
+  if Nat.eq_dec declared_post_state computed_post_state
+  then publish_validated_state artifacts state
+  else state.
+
 Definition cache_after_durable
   (artifacts : validated_replay_artifacts)
   (store : evidence_store)
@@ -407,6 +438,34 @@ Proof.
       (replay_execution_id artifacts)); congruence.
 Qed.
 
+Theorem post_state_mismatch_preserves_durable_evidence_and_cache :
+  forall declared_post_state computed_post_state artifacts durable cache,
+    declared_post_state <> computed_post_state ->
+    validate_post_state_and_publish
+      declared_post_state
+      computed_post_state
+      artifacts
+      (durable, cache) = (durable, cache).
+Proof.
+  intros declared_post_state computed_post_state artifacts durable cache mismatch.
+  unfold validate_post_state_and_publish.
+  destruct (Nat.eq_dec declared_post_state computed_post_state); congruence.
+Qed.
+
+Theorem changed_replay_publication_requires_post_state_equality :
+  forall declared_post_state computed_post_state artifacts state,
+    validate_post_state_and_publish
+      declared_post_state
+      computed_post_state
+      artifacts
+      state <> state ->
+    declared_post_state = computed_post_state.
+Proof.
+  intros declared_post_state computed_post_state artifacts state changed.
+  unfold validate_post_state_and_publish in changed.
+  destruct (Nat.eq_dec declared_post_state computed_post_state); congruence.
+Qed.
+
 Theorem crash_exposes_before_or_after_transaction :
   forall before after observed key,
     transactional_crash_outcome before after observed ->
@@ -426,3 +485,6 @@ Proof.
   intros left right equal.
   now subst right.
 Qed.
+
+Print Assumptions post_state_mismatch_preserves_durable_evidence_and_cache.
+Print Assumptions changed_replay_publication_requires_post_state_equality.

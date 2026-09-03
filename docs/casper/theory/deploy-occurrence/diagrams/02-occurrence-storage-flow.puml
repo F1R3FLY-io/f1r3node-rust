@@ -34,8 +34,10 @@ Finalizer -> Lifecycle: commit one strict transaction
 Lifecycle -> Occurrence: preserve permanent archive
 Occurrence --> Finalizer: terminal survivor
 
-Client -> Occurrence: canonical lookup
-Occurrence --> Client: open or terminal representative
+Client -> Lifecycle: terminal status lookup
+Lifecycle --> Client: source-aware carrier and state anchor
+Client -> Occurrence: archive representative lookup
+Occurrence --> Client: open or terminal archive representative
 Client -> Occurrence: exact source lookup
 Occurrence --> Client: permanent archive rows
 @enduml

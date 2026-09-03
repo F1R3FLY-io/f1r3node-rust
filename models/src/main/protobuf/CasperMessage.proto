@@ -189,6 +189,8 @@ message BlockMetadataInternal {
   bool finalized                             = 10;// whether the block is finalized
   float faultToleranceValue                  = 11;// cached normalized FT at finalization time
   bytes mergeBase                            = 12;
+  // Historical field name. The set contains each committed state effect,
+  // including a cost settlement that follows a failed user-body execution.
   repeated uint32 successfulStateEffectIndices = 13;
   repeated StateEffectIdProto rejectedStateEffects = 14;
   int64 protocolVersion                     = 15;
@@ -202,6 +204,7 @@ message BlockMetadataInternal {
   bytes postStateHash = 23;
   optional CertifiedAdmissionOutcomeProto admissionOutcome = 24;
   optional FinalizedFloorCommitmentProto finalizedFloorCommitment = 25;
+  repeated StateEffectIdProto appliedStateEffects = 26;
 }
 
 message CertifiedSenderAuthorityProto {
@@ -645,6 +648,7 @@ message BodyProto {
   repeated bytes appliedFromScope                   = 6;
   bytes mergeBase                                   = 7;
   repeated StateEffectIdProto rejectedStateEffects  = 8;
+  repeated StateEffectIdProto appliedStateEffects   = 9;
 }
 
 message StateEffectIdProto {

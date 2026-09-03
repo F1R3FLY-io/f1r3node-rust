@@ -780,6 +780,7 @@ mod tests {
                 fault_tolerance_value: 1.0,
                 successful_state_effect_indices: Default::default(),
                 rejected_state_effects: Default::default(),
+                applied_state_effects: Default::default(),
                 protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                 objective_equivocation_evidence_delta: Vec::new(),
                 sender_authority: None,

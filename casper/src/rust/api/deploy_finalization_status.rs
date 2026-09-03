@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-use block_storage::rust::dag::deploy_lifecycle_types::{LifecycleEvents, TerminalState};
+use block_storage::rust::dag::deploy_lifecycle_types::{
+    LifecycleEvents, TerminalRecord, TerminalState,
+};
+use block_storage::rust::dag::deploy_occurrence_types::TerminalOccurrenceSummary;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -81,10 +84,16 @@ pub struct DeployFinalizationStatus {
     /// count is observability, not the causal ordering). Gives operators
     /// visibility into deploys that are contending.
     pub rejection_count: u32,
-    /// Hash of the highest-block-number surviving block that contains
-    /// the sig in `body.deploys`.
-    /// `None` when the sig has not yet been included in any block.
+    /// Hash of a block that contains the deploy occurrence. Pending status
+    /// uses the highest surviving inclusion. Protocol-v6 terminal status uses
+    /// the source-aware occurrence that the lifecycle record froze.
+    /// `None` when the deploy has no known occurrence.
     pub latest_block_hash: Option<BlockHash>,
+    /// Hash of the finalized floor whose replay state determines a terminal
+    /// verdict. This hash is not a deploy occurrence carrier.
+    pub finalized_floor_hash: Option<BlockHash>,
+    /// Height of `finalized_floor_hash`.
+    pub finalized_floor_height: Option<i64>,
 }
 
 impl DeployFinalizationStatus {
@@ -93,6 +102,8 @@ impl DeployFinalizationStatus {
             state: DeployFinalizationState::Pending,
             rejection_count: 0,
             latest_block_hash: None,
+            finalized_floor_hash: None,
+            finalized_floor_height: None,
         }
     }
 }
@@ -105,6 +116,46 @@ fn terminal_state(state: TerminalState) -> DeployFinalizationState {
     }
 }
 
+fn v6_terminal_anchors(
+    record: &TerminalRecord,
+    summary: &TerminalOccurrenceSummary,
+) -> ApiErr<(Option<BlockHash>, BlockHash, i64)> {
+    if summary.terminal_state != record.state || summary.rejection_count != record.rejection_count {
+        return Err(eyre::eyre!(
+            "protocol-v6 lifecycle record and occurrence summary disagree"
+        ));
+    }
+    let occurrence = match record.latest_block_hash.len() {
+        0 => None,
+        32 => Some(Bytes::copy_from_slice(&record.latest_block_hash)),
+        length => {
+            return Err(eyre::eyre!(
+                "protocol-v6 terminal occurrence hash must be 32 bytes, got {}",
+                length
+            ));
+        }
+    };
+    if matches!(
+        record.state,
+        TerminalState::Finalized | TerminalState::Failed
+    ) && occurrence.is_none()
+    {
+        return Err(eyre::eyre!(
+            "protocol-v6 finalized or failed deploy is missing its occurrence carrier"
+        ));
+    }
+    if record.latest_height < 0 || record.latest_height > summary.finalized_floor_height {
+        return Err(eyre::eyre!(
+            "protocol-v6 terminal occurrence height is outside the finalized floor"
+        ));
+    }
+    Ok((
+        occurrence,
+        Bytes::copy_from_slice(&summary.finalized_floor_hash),
+        summary.finalized_floor_height,
+    ))
+}
+
 fn pending_from_row(row: &LifecycleEvents) -> DeployFinalizationStatus {
     let (rejection_count, _, latest_block_hash) =
         crate::rust::finality::deploy_lifecycle::lifecycle_display(row);
@@ -113,6 +164,8 @@ fn pending_from_row(row: &LifecycleEvents) -> DeployFinalizationStatus {
         state: DeployFinalizationState::Pending,
         rejection_count,
         latest_block_hash,
+        finalized_floor_hash: None,
+        finalized_floor_height: None,
     }
 }
 
@@ -170,6 +223,8 @@ fn checked_block_membership(
         state: DeployFinalizationState::Pending,
         rejection_count: 0,
         latest_block_hash: Some(block_hash.clone()),
+        finalized_floor_hash: None,
+        finalized_floor_height: None,
     }))
 }
 
@@ -229,15 +284,35 @@ fn resolve_lookup(
         .deploy_terminal(deploy_id)
         .map_err(|e| eyre::eyre!("deploy lifecycle terminal lookup failed: {}", e))?
     {
-        let latest_block_hash = if record.latest_block_hash.is_empty() {
-            None
-        } else {
-            Some(Bytes::from(record.latest_block_hash))
+        let (latest_block_hash, finalized_floor_hash, finalized_floor_height) = match deploy_id {
+            DeployLookupId::Legacy(_) => (
+                (!record.latest_block_hash.is_empty())
+                    .then(|| Bytes::from(record.latest_block_hash.clone())),
+                None,
+                None,
+            ),
+            DeployLookupId::V6(deploy_id) => {
+                let summary = dag
+                    .deploy_terminal_occurrence_summary(*deploy_id)
+                    .map_err(|error| {
+                        eyre::eyre!(
+                            "terminal deploy occurrence summary lookup failed: {}",
+                            error
+                        )
+                    })?
+                    .ok_or_else(|| {
+                        eyre::eyre!("protocol-v6 terminal deploy is missing its occurrence summary")
+                    })?;
+                let (occurrence, floor, height) = v6_terminal_anchors(&record, &summary)?;
+                (occurrence, Some(floor), Some(height))
+            }
         };
         return Ok(DeployFinalizationStatus {
             state: terminal_state(record.state),
             rejection_count: record.rejection_count,
             latest_block_hash,
+            finalized_floor_hash,
+            finalized_floor_height,
         });
     }
 
@@ -264,7 +339,31 @@ fn resolve_lookup(
 
 #[cfg(test)]
 mod tests {
+    use block_storage::rust::dag::deploy_occurrence_types::{
+        DeployOccurrence, OccurrenceAdmissionMode, DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
+        DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+    };
+    use models::rust::deploy_id::DeployIdV6;
+    use proptest::prelude::*;
+
     use super::*;
+
+    fn occurrence(deploy_id: DeployIdV6, hash: [u8; 32], height: i64) -> DeployOccurrence {
+        DeployOccurrence {
+            schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+            deploy_id,
+            protocol_version: DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
+            source_block_hash: hash,
+            source_block_height: height,
+            source_validator: vec![1; models::rust::validator::LENGTH],
+            deploy_ordinal: 0,
+            admission_mode: OccurrenceAdmissionMode::Normal,
+            admission_ruleset_digest: vec![2; 32],
+            admission_context_digest: vec![3; 32],
+            sender_authority_digest: vec![4; 32],
+            is_failed: false,
+        }
+    }
 
     #[test]
     fn pending_unknown_has_empty_fields() {
@@ -272,6 +371,8 @@ mod tests {
         assert_eq!(s.state, DeployFinalizationState::Pending);
         assert_eq!(s.rejection_count, 0);
         assert!(s.latest_block_hash.is_none());
+        assert!(s.finalized_floor_hash.is_none());
+        assert!(s.finalized_floor_height.is_none());
     }
 
     #[test]
@@ -339,5 +440,131 @@ mod tests {
         let status = pending_from_row(&row);
         assert_eq!(status.rejection_count, 1);
         assert_eq!(status.latest_block_hash, Some(Bytes::from(surviving)));
+    }
+
+    proptest! {
+        #[test]
+        fn terminal_status_never_substitutes_the_state_floor_for_the_occurrence_carrier(
+            carrier in any::<[u8; 32]>(),
+            current in any::<[u8; 32]>(),
+            floor in any::<[u8; 32]>(),
+            carrier_height in 0_i64..i64::MAX,
+            floor_delta in 0_i64..1_000_000,
+            rejection_count in any::<u32>(),
+            terminal_choice in 0_u8..3,
+        ) {
+            let terminal_state = match terminal_choice {
+                0 => TerminalState::Finalized,
+                1 => TerminalState::Failed,
+                _ => TerminalState::Expired,
+            };
+            let floor_height = carrier_height.saturating_add(floor_delta);
+            let deploy_id = DeployIdV6::try_from(&[9_u8; 32][..]).expect("deploy id");
+            let canonical_at_compaction = occurrence(deploy_id, current, carrier_height);
+            let current_representative = occurrence(deploy_id, current, carrier_height);
+            let record = TerminalRecord {
+                state: terminal_state,
+                rejection_count,
+                latest_height: carrier_height,
+                latest_block_hash: carrier.to_vec(),
+            };
+            let summary = TerminalOccurrenceSummary {
+                schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+                deploy_id,
+                terminal_state,
+                canonical_at_compaction,
+                current_representative,
+                rejection_count,
+                archive_count: 2,
+                archive_digest: [0; 32],
+                finalization_revision: 1,
+                finalized_floor_hash: floor,
+                finalized_floor_height: floor_height,
+                compaction_horizon: 0,
+                digest_generation: 0,
+            };
+
+            let anchors = v6_terminal_anchors(&record, &summary).expect("matching rows");
+            prop_assert_eq!(anchors.0.as_ref().map(|hash| hash.as_ref()), Some(carrier.as_slice()));
+            prop_assert_eq!(anchors.1.as_ref(), floor.as_slice());
+            prop_assert_eq!(anchors.2, floor_height);
+
+            let mismatched_record = TerminalRecord {
+                rejection_count: rejection_count.wrapping_add(1),
+                ..record
+            };
+            prop_assert!(v6_terminal_anchors(&mismatched_record, &summary).is_err());
+        }
+    }
+
+    #[test]
+    fn expired_terminal_can_have_no_surviving_occurrence() {
+        let deploy_id = DeployIdV6::try_from(&[9_u8; 32][..]).expect("deploy id");
+        let summary = TerminalOccurrenceSummary {
+            schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+            deploy_id,
+            terminal_state: TerminalState::Expired,
+            canonical_at_compaction: occurrence(deploy_id, [1; 32], 1),
+            current_representative: occurrence(deploy_id, [1; 32], 1),
+            rejection_count: 1,
+            archive_count: 1,
+            archive_digest: [0; 32],
+            finalization_revision: 1,
+            finalized_floor_hash: [2; 32],
+            finalized_floor_height: 5,
+            compaction_horizon: 0,
+            digest_generation: 0,
+        };
+        let record = TerminalRecord {
+            state: TerminalState::Expired,
+            rejection_count: 1,
+            latest_height: 0,
+            latest_block_hash: Vec::new(),
+        };
+
+        let (occurrence, floor, height) =
+            v6_terminal_anchors(&record, &summary).expect("valid expired terminal");
+        assert_eq!(occurrence, None);
+        assert_eq!(floor, Bytes::from_static(&[2; 32]));
+        assert_eq!(height, 5);
+    }
+
+    #[test]
+    fn terminal_anchors_reject_missing_malformed_and_future_occurrence_carriers() {
+        let deploy_id = DeployIdV6::try_from(&[9_u8; 32][..]).expect("deploy id");
+        let summary = TerminalOccurrenceSummary {
+            schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+            deploy_id,
+            terminal_state: TerminalState::Finalized,
+            canonical_at_compaction: occurrence(deploy_id, [1; 32], 1),
+            current_representative: occurrence(deploy_id, [1; 32], 1),
+            rejection_count: 0,
+            archive_count: 1,
+            archive_digest: [0; 32],
+            finalization_revision: 1,
+            finalized_floor_hash: [2; 32],
+            finalized_floor_height: 5,
+            compaction_horizon: 0,
+            digest_generation: 0,
+        };
+        let missing = TerminalRecord {
+            state: TerminalState::Finalized,
+            rejection_count: 0,
+            latest_height: 1,
+            latest_block_hash: Vec::new(),
+        };
+        let malformed = TerminalRecord {
+            latest_block_hash: vec![3; 31],
+            ..missing.clone()
+        };
+        let future = TerminalRecord {
+            latest_height: 6,
+            latest_block_hash: vec![3; 32],
+            ..missing
+        };
+
+        assert!(v6_terminal_anchors(&missing, &summary).is_err());
+        assert!(v6_terminal_anchors(&malformed, &summary).is_err());
+        assert!(v6_terminal_anchors(&future, &summary).is_err());
     }
 }

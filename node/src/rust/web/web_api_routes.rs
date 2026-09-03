@@ -1139,6 +1139,8 @@ mod router_tests {
                 state: "Finalized".to_string(),
                 rejection_count: 0,
                 latest_block_hash: Some("aa".to_string()),
+                finalized_floor_hash: Some("bb".to_string()),
+                finalized_floor_height: Some(1),
             })
         }
 

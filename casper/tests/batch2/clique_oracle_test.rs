@@ -864,6 +864,10 @@ async fn finalized_floor_requires_lineage_and_updates_secondary_parent_ft() {
                     (v3.clone(), b1_v3.block_hash.clone()),
                 ]),
                 predecessor_certificate,
+                crate::helper::block_generator::MergeFacts {
+                    merge_base: Some(b1_v1.block_hash.clone()),
+                    ..Default::default()
+                },
             );
 
         // Build b2 on top of b1_v3 (NOT b1_v1) — the DAG diverges
@@ -894,7 +898,7 @@ async fn finalized_floor_requires_lineage_and_updates_secondary_parent_ft() {
         );
         assert_eq!(dag_after_second.last_finalized_block(), b1_v1.block_hash);
 
-        let b2_rebased = crate::helper::block_generator::create_block(
+        let b2_rebased = crate::helper::block_generator::create_block_with_merge_facts(
             &mut block_store,
             &mut block_dag_storage,
             vec![b1_v3.block_hash.clone(), b1_v1.block_hash.clone()],
@@ -912,6 +916,10 @@ async fn finalized_floor_requires_lineage_and_updates_secondary_parent_ft() {
             None,
             None,
             None,
+            crate::helper::block_generator::MergeFacts {
+                merge_base: Some(b1_v1.block_hash.clone()),
+                ..Default::default()
+            },
         );
         let dag_before_rebased_finalization = block_dag_storage
             .get_representation()
@@ -1752,7 +1760,7 @@ fn stage_spine_state_divergence(
     }
 }
 
-/// WHY the oracle may read agreement off the MAIN-PARENT SPINE alone.
+/// The causal oracle does not prove exact state support.
 ///
 /// `agree` asks only `dag.is_in_main_chain(target, latest_message)`. That is
 /// sound exactly while every merge keeps its main parent's content, because
@@ -1769,24 +1777,10 @@ fn stage_spine_state_divergence(
 /// floors (#536 on two validators, #537 on two, #539 on one) and every propose
 /// was refused thereafter.
 ///
-/// The geometry is staged DIRECTLY here because the ordinary merge path can
-/// no longer build it: a merge bases on its main parent, so that parent's
-/// content is in the base rather than in the conflict set, and there is no
-/// rejection decision to make about it. (It is NOT pinning that holds this —
-/// `pinned` is empty in production and the option filter it feeds is dead
-/// code.) So this is a standing pin on the ORACLE's precondition, not a live
-/// defect: if the base rule is ever weakened, the oracle silently goes back to
-/// certifying blocks nothing holds, and the failure resurfaces here rather
-/// than on a wedged shard.
-///
-/// The precondition is CONDITIONAL, not structural. When the main parent's
-/// state does not hold the floor's settled content the base falls back to the
-/// floor, which puts the parent's content back in scope where cost-optimal
-/// resolution can drop it — this geometry's shape. Whether that path can
-/// actually produce it is open; it requires finality lag, which no suite here
-/// generates.
+/// The exact floor witness filters this causal result through state-effect
+/// containment. The unit regression in `finality::floor` verifies that filter.
 #[tokio::test]
-async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content() {
+async fn causal_spine_agreement_does_not_prove_state_support() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         use casper::rust::safety::clique_oracle::FtThreshold;
 
@@ -1821,25 +1815,21 @@ async fn spine_agreement_is_sound_only_because_merges_keep_main_parent_content()
                 .expect("ft_witnessed_exact(A)");
         assert!(
             decision,
-            "A certifies on spine agreement alone. Nothing in the oracle prevents \
-             this — only the merge rule that keeps A's content in every descendant's \
-             state makes spine agreement equal state agreement"
+            "the causal threshold does not inspect state effects; exact floor \
+             certification must apply the state-support filter"
         );
     })
     .await
 }
 
 /// The paired pin for
-/// [`spine_agreement_is_sound_only_because_merges_keep_main_parent_content`]:
+/// [`causal_spine_agreement_does_not_prove_state_support`]:
 /// the same DAG with `B` built as an ordinary merge — `merge_base = A`,
 /// nothing rejected — certifies `A` too.
 ///
 /// The pair together is the actual point. Both geometries produce the SAME
-/// oracle verdict, so the oracle cannot distinguish the state that holds `A`
-/// from the state that dropped it. Whether a certified block's content
-/// survives is settled entirely by the merge rule, never by finality — which
-/// is why the rule is enforced where content is chosen (conflict resolution)
-/// rather than where agreement is counted.
+/// causal oracle verdict. Exact floor certification distinguishes the states
+/// with the state-effect containment filter.
 #[tokio::test]
 async fn an_ordinary_merge_still_certifies_the_main_parent_it_kept() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
@@ -1858,9 +1848,8 @@ async fn an_ordinary_merge_still_certifies_the_main_parent_it_kept() {
                 .expect("ft_witnessed_exact(A)");
         assert!(
             decision,
-            "an ordinary merge keeps its main parent's content and A finalizes — \
-             the same verdict the divergent geometry gets, which is why the merge \
-             rule and not the oracle is what makes certification meaningful"
+            "the causal threshold accepts the ordinary merge, whose state also \
+             preserves its main-parent effect"
         );
     })
     .await

@@ -518,7 +518,25 @@ The structural cost of [§5.2](#52-the-cost-function-sig_algebra_min_required) i
 
 **Threshold `k`-of-`N`.** *Admission.* Up to `N` atomic candidate signatures are verified under the verify-before-count discipline. Empty signatures are placeholders; any non-empty invalid signature is rejected even when the quorum is otherwise met. The threshold itself does not key a funding pool: the verified, non-placeholder signer atoms determine the funding signature. *Fuel tokens.* The accepted deploy executes under the single authority-derived budget committed by the state-bound admission certificate.
 
-**Settlement and rollback.** Authorization, execution, and settlement are reconciled inside one node checkpoint. Any failed evaluation or later evidence check restores the body, located-stack changes, SystemVault effects, and unpublished evidence together. State-bound admission rejects capacity exhaustion before an execution can become block evidence. Settlement is recomputed from authenticated processed deploys at the close lane, and replay must reproduce the physical debit, byte debit, fee, and adjacent roots. Consequently, a failed body cannot leak partial tuple-space or custody state, and an underfunded execution cannot be admitted. Application protocols spanning multiple distinct deploys still need their own atomicity construction because the consensus transaction boundary is one deploy.
+**Settlement and rollback.** Authorization, execution, and settlement share one
+node checkpoint. A failed user body restores its program and located-stack
+changes. The node retains the authenticated attempted-work trace.
+
+The close lane then commits the verified physical debit, byte debit, and fee.
+This failed-body settlement has adjacent roots and exact merge provenance.
+
+A later evidence error restores the complete deployment checkpoint. It removes
+the body, settlement, and unpublished evidence together.
+
+State-bound admission rejects capacity exhaustion before block evidence exists.
+Replay must reproduce status, cost, settlement, event evidence, and adjacent
+roots.
+
+Thus, a failed body cannot leak partial program state. The failed process still
+pays for verified attempted work.
+
+Application protocols across multiple deploys need their own atomicity design.
+The consensus transaction boundary remains one deploy.
 
 ---
 

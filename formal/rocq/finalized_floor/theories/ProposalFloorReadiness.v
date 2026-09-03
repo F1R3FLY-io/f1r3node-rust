@@ -53,6 +53,12 @@ Definition preserves_committed_state (relation : certified_context_relation) : b
   | _ => false
   end.
 
+Definition pending_work_ready
+  (fresh_ready retry_ready terminal : bool) : bool :=
+  andb (negb terminal) (orb fresh_ready retry_ready).
+
+Definition selection_has_work := pending_work_ready.
+
 Theorem ready_requires_matching_complete_authority :
   forall permit_required permit_fresh relation slots_complete proposer_active,
     classify_proposal_readiness permit_required permit_fresh relation
@@ -138,3 +144,41 @@ Proof.
 Qed.
 
 Print Assumptions proposal_floor_readiness_contract.
+
+Theorem retry_only_work_is_ready :
+  pending_work_ready false true false = true.
+Proof. reflexivity. Qed.
+
+Theorem terminal_work_is_never_ready :
+  forall fresh_ready retry_ready,
+    pending_work_ready fresh_ready retry_ready true = false.
+Proof. intros [] []; reflexivity. Qed.
+
+Theorem fresh_to_retry_transfer_preserves_readiness :
+  pending_work_ready true false false =
+  pending_work_ready false true false.
+Proof. reflexivity. Qed.
+
+Theorem heartbeat_and_selection_share_pending_work_classifier :
+  forall fresh_ready retry_ready terminal,
+    pending_work_ready fresh_ready retry_ready terminal =
+    selection_has_work fresh_ready retry_ready terminal.
+Proof. reflexivity. Qed.
+
+Theorem pending_work_readiness_contract :
+  pending_work_ready false true false = true /\
+  (forall fresh_ready retry_ready,
+    pending_work_ready fresh_ready retry_ready true = false) /\
+  pending_work_ready true false false = pending_work_ready false true false /\
+  (forall fresh_ready retry_ready terminal,
+    pending_work_ready fresh_ready retry_ready terminal =
+    selection_has_work fresh_ready retry_ready terminal).
+Proof.
+  exact
+    (conj retry_only_work_is_ready
+      (conj terminal_work_is_never_ready
+        (conj fresh_to_retry_transfer_preserves_readiness
+          heartbeat_and_selection_share_pending_work_classifier))).
+Qed.
+
+Print Assumptions pending_work_readiness_contract.

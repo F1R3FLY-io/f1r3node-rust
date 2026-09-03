@@ -320,6 +320,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         deploys: checkpoint.deploys,
         rejected_deploys: Vec::new(),
         rejected_state_effects: checkpoint.rejected_state_effects,
+        applied_state_effects: checkpoint.applied_state_effects,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,

@@ -68,14 +68,116 @@ fn block_in_base_merge_scope(
 
 fn state_effect_encoding_matches_protocol(
     protocol_version: i64,
+    activation_version: i64,
     encoded: &[StateEffectId],
     computed: &[StateEffectId],
 ) -> bool {
-    if protocol_version < crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION {
+    if protocol_version < activation_version {
         encoded.is_empty()
     } else {
         encoded.windows(2).all(|pair| pair[0] < pair[1]) && encoded == computed
     }
+}
+
+fn applied_scope_encoding_matches_protocol(
+    protocol_version: i64,
+    encoded: &[Bytes],
+    computed: &HashSet<Bytes>,
+) -> bool {
+    if protocol_version < models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION {
+        return encoded.is_empty();
+    }
+    if encoded
+        .iter()
+        .any(|deploy_id| deploy_id.len() != models::rust::deploy_id::DeployIdV6::LENGTH)
+        || encoded.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return false;
+    }
+    let mut expected = computed.iter().cloned().collect::<Vec<_>>();
+    expected.sort();
+    encoded == expected
+}
+
+fn projected_user_effects(
+    block_store: &KeyValueBlockStore,
+    effects: &[StateEffectId],
+) -> Result<HashSet<Bytes>, CasperError> {
+    let mut projected = HashSet::new();
+    for effect in effects {
+        let source = block_store
+            .get(&effect.source_block_hash)?
+            .ok_or_else(|| CasperError::BlockNotHeld(effect.source_block_hash.clone()))?;
+        let mut execution_index = 0u32;
+        let mut matched = false;
+        for deploy in source
+            .body
+            .deploys
+            .iter()
+            .filter(|deploy| !deploy.is_admission_rejected())
+        {
+            if execution_index == effect.execution_index {
+                if !deploy.has_committed_state_effect() {
+                    return Err(CasperError::Other(format!(
+                        "applied state effect {}:{} identifies a non-committed user execution",
+                        PrettyPrinter::build_string_bytes(&effect.source_block_hash),
+                        effect.execution_index,
+                    )));
+                }
+                if deploy.deploy_id().len() != models::rust::deploy_id::DeployIdV6::LENGTH {
+                    return Err(CasperError::Other(format!(
+                        "applied state effect {}:{} projects to a non-v6 deploy identity",
+                        PrettyPrinter::build_string_bytes(&effect.source_block_hash),
+                        effect.execution_index,
+                    )));
+                }
+                projected.insert(deploy.deploy_id().clone());
+                matched = true;
+                break;
+            }
+            execution_index = execution_index.checked_add(1).ok_or_else(|| {
+                CasperError::Other("source block execution index exceeds u32".to_string())
+            })?;
+        }
+        if matched {
+            continue;
+        }
+        for system_deploy in &source.body.system_deploys {
+            if execution_index == effect.execution_index {
+                if !matches!(system_deploy, ProcessedSystemDeploy::Succeeded { .. }) {
+                    return Err(CasperError::Other(format!(
+                        "applied state effect {}:{} identifies a failed system execution",
+                        PrettyPrinter::build_string_bytes(&effect.source_block_hash),
+                        effect.execution_index,
+                    )));
+                }
+                matched = true;
+                break;
+            }
+            execution_index = execution_index.checked_add(1).ok_or_else(|| {
+                CasperError::Other("source block execution index exceeds u32".to_string())
+            })?;
+        }
+        if !matched {
+            return Err(CasperError::Other(format!(
+                "applied state effect {}:{} identifies no source execution",
+                PrettyPrinter::build_string_bytes(&effect.source_block_hash),
+                effect.execution_index,
+            )));
+        }
+    }
+    Ok(projected)
+}
+
+fn applied_scope_projects_exactly(
+    block_store: &KeyValueBlockStore,
+    effects: &[StateEffectId],
+    applied_scope: &[Bytes],
+) -> Result<bool, CasperError> {
+    let encoded = applied_scope.iter().cloned().collect::<HashSet<_>>();
+    Ok(encoded.len() == applied_scope.len()
+        && applied_scope.windows(2).all(|pair| pair[0] < pair[1])
+        && encoded == projected_user_effects(block_store, effects)?)
 }
 
 fn duplicate_deploy_ids(
@@ -863,9 +965,29 @@ pub async fn validate_block_pre_state(
                 };
             let state_effects_match = state_effect_encoding_matches_protocol(
                 block.header.version,
+                crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
                 &block.body.rejected_state_effects,
                 rejected_state_effects,
             );
+            let applied_state_effects_match = state_effect_encoding_matches_protocol(
+                block.header.version,
+                models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION,
+                &block.body.applied_state_effects,
+                &merged.applied_state_effects,
+            );
+            let applied_projection_match = if !applied_state_effects_match {
+                false
+            } else if block.header.version
+                < models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION
+            {
+                block.body.applied_from_scope.is_empty()
+            } else {
+                applied_scope_projects_exactly(
+                    block_store,
+                    &block.body.applied_state_effects,
+                    &block.body.applied_from_scope,
+                )?
+            };
 
             if incoming_pre_state_hash != computed_pre_state_hash {
                 tracing::debug!(target: "f1r3fly.casper.block_validation", block = %hex::encode(&block.block_hash[..8.min(block.block_hash.len())]), computed = %hex::encode(&computed_pre_state_hash[..8.min(computed_pre_state_hash.len())]), incoming = %hex::encode(&incoming_pre_state_hash[..8.min(incoming_pre_state_hash.len())]), "validate.block_checkpoint: PRE-STATE MISMATCH (recomputed merge != block's recorded pre-state) -> reject, NO replay");
@@ -876,7 +998,11 @@ pub async fn validate_block_pre_state(
                 );
 
                 Ok(Either::Right(None))
-            } else if !rejections_match || !state_effects_match {
+            } else if !rejections_match
+                || !state_effects_match
+                || !applied_state_effects_match
+                || !applied_projection_match
+            {
                 // Detailed logging for InvalidRejectedDeploy mismatch
                 let extra_in_computed: Vec<_> = computed_rejections
                     .difference(&block_rejections)
@@ -901,23 +1027,29 @@ pub async fn validate_block_pre_state(
                     computed_rejected_state_effects = rejected_state_effects.len(),
                     block_rejected_state_effects = block.body.rejected_state_effects.len(),
                     state_effects_match,
+                    applied_state_effects_match,
+                    applied_projection_match,
                     "merge-disposition mismatch: validator and block creator disagree on rejected deploys or state effects"
                 );
 
                 Ok(Either::Left(BlockStatus::invalid_rejected_deploy()))
             } else {
-                let block_applied: HashSet<Bytes> =
-                    block.body.applied_from_scope.iter().cloned().collect();
+                let applied_scope_match = applied_scope_encoding_matches_protocol(
+                    block.header.version,
+                    &block.body.applied_from_scope,
+                    &merged.applied_from_scope,
+                );
                 let block_base = if block.body.merge_base.is_empty() {
                     None
                 } else {
                     Some(block.body.merge_base.clone())
                 };
-                if block_applied != merged.applied_from_scope || block_base != merged.merge_base {
+                if !applied_scope_match || block_base != merged.merge_base {
                     tracing::error!(
                         target: "f1r3fly.casper.block_validation",
                         block_num = block.body.state.block_number,
                         block_hash = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                        applied_scope_match,
                         "merge state-construction facts disagree with validator recomputation"
                     );
                     return Ok(Either::Left(BlockStatus::invalid_rejected_deploy()));
@@ -1186,6 +1318,7 @@ pub struct DeploysCheckpoint {
     pub deploys: Vec<ProcessedDeploy>,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub rejected_state_effects: Vec<StateEffectId>,
+    pub applied_state_effects: Vec<StateEffectId>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub bonds: Vec<Bond>,
     pub applied_from_scope: Vec<Bytes>,
@@ -1428,6 +1561,7 @@ async fn compute_deploys_checkpoint_cosigned_internal(
         deploys: processed_deploys,
         rejected_deploys: computed_parents_info.rejected_user,
         rejected_state_effects: computed_parents_info.rejected_state_effects,
+        applied_state_effects: computed_parents_info.applied_state_effects,
         system_deploys: processed_system_deploys,
         bonds,
         applied_from_scope,
@@ -1536,6 +1670,7 @@ pub async fn compute_deploys_checkpoint(
     let pre_state_hash = computed_parents_info.state;
     let rejected_deploys = computed_parents_info.rejected_user;
     let rejected_state_effects = computed_parents_info.rejected_state_effects;
+    let applied_state_effects = computed_parents_info.applied_state_effects;
     let mut applied_from_scope: Vec<Bytes> = computed_parents_info
         .applied_from_scope
         .into_iter()
@@ -1579,6 +1714,7 @@ pub async fn compute_deploys_checkpoint(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         bonds,
         applied_from_scope,
@@ -1783,8 +1919,29 @@ fn parent_state_holds_floor(
             hash: floor_hash.clone(),
             block_number: floor_block_number,
         },
-        &mut crate::rust::finality::floor::IntroducedSigsMemo::new(),
+        &mut crate::rust::finality::floor::StateContainmentMemo::new(),
     )
+}
+
+fn state_contains_all_floors(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    candidate: &crate::rust::finality::floor::Floor,
+    settled_floors: &[crate::rust::finality::floor::Floor],
+    memo: &mut crate::rust::finality::floor::StateContainmentMemo,
+) -> Result<bool, CasperError> {
+    for settled in settled_floors {
+        if !crate::rust::finality::floor::state_contains(
+            dag,
+            block_store,
+            candidate,
+            settled,
+            memo,
+        )? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub async fn compute_parents_post_state(
@@ -1840,6 +1997,7 @@ pub async fn compute_parents_post_state(
                 state,
                 rejected_user: Vec::new(),
                 rejected_state_effects: Vec::new(),
+                applied_state_effects: Vec::new(),
                 rejected_slashes: Vec::new(),
                 applied_from_scope: HashSet::new(),
                 merge_base: None,
@@ -1884,6 +2042,7 @@ pub async fn compute_parents_post_state(
                         state,
                         rejected_user: Vec::new(),
                         rejected_state_effects: Vec::new(),
+                        applied_state_effects: Vec::new(),
                         rejected_slashes: Vec::new(),
                         applied_from_scope: HashSet::new(),
                         merge_base: None,
@@ -1960,6 +2119,7 @@ pub async fn compute_parents_post_state(
                                 state,
                                 rejected_user: Vec::new(),
                                 rejected_state_effects: Vec::new(),
+                                applied_state_effects: Vec::new(),
                                 rejected_slashes: Vec::new(),
                                 applied_from_scope: HashSet::new(),
                                 merge_base: Some(candidate.block_hash.clone()),
@@ -2118,18 +2278,20 @@ pub async fn compute_parents_post_state(
             // floor-wide rebase performed on every merge, now paid for only
             // when it is needed.
             let base_holds_floor_started = std::time::Instant::now();
-            let mut containment_memo = crate::rust::finality::floor::IntroducedSigsMemo::new();
-            let base_holds_floor = crate::rust::finality::floor::state_contains(
+            let mut containment_memo = crate::rust::finality::floor::StateContainmentMemo::new();
+            let main_parent_floor = crate::rust::finality::floor::Floor {
+                hash: main_parent_hash.clone(),
+                block_number: base_block_number,
+            };
+            let selected_floor = crate::rust::finality::floor::Floor {
+                hash: floor_hash.clone(),
+                block_number: floor_block_number,
+            };
+            let base_holds_settled = state_contains_all_floors(
                 &s.dag,
                 block_store,
-                &crate::rust::finality::floor::Floor {
-                    hash: main_parent_hash.clone(),
-                    block_number: base_block_number,
-                },
-                &crate::rust::finality::floor::Floor {
-                    hash: floor_hash.clone(),
-                    block_number: floor_block_number,
-                },
+                &main_parent_floor,
+                &settled_floors,
                 &mut containment_memo,
             )?;
             metrics::histogram!(PARENTS_POST_STATE_BASE_HOLDS_FLOOR_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
@@ -2140,15 +2302,28 @@ pub async fn compute_parents_post_state(
             // still lose to the very parent that wrongly dropped it. Settled
             // content has to outrank the base, and the only way for that to hold
             // is for the base not to be that parent.
-            let (scope_anchor_hash, scope_anchor_number) = if base_holds_floor {
+            let (scope_anchor_hash, scope_anchor_number) = if base_holds_settled {
                 (main_parent_hash.clone(), base_block_number)
             } else {
+                if !state_contains_all_floors(
+                    &s.dag,
+                    block_store,
+                    &selected_floor,
+                    &settled_floors,
+                    &mut containment_memo,
+                )? {
+                    return Err(CasperError::IncompatibleFinalizedFork(format!(
+                        "selected floor {}#{} does not preserve every inherited settled floor",
+                        PrettyPrinter::build_string_bytes(&selected_floor.hash),
+                        selected_floor.block_number,
+                    )));
+                }
                 tracing::debug!(
                     target: "f1r3fly.merge.cpps",
                     step = "compute_parents_post_state.BASE_FALLS_BACK_TO_FLOOR",
                     main_parent = %hex::encode(&main_parent_hash[..8.min(main_parent_hash.len())]),
                     floor = %hex::encode(&floor_hash[..8.min(floor_hash.len())]),
-                    "main parent's state lacks settled content; basing on the floor instead"
+                    "main parent's state lacks inherited settled content; basing on the floor instead"
                 );
                 (floor_hash.clone(), floor_block_number)
             };
@@ -2607,20 +2782,22 @@ pub async fn compute_parents_post_state(
             let state = merger_result.post_state;
             let mut rejected_user_records = merger_result.rejected_deploys;
             let rejected_state_effects = merger_result.rejected_state_effects;
+            let applied_state_effects = merger_result.applied_state_effects;
             let rejected_slash_pairs = merger_result.rejected_slash_occurrences;
             let applied_user_sigs = merger_result.applied_from_scope;
             let merge_base = merger_result.merge_base;
+            if projected_user_effects(block_store, &applied_state_effects)? != applied_user_sigs {
+                return Err(CasperError::Other(
+                    "merge result applied scope is not the exact user-effect projection"
+                        .to_string(),
+                ));
+            }
             // The tripwire runs on the PRE-suppression records: suppression
             // drops a record whose identical copy is visible elsewhere in
             // scope, but the drop it testifies to still happened in THIS
             // merge — a settled chain kept out must trip regardless of
             // whether its record is re-emitted.
-            assert_no_settled_rejection(
-                block_store,
-                &settled_floors,
-                &rejected_user_records,
-                s.on_chain_state.shard_conf.deploy_lifespan,
-            )?;
+            assert_no_settled_rejection(&s.dag, &settled_floors, &rejected_state_effects)?;
             let suppressed = suppress_already_recorded_rejections(
                 block_store,
                 &rejection_recording_blocks,
@@ -2890,6 +3067,7 @@ pub async fn compute_parents_post_state(
                 state: computed_state.clone(),
                 rejected_user: rejected_user_records,
                 rejected_state_effects,
+                applied_state_effects,
                 rejected_slashes,
                 applied_from_scope: applied_user_sigs,
                 merge_base,
@@ -2950,25 +3128,25 @@ pub async fn compute_parents_post_state(
 /// never a silent erasure. Duplicate records discarded a redundant copy of
 /// an effect that is still present and are exempt.
 fn assert_no_settled_rejection(
-    block_store: &KeyValueBlockStore,
+    dag: &KeyValueDagRepresentation,
     settled_floors: &[crate::rust::finality::floor::Floor],
-    rejected: &[RejectedDeploy],
-    deploy_lifespan: i64,
+    rejected: &[StateEffectId],
 ) -> Result<(), CasperError> {
-    for record in rejected.iter().filter(|r| !r.is_duplicate()) {
+    let mut cache =
+        block_storage::rust::finality::state_preservation::StateProvenanceCache::default();
+    for effect in rejected {
         for floor in settled_floors {
-            let min_height = floor.block_number.saturating_sub(deploy_lifespan);
-            if crate::rust::finality::deploy_lifecycle::effect_in_state_of(
-                block_store,
+            if block_storage::rust::finality::state_preservation::is_state_effect_active_with_cache(
+                dag,
                 &floor.hash,
-                record.typed_deploy_id(),
-                min_height,
+                effect,
+                &mut cache,
             )? {
                 return Err(CasperError::Other(format!(
-                    "finalized-floor safety violation: merge rejected sig {} whose \
-                     effect is settled in floor {}#{} — a settled chain must be \
-                     re-applied, never kept out",
-                    hex::encode(&record.deploy_id()[..8.min(record.deploy_id().len())]),
+                    "finalized-floor safety violation: merge rejected state effect {}:{} \
+                     that is settled in floor {}#{}",
+                    PrettyPrinter::build_string_bytes(&effect.source_block_hash),
+                    effect.execution_index,
                     PrettyPrinter::build_string_bytes(&floor.hash),
                     floor.block_number,
                 )));
@@ -2993,8 +3171,8 @@ mod backstop_tests {
     use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
     use models::rust::block_implicits;
     use models::rust::casper::protocol::casper_message::{
-        BlockMessage, FinalizationCertificate, ProcessedDeploy, RejectedDeploy,
-        RejectedDeployReason, StateEffectId,
+        BlockMessage, FinalizationCertificate, ProcessedDeploy, ProcessedSystemDeploy,
+        RejectedDeploy, RejectedDeployReason, StateEffectId, SystemDeployData,
     };
     use models::rust::deploy_id::{DeployIdV6, DeployLookupId, LegacyDeploySignature};
     use models::rust::validator::ValidatorSerde;
@@ -3004,9 +3182,10 @@ mod backstop_tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::{
+        applied_scope_encoding_matches_protocol, applied_scope_projects_exactly,
         block_in_base_merge_scope, canonical_disposition_sets_at_floor, canonical_rejected_sigs,
         canonical_won_sigs, duplicate_deploy_ids, handle_errors, merge_scope_backstop_exceeded,
-        reduce_scope_events, rejected_sig_has_visible_non_source_win,
+        reduce_scope_events, rejected_sig_has_visible_non_source_win, state_contains_all_floors,
         state_effect_encoding_matches_protocol, suppress_already_recorded_rejections,
         visible_rejected_deploy_sigs, SigEvents, EXACT_REJECTION_PROTOCOL_VERSION,
         MAX_FLOOR_DISTANCE_BLOCKS,
@@ -3094,7 +3273,7 @@ mod backstop_tests {
     }
 
     #[test]
-    fn state_effect_encoding_activates_only_at_protocol_three() {
+    fn state_effect_encoding_enforces_activation_and_canonical_order() {
         let first = StateEffectId {
             source_block_hash: Bytes::from_static(b"a"),
             execution_index: 0,
@@ -3103,36 +3282,196 @@ mod backstop_tests {
             source_block_hash: Bytes::from_static(b"b"),
             execution_index: 0,
         };
+        let third = StateEffectId {
+            source_block_hash: Bytes::from_static(b"c"),
+            execution_index: 0,
+        };
         let canonical = vec![first.clone(), second.clone()];
 
         assert!(state_effect_encoding_matches_protocol(
             EXACT_REJECTION_PROTOCOL_VERSION,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
             &[],
             &canonical,
         ));
         assert!(!state_effect_encoding_matches_protocol(
             EXACT_REJECTION_PROTOCOL_VERSION,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
             std::slice::from_ref(&first),
             &canonical,
         ));
         let current = crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
         assert!(state_effect_encoding_matches_protocol(
-            current, &canonical, &canonical,
+            current,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
+            &canonical,
+            &canonical,
         ));
         assert!(!state_effect_encoding_matches_protocol(
             current,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
             &[second.clone(), first.clone()],
             &canonical,
         ));
         assert!(!state_effect_encoding_matches_protocol(
             current,
-            &[first.clone(), first],
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
+            &[first.clone(), first.clone()],
             &canonical,
         ));
         assert!(!state_effect_encoding_matches_protocol(
             current,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
             std::slice::from_ref(&second),
             &canonical,
+        ));
+        assert!(!state_effect_encoding_matches_protocol(
+            current,
+            crate::rust::casper::STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION,
+            &[first, second, third],
+            &canonical,
+        ));
+    }
+
+    fn state_effect_from_key((source, execution_index): (u8, u8)) -> StateEffectId {
+        StateEffectId {
+            source_block_hash: Bytes::from(vec![source; block_hash::LENGTH]),
+            execution_index: u32::from(execution_index),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn canonical_applied_state_effect_vector_matches_itself(
+            keys in prop::collection::btree_set((any::<u8>(), any::<u8>()), 0..16),
+        ) {
+            let computed = keys.into_iter().map(state_effect_from_key).collect::<Vec<_>>();
+
+            prop_assert!(state_effect_encoding_matches_protocol(
+                crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION,
+                &computed,
+                &computed,
+            ));
+        }
+
+        #[test]
+        fn absent_or_inherited_non_applied_claim_does_not_match_exact_vector(
+            keys in prop::collection::btree_set((any::<u8>(), any::<u8>()), 0..16),
+            candidate in (any::<u8>(), any::<u8>()),
+        ) {
+            let mut keys = keys;
+            let mut extra = candidate;
+            while keys.contains(&extra) {
+                extra.1 = extra.1.wrapping_add(1);
+            }
+            let computed = keys.iter().copied().map(state_effect_from_key).collect::<Vec<_>>();
+            keys.insert(extra);
+            let encoded = keys.into_iter().map(state_effect_from_key).collect::<Vec<_>>();
+
+            prop_assert!(!state_effect_encoding_matches_protocol(
+                crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION,
+                &encoded,
+                &computed,
+            ));
+        }
+
+        #[test]
+        fn duplicate_applied_state_effect_vector_is_never_canonical(
+            keys in prop::collection::btree_set((any::<u8>(), any::<u8>()), 1..16),
+        ) {
+            let computed = keys.into_iter().map(state_effect_from_key).collect::<Vec<_>>();
+            let mut encoded = computed.clone();
+            encoded.insert(1.min(encoded.len()), encoded[0].clone());
+
+            prop_assert!(!state_effect_encoding_matches_protocol(
+                crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION,
+                &encoded,
+                &computed,
+            ));
+        }
+
+        #[test]
+        fn out_of_order_applied_state_effect_vector_is_never_canonical(
+            keys in prop::collection::btree_set((any::<u8>(), any::<u8>()), 2..16),
+        ) {
+            let computed = keys.into_iter().map(state_effect_from_key).collect::<Vec<_>>();
+            let mut encoded = computed.clone();
+            encoded.swap(0, 1);
+
+            prop_assert!(!state_effect_encoding_matches_protocol(
+                crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+                models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION,
+                &encoded,
+                &computed,
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_applied_vector_with_missing_source_reports_block_not_held() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let missing_hash = Bytes::from(vec![0xBC; block_hash::LENGTH]);
+        let effect = StateEffectId {
+            source_block_hash: missing_hash.clone(),
+            execution_index: 0,
+        };
+
+        let error = applied_scope_projects_exactly(&block_store, &[effect], &[])
+            .expect_err("an exact claim with an unavailable source must defer");
+
+        assert!(matches!(
+            error,
+            crate::rust::errors::CasperError::BlockNotHeld(hash) if hash == missing_hash
+        ));
+    }
+
+    #[test]
+    fn applied_scope_encoding_requires_exact_canonical_deploy_ids() {
+        let first = Bytes::from(vec![1; models::rust::deploy_id::DeployIdV6::LENGTH]);
+        let second = Bytes::from(vec![2; models::rust::deploy_id::DeployIdV6::LENGTH]);
+        let computed = HashSet::from([first.clone(), second.clone()]);
+        let activation = models::rust::block_metadata::APPLIED_STATE_EFFECTS_PROTOCOL_VERSION;
+
+        assert!(applied_scope_encoding_matches_protocol(
+            activation - 1,
+            &[],
+            &computed,
+        ));
+        assert!(!applied_scope_encoding_matches_protocol(
+            activation - 1,
+            std::slice::from_ref(&first),
+            &computed,
+        ));
+        assert!(applied_scope_encoding_matches_protocol(
+            activation,
+            &[first.clone(), second.clone()],
+            &computed,
+        ));
+        assert!(!applied_scope_encoding_matches_protocol(
+            activation,
+            &[second.clone(), first.clone()],
+            &computed,
+        ));
+        assert!(!applied_scope_encoding_matches_protocol(
+            activation,
+            &[first.clone(), first.clone()],
+            &computed,
+        ));
+        assert!(!applied_scope_encoding_matches_protocol(
+            activation,
+            std::slice::from_ref(&first),
+            &computed,
+        ));
+        assert!(!applied_scope_encoding_matches_protocol(
+            activation,
+            &[first, Bytes::from_static(b"short")],
+            &computed,
         ));
     }
 
@@ -3428,6 +3767,24 @@ mod backstop_tests {
         parents: Vec<BlockHash>,
         deploys: Vec<ProcessedDeploy>,
     ) -> BlockMessage {
+        occurrence_test_block_with_system(
+            block_number,
+            seq_num,
+            version,
+            parents,
+            deploys,
+            Vec::new(),
+        )
+    }
+
+    fn occurrence_test_block_with_system(
+        block_number: i64,
+        seq_num: i32,
+        version: i64,
+        parents: Vec<BlockHash>,
+        deploys: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+    ) -> BlockMessage {
         let mut block = block_implicits::get_random_block(
             Some(block_number),
             Some(seq_num),
@@ -3439,7 +3796,7 @@ mod backstop_tests {
             Some(parents),
             Some(Vec::new()),
             Some(deploys),
-            Some(Vec::new()),
+            Some(system_deploys),
             Some(Vec::new()),
             Some("root".to_string()),
             None,
@@ -3448,6 +3805,210 @@ mod backstop_tests {
             bind_test_floor(&mut block);
         }
         block
+    }
+
+    #[tokio::test]
+    async fn applied_scope_is_the_exact_user_effect_projection() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = v6_processed(
+            construct_deploy::source_deploy_now_full(
+                "@1!(1)".to_string(),
+                None,
+                None,
+                None,
+                Some(0),
+                None,
+            )
+            .expect("deploy"),
+        );
+        let deploy_id = deploy.deploy_id().clone();
+        let source = occurrence_test_block(
+            1,
+            1,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            vec![Bytes::from(vec![0x71; block_hash::LENGTH])],
+            vec![deploy],
+        );
+        block_store
+            .put_block_message(&source)
+            .expect("store source block");
+        let effect = StateEffectId {
+            source_block_hash: source.block_hash,
+            execution_index: 0,
+        };
+
+        assert!(applied_scope_projects_exactly(
+            &block_store,
+            std::slice::from_ref(&effect),
+            std::slice::from_ref(&deploy_id),
+        )
+        .unwrap());
+        assert!(!applied_scope_projects_exactly(&block_store, &[effect], &[]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn system_effects_do_not_enter_the_user_deploy_projection() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = v6_processed(
+            construct_deploy::source_deploy_now_full(
+                "@1!(1)".to_string(),
+                None,
+                None,
+                None,
+                Some(0),
+                None,
+            )
+            .expect("deploy"),
+        );
+        let deploy_id = deploy.deploy_id().clone();
+        let source = occurrence_test_block_with_system(
+            1,
+            1,
+            crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
+            vec![Bytes::from(vec![0x72; block_hash::LENGTH])],
+            vec![deploy],
+            vec![ProcessedSystemDeploy::Succeeded {
+                event_list: Vec::new(),
+                system_deploy: SystemDeployData::CloseBlockSystemDeployData,
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+            }],
+        );
+        block_store
+            .put_block_message(&source)
+            .expect("store source block");
+        let user_effect = StateEffectId {
+            source_block_hash: source.block_hash.clone(),
+            execution_index: 0,
+        };
+        let system_effect = StateEffectId {
+            source_block_hash: source.block_hash,
+            execution_index: 1,
+        };
+
+        assert!(applied_scope_projects_exactly(
+            &block_store,
+            &[user_effect, system_effect.clone()],
+            &[deploy_id],
+        )
+        .unwrap());
+        assert!(applied_scope_projects_exactly(&block_store, &[system_effect], &[]).unwrap());
+    }
+
+    #[tokio::test]
+    async fn replay_base_must_contain_every_settled_floor() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let version = crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION;
+        let genesis = occurrence_test_block(0, 0, version, Vec::new(), Vec::new());
+        let left = occurrence_test_block(1, 1, version, vec![genesis.block_hash.clone()], vec![
+            v6_processed(
+                construct_deploy::source_deploy_now_full(
+                    "@1!(1)".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(0),
+                    None,
+                )
+                .expect("left deploy"),
+            ),
+        ]);
+        let right = occurrence_test_block(1, 2, version, vec![genesis.block_hash.clone()], vec![
+            v6_processed(
+                construct_deploy::source_deploy_now_full(
+                    "@2!(2)".to_string(),
+                    None,
+                    None,
+                    None,
+                    Some(0),
+                    None,
+                )
+                .expect("right deploy"),
+            ),
+        ]);
+        let right_effect = StateEffectId {
+            source_block_hash: right.block_hash.clone(),
+            execution_index: 0,
+        };
+        let mut partial = occurrence_test_block(
+            2,
+            3,
+            version,
+            vec![left.block_hash.clone(), right.block_hash.clone()],
+            Vec::new(),
+        );
+        partial.body.merge_base = left.block_hash.clone();
+        partial.body.rejected_state_effects = vec![right_effect.clone()];
+        let mut joined = occurrence_test_block(
+            3,
+            4,
+            version,
+            vec![partial.block_hash.clone(), right.block_hash.clone()],
+            Vec::new(),
+        );
+        joined.body.merge_base = partial.block_hash.clone();
+        joined.body.applied_state_effects = vec![right_effect];
+
+        for block in [&genesis, &left, &right, &partial, &joined] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        for (block, mode) in [
+            (&genesis, InsertMode::ApprovedGenesis),
+            (&left, InsertMode::Normal),
+            (&right, InsertMode::Normal),
+            (&partial, InsertMode::Normal),
+            (&joined, InsertMode::Normal),
+        ] {
+            dag_storage.insert(block, mode).expect("insert block");
+        }
+        let dag = dag_storage.get_representation().expect("dag");
+        let settled = [
+            crate::rust::finality::floor::Floor {
+                hash: left.block_hash,
+                block_number: 1,
+            },
+            crate::rust::finality::floor::Floor {
+                hash: right.block_hash,
+                block_number: 1,
+            },
+        ];
+        let partial_floor = crate::rust::finality::floor::Floor {
+            hash: partial.block_hash,
+            block_number: 2,
+        };
+        let joined_floor = crate::rust::finality::floor::Floor {
+            hash: joined.block_hash,
+            block_number: 3,
+        };
+
+        assert!(!state_contains_all_floors(
+            &dag,
+            &block_store,
+            &partial_floor,
+            &settled,
+            &mut crate::rust::finality::floor::StateContainmentMemo::new(),
+        )
+        .unwrap());
+        assert!(state_contains_all_floors(
+            &dag,
+            &block_store,
+            &joined_floor,
+            &settled,
+            &mut crate::rust::finality::floor::StateContainmentMemo::new(),
+        )
+        .unwrap());
     }
 
     #[tokio::test]
@@ -3846,10 +4407,11 @@ mod backstop_tests {
         let genesis = scope_test_block(0, 0, v1.clone(), Vec::new());
         let main = scope_test_block(1, 1, v1.clone(), vec![genesis.block_hash.clone()]);
         let off_main = scope_test_block(1, 1, v2.clone(), vec![genesis.block_hash.clone()]);
-        let floor = scope_test_block(2, 2, v1.clone(), vec![
+        let mut floor = scope_test_block(2, 2, v1.clone(), vec![
             main.block_hash.clone(),
             off_main.block_hash.clone(),
         ]);
+        floor.body.merge_base = main.block_hash.clone();
         let outside = scope_test_block(1, 1, v3.clone(), vec![genesis.block_hash.clone()]);
         let outside_same_height =
             scope_test_block(2, 2, v3.clone(), vec![outside.block_hash.clone()]);

@@ -70,11 +70,12 @@ use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
+    TerminalState,
 };
 use super::deploy_occurrence_store::DeployOccurrenceStore;
 use super::deploy_occurrence_types::{
-    DeployOccurrence, OccurrenceAdmissionMode, DEPLOY_OCCURRENCE_PROTOCOL_VERSION,
-    DEPLOY_OCCURRENCE_SCHEMA_VERSION,
+    DeployOccurrence, OccurrenceAdmissionMode, TerminalOccurrenceSummary,
+    DEPLOY_OCCURRENCE_PROTOCOL_VERSION, DEPLOY_OCCURRENCE_SCHEMA_VERSION,
 };
 use super::equivocation_tracker_store::EquivocationTrackerStore;
 use crate::rust::finality::{
@@ -458,11 +459,39 @@ impl KeyValueDagRepresentation {
         finalized_floor_height: i64,
         compaction_horizon: i64,
     ) -> Result<TerminalRecord, KvStoreError> {
+        let validate_record = |candidate: &TerminalRecord| {
+            let carrier_length = candidate.latest_block_hash.len();
+            if matches!(
+                candidate.state,
+                TerminalState::Finalized | TerminalState::Failed
+            ) && carrier_length != 32
+            {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "protocol-v6 finalized or failed lifecycle carrier must be 32 bytes, got {}",
+                    carrier_length
+                )));
+            }
+            if carrier_length != 0 && carrier_length != 32 {
+                return Err(KvStoreError::InvalidArgument(format!(
+                    "protocol-v6 lifecycle carrier must be empty or 32 bytes, got {}",
+                    carrier_length
+                )));
+            }
+            if candidate.latest_height < 0 || candidate.latest_height > finalized_floor_height {
+                return Err(KvStoreError::InvalidArgument(
+                    "protocol-v6 lifecycle carrier height is outside the finalized floor"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        };
+        validate_record(&record)?;
         let typed_id = DeployLookupId::V6(deploy_id);
         let lifecycle = self.lifecycle.write();
         let survivor = lifecycle
             .get_terminal(&typed_id)?
             .unwrap_or_else(|| record.clone());
+        validate_record(&survivor)?;
         let occurrence_plan = self.deploy_occurrence_store.prepare_compaction(
             deploy_id,
             survivor.state,
@@ -701,6 +730,13 @@ impl KeyValueDagRepresentation {
                 .into_keys()
                 .collect()),
         }
+    }
+
+    pub fn deploy_terminal_occurrence_summary(
+        &self,
+        deploy_id: models::rust::deploy_id::DeployIdV6,
+    ) -> Result<Option<TerminalOccurrenceSummary>, KvStoreError> {
+        self.deploy_occurrence_store.terminal_summary(deploy_id)
     }
 
     // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagRepresentationSyntax.scala
@@ -2981,31 +3017,51 @@ impl BlockDagKeyValueStorage {
 
     pub fn capture_finalization_base(&self) -> Result<FinalizationBase, KvStoreError> {
         self.reconcile_finalization_projection()?;
-        let _lock_guard = self.global_lock.read();
+        self.capture_finalization_base_after_reconciliation(|| {})
+    }
+
+    fn capture_finalization_base_after_reconciliation(
+        &self,
+        after_reconciliation: impl FnOnce(),
+    ) -> Result<FinalizationBase, KvStoreError> {
+        after_reconciliation();
         let before = self
             .finalization_ledger
-            .head()?
+            .projection_endpoint()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
+        if before.projection_revision != before.head.revision {
+            return Err(KvStoreError::StaleFinalization {
+                expected_revision: before.projection_revision,
+                actual_revision: before.head.revision,
+            });
+        }
+        let _lock_guard = self.global_lock.read();
         let dag = self.get_representation_internal()?;
         let dag_generation = self.dag_generation.load(Ordering::Acquire);
         let after = self
             .finalization_ledger
-            .head()?
+            .projection_endpoint()?
             .ok_or(KvStoreError::LastFinalizedBlockUninitialized)?;
         if before != after {
             return Err(KvStoreError::StaleFinalization {
-                expected_revision: before.revision,
-                actual_revision: after.revision,
+                expected_revision: before.head.revision,
+                actual_revision: after.head.revision,
             });
         }
-        if dag.last_finalized_block() != before.block_hash.0 {
+        if after.projection_revision != after.head.revision {
+            return Err(KvStoreError::StaleFinalization {
+                expected_revision: after.projection_revision,
+                actual_revision: after.head.revision,
+            });
+        }
+        if dag.last_finalized_block() != before.head.block_hash.0 {
             return Err(KvStoreError::SerializationError(
                 "projected finalized head does not match the durable finalization ledger"
                     .to_string(),
             ));
         }
         Ok(FinalizationBase {
-            head: before,
+            head: before.head,
             dag,
             dag_generation,
         })
@@ -3863,5 +3919,277 @@ mod certified_closure_tests {
         assert!(dag
             .certified_support_closure(&rank(1), [rank(4)], 3, &mut bounded_work)
             .is_err());
+    }
+}
+
+#[cfg(test)]
+mod finalization_snapshot_tests {
+    use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
+    use models::rust::block_implicits;
+    use models::rust::bond_generation::BondGeneration;
+    use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
+    use models::rust::validator::{self, Validator, ValidatorSerde};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use shared::rust::store::key_value_store::KvStoreError;
+
+    use super::{BlockDagKeyValueStorage, InsertMode};
+    use crate::rust::finality::{FinalizationAppendOutcome, FinalizationHead, FinalizationLedger};
+
+    fn hash(value: u8) -> BlockHash { Bytes::from(vec![value; block_hash::LENGTH]) }
+
+    fn validator() -> Validator { Bytes::from(vec![7; validator::LENGTH]) }
+
+    fn block(value: u8, block_number: i64, parents: Vec<BlockHash>) -> BlockMessage {
+        let validator = validator();
+        let pre_state = if block_number == 0 {
+            hash(20)
+        } else {
+            hash(value.saturating_add(39))
+        };
+        let mut block = block_implicits::get_random_block(
+            Some(block_number),
+            Some(i32::try_from(block_number).unwrap()),
+            Some(pre_state),
+            Some(hash(value.saturating_add(40))),
+            Some(validator.clone()),
+            Some(models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+            Some(block_number),
+            Some(parents),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![Bond {
+                validator,
+                stake: 1,
+            }]),
+            Some("root".to_string()),
+            None,
+        );
+        block.block_hash = hash(value);
+        block.header.sender_bond_generation = Some(BondGeneration::GENESIS);
+        block
+    }
+
+    async fn fixture() -> (
+        InMemoryStoreManager,
+        BlockDagKeyValueStorage,
+        BlockMessage,
+        BlockMessage,
+    ) {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let genesis = block(0, 0, Vec::new());
+        storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .unwrap();
+        let child = block(1, 1, vec![genesis.block_hash.clone()]);
+        storage.insert(&child, InsertMode::Normal).unwrap();
+        (manager, storage, genesis, child)
+    }
+
+    fn append_without_projection(
+        storage: &BlockDagKeyValueStorage,
+        child: &BlockMessage,
+    ) -> FinalizationHead {
+        let expected = storage.finalization_head().unwrap().unwrap();
+        let genesis = storage
+            .finalization_ledger
+            .genesis_anchor()
+            .unwrap()
+            .unwrap();
+        let zero = hash(0);
+        let finalized: std::collections::BTreeSet<_> = [BlockHashSerde(child.block_hash.clone())]
+            .into_iter()
+            .collect();
+        let mut supporting = finalized.clone();
+        let (predecessor_certificate_digest, predecessor_certificate_block_hash) =
+            if expected.revision == 0 {
+                (zero.clone(), zero.clone())
+            } else {
+                supporting.insert(expected.block_hash.clone());
+                (
+                    expected.certificate_digest.0.clone(),
+                    expected.block_hash.0.clone(),
+                )
+            };
+        let latest_messages = std::collections::BTreeMap::from([(
+            ValidatorSerde(validator()),
+            BlockHashSerde(child.block_hash.clone()),
+        )]);
+        let witness = FinalizationLedger::prepare_witness(
+            child.header.version,
+            child.shard_id.clone(),
+            genesis.block_hash.0,
+            &expected,
+            child.block_hash.clone(),
+            predecessor_certificate_digest,
+            predecessor_certificate_block_hash,
+            child.body.state.block_number,
+            child.body.state.post_state_hash.clone(),
+            1,
+            1,
+            latest_messages,
+            supporting,
+            BlockHashSerde(hash(99)),
+            finalized.clone(),
+        )
+        .unwrap();
+        storage
+            .finalization_ledger
+            .persist_witness(&expected, &witness)
+            .unwrap();
+        let record = FinalizationLedger::prepare_record(
+            &expected,
+            child.block_hash.clone(),
+            child.body.state.block_number,
+            1.0,
+            finalized,
+            &witness,
+        )
+        .unwrap();
+        match storage
+            .finalization_ledger
+            .try_append(&expected, &record)
+            .unwrap()
+        {
+            FinalizationAppendOutcome::Committed(head) => head,
+            outcome => panic!("unexpected append outcome: {outcome:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_append_after_reconciliation_returns_typed_stale_finalization() {
+        let (_, storage, _, child) = fixture().await;
+        storage.reconcile_finalization_projection().unwrap();
+
+        let error = match storage.capture_finalization_base_after_reconciliation(|| {
+            append_without_projection(&storage, &child);
+        }) {
+            Ok(_) => panic!("a durable head beyond its projection must be retried"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, KvStoreError::StaleFinalization {
+            expected_revision: 0,
+            actual_revision: 1,
+        }));
+    }
+
+    #[tokio::test]
+    async fn completed_projection_produces_a_coherent_finalization_base() {
+        let (_, storage, _, child) = fixture().await;
+        let head = append_without_projection(&storage, &child);
+
+        storage.reconcile_finalization_projection().unwrap();
+        let base = storage.capture_finalization_base().unwrap();
+
+        assert_eq!(base.head, head);
+        assert_eq!(base.dag.last_finalized_block(), child.block_hash);
+    }
+
+    #[tokio::test]
+    async fn captured_base_remains_a_coherent_prefix_after_later_projection() {
+        let (_, storage, genesis, child) = fixture().await;
+        let captured = storage.capture_finalization_base().unwrap();
+
+        let later_head = append_without_projection(&storage, &child);
+        storage.reconcile_finalization_projection().unwrap();
+        let later = storage.capture_finalization_base().unwrap();
+
+        assert_eq!(captured.head.revision, 0);
+        assert_eq!(captured.head.block_hash.0, genesis.block_hash);
+        assert_eq!(captured.dag.last_finalized_block(), genesis.block_hash);
+        assert_eq!(later.head, later_head);
+        assert_eq!(later.dag.last_finalized_block(), child.block_hash);
+        assert!(captured.head.revision < later.head.revision);
+    }
+
+    #[tokio::test]
+    async fn generated_monotonic_history_preserves_every_captured_prefix() {
+        let (_, storage, genesis, first_child) = fixture().await;
+        let mut captures = vec![storage.capture_finalization_base().unwrap()];
+        let mut parent = genesis;
+
+        for revision in 1_u8..=6 {
+            let next = if revision == 1 {
+                first_child.clone()
+            } else {
+                let next = block(revision, i64::from(revision), vec![parent
+                    .block_hash
+                    .clone()]);
+                storage.insert(&next, InsertMode::Normal).unwrap();
+                next
+            };
+            append_without_projection(&storage, &next);
+            storage.reconcile_finalization_projection().unwrap();
+            captures.push(storage.capture_finalization_base().unwrap());
+            parent = next;
+        }
+
+        let strategy = (0_usize..captures.len(), 0_usize..captures.len());
+        let mut runner = TestRunner::new(Config::with_cases(128));
+        runner
+            .run(&strategy, |(left, right)| {
+                let captured_index = left.min(right);
+                let later_index = left.max(right);
+                let captured = &captures[captured_index];
+                let later = &captures[later_index];
+
+                prop_assert_eq!(captured.head.revision, captured_index as u64);
+                prop_assert_eq!(later.head.revision, later_index as u64);
+                prop_assert!(captured.head.revision <= later.head.revision);
+                let captured_floor = captured.dag.last_finalized_block();
+                let later_floor = later.dag.last_finalized_block();
+                prop_assert_eq!(&captured_floor, &captured.head.block_hash.0);
+                prop_assert_eq!(&later_floor, &later.head.block_hash.0);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stable_fully_projected_head_mismatch_is_fatal_corruption() {
+        let (_, storage, genesis, child) = fixture().await;
+        append_without_projection(&storage, &child);
+        storage
+            .finalization_ledger
+            .record_projection_completed(1)
+            .unwrap();
+
+        let error = match storage.capture_finalization_base() {
+            Ok(_) => panic!("a stable projected-head mismatch must fail closed"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            KvStoreError::SerializationError(message)
+                if message == "projected finalized head does not match the durable finalization ledger"
+        ));
+        assert_eq!(
+            storage.get_representation().unwrap().last_finalized_block(),
+            genesis.block_hash
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_reconciles_a_durable_head_ahead_of_its_projection_cursor() {
+        let (mut manager, storage, _, child) = fixture().await;
+        let head = append_without_projection(&storage, &child);
+        drop(storage);
+
+        let restarted = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let base = restarted.capture_finalization_base().unwrap();
+
+        assert_eq!(base.head, head);
+        assert_eq!(base.dag.last_finalized_block(), child.block_hash);
+        assert!(restarted
+            .finalization_ledger
+            .pending_projection_records()
+            .unwrap()
+            .is_empty());
     }
 }

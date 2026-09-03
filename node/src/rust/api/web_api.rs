@@ -155,6 +155,8 @@ pub struct DeployFinalizationStatusJson {
     /// Hex-encoded block hash. Absent (`null`) when the deploy has never
     /// been included in any block.
     pub latest_block_hash: Option<String>,
+    pub finalized_floor_hash: Option<String>,
+    pub finalized_floor_height: Option<i64>,
 }
 
 /// JSON-serializable view of a single pending deploy.
@@ -718,6 +720,8 @@ impl WebApi for WebApiImpl {
             state: deploy_state_json_label(status.state).to_string(),
             rejection_count: status.rejection_count,
             latest_block_hash: status.latest_block_hash.map(|h| hex::encode(&h)),
+            finalized_floor_hash: status.finalized_floor_hash.map(|h| hex::encode(&h)),
+            finalized_floor_height: status.finalized_floor_height,
         })
     }
 
@@ -2147,6 +2151,23 @@ mod tests {
         let error = prepare_deploy_names(Some(&request)).expect_err("preview must fail closed");
 
         assert!(error.to_string().contains("authenticated deploy envelope"));
+    }
+
+    #[test]
+    fn deploy_finalization_status_serializes_distinct_occurrence_and_state_anchors() {
+        let response = DeployFinalizationStatusJson {
+            state: "Finalized".to_string(),
+            rejection_count: 2,
+            latest_block_hash: Some("aa".to_string()),
+            finalized_floor_hash: Some("bb".to_string()),
+            finalized_floor_height: Some(42),
+        };
+
+        let json = serde_json::to_value(response).expect("status JSON");
+
+        assert_eq!(json["latest_block_hash"], "aa");
+        assert_eq!(json["finalized_floor_hash"], "bb");
+        assert_eq!(json["finalized_floor_height"], 42);
     }
 
     #[test]

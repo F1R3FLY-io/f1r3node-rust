@@ -789,6 +789,93 @@ Qed.
 
 End BoundFinalizationHead.
 
+Inductive finalization_capture_classification :=
+| FinalizationCaptureStale
+| FinalizationCaptureCorrupt
+| FinalizationCaptureCoherent (revision : nat).
+
+Definition classify_finalization_capture
+  (durable projected dag_floor : nat) : finalization_capture_classification :=
+  if Nat.eqb durable projected then
+    if Nat.eqb projected dag_floor then
+      FinalizationCaptureCoherent durable
+    else FinalizationCaptureCorrupt
+  else FinalizationCaptureStale.
+
+Theorem projection_lag_classifies_as_stale :
+  forall durable projected dag_floor,
+    durable <> projected ->
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureStale.
+Proof.
+  intros durable projected dag_floor Hlag.
+  unfold classify_finalization_capture.
+  apply Nat.eqb_neq in Hlag. rewrite Hlag. reflexivity.
+Qed.
+
+Theorem coherent_capture_requires_one_revision :
+  forall durable projected dag_floor revision,
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureCoherent revision ->
+    durable = projected /\ projected = dag_floor /\ revision = durable.
+Proof.
+  intros durable projected dag_floor revision Hcapture.
+  unfold classify_finalization_capture in Hcapture.
+  destruct (durable =? projected) eqn:Hdurable; try discriminate.
+  destruct (projected =? dag_floor) eqn:Hprojected; try discriminate.
+  inversion Hcapture. subst revision.
+  repeat split.
+  - apply Nat.eqb_eq. exact Hdurable.
+  - apply Nat.eqb_eq. exact Hprojected.
+Qed.
+
+Theorem stable_projection_mismatch_classifies_as_corruption :
+  forall durable projected dag_floor,
+    durable = projected ->
+    projected <> dag_floor ->
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureCorrupt.
+Proof.
+  intros durable projected dag_floor Hstable Hmismatch.
+  subst projected. unfold classify_finalization_capture.
+  rewrite Nat.eqb_refl.
+  apply Nat.eqb_neq in Hmismatch. rewrite Hmismatch. reflexivity.
+Qed.
+
+Theorem matching_endpoint_and_floor_classify_as_coherent :
+  forall revision,
+    classify_finalization_capture revision revision revision =
+      FinalizationCaptureCoherent revision.
+Proof.
+  intros revision. unfold classify_finalization_capture.
+  rewrite Nat.eqb_refl. reflexivity.
+Qed.
+
+Theorem coherent_capture_remains_a_prefix_after_monotonic_advance :
+  forall durable projected dag_floor captured future,
+    classify_finalization_capture durable projected dag_floor =
+      FinalizationCaptureCoherent captured ->
+    durable <= future ->
+    captured <= future.
+Proof.
+  intros durable projected dag_floor captured future Hcapture Hadvance.
+  pose proof
+    (coherent_capture_requires_one_revision
+      durable projected dag_floor captured Hcapture) as [_ [_ Hcaptured]].
+  subst captured. exact Hadvance.
+Qed.
+
+Example coherent_genesis_capture_need_not_equal_a_later_head :
+  exists captured future,
+    classify_finalization_capture 0 0 0 =
+      FinalizationCaptureCoherent captured /\
+    captured < future.
+Proof.
+  exists 0, 1. split.
+  - reflexivity.
+  - lia.
+Qed.
+
 Inductive snapshot_capture_observation :=
 | SnapshotCaptureStale
 | SnapshotCaptureCoherent (revision : nat).
@@ -866,6 +953,12 @@ Print Assumptions changed_bound_base_requires_fresh_evaluation.
 Print Assumptions compare_append_closes_validation_commit_race.
 Print Assumptions dag_ancestry_is_insufficient_for_late_bound_commit.
 Print Assumptions bound_finalization_head_contract.
+Print Assumptions projection_lag_classifies_as_stale.
+Print Assumptions coherent_capture_requires_one_revision.
+Print Assumptions stable_projection_mismatch_classifies_as_corruption.
+Print Assumptions matching_endpoint_and_floor_classify_as_coherent.
+Print Assumptions coherent_capture_remains_a_prefix_after_monotonic_advance.
+Print Assumptions coherent_genesis_capture_need_not_equal_a_later_head.
 Print Assumptions stale_snapshot_capture_publishes_no_result.
 Print Assumptions finite_stale_snapshot_prefix_reaches_coherent_capture.
 Print Assumptions snapshot_retry_returns_only_an_observed_coherent_revision.

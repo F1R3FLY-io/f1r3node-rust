@@ -66,6 +66,130 @@ and the implementation-level interleavings are in
 The local entry point is
 [`scripts/check-finalized-floor-ALL.sh`](../scripts/check-finalized-floor-ALL.sh).
 
+[`tlaplus/finalized_floor/RecoveryCommitteeTransition.tla`](tlaplus/finalized_floor/RecoveryCommitteeTransition.tla)
+separates replayed bonds from the active finality committee. The finality
+denominator contains only positive active stake from the target block's
+certified authority floor.
+
+The all-bonds control substitutes the candidate parent's replayed bond map.
+TLC and Apalache must then violate certified active-committee finality admission.
+
+[`tlaplus/finalized_floor/AuthorityFloorStateBinding.tla`](tlaplus/finalized_floor/AuthorityFloorStateBinding.tla)
+binds each certified authority-floor block hash to its stored replay state.
+It also keeps target and head committee views independent from the selected
+active floor committee.
+
+The hash-only control authorizes a target with a mismatched replay state.
+TLC and Apalache must violate the fail-closed state-binding invariant.
+
+[`tlaplus/finalized_floor/PendingWorkReadiness.tla`](tlaplus/finalized_floor/PendingWorkReadiness.tla)
+models fresh custody, retry custody, terminalization, and heartbeat selection.
+The retry-blind control must expose false idle after custody transfer.
+
+[`tlaplus/finalized_floor/StateEffectProvenance.tla`](tlaplus/finalized_floor/StateEffectProvenance.tla)
+models the exact replay-state constructor.
+Each block inherits one state parent and adds canonical applied and own effects.
+Direct rejection records do not construct state.
+
+The union-parent control must resurrect an omitted header-parent effect.
+The corresponding unbounded proof is
+[`rocq/finalized_floor/theories/StateEffectProvenance.v`](rocq/finalized_floor/theories/StateEffectProvenance.v).
+The weak-memory publication model is
+[`loom/cost_accounting/tests/loom_state_effect_provenance.rs`](loom/cost_accounting/tests/loom_state_effect_provenance.rs).
+
+[`tlaplus/finalized_floor/AppliedStateValidationPrecedence.tla`](tlaplus/finalized_floor/AppliedStateValidationPrecedence.tla)
+checks canonical applied-state claims before source lookup. Its claims-first
+control exposes false deferral for an attacker-selected absent source.
+
+The [TLC configuration](tlaplus/finalized_floor/MC_AppliedStateValidationPrecedence.cfg)
+and [Apalache configuration](tlaplus/finalized_floor/MC_AppliedStateValidationPrecedenceApalache.cfg)
+check the same precedence rule. Their [TLC](tlaplus/finalized_floor/MC_AppliedStateValidationPrecedenceUnsafe.cfg)
+and [Apalache](tlaplus/finalized_floor/MC_AppliedStateValidationPrecedenceUnsafeApalache.cfg)
+controls check the claims-first defect.
+[`rocq/finalized_floor/theories/StateEffectProvenance.v`](rocq/finalized_floor/theories/StateEffectProvenance.v)
+proves the unbounded classifier. The [Loom model](loom/cost_accounting/tests/loom_applied_state_validation_precedence.rs)
+checks all finite claim and source interleavings.
+
+Rust properties in [`interpreter_util.rs`](../casper/src/rust/util/rholang/interpreter_util.rs)
+generate exact, extra, duplicate, and misordered vectors. Production regressions
+in [`state_facts_spec.rs`](../casper/tests/batch2/state_facts_spec.rs) check false
+claims and absent attacker-selected sources.
+
+[`tlaplus/finalized_floor/FinalizationSnapshotRetry.tla`](tlaplus/finalized_floor/FinalizationSnapshotRetry.tla)
+models durable append, delayed projection, snapshot capture, and retry. A
+projection endpoint contains the durable head and projection cursor.
+
+The [TLC configuration](tlaplus/finalized_floor/MC_FinalizationSnapshotRetry.cfg)
+and [Apalache configuration](tlaplus/finalized_floor/MC_FinalizationSnapshotRetryApalache.cfg)
+distinguish stale lag from stable corruption. Their [TLC](tlaplus/finalized_floor/MC_FinalizationSnapshotRetry_stale_publish_unsafe.cfg)
+and [Apalache](tlaplus/finalized_floor/MC_FinalizationSnapshotRetry_stale_publish_unsafe_Apalache.cfg)
+controls must violate result coherence.
+The future-head-equality [TLC control](tlaplus/finalized_floor/MC_FinalizationSnapshotRetry_future_head_unsafe.cfg)
+and [Apalache control](tlaplus/finalized_floor/MC_FinalizationSnapshotRetry_future_head_unsafe_Apalache.cfg)
+reject the false rule that a historical capture must equal a later live head.
+[`rocq/finalized_floor/theories/FinalizationAtomicity.v`](rocq/finalized_floor/theories/FinalizationAtomicity.v)
+proves the classifier, retry, and historical-prefix contracts.
+
+The [Loom model](loom/cost_accounting/tests/loom_finalization_atomicity.rs) checks
+append, projection, and reader interleavings. [Block-storage regressions](../block-storage/src/rust/dag/block_dag_key_value_storage.rs)
+check stale lag, coherent capture, fatal mismatch, and restart reconciliation.
+The `projection_endpoint_preserves_exact_head_and_projection_prefix` property
+generates durable history lengths and valid projected prefixes.
+The production monotonic-history property checks immutable captures at generated
+earlier and later revision pairs.
+
+[`tlaplus/cost_accounted_rho/ReplayAdmissionPublication.tla`](tlaplus/cost_accounted_rho/ReplayAdmissionPublication.tla)
+models the replay post-root publication barrier. Durable evidence and cache
+publication require equality between computed and declared post-state roots.
+
+The [TLC configuration](tlaplus/cost_accounted_rho/ReplayAdmissionPublication.cfg)
+and [Apalache configuration](tlaplus/cost_accounted_rho/ReplayAdmissionPublicationApalache.cfg)
+check that rule. The [early-publication control](tlaplus/cost_accounted_rho/ReplayAdmissionPublicationEarlyPublishUnsafe.cfg)
+must expose unauthenticated durable evidence.
+[`rocq/cost_accounted_rho/theories/ReplayAdmissionPublication.v`](rocq/cost_accounted_rho/theories/ReplayAdmissionPublication.v)
+proves mismatch nonpublication and exact-root publication.
+
+The [Loom model](loom/cost_accounting/tests/loom_mergeable_evidence_authentication.rs)
+checks concurrent durable and cache visibility. The production regression
+[`rejected_block_final_state_does_not_publish_mergeable_evidence`](../casper/tests/util/rholang/runtime_manager_test.rs)
+checks rollback and nonpublication. Runtime-manager properties vary equal and
+unequal post-state roots through the production validation predicate.
+
+[`tlaplus/finalized_floor/ExactFloorSelection.tla`](tlaplus/finalized_floor/ExactFloorSelection.tla)
+composes exact recurrence with certificate, proposal, replay-base, and durable
+finalizer consumers. It schedules two nodes with independent delivery orders.
+
+Six unsafe configurations isolate signature aliasing, anticipatory promotion,
+causal-only witnesses, missing-fact coercion, stale-cache reuse, and incomplete
+replay bases. TLC and Apalache must find each named violation.
+
+The corresponding axiom-free composition proof is in
+[`rocq/finalized_floor/theories/StateEffectProvenance.v`](rocq/finalized_floor/theories/StateEffectProvenance.v).
+`MainTheorem.finalized_floor_exact_selection_correct` exposes the checked
+capstone.
+
+[`tlaplus/finalized_floor/DeployLifecycleFinalization.tla`](tlaplus/finalized_floor/DeployLifecycleFinalization.tla)
+models floor commitment, lifecycle effects, crash recovery, and pool cleanup.
+It also separates deploy occurrence carriers from finalized state floors.
+
+Its controls require counterexamples for four defects:
+
+- A missing floor trigger.
+- Floor-as-carrier substitution.
+- Finality-marker-only cleanup.
+- Frozen-floor-only cleanup.
+
+The safe model requires exact effect membership in the adopted LFB state. It
+includes successful effects and failed-body settlements.
+
+Rocq proves the unbounded decision, settlement-evidence, and anchor contracts.
+Rocq also proves that evaluation remains pending before restore readiness.
+
+The corresponding weak-memory checks are
+[`loom/cost_accounting/tests/loom_pending_work_readiness.rs`](loom/cost_accounting/tests/loom_pending_work_readiness.rs)
+and
+[`loom/cost_accounting/tests/loom_deploy_lifecycle_finalization.rs`](loom/cost_accounting/tests/loom_deploy_lifecycle_finalization.rs).
+
 [`tlaplus/finalized_floor/RestoreHorizonCertifiedContext.tla`](tlaplus/finalized_floor/RestoreHorizonCertifiedContext.tla)
 interleaves full-history and restored-node context capture. It preserves exact
 validator slots, frozen stake, projections, context digest, replay state, and
@@ -148,6 +272,20 @@ classifier in
 [`rocq/finalized_floor/theories/CandidateScopeDeployRehome.v`](rocq/finalized_floor/theories/CandidateScopeDeployRehome.v),
 and three memory-order refinements live in
 [`loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs`](loom/cost_accounting/tests/loom_candidate_scope_deploy_rehome.rs).
+
+[`tlaplus/deploy_recovery/FinalizedOccurrenceStatus.tla`](tlaplus/deploy_recovery/FinalizedOccurrenceStatus.tla)
+connects exact-source disposition to terminal API state.
+It interleaves occurrence and rejection evidence from the finalized-floor
+closure and an off-floor branch. It also orders restored-floor materialization
+before lifecycle settlement. The safe model excludes rejected and off-floor
+sources from the frozen terminal carrier.
+
+Five controls restore main-chain-only tombstones, raw archive-source selection,
+floor-blind evidence selection, settlement before floor readiness, or rejection
+subtraction from inherited state. Rocq proves active-source, floor-membership,
+state-parent preservation, and total-order obligations without finite bounds.
+The lifecycle Loom model checks restore ordering and late archive updates
+against the frozen terminal carrier.
 
 [`tlaplus/deploy_recovery/CarrierIndexSoundness.tla`](tlaplus/deploy_recovery/CarrierIndexSoundness.tla)
 models the repeat-deploy fast path under concurrent validator actions.

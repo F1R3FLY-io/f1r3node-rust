@@ -48,6 +48,21 @@ An **effect receipt** records completion of one idempotent post-finalization act
 
 A **cursor** is a durable high-water mark for a contiguous prefix. Projection, effect completion, and receipt compaction have separate cursors because they cross different persistence boundaries.
 
+A **projection endpoint** is one atomic pair of the durable head and projection
+cursor. The append lock protects this read.
+
+A **coherent capture** has two equal projection endpoints. Its cursor equals the
+head revision, and its DAG floor equals the head block.
+
+A coherent capture is immutable. A later monotonic projection can advance the
+live head without invalidating the captured historical prefix.
+
+A **stale capture** observes projection lag or two different endpoints. It is an
+expected concurrency result that requires a fresh capture.
+
+A **corrupt capture** observes a stable, fully projected endpoint whose DAG floor
+does not equal the durable head. It is a fatal storage result.
+
 ## 2. Safety contract
 
 Let $`H`$ be the durable ledger revision, $`P`$ the projection cursor, $`E`$ the
@@ -82,7 +97,7 @@ or an unrelated branch even if a caller is defective.
 
 ## 3. Durable representation
 
-The `finalization-ledger-v5` store contains the following typed records.
+The `finalization-ledger-v7` store contains the following typed records.
 
 | Record | Purpose | Durability rule |
 |---|---|---|
@@ -198,8 +213,18 @@ procedure evaluate_and_commit():
             restart with a fresh coherent base and no stale effects
 ```
 
+Capture reads one projection endpoint before the DAG snapshot and one endpoint
+after the snapshot. A changed endpoint or lagging cursor returns
+`StaleFinalization`.
+
+A stable endpoint permits publication only when the projected DAG floor equals
+the durable head. A mismatch returns `SerializationError` because no concurrent
+projection can repair that observation.
+
 The captured base is one identity: revision, block hash, height, record digest,
 and the immutable DAG representation against which the certificate was evaluated.
+Capture coherence applies at the capture linearization point. It does not require
+the captured revision to equal a later live head.
 Immediately before append, the implementation rechecks DAG ancestry and state
 preservation from that exact block. The ledger compare-and-append then succeeds
 only if the durable head still equals the complete captured identity. A changed
@@ -340,6 +365,10 @@ Increasing this value permits more immutable evaluations but also raises peak CP
 | Unsafe reset, overwrite, split bootstrap, and auto-backfill are detected | Four TLC and four Apalache expected-counterexample configurations | partial/unrooted bootstrap and conflicting immutable-metadata regressions |
 | No early effect; stale worker inert | Safe model plus unsafe controls | Ledger outcome handling and effect gating |
 | No request/release lost wake | TLA+ scheduler invariant; unsafe control | `loom_finalization_atomicity::request_release_race_has_no_lost_wake` |
+| Coherent snapshot capture | [`FinalizationSnapshotRetry.tla`](../../../../formal/tlaplus/finalized_floor/FinalizationSnapshotRetry.tla), `Inv_CapturedRevisionRemainsDurablePrefix`, its future-head-equality control, and Rocq capture-prefix theorems | Loom concurrent and capture-before-advance tests; Rust coherent-capture, immutable-prefix, and generated monotonic-history properties |
+| Projection lag is retryable | TLA+ `Inv_StaleReaderHasNoResult` and Rocq `projection_lag_classifies_as_stale` | Loom `projection_lag_is_retryable_and_post_projection_capture_is_coherent`, Rust `durable_append_after_reconciliation_returns_typed_stale_finalization`, and Casper capture-retry tests |
+| Stable projected mismatch is fatal | TLA+ `Inv_CorruptReaderHasNoResult` and Rocq `stable_projection_mismatch_classifies_as_corruption` | Loom `stable_fully_projected_floor_mismatch_is_corruption` and Rust `stable_fully_projected_head_mismatch_is_fatal_corruption` |
+| Restart closes projection lag | `FinalizationRecovery.tla` and Rocq cursor bounds | Rust `restart_reconciles_a_durable_head_ahead_of_its_projection_cursor` |
 | Ordered projection after crash | `FinalizationRecovery.tla`; Rocq cursor bounds | `projection_cursor_advances_only_in_committed_order`, restart regression |
 | Out-of-order effects close only contiguous prefix | Recovery model; Rocq prefix-extension theorem | property test over arbitrary completion orders; Loom cursor test |
 | Receipt compaction never outruns completion | Recovery invariant; Rocq compaction theorem | restart and compaction regressions |

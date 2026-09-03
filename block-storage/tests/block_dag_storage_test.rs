@@ -2177,23 +2177,91 @@ fn v6_terminal_write_prunes_lifecycle_and_active_occurrence_state_atomically() {
         sender_authority_digest: vec![16; 32],
         is_failed: false,
     };
+    let mut rejected_occurrence = occurrence.clone();
+    rejected_occurrence.source_block_hash = [11; 32];
     dag.deploy_occurrence_store
         .insert(occurrence)
         .expect("insert occurrence");
+    dag.deploy_occurrence_store
+        .insert(rejected_occurrence)
+        .expect("insert rejected occurrence");
     dag.lifecycle
         .read()
-        .append_events(&typed_id, Some(0), vec![LifecycleEvent {
-            height: 7,
-            block_hash: vec![12; 32],
-            kind: LifecycleEventKind::Included { is_failed: false },
-        }])
+        .append_events(&typed_id, Some(0), vec![
+            LifecycleEvent {
+                height: 7,
+                block_hash: vec![12; 32],
+                kind: LifecycleEventKind::Included { is_failed: false },
+            },
+            LifecycleEvent {
+                height: 7,
+                block_hash: vec![11; 32],
+                kind: LifecycleEventKind::Included { is_failed: false },
+            },
+            LifecycleEvent {
+                height: 8,
+                block_hash: vec![17; 32],
+                kind: LifecycleEventKind::Rejected {
+                    duplicate: true,
+                    carrier: vec![11; 32],
+                },
+            },
+        ])
         .expect("append lifecycle event");
     let terminal = TerminalRecord {
         state: TerminalState::Finalized,
-        rejection_count: 0,
+        rejection_count: 1,
         latest_height: 7,
         latest_block_hash: vec![12; 32],
     };
+    let missing_carrier = TerminalRecord {
+        latest_block_hash: Vec::new(),
+        ..terminal.clone()
+    };
+    let future_carrier = TerminalRecord {
+        latest_height: 8,
+        ..terminal.clone()
+    };
+    let malformed_carrier = TerminalRecord {
+        latest_block_hash: vec![12; 31],
+        ..terminal.clone()
+    };
+
+    assert!(matches!(
+        dag.put_deploy_terminal_and_compact_occurrences(
+            deploy_id,
+            missing_carrier,
+            1,
+            [17; 32],
+            7,
+            7,
+        ),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        dag.put_deploy_terminal_and_compact_occurrences(
+            deploy_id,
+            future_carrier,
+            1,
+            [17; 32],
+            7,
+            7,
+        ),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+    assert!(matches!(
+        dag.put_deploy_terminal_and_compact_occurrences(
+            deploy_id,
+            malformed_carrier,
+            1,
+            [17; 32],
+            7,
+            7,
+        ),
+        Err(KvStoreError::InvalidArgument(_))
+    ));
+    assert!(dag.deploy_terminal(&typed_id).unwrap().is_none());
+    assert!(dag.deploy_lifecycle_events(&typed_id).unwrap().is_some());
 
     let survivor = dag
         .put_deploy_terminal_and_compact_occurrences(deploy_id, terminal.clone(), 1, [17; 32], 7, 7)
@@ -2215,10 +2283,17 @@ fn v6_terminal_write_prunes_lifecycle_and_active_occurrence_state_atomically() {
     assert!(dag.open_lifecycle_sigs().unwrap().is_empty());
     assert_eq!(
         dag.lookup_deploy_occurrences(&typed_id).unwrap(),
-        BTreeSet::from([BlockHash::copy_from_slice(&[12; 32])])
+        BTreeSet::from([
+            BlockHash::copy_from_slice(&[11; 32]),
+            BlockHash::copy_from_slice(&[12; 32]),
+        ])
     );
     assert_eq!(
         dag.lookup_by_deploy_id(&typed_id).unwrap(),
+        Some(BlockHash::copy_from_slice(&[11; 32]))
+    );
+    assert_eq!(
+        dag.deploy_canonical_appearance(&typed_id).unwrap(),
         Some(BlockHash::copy_from_slice(&[12; 32]))
     );
     dag.deploy_occurrence_store
@@ -2495,12 +2570,27 @@ async fn recording_of_new_directly_finalized_block_should_record_finalized_all_n
 
 #[tokio::test]
 async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_state() {
+    use models::rust::block_implicits::protocol_v6_processed_deploy_gen;
+    use proptest::test_runner::TestRunner;
+
     let mut genesis = genesis_block();
     genesis.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
     let dag_storage = create_dag_storage(&genesis).await;
     let initial_base = dag_storage
         .capture_finalization_base()
         .expect("initial finalization base");
+
+    let mut runner = TestRunner::deterministic();
+    let source_deploys = (0..2)
+        .map(|_| {
+            let mut deploy = protocol_v6_processed_deploy_gen()
+                .new_tree(&mut runner)
+                .expect("source deploy")
+                .current();
+            deploy.is_failed = false;
+            deploy
+        })
+        .collect::<Vec<_>>();
 
     let mut finalized_effect_source = get_random_block(
         Some(1),
@@ -2512,8 +2602,8 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         None,
         Some(vec![genesis.block_hash.clone()]),
         Some(vec![]),
-        None,
-        None,
+        Some(source_deploys),
+        Some(vec![]),
         None,
         None,
         None,
@@ -2530,6 +2620,34 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         )
         .expect("insert finalized effect source");
 
+    let mut sibling = get_random_block(
+        Some(1),
+        None,
+        None,
+        None,
+        None,
+        Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        Some(vec![]),
+        Some(vec![]),
+        None,
+        None,
+        None,
+    );
+    sibling.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    sibling.header.finalized_floor =
+        Some(finalized_floor_commitment(&genesis, b"sibling-certificate"));
+    dag_storage
+        .insert(&sibling, InsertMode::Normal)
+        .expect("insert sibling");
+
+    let effects = [0, 1].map(|execution_index| StateEffectId {
+        source_block_hash: finalized_effect_source.block_hash.clone(),
+        execution_index,
+    });
+
     let mut drops_finalized_effect = get_random_block(
         Some(2),
         None,
@@ -2538,15 +2656,21 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         None,
         Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
         None,
-        Some(vec![finalized_effect_source.block_hash.clone()]),
+        Some(vec![
+            finalized_effect_source.block_hash.clone(),
+            sibling.block_hash.clone(),
+        ]),
         Some(vec![]),
-        None,
-        None,
+        Some(vec![]),
+        Some(vec![]),
         None,
         None,
         None,
     );
     drops_finalized_effect.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    drops_finalized_effect.body.merge_base = genesis.block_hash.clone();
+    drops_finalized_effect.body.applied_state_effects = vec![effects[0].clone()];
+    drops_finalized_effect.body.rejected_state_effects = vec![effects[1].clone()];
     drops_finalized_effect.header.finalized_floor = Some(finalized_floor_commitment(
         &finalized_effect_source,
         b"dropping-descendant-certificate",
@@ -2566,15 +2690,20 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
         None,
         Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
         None,
-        Some(vec![finalized_effect_source.block_hash.clone()]),
+        Some(vec![
+            sibling.block_hash.clone(),
+            finalized_effect_source.block_hash.clone(),
+        ]),
         Some(vec![]),
-        None,
-        None,
+        Some(vec![]),
+        Some(vec![]),
         None,
         None,
         None,
     );
     preserves_finalized_effect.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    preserves_finalized_effect.body.merge_base = genesis.block_hash.clone();
+    preserves_finalized_effect.body.applied_state_effects = effects.to_vec();
     preserves_finalized_effect.header.finalized_floor = Some(finalized_floor_commitment(
         &finalized_effect_source,
         b"preserving-descendant-certificate",
@@ -2592,32 +2721,46 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
     for hash in [
         &genesis.block_hash,
         &finalized_effect_source.block_hash,
+        &sibling.block_hash,
         &drops_finalized_effect.block_hash,
         &preserves_finalized_effect.block_hash,
     ] {
         dag.put_cached_floor(hash.clone(), genesis.block_hash.clone())
             .expect("cache finalized floor");
     }
-    let effect = StateEffectId {
-        source_block_hash: finalized_effect_source.block_hash.clone(),
-        execution_index: 0,
-    };
-    let mut source_metadata = dag
-        .lookup_unsafe(&finalized_effect_source.block_hash)
-        .expect("source metadata");
-    source_metadata.successful_state_effect_indices.insert(0);
-    dag.block_metadata_index
-        .write()
-        .add(source_metadata)
-        .expect("record source effect provenance");
-    let mut dropping_metadata = dag
-        .lookup_unsafe(&drops_finalized_effect.block_hash)
-        .expect("dropping metadata");
-    dropping_metadata.rejected_state_effects.insert(effect);
-    dag.block_metadata_index
-        .write()
-        .add(dropping_metadata)
-        .expect("record rejected effect provenance");
+    assert_eq!(
+        dag.lookup_unsafe(&finalized_effect_source.block_hash)
+            .expect("source metadata")
+            .successful_state_effect_indices,
+        BTreeSet::from([0, 1])
+    );
+
+    for effect in &effects {
+        assert!(
+            block_storage::rust::finality::state_preservation::is_state_effect_active(
+                &dag,
+                &finalized_effect_source.block_hash,
+                effect,
+            )
+            .expect("source effect activity")
+        );
+    }
+    assert!(
+        block_storage::rust::finality::state_preservation::is_state_effect_active(
+            &dag,
+            &drops_finalized_effect.block_hash,
+            &effects[0],
+        )
+        .expect("retained effect activity")
+    );
+    assert!(
+        !block_storage::rust::finality::state_preservation::is_state_effect_active(
+            &dag,
+            &drops_finalized_effect.block_hash,
+            &effects[1],
+        )
+        .expect("rejected effect activity")
+    );
 
     assert!(
         block_storage::rust::finality::state_preservation::is_state_preserved(
@@ -2737,6 +2880,313 @@ async fn bound_finalization_rejects_stale_certificates_and_dropped_finalized_sta
             .0,
         preserves_finalized_effect.block_hash
     );
+}
+
+#[test]
+fn exact_state_effect_recurrence_is_parent_order_invariant() {
+    proptest!(
+        ProptestConfig::with_cases(64),
+        |(accepted_mask in 0u8..8, restored_mask in 0u8..8)| {
+            for permutation in [
+                [0usize, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
+                let mut genesis = genesis_block();
+                genesis.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+                let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+                let sources = (0..3)
+                    .map(|index| {
+                        get_random_block(
+                            Some(1), Some(index + 1), None, None, None,
+                            Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION), None,
+                            Some(vec![genesis.block_hash.clone()]), Some(vec![]),
+                            None, None, None, None, None,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let parents = permutation
+                    .iter()
+                    .map(|index| sources[*index].block_hash.clone())
+                    .collect();
+                let merge = get_random_block(
+                    Some(2), Some(4), None, None, None,
+                    Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION), None,
+                    Some(parents), Some(vec![]), None, None, None, None, None,
+                );
+                let descendant = get_random_block(
+                    Some(3), Some(5), None, None, None,
+                    Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION), None,
+                    Some(vec![merge.block_hash.clone()]), Some(vec![]),
+                    None, None, None, None, None,
+                );
+                for block in sources.iter().chain([&merge, &descendant]) {
+                    dag_storage.insert(block, InsertMode::Normal).unwrap();
+                }
+                let dag = dag_storage.get_representation().unwrap();
+                for hash in std::iter::once(&genesis.block_hash)
+                    .chain(sources.iter().map(|source| &source.block_hash))
+                    .chain([&merge.block_hash, &descendant.block_hash])
+                {
+                    dag.put_cached_floor(hash.clone(), genesis.block_hash.clone()).unwrap();
+                }
+                let effects = sources
+                    .iter()
+                    .map(|source| StateEffectId {
+                        source_block_hash: source.block_hash.clone(),
+                        execution_index: 0,
+                    })
+                    .collect::<Vec<_>>();
+                for source in &sources {
+                    let mut metadata = dag.lookup_unsafe(&source.block_hash).unwrap();
+                    metadata.successful_state_effect_indices.clear();
+                    metadata.successful_state_effect_indices.insert(0);
+                    dag.block_metadata_index.write().add(metadata).unwrap();
+                }
+                let mut merge_metadata = dag.lookup_unsafe(&merge.block_hash).unwrap();
+                merge_metadata.successful_state_effect_indices.clear();
+                merge_metadata.merge_base = genesis.block_hash.clone();
+                for (index, effect) in effects.iter().enumerate() {
+                    if accepted_mask & (1 << index) == 0 {
+                        merge_metadata.rejected_state_effects.insert(effect.clone());
+                    } else {
+                        merge_metadata.applied_state_effects.insert(effect.clone());
+                    }
+                }
+                dag.block_metadata_index.write().add(merge_metadata).unwrap();
+
+                let restore_after_rejection = restored_mask & !accepted_mask;
+                let mut descendant_metadata = dag.lookup_unsafe(&descendant.block_hash).unwrap();
+                descendant_metadata.successful_state_effect_indices.clear();
+                descendant_metadata.successful_state_effect_indices.insert(0);
+                for (index, effect) in effects.iter().enumerate() {
+                    if restore_after_rejection & (1 << index) != 0 {
+                        descendant_metadata.applied_state_effects.insert(effect.clone());
+                    }
+                }
+                dag.block_metadata_index.write().add(descendant_metadata).unwrap();
+
+                for (index, effect) in effects.iter().enumerate() {
+                    let accepted = accepted_mask & (1 << index) != 0;
+                    let restored = restore_after_rejection & (1 << index) != 0;
+                    prop_assert_eq!(
+                        block_storage::rust::finality::state_preservation::is_state_effect_active(
+                            &dag, &merge.block_hash, effect,
+                        ).unwrap(),
+                        accepted,
+                    );
+                    prop_assert_eq!(
+                        block_storage::rust::finality::state_preservation::is_state_effect_active(
+                            &dag, &descendant.block_hash, effect,
+                        ).unwrap(),
+                        accepted || restored,
+                    );
+                    prop_assert_eq!(
+                        block_storage::rust::finality::state_preservation::is_state_preserved(
+                            &dag, &sources[index].block_hash, &merge.block_hash,
+                        ).unwrap(),
+                        accepted,
+                    );
+                    prop_assert_eq!(
+                        block_storage::rust::finality::state_preservation::is_exact_state_contained(
+                            &dag, &sources[index].block_hash, &merge.block_hash,
+                        ).unwrap(),
+                        accepted,
+                    );
+                    prop_assert_eq!(
+                        block_storage::rust::finality::state_preservation::is_state_preserved(
+                            &dag, &sources[index].block_hash, &descendant.block_hash,
+                        ).unwrap(),
+                        accepted || restored,
+                    );
+                    prop_assert_eq!(
+                        block_storage::rust::finality::state_preservation::is_exact_state_contained(
+                            &dag, &sources[index].block_hash, &descendant.block_hash,
+                        ).unwrap(),
+                        accepted || restored,
+                    );
+                }
+                let descendant_effect = StateEffectId {
+                    source_block_hash: descendant.block_hash.clone(),
+                    execution_index: 0,
+                };
+                prop_assert!(
+                    block_storage::rust::finality::state_preservation::is_state_effect_active(
+                        &dag, &descendant.block_hash, &descendant_effect,
+                    ).unwrap()
+                );
+                prop_assert!(
+                    block_storage::rust::finality::state_preservation::is_state_preserved(
+                        &dag, &merge.block_hash, &descendant.block_hash,
+                    ).unwrap()
+                );
+                prop_assert!(
+                    block_storage::rust::finality::state_preservation::is_exact_state_contained(
+                        &dag, &merge.block_hash, &descendant.block_hash,
+                    ).unwrap()
+                );
+            }
+        }
+    );
+}
+
+#[test]
+fn exact_state_effect_facts_reject_noncausal_missing_and_conflicting_sources() {
+    let mut genesis = genesis_block();
+    genesis.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+    let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
+    let source = get_random_block(
+        Some(1),
+        Some(1),
+        None,
+        None,
+        None,
+        Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let state_parent = get_random_block(
+        Some(1),
+        Some(2),
+        None,
+        None,
+        None,
+        Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+        None,
+        Some(vec![genesis.block_hash.clone()]),
+        Some(vec![]),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let target = get_random_block(
+        Some(2),
+        Some(3),
+        None,
+        None,
+        None,
+        Some(CERTIFIED_ADMISSION_PROTOCOL_VERSION),
+        None,
+        Some(vec![state_parent.block_hash.clone()]),
+        Some(vec![]),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    for block in [&source, &state_parent, &target] {
+        dag_storage.insert(block, InsertMode::Normal).unwrap();
+    }
+    let dag = dag_storage.get_representation().unwrap();
+    let noncausal = StateEffectId {
+        source_block_hash: source.block_hash.clone(),
+        execution_index: 0,
+    };
+    let parent_effect = StateEffectId {
+        source_block_hash: state_parent.block_hash.clone(),
+        execution_index: 0,
+    };
+
+    let mut source_metadata = dag.lookup_unsafe(&source.block_hash).unwrap();
+    source_metadata.successful_state_effect_indices.clear();
+    source_metadata.successful_state_effect_indices.insert(0);
+    dag.block_metadata_index
+        .write()
+        .add(source_metadata)
+        .unwrap();
+
+    let mut parent_metadata = dag.lookup_unsafe(&state_parent.block_hash).unwrap();
+    parent_metadata.successful_state_effect_indices.clear();
+    dag.block_metadata_index
+        .write()
+        .add(parent_metadata)
+        .unwrap();
+
+    let mut target_metadata = dag.lookup_unsafe(&target.block_hash).unwrap();
+    target_metadata.successful_state_effect_indices.clear();
+    target_metadata
+        .applied_state_effects
+        .insert(noncausal.clone());
+    dag.block_metadata_index
+        .write()
+        .add(target_metadata.clone())
+        .unwrap();
+    assert!(matches!(
+        block_storage::rust::finality::state_preservation::is_state_effect_active(
+            &dag,
+            &target.block_hash,
+            &noncausal,
+        ),
+        Err(KvStoreError::InvalidArgument(message)) if message.contains("strict DAG ancestor")
+    ));
+
+    target_metadata.applied_state_effects = BTreeSet::from([parent_effect.clone()]);
+    dag.block_metadata_index
+        .write()
+        .add(target_metadata.clone())
+        .unwrap();
+    let missing_source_effect =
+        block_storage::rust::finality::state_preservation::is_state_effect_active(
+            &dag,
+            &target.block_hash,
+            &parent_effect,
+        );
+    assert!(
+        matches!(
+            &missing_source_effect,
+            Err(KvStoreError::InvalidArgument(message))
+                if message.contains("no committed source effect")
+        ),
+        "unexpected missing-source result: {missing_source_effect:?}"
+    );
+
+    let mut parent_metadata = dag.lookup_unsafe(&state_parent.block_hash).unwrap();
+    parent_metadata.successful_state_effect_indices.insert(0);
+    dag.block_metadata_index
+        .write()
+        .add(parent_metadata)
+        .unwrap();
+    target_metadata
+        .rejected_state_effects
+        .insert(parent_effect.clone());
+    let conflicting = dag
+        .block_metadata_index
+        .write()
+        .add(target_metadata.clone())
+        .expect_err("conflicting effect dispositions must not enter metadata storage");
+    assert!(matches!(
+        conflicting,
+        KvStoreError::InvalidArgument(message)
+            if message.contains("applies and rejects the same state effect")
+    ));
+
+    target_metadata.rejected_state_effects.clear();
+    target_metadata.applied_state_effects.clear();
+    target_metadata.merge_base = source.block_hash.clone();
+    dag.block_metadata_index
+        .write()
+        .add(target_metadata)
+        .unwrap();
+    assert!(matches!(
+        block_storage::rust::finality::state_preservation::is_state_effect_active(
+            &dag,
+            &target.block_hash,
+            &parent_effect,
+        ),
+        Err(KvStoreError::InvalidArgument(message)) if message.contains("state parent")
+    ));
 }
 
 #[test]

@@ -48,6 +48,12 @@ pub struct FinalizationHead {
     pub certificate_digest: BlockHashSerde,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FinalizationProjectionEndpoint {
+    pub head: FinalizationHead,
+    pub projection_revision: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FinalizationGenesisAnchor {
     pub block_hash: BlockHashSerde,
@@ -438,6 +444,26 @@ impl FinalizationLedger {
             )),
             None => Ok(None),
         }
+    }
+
+    pub(crate) fn projection_endpoint(
+        &self,
+    ) -> Result<Option<FinalizationProjectionEndpoint>, KvStoreError> {
+        let _guard = self.append_lock.lock();
+        let Some(head) = self.head()? else {
+            return Ok(None);
+        };
+        let projection_revision = self.projection_cursor()?;
+        if projection_revision > head.revision {
+            return Err(KvStoreError::SerializationError(format!(
+                "finalization projection cursor {projection_revision} exceeds durable head {}",
+                head.revision
+            )));
+        }
+        Ok(Some(FinalizationProjectionEndpoint {
+            head,
+            projection_revision,
+        }))
     }
 
     fn genesis(&self) -> Result<Option<FinalizationGenesisAnchor>, KvStoreError> {
@@ -1649,6 +1675,86 @@ mod tests {
         ]);
         ledger.record_projection_completed(2).unwrap();
         assert!(ledger.pending_projection_records().unwrap().is_empty());
+    }
+
+    #[test]
+    fn projection_endpoint_reports_lag_until_the_durable_head_is_projected() {
+        let ledger = ledger();
+        let genesis = initialize(&ledger, hash(0), 0);
+        assert_eq!(
+            ledger.projection_endpoint().unwrap(),
+            Some(FinalizationProjectionEndpoint {
+                head: genesis.clone(),
+                projection_revision: 0,
+            })
+        );
+
+        let record = prepare_record(
+            &ledger,
+            &genesis,
+            hash(1),
+            1,
+            0.75,
+            BTreeSet::from([BlockHashSerde(hash(1))]),
+        )
+        .unwrap();
+        let head = match ledger.try_append(&genesis, &record).unwrap() {
+            FinalizationAppendOutcome::Committed(head) => head,
+            outcome => panic!("unexpected append outcome: {outcome:?}"),
+        };
+        assert_eq!(
+            ledger.projection_endpoint().unwrap(),
+            Some(FinalizationProjectionEndpoint {
+                head: head.clone(),
+                projection_revision: 0,
+            })
+        );
+
+        ledger.record_projection_completed(1).unwrap();
+        assert_eq!(
+            ledger.projection_endpoint().unwrap(),
+            Some(FinalizationProjectionEndpoint {
+                head,
+                projection_revision: 1,
+            })
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn projection_endpoint_preserves_exact_head_and_projection_prefix(
+            (rounds, projected) in
+                (1u8..8).prop_flat_map(|rounds| (Just(rounds), 0u8..=rounds)),
+        ) {
+            let ledger = ledger();
+            let mut head = initialize(&ledger, hash(0), 0);
+            for round in 1..=rounds {
+                let record = prepare_record(
+                    &ledger,
+                    &head,
+                    hash(round),
+                    i64::from(round),
+                    0.75,
+                    BTreeSet::from([BlockHashSerde(hash(round))]),
+                )
+                .unwrap();
+                head = match ledger.try_append(&head, &record).unwrap() {
+                    FinalizationAppendOutcome::Committed(head) => head,
+                    outcome => panic!("unexpected append outcome: {outcome:?}"),
+                };
+            }
+            for revision in 1..=u64::from(projected) {
+                ledger.record_projection_completed(revision).unwrap();
+            }
+
+            let endpoint = ledger.projection_endpoint().unwrap().unwrap();
+            prop_assert_eq!(endpoint.head, head);
+            prop_assert_eq!(endpoint.projection_revision, u64::from(projected));
+            prop_assert_eq!(
+                ledger.pending_projection_records().unwrap().len(),
+                usize::from(rounds - projected),
+            );
+        }
     }
 
     #[test]

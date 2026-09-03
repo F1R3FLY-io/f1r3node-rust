@@ -331,7 +331,7 @@ curl http://localhost:40403/api/deploy-finalization-status/3044...
 ```
 
 ```json
-{"state": "Finalized", "rejectionCount": 0, "latestBlockHash": "3bfdf56f..."}
+{"state": "Finalized", "rejection_count": 0, "latest_block_hash": "3bfdf56f...", "finalized_floor_hash": "91ca6d2e...", "finalized_floor_height": 42}
 ```
 
 Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
@@ -339,8 +339,10 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `state` | string | Deploy finalization state |
-| `rejectionCount` | int | Number of times the deploy was rejected during finalization |
-| `latestBlockHash` | string/null | Hex block hash where the deploy was last seen; `null` if never included |
+| `rejection_count` | int | Pending status counts visible rejection blocks. Terminal status counts rejection blocks in the deciding finalized-floor closure. |
+| `latest_block_hash` | string/null | Hex source-aware occurrence-carrier hash. This block contains the deploy. An exact tombstone cannot remain selected. |
+| `finalized_floor_hash` | string/null | Hex finalized-floor hash whose replay state determines a terminal verdict. Pending and legacy responses can omit it. |
+| `finalized_floor_height` | int/null | Height of `finalized_floor_hash`. Pending and legacy responses can omit it. |
 
 | Status | Condition |
 |--------|-----------|
@@ -886,6 +888,11 @@ curl -X POST http://localhost:40405/api/propose
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |
 | `status` | `google.protobuf.Empty` | `StatusResponse` | Node status — version, address, peers, network, native token metadata, LFB number, isValidator, isReadOnly, isReady, epoch |
 | `getPendingDeploys` | `PendingDeploysQuery` | `PendingDeploysResponse` | Bulk list of the node-local pending-deploy queue (deploy_storage + rejected-recovery buffer), optionally filtered by `deployerPubkey`. Capped at 1000 entries; `totalAvailable` reports the pre-cap count. Observers always answer empty. HTTP: `GET /api/pending-deploys` |
+
+`LightBlockInfo.bonds` contains the complete replayed PoS bond ledger for the
+block state. `LightBlockInfo.activeBonds` contains the positive-stake committee
+that consensus uses for the block. Clients must use `activeBonds` for finality
+and active-validator checks.
 
 ### ProposeService (port 40402)
 

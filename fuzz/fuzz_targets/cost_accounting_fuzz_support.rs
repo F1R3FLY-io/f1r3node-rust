@@ -128,6 +128,7 @@ pub fn block_with_deploy(deploy: ProcessedDeploy) -> BlockMessage {
             deploys: vec![deploy],
             rejected_deploys: Vec::new(),
             rejected_state_effects: Vec::new(),
+            applied_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Vec::<u8>::new().into(),
             applied_from_scope: Vec::new(),

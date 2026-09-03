@@ -86,6 +86,10 @@ PreStateRoot == Tag("Pre")
 \* @type: Seq(Str) => Seq(Str);
 PostStateRoot(evidence) == Tag("Post") \o evidence
 StateRoots == {PreStateRoot} \cup {PostStateRoot(evidence) : evidence \in EvidenceSequences}
+\* @type: Str => Seq(Str);
+DeclaredPostStateRoot(block) == PostStateRoot(CanonicalAdmitted(block))
+\* @type: Str => Set(Seq(Str));
+ReplayPostRoots(block) == {DeclaredPostStateRoot(block), PreStateRoot}
 \* @type: Str => Str;
 PrimaryWitnessIdentity(deploy) ==
     IF deploy \in {"D1", "D2"}
@@ -182,10 +186,22 @@ VARIABLES
     \* @type: (Str -> (Str -> Seq(Str)));
     stateRoot,
     \* @type: (Str -> (Str -> Seq(Str)));
+    computedPostRoot,
+    \* @type: (Str -> (Str -> Seq(Str)));
+    durableBeforeReplay,
+    \* @type: (Str -> (Str -> Bool));
+    durableCertifiedBeforeReplay,
+    \* @type: (Str -> (Str -> Seq(Str)));
+    cacheBeforeReplay,
+    \* @type: (Str -> (Str -> Seq(Str)));
+    stateRootBeforeReplay,
+    \* @type: (Str -> (Str -> Seq(Str)));
     firstWrite
 
 vars == <<phase, replayEvidence, replayContext, validated, durable,
-          durableCertified, cache, stateRoot, firstWrite>>
+          durableCertified, cache, stateRoot, computedPostRoot,
+          durableBeforeReplay, durableCertifiedBeforeReplay,
+          cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
 EmptyByBlock(value) == [block \in Blocks |-> value]
 EmptyByValidator(value) == [validator \in Validators |-> EmptyByBlock(value)]
@@ -199,20 +215,39 @@ Init ==
     /\ durableCertified = EmptyByValidator(FALSE)
     /\ cache = EmptyByValidator(NoEvidence)
     /\ stateRoot = EmptyByValidator(PreStateRoot)
+    /\ computedPostRoot = EmptyByValidator(PreStateRoot)
+    /\ durableBeforeReplay = EmptyByValidator(NoEvidence)
+    /\ durableCertifiedBeforeReplay = EmptyByValidator(FALSE)
+    /\ cacheBeforeReplay = EmptyByValidator(NoEvidence)
+    /\ stateRootBeforeReplay = EmptyByValidator(PreStateRoot)
     /\ firstWrite = EmptyByValidator(NoEvidence)
 
 Certify(validator, block) ==
     /\ phase[validator][block] \in {"Idle", "Reopened"}
     /\ phase' = [phase EXCEPT ![validator][block] = "Certified"]
     /\ UNCHANGED <<replayEvidence, replayContext, validated, durable,
-                    durableCertified, cache, stateRoot, firstWrite>>
+                    durableCertified, cache, stateRoot, computedPostRoot,
+                    durableBeforeReplay, durableCertifiedBeforeReplay,
+                    cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
-Replay(validator, block, context, evidence) ==
+Replay(validator, block, context, evidence, computedRoot) ==
     /\ phase[validator][block] = "Certified"
     /\ context \in Contexts
+    /\ computedRoot \in ReplayPostRoots(block)
     /\ ReplayPermitted(block, context, evidence)
     /\ replayEvidence' = [replayEvidence EXCEPT ![validator][block] = evidence]
     /\ replayContext' = [replayContext EXCEPT ![validator][block] = context]
+    /\ computedPostRoot' =
+         [computedPostRoot EXCEPT ![validator][block] = computedRoot]
+    /\ durableBeforeReplay' =
+         [durableBeforeReplay EXCEPT ![validator][block] = durable[validator][block]]
+    /\ durableCertifiedBeforeReplay' =
+         [durableCertifiedBeforeReplay EXCEPT
+            ![validator][block] = durableCertified[validator][block]]
+    /\ cacheBeforeReplay' =
+         [cacheBeforeReplay EXCEPT ![validator][block] = cache[validator][block]]
+    /\ stateRootBeforeReplay' =
+         [stateRootBeforeReplay EXCEPT ![validator][block] = stateRoot[validator][block]]
     /\ phase' = [phase EXCEPT ![validator][block] = "Replayed"]
     /\ IF Defect = "EarlyPublication"
        THEN
@@ -236,23 +271,31 @@ Validate(validator, block) ==
          replayContext[validator][block],
          replayEvidence[validator][block]
        )
+    /\ computedPostRoot[validator][block] = DeclaredPostStateRoot(block)
     /\ validated' = [validated EXCEPT ![validator][block] = TRUE]
     /\ stateRoot' = [stateRoot EXCEPT ![validator][block] =
-         PostStateRoot(replayEvidence[validator][block])]
+         computedPostRoot[validator][block]]
     /\ phase' = [phase EXCEPT ![validator][block] = "Validated"]
     /\ UNCHANGED <<replayEvidence, replayContext, durable,
-                    durableCertified, cache, firstWrite>>
+                    durableCertified, cache, computedPostRoot,
+                    durableBeforeReplay, durableCertifiedBeforeReplay,
+                    cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
 RejectReplay(validator, block) ==
     /\ phase[validator][block] = "Replayed"
-    /\ ~ValidationAccepts(
-         block,
-         replayContext[validator][block],
-         replayEvidence[validator][block]
+    /\ ~(
+         /\ ValidationAccepts(
+              block,
+              replayContext[validator][block],
+              replayEvidence[validator][block]
+            )
+         /\ computedPostRoot[validator][block] = DeclaredPostStateRoot(block)
        )
     /\ phase' = [phase EXCEPT ![validator][block] = "Rejected"]
     /\ UNCHANGED <<replayEvidence, replayContext, validated, durable,
-                    durableCertified, cache, stateRoot, firstWrite>>
+                    durableCertified, cache, stateRoot, computedPostRoot,
+                    durableBeforeReplay, durableCertifiedBeforeReplay,
+                    cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
 Publish(validator, block) ==
     /\ phase[validator][block] = "Validated"
@@ -275,7 +318,10 @@ Publish(validator, block) ==
           [] OTHER ->
               /\ phase' = [phase EXCEPT ![validator][block] = "Conflict"]
               /\ UNCHANGED <<durable, durableCertified, cache, firstWrite>>
-    /\ UNCHANGED <<replayEvidence, replayContext, validated, stateRoot>>
+    /\ UNCHANGED <<replayEvidence, replayContext, validated, stateRoot,
+                    computedPostRoot, durableBeforeReplay,
+                    durableCertifiedBeforeReplay, cacheBeforeReplay,
+                    stateRootBeforeReplay>>
 
 InjectPeerBytes(validator, block) ==
     /\ Defect \in {"PeerBytePublication", "BareRowTrust"}
@@ -286,7 +332,9 @@ InjectPeerBytes(validator, block) ==
     /\ firstWrite' =
          [firstWrite EXCEPT ![validator][block] = ForgedEvidence]
     /\ UNCHANGED <<phase, replayEvidence, replayContext, validated,
-                    cache, stateRoot>>
+                    cache, stateRoot, computedPostRoot, durableBeforeReplay,
+                    durableCertifiedBeforeReplay, cacheBeforeReplay,
+                    stateRootBeforeReplay>>
 
 TrustBareRow(validator, block) ==
     /\ Defect = "BareRowTrust"
@@ -295,7 +343,9 @@ TrustBareRow(validator, block) ==
     /\ phase' = [phase EXCEPT ![validator][block] = "Published"]
     /\ cache' = [cache EXCEPT ![validator][block] = durable[validator][block]]
     /\ UNCHANGED <<replayEvidence, replayContext, validated, durable,
-                    durableCertified, stateRoot, firstWrite>>
+                    durableCertified, stateRoot, computedPostRoot,
+                    durableBeforeReplay, durableCertifiedBeforeReplay,
+                    cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
 OverwriteConflict(validator, block, evidence) ==
     /\ Defect = "ConflictOverwrite"
@@ -308,7 +358,9 @@ OverwriteConflict(validator, block, evidence) ==
          [durableCertified EXCEPT ![validator][block] = FALSE]
     /\ UNCHANGED firstWrite
     /\ UNCHANGED <<phase, replayEvidence, replayContext, validated,
-                    cache, stateRoot>>
+                    cache, stateRoot, computedPostRoot, durableBeforeReplay,
+                    durableCertifiedBeforeReplay, cacheBeforeReplay,
+                    stateRootBeforeReplay>>
 
 Crash(validator, block) ==
     /\ phase[validator][block] # "Crashed"
@@ -316,13 +368,17 @@ Crash(validator, block) ==
     /\ cache' = [cache EXCEPT ![validator][block] = NoEvidence]
     /\ validated' = [validated EXCEPT ![validator][block] = FALSE]
     /\ UNCHANGED <<replayEvidence, replayContext, durable,
-                    durableCertified, stateRoot, firstWrite>>
+                    durableCertified, stateRoot, computedPostRoot,
+                    durableBeforeReplay, durableCertifiedBeforeReplay,
+                    cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
 Reopen(validator, block) ==
     /\ phase[validator][block] = "Crashed"
     /\ phase' = [phase EXCEPT ![validator][block] = "Reopened"]
     /\ UNCHANGED <<replayEvidence, replayContext, validated, durable,
-                    durableCertified, cache, stateRoot, firstWrite>>
+                    durableCertified, cache, stateRoot, computedPostRoot,
+                    durableBeforeReplay, durableCertifiedBeforeReplay,
+                    cacheBeforeReplay, stateRootBeforeReplay, firstWrite>>
 
 Stutter == UNCHANGED vars
 
@@ -330,7 +386,8 @@ Next ==
     \/ \E validator \in Validators, block \in Blocks : Certify(validator, block)
     \/ \E validator \in Validators, block \in Blocks,
           context \in Contexts, evidence \in EvidenceSequences :
-         Replay(validator, block, context, evidence)
+         \E computedRoot \in ReplayPostRoots(block) :
+            Replay(validator, block, context, evidence, computedRoot)
     \/ \E validator \in Validators, block \in Blocks : Validate(validator, block)
     \/ \E validator \in Validators, block \in Blocks : RejectReplay(validator, block)
     \/ \E validator \in Validators, block \in Blocks : Publish(validator, block)
@@ -353,6 +410,11 @@ TypeOK ==
     /\ durableCertified \in [Validators -> [Blocks -> BOOLEAN]]
     /\ cache \in [Validators -> [Blocks -> StoreValues]]
     /\ stateRoot \in [Validators -> [Blocks -> StateRoots]]
+    /\ computedPostRoot \in [Validators -> [Blocks -> StateRoots]]
+    /\ durableBeforeReplay \in [Validators -> [Blocks -> StoreValues]]
+    /\ durableCertifiedBeforeReplay \in [Validators -> [Blocks -> BOOLEAN]]
+    /\ cacheBeforeReplay \in [Validators -> [Blocks -> StoreValues]]
+    /\ stateRootBeforeReplay \in [Validators -> [Blocks -> StateRoots]]
     /\ firstWrite \in [Validators -> [Blocks -> StoreValues]]
 
 DeployIdentityIsTypedAndInjective ==
@@ -392,6 +454,12 @@ ValidatedReplayUsesAuthenticatedContext ==
         validated[validator][block] =>
             replayContext[validator][block] = "Authenticated"
 
+ValidatedReplayUsesDeclaredPostStateRoot ==
+    \A validator \in Validators, block \in Blocks :
+        validated[validator][block] =>
+            /\ computedPostRoot[validator][block] = DeclaredPostStateRoot(block)
+            /\ stateRoot[validator][block] = DeclaredPostStateRoot(block)
+
 PersistentEvidenceRequiresValidatedReplay ==
     \A validator \in Validators, block \in Blocks :
         durable[validator][block] # NoEvidence => durableCertified[validator][block]
@@ -410,7 +478,18 @@ CacheFollowsDurablePublication ==
 RejectedReplayPreservesAuthenticatedRoot ==
     \A validator \in Validators, block \in Blocks :
         phase[validator][block] = "Rejected" =>
-            stateRoot[validator][block] = PreStateRoot
+            stateRoot[validator][block] = stateRootBeforeReplay[validator][block]
+
+PostStateMismatchPublishesNoEvidence ==
+    \A validator \in Validators, block \in Blocks :
+        /\ phase[validator][block] \in {"Replayed", "Rejected"}
+        /\ computedPostRoot[validator][block] # DeclaredPostStateRoot(block)
+        => /\ durable[validator][block] = durableBeforeReplay[validator][block]
+           /\ durableCertified[validator][block] =
+                durableCertifiedBeforeReplay[validator][block]
+           /\ cache[validator][block] = cacheBeforeReplay[validator][block]
+           /\ stateRoot[validator][block] =
+                stateRootBeforeReplay[validator][block]
 
 ConflictingWritesNeverOverwrite ==
     \A validator \in Validators, block \in Blocks :

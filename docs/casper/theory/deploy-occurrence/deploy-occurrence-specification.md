@@ -239,6 +239,24 @@ named by the snapshot. Missing committed inputs are a typed local
 storage/dependency failure. The node does not substitute an empty closure,
 height zero, a main-parent-only view, or any node-local fallback.
 
+### O15 — terminal status authority
+
+A terminal status has two different block references.
+The **occurrence carrier** contains the reported deploy occurrence.
+The **finalized state anchor** supplies the replay state that determines the verdict.
+
+The terminal carrier uses only active inclusion evidence in the finalized-floor causal closure.
+A rejection tombstone changes occurrence disposition only.
+It does not subtract an effect inherited through the selected state parent.
+The reducer excludes an exact tombstone when its recording block is in that closure.
+Evidence outside that closure cannot change a write-once terminal response.
+
+The permanent occurrence archive has a separate representative for lookup and retention.
+That representative cannot replace the source-aware lifecycle carrier in a terminal status response.
+
+Equal-height occurrence selection uses the lexicographically smallest block hash.
+The lifecycle reducer and occurrence archive use the same total order.
+
 ## Reference reducer
 
 ```text

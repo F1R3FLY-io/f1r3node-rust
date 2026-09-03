@@ -58,6 +58,7 @@ fn metadata(block_hash: BlockHash, block_number: i64) -> BlockMetadata {
             deploys: Vec::new(),
             rejected_deploys: Vec::new(),
             rejected_state_effects: Vec::new(),
+            applied_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
             applied_from_scope: Vec::new(),

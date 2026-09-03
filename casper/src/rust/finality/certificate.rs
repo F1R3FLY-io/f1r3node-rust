@@ -277,7 +277,7 @@ fn state_is_preserved(
         hash: target.clone(),
         block_number: target_metadata.block_number,
     };
-    let mut memo = std::collections::HashMap::new();
+    let mut memo = crate::rust::finality::floor::StateContainmentMemo::new();
     crate::rust::finality::floor::state_contains(
         dag,
         block_store,
@@ -805,6 +805,7 @@ mod tests {
                 deploys: Vec::new(),
                 rejected_deploys: Vec::new(),
                 rejected_state_effects: Vec::new(),
+                applied_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
                 applied_from_scope: Vec::new(),
@@ -862,6 +863,7 @@ mod tests {
             fault_tolerance_value: 0.0,
             successful_state_effect_indices: BTreeSet::new(),
             rejected_state_effects: BTreeSet::new(),
+            applied_state_effects: BTreeSet::new(),
             protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
             objective_equivocation_evidence_delta: Vec::new(),
             sender_authority: None,

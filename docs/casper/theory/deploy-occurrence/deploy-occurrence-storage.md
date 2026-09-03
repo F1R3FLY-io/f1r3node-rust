@@ -22,7 +22,9 @@ An **active row** is the current hot-index representative for one deploy. Active
 
 An **open summary** describes a deploy that has no terminal lifecycle verdict. It contains the canonical occurrence and the archive count.
 
-A **terminal summary** freezes the lifecycle verdict and the canonical source at finalization. It also records the compaction horizon.
+A **terminal summary** copies the lifecycle verdict for an atomic consistency check. It records the archive representative, finalized state anchor, and compaction horizon.
+
+An **archive representative** is the deterministic height-and-hash selection from stored occurrence rows. It is an index value, not a lifecycle verdict.
 
 A **compaction horizon** is the certified block height below which ordinary late occurrence insertion is not valid.
 
@@ -157,12 +159,15 @@ function terminalize_v6(deploy_id, terminal_facts):
     require deploy_id is DeployIdV6
     require finalized floor hash has 32 bytes
     require one open occurrence summary exists
+    require Finalized and Failed have a 32-byte lifecycle carrier
+    require lifecycle carrier height is not above the finalized floor
 
     survivor := existing write-once verdict or terminal_facts.verdict
     require existing terminal summary agrees with survivor
 
+    select lifecycle carrier from active events in the finalized-floor closure
     prepare terminal summary from open summary and archive digest
-    prepare write-once lifecycle verdict compare-and-swap
+    prepare write-once lifecycle verdict and carrier compare-and-swap
     prepare lifecycle event deletion
     prepare open summary and active row deletion
 
@@ -172,7 +177,18 @@ function terminalize_v6(deploy_id, terminal_facts):
 
 Terminalization never deletes archive rows. Exact source lookup remains available for the complete stored chain history.
 
-The terminal summary freezes the source used for the terminal display. A later settled-history row can update the current representative without changing that frozen source.
+The lifecycle record freezes the occurrence carrier used for terminal display.
+The selection excludes exact tombstones and evidence outside the finalized-floor closure.
+
+The terminal summary stores the archive representative at compaction time.
+A later settled-history row can update the current archive representative.
+Neither archive value can change the lifecycle carrier.
+
+The terminal summary also stores the finalized floor hash and height. This
+state anchor identifies the replay state that determined the verdict.
+
+The API reports both roles separately. It never substitutes a finalized floor
+for an occurrence carrier because the floor can omit the deploy body.
 
 The archive digest is an order-independent integrity summary:
 
@@ -229,7 +245,10 @@ Do not copy the old singular deploy index into the v6 occurrence database. Old s
 
 `lookup_by_deploy_id` requires an explicit `DeployLookupId`. It dispatches to the protocol-specific store without byte-length inference.
 
-For v6, canonical lookup reads the open or terminal summary in constant key operations. It does not scan all occurrences.
+For v6, archive lookup reads the open or terminal summary in constant key operations. It does not scan all occurrences.
+
+The finalization-status API reads the source-aware lifecycle carrier.
+It does not use the archive representative as the terminal occurrence carrier.
 
 The public `find_deploy` path follows that canonical index and reads only its
 named block. A missing or mismatched indexed block is a storage-consistency

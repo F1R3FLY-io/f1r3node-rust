@@ -39,6 +39,7 @@ use std::collections::{BTreeMap, HashMap};
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::safety::clique_oracle::{CliqueOracle, FtThreshold};
+use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Justification};
@@ -148,13 +149,14 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
 
     let mk = |number: i64,
               sender: Validator,
+              pre_state_hash: Option<StateHash>,
               parents: Vec<BlockHash>,
               justifications: Vec<Justification>,
               bonds: Vec<Bond>| {
         block_implicits::get_random_block(
             Some(number),
             Some(number as i32),
-            None,
+            pre_state_hash,
             None,
             Some(sender),
             None,
@@ -172,10 +174,21 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
         block_store.put_block_message(block).expect("store block");
         dag_storage.insert(block, mode).expect("insert block");
     };
+    let assert_parent_binding =
+        |block: &BlockMessage, parent_hash: &BlockHash, parent_post_state_hash: &StateHash| {
+            let commitment = block
+                .header
+                .finalized_floor
+                .as_ref()
+                .expect("non-genesis fixture block has a floor commitment");
+            assert_eq!(&commitment.floor_hash, parent_hash);
+            assert_eq!(&commitment.floor_post_state_hash, parent_post_state_hash);
+        };
 
     let genesis = mk(
         0,
         filler.clone(),
+        None,
         Vec::new(),
         Vec::new(),
         era_bonds[0].clone(),
@@ -186,25 +199,36 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
     // fixture block sits at exactly its CI height and spine walks that leave
     // the distilled window descend a real chain to genesis.
     let mut filler_at: Vec<BlockHash> = vec![genesis.block_hash.clone()];
+    let mut filler_post_state_at: Vec<StateHash> = vec![genesis.body.state.post_state_hash.clone()];
     for h in 1..=fx.max_height {
+        let parent_hash = filler_at[(h - 1) as usize].clone();
+        let parent_post_state_hash = filler_post_state_at[(h - 1) as usize].clone();
         let block = mk(
             h,
             filler.clone(),
-            vec![filler_at[(h - 1) as usize].clone()],
+            Some(parent_post_state_hash.clone()),
+            vec![parent_hash.clone()],
             Vec::new(),
             era_bonds[0].clone(),
         );
+        assert_parent_binding(&block, &parent_hash, &parent_post_state_hash);
         store(&block, InsertMode::Normal);
-        filler_at.push(block.block_hash);
+        filler_at.push(block.block_hash.clone());
+        filler_post_state_at.push(block.body.state.post_state_hash);
     }
 
     let mut hash_of: HashMap<String, BlockHash> = HashMap::new();
+    let mut post_state_of: HashMap<String, StateHash> = HashMap::new();
     for b in &fx.blocks {
         let mut parents: Vec<BlockHash> = Vec::with_capacity(2);
-        match &b.main_parent {
-            Some(mp) => parents.push(hash_of[mp].clone()),
-            None => parents.push(filler_at[(b.height - 1) as usize].clone()),
-        }
+        let (main_parent_hash, main_parent_post_state_hash) = match &b.main_parent {
+            Some(mp) => (hash_of[mp].clone(), post_state_of[mp].clone()),
+            None => (
+                filler_at[(b.height - 1) as usize].clone(),
+                filler_post_state_at[(b.height - 1) as usize].clone(),
+            ),
+        };
+        parents.push(main_parent_hash.clone());
         if b.extra_filler_parent {
             parents.push(filler_at[(b.height - 1) as usize].clone());
         }
@@ -219,12 +243,15 @@ async fn rebuild(fx: &Fixture) -> Rebuilt {
         let block = mk(
             b.height,
             validator_of[&b.sender].clone(),
+            Some(main_parent_post_state_hash.clone()),
             parents,
             justifications,
             era_bonds[b.era].clone(),
         );
+        assert_parent_binding(&block, &main_parent_hash, &main_parent_post_state_hash);
         store(&block, InsertMode::Normal);
-        hash_of.insert(b.id.clone(), block.block_hash);
+        hash_of.insert(b.id.clone(), block.block_hash.clone());
+        post_state_of.insert(b.id.clone(), block.body.state.post_state_hash);
     }
 
     let dag = dag_storage

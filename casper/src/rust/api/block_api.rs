@@ -1831,6 +1831,16 @@ impl BlockAPI {
                 .iter()
                 .map(proto_util::bond_to_bond_info)
                 .collect(),
+            active_bonds: block
+                .body
+                .state
+                .bonds
+                .iter()
+                .filter(|bond| {
+                    bond.stake > 0 && block.body.state.active_validators.contains(&bond.validator)
+                })
+                .map(proto_util::bond_to_bond_info)
+                .collect(),
             block_size: block.to_proto().encode_to_vec().len().to_string(),
             deploy_count: block.body.deploys.len() as i32,
             fault_tolerance,
@@ -2309,6 +2319,51 @@ mod tests {
         assert!(deploy_is_block_expired(i64::MIN, i64::MIN, 1).unwrap());
         assert!(!deploy_is_block_expired(i64::MIN + 1, i64::MIN, 1).unwrap());
         assert!(deploy_is_block_expired(0, 0, -1).is_err());
+    }
+
+    #[test]
+    fn light_block_info_separates_active_committee_from_all_bonds() {
+        let active = Bytes::from(vec![1; models::rust::validator::LENGTH]);
+        let inactive = Bytes::from(vec![2; models::rust::validator::LENGTH]);
+        let nonpositive = Bytes::from(vec![3; models::rust::validator::LENGTH]);
+        let mut block = models::rust::block_implicits::get_random_block(
+            Some(1),
+            Some(1),
+            None,
+            None,
+            Some(active.clone()),
+            None,
+            Some(1),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(Vec::new()),
+            Some(vec![
+                models::rust::casper::protocol::casper_message::Bond {
+                    validator: active.clone(),
+                    stake: 100,
+                },
+                models::rust::casper::protocol::casper_message::Bond {
+                    validator: inactive,
+                    stake: 200,
+                },
+                models::rust::casper::protocol::casper_message::Bond {
+                    validator: nonpositive,
+                    stake: 0,
+                },
+            ]),
+            Some("root".to_string()),
+            None,
+        );
+        block.body.state.active_validators = vec![active.clone()];
+
+        let info = BlockAPI::construct_light_block_info(&block, 0.0, false);
+
+        assert_eq!(info.bonds.len(), 3);
+        assert_eq!(info.active_bonds, vec![models::casper::BondInfo {
+            validator: hex::encode(active),
+            stake: 100,
+        }]);
     }
 
     proptest::proptest! {

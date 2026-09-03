@@ -25,6 +25,8 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
+use super::deploy_occurrence_types::occurrence_rank_cmp;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleEventKind {
     Included {
@@ -145,11 +147,7 @@ impl DeployLifecycleTables {
             .iter()
             .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
             .filter(|e| is_visible(&e.block_hash))
-            .max_by(|a, b| {
-                a.height
-                    .cmp(&b.height)
-                    .then_with(|| a.block_hash.cmp(&b.block_hash))
-            })
+            .max_by(|a, b| occurrence_rank_cmp(a.height, &a.block_hash, b.height, &b.block_hash))
             .map(|e| e.block_hash.clone()))
     }
 

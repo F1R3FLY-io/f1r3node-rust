@@ -45,24 +45,10 @@ unsafe impl Sync for NoOpsCasperEffect {}
 // For testing purposes, we'll implement Clone manually by creating stub instances
 impl Clone for NoOpsCasperEffect {
     fn clone(&self) -> Self {
-        // Create a clone that shares the same underlying storage so that blocks added to one instance
-        // are visible to cloned instances (which is necessary for the engine tests to work)
-
-        // Create new KeyValueBlockStore with shared underlying storage
-        // Note: We need to share the underlying data between clones for tests to work
-        let cloned_block_store = KeyValueBlockStore::new(
-            Arc::new(MockKeyValueStore::with_shared_data(
-                self.shared_block_data.clone(),
-            )),
-            Arc::new(MockKeyValueStore::with_shared_data(
-                self.shared_approved_block_data.clone(),
-            )),
-        );
-
         Self {
             estimator_func: self.estimator_func.clone(),
             runtime_manager: self.runtime_manager.clone(), // Arc clone is cheap
-            block_store: cloned_block_store,
+            block_store: self.block_store.clone(),
             shared_block_data: self.shared_block_data.clone(),
             shared_approved_block_data: self.shared_approved_block_data.clone(),
             block_dag_storage: self.block_dag_storage.clone(),
@@ -150,17 +136,10 @@ impl NoOpsCasperEffect {
     pub fn new_with_shared_kvm(
         estimator_func: Option<Vec<BlockHash>>,
         runtime_manager: Arc<RuntimeManager>,
-        _block_store: KeyValueBlockStore, // We'll ignore this and create our own with shared data
+        block_store: KeyValueBlockStore,
         block_dag_storage: KeyValueDagRepresentation,
         shared_kvm_data: Arc<Mutex<HashMap<Vec<u8>, Vec<u8>>>>,
     ) -> Self {
-        // Use the provided shared kvm data for BOTH block store and approved block store
-        // This matches Scala's behavior where all storages share one kvm
-        let block_store = KeyValueBlockStore::new(
-            Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
-            Arc::new(MockKeyValueStore::with_shared_data(shared_kvm_data.clone())),
-        );
-
         Self {
             estimator_func: estimator_func.unwrap_or_default(),
             runtime_manager,

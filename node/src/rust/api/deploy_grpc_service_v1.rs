@@ -794,6 +794,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
                             state: deploy_state_to_proto(status.state) as i32,
                             rejection_count: status.rejection_count,
                             latest_block_hash: status.latest_block_hash,
+                            finalized_floor_hash: status.finalized_floor_hash,
+                            finalized_floor_height: status.finalized_floor_height,
                         },
                     ),
                 ),

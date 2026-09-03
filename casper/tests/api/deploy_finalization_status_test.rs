@@ -17,10 +17,12 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use casper::rust::finality::deploy_lifecycle::DeployLifecycle;
+use casper::rust::finality::floor::floor_of_block;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason,
+    BlockMessage, DeployData, ProcessedDeploy, RejectedDeploy, RejectedDeployReason, StateEffectId,
 };
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 
@@ -45,14 +47,6 @@ fn v6_lookup_id(bytes: &[u8]) -> DeployLookupId {
     DeployLookupId::V6(DeployIdV6::try_from(bytes).expect("protocol-v6 deploy id"))
 }
 
-fn rejected_v6(bytes: &[u8]) -> RejectedDeploy {
-    RejectedDeploy::occurrence_v6(
-        DeployIdV6::try_from(bytes).expect("protocol-v6 deploy id"),
-        BlockHash::new(),
-        RejectedDeployReason::Unspecified,
-    )
-}
-
 fn rejected_occurrence_v6(
     bytes: &[u8],
     source_block_hash: BlockHash,
@@ -63,6 +57,82 @@ fn rejected_occurrence_v6(
         source_block_hash,
         reason,
     )
+}
+
+fn settled_failure(mut deploy: ProcessedDeploy) -> ProcessedDeploy {
+    deploy.is_failed = true;
+    deploy.authority_funding_certificate = Some(Default::default());
+    deploy.authority_cost_witness = Some(Default::default());
+    deploy
+}
+
+fn reject_state_effect(
+    block: &mut BlockMessage,
+    deploy_id: &[u8],
+    source_block_hash: BlockHash,
+    execution_index: u32,
+    reason: RejectedDeployReason,
+) {
+    block.body.rejected_deploys.push(rejected_occurrence_v6(
+        deploy_id,
+        source_block_hash.clone(),
+        reason,
+    ));
+    block.body.rejected_state_effects.push(StateEffectId {
+        source_block_hash,
+        execution_index,
+    });
+    block.body.rejected_state_effects.sort();
+    assert!(
+        block
+            .body
+            .rejected_state_effects
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]),
+        "duplicate rejected state-effect identity"
+    );
+}
+
+fn isolated_store_manager(
+    context: &TestContext,
+) -> Box<dyn rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager> {
+    Box::new(
+        crate::util::rholang::resources::mk_test_rnode_store_manager_with_dual_scope(
+            crate::util::rholang::resources::generate_scope_id(),
+            context.genesis.rspace_scope_id.clone(),
+        ),
+    )
+}
+
+fn bind_authority_floor(block: &mut BlockMessage, floor: &BlockMessage) {
+    let (certificate_digest, authority_context_digest) = {
+        let certificate = block
+            .finalized_floor_certificate
+            .as_mut()
+            .expect("protocol-v6 floor certificate");
+        certificate.target_floor_hash.0 = floor.block_hash.clone();
+        certificate.target_post_state_hash.0 = floor.body.state.post_state_hash.clone();
+        certificate.target_block_number = floor.body.state.block_number;
+        certificate.predecessor_floor_hash.0 = floor.block_hash.clone();
+        certificate.predecessor_certificate_digest.0 =
+            BlockHash::from(vec![0; models::rust::block_hash::LENGTH]);
+        certificate.predecessor_certificate_block_hash.0 =
+            BlockHash::from(vec![0; models::rust::block_hash::LENGTH]);
+        (
+            certificate.digest(),
+            certificate.authority_context_digest.0.clone(),
+        )
+    };
+    let commitment = block
+        .header
+        .finalized_floor
+        .as_mut()
+        .expect("protocol-v6 floor commitment");
+    commitment.floor_hash = floor.block_hash.clone();
+    commitment.floor_post_state_hash = floor.body.state.post_state_hash.clone();
+    commitment.certificate_digest = certificate_digest;
+    commitment.authority_context_digest = authority_context_digest;
+    block.block_hash = casper::rust::util::proto_util::hash_block(block);
 }
 
 impl TestContext {
@@ -95,6 +165,24 @@ async fn observe_lifecycle(
         .observe_block(dag, block_store, block, deploy_lifespan, None, 0)
         .await
         .expect("lifecycle observation");
+}
+
+async fn adopt_and_observe_lifecycle(
+    dag: &mut KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    block: &BlockMessage,
+    deploy_lifespan: i64,
+) {
+    floor_of_block(
+        dag,
+        block_store,
+        &block.block_hash,
+        FtThreshold::from_ppm(0),
+    )
+    .await
+    .expect("materialize adopted floor");
+    dag.last_finalized_block_hash = block.block_hash.clone();
+    observe_lifecycle(dag, block_store, block, deploy_lifespan).await;
 }
 
 fn put_terminal(
@@ -263,15 +351,13 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -293,7 +379,7 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
     let deploy_b_sig = deploy_b.deploy_id().clone();
 
     // Block A: empty-body sibling of genesis at h=1.
-    let block_a = models::rust::block_implicits::get_random_block(
+    let mut block_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -309,8 +395,9 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_a, &genesis_block);
     // Block B: sibling of A at h=1, carries deploy_b in body.deploys.
-    let block_b = models::rust::block_implicits::get_random_block(
+    let mut block_b = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(2),
         None,
@@ -326,6 +413,7 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_b, &genesis_block);
     // Block C: merge of [A, B] with A as main parent.
     let mut block_c = models::rust::block_implicits::get_random_block(
         Some(2),
@@ -345,6 +433,11 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
     );
     block_c.body.merge_base = block_a.block_hash.clone();
     block_c.body.applied_from_scope = vec![deploy_b_sig.clone()];
+    block_c.body.applied_state_effects = vec![StateEffectId {
+        source_block_hash: block_b.block_hash.clone(),
+        execution_index: 0,
+    }];
+    bind_authority_floor(&mut block_c, &genesis_block);
 
     block_store.put_block_message(&block_a).expect("store A");
     block_store.put_block_message(&block_b).expect("store B");
@@ -365,8 +458,7 @@ async fn resolve_finds_sig_in_secondary_parent_branch() {
     let mut dag = dag_storage
         .get_representation()
         .expect("get_representation");
-    dag.last_finalized_block_hash = block_c.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &block_c, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &block_c, 50).await;
 
     let status =
         resolve_v6(&dag, &block_store, &deploy_b_sig, None).expect("resolve should not fail");
@@ -461,15 +553,13 @@ async fn resolve_and_resolve_batch_agree_across_states() {
     use casper::rust::util::construct_deploy;
     use prost::bytes::Bytes;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -541,8 +631,7 @@ async fn resolve_and_resolve_batch_agree_across_states() {
 
     // ProcessedDeploy::empty defaults is_failed=false; flip for the
     // `failed_canonical` deploy.
-    let mut pd_failed = deploy_failed;
-    pd_failed.is_failed = true;
+    let pd_failed = settled_failure(deploy_failed);
 
     // Block A: canonical h=1. Carries failed_canonical (with is_failed)
     // and the two clean-then-reject sigs in body.deploys.
@@ -591,7 +680,13 @@ async fn resolve_and_resolve_batch_agree_across_states() {
         Some(genesis_block.shard_id.clone()),
         None,
     );
-    block_b.body.rejected_deploys = vec![rejected_v6(&sig_clean_canonical_reject_canonical)];
+    reject_state_effect(
+        &mut block_b,
+        &sig_clean_canonical_reject_canonical,
+        block_a.block_hash.clone(),
+        1,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
 
     // Block S: non-canonical sibling of B at h=2. Has main parent A
     // (so `is_in_main_chain(A, S)` is true) but is NOT on LFB's
@@ -625,7 +720,13 @@ async fn resolve_and_resolve_batch_agree_across_states() {
         Some(genesis_block.shard_id.clone()),
         None,
     );
-    block_s.body.rejected_deploys = vec![rejected_v6(&sig_clean_canonical_reject_sibling)];
+    reject_state_effect(
+        &mut block_s,
+        &sig_clean_canonical_reject_sibling,
+        block_a.block_hash.clone(),
+        2,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
 
     // Block C: LFB. Multi-parent merge of [B, S]. Main parent = B,
     // secondary parent = S. BFS from C visits both B (canonical) and
@@ -856,15 +957,13 @@ async fn resolve_returns_pending_for_unfinalized_inclusion_past_lifespan() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -968,15 +1067,13 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1004,12 +1101,11 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
     );
     let sig_under_test = deploy_failed_then_clean.deploy_id().clone();
 
-    let mut pd_failed = deploy_failed_then_clean.clone();
-    pd_failed.is_failed = true;
+    let pd_failed = settled_failure(deploy_failed_then_clean.clone());
     let pd_clean = deploy_failed_then_clean;
 
     // Block A: h=1, canonical, parent=genesis. Empty body.
-    let block_a = models::rust::block_implicits::get_random_block(
+    let mut block_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -1025,9 +1121,10 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_a, &genesis_block);
 
     // Block B: h=2, canonical, main_parent=A. Empty body.
-    let block_b = models::rust::block_implicits::get_random_block(
+    let mut block_b = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(1),
         None,
@@ -1043,10 +1140,11 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_b, &genesis_block);
 
     // Block S: h=2, sibling of B (also main_parent=A). Carries sig with
     // is_failed=true.
-    let block_s = models::rust::block_implicits::get_random_block(
+    let mut block_s = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(2),
         None,
@@ -1062,6 +1160,7 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_s, &genesis_block);
 
     // Block C: h=3, multi-parent merge of [B, S]. Main parent = B.
     let mut block_c = models::rust::block_implicits::get_random_block(
@@ -1081,9 +1180,17 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         None,
     );
     block_c.body.merge_base = block_b.block_hash.clone();
+    reject_state_effect(
+        &mut block_c,
+        &sig_under_test,
+        block_s.block_hash.clone(),
+        0,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
+    bind_authority_floor(&mut block_c, &genesis_block);
 
     // Block D: h=4, canonical clean inclusion of sig X. main_parent=C.
-    let block_d = models::rust::block_implicits::get_random_block(
+    let mut block_d = models::rust::block_implicits::get_random_block(
         Some(4),
         Some(1),
         None,
@@ -1099,6 +1206,7 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_d, &genesis_block);
 
     block_store.put_block_message(&block_a).expect("store A");
     block_store.put_block_message(&block_b).expect("store B");
@@ -1125,8 +1233,7 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
     let mut dag = dag_storage
         .get_representation()
         .expect("get_representation");
-    dag.last_finalized_block_hash = block_d.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &block_d, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &block_d, 50).await;
 
     let status =
         resolve_v6(&dag, &block_store, &sig_under_test, None).expect("resolve should not fail");
@@ -1146,39 +1253,33 @@ async fn resolve_returns_finalized_for_clean_canonical_after_failed_secondary() 
     );
 }
 
-/// Same-chain symmetric gate: a deploy that fails canonically at A, gets
-/// canonical-descendant-rejected at B, and is re-tried clean canonically
-/// at C must resolve to `Finalized`. The latest canonical inclusion (C
-/// clean at h=3) wins over the earlier failed inclusion at A. Without
-/// this, `repeat_deploy` would exempt the sig as a recovery candidate
-/// — allowing double-execution of a canonically-clean deploy.
+/// A failed occurrence in A can be retried after a merge rebases onto a
+/// sibling state and rejects A's exact state effect. The clean occurrence
+/// in C is then the only occurrence in the adopted state.
 ///
-/// DAG shape (single chain, no multi-parent):
+/// DAG shape:
 ///
 /// ```text
-///   genesis (h=0)
-///       |
-///       A (h=1)            canonical; sig X with is_failed=true
-///       |
-///       B (h=2)            canonical; sig X in body.rejected_deploys
-///       |                  (canonical-descendant rejection of A's failed
-///       |                   inclusion — recovery flow's first step)
-///       C (h=3, LFB)       canonical; sig X clean (recovery succeeded)
+///       genesis (h=0)
+///         /   \
+///        A     S           A contains failed occurrence X
+///         \   /
+///           B             B uses S's state and rejects A:0
+///           |
+///           C             C contains the clean retry of X
 /// ```
 #[tokio::test]
-async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_failed() {
+async fn resolve_returns_finalized_when_rebased_clean_supersedes_rejected_failed() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1206,12 +1307,11 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
     );
     let sig_under_test = deploy.deploy_id().clone();
 
-    let mut pd_failed = deploy.clone();
-    pd_failed.is_failed = true;
+    let pd_failed = settled_failure(deploy.clone());
     let pd_clean = deploy;
 
     // Block A: h=1, canonical, sig with is_failed=true.
-    let block_a = models::rust::block_implicits::get_random_block(
+    let mut block_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -1227,8 +1327,27 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_a, &genesis_block);
 
-    // Block B: h=2, canonical descendant of A. sig in rejected_deploys.
+    let mut block_s = models::rust::block_implicits::get_random_block(
+        Some(1),
+        Some(2),
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(vec![genesis_hash.clone()]),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(Vec::new()),
+        Some(genesis_block.body.state.bonds.clone()),
+        Some(genesis_block.shard_id.clone()),
+        None,
+    );
+    bind_authority_floor(&mut block_s, &genesis_block);
+
+    // Block B rebases onto S's state and rejects A's failed occurrence.
     let mut block_b = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(1),
@@ -1237,7 +1356,7 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         None,
         None,
         Some(0),
-        Some(vec![block_a.block_hash.clone()]),
+        Some(vec![block_a.block_hash.clone(), block_s.block_hash.clone()]),
         Some(Vec::new()),
         Some(Vec::new()),
         Some(Vec::new()),
@@ -1245,11 +1364,19 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         Some(genesis_block.shard_id.clone()),
         None,
     );
-    block_b.body.rejected_deploys = vec![rejected_v6(&sig_under_test)];
+    reject_state_effect(
+        &mut block_b,
+        &sig_under_test,
+        block_a.block_hash.clone(),
+        0,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
+    block_b.body.merge_base = block_s.block_hash.clone();
+    bind_authority_floor(&mut block_b, &genesis_block);
 
     // Block C: h=3 LFB, canonical descendant of B. sig clean (recovery
     // succeeded after B's rejection).
-    let block_c = models::rust::block_implicits::get_random_block(
+    let mut block_c = models::rust::block_implicits::get_random_block(
         Some(3),
         Some(1),
         None,
@@ -1265,13 +1392,18 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_c, &genesis_block);
 
     block_store.put_block_message(&block_a).expect("store A");
+    block_store.put_block_message(&block_s).expect("store S");
     block_store.put_block_message(&block_b).expect("store B");
     block_store.put_block_message(&block_c).expect("store C");
     dag_storage
         .insert(&block_a, InsertMode::Normal)
         .expect("dag insert A");
+    dag_storage
+        .insert(&block_s, InsertMode::Normal)
+        .expect("dag insert S");
     dag_storage
         .insert(&block_b, InsertMode::Normal)
         .expect("dag insert B");
@@ -1282,8 +1414,7 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
     let mut dag = dag_storage
         .get_representation()
         .expect("get_representation");
-    dag.last_finalized_block_hash = block_c.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &block_c, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &block_c, 50).await;
 
     let status =
         resolve_v6(&dag, &block_store, &sig_under_test, None).expect("resolve should not fail");
@@ -1291,7 +1422,7 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
     assert_eq!(
         status.state,
         DeployFinalizationState::Finalized,
-        "canonical clean at C must supersede canonical failed at A; got {:?}",
+        "clean retry at C must supersede the rebased rejected failure at A; got {:?}",
         status.state,
     );
     assert_eq!(
@@ -1306,32 +1437,18 @@ async fn resolve_returns_finalized_when_canonical_clean_supersedes_canonical_fai
     );
 }
 
-/// "Indexed but missing from body" is the case where the deploy index
-/// claims a sig lives in some block, but that block's `body.deploys` does
-/// not list the sig. The resolver returns a typed `DeployFinalizationCorruption`
-/// error so the consensus path (`repeat_deploy`) conservative-fails (keep
-/// the sig in the check set rather than exempting it as a recovery
-/// candidate). `BlockAPI::deploy_finalization_status` downcasts and
-/// converts to `pending_unknown` at the HTTP/gRPC boundary so callers
-/// see a tractable response. The `f1r3fly.deploy_finalization_status.corruption`
-/// warn target gives operators visibility for the inconsistency.
 #[tokio::test]
-async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
+async fn known_block_fallback_rejects_a_body_without_the_deploy() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::api::deploy_finalization_status::DeployFinalizationCorruption;
-    use models::rust::block_hash::BlockHashSerde;
-    use prost::bytes::Bytes;
-    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1364,24 +1481,7 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
         None,
     );
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage
-        .insert(&block_a, InsertMode::Normal)
-        .expect("dag insert A");
-
-    // Inject the inconsistency: write a fake mapping into the deploy index
-    // claiming `corrupt_sig` lives in block_a, even though A's body does
-    // not list it.
     let corrupt_sig = vec![0xDEu8; 32];
-    {
-        let deploy_index_handle = dag_storage.deploy_index_for_tests();
-        let deploy_index_guard = deploy_index_handle.write();
-        deploy_index_guard
-            .put(vec![(
-                Bytes::from(corrupt_sig.clone()).into(),
-                BlockHashSerde(block_a.block_hash.clone()),
-            )])
-            .expect("inject corrupt deploy_index entry");
-    }
 
     let dag = dag_storage
         .get_representation()
@@ -1407,20 +1507,17 @@ async fn resolve_returns_typed_err_for_indexed_but_missing_from_body() {
 }
 
 #[tokio::test]
-async fn resolve_with_known_block_uses_fallback_block_when_deploy_index_misses() {
+async fn known_block_fallback_reports_a_body_that_contains_the_deploy() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
-    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1458,29 +1555,13 @@ async fn resolve_with_known_block_uses_fallback_block_when_deploy_index_misses()
     );
 
     block_store.put_block_message(&block_a).expect("store A");
-    dag_storage
-        .insert(&block_a, InsertMode::Normal)
-        .expect("dag insert A");
-
-    {
-        let deploy_index_handle = dag_storage.deploy_index_for_tests();
-        let deploy_index_guard = deploy_index_handle.write();
-        deploy_index_guard
-            .delete(vec![deploy_sig.to_vec()])
-            .expect("remove deploy index entry");
-    }
-
-    let mut dag = dag_storage
+    let dag = dag_storage
         .get_representation()
         .expect("dag representation");
-    dag.last_finalized_block_hash = block_a.block_hash.clone();
     let without_known_block = resolve_v6(&dag, &block_store, &deploy_sig, None)
-        .expect("index-miss resolve should not fail");
+        .expect("unknown deploy resolve should not fail");
     assert_eq!(without_known_block.state, DeployFinalizationState::Pending);
-    assert_eq!(
-        without_known_block.latest_block_hash,
-        Some(block_a.block_hash.clone())
-    );
+    assert_eq!(without_known_block.latest_block_hash, None);
 
     let with_known_block = resolve_v6(&dag, &block_store, &deploy_sig, Some(&block_a.block_hash))
         .expect("known-block resolve should not fail");
@@ -1530,15 +1611,13 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis_block = ctx.genesis.genesis_block.clone();
     let genesis_hash = genesis_block.block_hash.clone();
 
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1567,7 +1646,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
     let sig_under_test = deploy.deploy_id().clone();
 
     // A: h=1, canonical, empty body.
-    let block_a = models::rust::block_implicits::get_random_block(
+    let mut block_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -1583,9 +1662,10 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_a, &genesis_block);
 
     // B: h=2, canonical (main parent of LFB), empty body.
-    let block_b = models::rust::block_implicits::get_random_block(
+    let mut block_b = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(1),
         None,
@@ -1601,9 +1681,10 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_b, &genesis_block);
 
     // Y: h=2, non-canonical sibling of B. Carries sig_X clean.
-    let block_y = models::rust::block_implicits::get_random_block(
+    let mut block_y = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(2),
         None,
@@ -1619,6 +1700,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         Some(genesis_block.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut block_y, &genesis_block);
 
     // C: h=3, LFB. Multi-parent merge of [B, Y]. body.rejected_deploys
     // contains sig_X (the merge engine rejected the deploy when
@@ -1639,8 +1721,15 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
         Some(genesis_block.shard_id.clone()),
         None,
     );
-    block_c.body.rejected_deploys = vec![rejected_v6(&sig_under_test)];
+    reject_state_effect(
+        &mut block_c,
+        &sig_under_test,
+        block_y.block_hash.clone(),
+        0,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
     block_c.body.merge_base = block_b.block_hash.clone();
+    bind_authority_floor(&mut block_c, &genesis_block);
 
     block_store.put_block_message(&block_a).expect("store A");
     block_store.put_block_message(&block_b).expect("store B");
@@ -1662,8 +1751,7 @@ async fn resolve_returns_pending_for_non_canonical_clean_with_canonical_reject()
     let mut dag = dag_storage
         .get_representation()
         .expect("get_representation");
-    dag.last_finalized_block_hash = block_c.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &block_c, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &block_c, 50).await;
 
     let status =
         resolve_v6(&dag, &block_store, &sig_under_test, None).expect("resolve should not fail");
@@ -1686,13 +1774,11 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis = ctx.genesis.genesis_block.clone();
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1711,7 +1797,7 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
             .expect("deploy"),
     );
     let sig = deploy.deploy_id().clone();
-    let source_a = models::rust::block_implicits::get_random_block(
+    let mut source_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -1727,7 +1813,8 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    let source_b = models::rust::block_implicits::get_random_block(
+    bind_authority_floor(&mut source_a, &genesis);
+    let mut source_b = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(2),
         None,
@@ -1743,6 +1830,7 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
         Some(genesis.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut source_b, &genesis);
     let mut merge = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(3),
@@ -1762,13 +1850,20 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    merge.body.rejected_deploys = vec![rejected_occurrence_v6(
+    reject_state_effect(
+        &mut merge,
         &sig,
         source_b.block_hash.clone(),
+        0,
         RejectedDeployReason::DuplicateOccurrence,
-    )];
+    );
     merge.body.merge_base = genesis.block_hash.clone();
     merge.body.applied_from_scope = vec![sig.clone()];
+    merge.body.applied_state_effects = vec![StateEffectId {
+        source_block_hash: source_a.block_hash.clone(),
+        execution_index: 0,
+    }];
+    bind_authority_floor(&mut merge, &genesis);
 
     for block in [&source_a, &source_b, &merge] {
         block_store.put_block_message(block).expect("store block");
@@ -1777,8 +1872,7 @@ async fn source_aware_rejection_returns_the_surviving_occurrence() {
             .expect("insert block");
     }
     let mut dag = dag_storage.get_representation().expect("dag");
-    dag.last_finalized_block_hash = merge.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &merge, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &merge, 50).await;
 
     let status = resolve_v6(&dag, &block_store, &sig, None).expect("source-aware resolve");
 
@@ -1792,13 +1886,11 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis = ctx.genesis.genesis_block.clone();
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1817,7 +1909,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
             .expect("deploy"),
     );
     let sig = deploy.deploy_id().clone();
-    let source_a = models::rust::block_implicits::get_random_block(
+    let mut source_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -1833,7 +1925,8 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    let source_b = models::rust::block_implicits::get_random_block(
+    bind_authority_floor(&mut source_a, &genesis);
+    let mut source_b = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(2),
         None,
@@ -1849,7 +1942,8 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    let main_parent = models::rust::block_implicits::get_random_block(
+    bind_authority_floor(&mut source_b, &genesis);
+    let mut main_parent = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(3),
         None,
@@ -1865,6 +1959,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         Some(genesis.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut main_parent, &genesis);
     let mut secondary_parent = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(4),
@@ -1881,11 +1976,14 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    secondary_parent.body.rejected_deploys = vec![rejected_occurrence_v6(
+    reject_state_effect(
+        &mut secondary_parent,
         &sig,
         source_b.block_hash.clone(),
+        0,
         RejectedDeployReason::DuplicateOccurrence,
-    )];
+    );
+    bind_authority_floor(&mut secondary_parent, &genesis);
     let mut lfb = models::rust::block_implicits::get_random_block(
         Some(3),
         Some(5),
@@ -1906,6 +2004,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
         None,
     );
     lfb.body.merge_base = main_parent.block_hash.clone();
+    bind_authority_floor(&mut lfb, &genesis);
 
     for block in [&source_a, &source_b, &main_parent, &secondary_parent, &lfb] {
         block_store.put_block_message(block).expect("store block");
@@ -1914,8 +2013,7 @@ async fn source_aware_rejection_in_secondary_parent_is_authoritative() {
             .expect("insert block");
     }
     let mut dag = dag_storage.get_representation().expect("dag");
-    dag.last_finalized_block_hash = lfb.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &lfb, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &lfb, 50).await;
 
     let status = resolve_v6(&dag, &block_store, &sig, None).expect("source-aware resolve");
 
@@ -1929,13 +2027,11 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::util::construct_deploy;
 
-    use crate::util::rholang::resources::{
-        block_dag_storage_from_dyn, mk_test_rnode_store_manager_from_genesis,
-    };
+    use crate::util::rholang::resources::block_dag_storage_from_dyn;
 
     let ctx = TestContext::new().await;
     let genesis = ctx.genesis.genesis_block.clone();
-    let mut kvm = mk_test_rnode_store_manager_from_genesis(&ctx.genesis);
+    let mut kvm = isolated_store_manager(&ctx);
     let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvm)
         .await
         .expect("block store");
@@ -1954,7 +2050,7 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
             .expect("deploy"),
     );
     let sig = deploy.deploy_id().clone();
-    let source_a = models::rust::block_implicits::get_random_block(
+    let mut source_a = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(1),
         None,
@@ -1970,7 +2066,8 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    let source_b = models::rust::block_implicits::get_random_block(
+    bind_authority_floor(&mut source_a, &genesis);
+    let mut source_b = models::rust::block_implicits::get_random_block(
         Some(1),
         Some(2),
         None,
@@ -1986,6 +2083,7 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
         Some(genesis.shard_id.clone()),
         None,
     );
+    bind_authority_floor(&mut source_b, &genesis);
     let mut merge = models::rust::block_implicits::get_random_block(
         Some(2),
         Some(3),
@@ -2005,19 +2103,22 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
         Some(genesis.shard_id.clone()),
         None,
     );
-    merge.body.rejected_deploys = vec![
-        rejected_occurrence_v6(
-            &sig,
-            source_a.block_hash.clone(),
-            RejectedDeployReason::DuplicateOccurrence,
-        ),
-        rejected_occurrence_v6(
-            &sig,
-            source_b.block_hash.clone(),
-            RejectedDeployReason::DuplicateOccurrence,
-        ),
-    ];
+    reject_state_effect(
+        &mut merge,
+        &sig,
+        source_a.block_hash.clone(),
+        0,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
+    reject_state_effect(
+        &mut merge,
+        &sig,
+        source_b.block_hash.clone(),
+        0,
+        RejectedDeployReason::DuplicateOccurrence,
+    );
     merge.body.merge_base = genesis.block_hash.clone();
+    bind_authority_floor(&mut merge, &genesis);
 
     for block in [&source_a, &source_b, &merge] {
         block_store.put_block_message(block).expect("store block");
@@ -2026,8 +2127,7 @@ async fn multiple_exact_rejections_in_one_block_count_as_one_rejection_event() {
             .expect("insert block");
     }
     let mut dag = dag_storage.get_representation().expect("dag");
-    dag.last_finalized_block_hash = merge.block_hash.clone();
-    observe_lifecycle(&dag, &block_store, &merge, 50).await;
+    adopt_and_observe_lifecycle(&mut dag, &block_store, &merge, 50).await;
 
     let status = resolve_v6(&dag, &block_store, &sig, None).expect("source-aware resolve");
 

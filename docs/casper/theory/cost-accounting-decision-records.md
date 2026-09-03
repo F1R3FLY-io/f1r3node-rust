@@ -2243,64 +2243,101 @@ E2E-021, REL-003 through REL-005, `StackTransferConservation.v`, and
 
 **Context.** The causal block DAG is not the replay-state graph. A merge can
 name a block as a parent while rejecting one of that block's execution effects.
-The first state-preservation repair represented each block by one functional
-state base chosen from a covering parent or finalized floor. That representation
-was adequate for a stale two-parent counterexample but not for accepted
-multi-parent state: a non-covering parent's accepted effect had no single base
-edge and disappeared across the next merge round. The abstract Rocq relation and
-the first TLA+ model assumed preservation without deriving it from the merge's
-accepted/rejected effect decision, so they could not expose that refinement gap.
+The first state-preservation repair represented each block with one state base.
+It did not record effects that replay applied from other accepted chains.
+An accepted sibling effect could therefore disappear from later provenance.
 
-**Decision.** State preservation is defined over exact execution-effect
-identities, not a selected parent:
+The next repair unioned every maximal DAG parent and the cached floor.
+It then subtracted the current block's direct rejection evidence.
+That recurrence did not match replay state construction.
+It could resurrect an effect omitted by an earlier merge.
 
-1. A successful execution originates
-   $`(source\_block\_hash, execution\_index)`$; failed executions originate no
-   active effect.
-2. A block serializes the exact ordered, duplicate-free identities rejected by
-   its parent merge. Validation recomputes those bytes before replay acceptance.
-3. Persisted metadata derives `Active(B)` as the union of `Own(B)`, every
-   maximal parent's active effects, and the finalized-floor input, minus the
-   block's direct rejected identities.
-4. `preserves(A,D)` requires DAG ancestry and
-   $`Active(A) \subseteq Active(D)`$.
-5. Causal certification is unchanged. The state-preserving certificate runs
-   the same exact hard-majority, clique, and threshold calculation after
-   restricting support by `preserves`; LFB admission separately requires
-   preservation from the current LFB.
-6. Protocol 2 requires this encoding from fresh genesis. Missing historical
-   provenance fails closed instead of being inferred from node-local state.
+The earlier formal model encoded the same incorrect union recurrence.
+It therefore proved properties about an over-approximation instead of replay
+state.
 
-The implementation decides preservation by scanning the descendant's
-height-bounded causal past for a complete superset of potentially removed
-identities. It evaluates activity only for those identities. Unrelated
-rejections cannot change the verdict, and completeness makes the scan equivalent
-to direct subset inclusion without storing an ever-growing active set per block.
-AMD uProf identified repeated per-edge ancestry queries in the first scan as an
-accidental quadratic multiplier; one causal-past traversal removes that
-multiplier without changing the candidate set or decision.
+**Decision.** State preservation uses exact execution-effect identities and the
+actual replay constructor.
 
-**Rejected alternatives.** Parent order, main-parent preference, or a
-deterministic single-base tiebreak still drops accepted effects. Treating every
-causal descendant as state-preserving admits rejected-parent promotion.
-Comparing tuple snapshots confuses authorized consumption with loss of the
-transition that produced the consumed resource. Changing the causal majority
-vote would conflate block agreement with replay-state admissibility.
+1. Each committed transition has identity
+   $`(source\_block\_hash, execution\_index)`$.
+   A successful execution creates an identity.
+   A failed body with verified settlement also creates an identity.
+   Admission rejection and a legacy failed execution create no identity.
+2. Each block defines one state parent.
+   A multi-parent block uses its exact `merge_base`.
+   A single-parent block uses that parent.
+   Genesis has no state parent.
+3. Each block commits a canonical `applied_state_effects` sequence.
+   The sequence identifies accepted ancestor effects that replay applies above
+   the state parent.
+4. Each block also commits canonical direct rejection evidence.
+   Rejection evidence explains the merge decision but does not construct state.
+5. Exact active state follows this positive recurrence:
 
-**Formal verification.** `StateEffectProvenance.v` proves the exact recurrence,
-input preservation, direct-rejection precision, parent permutation, redundant
-covered-parent elimination, finalized-floor restoration, repeated three-way
-preservation, majority support, and complete-candidate-scan equivalence without
-axioms. TLC exhausts the exact three-validator/two-node model; Apalache checks
-the solver-oriented arrival-order refinement through bound 8. Both single-base
-controls reproduce accepted-source loss.
+```math
+\operatorname{Active}(B)=
+\operatorname{Active}(\operatorname{StateParent}(B))
+\cup \operatorname{Applied}(B)
+\cup \operatorname{Own}(B).
+```
 
-**Implementation verification.** Wire and metadata round trips distinguish
-source identity and successful execution indices. Validation rejects tampered,
-out-of-order, and duplicate rejection lists. Rust covers all six three-parent
-orders, repeated majority rounds, unrelated rejection candidates, arbitrary
-reject/restore sequences, causal-versus-state certificates, covering-parent
-fast paths, and execution-backed stale/rebase transitions.
+6. Validation requires a strict ancestor state parent.
+   Each applied identity must name a committed effect from a strict ancestor.
+   Applied and rejected identity sets must be disjoint.
+7. Replay recomputes `merge_base`, applied identities, rejected identities, and
+   `applied_from_scope`.
+   Replay requires exact canonical equality for each field.
+8. `preserves(A,D)` requires DAG ancestry and
+   $`\operatorname{Active}(A) \subseteq \operatorname{Active}(D)`$.
+9. Causal certification remains unchanged.
+   State certification applies the existing majority and clique calculation to
+   validators whose states satisfy `preserves`.
+10. Protocol 6 requires this positive provenance encoding.
+    Missing or malformed provenance fails closed.
+
+The implementation follows one explicit state construction algorithm:
+
+```text
+construct_state(block):
+    parent_state := state(state_parent(block))
+    applied := validate(block.applied_state_effects)
+    own := committed_own_effects(block)
+    return parent_state union applied union own
+```
+
+Activity queries walk only the state-parent lineage.
+They test inherited state, exact applied identities, and own committed effects.
+
+Preservation queries find the meet of two state-parent lineages.
+They collect positive effects introduced on both segments.
+The source segment must be a subset of the destination segment.
+The implementation memoizes immutable metadata, ancestry, activity, and
+preservation results for one selection run.
+
+**Rejected alternatives.** Unioning every DAG parent resurrects omitted effects.
+Subtracting direct rejections cannot remove an omitted effect from later blocks.
+A state parent without positive applied facts drops accepted sibling effects.
+Changing the causal vote would conflate causal agreement with replay-state
+admissibility.
+
+**Formal verification.** `StateEffectProvenance.v` proves the positive
+constructor and each preservation case without axioms.
+It proves applied-order invariance and repeated accepted-merge preservation.
+It also proves that omitted header-parent effects remain absent.
+The unsafe union-parent constructor resurrects the omitted effect.
+
+TLC exhausts the exact three-validator and two-node model.
+Apalache checks the solver-oriented model through bound 8.
+Both unsafe configurations reproduce header-parent effect resurrection.
+
+**Implementation verification.** Wire and metadata round trips preserve exact
+effect order and identity.
+Validation rejects malformed, missing, extra, duplicate, and reordered applied
+facts.
+Rust covers all six three-parent orders and repeated restoration rounds.
+Properties compare activity and preservation with the positive recurrence.
+Loom checks atomic metadata publication and concurrent finality reads.
 
 **Cross-refs.** DR-36, DR-38, DR-42, TM-CA-178, REL-001, REL-004,
 `finalized-floor-specification.md` R-EFFECT-ID through R-EFFECT-SCAN and S28,
@@ -3277,3 +3314,72 @@ validators and a finalized settlement floor.
 **Cross-refs.** CA-P-202, TM-CA-192, UC-CA-183, DR-55, option B1 in
 `docs/casper/CONSENSUS_PHILOSOPHY.md`, and
 `formal/tlaplus/deploy_recovery/README.md`.
+
+---
+
+## DR-57 — Failed-body settlement remains an exact state effect
+
+**Status:** accepted and implemented. Focused formal and Rust checks pass.
+Aggregate and multi-node gates remain release evidence.
+
+**Context.** State-bound execution rolls back a failed user body. The node then
+commits the verified SystemVault charge for attempted compute and byte work.
+
+Earlier provenance code treated every failed execution as effect-free. Merge
+indexing could omit the charge while lifecycle cleanup called the occurrence
+terminal. A prior admission rejection could also shift later execution indices.
+
+**Decision.** A processed deploy has a committed state effect when either rule
+holds:
+
+1. The admitted user body succeeds.
+2. The admitted user body fails and carries both verified settlement records.
+
+The settlement records are the funding certificate and the cost witness. A
+terminal admission rejection consumes no execution index.
+
+A legacy failed execution still consumes its historical execution slot. The
+legacy failure does not originate a state effect.
+
+Metadata keeps the historical wire field name
+`successfulStateEffectIndices`. The field now records every committed effect
+index. This interpretation avoids a wire-format change.
+
+The LFB containment guard uses the same committed-effect predicate. It cannot
+advance across a branch that omits a failed-body settlement.
+
+Lifecycle settlement uses the adopted last finalized block state. A finality
+marker does not prove effect membership. A carrier's frozen floor does not
+prove effect membership.
+
+Pool cleanup occurs only after exact provenance finds the occurrence effect in
+the adopted state. Effect-free failures use causal adoption under their legacy
+rule. Missing history keeps the occurrence pending.
+
+**Rejected alternatives.** Dropping the failed charge violates the economic
+model. Keeping the old failure filter loses a committed debit during merge.
+
+Using finality markers for cleanup can destroy the last recovery copy. Using a
+frozen proposal floor can delay or misclassify settlement.
+
+**Formal verification.** `StateEffectProvenance.v` proves preservation for
+successful effects and failed settlements. The TLA+ model carries both effects
+through every parent permutation and repeated merge.
+
+`DeployLifecycleFinalization.tla` separates a finality marker, frozen-floor
+coverage, and exact adopted-state membership. Two unsafe controls prove that
+the first two facts cannot authorize cleanup.
+
+Rocq proves that marker and frozen-floor inputs cannot change the lifecycle
+decision. Loom checks concurrent commit, marker, coverage, and cleanup orders.
+
+**Implementation verification.** Rust properties generate admission, failure,
+settlement, and system-deploy combinations. They check compact execution
+indices and exact committed-effect projection.
+
+Lifecycle tests check failed settlement membership, restore-horizon deferral,
+and adopted-state cleanup. Floor tests check that failed-body settlement is
+settled content. Storage tests check accepted and rejected exact effects.
+
+**Cross-refs.** DR-43, DR-50, DR-53, CA-P-203, TM-CA-193, UC-CA-184,
+E2E-052, and finalized-floor safety invariant S34.

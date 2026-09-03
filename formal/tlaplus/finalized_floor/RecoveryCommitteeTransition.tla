@@ -173,8 +173,18 @@ FinalitySupport ==
 ValidOnlyFinalityAdmits ==
   AdmitsSupport(state.support \ state.invalidLmmSlots, state.floorCommittee)
 
-ConfiguredFinalityAdmits ==
+CertifiedFinalityCommittee == state.floorCommittee
+
+UncertifiedParentFinalityCommittee == state.postStateBonds
+
+FloorFinalityAdmits ==
   AdmitsSupport(FinalitySupport, state.floorCommittee)
+
+ConfiguredFinalityAdmits ==
+  AdmitsSupport(FinalitySupport, CertifiedFinalityCommittee)
+
+UncertifiedParentFinalityAdmits ==
+  AdmitsSupport(FinalitySupport, UncertifiedParentFinalityCommittee)
 
 FloorSynchronyAdmits == AdmitsWith(state.floorCommittee)
 ConfiguredSynchronyAdmits == AdmitsWith(SynchronyCommittee)
@@ -547,6 +557,12 @@ Inv_InvalidUnregisteredSendersHaveNoLmmSlot ==
 Inv_InvalidLmmDoesNotContributeToFinality ==
   /\ FinalitySupport \intersect state.invalidLmmSlots = {}
   /\ ConfiguredFinalityAdmits = ValidOnlyFinalityAdmits
+
+Inv_FinalityAdmissionMatchesActiveFloor ==
+  ConfiguredFinalityAdmits = FloorFinalityAdmits
+
+Inv_UncertifiedParentFinalityMatchesActiveFloor ==
+  UncertifiedParentFinalityAdmits = FloorFinalityAdmits
 
 Inv_OnlyPositivePostStateBondsCreateSlots ==
   state.registeredValidators \ Validators \subseteq state.positiveSlotOrigins

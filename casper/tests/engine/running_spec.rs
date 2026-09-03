@@ -27,7 +27,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, BlockRequest, CasperMessage, DeployData,
-    ForkChoiceTipRequest, HasBlock, MergeableEntryRequest,
+    FinalizationCertificateRequest, ForkChoiceTipRequest, HasBlock, MergeableEntryRequest,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -729,32 +729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn floor_cache_request_over_the_cap_is_ignored() {
-        let fixture = TestFixture::new().await;
-        let hashes: Vec<BlockHash> = (0..4_097u32)
-            .map(|i| Bytes::from(format!("floor-cache-flood-{i}").into_bytes()))
-            .collect();
-
-        fixture
-            .engine
-            .handle(
-                fixture.local.clone(),
-                CasperMessage::FloorCacheRequest(
-                    models::rust::casper::protocol::casper_message::FloorCacheRequest { hashes },
-                ),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            fixture.transport_layer.request_count(),
-            0,
-            "an over-cap request must not become a scan or a response"
-        );
-    }
-
-    #[tokio::test]
-    async fn floor_cache_request_answers_with_only_fully_cached_entries() {
+    async fn legacy_floor_cache_requests_are_ignored_under_certified_recovery() {
         let fixture = TestFixture::new().await;
 
         fixture
@@ -763,7 +738,7 @@ mod tests {
                 fixture.local.clone(),
                 CasperMessage::FloorCacheRequest(
                     models::rust::casper::protocol::casper_message::FloorCacheRequest {
-                        hashes: vec![Bytes::from_static(b"floor-cache-uncached-hash")],
+                        hashes: vec![Bytes::from_static(b"legacy-floor-cache-request")],
                     },
                 ),
             )
@@ -772,9 +747,71 @@ mod tests {
 
         assert_eq!(
             fixture.transport_layer.request_count(),
-            1,
-            "a within-cap request is answered even when no entry is cached"
+            0,
+            "certified recovery must not serve unauthenticated floor-cache state"
         );
+    }
+
+    #[tokio::test]
+    async fn finalization_certificate_request_answers_only_for_an_exact_stored_digest() {
+        let fixture = TestFixture::new().await;
+        let absent_digest = Bytes::from(vec![0x51; 32]);
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::FinalizationCertificateRequest(FinalizationCertificateRequest {
+                    digest: absent_digest,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fixture.transport_layer.request_count(), 0);
+
+        let dag = fixture
+            .block_dag_storage
+            .get_representation()
+            .expect("DAG representation");
+        let certificate = casper::rust::finality::certificate::genesis_finalization_certificate(
+            &dag,
+            &fixture.genesis,
+            fixture.casper_shard_conf.casper_version,
+            fixture.casper_shard_conf.shard_name.clone(),
+            fixture.casper_shard_conf.fault_tolerance_threshold_ppm,
+            1_000_000,
+        )
+        .expect("genesis certificate");
+        let digest = certificate.digest();
+        fixture
+            .block_store
+            .put_finalization_certificate(&digest, &certificate)
+            .expect("store finalization certificate");
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::FinalizationCertificateRequest(FinalizationCertificateRequest {
+                    digest: digest.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(fixture.transport_layer.request_count(), 1);
+        let sent = fixture.transport_layer.pop_request().expect("response");
+        let packet = match sent.msg.message {
+            Some(ProtocolMessage::Packet(packet)) => packet,
+            _ => panic!("expected finalization certificate response packet"),
+        };
+        assert_eq!(packet.type_id, "FinalizationCertificateResponse");
+        let response = models::casper::FinalizationCertificateResponseProto::decode(packet.content)
+            .expect("finalization certificate response payload");
+        let response = models::rust::casper::protocol::casper_message::FinalizationCertificateResponse::from_proto(response)
+            .expect("valid finalization certificate response");
+        assert_eq!(response.digest, digest);
+        assert_eq!(response.certificate, certificate);
     }
 
     #[tokio::test]

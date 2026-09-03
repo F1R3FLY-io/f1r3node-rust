@@ -18,9 +18,10 @@
 //!   — so Finalized is decided AT COVERAGE, re-checked per floor advance
 //!   with a per-sig checked-up-to memo bounding each walk to the new
 //!   lineage segment.
-//! - **Failed** ⟺ beyond the contestability bound, not in the state, and
-//!   a floor-covered `is_failed` execution exists (it ran and failed; the
-//!   charge landed).
+//! - **Failed** ⟺ the effect is not in the readable FLOOR state and a
+//!   floor-covered `is_failed` execution exists (it ran and failed; the
+//!   charge landed). Adoption makes that execution authoritative, so this
+//!   verdict does not wait for a later block or the expiry bound.
 //! - **Expired** ⟺ beyond the bound, not in the state, and the whole
 //!   lineage segment down to the bound was READABLE: on a truncated node a
 //!   sig whose walk crosses the restore horizon is unknowable, and the
@@ -31,8 +32,8 @@
 //! re-apply, or re-include the sig (the parent-depth spread rule refuses
 //! late citations). The horizon derives from `max_parent_depth` ALONE —
 //! shard config, never a node-local value or a constant; the unlimited
-//! sentinel disables only the Expired/Failed side (nothing is ever
-//! provably beyond contest), never Finalized.
+//! sentinel disables only Expired (nothing is ever provably beyond
+//! contest), never Finalized or an adopted failed execution.
 //!
 //! Event rows are fed by `BlockDagKeyValueStorage::insert` itself, so the
 //! register never walks bodies. This module owns only the VOLATILE
@@ -47,14 +48,19 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use block_storage::rust::dag::deploy_lifecycle_types::{
     LifecycleEventKind, LifecycleEvents, TerminalRecord, TerminalState,
 };
+use block_storage::rust::dag::deploy_occurrence_types::occurrence_rank_cmp;
+use block_storage::rust::finality::state_preservation::{
+    is_state_effect_active_with_cache, StateProvenanceCache,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy};
+use models::rust::casper::protocol::casper_message::{BlockMessage, RejectedDeploy, StateEffectId};
 use models::rust::deploy_id::DeployLookupId;
 use prost::bytes::Bytes;
 
-use super::floor::{in_floor_closure, Floor};
+use super::floor::{floor_of_block, in_floor_closure, Floor};
 use crate::rust::errors::CasperError;
+use crate::rust::safety::clique_oracle::FtThreshold;
 
 /// The citability horizon: how far below the floor an admissible block can
 /// still cite. Derives from `max_parent_depth` ALONE (shard config — the
@@ -65,7 +71,7 @@ pub(crate) fn citability_horizon(max_parent_depth: i32) -> Option<i64> {
 }
 
 /// True iff `block_hash`'s committed state contains `sig`'s effect: some
-/// block on its base lineage either executed it fresh (a non-failed
+/// block on its base lineage either committed it fresh
 /// `deploys` entry) or re-applied its chain from scope
 /// (`applied_from_scope`). The lineage is the recorded `merge_base` chain;
 /// where the recorded base is empty the header derives it (single parent)
@@ -111,10 +117,9 @@ fn effect_in_state_of_above(
         if block.body.state.block_number < min_height {
             return Ok(false);
         }
-        // A failed execution's deploy is in the body while its effect is
-        // NOT in the state — only successful executions count.
         if block.body.deploys.iter().any(|pd| {
-            pd.deploy_id_for_protocol(block.header.version).as_ref() == Ok(sig) && !pd.is_failed
+            pd.deploy_id_for_protocol(block.header.version).as_ref() == Ok(sig)
+                && pd.has_committed_state_effect()
         }) {
             return Ok(true);
         }
@@ -168,7 +173,7 @@ enum LineageNext {
 struct LineageStep {
     block_number: i64,
     next: LineageNext,
-    /// The block's applied-sig facts: sigs of its non-failed `deploys`
+    /// The block's applied-sig facts: sigs of its state-bearing `deploys`
     /// entries plus its `applied_from_scope` list.
     sigs: std::sync::Arc<HashSet<Bytes>>,
     /// The block's kept rejection records, verbatim from
@@ -261,7 +266,7 @@ fn lineage_step_of(
         .body
         .deploys
         .iter()
-        .filter(|pd| !pd.is_failed)
+        .filter(|pd| pd.has_committed_state_effect())
         .map(|pd| pd.deploy_id().clone())
         .collect();
     sigs.extend(block.body.applied_from_scope.iter().cloned());
@@ -298,7 +303,7 @@ pub(crate) fn rejected_records_of(
 /// merge's ~30 per-sig lineage walks into one walk plus O(1) lookups.
 /// Also returns the number of blocks walked, for the caller's metrics.
 ///
-/// Stepping, bounds, and the non-failed/`applied_from_scope` fact kinds
+/// Stepping, bounds, and the state-bearing/`applied_from_scope` fact kinds
 /// are exactly the reference walk's. One deliberate strengthening: this
 /// walk always covers the FULL segment, so an absent body (or a malformed
 /// multi-parent block without a recorded base) anywhere above the bound
@@ -397,7 +402,7 @@ struct Schedule {
     floor_thresholds: BTreeMap<i64, HashSet<DeployLookupId>>,
     /// The monotone max frozen latest-message floor — the highest floor
     /// any known canonical block carries. The register's ONE clock.
-    max_floor: Option<Floor>,
+    max_adopted_lfb: Option<Floor>,
     /// Per-sig coverage memo: the floor block whose lineage a previous
     /// membership check already answered FALSE for. The next check walks
     /// only the new segment above it.
@@ -421,6 +426,16 @@ pub struct DeployLifecycle {
 }
 
 impl DeployLifecycle {
+    pub async fn prepare_after_restore(
+        &self,
+        dag: &KeyValueDagRepresentation,
+        block_store: &KeyValueBlockStore,
+        ftt: FtThreshold,
+    ) -> Result<(), CasperError> {
+        floor_of_block(dag, block_store, &dag.last_finalized_block(), ftt).await?;
+        self.rebuild_schedule(dag)
+    }
+
     /// Arm every persisted open sig for evaluation at the next observed
     /// block (threshold 0 crosses immediately). Verdicts only get MORE
     /// settled by waiting, so a conservative cold start is sound; a crash
@@ -478,12 +493,12 @@ impl DeployLifecycle {
         }
 
         // The floor clock (monotone; adoption itself is monotone per node).
-        let floor_advanced = match &schedule.max_floor {
+        let floor_advanced = match &schedule.max_adopted_lfb {
             Some(current) => adopted_number > current.block_number,
             None => true,
         };
         if floor_advanced {
-            schedule.max_floor = Some(Floor {
+            schedule.max_adopted_lfb = Some(Floor {
                 hash: adopted_hash,
                 block_number: adopted_number,
             });
@@ -510,7 +525,7 @@ impl DeployLifecycle {
             due.insert(rd.typed_deploy_id().clone());
         }
         let floor_height = schedule
-            .max_floor
+            .max_adopted_lfb
             .as_ref()
             .map(|f| f.block_number)
             .unwrap_or(0);
@@ -544,6 +559,295 @@ impl DeployLifecycle {
     }
 }
 
+fn lifecycle_decision(
+    effect_in_floor: bool,
+    history_readable: bool,
+    failed_in_floor: bool,
+    expiry_bound_crossed: bool,
+) -> Option<TerminalState> {
+    if effect_in_floor {
+        Some(TerminalState::Finalized)
+    } else if !history_readable {
+        None
+    } else if failed_in_floor {
+        Some(TerminalState::Failed)
+    } else if expiry_bound_crossed {
+        Some(TerminalState::Expired)
+    } else {
+        None
+    }
+}
+
+enum IncludedOccurrenceEffect {
+    AdmissionRejected,
+    LegacyFailure,
+    StateEffect {
+        effect: StateEffectId,
+        is_failed: bool,
+    },
+}
+
+fn included_occurrence_effect(
+    block: &BlockMessage,
+    sig: &DeployLookupId,
+    event_is_failed: bool,
+) -> Result<Option<IncludedOccurrenceEffect>, CasperError> {
+    let mut execution_index = 0u32;
+    let mut found = None;
+    for deploy in &block.body.deploys {
+        let deploy_id = deploy
+            .deploy_id_for_protocol(block.header.version)
+            .map_err(CasperError::RuntimeError)?;
+        let index = if deploy.is_admission_rejected() {
+            None
+        } else {
+            let index = execution_index;
+            execution_index = execution_index.checked_add(1).ok_or_else(|| {
+                CasperError::RuntimeError("user execution index exceeds u32".to_string())
+            })?;
+            Some(index)
+        };
+        if &deploy_id != sig {
+            continue;
+        }
+        if deploy.is_failed != event_is_failed {
+            return Err(CasperError::Other(format!(
+                "deploy lifecycle event outcome disagrees with carrier {}",
+                hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+            )));
+        }
+        let occurrence = if deploy.is_admission_rejected() {
+            IncludedOccurrenceEffect::AdmissionRejected
+        } else if deploy.has_committed_state_effect() {
+            IncludedOccurrenceEffect::StateEffect {
+                effect: StateEffectId {
+                    source_block_hash: block.block_hash.clone(),
+                    execution_index: index.expect("executed deploy has an index"),
+                },
+                is_failed: deploy.is_failed,
+            }
+        } else if deploy.is_failed {
+            IncludedOccurrenceEffect::LegacyFailure
+        } else {
+            return Err(CasperError::Other(format!(
+                "successful deploy in carrier {} has no committed state effect",
+                hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+            )));
+        };
+        if found.replace(occurrence).is_some() {
+            return Err(CasperError::Other(format!(
+                "deploy occurs more than once in carrier {}",
+                hex::encode(&block.block_hash[..8.min(block.block_hash.len())]),
+            )));
+        }
+    }
+    Ok(found)
+}
+
+fn adopted_occurrence_evidence(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    row: &LifecycleEvents,
+    sig: &DeployLookupId,
+    adopted_lfb: &Floor,
+) -> Result<(bool, bool, bool), CasperError> {
+    let mut successful_effect = false;
+    let mut failed_state_effect = false;
+    let mut effect_free_failure = false;
+    let mut active_state_effects = 0u32;
+    let mut cache = StateProvenanceCache::default();
+    for event in &row.events {
+        let LifecycleEventKind::Included { is_failed } = &event.kind else {
+            continue;
+        };
+        let source_hash = Bytes::copy_from_slice(&event.block_hash);
+        let source = block_store
+            .get(&source_hash)?
+            .ok_or_else(|| CasperError::BlockNotHeld(source_hash.clone()))?;
+        let occurrence =
+            included_occurrence_effect(&source, sig, *is_failed)?.ok_or_else(|| {
+                CasperError::Other(format!(
+                    "deploy lifecycle event has no matching carrier deploy in {}",
+                    hex::encode(&source_hash[..8.min(source_hash.len())]),
+                ))
+            })?;
+        match occurrence {
+            IncludedOccurrenceEffect::StateEffect { effect, is_failed } => {
+                if is_state_effect_active_with_cache(dag, &adopted_lfb.hash, &effect, &mut cache)
+                    .map_err(CasperError::from)?
+                {
+                    active_state_effects =
+                        active_state_effects.checked_add(1).ok_or_else(|| {
+                            CasperError::RuntimeError(
+                                "active deploy occurrence count exceeds u32".to_string(),
+                            )
+                        })?;
+                    if is_failed {
+                        failed_state_effect = true;
+                    } else {
+                        successful_effect = true;
+                    }
+                }
+            }
+            IncludedOccurrenceEffect::AdmissionRejected
+            | IncludedOccurrenceEffect::LegacyFailure => {
+                if in_floor_closure(dag, &source_hash, adopted_lfb)? {
+                    effect_free_failure = true;
+                }
+            }
+        }
+    }
+    if active_state_effects > 1 {
+        return Err(CasperError::Other(format!(
+            "adopted state contains more than one active occurrence for deploy {}",
+            hex::encode(sig.as_bytes()),
+        )));
+    }
+    Ok((successful_effect, failed_state_effect, effect_free_failure))
+}
+
+fn projection_mismatch_context(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    row: &LifecycleEvents,
+    sig: &DeployLookupId,
+    target: &BlockHash,
+    min_height: i64,
+) -> String {
+    let effects = row
+        .events
+        .iter()
+        .filter_map(|event| {
+            let LifecycleEventKind::Included { is_failed } = &event.kind else {
+                return None;
+            };
+            let source_hash = Bytes::copy_from_slice(&event.block_hash);
+            let source = block_store.get(&source_hash).ok().flatten()?;
+            match included_occurrence_effect(&source, sig, *is_failed)
+                .ok()
+                .flatten()?
+            {
+                IncludedOccurrenceEffect::StateEffect { effect, .. } => Some(effect),
+                IncludedOccurrenceEffect::AdmissionRejected
+                | IncludedOccurrenceEffect::LegacyFailure => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let Ok(levels) = dag.topo_sort(0, None) else {
+        return "topological scan unavailable".to_string();
+    };
+    for hash in levels.into_iter().flatten() {
+        if !dag.is_dag_ancestor(&hash, target).unwrap_or(false) {
+            continue;
+        }
+        let Ok(signature_member) = effect_in_state_of(block_store, &hash, sig, min_height) else {
+            continue;
+        };
+        let mut cache = StateProvenanceCache::default();
+        let exact = effects.iter().try_fold(false, |active, effect| {
+            is_state_effect_active_with_cache(dag, &hash, effect, &mut cache)
+                .map(|next| active || next)
+        });
+        let Ok(exact_member) = exact else {
+            continue;
+        };
+        if signature_member == exact_member {
+            continue;
+        }
+        let Some(block) = block_store.get(&hash).ok().flatten() else {
+            continue;
+        };
+        let metadata = dag.lookup_unsafe(&hash).ok();
+        let floor = dag.get_cached_floor(&hash).ok().flatten();
+        let effect_status = effects
+            .iter()
+            .map(|effect| {
+                let mut effect_cache = StateProvenanceCache::default();
+                let active =
+                    is_state_effect_active_with_cache(dag, &hash, effect, &mut effect_cache).ok();
+                format!(
+                    "{}#{}:{}={active:?}",
+                    hex::encode(&effect.source_block_hash[..8.min(effect.source_block_hash.len())]),
+                    dag.block_number(&effect.source_block_hash)
+                        .unwrap_or_default(),
+                    effect.execution_index,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut state_inputs = Vec::new();
+        for (index, candidate) in block.header.parents_hash_list.iter().enumerate() {
+            let covered = block.header.parents_hash_list.iter().any(|parent| {
+                parent != candidate && dag.is_dag_ancestor(candidate, parent).unwrap_or(false)
+            });
+            if !covered {
+                state_inputs.push((format!("parent[{index}]"), candidate.clone()));
+            }
+        }
+        if let Some(floor) = floor.as_ref() {
+            if floor != &hash && !state_inputs.iter().any(|(_, input)| input == floor) {
+                state_inputs.push(("floor".to_string(), floor.clone()));
+            }
+        }
+        let input_status = state_inputs
+            .iter()
+            .map(|(kind, input)| {
+                let signature_member = effect_in_state_of(block_store, input, sig, min_height).ok();
+                let mut effect_cache = StateProvenanceCache::default();
+                let exact_member = effects.iter().try_fold(false, |active, effect| {
+                    is_state_effect_active_with_cache(dag, input, effect, &mut effect_cache)
+                        .map(|next| active || next)
+                });
+                format!(
+                    "{kind}={}#{},signature={signature_member:?},exact={exact_member:?}",
+                    hex::encode(&input[..8.min(input.len())]),
+                    dag.block_number(input).unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
+        return format!(
+            "first_divergence={}#{}, signature_member={}, exact_member={}, merge_base={}, parents={:?}, floor={}, own_indices={:?}, applied={:?}, rejected={:?}, effects={:?}, inputs={:?}",
+            hex::encode(&hash[..8.min(hash.len())]),
+            block.body.state.block_number,
+            signature_member,
+            exact_member,
+            hex::encode(&block.body.merge_base[..8.min(block.body.merge_base.len())]),
+            block
+                .header
+                .parents_hash_list
+                .iter()
+                .map(|parent| hex::encode(&parent[..8.min(parent.len())]))
+                .collect::<Vec<_>>(),
+            floor
+                .as_ref()
+                .map(|floor| hex::encode(&floor[..8.min(floor.len())]))
+                .unwrap_or_default(),
+            metadata
+                .as_ref()
+                .map(|metadata| metadata.successful_state_effect_indices.clone())
+                .unwrap_or_default(),
+            block
+                .body
+                .applied_from_scope
+                .iter()
+                .map(|id| hex::encode(&id[..8.min(id.len())]))
+                .collect::<Vec<_>>(),
+            block
+                .body
+                .rejected_state_effects
+                .iter()
+                .map(|effect| format!(
+                    "{}:{}",
+                    hex::encode(&effect.source_block_hash[..8.min(effect.source_block_hash.len())]),
+                    effect.execution_index,
+                ))
+                .collect::<Vec<_>>(),
+            effect_status,
+            input_status,
+        );
+    }
+    "no causal predecessor divergence was readable".to_string()
+}
+
 fn evaluate(
     schedule: &mut Schedule,
     dag: &KeyValueDagRepresentation,
@@ -560,10 +864,10 @@ fn evaluate(
     else {
         return Ok(());
     };
-    let Some(max_floor) = schedule.max_floor.clone() else {
+    let Some(max_adopted_lfb) = schedule.max_adopted_lfb.clone() else {
         return Ok(());
     };
-    let floor_height = max_floor.block_number;
+    let floor_height = max_adopted_lfb.block_number;
 
     // A record-only row (carrier never observed) has no window basis yet;
     // its inclusion event will arm it.
@@ -578,7 +882,7 @@ fn evaluate(
     let checked_below = schedule.checked.get(sig).cloned();
     let member = match effect_in_state_of_above(
         block_store,
-        &max_floor.hash,
+        &max_adopted_lfb.hash,
         sig,
         valid_after,
         checked_below.as_ref(),
@@ -610,13 +914,69 @@ fn evaluate(
         }
         Err(other) => return Err(other),
     };
-    if member {
+    let (adopted_success, adopted_failed_state, adopted_effect_free_failure) = match sig {
+        DeployLookupId::Legacy(_) => {
+            let mut failed = false;
+            for event in &row.events {
+                if !matches!(event.kind, LifecycleEventKind::Included { is_failed: true }) {
+                    continue;
+                }
+                let block = Bytes::from(event.block_hash.clone());
+                if in_floor_closure(dag, &block, &max_adopted_lfb)? {
+                    failed = true;
+                    break;
+                }
+            }
+            (member, false, failed)
+        }
+        DeployLookupId::V6(_) => {
+            match adopted_occurrence_evidence(dag, block_store, &row, sig, &max_adopted_lfb) {
+                Ok(evidence) => evidence,
+                Err(CasperError::BlockNotHeld(missing)) => {
+                    tracing::warn!(
+                        target: "f1r3fly.casper.lifecycle",
+                        sig = %hex::encode(&sig.as_bytes()[..8.min(sig.as_bytes().len())]),
+                        missing = %hex::encode(&missing[..8.min(missing.len())]),
+                        "occurrence carrier is below the restore horizon: verdict \
+                         unknowable on this node, sig stays Pending"
+                    );
+                    schedule.horizon_blocked.insert(sig.clone());
+                    schedule
+                        .floor_thresholds
+                        .entry(floor_height + 1)
+                        .or_default()
+                        .insert(sig.clone());
+                    return Ok(());
+                }
+                Err(other) => return Err(other),
+            }
+        }
+    };
+    if matches!(sig, DeployLookupId::V6(_)) && member != (adopted_success || adopted_failed_state) {
+        let context = projection_mismatch_context(
+            dag,
+            block_store,
+            &row,
+            sig,
+            &max_adopted_lfb.hash,
+            valid_after,
+        );
+        return Err(CasperError::Other(format!(
+            "deploy state-lineage membership disagrees with exact provenance for {}: signature_member={}, successful_effect={}, failed_state_effect={}; {}",
+            hex::encode(sig.as_bytes()),
+            member,
+            adopted_success,
+            adopted_failed_state,
+            context,
+        )));
+    }
+    if lifecycle_decision(adopted_success, true, false, false) == Some(TerminalState::Finalized) {
         write_terminal(
             dag,
             sig,
             TerminalState::Finalized,
             &row,
-            &max_floor,
+            &max_adopted_lfb,
             citability_horizon,
             finalization_revision,
             terminalized,
@@ -625,7 +985,9 @@ fn evaluate(
         schedule.horizon_blocked.remove(sig);
         return Ok(());
     }
-    schedule.checked.insert(sig.clone(), max_floor.hash.clone());
+    schedule
+        .checked
+        .insert(sig.clone(), max_adopted_lfb.hash.clone());
 
     // "Not in the state" over an unreadable segment is not established —
     // it is unknowable. Expired/Failed for a horizon-blocked sig would be
@@ -639,11 +1001,26 @@ fn evaluate(
         return Ok(());
     }
 
-    // EXPIRED / FAILED — only beyond the contestability bound, past which
-    // no admissible block can adjudicate, re-apply, or re-include the sig,
-    // so "not in the state" is stable. `None` (depth checking disabled)
-    // means nothing is ever provably beyond contest: the sig stays
-    // Pending by design.
+    let adopted_failed = adopted_failed_state || adopted_effect_free_failure;
+    if lifecycle_decision(false, true, adopted_failed, false) == Some(TerminalState::Failed) {
+        write_terminal(
+            dag,
+            sig,
+            TerminalState::Failed,
+            &row,
+            &max_adopted_lfb,
+            citability_horizon,
+            finalization_revision,
+            terminalized,
+        )?;
+        schedule.checked.remove(sig);
+        return Ok(());
+    }
+
+    // EXPIRED — only beyond the contestability bound, past which no
+    // admissible block can adjudicate, re-apply, or re-include the sig, so
+    // "not in the state" is stable. `None` (depth checking disabled) means
+    // nothing is ever provably beyond contest: the sig stays Pending.
     let Some(bound) = citability_horizon else {
         schedule
             .floor_thresholds
@@ -661,7 +1038,8 @@ fn evaluate(
         .max()
         .unwrap_or(window_end);
     let decide_at = window_end.max(last_inclusion) + bound;
-    if floor_height <= decide_at {
+    let expiry_bound_crossed = floor_height > decide_at;
+    if lifecycle_decision(false, true, false, expiry_bound_crossed).is_none() {
         // Not yet decidable: re-arm on the FLOOR clock — at the next
         // advance for the coverage re-check (a threshold that always
         // comes due, so a verdict is always eventually written).
@@ -673,27 +1051,12 @@ fn evaluate(
         return Ok(());
     }
 
-    let mut ran_and_failed = false;
-    for event in &row.events {
-        if matches!(event.kind, LifecycleEventKind::Included { is_failed: true }) {
-            let block = Bytes::from(event.block_hash.clone());
-            if in_floor_closure(dag, &block, &max_floor)? {
-                ran_and_failed = true;
-                break;
-            }
-        }
-    }
-    let state = if ran_and_failed {
-        TerminalState::Failed
-    } else {
-        TerminalState::Expired
-    };
     write_terminal(
         dag,
         sig,
-        state,
+        TerminalState::Expired,
         &row,
-        &max_floor,
+        &max_adopted_lfb,
         citability_horizon,
         finalization_revision,
         terminalized,
@@ -703,12 +1066,11 @@ fn evaluate(
 }
 
 /// Display fields for a terminal record, frozen from the event row it
-/// prunes: every distinct record block counts toward `rejection_count`, and
-/// the latest DAG-VISIBLE inclusion event names the sig's most recent
-/// canonical appearance. The visibility filter matters here because the
-/// terminal record outlives the row: an orphan event from a crash inside
-/// the ingest-first insert window must not freeze into a write-once
-/// record that `canonical_appearance` then returns unfiltered forever.
+/// prunes. Each visible record block counts once toward `rejection_count`.
+/// The highest-ranked visible inclusion names the deploy occurrence.
+/// Pending status supplies DAG visibility. Terminal status supplies the
+/// adopted finalized-floor closure. Thus, orphan and off-floor evidence
+/// cannot freeze into a write-once terminal record.
 /// A rejection record's block does not carry the deploy — a
 /// record-carrier here sends every consumer that fetches the named block
 /// looking for a deploy that is not in it.
@@ -720,8 +1082,9 @@ fn frozen_display(
         .events
         .iter()
         .filter_map(|event| {
-            matches!(event.kind, LifecycleEventKind::Rejected { .. })
-                .then_some(event.block_hash.as_slice())
+            (matches!(event.kind, LifecycleEventKind::Rejected { .. })
+                && is_visible(&event.block_hash))
+            .then_some(event.block_hash.as_slice())
         })
         .collect::<HashSet<_>>()
         .len() as u32;
@@ -745,11 +1108,7 @@ fn frozen_display(
                 && !rejected_carriers.contains(event.block_hash.as_slice())
         })
         .filter(|e| is_visible(&e.block_hash))
-        .max_by(|a, b| {
-            a.height
-                .cmp(&b.height)
-                .then_with(|| a.block_hash.cmp(&b.block_hash))
-        })
+        .max_by(|a, b| occurrence_rank_cmp(a.height, &a.block_hash, b.height, &b.block_hash))
         .map(|e| (e.height, e.block_hash.clone()));
     let (latest_height, latest_block_hash) = latest.unwrap_or((0, Vec::new()));
     (rejection_count, latest_height, latest_block_hash)
@@ -769,9 +1128,15 @@ fn write_terminal(
     finalization_revision: u64,
     terminalized: &mut Vec<DeployLookupId>,
 ) -> Result<(), CasperError> {
-    let (rejection_count, latest_height, latest_block_hash) = frozen_display(row, &|hash| {
-        dag.contains(&prost::bytes::Bytes::copy_from_slice(hash))
-    });
+    let mut floor_closure = HashSet::new();
+    for event in &row.events {
+        let block_hash = Bytes::copy_from_slice(&event.block_hash);
+        if in_floor_closure(dag, &block_hash, floor)? {
+            floor_closure.insert(event.block_hash.as_slice());
+        }
+    }
+    let (rejection_count, latest_height, latest_block_hash) =
+        frozen_display(row, &|hash| floor_closure.contains(hash));
     let record = TerminalRecord {
         state,
         rejection_count,
@@ -816,6 +1181,7 @@ fn write_terminal(
 mod tests {
     use models::rust::block_implicits::get_random_block;
     use models::rust::casper::protocol::casper_message::BlockMessage;
+    use proptest::prelude::*;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -915,11 +1281,322 @@ mod tests {
         (sig, pd)
     }
 
+    #[test]
+    fn occurrence_effect_indices_exclude_admission_rejections_and_keep_settled_failures() {
+        use models::rust::casper::protocol::casper_message::DeployAdmissionStatus;
+
+        let (successful_id, successful) = processed(1, false);
+        let (rejected_id, mut rejected) = processed(2, true);
+        rejected.admission_status = DeployAdmissionStatus::Rejected;
+        let (failed_id, mut failed) = processed(3, true);
+        failed.authority_funding_certificate = Some(Default::default());
+        failed.authority_cost_witness = Some(Default::default());
+        let mut block = block_at(1, Vec::new(), 1);
+        block.body.deploys = vec![successful, rejected, failed];
+
+        assert!(matches!(
+            included_occurrence_effect(&block, &v6_id(&successful_id), false).expect("successful"),
+            Some(IncludedOccurrenceEffect::StateEffect {
+                effect: StateEffectId {
+                    execution_index: 0,
+                    ..
+                },
+                is_failed: false,
+            })
+        ));
+        assert!(matches!(
+            included_occurrence_effect(&block, &v6_id(&rejected_id), true).expect("rejected"),
+            Some(IncludedOccurrenceEffect::AdmissionRejected)
+        ));
+        assert!(matches!(
+            included_occurrence_effect(&block, &v6_id(&failed_id), true).expect("failed"),
+            Some(IncludedOccurrenceEffect::StateEffect {
+                effect: StateEffectId {
+                    execution_index: 1,
+                    ..
+                },
+                is_failed: true,
+            })
+        ));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn occurrence_effect_index_matches_every_admission_failure_projection(
+            prefix in proptest::collection::vec(
+                (any::<bool>(), any::<bool>(), any::<bool>()),
+                0..48,
+            ),
+            target_failed in any::<bool>(),
+        ) {
+            use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+            use models::rust::casper::protocol::casper_message::DeployAdmissionStatus;
+
+            let (_, template) = processed(9000, false);
+            let mut deploys = Vec::with_capacity(prefix.len() + 1);
+            for (index, (admission_rejected, failed, settled)) in prefix.iter().enumerate() {
+                let mut deploy = template.clone();
+                deploy.envelope_commitment = deploy_id(index.to_le_bytes());
+                deploy.is_failed = *failed || *admission_rejected;
+                deploy.admission_status = if *admission_rejected {
+                    DeployAdmissionStatus::Rejected
+                } else {
+                    DeployAdmissionStatus::Executed
+                };
+                if *settled {
+                    deploy.authority_funding_certificate = Some(Default::default());
+                    deploy.authority_cost_witness = Some(Default::default());
+                }
+                deploys.push(deploy);
+            }
+            let mut target = template;
+            let target_id = deploy_id(b"projection-target");
+            target.envelope_commitment = target_id.clone();
+            target.is_failed = target_failed;
+            if target_failed {
+                target.authority_funding_certificate = Some(Default::default());
+                target.authority_cost_witness = Some(Default::default());
+            }
+            deploys.push(target);
+
+            let mut block = block_at(1, Vec::new(), 1);
+            block.header.version = CERTIFIED_ADMISSION_PROTOCOL_VERSION;
+            block.body.deploys = deploys;
+            let expected_index = u32::try_from(
+                prefix.iter().filter(|(rejected, _, _)| !rejected).count(),
+            ).unwrap();
+            let occurrence = included_occurrence_effect(
+                &block,
+                &v6_id(&target_id),
+                target_failed,
+            ).expect("project occurrence");
+
+            let matches_expected = matches!(
+                occurrence,
+                Some(IncludedOccurrenceEffect::StateEffect {
+                    effect: StateEffectId { execution_index, .. },
+                    is_failed,
+                }) if execution_index == expected_index && is_failed == target_failed
+            );
+            prop_assert!(matches_expected);
+        }
+    }
+
     async fn store() -> KeyValueBlockStore {
         let mut kvm = InMemoryStoreManager::new();
         KeyValueBlockStore::create_from_kvm(&mut kvm)
             .await
             .expect("block store")
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn lifecycle_decision_preserves_terminal_priority(
+            effect_in_floor in any::<bool>(),
+            history_readable in any::<bool>(),
+            failed_in_floor in any::<bool>(),
+            expiry_bound_crossed in any::<bool>(),
+        ) {
+            let decision = lifecycle_decision(
+                effect_in_floor,
+                history_readable,
+                failed_in_floor,
+                expiry_bound_crossed,
+            );
+            let expected = if effect_in_floor {
+                Some(TerminalState::Finalized)
+            } else if !history_readable {
+                None
+            } else if failed_in_floor {
+                Some(TerminalState::Failed)
+            } else if expiry_bound_crossed {
+                Some(TerminalState::Expired)
+            } else {
+                None
+            };
+            prop_assert_eq!(decision, expected);
+            prop_assert!(decision != Some(TerminalState::Finalized) || effect_in_floor);
+            prop_assert!(decision != Some(TerminalState::Failed) || history_readable);
+            prop_assert!(decision != Some(TerminalState::Expired) || expiry_bound_crossed);
+        }
+
+        #[test]
+        fn frozen_display_and_occurrence_rank_agree_for_arbitrary_equal_height_orders(
+            hashes in proptest::collection::vec(any::<[u8; 32]>(), 1..64),
+        ) {
+            let events = hashes
+                .iter()
+                .map(|hash| block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 10,
+                    block_hash: hash.to_vec(),
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Included {
+                        is_failed: false,
+                    },
+                })
+                .collect::<Vec<_>>();
+            let expected = hashes.iter().min().expect("non-empty generated hashes").to_vec();
+            let forward = frozen_display(
+                &LifecycleEvents {
+                    valid_after: Some(1),
+                    events: events.clone(),
+                },
+                &|_| true,
+            );
+            let reverse = frozen_display(
+                &LifecycleEvents {
+                    valid_after: Some(1),
+                    events: events.into_iter().rev().collect(),
+                },
+                &|_| true,
+            );
+
+            prop_assert_eq!(&forward, &(0, 10, expected));
+            prop_assert_eq!(&reverse, &forward);
+        }
+
+        #[test]
+        fn frozen_display_counts_each_recording_block_once_for_arbitrary_rejection_order(
+            recording_hash in any::<[u8; 32]>(),
+            first_carrier in any::<[u8; 32]>(),
+            second_carrier in any::<[u8; 32]>(),
+            reverse in any::<bool>(),
+        ) {
+            let mut events = vec![
+                block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 11,
+                    block_hash: recording_hash.to_vec(),
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Rejected {
+                        duplicate: false,
+                        carrier: first_carrier.to_vec(),
+                    },
+                },
+                block_storage::rust::dag::deploy_lifecycle_types::LifecycleEvent {
+                    height: 11,
+                    block_hash: recording_hash.to_vec(),
+                    kind: block_storage::rust::dag::deploy_lifecycle_types::LifecycleEventKind::Rejected {
+                        duplicate: true,
+                        carrier: second_carrier.to_vec(),
+                    },
+                },
+            ];
+            if reverse {
+                events.reverse();
+            }
+            let display = frozen_display(
+                &LifecycleEvents {
+                    valid_after: Some(1),
+                    events,
+                },
+                &|_| true,
+            );
+
+            prop_assert_eq!(display, (1, 0, Vec::new()));
+        }
+    }
+
+    #[tokio::test]
+    async fn adopted_failed_execution_terminalizes_without_a_later_block() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_at(0, Vec::new(), 0);
+        let (sig, failed) = processed(1, true);
+        let mut block = block_at(1, vec![genesis.block_hash.clone()], 1);
+        block.body.deploys = vec![failed];
+        for stored in [&genesis, &block] {
+            block_store.put_block_message(stored).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&block, InsertMode::Normal)
+            .expect("insert failed block");
+        dag_storage
+            .record_directly_finalized(block.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt failed block");
+
+        let dag = dag_storage.get_representation().expect("dag");
+        let terminalized = DeployLifecycle::default()
+            .observe_block(&dag, &block_store, &block, 100, Some(10), 1)
+            .await
+            .expect("evaluate committed floor");
+        assert_eq!(terminalized, vec![v6_id(&sig)]);
+        assert_eq!(
+            dag.deploy_terminal(&v6_id(&sig))
+                .expect("terminal lookup")
+                .expect("terminal record")
+                .state,
+            TerminalState::Failed,
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_preparation_materializes_the_adopted_floor_before_evaluation() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_hash::BlockHashSerde;
+        use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let genesis = block_at(0, Vec::new(), 0);
+        let (sig, deploy) = processed(1, false);
+        let mut block = block_at(1, vec![genesis.block_hash.clone()], 1);
+        block.body.deploys = vec![deploy];
+        for stored in [&genesis, &block] {
+            block_store.put_block_message(stored).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::ApprovedGenesis)
+            .expect("insert genesis");
+        dag_storage
+            .insert(&block, InsertMode::Normal)
+            .expect("insert block");
+        dag_storage
+            .record_directly_finalized(block.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt block");
+
+        dag_storage
+            .floor_index_for_tests()
+            .delete(vec![BlockHashSerde(block.block_hash.clone())])
+            .expect("remove restored cache entry");
+        let dag = dag_storage.get_representation().expect("dag");
+        let register = DeployLifecycle::default();
+        register
+            .prepare_after_restore(&dag, &block_store, FtThreshold::from_ppm(0))
+            .await
+            .expect("prepare restored lifecycle");
+
+        assert!(dag
+            .get_cached_floor(&block.block_hash)
+            .expect("floor cache")
+            .is_some());
+        let terminalized = register
+            .observe_block(&dag, &block_store, &block, 100, Some(10), 1)
+            .await
+            .expect("evaluate restored lifecycle");
+        assert_eq!(terminalized, vec![v6_id(&sig)]);
     }
 
     /// The register's clock is the node's ADOPTED LFB, never an admitted
@@ -995,6 +1672,10 @@ mod tests {
         // covering the deploy's carrier — while THIS node has adopted
         // nothing past genesis.
         let dag = dag_storage.get_representation().expect("dag");
+        for block in [&genesis, &a, &b, &c] {
+            dag.put_cached_floor(block.block_hash.clone(), genesis.block_hash.clone())
+                .expect("materialize state-provenance floor");
+        }
         dag.put_cached_floor(b.block_hash.clone(), b.block_hash.clone())
             .expect("seed frozen floor");
 
@@ -1101,6 +1782,10 @@ mod tests {
 
         // Arm the sig (adopted LFB still genesis: no verdict possible yet).
         let dag = dag_storage.get_representation().expect("dag");
+        for block in [&genesis, &a, &b, &c, &d] {
+            dag.put_cached_floor(block.block_hash.clone(), genesis.block_hash.clone())
+                .expect("materialize state-provenance floor");
+        }
         let register = DeployLifecycle::default();
         let armed = register
             .observe_block(&dag, &block_store, &b, 1, Some(1), 0)
@@ -1211,7 +1896,7 @@ mod tests {
         };
 
         let display = frozen_display(&row, &|hash| hash == inclusion.as_slice());
-        assert_eq!(display, (1, 10, inclusion));
+        assert_eq!(display, (0, 10, inclusion));
     }
 
     #[test]
@@ -1258,6 +1943,75 @@ mod tests {
         assert_eq!(lifecycle_display(&row), (1, 10, surviving));
     }
 
+    #[test]
+    fn frozen_display_uses_one_order_for_equal_height_occurrences() {
+        use block_storage::rust::dag::deploy_lifecycle_types::{
+            LifecycleEvent, LifecycleEventKind, LifecycleEvents,
+        };
+
+        let lower_hash = vec![0x10u8; 32];
+        let higher_hash = vec![0xf0u8; 32];
+        let events = [
+            LifecycleEvent {
+                height: 10,
+                block_hash: higher_hash,
+                kind: LifecycleEventKind::Included { is_failed: false },
+            },
+            LifecycleEvent {
+                height: 10,
+                block_hash: lower_hash.clone(),
+                kind: LifecycleEventKind::Included { is_failed: false },
+            },
+        ];
+
+        for row_events in [events.to_vec(), events.into_iter().rev().collect()] {
+            let row = LifecycleEvents {
+                valid_after: Some(1),
+                events: row_events,
+            };
+            assert_eq!(frozen_display(&row, &|_| true), (0, 10, lower_hash.clone()));
+        }
+    }
+
+    #[test]
+    fn frozen_display_excludes_all_off_floor_evidence() {
+        use block_storage::rust::dag::deploy_lifecycle_types::{
+            LifecycleEvent, LifecycleEventKind, LifecycleEvents,
+        };
+
+        let adopted = vec![0x11u8; 32];
+        let off_floor = vec![0x22u8; 32];
+        let off_floor_record = vec![0x33u8; 32];
+        let row = LifecycleEvents {
+            valid_after: Some(1),
+            events: vec![
+                LifecycleEvent {
+                    height: 10,
+                    block_hash: adopted.clone(),
+                    kind: LifecycleEventKind::Included { is_failed: false },
+                },
+                LifecycleEvent {
+                    height: 11,
+                    block_hash: off_floor.clone(),
+                    kind: LifecycleEventKind::Included { is_failed: false },
+                },
+                LifecycleEvent {
+                    height: 12,
+                    block_hash: off_floor_record,
+                    kind: LifecycleEventKind::Rejected {
+                        duplicate: false,
+                        carrier: adopted.clone(),
+                    },
+                },
+            ],
+        };
+
+        assert_eq!(
+            frozen_display(&row, &|hash| hash == adopted.as_slice()),
+            (0, 10, adopted)
+        );
+    }
+
     /// genesis(0) <- a(1, fresh sig_a) <- m(2, base=a, applied sig_b):
     /// membership walks the recorded lineage for both fact kinds and
     /// exhausts at genesis for unknown sigs.
@@ -1295,6 +2049,21 @@ mod tests {
             store.put_block_message(b).expect("store block");
         }
         assert!(!effect_in_state_of(&store, &a.block_hash, &sig_f, 0).expect("walk"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_state_bound_settlement_is_membership() {
+        let store = store().await;
+        let genesis = block_at(0, vec![], 0);
+        let (sig_f, mut pd_f) = processed(1, true);
+        pd_f.authority_funding_certificate = Some(Default::default());
+        pd_f.authority_cost_witness = Some(Default::default());
+        let mut a = block_at(1, vec![genesis.block_hash.clone()], 1);
+        a.body.deploys = vec![pd_f];
+        for block in [&genesis, &a] {
+            store.put_block_message(block).expect("store block");
+        }
+        assert!(effect_in_state_of(&store, &a.block_hash, &sig_f, 0).expect("walk"));
     }
 
     /// The bound stops the walk: an execution below `min_height` is
@@ -1410,6 +2179,7 @@ mod tests {
         )
         .expect("deploy data");
         let (sig_blocked, mut blocked_pd) = v6_processed(blocked_deploy);
+        let reapplied_pd = blocked_pd.clone();
         blocked_pd.is_failed = true;
 
         let live_deploy = crate::rust::util::construct_deploy::basic_deploy_data(
@@ -1444,6 +2214,10 @@ mod tests {
             .expect("adopt w2");
 
         let dag = dag_storage.get_representation().expect("dag");
+        for block in [&absent, &w1, &w2] {
+            dag.put_cached_floor(block.block_hash.clone(), absent.block_hash.clone())
+                .expect("materialize state-provenance floor");
+        }
         let register = DeployLifecycle::default();
         let terminalized = register
             .observe_block(&dag, &block_store, &w2, 1, Some(1), 0)
@@ -1486,6 +2260,10 @@ mod tests {
             .await
             .expect("adopt w3");
         let dag = dag_storage.get_representation().expect("dag");
+        for block in [&w3_carrier, &w3] {
+            dag.put_cached_floor(block.block_hash.clone(), w2.block_hash.clone())
+                .expect("materialize state-provenance floor");
+        }
         let terminalized = register
             .observe_block(&dag, &block_store, &w3, 1, Some(1), 0)
             .await
@@ -1511,8 +2289,9 @@ mod tests {
             .expect("w3 certificate");
         let mut w4_carrier = mk(10, 10, vec![w3.block_hash.clone()], Vec::new());
         bind_to_floor(&mut w4_carrier, &w3, &head, certificate);
-        let mut w4 = mk(11, 11, vec![w4_carrier.block_hash.clone()], Vec::new());
-        w4.body.applied_from_scope = vec![sig_blocked.clone()];
+        let w4 = mk(11, 11, vec![w4_carrier.block_hash.clone()], vec![
+            reapplied_pd,
+        ]);
         for block in [&w4_carrier, &w4] {
             block_store.put_block_message(block).expect("store block");
             dag_storage
@@ -1524,6 +2303,10 @@ mod tests {
             .await
             .expect("adopt w4");
         let dag = dag_storage.get_representation().expect("dag");
+        for block in [&w4_carrier, &w4] {
+            dag.put_cached_floor(block.block_hash.clone(), w3.block_hash.clone())
+                .expect("materialize state-provenance floor");
+        }
         let terminalized = register
             .observe_block(&dag, &block_store, &w4, 1, Some(1), 0)
             .await

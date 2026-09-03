@@ -359,6 +359,16 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
+    let deploy_lifecycle =
+        Arc::new(crate::rust::finality::deploy_lifecycle::DeployLifecycle::default());
+    deploy_lifecycle
+        .prepare_after_restore(
+            &block_dag_storage.get_representation()?,
+            &block_store,
+            crate::rust::safety::clique_oracle::FtThreshold::from_ppm(onchain_ppm),
+        )
+        .await?;
+
     let finalization_worker_limit = casper_shard_conf.finalizer_conf.max_parallel_workers;
     Ok(MultiParentCasperImpl {
         divergence_monitor: std::sync::Arc::new(
@@ -372,9 +382,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_dag_storage,
         deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
         rejected_deploy_buffer,
-        deploy_lifecycle: Arc::new(
-            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
-        ),
+        deploy_lifecycle,
         casper_buffer_storage,
         validator_id,
         casper_shard_conf,

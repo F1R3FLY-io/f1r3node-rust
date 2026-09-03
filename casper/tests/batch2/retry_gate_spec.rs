@@ -319,6 +319,7 @@ async fn premature_retry_is_rejected_by_every_validator() {
         deploys: checkpoint.deploys,
         rejected_deploys: checkpoint.rejected_deploys,
         rejected_state_effects: checkpoint.rejected_state_effects,
+        applied_state_effects: checkpoint.applied_state_effects,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,

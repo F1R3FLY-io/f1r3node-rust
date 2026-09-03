@@ -171,12 +171,18 @@ matching committed state. The unsafe projection deliberately consults only the
 main-parent spine and therefore reports two active sources after state has kept
 one.
 
+State construction uses only positive state-parent, applied, and own effects.
+A rejection record explains why a sibling effect was omitted. The record never
+subtracts an effect inherited from the selected state parent.
+
 | Configuration | Expected result | Defect isolated |
 | --- | --- | --- |
 | `MC_FinalizedOccurrenceStatus.cfg` | pass | all-parent exact status equals committed active occurrence state under every evidence order |
 | `MC_FinalizedOccurrenceStatus_main_chain_unsafe.cfg` | violate `Inv_StatusMatchesCommittedState` | main-chain-only status ignores a secondary-parent exact tombstone |
+| `MC_FinalizedOccurrenceStatus_rejection_subtraction_unsafe.cfg` | violate `Inv_RejectionDoesNotSubtractStateParent` | treating rejection evidence as state subtraction removes an inherited state-parent effect |
 | `MC_FinalizedOccurrenceStatusApalache.cfg` | pass | typed bounded verification of the same all-parent projection |
 | `MC_FinalizedOccurrenceStatus_main_chain_unsafe_Apalache.cfg` | violate `Inv_StatusMatchesCommittedState` | symbolic counterexample to main-chain-only exact status |
+| `MC_FinalizedOccurrenceStatus_rejection_subtraction_unsafe_Apalache.cfg` | violate `Inv_RejectionDoesNotSubtractStateParent` | symbolic counterexample to rejection-driven state subtraction |
 
 `RejectionReasonConfluence.tla` covers the diagnostic refinement carried by an
 exact tombstone. Concurrent descendants can reject the same source occurrence

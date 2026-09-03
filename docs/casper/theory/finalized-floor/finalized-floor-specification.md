@@ -552,49 +552,73 @@ LFB. These are separate predicates. The state-support calculation MUST NOT alter
 the causal certificate, and the current-LFB preservation check MUST NOT alter
 either certificate.
 
-- **R-EFFECT-ID.** Every successful user or system execution MUST have the
+- **R-EFFECT-ID.** Every committed user or system transition MUST have the
   consensus identity $`E = (source\_block\_hash, execution\_index)`$. Execution
-  indices MUST use the block's sequential user-then-system execution order.
-  Failed executions MUST NOT originate active effects.
-- **R-EFFECT-WIRE.** A current-protocol block MUST serialize the exact,
-  lexicographically ordered, duplicate-free set of state-effect identities
-  rejected by its parent merge. Validation MUST recompute that set and reject a
-  mismatch or non-canonical encoding before replay acceptance. DAG metadata MUST
-  persist the block protocol version, successful local indices, and rejected
-  identities. Nodes MUST fail closed when those fields are unavailable.
-- **R-EFFECT-ACTIVE.** Let `inputs(B)` contain every maximal direct parent of
-  `B`, plus `floor(B)` when it is not already present. The active-effect set MUST
-  satisfy this recurrence:
+  indices MUST use sequential user-then-system execution order. A successful
+  execution originates an effect. A failed user body with complete verified
+  cost settlement also originates an effect. Admission rejection and legacy
+  failed execution do not originate effects.
+- **R-EFFECT-WIRE.** A protocol-6 block MUST serialize its exact `merge_base`.
+  It MUST also serialize canonical applied and rejected effect sequences.
+  Each sequence MUST use lexicographic order and contain no duplicates.
+  Validation MUST recompute all merge facts before replay acceptance.
+  It MUST reject missing, extra, reordered, duplicate, or conflicting facts.
+  DAG metadata MUST persist the protocol version, committed local indices,
+  state parent, applied identities, and rejected identities.
+  Nodes MUST fail closed when required fields are unavailable.
+- **R-EFFECT-ACTIVE.** Let `StateParent(B)` be the exact `merge_base` for a
+  multi-parent block.
+  A single-parent block uses that parent.
+  Genesis has no state parent.
+  The active-effect set MUST satisfy this recurrence:
 
   ```math
-  Active(B) = \left(Own(B) \cup
-    \bigcup_{I \in inputs(B)} Active(I)\right) \setminus Rejected(B).
+  \operatorname{Active}(B)=
+  \operatorname{Active}(\operatorname{StateParent}(B))
+  \cup \operatorname{Applied}(B)
+  \cup \operatorname{Own}(B).
   ```
 
-  `Own(B)` contains exactly the identities required by R-EFFECT-ID, and
-  `Rejected(B)` is the canonical wire set required by R-EFFECT-WIRE. Parent
-  ordering MUST NOT affect this set. Removing a parent already covered by
-  another state input MUST NOT change the result.
+  `Own(B)` contains exactly the identities required by R-EFFECT-ID.
+  `Applied(B)` contains validated ancestor effects applied above the state
+  parent.
+  Each applied source MUST be a strict DAG ancestor with the named committed
+  local effect.
+  Applied and rejected identities MUST be disjoint.
+  Rejected identities are disposition evidence and MUST NOT construct state.
+  Rejected identities MUST NOT subtract effects inherited through the state
+  parent.
+  Header-parent order MUST NOT affect active state.
 - **R-STATE-PRESERVATION.** `preserves(A,D)` MUST hold exactly when `A = D`, or
   when `A` is a DAG ancestor of `D` and $`Active(A) \subseteq Active(D)`$. This
   is transition provenance rather than tuple-set inclusion: an authorized later
   reduction may consume data while still preserving the earlier transition.
-- **R-EFFECT-SCAN.** An implementation MAY collect a height-bounded superset of
-  rejected identities from `D`'s causal past when deciding `preserves(A,D)`.
-  It MUST test only candidates active at `A`, and MUST return false exactly when
-  one such candidate is inactive at `D`. Rejections unrelated to `A` MUST NOT
-  change the verdict.
+- **R-EXACT-CONTAINMENT.** `contains(A,D)` MUST hold exactly when
+  $`Active(A) \subseteq Active(D)`$.
+  This predicate does not require causal ancestry.
+  Use it when two replay-state lineages can join without one block containing
+  the other in its DAG past.
+  Missing or invalid exact provenance MUST defer the decision.
+  Signature equality MUST NOT satisfy exact containment.
+- **R-EFFECT-SCAN.** An implementation MAY compare exact state-lineage segments
+  when deciding `preserves(A,D)`.
+  It MUST find the state-lineage meet or return false.
+  It MUST collect positive own and applied effects on both segments.
+  It MUST return true exactly when the source segment is a destination subset.
+  An equivalent implementation MUST produce the same result.
 - **R-STATE-CERT.** For candidate `C` and frozen snapshot `just(B)`, state support
   MUST contain exactly the validators whose latest messages both causally include
   `C` and preserve every effect active at `C`. The node MUST run the same hard-majority,
   maximum-clique, exact-threshold decision used for causal certification over
   that restricted support. Causal support through a merge-parent edge MUST NOT
   count as state support when the merge state rejected `C`'s effects.
-- **R-STATE-DEPENDENCIES.** Finalized-floor materialization MUST close over both
-  DAG parents and the frozen latest-message justifications consulted by
-  R-STATE-CERT. Active-effect evaluation MUST close over every recurrence input.
-  A missing dependency or cyclic dependency MUST fail the derivation; it MUST NOT be
-  interpreted as absent state support.
+- **R-STATE-DEPENDENCIES.** Finalized-floor materialization MUST close over DAG
+  parents and frozen latest-message justifications used by R-STATE-CERT.
+  Active-effect evaluation MUST close over the exact state-parent lineage.
+  It MUST validate every applied source against the causal DAG and source
+  metadata.
+  A missing or cyclic dependency MUST fail the derivation.
+  The node MUST NOT interpret that condition as absent state support.
 - **R-SNAPSHOT-PROVENANCE-CLOSURE.** Before parent eligibility, causal support,
   or state-preserving support is evaluated, snapshot construction MUST
   materialize finalized-floor provenance for the union of the captured LFB,
@@ -611,6 +635,10 @@ either certificate.
   a state-certified candidate. A causally certified stale-state descendant or
   rejected parent remains a valid speculative block but MUST NOT become a floor
   advancement.
+- **R-SETTLED-FLOOR-SET.** A selected floor candidate MUST exactly contain every
+  inherited settled floor.
+  The selected replay base MUST satisfy the same requirement before execution.
+  A base that contains only one sibling floor MUST defer replay.
 - **R-UNIVERSAL-FRONTIER.** Universal certified advancement MUST traverse the
   complete all-parent causal closure in deterministic descending
   `(block_number, block_hash)` order. Each declared parent supplies a distinct
@@ -754,9 +782,9 @@ either certificate.
   A verified certificate cache MUST NOT bypass this candidate-specific check.
   The receiver MUST NOT require equality with its local preferred parent frontier.
   Frozen justifications remain authority inputs even when a replay-safe parent subset omits one justified sibling.
-- **R-PARENT-STATE.** Parent selection preserves causality; floor-rebased replay
-  preserves state. The produced pre-state MUST include every effect active at the
-  selected certified floor. Rejections MAY remove only exact above-floor effect
+- **R-PARENT-STATE.** Parent selection preserves causality.
+  Floor-rebased replay preserves state. The produced pre-state MUST include every effect active at
+  every inherited settled floor. Rejections MAY remove only exact above-floor effect
   identities considered by that merge and MUST NOT remove an effect already
   represented by the floor state.
 - **R-REBASE.** If a causally certified speculative block fails R-STATE-CERT or
@@ -773,8 +801,9 @@ either certificate.
   protocol 4, certified validator incarnations with protocol 5, and certified
   finalized-floor commitments and admission outcomes with protocol 6. This
   release supports only protocol 6 and MUST start from a protocol-6 genesis or
-  resynchronize complete current metadata; it MUST NOT infer missing consensus
-  fields for legacy persisted blocks.
+  resynchronize complete current metadata. It MUST NOT infer missing consensus
+  fields for legacy persisted blocks. Storage validation MUST reject mixed
+  protocol histories and metadata from a different admission schema.
 
 ## 3. Determinism (normative)
 
@@ -1081,6 +1110,21 @@ authorization for an in-place protocol upgrade.
   effect metadata MUST remain an error; status-only records MUST NOT fabricate
   empty effects or prevent indexing an otherwise valid parent.
 
+### 5.5 Deploy lifecycle settlement
+
+- **R-LIFECYCLE-ADOPTED-STATE.** A terminal lifecycle verdict MUST use exact
+  effect membership in the adopted LFB state. A finality marker or frozen
+  proposal floor MUST NOT replace this evidence.
+- **R-LIFECYCLE-FAILED-SETTLEMENT.** A failed user body with verified cost
+  settlement MUST become `Failed` only when the adopted LFB retains that exact
+  settlement effect.
+- **R-LIFECYCLE-EFFECT-FREE-FAILURE.** Admission rejection and legacy failure
+  MAY use causal adoption because those records originate no state effect.
+- **R-LIFECYCLE-HISTORY.** Missing carrier or provenance history MUST retain
+  `Pending` state and retry custody. A node MUST NOT infer terminal absence.
+- **R-LIFECYCLE-CLEANUP.** A write-once terminal verdict MUST precede deploy
+  pool cleanup. Repeated finalization effects MUST be idempotent.
+
 ## 6. Safety invariants — MUST NEVER happen
 
 | ID | Must never |
@@ -1112,12 +1156,13 @@ authorization for an in-place protocol upgrade.
 | **S25** | A covering-parent fast path reuses a stale post-state after the block's floor contains an active effect that parent rejected (violates R-STATE-PRESERVATION/R-REBASE). |
 | **S26** | Rejecting one exact effect removes an independent effect solely because its source block descends from the rejected effect's block (violates R-EXACT-SURVIVAL). |
 | **S27** | Rejection stops after one dependency hop and retains an effect that transitively consumes rejected state (violates R-CHAIN-ATOMIC/R-REJECTION-FIXPOINT). |
-| **S28** | A merge, floor, or LFB drops an accepted effect because state provenance collapses to one parent, depends on parent order, aliases two source identities, accepts non-canonical rejection evidence, or omits a rejection-candidate check (violates R-EFFECT-ID/R-EFFECT-WIRE/R-EFFECT-ACTIVE/R-STATE-PRESERVATION/R-EFFECT-SCAN). |
+| **S28** | A merge, floor, or LFB loses an accepted effect because applied facts are missing. Unioning header-parent states can instead resurrect an omitted effect. Wrong state parents, aliased identities, noncanonical facts, or incomplete lineage comparisons violate R-EFFECT-ID/R-EFFECT-WIRE/R-EFFECT-ACTIVE/R-STATE-PRESERVATION/R-EFFECT-SCAN. |
 | **S29** | An honest proposer drops a valid causal latest message, falls back to genesis when the valid-tip set is empty, or replays parent deltas without preserving its certified floor state (violates R-PARENT-CAUSALITY/R-PARENT-STATE/R-PARENT-EVIDENCE). |
 | **S30** | A dual-certified state remains absent from every block replay floor solely because it is secondary to every parent and main-spine discovery cannot see it (violates R-UNIVERSAL-FRONTIER). |
 | **S31** | Optimized latest-message coverage changes a validator support set, weight map, clique verdict, or permits a multi-parent unchanged-snapshot scan reuse (violates R-COVERAGE-EQUIVALENCE/R-LINEAR-SNAPSHOT-REUSE). |
 | **S32** | Snapshot selection inspects an off-parent latest message before its recursive floor provenance is materialized, or concurrent cache writes lose a required entry, causing node-local classification, repeated processing, or proposal failure (violates R-STATE-DEPENDENCIES/R-SNAPSHOT-PROVENANCE-CLOSURE). |
 | **S33** | A terminal admission rejection is counted as a runtime effect, or an ordinary runtime failure is removed from the effect sequence, shifting metadata and preventing valid-parent indexing (violates R-ADMISSION-EFFECT-PROJECTION/R-ADMISSION-EFFECT-FAIL-CLOSED). |
+| **S34** | A failed-body settlement is omitted from merge provenance or LFB containment, or pool cleanup uses marker or frozen-floor evidence instead of adopted-state membership (violates R-EFFECT-ID/R-EFFECT-ACTIVE/R-LIFECYCLE-ADOPTED-STATE/R-LIFECYCLE-FAILED-SETTLEMENT). |
 | **S34** | Heartbeat recovery treats producer timestamps or frontier churn as finality progress, reapplies the one-time stall timeout between later rounds, permits every validator to emit each round, requires a shared global round, fixes recovery to an offline leader, uses a non-canonical committee, admits an unbounded validation backlog, promotes without mutual causal and state cliques, assumes within-round delivery for safety, shrinks the finality denominator to a local subgraph, or treats indirect ancestor closure as an independently voted sub-finalization (violates R-FINALIZER-LOCAL-VIEW/R-FINALIZATION-CLOSURE/R-HEARTBEAT-*). |
 | **S35** | A validator captures or publishes a replay root through a shared mutable current-root pointer, so another runtime's reset changes its decision (violates R-LOCAL-ROOT-AUTHORITY). |
 | **S36** | Support is emitted before exact local replay, received support substitutes for local validation, or a delivered message lacks an emitted signer/candidate source (violates R-LOCAL-SUPPORT). |

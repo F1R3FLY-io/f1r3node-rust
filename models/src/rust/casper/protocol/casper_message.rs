@@ -1345,6 +1345,26 @@ impl StateEffectId {
             execution_index: self.execution_index,
         }
     }
+
+    pub fn validate_canonical_sequence(effects: &[Self], field: &str) -> Result<(), String> {
+        if let Some(effect) = effects
+            .iter()
+            .find(|effect| effect.source_block_hash.len() != block_hash::LENGTH)
+        {
+            return Err(format!(
+                "{field} contains a {}-byte source block hash at execution index {}, expected {} bytes",
+                effect.source_block_hash.len(),
+                effect.execution_index,
+                block_hash::LENGTH
+            ));
+        }
+        if effects.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(format!(
+                "{field} must be strictly ordered without duplicate effect identities"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1353,6 +1373,7 @@ pub struct Body {
     pub deploys: Vec<ProcessedDeploy>,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub rejected_state_effects: Vec<StateEffectId>,
+    pub applied_state_effects: Vec<StateEffectId>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
     pub extra_bytes: ByteString,
     pub applied_from_scope: Vec<ByteString>,
@@ -1361,6 +1382,21 @@ pub struct Body {
 
 impl Body {
     pub fn from_proto(proto: BodyProto) -> Result<Self, String> {
+        let rejected_state_effects = proto
+            .rejected_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(
+            &rejected_state_effects,
+            "rejectedStateEffects",
+        )?;
+        let applied_state_effects = proto
+            .applied_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(&applied_state_effects, "appliedStateEffects")?;
         Ok(Self {
             state: F1r3flyState::from_proto(
                 proto
@@ -1377,11 +1413,8 @@ impl Body {
                 .into_iter()
                 .map(|r| RejectedDeploy::from_proto(r))
                 .collect::<Result<Vec<_>, _>>()?,
-            rejected_state_effects: proto
-                .rejected_state_effects
-                .into_iter()
-                .map(StateEffectId::from_proto)
-                .collect(),
+            rejected_state_effects,
+            applied_state_effects,
             system_deploys: proto
                 .system_deploys
                 .into_iter()
@@ -1410,6 +1443,11 @@ impl Body {
                 .collect(),
             rejected_state_effects: self
                 .rejected_state_effects
+                .iter()
+                .map(StateEffectId::to_proto)
+                .collect(),
+            applied_state_effects: self
+                .applied_state_effects
                 .iter()
                 .map(StateEffectId::to_proto)
                 .collect(),
@@ -1716,6 +1754,13 @@ impl ProcessedDeploy {
 
     pub fn is_admission_rejected(&self) -> bool {
         self.admission_status == DeployAdmissionStatus::Rejected
+    }
+
+    pub fn has_committed_state_effect(&self) -> bool {
+        !self.is_admission_rejected()
+            && (!self.is_failed
+                || (self.authority_funding_certificate.is_some()
+                    && self.authority_cost_witness.is_some()))
     }
 
     pub fn deploy_id(&self) -> &ByteString {
@@ -3940,17 +3985,21 @@ mod tests {
     }
 
     #[test]
-    fn rejected_state_effects_round_trip_through_body_proto_without_reordering() {
+    fn state_effects_round_trip_through_body_proto_without_reordering() {
         let effects = vec![
             StateEffectId {
-                source_block_hash: Bytes::from_static(b"source-a"),
+                source_block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
                 execution_index: 2,
             },
             StateEffectId {
-                source_block_hash: Bytes::from_static(b"source-b"),
+                source_block_hash: Bytes::from(vec![2; block_hash::LENGTH]),
                 execution_index: 1,
             },
         ];
+        let applied = vec![StateEffectId {
+            source_block_hash: Bytes::from(vec![3; block_hash::LENGTH]),
+            execution_index: 4,
+        }];
         let body = Body {
             state: F1r3flyState {
                 pre_state_hash: Bytes::from_static(b"pre"),
@@ -3963,6 +4012,7 @@ mod tests {
             deploys: Vec::new(),
             rejected_deploys: Vec::new(),
             rejected_state_effects: effects.clone(),
+            applied_state_effects: applied.clone(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
             applied_from_scope: Vec::new(),
@@ -3972,6 +4022,55 @@ mod tests {
         let decoded = Body::from_proto(body.to_proto()).unwrap();
         assert_eq!(decoded, body);
         assert_eq!(decoded.rejected_state_effects, effects);
+        assert_eq!(decoded.applied_state_effects, applied);
+    }
+
+    #[test]
+    fn body_proto_rejects_noncanonical_state_effect_sequences() {
+        let first = StateEffectId {
+            source_block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
+            execution_index: 0,
+        };
+        let second = StateEffectId {
+            source_block_hash: Bytes::from(vec![2; block_hash::LENGTH]),
+            execution_index: 0,
+        };
+        let mut body = Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::from(vec![3; block_hash::LENGTH]),
+                post_state_hash: Bytes::from(vec![4; block_hash::LENGTH]),
+                bonds: Vec::new(),
+                bond_generations: Vec::new(),
+                active_validators: Vec::new(),
+                block_number: 1,
+            },
+            deploys: Vec::new(),
+            rejected_deploys: Vec::new(),
+            rejected_state_effects: Vec::new(),
+            applied_state_effects: vec![first.clone(), second.clone()],
+            system_deploys: Vec::new(),
+            extra_bytes: Bytes::new(),
+            applied_from_scope: Vec::new(),
+            merge_base: Bytes::new(),
+        };
+
+        body.applied_state_effects.reverse();
+        assert!(Body::from_proto(body.to_proto())
+            .expect_err("unordered effects must fail")
+            .contains("strictly ordered"));
+
+        body.applied_state_effects = vec![first.clone(), first];
+        assert!(Body::from_proto(body.to_proto())
+            .expect_err("duplicate effects must fail")
+            .contains("duplicate"));
+
+        body.applied_state_effects = vec![StateEffectId {
+            source_block_hash: Bytes::from_static(b"short"),
+            execution_index: 0,
+        }];
+        assert!(Body::from_proto(body.to_proto())
+            .expect_err("malformed source hash must fail")
+            .contains("expected 32 bytes"));
     }
 
     #[test]
@@ -4456,6 +4555,27 @@ mod tests {
             ProcessedDeploy::from_proto(rejected.clone().to_proto()).unwrap(),
             rejected
         );
+        assert!(!rejected.has_committed_state_effect());
+    }
+
+    #[test]
+    fn failed_state_bound_execution_keeps_its_committed_settlement_effect() {
+        let signed = signed_deploy(deploy_data());
+        let mut processed = ProcessedDeploy::empty(signed);
+        processed.is_failed = true;
+        assert!(!processed.has_committed_state_effect());
+
+        processed.authority_funding_certificate =
+            Some(CostAuthorityFundingCertificateProto::default());
+        assert!(!processed.has_committed_state_effect());
+
+        processed.authority_cost_witness = Some(CostAuthorityWitnessProto::default());
+        assert!(processed.has_committed_state_effect());
+
+        processed.is_failed = false;
+        processed.authority_funding_certificate = None;
+        processed.authority_cost_witness = None;
+        assert!(processed.has_committed_state_effect());
     }
 
     // =================================================================
@@ -4946,6 +5066,7 @@ mod tests {
                     deploys: vec![],
                     rejected_deploys: vec![],
                     rejected_state_effects: vec![],
+                    applied_state_effects: vec![],
                     system_deploys: vec![],
                     extra_bytes: Bytes::new(),
                     applied_from_scope: vec![],

@@ -395,6 +395,49 @@ and the validation committee read the block-derived floor, never the LFB.
 *Avoid*: "finalized block" unqualified when the node-local marker is
 intended.
 
+### State-effect identity
+
+A state-effect identity is the pair `(source block hash, execution index)`.
+The pair identifies one committed successful execution or failed-body
+settlement. Equal deploy identities do not make two state effects equal.
+
+**Preferred usage.** Use this term for protocol-6 replay and finality state.
+*Distinguish from* [Deploy lookup identity](#deploy-lookup-identity), which
+identifies one submitted deploy.
+*Avoid*: "signature" when the rule requires exact committed state.
+
+### Exact state containment
+
+Exact state containment holds when every state-effect identity active at one
+block is active in another block. The relation does not require DAG ancestry.
+
+**Preferred usage.** Use this term for state comparison across joined replay
+lineages.
+*Distinguish from* state preservation, which also requires causal ancestry.
+*Avoid*: "descendant" when only the exact effect subset is required.
+
+### State witness
+
+A state witness is a frozen validator latest message with causal and exact
+state-preserving support for one candidate.
+
+**Preferred usage.** Use this term for a validator input to the exact state
+certificate.
+*Distinguish from* causal support, which can include a merge that rejected the
+candidate state.
+*Avoid*: "vote" without the exact state qualification.
+
+### Settled floor set
+
+The settled floor set contains every inherited finalized floor in one frozen
+block context. A selected floor and replay base must contain each member's
+exact effects.
+
+**Preferred usage.** Use this term when a decision must preserve multiple
+inherited floor states.
+*Distinguish from* one selected finalized floor.
+*Avoid*: "current floor" when the rule quantifies over the complete set.
+
 ### Lowest common ancestor (LCA)
 
 The lowest common ancestor is the deepest block that is an ancestor of
@@ -491,11 +534,12 @@ among its member deploy identities.
 
 **Preferred usage.** Use for the consensus-visible priority input to
 [loss-aware adjudication](#loss-aware-adjudication).
-*Distinguish from* the lifecycle `rejection_count`, which is a node-local
-observability value that includes duplicate records. The
-[repeat-deploy carrier index](#repeat-deploy-carrier-index) is the one
-node-local materialized structure with a consensus-reading role. It holds
-that role only under its completeness invariant.
+*Distinguish from* the lifecycle `rejection_count`. A pending response uses
+node-local visible records. A terminal response freezes records in the
+adopted finalized-floor closure. Both response types include duplicate
+records. The [repeat-deploy carrier index](#repeat-deploy-carrier-index) is
+the one node-local materialized structure with a consensus-reading role. It
+holds that role only under its completeness invariant.
 *Avoid*: "loss count" without qualification.
 
 ### Loss-aware adjudication
@@ -536,6 +580,38 @@ owner-scoped: only the sender of the carrier buffers the retry of that copy.
 *Distinguish from* the recording block, which is the merge block whose body
 holds the rejection record.
 *Avoid*: "source block" without qualification.
+
+### Occurrence carrier
+
+An occurrence carrier is a block whose body contains one exact deploy
+occurrence. Deploy lookup can return this block.
+
+**Preferred usage.** Use when a terminal API response identifies where the
+deploy occurred.
+*Distinguish from* the [finalized state anchor](#finalized-state-anchor), which
+identifies the replay state that determined the terminal verdict.
+*Avoid*: "finalized block" unless consensus finalized the occurrence carrier.
+
+### Finalized state anchor
+
+A finalized state anchor is the finalized floor whose replay state determines
+a terminal deploy verdict. The floor body does not need to contain the deploy.
+
+**Preferred usage.** Use when a terminal API response identifies the deciding
+state.
+*Distinguish from* an [occurrence carrier](#occurrence-carrier), which contains
+the deploy body.
+*Avoid*: "deploy block", because the anchor can omit that deploy.
+
+### Archive representative
+
+An archive representative is the deterministic height-and-hash selection from stored deploy occurrences.
+The occurrence store uses this value for constant-time lookup.
+
+**Preferred usage.** Use this term for the occurrence archive index value.
+*Distinguish from* the [occurrence carrier](#occurrence-carrier) in a terminal lifecycle response.
+An exact tombstone can exclude that carrier without deleting immutable archive history.
+*Avoid*: "terminal source", because the lifecycle record supplies the terminal source.
 
 ### Deploy lifespan
 
@@ -585,6 +661,29 @@ tables (`deploy-lifecycle-events`, `deploy-lifecycle-terminal`).
 verdict about one deploy; finalization is a property of blocks.
 *Avoid*: "deploy status" for the storage internals — status is the API
 view over the lifecycle tables.
+
+### Failed-body settlement
+
+A failed-body settlement is the verified SystemVault charge after a user body
+fails. The user body's program state rolls back. The attempted-work charge
+remains a committed state effect.
+
+**Preferred usage.** Use for the cost effect that survives failed user-body
+rollback.
+*Distinguish from* admission rejection, which executes no body and commits no
+cost effect.
+*Avoid*: "failed deploy has no effect", because the settlement changes state.
+
+### Adopted lifecycle state
+
+The adopted lifecycle state is the state of the node's adopted last finalized
+block. Exact effect membership in this state authorizes lifecycle cleanup.
+
+**Preferred usage.** Use for the state anchor of a terminal deploy verdict.
+*Distinguish from* a finality marker and a carrier's frozen floor. Those facts
+do not prove current effect membership.
+*Avoid*: "finalized carrier state", because the occurrence and state anchors
+can name different blocks.
 
 ### Settled content
 

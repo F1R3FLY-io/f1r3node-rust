@@ -22,6 +22,10 @@
 | Multiple exact tombstones in one block are one rejection event | occurrence-aware status reducer | `multiple_exact_rejections_in_one_block_count_as_one_rejection_event` |
 | An exact tombstone in a secondary-parent ancestor affects status exactly as it affects committed state | Rocq `finalized_closure_rejection_is_authoritative`, TLA⁺ `Inv_StatusMatchesCommittedState` | `source_aware_rejection_in_secondary_parent_is_authoritative` |
 | Restricting exact tombstones to the main-parent spine is unsound | Rocq `main_chain_only_projection_is_incomplete`; TLC and Apalache `MC_FinalizedOccurrenceStatus_main_chain_unsafe*` | the secondary-parent regression fails under the old filter |
+| Terminal status excludes off-floor occurrence and rejection evidence | Rocq `terminal_summary_uses_only_finalized_active_occurrence` and `off_floor_occurrence_cannot_be_frozen`. TLA⁺ checks `Inv_OffFloorEvidenceCannotAffectTerminalStatus` and the floor-blind control. | `frozen_display_excludes_all_off_floor_evidence` |
+| Terminal source selection excludes an exact tombstone | Rocq checks `terminal_summary_freezes_only_active_occurrence`. TLA⁺ checks `Inv_FrozenSourceMatchesCommittedState` and the raw-source control. | Source-aware rejection tests with both source-hash orders. |
+| Lifecycle evaluation requires a materialized adopted floor | Rocq proves `restore_readiness_contract`. TLA⁺ checks `Inv_TerminalStatusRequiresFloorReady`. The unready-settlement control violates this invariant. | `restore_preparation_materializes_the_adopted_floor_before_evaluation` and `restored_lifecycle_waits_for_floor_materialization` |
+| Equal-height occurrence selection is order-independent | Rocq `preferred_occurrence_order_independent` | `occurrence_ranking_is_order_independent`, `frozen_display_uses_one_order_for_equal_height_occurrences` |
 | Atomic v6 admission keeps metadata, occurrence, and lifecycle state aligned | TLA⁺ `DeployOccurrenceStorage.tla`, Rocq `deploy_occurrence_storage_contract` | strict transaction rollback and occurrence insertion tests |
 | Fresh-v6 activation rejects legacy and partial state | TLA⁺ `Inv_FreshActivation`, Rocq `successful_activation_has_no_legacy_or_partial_rows` | `fresh_activation_rejects_legacy_or_partial_rows` |
 | Terminalization preserves exact history while it removes open hot state | Rocq `terminalization_preserves_exact_archive`, `terminalization_is_atomic_across_occurrence_and_lifecycle_state` | compaction, LMDB reopen, and terminal integration tests |
@@ -33,6 +37,30 @@ The Rocq capstone is checked with `Print Assumptions` and `coqchk`. The TLA⁺
 post-fix models must exhaust their bounded state spaces without violation. Each
 pre-fix configuration is successful only when it reproduces its named
 counterexample.
+
+`FinalizedOccurrenceStatus.tla` has three occurrence observations and two
+rejection-record observations. Floor materialization and settlement each need
+one transition. Its safe Apalache checks use a minimum bound of seven
+transitions. A smaller safe bound cannot reach a settled state after floor
+materialization. The unready-settlement control uses six transitions because it
+omits the required floor transition.
+
+## Restore readiness
+
+The deploy lifecycle reads exact state-effect membership from the adopted last
+finalized block. This query requires the persisted floor for each state input.
+
+A restored database can contain lifecycle rows before it contains the new floor
+cache. Casper startup derives the adopted floor from stored block metadata and
+signed justifications. Startup then rebuilds the open lifecycle schedule.
+
+The node fails closed if it cannot derive the floor. The node does not select a
+default parent or create a tombstone. These alternatives could change committed
+state membership.
+
+Synthetic tests must use the same order. First, materialize the selected floor.
+Second, adopt the block. Third, evaluate lifecycle rows. Each protocol-v6
+rejection must name its source block and execution index.
 
 ## Carrier-index refinement
 
@@ -239,9 +267,14 @@ published constraints.
 - stale-history recovery regression;
 - exact-LFB sibling exclusion;
 - invalid block exclusion from occurrence lookup;
-- finalization API returns the surviving source block.
+- finalization API returns an occurrence carrier that contains the deploy.
+- finalization API returns the separate floor that supplied terminal state.
+- finalization API never substitutes that floor for an occurrence carrier.
 - finalization API applies an exact rejection recorded in a secondary-parent
   ancestor and returns the distinct surviving source block.
+- finalization API does not expose the archive representative as its
+  source-aware occurrence carrier.
+- off-floor inclusions and rejection records do not affect terminal display.
 
 ### Property-based tests
 
@@ -252,6 +285,8 @@ published constraints.
 - recovery projection preserves every untombstoned source;
 - occurrence index and its compatibility representative are invariant under
   block insertion permutation.
+- lifecycle and occurrence reducers select the same equal-height hash under
+  every input order.
 - retry eligibility is equivalent to an empty active-source set;
 - retry selection is invariant under parent and validator observation order;
 - exact lifespan boundaries are closed to both backlog probing and selection;
@@ -267,6 +302,7 @@ published constraints.
 - independent validators rehome without a global lock and their results commute;
 - an occurrence active in the captured candidate scope remains suppressed while
   another thread cleans historical state.
+- concurrent late archive updates cannot change a frozen terminal carrier.
 
 ### Integration tests
 

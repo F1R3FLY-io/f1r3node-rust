@@ -98,9 +98,11 @@ enum DeployFinalizationStateProto {
 message DeployFinalizationStatusInfo {
   DeployFinalizationStateProto state = 1;
   uint32 rejectionCount              = 2;
-  // Present when the sig has been included in at least one block.
-  // Absent (no field set) when the deploy is unknown to this node.
+  // An occurrence carrier that contains the deploy.
   optional bytes latestBlockHash     = 3;
+  // The finalized floor whose state determines a terminal verdict.
+  optional bytes finalizedFloorHash  = 4;
+  optional int64 finalizedFloorHeight = 5;
 }
 
 message BondStatusQuery {
@@ -209,6 +211,7 @@ message LightBlockInfo {
   repeated JustificationInfo justifications   = 20;
   repeated RejectedDeployInfo rejectedDeploys = 21;
   bool isFinalized                            = 22;
+  repeated BondInfo activeBonds               = 23;
 }
 
 message RejectedDeployInfo{

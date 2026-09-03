@@ -15,7 +15,9 @@ use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::util::rholang::interpreter_util;
 use casper::rust::util::{construct_deploy, proto_util};
-use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header, Justification};
+use models::rust::casper::protocol::casper_message::{
+    Body, F1r3flyState, Header, Justification, StateEffectId,
+};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
@@ -127,6 +129,7 @@ async fn checkpoint_block_with(
         deploys: checkpoint.deploys,
         rejected_deploys: checkpoint.rejected_deploys,
         rejected_state_effects: checkpoint.rejected_state_effects,
+        applied_state_effects: checkpoint.applied_state_effects,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
@@ -301,6 +304,17 @@ async fn merged_block_records_the_floor_base_and_the_applied_set() {
          incomparable siblings, so at least one chain is re-applied"
     );
     assert!(
+        !merge_block.body.applied_state_effects.is_empty(),
+        "a merge with an applied sibling chain records its exact positive effects"
+    );
+    for effect in &merge_block.body.applied_state_effects {
+        assert!(
+            [block_a.block_hash.as_ref(), block_b.block_hash.as_ref()]
+                .contains(&effect.source_block_hash.as_ref()),
+            "each applied state effect comes from one accepted sibling chain"
+        );
+    }
+    assert!(
         !merge_block
             .body
             .applied_from_scope
@@ -319,6 +333,83 @@ async fn merged_block_records_the_floor_base_and_the_applied_set() {
         "the recorded facts are validator-recomputable: the merge must \
          validate, got {:?}",
         outcome
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_block_lying_about_its_applied_state_effects_is_invalid() {
+    let (mut nodes, shard_id, _genesis_hash) = two_validator_network().await;
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        r#"@"sf_effect_lie"!(1)"#.to_string(),
+        None,
+        None,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .expect("build deploy");
+    let source_block = nodes[0]
+        .add_block_from_deploys(std::slice::from_ref(&deploy))
+        .await
+        .expect("validator 1 proposes the source block");
+    assert_eq!(source_block.body.deploys.len(), 1);
+    assert!(!source_block.body.deploys[0].is_failed);
+    let source_verdict = nodes[1]
+        .process_block(source_block.clone())
+        .await
+        .expect("validator 2 processes the source block");
+    assert!(matches!(source_verdict, Either::Right(_)));
+    let lying_block = checkpoint_block_with(&mut nodes[0], &shard_id, Vec::new(), |body| {
+        body.applied_state_effects = vec![StateEffectId {
+            source_block_hash: source_block.block_hash.clone(),
+            execution_index: 0,
+        }];
+    })
+    .await;
+
+    let verdict = nodes[1]
+        .process_block(lying_block)
+        .await
+        .expect("validator 2 processes the lying block");
+    assert_eq!(
+        verdict,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy)),
+        "an applied effect absent from validator recomputation invalidates the block"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn an_extra_unheld_applied_state_effect_is_rejected_without_dependency_lookup() {
+    let (mut nodes, shard_id, _genesis_hash) = two_validator_network().await;
+
+    let deploy = construct_deploy::source_deploy_now_full(
+        r#"@"sf_effect_unheld"!(1)"#.to_string(),
+        None,
+        None,
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(shard_id.clone()),
+    )
+    .expect("build deploy");
+    let missing_hash = Bytes::from(vec![0xBC; 32]);
+    let block = checkpoint_block_with(&mut nodes[0], &shard_id, vec![deploy], |body| {
+        body.applied_state_effects = vec![StateEffectId {
+            source_block_hash: missing_hash.clone(),
+            execution_index: 0,
+        }];
+    })
+    .await;
+
+    let verdict = nodes[1]
+        .process_block(block)
+        .await
+        .expect("the unequal exact vector is decidable without the unheld source");
+    assert_eq!(
+        verdict,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidRejectedDeploy))
     );
 }
 

@@ -3,14 +3,16 @@ EXTENDS Naturals, FiniteSets, Sequences
 
 CONSTANT
   \* @type: Bool;
-  UseSingleBase
+  UseUnionParents
 
-ASSUME UseSingleBase \in BOOLEAN
+ASSUME UseUnionParents \in BOOLEAN
 
-Effects == {"a:0"}
-Blocks == {"G", "A", "B", "C", "M1", "M2", "M3", "N1", "N2", "N3", "J", "R"}
+Effects == {"successful:0", "failed-settlement:1", "sibling-b:0", "sibling-c:0"}
+SourceEffects == {"successful:0", "failed-settlement:1"}
+OmittedApplied == {"sibling-c:0"}
+Blocks == {"G", "A", "B", "C", "O1", "O2", "Q1", "Q2", "N1", "N2", "N3", "R"}
 BaseBlocks == {"G", "A", "B", "C"}
-FirstRound == {"M1", "M2", "M3", "J"}
+FirstRound == {"O1", "O2", "Q1", "Q2"}
 SecondRound == {"N1", "N2", "N3", "R"}
 Nodes == {"n1", "n2"}
 Validators == {"v1", "v2", "v3"}
@@ -18,44 +20,59 @@ Validators == {"v1", "v2", "v3"}
 ParentOrder == [block \in Blocks |->
   CASE block = "G" -> <<>>
     [] block \in {"A", "B", "C"} -> <<"G">>
-    [] block = "M1" -> <<"A", "B", "C">>
-    [] block = "M2" -> <<"B", "C", "A">>
-    [] block = "M3" -> <<"C", "A", "B">>
-    [] block = "N1" -> <<"M1", "M2", "M3">>
-    [] block = "N2" -> <<"M2", "M3", "M1">>
-    [] block = "N3" -> <<"M3", "M1", "M2">>
-    [] block = "J" -> <<"A", "B", "C">>
-    [] OTHER -> <<"J">>]
+    [] block \in {"O1", "Q1"} -> <<"A", "B", "C">>
+    [] block \in {"O2", "Q2"} -> <<"C", "B", "A">>
+    [] block = "N1" -> <<"Q1", "O1">>
+    [] block = "N2" -> <<"Q2", "O2">>
+    [] block = "N3" -> <<"O2", "Q1">>
+    [] OTHER -> <<"O1", "A">>]
 
 Parents(block) ==
   {ParentOrder[block][index] : index \in DOMAIN ParentOrder[block]}
 
-Floor == [block \in Blocks |-> IF block = "R" THEN "A" ELSE "G"]
+StateParent == [block \in Blocks |->
+  CASE block = "G" -> "G"
+    [] block \in {"A", "B", "C"} -> "G"
+    [] block \in {"O1", "O2", "Q1", "Q2"} -> "B"
+    [] block = "N1" -> "Q1"
+    [] block = "N2" -> "Q2"
+    [] block = "N3" -> "Q1"
+    [] OTHER -> "O1"]
 
-Own == [block \in Blocks |-> IF block = "A" THEN {"a:0"} ELSE {}]
+Own == [block \in Blocks |->
+  CASE block = "A" -> SourceEffects
+    [] block = "B" -> {"sibling-b:0"}
+    [] block = "C" -> {"sibling-c:0"}
+    [] OTHER -> {}]
 
-DirectRejected ==
-  [block \in Blocks |-> IF block = "J" THEN {"a:0"} ELSE {}]
+Applied == [block \in Blocks |->
+  CASE block \in {"O1", "O2"} -> OmittedApplied
+    [] block \in {"Q1", "Q2"} -> OmittedApplied \union SourceEffects
+    [] block = "R" -> SourceEffects
+    [] OTHER -> {}]
+
+DirectRejected == [block \in Blocks |->
+  IF block \in {"O1", "O2"} THEN SourceEffects ELSE {}]
 
 Inputs(block) ==
-  IF UseSingleBase /\ Cardinality(Parents(block)) > 1
-  THEN {Floor[block]}
-  ELSE Parents(block) \union {Floor[block]}
+  IF block = "G"
+  THEN {}
+  ELSE IF UseUnionParents THEN Parents(block) ELSE {StateParent[block]}
 
-MergeActive(previous, block) ==
-  (Own[block] \union UNION {previous[input] : input \in Inputs(block)})
-    \ DirectRejected[block]
+Construct(previous, block) ==
+  Own[block] \union Applied[block] \union
+    UNION {previous[input] : input \in Inputs(block)}
 
 Active0 == [block \in Blocks |-> Own[block]]
 
 Active1 == [block \in Blocks |->
   IF block \in FirstRound
-  THEN MergeActive(Active0, block)
+  THEN Construct(Active0, block)
   ELSE Active0[block]]
 
 Active == [block \in Blocks |->
   IF block \in SecondRound
-  THEN MergeActive(Active1, block)
+  THEN Construct(Active1, block)
   ELSE Active1[block]]
 
 DagPast == [block \in Blocks |->
@@ -63,22 +80,14 @@ DagPast == [block \in Blocks |->
     [] block = "A" -> {"G", "A"}
     [] block = "B" -> {"G", "B"}
     [] block = "C" -> {"G", "C"}
-    [] block \in {"M1", "M2", "M3"} -> {"G", "A", "B", "C", block}
-    [] block \in {"N1", "N2", "N3"} ->
-         {"G", "A", "B", "C", "M1", "M2", "M3", block}
-    [] block = "J" -> {"G", "A", "B", "C", "J"}
-    [] OTHER -> {"G", "A", "B", "C", "J", "R"}]
+    [] block \in FirstRound -> {"G", "A", "B", "C", block}
+    [] block = "N1" -> {"G", "A", "B", "C", "O1", "Q1", "N1"}
+    [] block = "N2" -> {"G", "A", "B", "C", "O2", "Q2", "N2"}
+    [] block = "N3" -> {"G", "A", "B", "C", "O2", "Q1", "N3"}
+    [] OTHER -> {"G", "A", "B", "C", "O1", "R"}]
 
 DagDescendant(ancestor, descendant) == ancestor \in DagPast[descendant]
-EffectPreserves(ancestor, descendant) == Active[ancestor] \subseteq Active[descendant]
-
-CarriesSourceEffect == [block \in Blocks |->
-  CASE block \in {"A", "R"} -> TRUE
-    [] block \in {"M1", "M2", "M3", "N1", "N2", "N3"} -> ~UseSingleBase
-    [] OTHER -> FALSE]
-
-Preserves(ancestor, descendant) ==
-  ~CarriesSourceEffect[ancestor] \/ CarriesSourceEffect[descendant]
+Preserves(ancestor, descendant) == Active[ancestor] \subseteq Active[descendant]
 
 Tip == [validator \in Validators |->
   CASE validator = "v1" -> "N1"
@@ -147,40 +156,38 @@ TypeOK ==
   /\ known \in [Nodes -> SUBSET Validators]
   /\ Active \in [Blocks -> SUBSET Effects]
 
-Inv_ActiveIsExactMergeRecurrence ==
-  /\ \A block \in FirstRound : Active1[block] = MergeActive(Active0, block)
-  /\ \A block \in SecondRound : Active[block] = MergeActive(Active1, block)
+Inv_ActiveIsExactPositiveRecurrence ==
+  /\ \A block \in FirstRound : Active1[block] = Construct(Active0, block)
+  /\ \A block \in SecondRound : Active[block] = Construct(Active1, block)
 
 Inv_ParentOrderInvariant ==
-  /\ Parents("M1") = Parents("M2")
-  /\ Parents("M2") = Parents("M3")
-  /\ Active["M1"] = Active["M2"]
-  /\ Active["M2"] = Active["M3"]
-  /\ Active["N1"] = Active["N2"]
-  /\ Active["N2"] = Active["N3"]
+  /\ Parents("O1") = Parents("O2")
+  /\ Parents("Q1") = Parents("Q2")
+  /\ Active["O1"] = Active["O2"]
+  /\ Active["Q1"] = Active["Q2"]
 
-Inv_PreservationSummaryEqualsEffectRecurrence ==
-  \A ancestor \in Blocks, descendant \in Blocks :
-    Preserves(ancestor, descendant) = EffectPreserves(ancestor, descendant)
+Inv_OmittedParentEffectAbsent ==
+  /\ SourceEffects \intersect Active["O1"] = {}
+  /\ SourceEffects \intersect Active["O2"] = {}
 
-Inv_AcceptedThreeWayEffectsSurvive ==
-  \A block \in {"M1", "M2", "M3", "N1", "N2", "N3"} :
-    "a:0" \in Active[block]
+Inv_AcceptedSiblingEffectPresent ==
+  \A block \in {"Q1", "Q2", "N1", "N2", "N3"} :
+    SourceEffects \subseteq Active[block]
 
-Inv_DirectRejectionRemovesOnlyNamedEffect ==
-  /\ "a:0" \notin Active["J"]
-  /\ DirectRejected["J"] = {"a:0"}
+Inv_DirectRejectionIsEvidenceOnly ==
+  /\ DirectRejected["O1"] = SourceEffects
+  /\ DirectRejected["O1"] \intersect Applied["O1"] = {}
+  /\ DirectRejected["O1"] \intersect Active["O1"] = {}
 
-Inv_FinalizedFloorRestoresEffect == "a:0" \in Active["R"]
+Inv_RetryRestoresExactEffect == SourceEffects \subseteq Active["R"]
+
+Inv_FailedSettlementSurvivesAcceptedMerges ==
+  \A block \in {"Q1", "Q2", "N1", "N2", "N3", "R"} :
+    "failed-settlement:1" \in Active[block]
 
 Inv_StateSupportRefinesCausalSupport ==
   \A node \in Nodes :
     StateSupporting(node, "A") \subseteq CausalSupporting(node, "A")
-
-Inv_EveryDeliveredTipPreservesSource ==
-  \A node \in Nodes :
-    \A validator \in known[node] :
-      DagDescendant("A", Tip[validator]) /\ Preserves("A", Tip[validator])
 
 Inv_AllValidatorTipsPreserveSource ==
   /\ DagDescendant("A", Tip["v1"]) /\ Preserves("A", Tip["v1"])

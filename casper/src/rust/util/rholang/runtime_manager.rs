@@ -354,6 +354,7 @@ pub struct MergedPreState {
     /// travel to the block body as-is; the record IS the consensus content.
     pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
     pub rejected_state_effects: Vec<models::rust::casper::protocol::casper_message::StateEffectId>,
+    pub applied_state_effects: Vec<models::rust::casper::protocol::casper_message::StateEffectId>,
     pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
     /// User sigs whose chains the merge APPLIED from scope: their effects
     /// are in `state`, so executing any of them on top would double-apply.
@@ -1099,16 +1100,11 @@ impl RuntimeManager {
                 is_genesis,
             )
             .await?;
-        if computed_post_state != block.body.state.post_state_hash {
-            return Err(CasperError::ReplayFailure(
-                ReplayFailure::effect_state_mismatch(
-                    format!("block:{}", hex::encode(&block.block_hash)),
-                    "final-post-state".to_string(),
-                    hex::encode(&block.body.state.post_state_hash),
-                    hex::encode(&computed_post_state),
-                ),
-            ));
-        }
+        Self::validate_replayed_post_state(
+            &block.block_hash,
+            &block.body.state.post_state_hash,
+            &computed_post_state,
+        )?;
         if let Some(mergeable_chs) = mergeable_chs {
             self.save_mergeable_channels(
                 &computed_post_state,
@@ -1123,6 +1119,24 @@ impl RuntimeManager {
             })?;
         }
         Ok(computed_post_state)
+    }
+
+    fn validate_replayed_post_state(
+        block_hash: &BlockHash,
+        declared_post_state: &StateHash,
+        computed_post_state: &StateHash,
+    ) -> Result<(), CasperError> {
+        if computed_post_state == declared_post_state {
+            return Ok(());
+        }
+        Err(CasperError::ReplayFailure(
+            ReplayFailure::effect_state_mismatch(
+                format!("block:{}", hex::encode(block_hash)),
+                "final-post-state".to_string(),
+                hex::encode(declared_post_state),
+                hex::encode(computed_post_state),
+            ),
+        ))
     }
 
     async fn verify_state_bound_admission_partition(
@@ -2101,6 +2115,8 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::{ExploratoryDeployConfig, ParentsPostStateCacheKey, ReplayLock, RuntimeManager};
+    use crate::rust::errors::CasperError;
+    use crate::rust::util::rholang::replay_failure::ReplayFailure;
 
     proptest! {
         #[test]
@@ -2148,6 +2164,49 @@ mod tests {
                 );
                 prop_assert_ne!(original, swapped);
             }
+        }
+
+        #[test]
+        fn equal_replay_post_state_is_accepted(
+            root in any::<[u8; 32]>(),
+            block_hash in any::<[u8; 32]>(),
+        ) {
+            let root = Bytes::copy_from_slice(&root);
+            let block_hash = Bytes::copy_from_slice(&block_hash);
+
+            prop_assert!(RuntimeManager::validate_replayed_post_state(
+                &block_hash,
+                &root,
+                &root,
+            ).is_ok());
+        }
+
+        #[test]
+        fn unequal_replay_post_state_is_rejected_before_publication(
+            declared in any::<[u8; 32]>(),
+            block_hash in any::<[u8; 32]>(),
+            index in 0usize..32,
+            difference in 1u8..=u8::MAX,
+        ) {
+            let declared = Bytes::copy_from_slice(&declared);
+            let mut computed = declared.to_vec();
+            computed[index] ^= difference;
+            let computed = Bytes::from(computed);
+            let block_hash = Bytes::copy_from_slice(&block_hash);
+
+            let result = RuntimeManager::validate_replayed_post_state(
+                &block_hash,
+                &declared,
+                &computed,
+            );
+            let rejected = matches!(
+                result,
+                Err(CasperError::ReplayFailure(ReplayFailure::EffectStateMismatch {
+                    boundary,
+                    ..
+                })) if boundary == "final-post-state"
+            );
+            prop_assert!(rejected);
         }
     }
 

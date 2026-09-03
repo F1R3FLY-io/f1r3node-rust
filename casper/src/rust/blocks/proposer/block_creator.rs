@@ -472,7 +472,7 @@ pub async fn prepare_user_deploys(
 /// snapshot has no parents (parentless fixtures and the pre-genesis shape) —
 /// there is no floor to derive, and every consumer's walk over zero parents
 /// is empty anyway.
-async fn derive_floor_context(
+pub(crate) async fn derive_floor_context(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
 ) -> Result<Option<FloorContext>, CasperError> {
@@ -2423,7 +2423,17 @@ fn in_scope_local_deploy_stats(
 /// Cost: O(1) when the buffer is empty (the common steady state); otherwise
 /// one canonical-won scan bounded below by `scan_floor` (never deeper than
 /// the deploy-lifespan window).
-fn rejected_buffer_has_recoverable_deploys(
+fn retry_candidate_is_ready(
+    clean_in_scope: bool,
+    future: bool,
+    time_expired: bool,
+    floor_window_expired: bool,
+    terminal: bool,
+) -> bool {
+    !terminal && !clean_in_scope && !future && !time_expired && !floor_window_expired
+}
+
+pub(crate) fn rejected_buffer_has_recoverable_deploys(
     casper_snapshot: &CasperSnapshot,
     block_number: i64,
     current_time_millis: i64,
@@ -2459,9 +2469,13 @@ fn rejected_buffer_has_recoverable_deploys(
         })
         .transpose()?
         .unwrap_or(earliest_block_number);
-    let candidates: Vec<_> = buffered_deploys
-        .iter()
-        .filter(|deploy| {
+    let mut candidates = Vec::new();
+    for deploy in &buffered_deploys {
+        let terminal = casper_snapshot
+            .dag
+            .deploy_terminal(deploy.typed_deploy_id())?
+            .is_some();
+        let eligible = {
             let rejected_in_scope = casper_snapshot
                 .rejected_in_scope
                 .contains(deploy.typed_deploy_id());
@@ -2469,12 +2483,18 @@ fn rejected_buffer_has_recoverable_deploys(
                 .deploys_in_scope
                 .contains(deploy.typed_deploy_id())
                 && !rejected_in_scope;
-            !clean_in_scope
-                && not_future_deploy(block_number, deploy.data())
-                && !deploy.data().is_expired_at(current_time_millis)
-                && not_expired_deploy(window_bound, deploy.data())
-        })
-        .collect();
+            retry_candidate_is_ready(
+                clean_in_scope,
+                !not_future_deploy(block_number, deploy.data()),
+                deploy.data().is_expired_at(current_time_millis),
+                !not_expired_deploy(window_bound, deploy.data()),
+                terminal,
+            )
+        };
+        if eligible {
+            candidates.push(deploy);
+        }
+    }
     if candidates.is_empty() {
         return Ok(false);
     }
@@ -2900,7 +2920,7 @@ fn compare_certified_contexts(
                 hash: materialized_floor.clone(),
                 block_number: dag.lookup_unsafe(materialized_floor)?.block_number,
             },
-            &mut crate::rust::finality::floor::IntroducedSigsMemo::new(),
+            &mut crate::rust::finality::floor::StateContainmentMemo::new(),
         )?)
     } else {
         None
@@ -3732,6 +3752,7 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
         deploys: mut processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         bonds: new_bonds,
         applied_from_scope,
@@ -3818,6 +3839,7 @@ async fn create_with_checkpoint_attempt_observer<O: CheckpointAttemptObserver>(
         processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         processed_system_deploys,
         block_bonds,
         applied_from_scope,
@@ -3905,6 +3927,7 @@ fn package_block(
     deploys: Vec<ProcessedDeploy>,
     rejected_deploys: Vec<RejectedDeploy>,
     rejected_state_effects: Vec<StateEffectId>,
+    applied_state_effects: Vec<StateEffectId>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     bonds_map: Vec<Bond>,
     applied_from_scope: Vec<Bytes>,
@@ -3932,6 +3955,7 @@ fn package_block(
         deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys,
         extra_bytes: Bytes::new(),
         applied_from_scope,
@@ -4182,6 +4206,7 @@ mod tests {
                     fault_tolerance_value: 1.0,
                     successful_state_effect_indices: Default::default(),
                     rejected_state_effects: Default::default(),
+                    applied_state_effects: Default::default(),
                     protocol_version: crate::rust::casper::CURRENT_CASPER_PROTOCOL_VERSION,
                     objective_equivocation_evidence_delta: Vec::new(),
                     sender_authority: None,
@@ -4238,6 +4263,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             None,
             Vec::new(),
             Vec::new(),
@@ -4271,9 +4297,7 @@ mod tests {
             predecessor_certificate_digest: zero.clone(),
             predecessor_certificate_block_hash: zero,
             target_floor_hash: target.clone(),
-            target_post_state_hash: models::rust::block_hash::BlockHashSerde(Bytes::from(
-                vec![0; models::rust::block_hash::LENGTH],
-            )),
+            target_post_state_hash: target.clone(),
             target_block_number: block_number.saturating_sub(1).max(0),
             fault_tolerance_numerator: 0,
             fault_tolerance_denominator: 1,
@@ -4793,6 +4817,32 @@ mod tests {
             );
             let expected = !on_self_chain || selected_recovery || !active_in_candidate_scope;
             proptest::prop_assert_eq!(disposition.should_package(), expected);
+        }
+
+        #[test]
+        fn retry_readiness_matches_all_exclusion_invariants(
+            clean_in_scope in proptest::bool::ANY,
+            future in proptest::bool::ANY,
+            time_expired in proptest::bool::ANY,
+            floor_window_expired in proptest::bool::ANY,
+            terminal in proptest::bool::ANY,
+        ) {
+            let ready = retry_candidate_is_ready(
+                clean_in_scope,
+                future,
+                time_expired,
+                floor_window_expired,
+                terminal,
+            );
+            proptest::prop_assert_eq!(
+                ready,
+                !(terminal || clean_in_scope || future || time_expired || floor_window_expired),
+            );
+            proptest::prop_assert!(!ready || !terminal);
+            proptest::prop_assert!(!ready || !clean_in_scope);
+            proptest::prop_assert!(!ready || !future);
+            proptest::prop_assert!(!ready || !time_expired);
+            proptest::prop_assert!(!ready || !floor_window_expired);
         }
     }
 

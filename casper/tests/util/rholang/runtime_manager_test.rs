@@ -3572,6 +3572,96 @@ async fn state_bound_settlement_charges_the_realized_branch_and_replays_identica
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_state_bound_body_rolls_back_writes_and_commits_its_charge() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let start_state = genesis_block.body.state.post_state_hash.clone();
+            let payer_key = genesis_context.genesis_vaults[0].0.clone();
+            let payer_address =
+                VaultAddress::from_public_key(&genesis_context.genesis_vaults[0].1).unwrap();
+            let initial_balance =
+                system_vault_balance(&runtime_manager, &start_state, &payer_address).await;
+            let deploy = construct_deploy::source_deploy(
+                r#"new x in { x!(1) | for(@value <- x){ @"failed-user-write"!(value + "not-a-number") } }"#.to_string(),
+                1,
+                None,
+                None,
+                Some(payer_key),
+                None,
+                Some(genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            let deploy =
+                crypto::rust::signatures::signed::Cosigned::from_single_signer(deploy).unwrap();
+            let block_data = BlockData {
+                time_stamp: 3,
+                block_number: 2,
+                sender: genesis_context.validator_pks()[0].clone(),
+                seq_num: 2,
+            };
+            let admission = runtime_manager
+                .certify_state_bound_admission(
+                    &start_state,
+                    vec![deploy],
+                    &block_data,
+                    &HashMap::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(admission.outcome().admitted.len(), 1);
+
+            let close = CloseBlockDeploy::new(
+                system_deploy_util::generate_close_deploy_random_seed_from_pk(
+                    block_data.sender.clone(),
+                    block_data.seq_num,
+                ),
+            );
+            let (play_post, processed, processed_system, _) = runtime_manager
+                .compute_state_with_bonds_cosigned_admitted(admission, vec![
+                    casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Close(close),
+                ])
+                .await
+                .unwrap();
+            assert_eq!(processed.len(), 1);
+            assert!(processed[0].is_failed);
+            assert!(processed[0].has_committed_state_effect());
+            assert_eq!(processed[0].pre_state_hash, start_state);
+            assert_ne!(processed[0].post_state_hash, processed[0].pre_state_hash);
+            assert!(processed[0].authority_funding_certificate.is_some());
+            assert!(processed[0].authority_cost_witness.is_some());
+            assert!(runtime_manager
+                .get_data(
+                    play_post.clone(),
+                    &new_gstring_par("failed-user-write".to_string(), Vec::new(), false),
+                )
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(
+                system_vault_balance(&runtime_manager, &play_post, &payer_address).await
+                    < initial_balance
+            );
+
+            let replay_pre_state = processed[0].pre_state_hash.clone();
+            let replay_post = runtime_manager
+                .replay_compute_state(
+                    &replay_pre_state,
+                    processed,
+                    processed_system,
+                    &block_data,
+                    None,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(play_post, replay_post);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn state_bound_execution_observes_the_authenticated_pre_reservation_vault_balance() {
     with_runtime_manager(
         |runtime_manager, genesis_context, genesis_block| async move {
@@ -4275,6 +4365,7 @@ async fn physical_rejection_rolls_back_before_later_state_bound_execution() {
                     deploys: processed,
                     rejected_deploys: Vec::new(),
                     rejected_state_effects: Vec::new(),
+                    applied_state_effects: Vec::new(),
                     system_deploys: processed_system,
                     extra_bytes: Vec::<u8>::new().into(),
                     applied_from_scope: Vec::new(),
@@ -6563,11 +6654,12 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                 "@0!(0) | for(@0 <- @0){ Nil }".to_string(),
                 Some(10000),
                 None,
-                None,
+                Some(construct_deploy::DEFAULT_SEC.clone()),
                 None,
                 Some(genesis_block.shard_id.clone()),
             )
             .unwrap();
+            let deploy = protocol_v6_envelope(deploy, construct_deploy::DEFAULT_SEC.clone());
             let block_data = BlockData {
                 time_stamp: deploy.data.time_stamp,
                 block_number: 1,
@@ -6575,7 +6667,7 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                 seq_num: 1,
             };
             let (valid_post_state, processed_deploys, processed_system_deploys) = runtime_manager
-                .compute_state(
+                .compute_state_cosigned(
                     &start_state,
                     vec![deploy],
                     Vec::new(),
@@ -6609,6 +6701,7 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
                     deploys: processed_deploys,
                     rejected_deploys: Vec::new(),
                     rejected_state_effects: Vec::new(),
+                    applied_state_effects: Vec::new(),
                     system_deploys: processed_system_deploys,
                     extra_bytes: Vec::<u8>::new().into(),
                     applied_from_scope: Vec::new(),
@@ -6635,12 +6728,15 @@ async fn rejected_block_final_state_does_not_publish_mergeable_evidence() {
             let result = runtime_manager
                 .replay_block_from_consensus_data(&start_state, &forged_block, None)
                 .await;
-            assert!(matches!(
-                result,
-                Err(CasperError::ReplayFailure(
-                    ReplayFailure::EffectStateMismatch { ref boundary, .. }
-                )) if boundary == "final-post-state"
-            ));
+            assert!(
+                matches!(
+                    result,
+                    Err(CasperError::ReplayFailure(
+                        ReplayFailure::EffectStateMismatch { ref boundary, .. }
+                    )) if boundary == "final-post-state"
+                ),
+                "forged replay result: {result:?}"
+            );
             assert!(!runtime_manager.has_mergeable_entry(&valid_block).unwrap());
             assert!(!runtime_manager.has_mergeable_entry(&forged_block).unwrap());
 
@@ -7649,7 +7745,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::proto_util;
     use casper::rust::util::rholang::interpreter_util::{
-        compute_deploys_checkpoint_legacy_signer, compute_parents_post_state,
+        compute_deploys_checkpoint_cosigned, compute_parents_post_state,
     };
     use dashmap::DashSet;
     use models::rust::block_hash::BlockHash;
@@ -7718,6 +7814,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
         shard_conf.max_parent_depth = 0;
+        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100);
         snapshot.on_chain_state = OnChainCasperState {
@@ -7755,20 +7852,23 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let base_ts = now_millis();
     let mut found = None;
     for attempt in 0..MAX_RACE_SEARCH_ATTEMPTS {
-        // Fresh timestamps ⇒ fresh RFC6979 signatures ⇒ fresh insertArbitrary
+        // Fresh timestamps ⇒ fresh protocol-v6 deploy IDs ⇒ fresh insertArbitrary
         // URIs (and a fresh vault address) for every attempt.
         let attempt_ts = base_ts + (2 * attempt) as i64;
         // --- Block A: bridge deploy from genesis (funded deployer A) ---
-        let deploy_a = construct_deploy::source_deploy(
-            bridge_rho.clone(),
-            attempt_ts,
-            None,
-            None,
-            Some(key_a.clone()),
-            None,
-            None,
-        )
-        .unwrap();
+        let deploy_a = protocol_v6_envelope(
+            construct_deploy::source_deploy(
+                bridge_rho.clone(),
+                attempt_ts,
+                None,
+                None,
+                Some(key_a.clone()),
+                None,
+                None,
+            )
+            .unwrap(),
+            key_a.clone(),
+        );
 
         let block_a_raw = block_implicits::get_random_block(
             Some(1),
@@ -7780,7 +7880,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             Some(now_millis()),
             Some(vec![genesis_hash.clone()]),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy_a)]),
+            Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_a)]),
             Some(Vec::new()),
             Some(genesis_bonds.clone()),
             Some(shard_name.clone()),
@@ -7788,25 +7888,20 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
 
         let parents_a = vec![genesis_block.clone()];
-        let deploys_a = proto_util::deploys(&block_a_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect();
         let snapshot_a = mk_snapshot(&genesis_hash);
-        let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) =
-            compute_deploys_checkpoint_legacy_signer(
-                &mut block_store,
-                parents_a,
-                deploys_a,
-                Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
-                &snapshot_a,
-                &rm,
-                BlockData::from_block(&block_a_raw),
-                HashMap::new(),
-                None,
-            )
-            .await
-            .expect("compute block A");
+        let (_, post_state_a, pd_a, _, sys_pd_a, bonds_a) = compute_deploys_checkpoint_cosigned(
+            &mut block_store,
+            parents_a,
+            vec![deploy_a],
+            Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+            &snapshot_a,
+            &rm,
+            BlockData::from_block(&block_a_raw),
+            HashMap::new(),
+            None,
+        )
+        .await
+        .expect("compute block A");
 
         assert!(
             !pd_a[0].is_failed,
@@ -7826,16 +7921,19 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         block_a.body.state.bonds = bonds_a;
 
         // --- Block B: second bridge deploy from genesis (sibling branch, funded deployer B) ---
-        let deploy_b = construct_deploy::source_deploy(
-            bridge_rho.clone(),
-            attempt_ts + 1,
-            None,
-            None,
-            Some(key_b.clone()),
-            None,
-            None,
-        )
-        .unwrap();
+        let deploy_b = protocol_v6_envelope(
+            construct_deploy::source_deploy(
+                bridge_rho.clone(),
+                attempt_ts + 1,
+                None,
+                None,
+                Some(key_b.clone()),
+                None,
+                None,
+            )
+            .unwrap(),
+            key_b.clone(),
+        );
 
         let block_b_raw = block_implicits::get_random_block(
             Some(1),
@@ -7847,7 +7945,7 @@ async fn concurrent_registry_inserts_should_not_conflict() {
             Some(now_millis()),
             Some(vec![genesis_hash.clone()]),
             Some(Vec::new()),
-            Some(vec![ProcessedDeploy::empty(deploy_b)]),
+            Some(vec![ProcessedDeploy::empty_from_cosigned(&deploy_b)]),
             Some(Vec::new()),
             Some(genesis_bonds.clone()),
             Some(shard_name.clone()),
@@ -7855,25 +7953,20 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
 
         let parents_b = vec![genesis_block.clone()];
-        let deploys_b = proto_util::deploys(&block_b_raw)
-            .into_iter()
-            .map(|d| d.deploy)
-            .collect();
         let snapshot_b = mk_snapshot(&genesis_hash);
-        let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) =
-            compute_deploys_checkpoint_legacy_signer(
-                &mut block_store,
-                parents_b,
-                deploys_b,
-                Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
-                &snapshot_b,
-                &rm,
-                BlockData::from_block(&block_b_raw),
-                HashMap::new(),
-                None,
-            )
-            .await
-            .expect("compute block B");
+        let (_, post_state_b, pd_b, _, sys_pd_b, bonds_b) = compute_deploys_checkpoint_cosigned(
+            &mut block_store,
+            parents_b,
+            vec![deploy_b],
+            Vec::<casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum>::new(),
+            &snapshot_b,
+            &rm,
+            BlockData::from_block(&block_b_raw),
+            HashMap::new(),
+            None,
+        )
+        .await
+        .expect("compute block B");
 
         assert!(
             !pd_b[0].is_failed,
@@ -8123,8 +8216,8 @@ async fn concurrent_registry_inserts_should_not_conflict() {
         );
 
         // Identify which deploy was rejected
-        let a_sig = hex::encode(&pd_a[0].deploy.sig[..8]);
-        let b_sig = hex::encode(&pd_b[0].deploy.sig[..8]);
+        let a_sig = hex::encode(&pd_a[0].deploy_id()[..8]);
+        let b_sig = hex::encode(&pd_b[0].deploy_id()[..8]);
         let a_rejected = rejected_sigs.contains(&a_sig);
         let b_rejected = rejected_sigs.contains(&b_sig);
         tracing::warn!(
@@ -8168,14 +8261,14 @@ async fn concurrent_registry_inserts_should_not_conflict() {
     let data_a = rm
         .get_data(
             merged_state.clone(),
-            &make_deploy_id_par(&pd_a[0].deploy.sig),
+            &make_deploy_id_par(pd_a[0].deploy_id()),
         )
         .await
         .unwrap();
     let data_b = rm
         .get_data(
             merged_state.clone(),
-            &make_deploy_id_par(&pd_b[0].deploy.sig),
+            &make_deploy_id_par(pd_b[0].deploy_id()),
         )
         .await
         .unwrap();

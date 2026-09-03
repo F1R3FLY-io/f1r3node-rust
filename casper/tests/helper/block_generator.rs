@@ -233,6 +233,26 @@ fn inject_state_hashes(
     updated_block.body.state.post_state_hash = post_state_hash;
     updated_block.body.deploys = processed_deploys;
     updated_block.body.system_deploys = processed_system_deploys;
+    if let Some(mut certificate) = updated_block.finalized_floor_certificate.clone() {
+        let floor = block_store
+            .get(&certificate.target_floor_hash.0)?
+            .ok_or_else(|| CasperError::BlockNotHeld(certificate.target_floor_hash.0.clone()))?;
+        certificate.target_post_state_hash.0 = floor.body.state.post_state_hash.clone();
+        certificate.target_block_number = floor.body.state.block_number;
+        let authority_context_digest = updated_block
+            .header
+            .finalized_floor
+            .as_ref()
+            .map(|commitment| commitment.authority_context_digest.clone())
+            .ok_or_else(|| {
+                CasperError::RuntimeError(
+                    "synthetic certified block is missing its floor commitment".to_string(),
+                )
+            })?;
+        updated_block.header.finalized_floor =
+            Some(certificate.commitment(authority_context_digest));
+        updated_block.finalized_floor_certificate = Some(certificate);
+    }
     block_store.put(block.block_hash.clone(), &updated_block)?;
     block_dag_storage.insert(
         &updated_block,
@@ -519,6 +539,7 @@ pub fn create_block_with_finalized_floor_certificate(
     bonds: Vec<Bond>,
     justifications: std::collections::HashMap<Validator, BlockHash>,
     certificate: FinalizationCertificate,
+    merge_facts: MergeFacts,
 ) -> BlockMessage {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -538,7 +559,7 @@ pub fn create_block_with_finalized_floor_certificate(
         None,
         None,
         None,
-        None,
+        Some(merge_facts),
         None,
         Some(certificate),
         now,

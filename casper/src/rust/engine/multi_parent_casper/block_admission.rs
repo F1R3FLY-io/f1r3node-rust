@@ -499,26 +499,48 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
             ))
         })?;
 
-    // Phase 9 (A-3): `deploy_storage` is `parking_lot::Mutex`.
-    let storage = this.deploy_storage.lock();
-    if !storage.non_empty().map_err(|e| {
-        CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
-    })? {
-        return Ok(false);
+    let fresh = {
+        let storage = this.deploy_storage.lock();
+        if storage.non_empty().map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to query deploy storage: {:?}", e))
+        })? {
+            storage.read_all_for_protocol(snapshot.on_chain_state.shard_conf.casper_version)?
+        } else {
+            HashSet::new()
+        }
+    };
+    for deploy in &fresh {
+        if stored_deploy_is_pending_for_snapshot(
+            snapshot,
+            latest_block_number,
+            earliest_block_number,
+            current_time_millis,
+            deploy,
+        ) && snapshot
+            .dag
+            .deploy_terminal(deploy.typed_deploy_id())?
+            .is_none()
+        {
+            return Ok(true);
+        }
     }
 
-    Ok(storage
-        .read_all_for_protocol(snapshot.on_chain_state.shard_conf.casper_version)?
-        .iter()
-        .any(|deploy| {
-            stored_deploy_is_pending_for_snapshot(
-                snapshot,
-                latest_block_number,
-                earliest_block_number,
-                current_time_millis,
-                deploy,
-            )
-        }))
+    let next_block_number = latest_block_number.checked_add(1).ok_or_else(|| {
+        CasperError::RuntimeError("latest block number cannot advance past i64::MAX".to_string())
+    })?;
+    let floor_context = crate::rust::blocks::proposer::block_creator::derive_floor_context(
+        snapshot,
+        &this.block_store,
+    )
+    .await?;
+    crate::rust::blocks::proposer::block_creator::rejected_buffer_has_recoverable_deploys(
+        snapshot,
+        next_block_number,
+        current_time_millis,
+        &this.rejected_deploy_buffer,
+        &this.block_store,
+        floor_context.as_ref(),
+    )
 }
 
 /// C15 / Arch-3: extracted from `Casper::list_pending_deploys` in

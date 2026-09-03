@@ -95,11 +95,18 @@ POST_FIX_CONFIGS=(
     deploy_recovery/MC_ProtocolVersionLifecycle
     deploy_recovery/MC_ProtocolVersionLifecycle_legacy_rejected
     deploy_recovery/MC_ProtocolVersionLifecycle_unsupported_rejected
+    'deploy_recovery/MC_FinalizedOccurrenceStatus|FinalizedOccurrenceStatus'
     'deploy_recovery/MC_StartupMetadataPreflight|StartupMetadataPreflight'
     'finalized_floor/MC_PendingDeployHeartbeatComposition|PendingDeployHeartbeatComposition'
+    'finalized_floor/MC_PendingWorkReadiness|PendingWorkReadiness'
+    'finalized_floor/MC_ExactFloorSelection|ExactFloorSelection'
+    'finalized_floor/MC_DeployLifecycleFinalization|DeployLifecycleFinalization'
+    'finalized_floor/MC_FinalizationSnapshotRetry|FinalizationSnapshotRetry'
+    'finalized_floor/MC_AppliedStateValidationPrecedence|AppliedStateValidationPrecedence'
     'finalized_floor/MC_PendingDeployHeartbeatComposition_ingress_safety|PendingDeployHeartbeatComposition'
     'finalized_floor/MC_ProposerAdmissionCoalescing|ProposerAdmissionCoalescing'
     'finalized_floor/MC_RecoveryCommitteeTransition|RecoveryCommitteeTransition'
+    'finalized_floor/MC_AuthorityFloorStateBinding|AuthorityFloorStateBinding'
     'finalized_floor/MC_ObjectiveEquivocation|ObjectiveEquivocation'
     'finalized_floor/MC_ObjectiveEvidenceAuthorization|ObjectiveEvidenceAuthorization'
     'finalized_floor/MC_RestoreHorizonCertifiedContext|RestoreHorizonCertifiedContext'

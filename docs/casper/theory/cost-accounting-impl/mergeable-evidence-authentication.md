@@ -1,7 +1,7 @@
 # Mergeable Evidence Authentication
 
-**Status:** Implemented protocol-4 consensus refinement; aggregate verification
-pending.
+**Status:** Implemented protocol-6 local replay refinement. The aggregate
+verification gate remains pending.
 
 **Scope:** Mergeable-channel evidence identity, publication, synchronization,
 lookup, deletion, and replay reconstruction.
@@ -32,6 +32,9 @@ block locally.
 | Canonical replay payload | Domain-separated Blake2b-256 over the executed user and system deployment witnesses after event-log canonicalization, including the genesis discriminator. |
 | Local replay | Execution by the receiving validator from the block's authenticated pre-state, followed by exact effect and final-state validation. |
 | Auxiliary cache | Reconstructible node-local storage that cannot authorize a block, vote, finalization certificate, or state transition. |
+| Declared post-state root | The state root that the signed block commits. |
+| Computed post-state root | The state root that local replay calculates from the authenticated pre-state and payload. |
+| Publication barrier | The exact-root check that must succeed before durable evidence and its cache entry become visible. |
 
 ## Why the legacy boundary was unsafe
 
@@ -126,6 +129,16 @@ authenticated block pre-state and publishes no entry. A replay-cache hit is
 usable only if the fully bound mergeable entry also exists; otherwise the node
 performs full replay. Garbage collection and explicit deletion derive the same
 complete key from the block, so one equivocation cannot remove another's entry.
+
+The publication barrier compares the computed and declared post-state roots.
+Only exact equality permits durable publication and cache publication.
+
+The durable evidence write occurs before the cache write. A concurrent reader
+can observe missing cache state and recover it from durable evidence. It cannot
+observe authoritative cache state that has no durable source.
+
+Post-state mismatch restores the authenticated pre-state. It leaves both stores
+unchanged. The result is objective replay rejection, not a retryable dependency.
 
 ## Network and initialization protocol
 
@@ -268,7 +281,7 @@ support, or finalized state.
 | Peer input cannot publish or overwrite evidence | Rocq peer-response theorems; TLA+/Apalache `LocallyDerivedEvidenceOnly` | initializer forged-response regression; running-node empty-response regression; Loom peer race |
 | Distinct insertions preserve both entries | Rocq `distinct_replays_preserve_both_entries` | Loom concurrent equivocation replay |
 | Opposite arrival orders converge | Rocq pointwise commutation theorem; TLA+/Apalache `OppositeArrivalOrdersConverge` | Loom two-validator opposite-order test |
-| Rejected final state publishes nothing | Rocq `rejected_replay_publishes_no_mergeable_evidence`; TLA+/Apalache evaluation early-publication refutation | forged final-state runtime-manager regression |
+| Post-state mismatch publishes no evidence | Rocq [`ReplayAdmissionPublication.v`](../../../../formal/rocq/cost_accounted_rho/theories/ReplayAdmissionPublication.v) proves `post_state_mismatch_preserves_durable_evidence_and_cache` and `changed_replay_publication_requires_post_state_equality`. TLA+, TLC, and Apalache check [`ReplayAdmissionPublication.tla`](../../../../formal/tlaplus/cost_accounted_rho/ReplayAdmissionPublication.tla), its safe configurations, and the early-publication control. | [Loom](../../../../formal/loom/cost_accounting/tests/loom_mergeable_evidence_authentication.rs) checks `only_authenticated_exact_root_replay_publishes_durable_and_cached_evidence`. The production regression [`rejected_block_final_state_does_not_publish_mergeable_evidence`](../../../../casper/tests/util/rholang/runtime_manager_test.rs) checks rollback and nonpublication. Runtime-manager properties vary equal and unequal post-state roots through the production validator. |
 | Finalized retirement deletes only one complete execution key, fails closed without an advancement witness, and recognizes advancement through every DAG parent edge | Rocq exact-deletion, idempotence, distinct-entry-preservation, deletion/insertion commutation, complete-retirement-guard, every-parent-path completeness, and main-spine-incompleteness theorems; TLA+/Apalache exact deletion, preservation, idempotence, `DeletionCommutesWithDistinctReplay`, `RetirementRequiresEverySafetyGuard`, and `SecondaryParentRetirementComplete`; legacy-delete, vacuous-latest, and main-spine-only expected refutations | Runtime-manager legacy-alias deletion test, exhaustive GC eligibility tests including the empty-latest case, diamond-DAG secondary-parent regression, storage-backed idempotent collection test, and Loom retirement/replay interleaving |
 
 The aggregate gates must compile and kernel-check the Rocq module, pass the safe

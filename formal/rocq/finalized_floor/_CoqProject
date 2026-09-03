@@ -68,6 +68,7 @@ theories/BootstrapReplayContext.v
 theories/LocalFaultDeferral.v
 theories/FundingAdmissionLifecycle.v
 theories/EffectCausalClosure.v
+theories/SettledEffectProbe.v
 theories/StateEffectProvenance.v
 theories/StateLineageFinality.v
 theories/CertifiedFloorPromotion.v
@@ -87,6 +88,7 @@ theories/ParallelValidatorConsensus.v
 theories/FinalizationAtomicity.v
 theories/ProposalFloorReadiness.v
 theories/FinalizerFloorMaterialization.v
+theories/DeployLifecycleFinalization.v
 theories/DivergentFinalizationHistories.v
 theories/MinorityForkRecovery.v
 theories/CandidateScopeDeployRehome.v

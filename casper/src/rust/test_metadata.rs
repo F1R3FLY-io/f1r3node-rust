@@ -11,7 +11,25 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 
 pub(crate) fn certify(metadata: BlockMetadata, generation: BondGeneration) -> BlockMetadata {
-    certify_with_decision(metadata, generation, CertifiedAdmissionDecision::Accepted)
+    certify_with_decision(
+        metadata,
+        generation,
+        CertifiedAdmissionDecision::Accepted,
+        Bytes::from(vec![0; block_hash::LENGTH]),
+    )
+}
+
+pub(crate) fn certify_with_floor_post_state(
+    metadata: BlockMetadata,
+    generation: BondGeneration,
+    floor_post_state_hash: Bytes,
+) -> BlockMetadata {
+    certify_with_decision(
+        metadata,
+        generation,
+        CertifiedAdmissionDecision::Accepted,
+        floor_post_state_hash,
+    )
 }
 
 pub(crate) fn certify_rejected(
@@ -23,6 +41,7 @@ pub(crate) fn certify_rejected(
         metadata,
         generation,
         CertifiedAdmissionDecision::Rejected(reason),
+        Bytes::from(vec![0; block_hash::LENGTH]),
     )
 }
 
@@ -30,8 +49,8 @@ fn certify_with_decision(
     mut metadata: BlockMetadata,
     generation: BondGeneration,
     decision: CertifiedAdmissionDecision,
+    pre_state_hash: Bytes,
 ) -> BlockMetadata {
-    let pre_state_hash = Bytes::from(vec![0; block_hash::LENGTH]);
     let mut block = BlockMessage {
         block_hash: metadata.block_hash.clone(),
         header: Header {
@@ -57,6 +76,7 @@ fn certify_with_decision(
             deploys: Vec::new(),
             rejected_deploys: Vec::new(),
             rejected_state_effects: Vec::new(),
+            applied_state_effects: Vec::new(),
             system_deploys: Vec::new(),
             extra_bytes: Bytes::new(),
             applied_from_scope: Vec::new(),

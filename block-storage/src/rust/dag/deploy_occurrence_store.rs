@@ -326,6 +326,18 @@ impl DeployOccurrenceStore {
         )))
     }
 
+    pub fn terminal_summary(
+        &self,
+        deploy_id: DeployIdV6,
+    ) -> Result<Option<TerminalOccurrenceSummary>, KvStoreError> {
+        let Some(encoded) = self.store.get_one(&terminal_summary_key(deploy_id))? else {
+            return Ok(None);
+        };
+        let summary: TerminalOccurrenceSummary = bincode::deserialize(&encoded)?;
+        validate_terminal_summary(&summary, deploy_id)?;
+        Ok(Some(summary))
+    }
+
     pub fn prepare_compaction(
         &self,
         deploy_id: DeployIdV6,
@@ -362,7 +374,7 @@ impl DeployOccurrenceStore {
             schema_version: DEPLOY_OCCURRENCE_SCHEMA_VERSION,
             deploy_id,
             terminal_state,
-            frozen_source: open.canonical.clone(),
+            canonical_at_compaction: open.canonical.clone(),
             current_representative: open.canonical.clone(),
             rejection_count,
             archive_count: open.archive_count,
@@ -697,7 +709,7 @@ fn validate_terminal_summary(
 ) -> Result<(), KvStoreError> {
     if summary.schema_version != DEPLOY_OCCURRENCE_SCHEMA_VERSION
         || summary.deploy_id != deploy_id
-        || summary.frozen_source.deploy_id != deploy_id
+        || summary.canonical_at_compaction.deploy_id != deploy_id
         || summary.current_representative.deploy_id != deploy_id
     {
         return Err(KvStoreError::SerializationError(
@@ -864,6 +876,13 @@ mod tests {
             occurrence_store.canonical(id).unwrap(),
             Some(BlockHash::copy_from_slice(&[6; 32]))
         );
+        let terminal = occurrence_store
+            .terminal_summary(id)
+            .unwrap()
+            .expect("terminal summary");
+        assert_eq!(terminal.canonical_at_compaction.source_block_hash, [6; 32]);
+        assert_eq!(terminal.finalized_floor_hash, [7; 32]);
+        assert_eq!(terminal.finalized_floor_height, 6);
         assert!(occurrence_store
             .raw_store()
             .scan_prefix(&active_prefix(id))

@@ -22,6 +22,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, FinalizationWitnessInputs,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
 use block_storage::rust::finality::{
     FinalizationEffectId, FinalizationEffectKind, FinalizationRecord,
 };
@@ -175,11 +176,15 @@ pub(crate) struct FinalizationContext {
     pub(crate) block_dag_storage: BlockDagKeyValueStorage,
     pub(crate) block_store: KeyValueBlockStore,
     pub(crate) deploy_storage: Arc<Mutex<KeyValueDeployStorage>>,
+    pub(crate) rejected_deploy_buffer: Arc<std::sync::Mutex<KeyValueRejectedDeployBuffer>>,
+    pub(crate) deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
     pub(crate) runtime_manager: Arc<RuntimeManager>,
     pub(crate) event_publisher: F1r3flyEvents,
     pub(crate) finalization_in_progress: Arc<AtomicU64>,
     pub(crate) enable_mergeable_channel_gc: bool,
     pub(crate) protocol_version: i64,
+    pub(crate) deploy_lifespan: i64,
+    pub(crate) max_parent_depth: i32,
     pub(crate) shard_id: String,
     pub(crate) ftt: FtThreshold,
     pub(crate) finalization_schedule: Arc<FinalizationSchedule>,
@@ -200,11 +205,15 @@ pub(crate) fn build_finalization_context<
         block_dag_storage: this.block_dag_storage.clone(),
         block_store: this.block_store.clone(),
         deploy_storage: this.deploy_storage.clone(),
+        rejected_deploy_buffer: this.rejected_deploy_buffer.clone(),
+        deploy_lifecycle: this.deploy_lifecycle.clone(),
         runtime_manager: this.runtime_manager.clone(),
         event_publisher: this.event_publisher.clone(),
         finalization_in_progress: this.finalization_in_progress.clone(),
         enable_mergeable_channel_gc: this.casper_shard_conf.enable_mergeable_channel_gc,
         protocol_version: this.casper_shard_conf.casper_version,
+        deploy_lifespan: this.casper_shard_conf.deploy_lifespan,
+        max_parent_depth: this.casper_shard_conf.max_parent_depth,
         shard_id: this.casper_shard_conf.shard_name.clone(),
         // Exact ppm from the shard conf — the source of truth for the DECISION.
         ftt: FtThreshold::from_ppm(this.casper_shard_conf.fault_tolerance_threshold_ppm),
@@ -348,15 +357,6 @@ async fn apply_finalization_effects(
     });
     let dag = ctx.block_dag_storage.get_representation()?;
     for block in blocks {
-        let mut terminal_deploy_signatures = Vec::new();
-        for processed in &block.body.deploys {
-            let deploy_id = processed
-                .deploy_id_for_protocol(block.header.version)
-                .map_err(KvStoreError::InvalidArgument)?;
-            if dag.deploy_terminal(&deploy_id)?.is_some() {
-                terminal_deploy_signatures.push(deploy_id);
-            }
-        }
         let deploy_effect = effect_id(
             revision,
             block.block_hash.clone(),
@@ -366,18 +366,63 @@ async fn apply_finalization_effects(
             .block_dag_storage
             .finalization_effect_completed(&deploy_effect)?
         {
-            let mut deploy_storage = ctx.deploy_storage.lock();
-            for signature in &terminal_deploy_signatures {
-                match signature {
-                    models::rust::deploy_id::DeployLookupId::Legacy(signature) => {
-                        deploy_storage.remove_by_sig(signature.as_bytes())?;
-                    }
-                    models::rust::deploy_id::DeployLookupId::V6(deploy_id) => {
-                        deploy_storage.remove_envelope_by_id(deploy_id.as_ref())?;
+            ctx.deploy_lifecycle
+                .observe_block(
+                    &dag,
+                    &ctx.block_store,
+                    &block,
+                    ctx.deploy_lifespan,
+                    crate::rust::finality::deploy_lifecycle::citability_horizon(
+                        ctx.max_parent_depth,
+                    ),
+                    revision,
+                )
+                .await
+                .map_err(|error| {
+                    KvStoreError::IoError(format!(
+                        "deploy lifecycle finalization effect failed: {error}"
+                    ))
+                })?;
+            let mut terminal_deploy_signatures = HashSet::new();
+            {
+                let deploy_storage = ctx.deploy_storage.lock();
+                for deploy in deploy_storage.read_all_for_protocol(ctx.protocol_version)? {
+                    if dag.deploy_terminal(deploy.typed_deploy_id())?.is_some() {
+                        terminal_deploy_signatures.insert(deploy.typed_deploy_id().clone());
                     }
                 }
             }
-            drop(deploy_storage);
+            {
+                let rejected = ctx
+                    .rejected_deploy_buffer
+                    .lock()
+                    .map_err(|error| KvStoreError::LockError(error.to_string()))?;
+                for deploy in rejected.read_all()? {
+                    if dag.deploy_terminal(deploy.typed_deploy_id())?.is_some() {
+                        terminal_deploy_signatures.insert(deploy.typed_deploy_id().clone());
+                    }
+                }
+            }
+            {
+                let mut deploy_storage = ctx.deploy_storage.lock();
+                for signature in &terminal_deploy_signatures {
+                    match signature {
+                        models::rust::deploy_id::DeployLookupId::Legacy(signature) => {
+                            deploy_storage.remove_by_sig(signature.as_bytes())?;
+                        }
+                        models::rust::deploy_id::DeployLookupId::V6(deploy_id) => {
+                            deploy_storage.remove_envelope_by_id(deploy_id.as_ref())?;
+                        }
+                    }
+                }
+            }
+            let mut rejected = ctx
+                .rejected_deploy_buffer
+                .lock()
+                .map_err(|error| KvStoreError::LockError(error.to_string()))?;
+            for signature in &terminal_deploy_signatures {
+                rejected.remove_by_id(signature)?;
+            }
             ctx.block_dag_storage
                 .record_finalization_effect(deploy_effect)?;
         }

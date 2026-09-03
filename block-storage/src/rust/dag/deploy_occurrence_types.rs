@@ -8,6 +8,17 @@ use super::deploy_lifecycle_types::TerminalState;
 pub const DEPLOY_OCCURRENCE_SCHEMA_VERSION: u32 = 1;
 pub const DEPLOY_OCCURRENCE_PROTOCOL_VERSION: i64 = 6;
 
+pub fn occurrence_rank_cmp(
+    left_height: i64,
+    left_hash: &[u8],
+    right_height: i64,
+    right_hash: &[u8],
+) -> Ordering {
+    left_height
+        .cmp(&right_height)
+        .then_with(|| right_hash.cmp(left_hash))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OccurrenceAdmissionMode {
     Normal,
@@ -33,9 +44,12 @@ pub struct DeployOccurrence {
 
 impl DeployOccurrence {
     pub fn rank_cmp(&self, other: &Self) -> Ordering {
-        self.source_block_height
-            .cmp(&other.source_block_height)
-            .then_with(|| other.source_block_hash.cmp(&self.source_block_hash))
+        occurrence_rank_cmp(
+            self.source_block_height,
+            &self.source_block_hash,
+            other.source_block_height,
+            &other.source_block_hash,
+        )
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -103,7 +117,7 @@ pub struct TerminalOccurrenceSummary {
     pub schema_version: u32,
     pub deploy_id: DeployIdV6,
     pub terminal_state: TerminalState,
-    pub frozen_source: DeployOccurrence,
+    pub canonical_at_compaction: DeployOccurrence,
     pub current_representative: DeployOccurrence,
     pub rejection_count: u32,
     pub archive_count: u64,
@@ -194,6 +208,26 @@ mod tests {
                 _ => occurrence.sender_authority_digest = bytes,
             }
             prop_assert!(occurrence.validate().is_err());
+        }
+
+        #[test]
+        fn occurrence_ranking_is_order_independent(
+            left_height in 0_i64..=i64::MAX,
+            right_height in 0_i64..=i64::MAX,
+            left_hash in any::<[u8; 32]>(),
+            right_hash in any::<[u8; 32]>(),
+        ) {
+            let preferred = |left: (i64, [u8; 32]), right: (i64, [u8; 32])| {
+                if occurrence_rank_cmp(left.0, &left.1, right.0, &right.1).is_lt() {
+                    right
+                } else {
+                    left
+                }
+            };
+            let left = (left_height, left_hash);
+            let right = (right_height, right_hash);
+
+            prop_assert_eq!(preferred(left, right), preferred(right, left));
         }
     }
 }

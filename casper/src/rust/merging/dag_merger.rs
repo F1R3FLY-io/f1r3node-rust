@@ -37,6 +37,7 @@ pub struct MergeResult {
     pub post_state: Blake2b256Hash,
     pub rejected_deploys: Vec<RejectedDeploy>,
     pub rejected_state_effects: Vec<StateEffectId>,
+    pub applied_state_effects: Vec<StateEffectId>,
     pub rejected_slash_occurrences: Vec<(Bytes, BlockHash)>,
     pub applied_from_scope: HashSet<Bytes>,
     pub merge_base: Option<BlockHash>,
@@ -2262,6 +2263,22 @@ pub fn merge(
         .filter(|deploy| !is_system_deploy_id(&deploy.deploy_id))
         .map(|deploy| deploy.deploy_id.clone())
         .collect();
+    let applied_state_effects = resolved
+        .to_merge
+        .iter()
+        .flat_map(|branch| branch.0.iter())
+        .flat_map(|chain| {
+            chain
+                .effect_indices
+                .iter()
+                .map(|execution_index| StateEffectId {
+                    source_block_hash: chain.source_block_hash.clone(),
+                    execution_index: *execution_index,
+                })
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
 
     // Channels where MORE THAN ONE accepted chain contributes datum adds:
     // only these can exhibit cross-writer accumulation, so only these are
@@ -2430,6 +2447,7 @@ pub fn merge(
         post_state: new_state,
         rejected_deploys: rejected_user_deploys,
         rejected_state_effects,
+        applied_state_effects,
         rejected_slash_occurrences: rejected_slashes,
         applied_from_scope: applied_user_sigs,
         merge_base: Some(base.clone()),

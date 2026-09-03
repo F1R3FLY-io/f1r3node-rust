@@ -17,10 +17,11 @@ use crate::casper::{
 use crate::rust::bond_generation::BondGeneration;
 use crate::rust::{block_hash, validator};
 
-pub const ADMISSION_SCHEMA_VERSION: u32 = 12;
+pub const ADMISSION_SCHEMA_VERSION: u32 = 13;
 pub const CERTIFIED_ADMISSION_PROTOCOL_VERSION: i64 = 6;
 pub const STATE_EFFECT_PROVENANCE_PROTOCOL_VERSION: i64 = 3;
-pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v12|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2|finalized-floor:durable-parent-effective-floor-v1|certificate-cache:candidate-transparent-v1|candidate-authority-context:signed-exact-v1|certificate-sidecar:manifest-digests-and-counts-v2";
+pub const APPLIED_STATE_EFFECTS_PROTOCOL_VERSION: i64 = 6;
+pub const ADMISSION_RULESET_MANIFEST: &str = "f1r3fly-certified-admission-v13|0:accepted|1:invalid-format|2:invalid-signature|3:invalid-sender|4:invalid-version|5:invalid-timestamp|6:deploy-not-signed|7:invalid-block-number|8:invalid-repeat-deploy|9:invalid-parents|10:invalid-follows|11:invalid-sequence-number|12:invalid-shard-id|13:justification-regression|14:neglected-invalid-block|15:neglected-equivocation|16:invalid-transaction|17:invalid-bonds-cache|18:invalid-equivocation-evidence|19:invalid-block-hash|20:unauthorized-slash-deploy|21:invalid-rejected-deploy|22:contains-expired-deploy|23:contains-time-expired-deploy|24:contains-future-deploy|25:not-of-interest|26:low-deploy-cost|finalization-ledger:atomic-rooted-hash-chain-v2|finalized-floor:durable-exact-state-occurrence-v2|certificate-cache:exact-state-candidate-v2|candidate-authority-context:signed-exact-v1|certificate-sidecar:manifest-digests-and-counts-v2";
 
 pub fn admission_ruleset_digest() -> Bytes {
     Blake2b256::hash(ADMISSION_RULESET_MANIFEST.as_bytes().to_vec()).into()
@@ -694,8 +695,11 @@ pub struct BlockMetadata {
     pub directly_finalized: bool,
     pub finalized: bool,
     pub fault_tolerance_value: f32,
+    /// The wire name is historical. This set contains every committed state
+    /// effect, including settlement after a failed user-body execution.
     pub successful_state_effect_indices: BTreeSet<u32>,
     pub rejected_state_effects: BTreeSet<StateEffectId>,
+    pub applied_state_effects: BTreeSet<StateEffectId>,
     pub protocol_version: i64,
     pub objective_equivocation_evidence_delta: Vec<ObjectiveEquivocationEvidence>,
     pub sender_authority: Option<CertifiedSenderAuthority>,
@@ -720,6 +724,12 @@ pub enum BlockMetadataError {
     InvalidActiveValidatorSet,
     #[error("block metadata post-state hash must be {expected} bytes, got {actual}")]
     InvalidPostStateHash { expected: usize, actual: usize },
+    #[error("block metadata contains malformed state-effect provenance: {0}")]
+    InvalidStateEffectProvenance(String),
+    #[error("block metadata applies and rejects the same state effect")]
+    ConflictingStateEffectDisposition,
+    #[error("block metadata merge base must be empty or 32 bytes, got {0}")]
+    InvalidMergeBase(usize),
     #[error("block metadata contains malformed objective evidence: {0}")]
     InvalidObjectiveEvidence(String),
     #[error("block metadata contains an invalid authority certificate: {0}")]
@@ -827,6 +837,7 @@ impl PartialEq for BlockMetadata {
             && self.finalized == other.finalized
             && self.successful_state_effect_indices == other.successful_state_effect_indices
             && self.rejected_state_effects == other.rejected_state_effects
+            && self.applied_state_effects == other.applied_state_effects
             && self.protocol_version == other.protocol_version
             && self.objective_equivocation_evidence_delta
                 == other.objective_equivocation_evidence_delta
@@ -863,6 +874,7 @@ impl std::hash::Hash for BlockMetadata {
         self.finalized.hash(state);
         self.successful_state_effect_indices.hash(state);
         self.rejected_state_effects.hash(state);
+        self.applied_state_effects.hash(state);
         self.protocol_version.hash(state);
         self.objective_equivocation_evidence_delta.hash(state);
         self.sender_authority.hash(state);
@@ -875,6 +887,20 @@ impl std::hash::Hash for BlockMetadata {
 
 impl BlockMetadata {
     pub fn from_proto(proto: BlockMetadataInternal) -> Result<Self, BlockMetadataError> {
+        let rejected_state_effects = proto
+            .rejected_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(&rejected_state_effects, "rejectedStateEffects")
+            .map_err(BlockMetadataError::InvalidStateEffectProvenance)?;
+        let applied_state_effects = proto
+            .applied_state_effects
+            .into_iter()
+            .map(StateEffectId::from_proto)
+            .collect::<Vec<_>>();
+        StateEffectId::validate_canonical_sequence(&applied_state_effects, "appliedStateEffects")
+            .map_err(BlockMetadataError::InvalidStateEffectProvenance)?;
         let bond_generation_map = proto
             .bond_generations
             .into_iter()
@@ -950,11 +976,8 @@ impl BlockMetadata {
                 .successful_state_effect_indices
                 .into_iter()
                 .collect(),
-            rejected_state_effects: proto
-                .rejected_state_effects
-                .into_iter()
-                .map(StateEffectId::from_proto)
-                .collect(),
+            rejected_state_effects: rejected_state_effects.into_iter().collect(),
+            applied_state_effects: applied_state_effects.into_iter().collect(),
             protocol_version: proto.protocol_version,
             objective_equivocation_evidence_delta,
             sender_authority,
@@ -1008,6 +1031,11 @@ impl BlockMetadata {
                 .iter()
                 .map(StateEffectId::to_proto)
                 .collect(),
+            applied_state_effects: self
+                .applied_state_effects
+                .iter()
+                .map(StateEffectId::to_proto)
+                .collect(),
             protocol_version: self.protocol_version,
             sender_bond_generation: self.sender_bond_generation().map(BondGeneration::get),
             objective_equivocation_evidence_delta: self
@@ -1058,6 +1086,32 @@ impl BlockMetadata {
             .collect()
     }
 
+    fn committed_state_effect_indices(block: &BlockMessage) -> BTreeSet<u32> {
+        let mut execution_index = 0usize;
+        let mut indices = BTreeSet::new();
+        for deploy in &block.body.deploys {
+            if deploy.is_admission_rejected() {
+                continue;
+            }
+            if deploy.has_committed_state_effect() {
+                indices.insert(
+                    u32::try_from(execution_index).expect("block deploy index must fit in u32"),
+                );
+            }
+            execution_index += 1;
+        }
+        for deploy in &block.body.system_deploys {
+            if matches!(deploy, ProcessedSystemDeploy::Succeeded { .. }) {
+                indices.insert(
+                    u32::try_from(execution_index)
+                        .expect("block system deploy index must fit in u32"),
+                );
+            }
+            execution_index += 1;
+        }
+        indices
+    }
+
     pub fn from_block(
         b: &BlockMessage,
         directly_finalized: Option<bool>,
@@ -1086,28 +1140,9 @@ impl BlockMetadata {
             directly_finalized,
             finalized,
             fault_tolerance_value: 0.0,
-            successful_state_effect_indices: b
-                .body
-                .deploys
-                .iter()
-                .enumerate()
-                .filter(|(_, deploy)| !deploy.is_failed)
-                .map(|(index, _)| u32::try_from(index).expect("block deploy index must fit in u32"))
-                .chain(
-                    b.body
-                        .system_deploys
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, deploy)| {
-                            matches!(deploy, ProcessedSystemDeploy::Succeeded { .. })
-                        })
-                        .map(|(index, _)| {
-                            u32::try_from(b.body.deploys.len() + index)
-                                .expect("block system deploy index must fit in u32")
-                        }),
-                )
-                .collect(),
+            successful_state_effect_indices: Self::committed_state_effect_indices(b),
             rejected_state_effects: b.body.rejected_state_effects.iter().cloned().collect(),
+            applied_state_effects: b.body.applied_state_effects.iter().cloned().collect(),
             protocol_version: b.header.version,
             objective_equivocation_evidence_delta: b
                 .header
@@ -1183,6 +1218,15 @@ impl BlockMetadata {
                 actual: self.post_state_hash.len(),
             });
         }
+        if !self.merge_base.is_empty() && self.merge_base.len() != block_hash::LENGTH {
+            return Err(BlockMetadataError::InvalidMergeBase(self.merge_base.len()));
+        }
+        if !self
+            .rejected_state_effects
+            .is_disjoint(&self.applied_state_effects)
+        {
+            return Err(BlockMetadataError::ConflictingStateEffectDisposition);
+        }
         if self.admission_schema_version != ADMISSION_SCHEMA_VERSION {
             return Err(BlockMetadataError::UnsupportedAdmissionSchema(
                 self.admission_schema_version,
@@ -1252,6 +1296,7 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::rhoapi::PCost;
@@ -1322,6 +1367,7 @@ mod tests {
                 deploys: Vec::new(),
                 rejected_deploys: Vec::new(),
                 rejected_state_effects: Vec::new(),
+                applied_state_effects: Vec::new(),
                 system_deploys: Vec::new(),
                 extra_bytes: Bytes::new(),
                 applied_from_scope: Vec::new(),
@@ -1353,11 +1399,18 @@ mod tests {
     }
 
     #[test]
-    fn block_metadata_records_only_successful_execution_effects_and_round_trips() {
+    fn block_metadata_records_all_committed_effects_in_execution_order() {
         let rejected = StateEffectId {
-            source_block_hash: Bytes::from_static(b"source"),
+            source_block_hash: Bytes::from(vec![5; block_hash::LENGTH]),
             execution_index: 4,
         };
+        let successful = processed_deploy(false);
+        let mut admission_rejected = processed_deploy(true);
+        admission_rejected.admission_status = DeployAdmissionStatus::Rejected;
+        let legacy_failure = processed_deploy(true);
+        let mut settled_failure = processed_deploy(true);
+        settled_failure.authority_funding_certificate = Some(Default::default());
+        settled_failure.authority_cost_witness = Some(Default::default());
         let block = BlockMessage {
             block_hash: Bytes::from(vec![1; block_hash::LENGTH]),
             header: Header {
@@ -1383,9 +1436,15 @@ mod tests {
                     active_validators: Vec::new(),
                     block_number: 9,
                 },
-                deploys: vec![processed_deploy(false), processed_deploy(true)],
+                deploys: vec![
+                    successful,
+                    admission_rejected,
+                    legacy_failure,
+                    settled_failure,
+                ],
                 rejected_deploys: Vec::new(),
                 rejected_state_effects: vec![rejected.clone()],
+                applied_state_effects: Vec::new(),
                 system_deploys: vec![
                     ProcessedSystemDeploy::Succeeded {
                         event_list: Vec::new(),
@@ -1426,7 +1485,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             metadata.successful_state_effect_indices,
-            BTreeSet::from([0, 2])
+            BTreeSet::from([0, 2, 3])
         );
         assert_eq!(metadata.rejected_state_effects, BTreeSet::from([rejected]));
         assert_eq!(
@@ -1437,6 +1496,83 @@ mod tests {
             BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
             metadata
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn committed_effect_projection_compacts_rejections_and_retains_settled_failures(
+            dispositions in proptest::collection::vec(
+                (any::<bool>(), any::<bool>(), any::<bool>()),
+                0..48,
+            ),
+            system_successes in proptest::collection::vec(any::<bool>(), 0..16),
+        ) {
+            let template = processed_deploy(false);
+            let mut block = authority_block();
+            block.body.deploys = dispositions
+                .iter()
+                .map(|(admission_rejected, failed, settled)| {
+                    let mut deploy = template.clone();
+                    deploy.is_failed = *failed || *admission_rejected;
+                    deploy.admission_status = if *admission_rejected {
+                        DeployAdmissionStatus::Rejected
+                    } else {
+                        DeployAdmissionStatus::Executed
+                    };
+                    if *settled {
+                        deploy.authority_funding_certificate = Some(Default::default());
+                        deploy.authority_cost_witness = Some(Default::default());
+                    }
+                    deploy
+                })
+                .collect();
+            block.body.system_deploys = system_successes
+                .iter()
+                .map(|success| {
+                    if *success {
+                        ProcessedSystemDeploy::Succeeded {
+                            event_list: Vec::new(),
+                            system_deploy: SystemDeployData::Empty,
+                            pre_state_hash: Bytes::new(),
+                            post_state_hash: Bytes::new(),
+                        }
+                    } else {
+                        ProcessedSystemDeploy::Failed {
+                            event_list: Vec::new(),
+                            error_msg: "failed".to_string(),
+                            pre_state_hash: Bytes::new(),
+                            post_state_hash: Bytes::new(),
+                        }
+                    }
+                })
+                .collect();
+
+            let mut expected = BTreeSet::new();
+            let mut execution_index = 0u32;
+            for (admission_rejected, failed, settled) in &dispositions {
+                if *admission_rejected {
+                    continue;
+                }
+                if !*failed || *settled {
+                    expected.insert(execution_index);
+                }
+                execution_index += 1;
+            }
+            for success in &system_successes {
+                if *success {
+                    expected.insert(execution_index);
+                }
+                execution_index += 1;
+            }
+
+            prop_assert_eq!(
+                BlockMetadata::from_block(&block, None, None)
+                    .successful_state_effect_indices,
+                expected,
+            );
+        }
     }
 
     #[test]
@@ -1749,8 +1885,12 @@ mod round_trip_tests {
             fault_tolerance_value: 0.5,
             successful_state_effect_indices: BTreeSet::from([0, 2]),
             rejected_state_effects: BTreeSet::from([StateEffectId {
-                source_block_hash: Bytes::from_static(b"source"),
+                source_block_hash: Bytes::from(vec![3; block_hash::LENGTH]),
                 execution_index: 1,
+            }]),
+            applied_state_effects: BTreeSet::from([StateEffectId {
+                source_block_hash: Bytes::from(vec![4; block_hash::LENGTH]),
+                execution_index: 3,
             }]),
             protocol_version: CERTIFIED_ADMISSION_PROTOCOL_VERSION,
             objective_equivocation_evidence_delta: Vec::new(),
@@ -1758,7 +1898,7 @@ mod round_trip_tests {
             finalized_floor_commitment: None,
             admission_schema_version: ADMISSION_SCHEMA_VERSION,
             approved_genesis: true,
-            merge_base: Bytes::from_static(b"base"),
+            merge_base: Bytes::from(vec![5; block_hash::LENGTH]),
         }
     }
 
@@ -1787,6 +1927,60 @@ mod round_trip_tests {
         assert_eq!(
             round_tripped.fault_tolerance_value,
             metadata.fault_tolerance_value
+        );
+    }
+
+    #[test]
+    fn proto_rejects_noncanonical_applied_state_effects() {
+        let mut unordered = sample().to_proto();
+        let first = unordered.applied_state_effects[0].clone();
+        let second = StateEffectId {
+            source_block_hash: Bytes::from(vec![6; block_hash::LENGTH]),
+            execution_index: 0,
+        }
+        .to_proto();
+        unordered.applied_state_effects = vec![second, first.clone()];
+        assert!(matches!(
+            BlockMetadata::from_proto(unordered),
+            Err(BlockMetadataError::InvalidStateEffectProvenance(message))
+                if message.contains("strictly ordered")
+        ));
+
+        let mut duplicate = sample().to_proto();
+        duplicate.applied_state_effects = vec![first.clone(), first];
+        assert!(matches!(
+            BlockMetadata::from_proto(duplicate),
+            Err(BlockMetadataError::InvalidStateEffectProvenance(message))
+                if message.contains("duplicate")
+        ));
+
+        let mut malformed = sample().to_proto();
+        malformed.applied_state_effects = vec![StateEffectId {
+            source_block_hash: Bytes::from_static(b"short"),
+            execution_index: 0,
+        }
+        .to_proto()];
+        assert!(matches!(
+            BlockMetadata::from_proto(malformed),
+            Err(BlockMetadataError::InvalidStateEffectProvenance(message))
+                if message.contains("expected 32 bytes")
+        ));
+    }
+
+    #[test]
+    fn proto_rejects_conflicting_effect_dispositions_and_malformed_state_parent() {
+        let mut conflicting = sample().to_proto();
+        conflicting.applied_state_effects = conflicting.rejected_state_effects.clone();
+        assert_eq!(
+            BlockMetadata::from_proto(conflicting),
+            Err(BlockMetadataError::ConflictingStateEffectDisposition)
+        );
+
+        let mut malformed_parent = sample().to_proto();
+        malformed_parent.merge_base = Bytes::from_static(b"short");
+        assert_eq!(
+            BlockMetadata::from_proto(malformed_parent),
+            Err(BlockMetadataError::InvalidMergeBase(5))
         );
     }
 
@@ -1835,6 +2029,14 @@ mod round_trip_tests {
         assert_eq!(metadata.block_number, block.body.state.block_number);
         assert_eq!(metadata.sequence_number, block.seq_num);
         assert_eq!(metadata.merge_base, block.body.merge_base);
+        assert_eq!(
+            metadata.applied_state_effects,
+            block.body.applied_state_effects.iter().cloned().collect()
+        );
+        assert_eq!(
+            metadata.rejected_state_effects,
+            block.body.rejected_state_effects.iter().cloned().collect()
+        );
         assert!(!metadata.directly_finalized);
         assert!(!metadata.finalized);
         assert_eq!(metadata.fault_tolerance_value, 0.0);

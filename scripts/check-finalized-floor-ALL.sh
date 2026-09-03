@@ -44,7 +44,7 @@
 # Companion doc: docs/casper/theory/finalized-floor/finalized-floor-verification.md
 #
 # Env knobs:
-#   ROCQ_MEMMAX=16G   systemd MemoryMax for the Rocq build (default 16G)
+#   ROCQ_MEMMAX=8G    systemd MemoryMax for the Rocq build (default 8G)
 #   RUN_SOAK=1        also run the long-running 400+-block Rust soak
 #   RUN_WOLFRAM=1     opt into the licensed Wolfram exploration tier
 #   PENDING_HEARTBEAT_APALACHE_SAFE_LENGTH=6
@@ -100,7 +100,7 @@ ROCQ_DIR="$REPO_ROOT/formal/rocq/finalized_floor"
 TLA_DIR="$REPO_ROOT/formal/tlaplus/finalized_floor"
 DEPLOY_RECOVERY_TLA_DIR="$REPO_ROOT/formal/tlaplus/deploy_recovery"
 WL_DIR="$REPO_ROOT/formal/wolfram/finalized_floor"
-ROCQ_MEMMAX="${ROCQ_MEMMAX:-16G}"
+ROCQ_MEMMAX="${ROCQ_MEMMAX:-8G}"
 LOG_DIR="$REPO_ROOT/target/verification/finalized-floor"
 mkdir -p "$LOG_DIR"
 if command -v flock >/dev/null 2>&1; then
@@ -142,7 +142,7 @@ fi
 # --- memory-capped runner (systemd-run scope, else prlimit, else bare) ----------
 capped() {
   if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope true >/dev/null 2>&1; then
-    systemd-run --user --scope -p "MemoryMax=$ROCQ_MEMMAX" -p CPUQuota=1800% -p TasksMax=200 "$@"
+    systemd-run --user --scope --expand-environment=no -p "MemoryMax=$ROCQ_MEMMAX" -p MemorySwapMax=0 -p CPUQuota=1800% -p TasksMax=200 "$@"
   else
     "$@"
   fi
@@ -154,7 +154,7 @@ if command -v coqc >/dev/null 2>&1 || [[ -x "$HOME/.opam/default/bin/coqc" ]]; t
   eval "$(opam env 2>/dev/null)" 2>/dev/null || true
   ( cd "$ROCQ_DIR" && coq_makefile -f _CoqProject -o Makefile ) >/dev/null 2>&1
   if capped make -C "$ROCQ_DIR" -j1 >"$LOG_DIR/ff_rocq_build.log" 2>&1; then
-    pass "Rocq build (Foundation, CliqueOracle, AccountableSafety, Floor, GuardBridge, Merge, OccurrenceDisposition, FinalizedOccurrenceStatus, Recovery, MergeRecoveryCoherence, AdmissionEffectAlignment, RejectionReasonConfluence, ProtocolVersionLifecycle, ProtocolActivationCoherence, Selection, IntegerAdd, FtExact, FinalityThresholdAlignment, StateEffectProvenance, CertifiedFloorPromotion, CommitteeTransition, ObjectiveEquivocation, ProposalFloorReadiness, FinalizerFloorMaterialization, MainTheorem)"
+    pass "Rocq build (Foundation, CliqueOracle, AccountableSafety, Floor, GuardBridge, Merge, OccurrenceDisposition, FinalizedOccurrenceStatus, Recovery, MergeRecoveryCoherence, AdmissionEffectAlignment, RejectionReasonConfluence, ProtocolVersionLifecycle, ProtocolActivationCoherence, Selection, IntegerAdd, FtExact, FinalityThresholdAlignment, SettledEffectProbe, StateEffectProvenance, CertifiedFloorPromotion, CommitteeTransition, ObjectiveEquivocation, ProposalFloorReadiness, FinalizerFloorMaterialization, MainTheorem)"
     # Coq derives the module name from the file's basename, so it must be a valid
     # identifier (no dots) — use a fixed name inside a scratch dir.
     tmpd=$(mktemp -d "$LOG_DIR/rocq-gate.XXXXXX")
@@ -179,6 +179,8 @@ From FinalizedFloor Require Import CertifiedObjectiveEquivocation.
 From FinalizedFloor Require Import CertifiedCausalAdmission.
 From FinalizedFloor Require Import ProposalFloorReadiness.
 From FinalizedFloor Require Import FinalizerFloorMaterialization.
+From FinalizedFloor Require Import DeployLifecycleFinalization.
+From FinalizedFloor Require Import SettledEffectProbe.
 From FinalizedFloor Require Import GenesisApprovalTrust.
 From FinalizedFloor Require Import FinalizationCertificateRetrieval.
 From FinalizedFloor Require Import WitnessEquivalentCarrier.
@@ -198,6 +200,11 @@ Print Assumptions finalized_floor_protocol_activation_correct.
 Print Assumptions finalized_floor_protocol_lifecycle_correct.
 Print Assumptions finalized_floor_selection_correct.
 Print Assumptions committee_transition_correct.
+Print Assumptions finalized_floor_active_finality_committee_correct.
+Print Assumptions finalized_floor_certified_finality_authority_correct.
+Print Assumptions finalized_floor_deploy_lifecycle_decision_correct.
+Print Assumptions finalized_floor_deploy_lifecycle_anchor_correct.
+Print Assumptions finalized_floor_deploy_lifecycle_restore_readiness_correct.
 Print Assumptions objective_equivocation_correct.
 Print Assumptions finalized_floor_arithmetic_correct.
 Print Assumptions finalized_floor_phase7_correct.
@@ -217,8 +224,13 @@ Print Assumptions bootstrap_replay_and_local_fault_recovery_correct.
 Print Assumptions typed_local_validation_recovery_correct.
 Print Assumptions terminal_funding_admission_lifecycle_correct.
 Print Assumptions finalized_floor_effect_causal_closure_correct.
+Print Assumptions finalized_floor_settled_effect_probe_correct.
 Print Assumptions finalized_floor_state_lineage_correct.
 Print Assumptions finalized_floor_state_effect_provenance_correct.
+Print Assumptions finalized_floor_unequal_applied_state_rejection_correct.
+Print Assumptions finalized_floor_exact_missing_dependency_deferral_correct.
+Print Assumptions finalized_floor_applied_state_acceptance_correct.
+Print Assumptions finalized_floor_exact_selection_correct.
 Print Assumptions finalized_floor_rebased_parent_selection_correct.
 Print Assumptions finalized_floor_state_support_refines_causal_certificate.
 Print Assumptions finalized_floor_certified_promotion_correct.
@@ -235,6 +247,7 @@ Print Assumptions finalized_floor_node_local_temporal_lifting_correct.
 Print Assumptions finalized_floor_atomic_commit_correct.
 Print Assumptions finalized_floor_worker_retry_correct.
 Print Assumptions finalized_floor_proposal_readiness_correct.
+Print Assumptions finalized_floor_pending_work_readiness_correct.
 Print Assumptions finalized_floor_recovery_cursors_correct.
 Print Assumptions finalized_floor_genesis_approval_trust_correct.
 Print Assumptions genesis_placeholder_classification_is_heldness_independent.
@@ -490,6 +503,72 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
   else
     fail "TLA+ pending-deploy/heartbeat composition model failed (see $LOG_DIR/ff_tlc_pending_heartbeat.log)"
   fi
+  if tlc_run "$(tlc_metadir ff_pending_work_readiness)" "$TLA_DIR/MC_PendingWorkReadiness.cfg" "$TLA_DIR/PendingWorkReadiness.tla" >"$LOG_DIR/ff_tlc_pending_work_readiness.log" 2>&1; then
+    pass "TLA+ heartbeat readiness includes eligible retry custody and excludes terminal work"
+  else
+    fail "TLA+ pending-work readiness model failed (see $LOG_DIR/ff_tlc_pending_work_readiness.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_pending_work_retry_blind_unsafe)" "$TLA_DIR/MC_PendingWorkReadiness_retry_blind_unsafe.cfg" "$TLA_DIR/PendingWorkReadiness.tla" >"$LOG_DIR/ff_tlc_pending_work_retry_blind_unsafe.log" 2>&1; then
+    fail "TLA+ retry-blind readiness control should reproduce false idle but passed"
+  elif grep -Fq "Invariant Inv_CompletedTransferCannotAppearIdle is violated" "$LOG_DIR/ff_tlc_pending_work_retry_blind_unsafe.log"; then
+    pass "TLA+ retry-blind readiness control reproduces false idle after custody transfer"
+  else
+    fail "TLA+ retry-blind readiness control failed for the wrong reason (see $LOG_DIR/ff_tlc_pending_work_retry_blind_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_exact_floor_selection)" "$TLA_DIR/MC_ExactFloorSelection.cfg" "$TLA_DIR/ExactFloorSelection.tla" >"$LOG_DIR/ff_tlc_exact_floor_selection.log" 2>&1; then
+    pass "TLA+ exact floor selection preserves inherited effects across concurrent delivery orders"
+  else
+    fail "TLA+ exact floor selection model failed (see $LOG_DIR/ff_tlc_exact_floor_selection.log)"
+  fi
+  for exact_floor_control in \
+      'signature_unsafe:Inv_SelectedFloorContainsEveryInheritedFloor:signature quotienting selecting a state that omits an inherited effect' \
+      'anticipatory_unsafe:Inv_SelectedFloorContainsEveryInheritedFloor:causal anticipation selecting a state that omits an inherited effect' \
+      'witness_unsafe:Inv_CertificateUsesStateSupport:causal-only witnesses certifying an unsupported state' \
+      'missing_unsafe:Inv_MissingFactsDefer:missing state facts being treated as rejection' \
+      'cache_unsafe:Inv_SelectedFloorContainsEveryInheritedFloor:stale cache semantics selecting an incomplete state' \
+      'base_unsafe:Inv_UsedBaseContainsEverySettledFloor:a replay base omitting an inherited settled floor'; do
+    IFS=: read -r exact_floor_suffix exact_floor_invariant exact_floor_description <<<"$exact_floor_control"
+    exact_floor_log="$LOG_DIR/ff_tlc_exact_floor_selection_${exact_floor_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_exact_floor_selection_${exact_floor_suffix}")" "$TLA_DIR/MC_ExactFloorSelection_${exact_floor_suffix}.cfg" "$TLA_DIR/ExactFloorSelection.tla" >"$exact_floor_log" 2>&1; then
+      fail "TLA+ exact-floor control should reproduce ${exact_floor_description} but passed"
+    elif grep -Fq "Invariant ${exact_floor_invariant} is violated" "$exact_floor_log"; then
+      pass "TLA+ exact-floor control reproduces ${exact_floor_description}"
+    else
+      fail "TLA+ exact-floor control failed for the wrong reason (see $exact_floor_log)"
+    fi
+  done
+  if tlc_run "$(tlc_metadir ff_deploy_lifecycle_finalization)" "$TLA_DIR/MC_DeployLifecycleFinalization.cfg" "$TLA_DIR/DeployLifecycleFinalization.tla" >"$LOG_DIR/ff_tlc_deploy_lifecycle_finalization.log" 2>&1; then
+    pass "TLA+ lifecycle decisions run as an idempotent committed-floor effect"
+  else
+    fail "TLA+ deploy-lifecycle finalization model failed (see $LOG_DIR/ff_tlc_deploy_lifecycle_finalization.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_deploy_lifecycle_later_block_unsafe)" "$TLA_DIR/MC_DeployLifecycleFinalization_later_block_unsafe.cfg" "$TLA_DIR/DeployLifecycleFinalization.tla" >"$LOG_DIR/ff_tlc_deploy_lifecycle_later_block_unsafe.log" 2>&1; then
+    fail "TLA+ later-block lifecycle control should reproduce the missing trigger but passed"
+  elif grep -Fq "Invariant Inv_CommittedDecisionHasLocalTrigger is violated" "$LOG_DIR/ff_tlc_deploy_lifecycle_later_block_unsafe.log"; then
+    pass "TLA+ later-block lifecycle control reproduces the missing committed-floor trigger"
+  else
+    fail "TLA+ later-block lifecycle control failed for the wrong reason (see $LOG_DIR/ff_tlc_deploy_lifecycle_later_block_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_deploy_lifecycle_floor_anchor_unsafe)" "$TLA_DIR/MC_DeployLifecycleFinalization_floor_anchor_unsafe.cfg" "$TLA_DIR/DeployLifecycleFinalization.tla" >"$LOG_DIR/ff_tlc_deploy_lifecycle_floor_anchor_unsafe.log" 2>&1; then
+    fail "TLA+ floor-as-occurrence-anchor control should reproduce anchor substitution but passed"
+  elif grep -Fq "Invariant Inv_StateFloorIsNeverAnOccurrenceCarrier is violated" "$LOG_DIR/ff_tlc_deploy_lifecycle_floor_anchor_unsafe.log"; then
+    pass "TLA+ floor-as-occurrence-anchor control reproduces anchor substitution"
+  else
+    fail "TLA+ floor-as-occurrence-anchor control failed for the wrong reason (see $LOG_DIR/ff_tlc_deploy_lifecycle_floor_anchor_unsafe.log)"
+  fi
+  for lifecycle_settlement_control in \
+      'marker_unsafe:finality-marker-only settlement' \
+      'frozen_floor_unsafe:frozen-floor-only settlement'; do
+    IFS=: read -r lifecycle_suffix lifecycle_description <<<"$lifecycle_settlement_control"
+    lifecycle_log="$LOG_DIR/ff_tlc_deploy_lifecycle_${lifecycle_suffix}.log"
+    if tlc_run "$(tlc_metadir "ff_deploy_lifecycle_${lifecycle_suffix}")" "$TLA_DIR/MC_DeployLifecycleFinalization_${lifecycle_suffix}.cfg" "$TLA_DIR/DeployLifecycleFinalization.tla" >"$lifecycle_log" 2>&1; then
+      fail "TLA+ ${lifecycle_description} control should terminalize an uncommitted effect but passed"
+    elif grep -Fq "Invariant Inv_FinalizedHasSuccessfulFloorEffect is violated" "$lifecycle_log"; then
+      pass "TLA+ ${lifecycle_description} control reproduces premature terminalization"
+    else
+      fail "TLA+ ${lifecycle_description} control failed for the wrong reason (see $lifecycle_log)"
+    fi
+  done
   if tlc_run "$(tlc_metadir ff_pending_heartbeat_ingress)" "$TLA_DIR/MC_PendingDeployHeartbeatComposition_ingress_safety.cfg" "$TLA_DIR/PendingDeployHeartbeatComposition.tla" >"$LOG_DIR/ff_tlc_pending_heartbeat_ingress.log" 2>&1; then
     pass "TLA+ concurrent ingress preserves queue, attempt, occurrence, and terminal-evidence bounds"
   else
@@ -554,6 +633,7 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
     fail "TLA+ recovery committee-transition model failed (see $LOG_DIR/ff_tlc_recovery_committee_transition.log)"
   fi
   for transition_control in \
+      'all_bonds_finality_unsafe:Inv_UncertifiedParentFinalityMatchesActiveFloor:an uncertified parent post-state committee entering the finalized-floor denominator' \
       'post_auth_unsafe:Inv_ProspectiveAuthorizationDeferred:same-block post-state bonds authorizing their own block' \
       'head_justifications_unsafe:Inv_QueuedRecoveryHasExactContext:head-filtered justifications removing a recovery creator sequence' \
       'premature_promotion_unsafe:Inv_FloorValidatorsRegistered:committee promotion preceding validator registration' \
@@ -578,6 +658,18 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ recovery committee-transition control failed for the wrong reason (see $transition_log)"
     fi
   done
+  if tlc_run "$(tlc_metadir ff_authority_floor_state_binding)" "$TLA_DIR/MC_AuthorityFloorStateBinding.cfg" "$TLA_DIR/AuthorityFloorStateBinding.tla" >"$LOG_DIR/ff_tlc_authority_floor_state_binding.log" 2>&1; then
+    pass "TLA+ certified authority-floor identity binds the exact block hash, replay state, and active committee"
+  else
+    fail "TLA+ authority-floor state-binding model failed (see $LOG_DIR/ff_tlc_authority_floor_state_binding.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_authority_floor_state_binding_hash_only_unsafe)" "$TLA_DIR/MC_AuthorityFloorStateBinding_hash_only_unsafe.cfg" "$TLA_DIR/AuthorityFloorStateBinding.tla" >"$LOG_DIR/ff_tlc_authority_floor_state_binding_hash_only_unsafe.log" 2>&1; then
+    fail "TLA+ hash-only authority-floor control should authorize mismatched replay state but passed"
+  elif grep -Fq "Invariant Inv_MismatchedPairCannotAuthorize is violated" "$LOG_DIR/ff_tlc_authority_floor_state_binding_hash_only_unsafe.log"; then
+    pass "TLA+ hash-only authority-floor control reproduces mismatched replay-state authorization"
+  else
+    fail "TLA+ hash-only authority-floor control failed for the wrong reason (see $LOG_DIR/ff_tlc_authority_floor_state_binding_hash_only_unsafe.log)"
+  fi
   if tlc_run "$(tlc_metadir ff_objective_equivocation)" "$TLA_DIR/MC_ObjectiveEquivocation.cfg" "$TLA_DIR/ObjectiveEquivocation.tla" >"$LOG_DIR/ff_tlc_objective_equivocation.log" 2>&1; then
     pass "TLA+ opposite-order replicas converge on canonical objective-equivocation evidence, dependencies, and voting exclusion"
   else
@@ -1008,16 +1100,28 @@ if [[ -f "$TLC_JAR" ]] || command -v tlc >/dev/null 2>&1; then
       fail "TLA+ main-spine liveness control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_lineage_main_spine_liveness.log)"
   fi
   if tlc_run "$(tlc_metadir ff_state_effect_provenance)" "$TLA_DIR/MC_StateEffectProvenance.cfg" "$TLA_DIR/StateEffectProvenance.tla" >"$LOG_DIR/ff_tlc_state_effect_provenance.log" 2>&1; then
-    pass "TLA+ exact merge-effect recurrence preserves accepted three-way effects, parent-order invariance, majority support, and promotion liveness"
+    pass "TLA+ exact positive state recurrence preserves accepted effects, excludes omitted effects, preserves parent-order invariance, and supports promotion liveness"
   else
     fail "TLA+ merge-effect provenance model failed (see $LOG_DIR/ff_tlc_state_effect_provenance.log)"
   fi
   if tlc_run "$(tlc_metadir ff_state_effect_provenance_unsafe)" "$TLA_DIR/MC_StateEffectProvenanceUnsafe.cfg" "$TLA_DIR/StateEffectProvenance.tla" >"$LOG_DIR/ff_tlc_state_effect_provenance_unsafe.log" 2>&1; then
-    fail "TLA+ single-base provenance control should lose the accepted source effect but passed"
-  elif grep -q "Inv_DeliveredQuorumCertifiesSource is violated" "$LOG_DIR/ff_tlc_state_effect_provenance_unsafe.log"; then
-    pass "TLA+ single-base control reproduces loss of majority state support"
+    fail "TLA+ parent-union provenance control should resurrect an omitted source effect but passed"
+  elif grep -q "Inv_OmittedParentEffectAbsent is equal to FALSE" "$LOG_DIR/ff_tlc_state_effect_provenance_unsafe.log"; then
+    pass "TLA+ parent-union control reproduces the omitted-effect resurrection"
   else
-    fail "TLA+ single-base provenance control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_effect_provenance_unsafe.log)"
+    fail "TLA+ parent-union provenance control failed for the wrong reason (see $LOG_DIR/ff_tlc_state_effect_provenance_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_applied_state_validation_precedence)" "$TLA_DIR/MC_AppliedStateValidationPrecedence.cfg" "$TLA_DIR/AppliedStateValidationPrecedence.tla" >"$LOG_DIR/ff_tlc_applied_state_validation_precedence.log" 2>&1; then
+    pass "TLA+ exact applied-state validation rejects unequal vectors before dependency lookup and defers only genuine missing dependencies"
+  else
+    fail "TLA+ applied-state validation precedence model failed (see $LOG_DIR/ff_tlc_applied_state_validation_precedence.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_applied_state_validation_precedence_unsafe)" "$TLA_DIR/MC_AppliedStateValidationPrecedenceUnsafe.cfg" "$TLA_DIR/AppliedStateValidationPrecedence.tla" >"$LOG_DIR/ff_tlc_applied_state_validation_precedence_unsafe.log" 2>&1; then
+    fail "TLA+ claims-first control should amplify an attacker-only dependency but passed"
+  elif grep -q "Inv_UnequalVectorIsInvalidWithoutLookup is violated" "$LOG_DIR/ff_tlc_applied_state_validation_precedence_unsafe.log"; then
+    pass "TLA+ claims-first control reproduces attacker-driven dependency amplification"
+  else
+    fail "TLA+ claims-first control failed for the wrong reason (see $LOG_DIR/ff_tlc_applied_state_validation_precedence_unsafe.log)"
   fi
   if tlc_run "$(tlc_metadir ff_state_preserving_fork_choice)" "$TLA_DIR/MC_StatePreservingForkChoice.cfg" "$TLA_DIR/StatePreservingForkChoice.tla" >"$LOG_DIR/ff_tlc_state_preserving_fork_choice.log" 2>&1; then
     pass "TLA+ causal fork choice retains valid tips, inserts the LFB when no causal tip descends from it, and floor-rebases proposal state"
@@ -1180,12 +1284,40 @@ EOF
   else
     fail "TLA+ finalized occurrence-status model failed (see $LOG_DIR/ff_tlc_finalized_occurrence_status.log)"
   fi
+  if tlc_run "$(tlc_metadir ff_finalized_occurrence_rejection_subtraction_unsafe)" "$DEPLOY_RECOVERY_TLA_DIR/MC_FinalizedOccurrenceStatus_rejection_subtraction_unsafe.cfg" "$DEPLOY_RECOVERY_TLA_DIR/FinalizedOccurrenceStatus.tla" >"$LOG_DIR/ff_tlc_finalized_occurrence_rejection_subtraction_unsafe.log" 2>&1; then
+    fail "TLA+ rejection-subtraction control should erase an inherited state-parent effect but passed"
+  elif grep -q "Inv_RejectionDoesNotSubtractStateParent is violated" "$LOG_DIR/ff_tlc_finalized_occurrence_rejection_subtraction_unsafe.log"; then
+    pass "TLA+ rejection-subtraction control reproduces inherited state-effect erasure"
+  else
+    fail "TLA+ rejection-subtraction control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_rejection_subtraction_unsafe.log)"
+  fi
   if tlc_run "$(tlc_metadir ff_finalized_occurrence_main_chain_unsafe)" "$DEPLOY_RECOVERY_TLA_DIR/MC_FinalizedOccurrenceStatus_main_chain_unsafe.cfg" "$DEPLOY_RECOVERY_TLA_DIR/FinalizedOccurrenceStatus.tla" >"$LOG_DIR/ff_tlc_finalized_occurrence_status_unsafe.log" 2>&1; then
     fail "TLA+ main-chain-only occurrence-status control should retain a rejected secondary-parent source but passed"
   elif grep -q "Inv_StatusMatchesCommittedState is violated" "$LOG_DIR/ff_tlc_finalized_occurrence_status_unsafe.log"; then
     pass "TLA+ main-chain-only control reproduces finalized-status/state disagreement"
   else
     fail "TLA+ main-chain-only occurrence-status control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_status_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_finalized_occurrence_ranked_source_unsafe)" "$DEPLOY_RECOVERY_TLA_DIR/MC_FinalizedOccurrenceStatus_ranked_source_unsafe.cfg" "$DEPLOY_RECOVERY_TLA_DIR/FinalizedOccurrenceStatus.tla" >"$LOG_DIR/ff_tlc_finalized_occurrence_ranked_source_unsafe.log" 2>&1; then
+    fail "TLA+ raw occurrence-source control should freeze a rejected source but passed"
+  elif grep -q "Inv_FrozenSourceMatchesCommittedState is violated" "$LOG_DIR/ff_tlc_finalized_occurrence_ranked_source_unsafe.log"; then
+    pass "TLA+ raw occurrence-source control reproduces rejected terminal-source selection"
+  else
+    fail "TLA+ raw occurrence-source control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_ranked_source_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_finalized_occurrence_floor_blind_unsafe)" "$DEPLOY_RECOVERY_TLA_DIR/MC_FinalizedOccurrenceStatus_floor_blind_unsafe.cfg" "$DEPLOY_RECOVERY_TLA_DIR/FinalizedOccurrenceStatus.tla" >"$LOG_DIR/ff_tlc_finalized_occurrence_floor_blind_unsafe.log" 2>&1; then
+    fail "TLA+ floor-blind occurrence-status control should accept off-floor evidence but passed"
+  elif grep -q "Inv_StatusMatchesCommittedState is violated" "$LOG_DIR/ff_tlc_finalized_occurrence_floor_blind_unsafe.log"; then
+    pass "TLA+ floor-blind control reproduces off-floor terminal-status corruption"
+  else
+    fail "TLA+ floor-blind occurrence-status control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_floor_blind_unsafe.log)"
+  fi
+  if tlc_run "$(tlc_metadir ff_finalized_occurrence_unready_settle_unsafe)" "$DEPLOY_RECOVERY_TLA_DIR/MC_FinalizedOccurrenceStatus_unready_settle_unsafe.cfg" "$DEPLOY_RECOVERY_TLA_DIR/FinalizedOccurrenceStatus.tla" >"$LOG_DIR/ff_tlc_finalized_occurrence_unready_settle_unsafe.log" 2>&1; then
+    fail "TLA+ unready-settlement control should terminalize without a materialized floor but passed"
+  elif grep -q "Inv_TerminalStatusRequiresFloorReady is violated" "$LOG_DIR/ff_tlc_finalized_occurrence_unready_settle_unsafe.log"; then
+    pass "TLA+ unready-settlement control reproduces lifecycle evaluation before floor readiness"
+  else
+    fail "TLA+ unready-settlement control failed for the wrong reason (see $LOG_DIR/ff_tlc_finalized_occurrence_unready_settle_unsafe.log)"
   fi
   if tlc_run "$(tlc_metadir ff_witness_equivalent_carrier)" "$TLA_DIR/MC_WitnessEquivalentCarrier.cfg" "$TLA_DIR/WitnessEquivalentCarrier.tla" >"$LOG_DIR/ff_tlc_witness_equivalent_carrier.log" 2>&1; then
     pass "TLA+ semantic predecessor carriers preserve exact state and block/digest pairing across divergent local witnesses"
@@ -1524,6 +1656,68 @@ if command -v apalache-mc >/dev/null 2>&1; then
   else
     fail "Apalache pending-deploy scheduler model failed (see $LOG_DIR/ff_apalache_pending_heartbeat.log)"
   fi
+  pending_work_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/pending-work-safe" check --config=MC_PendingWorkReadinessApalache.cfg --length=4 PendingWorkReadiness.tla 2>&1)"
+  pending_work_rc=$?
+  printf '%s\n' "$pending_work_output" >"$LOG_DIR/ff_apalache_pending_work_readiness.log"
+  if [[ $pending_work_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_pending_work_readiness.log"; then
+    pass "Apalache pending-work readiness invariants through bound 4"
+  else
+    fail "Apalache pending-work readiness model failed (see $LOG_DIR/ff_apalache_pending_work_readiness.log)"
+  fi
+  pending_work_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/pending-work-retry-blind-unsafe" check --config=MC_PendingWorkReadiness_retry_blind_unsafe_Apalache.cfg --length=2 PendingWorkReadiness.tla 2>&1)"
+  pending_work_unsafe_rc=$?
+  printf '%s\n' "$pending_work_unsafe_output" >"$LOG_DIR/ff_apalache_pending_work_retry_blind_unsafe.log"
+  if [[ $pending_work_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_pending_work_retry_blind_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_pending_work_retry_blind_unsafe.log"; then
+    pass "Apalache retry-blind readiness control finds false idle"
+  else
+    fail "Apalache retry-blind readiness control failed for the wrong reason (see $LOG_DIR/ff_apalache_pending_work_retry_blind_unsafe.log)"
+  fi
+  lifecycle_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/deploy-lifecycle-finalization-safe" check --config=MC_DeployLifecycleFinalizationApalache.cfg --length=6 DeployLifecycleFinalization.tla 2>&1)"
+  lifecycle_rc=$?
+  printf '%s\n' "$lifecycle_output" >"$LOG_DIR/ff_apalache_deploy_lifecycle_finalization.log"
+  if [[ $lifecycle_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_deploy_lifecycle_finalization.log"; then
+    pass "Apalache deploy-lifecycle finalization invariants through bound 6"
+  else
+    fail "Apalache deploy-lifecycle finalization model failed (see $LOG_DIR/ff_apalache_deploy_lifecycle_finalization.log)"
+  fi
+  lifecycle_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/deploy-lifecycle-later-block-unsafe" check --config=MC_DeployLifecycleFinalization_later_block_unsafe_Apalache.cfg --length=3 DeployLifecycleFinalization.tla 2>&1)"
+  lifecycle_unsafe_rc=$?
+  printf '%s\n' "$lifecycle_unsafe_output" >"$LOG_DIR/ff_apalache_deploy_lifecycle_later_block_unsafe.log"
+  if [[ $lifecycle_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_deploy_lifecycle_later_block_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_deploy_lifecycle_later_block_unsafe.log"; then
+    pass "Apalache later-block lifecycle control finds the missing floor-commit trigger"
+  else
+    fail "Apalache later-block lifecycle control failed for the wrong reason (see $LOG_DIR/ff_apalache_deploy_lifecycle_later_block_unsafe.log)"
+  fi
+  lifecycle_anchor_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/deploy-lifecycle-floor-anchor-unsafe" check --config=MC_DeployLifecycleFinalization_floor_anchor_unsafe_Apalache.cfg --length=3 DeployLifecycleFinalization.tla 2>&1)"
+  lifecycle_anchor_unsafe_rc=$?
+  printf '%s\n' "$lifecycle_anchor_unsafe_output" >"$LOG_DIR/ff_apalache_deploy_lifecycle_floor_anchor_unsafe.log"
+  if [[ $lifecycle_anchor_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_deploy_lifecycle_floor_anchor_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_deploy_lifecycle_floor_anchor_unsafe.log"; then
+    pass "Apalache floor-as-occurrence-anchor control finds anchor substitution"
+  else
+    fail "Apalache floor-as-occurrence-anchor control failed for the wrong reason (see $LOG_DIR/ff_apalache_deploy_lifecycle_floor_anchor_unsafe.log)"
+  fi
+  for lifecycle_settlement_control in \
+      'marker_unsafe:finality-marker-only settlement' \
+      'frozen_floor_unsafe:frozen-floor-only settlement'; do
+    IFS=: read -r lifecycle_suffix lifecycle_description <<<"$lifecycle_settlement_control"
+    lifecycle_log="$LOG_DIR/ff_apalache_deploy_lifecycle_${lifecycle_suffix}.log"
+    lifecycle_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/deploy-lifecycle-${lifecycle_suffix}" check --config="MC_DeployLifecycleFinalization_${lifecycle_suffix}_Apalache.cfg" --length=4 DeployLifecycleFinalization.tla 2>&1)"
+    lifecycle_rc=$?
+    printf '%s\n' "$lifecycle_output" >"$lifecycle_log"
+    if [[ $lifecycle_rc -ne 0 ]] \
+         && grep -qE 'state invariant [0-9]+ violated' "$lifecycle_log" \
+         && grep -q 'The outcome is: Error' "$lifecycle_log"; then
+      pass "Apalache ${lifecycle_description} control finds premature terminalization"
+    else
+      fail "Apalache ${lifecycle_description} control failed for the wrong reason (see $lifecycle_log)"
+    fi
+  done
   pending_recovery_output="$(cd "$TLA_DIR" && timeout 600 apalache-mc --out-dir="$apalache_out/pending-heartbeat-recovery-safe" check --config=MC_PendingDeployHeartbeatCompositionRecoveryApalache.cfg --length="$PENDING_HEARTBEAT_APALACHE_SAFE_LENGTH" PendingDeployHeartbeatComposition.tla 2>&1)"
   pending_recovery_rc=$?
   printf '%s\n' "$pending_recovery_output" >"$LOG_DIR/ff_apalache_pending_heartbeat_recovery.log"
@@ -1570,6 +1764,7 @@ if command -v apalache-mc >/dev/null 2>&1; then
     fail "Apalache recovery committee-transition model failed (see $LOG_DIR/ff_apalache_recovery_committee_transition.log)"
   fi
   for transition_apalache_control in \
+      'all_bonds_finality_unsafe:Inv_UncertifiedParentFinalityMatchesActiveFloor:inactive or prospective finality weight' \
       'post_auth_unsafe:Inv_ProspectiveAuthorizationDeferred:same-block post-state authorization' \
       'head_justifications_unsafe:Inv_QueuedRecoveryHasExactContext:head-filtered creator justification' \
       'premature_promotion_unsafe:Inv_FloorValidatorsRegistered:promotion before registration' \
@@ -1598,6 +1793,25 @@ if command -v apalache-mc >/dev/null 2>&1; then
       fail "Apalache recovery committee-transition control did not reproduce ${transition_description} (see $transition_log)"
     fi
   done
+  authority_floor_state_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/authority-floor-state-binding-safe" check --config=MC_AuthorityFloorStateBindingApalache.cfg --length=3 AuthorityFloorStateBinding.tla 2>&1)"
+  authority_floor_state_rc=$?
+  printf '%s\n' "$authority_floor_state_output" >"$LOG_DIR/ff_apalache_authority_floor_state_binding.log"
+  if [[ $authority_floor_state_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_authority_floor_state_binding.log"; then
+    pass "Apalache authority-floor state-binding invariants through bound 3"
+  else
+    fail "Apalache authority-floor state-binding model failed (see $LOG_DIR/ff_apalache_authority_floor_state_binding.log)"
+  fi
+  authority_floor_state_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/authority-floor-state-binding-hash-only-unsafe" check --config=MC_AuthorityFloorStateBinding_hash_only_unsafe_Apalache.cfg --length=2 AuthorityFloorStateBinding.tla 2>&1)"
+  authority_floor_state_unsafe_rc=$?
+  printf '%s\n' "$authority_floor_state_unsafe_output" >"$LOG_DIR/ff_apalache_authority_floor_state_binding_hash_only_unsafe.log"
+  if [[ $authority_floor_state_unsafe_rc -ne 0 ]] \
+       && grep -Fq "Using inv predicate(s) Inv_MismatchedPairCannotAuthorize" "$LOG_DIR/ff_apalache_authority_floor_state_binding_hash_only_unsafe.log" \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_authority_floor_state_binding_hash_only_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_authority_floor_state_binding_hash_only_unsafe.log"; then
+    pass "Apalache hash-only authority-floor control finds mismatched replay-state authorization by bound 2"
+  else
+    fail "Apalache hash-only authority-floor control did not reproduce mismatched replay-state authorization (see $LOG_DIR/ff_apalache_authority_floor_state_binding_hash_only_unsafe.log)"
+  fi
   objective_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/objective-equivocation-safe" check --config=MC_ObjectiveEquivocationApalache.cfg --length="$OBJECTIVE_EQUIVOCATION_APALACHE_SAFE_LENGTH" ObjectiveEquivocation.tla 2>&1)"
   objective_rc=$?
   printf '%s\n' "$objective_output" >"$LOG_DIR/ff_apalache_objective_equivocation.log"
@@ -2150,7 +2364,7 @@ if command -v apalache-mc >/dev/null 2>&1; then
   effect_provenance_rc=$?
   printf '%s\n' "$effect_provenance_output" >"$LOG_DIR/ff_apalache_state_effect_provenance.log"
   if [[ $effect_provenance_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_state_effect_provenance.log"; then
-    pass "Apalache arrival-order merge settlement preserves all accepted parent effects through bound 8"
+    pass "Apalache arrival-order settlement preserves accepted effects and excludes omitted effects through bound 8"
   else
     fail "Apalache merge-effect provenance model failed (see $LOG_DIR/ff_apalache_state_effect_provenance.log)"
   fi
@@ -2160,10 +2374,57 @@ if command -v apalache-mc >/dev/null 2>&1; then
   if [[ $effect_provenance_unsafe_rc -ne 0 ]] \
        && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_state_effect_provenance_unsafe.log" \
        && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_state_effect_provenance_unsafe.log"; then
-    pass "Apalache single-base control finds accepted source-effect loss"
+    pass "Apalache parent-union control finds omitted source-effect resurrection"
   else
-    fail "Apalache single-base provenance control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_state_effect_provenance_unsafe.log)"
+    fail "Apalache parent-union provenance control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_state_effect_provenance_unsafe.log)"
   fi
+  applied_validation_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/applied-state-validation-safe" check --config=MC_AppliedStateValidationPrecedenceApalache.cfg --length=1 AppliedStateValidationPrecedence.tla 2>&1)"
+  applied_validation_rc=$?
+  printf '%s\n' "$applied_validation_output" >"$LOG_DIR/ff_apalache_applied_state_validation_precedence.log"
+  if [[ $applied_validation_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_applied_state_validation_precedence.log"; then
+    pass "Apalache exact applied-state validation precedence through bound 1"
+  else
+    fail "Apalache applied-state validation precedence model failed (see $LOG_DIR/ff_apalache_applied_state_validation_precedence.log)"
+  fi
+  applied_validation_unsafe_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/applied-state-validation-unsafe" check --config=MC_AppliedStateValidationPrecedenceUnsafeApalache.cfg --length=1 AppliedStateValidationPrecedence.tla 2>&1)"
+  applied_validation_unsafe_rc=$?
+  printf '%s\n' "$applied_validation_unsafe_output" >"$LOG_DIR/ff_apalache_applied_state_validation_precedence_unsafe.log"
+  if [[ $applied_validation_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_applied_state_validation_precedence_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_applied_state_validation_precedence_unsafe.log"; then
+    pass "Apalache claims-first control finds attacker-driven dependency amplification"
+  else
+    fail "Apalache claims-first control did not reproduce its counterexample (see $LOG_DIR/ff_apalache_applied_state_validation_precedence_unsafe.log)"
+  fi
+  exact_floor_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/exact-floor-selection-safe" check --config=MC_ExactFloorSelectionApalache.cfg --length=8 ExactFloorSelection.tla 2>&1)"
+  exact_floor_rc=$?
+  printf '%s\n' "$exact_floor_output" >"$LOG_DIR/ff_apalache_exact_floor_selection.log"
+  if [[ $exact_floor_rc -eq 0 ]] && grep -qE 'The outcome is: NoError|EXITCODE: OK' "$LOG_DIR/ff_apalache_exact_floor_selection.log"; then
+    pass "Apalache exact floor selection invariants through bound 8"
+  else
+    fail "Apalache exact floor selection model failed (see $LOG_DIR/ff_apalache_exact_floor_selection.log)"
+  fi
+  for exact_floor_apalache_control in \
+      'signature_unsafe:Inv_SelectedFloorContainsEveryInheritedFloor:6:signature quotienting' \
+      'anticipatory_unsafe:Inv_SelectedFloorContainsEveryInheritedFloor:6:causal anticipation' \
+      'witness_unsafe:Inv_CertificateUsesStateSupport:3:causal-only witness certification' \
+      'missing_unsafe:Inv_MissingFactsDefer:1:missing-fact rejection' \
+      'cache_unsafe:Inv_SelectedFloorContainsEveryInheritedFloor:1:stale semantic cache reuse' \
+      'base_unsafe:Inv_UsedBaseContainsEverySettledFloor:1:incomplete replay-base selection'; do
+    IFS=: read -r exact_floor_suffix exact_floor_invariant exact_floor_length exact_floor_description <<<"$exact_floor_apalache_control"
+    exact_floor_log="$LOG_DIR/ff_apalache_exact_floor_selection_${exact_floor_suffix}.log"
+    exact_floor_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/exact-floor-selection-${exact_floor_suffix}" check --config="MC_ExactFloorSelection_${exact_floor_suffix}_Apalache.cfg" --length="$exact_floor_length" ExactFloorSelection.tla 2>&1)"
+    exact_floor_rc=$?
+    printf '%s\n' "$exact_floor_output" >"$exact_floor_log"
+    if [[ $exact_floor_rc -ne 0 ]] \
+         && grep -Fq "Using inv predicate(s) ${exact_floor_invariant}" "$exact_floor_log" \
+         && grep -qE 'state invariant [0-9]+ violated' "$exact_floor_log" \
+         && grep -q 'The outcome is: Error' "$exact_floor_log"; then
+      pass "Apalache exact-floor control finds ${exact_floor_description} by bound $exact_floor_length"
+    else
+      fail "Apalache exact-floor control did not reproduce ${exact_floor_description} (see $exact_floor_log)"
+    fi
+  done
   fork_choice_types_output="$(cd "$TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/state-preserving-fork-choice-types" check --config=MC_StatePreservingForkChoice_types_Apalache.cfg --length=3 StatePreservingForkChoice.tla 2>&1)"
   fork_choice_types_rc=$?
   printf '%s\n' "$fork_choice_types_output" >"$LOG_DIR/ff_apalache_state_preserving_fork_choice_types.log"
@@ -2381,7 +2642,7 @@ EOF
   else
     fail "Apalache direct-only control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_effect_direct_only_unsafe.log)"
   fi
-  occurrence_status_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-safe" check --config=MC_FinalizedOccurrenceStatusApalache.cfg --length=6 FinalizedOccurrenceStatus.tla 2>&1)"
+  occurrence_status_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-safe" check --config=MC_FinalizedOccurrenceStatusApalache.cfg --length=7 FinalizedOccurrenceStatus.tla 2>&1)"
   occurrence_status_rc=$?
   printf '%s\n' "$occurrence_status_output" >"$LOG_DIR/ff_apalache_finalized_occurrence_status.log"
   if [[ $occurrence_status_rc -eq 0 ]] && grep -q 'EXITCODE: OK' "$LOG_DIR/ff_apalache_finalized_occurrence_status.log"; then
@@ -2389,7 +2650,17 @@ EOF
   else
     fail "Apalache finalized occurrence-status model failed (see $LOG_DIR/ff_apalache_finalized_occurrence_status.log)"
   fi
-  occurrence_status_unsafe_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-main-chain-unsafe" check --config=MC_FinalizedOccurrenceStatus_main_chain_unsafe_Apalache.cfg --length=5 FinalizedOccurrenceStatus.tla 2>&1)"
+  occurrence_rejection_subtraction_unsafe_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-rejection-subtraction-unsafe" check --config=MC_FinalizedOccurrenceStatus_rejection_subtraction_unsafe_Apalache.cfg --inv=Inv_RejectionDoesNotSubtractStateParent --length=7 FinalizedOccurrenceStatus.tla 2>&1)"
+  occurrence_rejection_subtraction_unsafe_rc=$?
+  printf '%s\n' "$occurrence_rejection_subtraction_unsafe_output" >"$LOG_DIR/ff_apalache_finalized_occurrence_rejection_subtraction_unsafe.log"
+  if [[ $occurrence_rejection_subtraction_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_finalized_occurrence_rejection_subtraction_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_finalized_occurrence_rejection_subtraction_unsafe.log"; then
+    pass "Apalache rejection-subtraction control finds inherited state-effect erasure"
+  else
+    fail "Apalache rejection-subtraction control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_finalized_occurrence_rejection_subtraction_unsafe.log)"
+  fi
+  occurrence_status_unsafe_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-main-chain-unsafe" check --config=MC_FinalizedOccurrenceStatus_main_chain_unsafe_Apalache.cfg --length=7 FinalizedOccurrenceStatus.tla 2>&1)"
   occurrence_status_unsafe_rc=$?
   printf '%s\n' "$occurrence_status_unsafe_output" >"$LOG_DIR/ff_apalache_finalized_occurrence_status_unsafe.log"
   if [[ $occurrence_status_unsafe_rc -ne 0 ]] \
@@ -2398,6 +2669,36 @@ EOF
     pass "Apalache main-chain-only control finds finalized-status/state disagreement"
   else
     fail "Apalache main-chain-only occurrence-status control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_finalized_occurrence_status_unsafe.log)"
+  fi
+  occurrence_source_unsafe_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-ranked-source-unsafe" check --config=MC_FinalizedOccurrenceStatus_ranked_source_unsafe_Apalache.cfg --length=7 FinalizedOccurrenceStatus.tla 2>&1)"
+  occurrence_source_unsafe_rc=$?
+  printf '%s\n' "$occurrence_source_unsafe_output" >"$LOG_DIR/ff_apalache_finalized_occurrence_ranked_source_unsafe.log"
+  if [[ $occurrence_source_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_finalized_occurrence_ranked_source_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_finalized_occurrence_ranked_source_unsafe.log"; then
+    pass "Apalache raw occurrence-source control finds rejected terminal-source selection"
+  else
+    fail "Apalache raw occurrence-source control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_finalized_occurrence_ranked_source_unsafe.log)"
+  fi
+  occurrence_floor_unsafe_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-floor-blind-unsafe" check --config=MC_FinalizedOccurrenceStatus_floor_blind_unsafe_Apalache.cfg --length=7 FinalizedOccurrenceStatus.tla 2>&1)"
+  occurrence_floor_unsafe_rc=$?
+  printf '%s\n' "$occurrence_floor_unsafe_output" >"$LOG_DIR/ff_apalache_finalized_occurrence_floor_blind_unsafe.log"
+  if [[ $occurrence_floor_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_finalized_occurrence_floor_blind_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_finalized_occurrence_floor_blind_unsafe.log"; then
+    pass "Apalache floor-blind control finds off-floor terminal-status corruption"
+  else
+    fail "Apalache floor-blind occurrence-status control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_finalized_occurrence_floor_blind_unsafe.log)"
+  fi
+  occurrence_unready_unsafe_output="$(cd "$DEPLOY_RECOVERY_TLA_DIR" && timeout 300 apalache-mc --out-dir="$apalache_out/finalized-occurrence-unready-unsafe" check --config=MC_FinalizedOccurrenceStatus_unready_settle_unsafe_Apalache.cfg --length=6 FinalizedOccurrenceStatus.tla 2>&1)"
+  occurrence_unready_unsafe_rc=$?
+  printf '%s\n' "$occurrence_unready_unsafe_output" >"$LOG_DIR/ff_apalache_finalized_occurrence_unready_settle_unsafe.log"
+  if [[ $occurrence_unready_unsafe_rc -ne 0 ]] \
+       && grep -qE 'state invariant [0-9]+ violated' "$LOG_DIR/ff_apalache_finalized_occurrence_unready_settle_unsafe.log" \
+       && grep -q 'The outcome is: Error' "$LOG_DIR/ff_apalache_finalized_occurrence_unready_settle_unsafe.log"; then
+    pass "Apalache unready-settlement control finds lifecycle evaluation before floor readiness"
+  else
+    fail "Apalache unready-settlement control did not reproduce the expected counterexample (see $LOG_DIR/ff_apalache_finalized_occurrence_unready_settle_unsafe.log)"
   fi
   rm -rf "$apalache_out"
 else
@@ -2514,14 +2815,49 @@ echo "== [7/8] Rust proptests + floor-selection lib tests (fail-soft) =="
 # thereafter), then runs only the `finalized_floor::` tests. SKIPPED if cargo is absent;
 # any proptest failure fails the gate.
 if command -v cargo >/dev/null 2>&1; then
-  if cargo test -p block-storage --lib finalization_ledger >"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
+  if cargo test -p block-storage --release --lib finalization_ledger >"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
+       && cargo test -p block-storage --release --lib finalization_snapshot_tests >>"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
        && cargo test -p casper --lib finalization_schedule >>"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
        && cargo test -p casper --lib finalizer_parallelism_rejects_zero_workers >>"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
        && cargo test -p casper --lib approved_block_ >>"$LOG_DIR/ff_rust_finalization_ledger.log" 2>&1 \
-       && test "$(grep -cE 'test result: ok\. [1-9][0-9]* passed' "$LOG_DIR/ff_rust_finalization_ledger.log")" -eq 4; then
+       && grep -q "projection_endpoint_preserves_exact_head_and_projection_prefix ... ok" "$LOG_DIR/ff_rust_finalization_ledger.log" \
+       && test "$(grep -cE 'test result: ok\. [1-9][0-9]* passed' "$LOG_DIR/ff_rust_finalization_ledger.log")" -eq 5; then
     pass "Rust atomic finalization ledger, local-witness validation, divergent local-history identity, genesis-only approval, crash recovery, arbitrary completion order, bounded parallel scheduler, and fail-closed configuration regressions"
   else
     fail "Rust finalization atomicity/recovery regressions failed (see $LOG_DIR/ff_rust_finalization_ledger.log)"; tail -20 "$LOG_DIR/ff_rust_finalization_ledger.log" | sed 's/^/      /'
+  fi
+  applied_state_markers=(
+    "a_block_lying_about_its_applied_state_effects_is_invalid ... ok"
+    "an_extra_unheld_applied_state_effect_is_rejected_without_dependency_lookup ... ok"
+    "exact_applied_vector_with_missing_source_reports_block_not_held ... ok"
+    "canonical_applied_state_effect_vector_matches_itself ... ok"
+    "absent_or_inherited_non_applied_claim_does_not_match_exact_vector ... ok"
+    "duplicate_applied_state_effect_vector_is_never_canonical ... ok"
+    "out_of_order_applied_state_effect_vector_is_never_canonical ... ok"
+  )
+  if cargo test -p casper --release --lib backstop_tests >"$LOG_DIR/ff_rust_applied_state_validation.log" 2>&1 \
+       && cargo test -p casper --release --lib exact_applied_vector_with_missing_source_reports_block_not_held >>"$LOG_DIR/ff_rust_applied_state_validation.log" 2>&1 \
+       && cargo test -p casper --release --test mod -- batch2::state_facts_spec::a_block_lying_about_its_applied_state_effects_is_invalid --exact >>"$LOG_DIR/ff_rust_applied_state_validation.log" 2>&1 \
+       && cargo test -p casper --release --test mod -- batch2::state_facts_spec::an_extra_unheld_applied_state_effect_is_rejected_without_dependency_lookup --exact >>"$LOG_DIR/ff_rust_applied_state_validation.log" 2>&1 \
+       && all_markers_present "$LOG_DIR/ff_rust_applied_state_validation.log" "${applied_state_markers[@]}"; then
+    pass "Rust applied-state validation rejects unequal claims before lookup and defers exact unavailable sources"
+  else
+    fail "Rust applied-state validation regressions failed (see $LOG_DIR/ff_rust_applied_state_validation.log)"; tail -20 "$LOG_DIR/ff_rust_applied_state_validation.log" | sed 's/^/      /'
+  fi
+  if cargo test -p casper --release --lib replay_post_state >"$LOG_DIR/ff_rust_replay_publication.log" 2>&1 \
+       && cargo test -p casper --release --test mod -- util::rholang::runtime_manager_test::rejected_block_final_state_does_not_publish_mergeable_evidence --exact >>"$LOG_DIR/ff_rust_replay_publication.log" 2>&1 \
+       && grep -q "equal_replay_post_state_is_accepted ... ok" "$LOG_DIR/ff_rust_replay_publication.log" \
+       && grep -q "unequal_replay_post_state_is_rejected_before_publication ... ok" "$LOG_DIR/ff_rust_replay_publication.log" \
+       && grep -q "rejected_block_final_state_does_not_publish_mergeable_evidence ... ok" "$LOG_DIR/ff_rust_replay_publication.log"; then
+    pass "Rust replay publication rejects a mismatched post-state root without publishing mergeable evidence"
+  else
+    fail "Rust replay publication regression failed (see $LOG_DIR/ff_rust_replay_publication.log)"; tail -20 "$LOG_DIR/ff_rust_replay_publication.log" | sed 's/^/      /'
+  fi
+  if cargo test -p casper --release --test mod -- batch2::orphan_reinclusion_spec::own_unmerged_carrier_is_merged_back_never_orphaned --exact >"$LOG_DIR/ff_rust_orphan_reinclusion.log" 2>&1 \
+       && grep -q "own_unmerged_carrier_is_merged_back_never_orphaned ... ok" "$LOG_DIR/ff_rust_orphan_reinclusion.log"; then
+    pass "Rust proposal replay preserves an unmerged local carrier"
+  else
+    fail "Rust orphan-reinclusion regression failed (see $LOG_DIR/ff_rust_orphan_reinclusion.log)"; tail -20 "$LOG_DIR/ff_rust_orphan_reinclusion.log" | sed 's/^/      /'
   fi
   if cargo test -p casper --test mod -- finalized_floor:: >"$LOG_DIR/ff_rust_prop.log" 2>&1 \
        && grep -qE "test result: ok\. [1-9][0-9]* passed" "$LOG_DIR/ff_rust_prop.log"; then
@@ -2700,7 +3036,7 @@ if command -v cargo >/dev/null 2>&1; then
   else
     skip "Loom finalized-floor cache: could not build the loom test in this cfg (fail-soft; see $LOG_DIR/ff_loom.log)"
   fi
-  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery loom_local_validation_recovery loom_parent_post_state_cache loom_recovery_custody; do
+  for loom_protocol in loom_committee_transition loom_objective_equivocation loom_certified_causal_admission loom_consensus_projection_freeze loom_finalization_atomicity loom_live_minority_fork_recovery loom_local_validation_recovery loom_parent_post_state_cache loom_recovery_custody loom_pending_work_readiness loom_deploy_lifecycle_finalization loom_state_effect_provenance loom_applied_state_validation_precedence; do
     loom_protocol_log="$LOG_DIR/ff_${loom_protocol}.log"
     if env RUSTFLAGS='--cfg loom -C target-cpu=native' LOOM_MAX_PREEMPTIONS=3 \
       cargo test -p cost-accounting-loom-models --test "$loom_protocol" >"$loom_protocol_log" 2>&1; then

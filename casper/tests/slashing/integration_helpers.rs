@@ -21,8 +21,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::CERTIFIED_ADMISSION_PROTOCOL_VERSION;
 use models::rust::bond_generation::BondGeneration;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    StateEffectId, ValidatorBondGeneration,
+    BlockMessage, DeployData, ValidatorBondGeneration,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -32,16 +31,6 @@ use super::production_adapter::SlashingProductionAdapter;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisContext;
 
-type CostAccountedCheckpoint = (
-    StateHash,
-    StateHash,
-    Vec<ProcessedDeploy>,
-    Vec<RejectedDeploy>,
-    Vec<StateEffectId>,
-    Vec<ProcessedSystemDeploy>,
-    Vec<Bond>,
-);
-
 async fn compute_cost_accounted_checkpoint(
     producing_node: &mut TestNode,
     snapshot: &CasperSnapshot,
@@ -49,7 +38,7 @@ async fn compute_cost_accounted_checkpoint(
     deploys: Vec<Signed<DeployData>>,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
-) -> Result<CostAccountedCheckpoint, CasperError> {
+) -> Result<interpreter_util::DeploysCheckpoint, CasperError> {
     let latest_messages: BTreeMap<Validator, BlockHash> = snapshot
         .justifications
         .iter()
@@ -118,15 +107,7 @@ async fn compute_cost_accounted_checkpoint(
         admission,
     )
     .await?;
-    Ok((
-        checkpoint.pre_state_hash,
-        checkpoint.post_state_hash,
-        checkpoint.deploys,
-        checkpoint.rejected_deploys,
-        checkpoint.rejected_state_effects,
-        checkpoint.system_deploys,
-        checkpoint.bonds,
-    ))
+    Ok(checkpoint)
 }
 
 async fn validator_caches_at(
@@ -315,15 +296,18 @@ pub async fn equivocate_block(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
@@ -362,10 +346,11 @@ pub async fn equivocate_block(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
-        applied_from_scope: Vec::new(),
-        merge_base: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -471,15 +456,18 @@ pub async fn propose_with_explicit_justifications(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
@@ -514,10 +502,11 @@ pub async fn propose_with_explicit_justifications(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
-        applied_from_scope: Vec::new(),
-        merge_base: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -659,15 +648,18 @@ pub async fn propose_with_block_mutation(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
@@ -702,10 +694,11 @@ pub async fn propose_with_block_mutation(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
-        applied_from_scope: Vec::new(),
-        merge_base: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -823,15 +816,18 @@ pub async fn propose_neglecting_block(
     )
     .await?;
 
-    let (
+    let interpreter_util::DeploysCheckpoint {
         pre_state_hash,
         post_state_hash,
-        processed_deploys,
+        deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
-        processed_system_deploys,
-        new_bonds,
-    ) = checkpoint;
+        applied_state_effects,
+        system_deploys: processed_system_deploys,
+        bonds: new_bonds,
+        applied_from_scope,
+        merge_base,
+    } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
     let (bond_generations, active_validators) =
@@ -866,10 +862,11 @@ pub async fn propose_neglecting_block(
         deploys: processed_deploys,
         rejected_deploys,
         rejected_state_effects,
+        applied_state_effects,
         system_deploys: processed_system_deploys,
         extra_bytes: Bytes::new(),
-        applied_from_scope: Vec::new(),
-        merge_base: Bytes::new(),
+        applied_from_scope,
+        merge_base: merge_base.unwrap_or_default(),
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),

@@ -173,11 +173,11 @@ pub fn new(
         .zip(sys_mergeable_chs.iter())
         .collect();
 
-    // Create user deploy indices - filter out failed deploys
+    // Create user deploy indices for every committed user-state effect.
     let mut usr_deploy_indices = Vec::new();
     for (execution_index, (deploy, merge_chs)) in usr_deploys_with_mergeable.into_iter().enumerate()
     {
-        if !deploy.is_failed {
+        if deploy.has_committed_state_effect() {
             let effect_pre = if has_exact_state_witness {
                 Blake2b256Hash::from_bytes_prost(&deploy.pre_state_hash)
             } else {
@@ -384,6 +384,15 @@ mod tests {
     fn ordinary_execution_failure_retains_its_mergeable_map() {
         let failed = processed_deploy(0, false, true);
         assert_eq!(effect_bearing_user_deploys(&[failed]).len() + 1, 2);
+    }
+
+    #[test]
+    fn state_bound_failure_has_a_committed_merge_effect() {
+        let mut failed = processed_deploy(0, false, true);
+        assert!(!failed.has_committed_state_effect());
+        failed.authority_funding_certificate = Some(Default::default());
+        failed.authority_cost_witness = Some(Default::default());
+        assert!(failed.has_committed_state_effect());
     }
 
     #[test]

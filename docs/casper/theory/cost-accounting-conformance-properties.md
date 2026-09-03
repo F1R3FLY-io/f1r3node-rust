@@ -237,6 +237,15 @@ Each property is one row:
   carrier owner can therefore retry across a split frontier without a serial
   coalescing block. TLC, Apalache, Rocq, and Rust regressions bind the refined
   proposer policy.
+- **v17 (failed-settlement provenance)** — added **CA-P-203** after an
+  end-to-end audit found that failed user bodies can still commit cost state.
+  The user body rolls back, but its verified SystemVault settlement remains.
+  Merge indexing and lifecycle settlement now preserve that exact effect.
+  TLA+, Rocq, Loom, examples, and generated projections cover this boundary.
+- **v18 (restored lifecycle readiness)** — added **CA-P-204** after the
+  full-suite audit exercised a synthetic adopted floor without its cache.
+  Casper now derives the adopted floor before it rebuilds lifecycle work.
+  TLA⁺, Loom, Rust examples, and exact-state properties cover this order.
 
 ---
 
@@ -307,6 +316,9 @@ Each property is one row:
 | CA-P-200 | Consensus-visible terminal admission records MUST remain distinct from runtime-effect records. `BlockIndex` MUST align mergeable metadata, adjacent state witnesses, user/system splitting, and execution indices with exactly the user records whose admission status is `Executed`, plus every processed system execution. A pre-execution funding rejection MUST consume no slot wherever it appears. An ordinary runtime failure MUST retain its slot. Genuine missing or extra effect metadata MUST still fail closed, and the terminal rejection MUST remain in the block for client-visible finality. | RHO transaction/witness/state-update L1770–1805, underfunding rejection L2208–2213, and replay L2242–2270; the papers' assumed native block-body/runtime-effect refinement | Rocq · TLA+ · Apalache · Rust(unit/property/integration) | finalized-floor `AdmissionEffectAlignment.v`; deploy-recovery `AdmissionEffectAlignment.tla` plus raw-status-counting control; `block_index::effect_bearing_user_deploys`; concrete funding-rejection/`closeBlock`, ordinary-failure, order, and generated cardinality tests | 🟡 PARTIAL — formal and focused Rust artifacts pass; canonical multi-node rerun pending |
 | CA-P-201 | A dual-certified cost state discovered through secondary-parent evidence MUST be discoverable by the durable LFB finalizer under the same frozen latest-message context. Finalizer coverage MUST equal exhaustive all-parent pairwise reachability, while each selected target retains its own exact causal certificate, independent exact state-preserving certificate, current-LFB effect preservation, and deterministic greatest `(block_number, block_hash)` rank. Main-parent-only enumeration or evidence substitution for a different target MUST fail. | RHO transaction/state permanence L1770–1805 and replay L2242–2270; MON schedule-independent local sufficiency L1485–1534; the papers' assumed native Casper finalization architecture | Rocq · TLA+ · Apalache · Loom · Rust(example/property/integration) | finalized-floor `FinalizerFloorMaterialization.v`; `FinalizerFloorMaterialization.tla` plus main-parent-only and causal-only controls; exhaustive pairwise selector oracle; strict-boundary, rejected-state, secondary-parent, and reconvergence examples; frozen-target Loom interleaving | 🟡 PARTIAL — focused formal and Rust artifacts pass; aggregate proof and canonical multi-node rerun pending |
 | CA-P-202 | Retry packaging MUST treat the selected parents as one collective frontier. Every valid latest message MUST descend to at least one selected parent. One parent need not cover all latest messages. Floor authorization, carrier-owner custody, strict lifespan, replay, and validation remain mandatory. The bounded lease MAY bypass only incomplete frontier coverage. Ordinary inclusion leadership MUST remain independent, and the repair MUST NOT serialize validators or require a global retry lock. | RHO transaction permanence and rejection L1770–1805 and L2208–2213; MON schedule-independent local sufficiency L1485–1534; the papers' assumed native multi-parent Casper architecture | Rocq · TLA+ · Apalache · Rust(example/integration) | finalized-floor `RecoveryFrontierCoverage.v`; deploy-recovery `RecoveryFrontierCoverage.tla` and one-parent control; split-frontier, permutation, incomplete-frontier, custody, reflexive-cover, lease, and map-cell regressions | 🟡 PARTIAL — focused formal and Rust artifacts pass; aggregate and canonical multi-node reruns pending |
+| CA-P-203 | A failed user body that commits verified cost settlement MUST remain an exact state effect. The body effects MUST roll back while its SystemVault compute, byte, and fee settlement remains merge-visible and replayable. Admission rejection MUST consume no execution index. LFB containment and lifecycle cleanup MUST use the same committed-effect projection. Cleanup MUST require exact effect membership in the adopted LFB state. Finality markers and frozen proposal floors MUST NOT substitute for that membership. Missing history MUST retain pending custody. | RHO transaction/witness/state update L1770–1805, conservative demand and refund L2104–2166, and replay L2242–2270. MON schedule-independent local sufficiency L1485–1534. The papers assume the native Casper settlement architecture. | Rocq · TLA+ · Apalache · Loom · Rust(example/property/integration) | `StateEffectProvenance.v`, `DeployLifecycleFinalization.v`, their TLA+ safe models and controls, the committed-effect projection property, and failed-settlement lifecycle regressions. | 🟡 PARTIAL — Focused Rocq, TLC, Apalache, Loom, and Rust checks pass. Aggregate and canonical multi-node gates are pending. |
+| CA-P-204 | A restored node MUST materialize exact provenance for its adopted last finalized block before lifecycle schedule rebuild or terminal evaluation. Missing provenance MUST stop readiness. The node MUST NOT guess a floor, use a header claim, or create missing tombstones. | RHO transaction/state permanence L1770–1805 and replay L2242–2270. MON schedule-independent local sufficiency L1485–1534. The papers assume the native Casper restoration architecture. | TLA⁺ · Apalache · Loom · Rust(example/property/integration) | `FinalizedOccurrenceStatus.tla`, the unready-settlement controls, `restored_lifecycle_waits_for_floor_materialization`, `restore_preparation_materializes_the_adopted_floor_before_evaluation`, and exact state-effect recurrence properties. | 🟡 PARTIAL — Focused implementation and tests are complete. Aggregate and canonical multi-node gates are pending. |
+| CA-P-205 | Finalized-floor selection MUST identify committed state by exact `(source block, execution index)` identities. Signature equality MUST NOT substitute for effect equality. Every certificate, proposal, replay base, and durable LFB update MUST use the same exact facts. Missing facts MUST defer. Every replay base MUST contain all inherited settled floors. | RHO transaction/state permanence L1770–1805 and replay L2242–2270. MON schedule-independent local sufficiency L1485–1534. The papers assume the native Casper finalization architecture. | Rocq · TLA⁺ · Apalache · Loom · Rust(example/property/integration) | `StateEffectProvenance.exact_floor_selection_end_to_end`, `MainTheorem.finalized_floor_exact_selection_correct`, `ExactFloorSelection.tla` and six controls, exact-state publication Loom tests, and exact-identity, projection, schema, parent-order, and replay-base Rust tests. | 🟡 PARTIAL — Focused formal and Rust checks pass. Aggregate and canonical multi-node gates are pending. |
 | CA-P-032 | Inject persistent **Splitter** `Split(s₁,s₂)` to convert combined→separate fuel.                                                                                                                                                                           | RHO App A.6 Def (Splitter) L2669–2684                                         | Rocq · TLA+        | `Translation.Split_operational`; `FullProtocol.tla`                                                                         | ✅ COVERED |
 | CA-P-033 | Inject persistent **Joiner** `Join(s₁,s₂)` to convert separate→combined fuel; **Exchange** swaps c↔v 1:1.                                                                                                                                                  | RHO App A.6 Def (Joiner) L2686–2701; App B.9 L3726–3749                       | Rocq · TLA+ · Sage · Rust | `Exchange.{exchange_preserves_stack_identity_and_order,exchange_preserves_resource_multiset,exchange_resource_join_requires_both}`; `ExchangeFlow.tla`; `exchange_conservation.sage`; exact-stack exchange regressions | ✅ COVERED |
 | CA-P-169 | Implement capture-avoiding substitution `T{@U/y}` with the rho **dequotation** clause (`(*x){@U/y}=U` iff `y≡ₙx`), substituting the quoted **signed** term **without unwrapping**, so signature/cost provenance survives communication (Rem signed-subst). | RHO §3.5 L799–825                                                             | Rocq               | `CAReduction` substitution; `CATokenConservation.st_token_count_subst_invariant`                                            | ✅ COVERED |
@@ -620,12 +632,12 @@ obligation in the two governing papers is covered except the MON construction th
 paper itself leaves to a sequel (CA-P-181). Direct MeTTaIL generation is an
 implementation adapter explicitly excluded by the user; the native checked
 semantics it must refine are covered by CA-P-131/132. Six publication-only
-PARTIAL rows sit outside this epic. CA-P-196 through CA-P-202 remain inside the
+PARTIAL rows sit outside this epic. CA-P-196 through CA-P-203 remain inside the
 epic pending final verification.
 
 ### 🟡 PARTIAL (stated missing piece per row) — 13
 CA-P-149, CA-P-150, CA-P-153, CA-P-155, CA-P-165, and CA-P-166 are from
-related publications outside the two-paper scope. CA-P-196 through CA-P-202
+related publications outside the two-paper scope. CA-P-196 through CA-P-203
 have implementations and cross-prover artifacts. Each row identifies its
 remaining focused, aggregate, or canonical integration evidence.
 
@@ -638,7 +650,7 @@ remaining focused, aggregate, or canonical integration evidence.
 > pre-state when syntax alone cannot bound resident continuations. The generic proof-bearing bound
 > interface remains the MeTTaIL/GSLT integration seam. At v4, six publication-only
 > PARTIAL rows remained outside this epic. Later revisions added CA-P-196 through
-> CA-P-202 as in-scope PARTIAL rows.
+> CA-P-203 as in-scope PARTIAL rows.
 
 > **v5 closed CA-P-131 and CA-P-132:** the native finite located checker now
 > implements separating surfaces, exact graded spend/post-state, and the
@@ -771,11 +783,11 @@ GR/QFT correspondences (Conclusion) are explicitly curiosities (RHO/MON open pro
   (§1.5 verified properties, §6 headline theorems, §10.3 invariants, §11.3 coverage matrix).
 - **Coarse traceability & three-bucket classification:** `cost-accounting-spec-alignment-audit.md`
   (§2 matrix, §3 buckets A/B/C, §8 publications crosswalk F-A…F-D / REV / §D2.9).
-- **Decision records:** `cost-accounting-decision-records.md` (DR-1…DR-53).
+- **Decision records:** `cost-accounting-decision-records.md` (DR-1…DR-57).
 - **Threat model:** `cost-accounting-threat-model.md` (TM-CA-151 digest-diagnostic,
   164 compound over-admission, 165 cross-group, 166 no-weakening, 168 genesis replay trust root,
   173 replay-snapshot boundary, 174 atomic native settlement, 175 authenticated normalizer environment).
-- **Use-case adequacy:** `cost-accounting-use-cases.md` (UC-CA-001…180, including implementation-refinement cases, ↔ `UseCaseAdequacy.v` and end-to-end artifacts).
+- **Use-case adequacy:** `cost-accounting-use-cases.md` (UC-CA-001…184, including implementation-refinement cases, ↔ `UseCaseAdequacy.v` and end-to-end artifacts).
 - **Monad correspondence:** `cost-accounting-as-monad-correspondence.md`.
 - **Impl designs:** `cost-accounting-impl/{w1-*,w2-*,d2-9-*,d3-*,f-a-*,funding-slots-*,
   stageb-*,staged-fee-exchange,supply-realization-*,wd-d2-*,workstream-*}.md`.
