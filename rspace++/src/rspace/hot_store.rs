@@ -85,6 +85,9 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     /// hot-store revision was created. `None` means this implementation does
     /// not expose a journal; it must never be interpreted as an empty journal.
     fn pending_data_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
+    /// Return normalized resting-join path changes, or `None` when the
+    /// implementation has no join-journal capability.
+    fn pending_join_delta(&self) -> Result<Option<BagDelta>, RSpaceError>;
     fn apply_accepted_match(
         &self,
         transition: AcceptedMatch<C>,
@@ -791,6 +794,17 @@ where
                 .read()
                 .expect("hot store state read lock")
                 .data
+                .pending_delta()
+                .clone(),
+        ))
+    }
+
+    fn pending_join_delta(&self) -> Result<Option<BagDelta>, RSpaceError> {
+        Ok(Some(
+            self.state
+                .read()
+                .expect("hot store state read lock")
+                .joins
                 .pending_delta()
                 .clone(),
         ))

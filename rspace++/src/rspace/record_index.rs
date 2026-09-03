@@ -17,6 +17,7 @@ use std::sync::Arc;
 use pathmap::PathMap;
 use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 
+use super::bag::{BagDelta, Multiplicity};
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_slice};
 use super::history::cold_store::{CanonicalCollectionKind, PERSISTED_DATA_HEADER_LEN};
@@ -1250,6 +1251,7 @@ where
 pub(crate) struct RSpaceJoinStore<C: Clone + Send + Sync> {
     resting: OrderedGroupStore<C, Vec<C>, false>,
     installed: OrderedGroupStore<C, Vec<C>, false>,
+    pending_delta: BagDelta,
 }
 
 impl<C: Clone + Send + Sync> Default for RSpaceJoinStore<C> {
@@ -1257,6 +1259,7 @@ impl<C: Clone + Send + Sync> Default for RSpaceJoinStore<C> {
         Self {
             resting: OrderedGroupStore::default(),
             installed: OrderedGroupStore::default(),
+            pending_delta: BagDelta::new(),
         }
     }
 }
@@ -1287,7 +1290,8 @@ where C: Clone + RhoPathEncode + Send + Sync
     pub(crate) fn put(&mut self, channel: &C, join: &[C]) -> bool {
         let prefix = RhoPathV1::join_prefix(channel);
         let identity = encode_join_record(join);
-        self.resting
+        let inserted = self
+            .resting
             .insert(
                 &prefix,
                 Arc::from([channel.clone()]),
@@ -1295,7 +1299,14 @@ where C: Clone + RhoPathEncode + Send + Sync
                 identity.clone(),
                 join.to_vec(),
             )
-            .expect("typed join records must have an injective frozen encoding")
+            .expect("typed join records must have an injective frozen encoding");
+        if inserted {
+            let path = RhoPathV1::collection_record_path(&prefix, &identity);
+            self.pending_delta
+                .record_addition(&path, Multiplicity::new(1).expect("one is nonzero"))
+                .expect("a successful join insertion is representable");
+        }
+        inserted
     }
 
     pub(crate) fn install(&mut self, channel: &C, join: &[C]) -> bool {
@@ -1325,8 +1336,17 @@ where C: Clone + RhoPathEncode + Send + Sync
     pub(crate) fn remove(&mut self, channel: &C, join: &[C]) -> Option<Vec<C>> {
         let prefix = RhoPathV1::join_prefix(channel);
         let identity = encode_join_record(join);
-        self.resting.remove_identity(&prefix, &identity)
+        let removed = self.resting.remove_identity(&prefix, &identity);
+        if removed.is_some() {
+            let path = RhoPathV1::collection_record_path(&prefix, &identity);
+            self.pending_delta
+                .record_removal(&path, Multiplicity::new(1).expect("one is nonzero"))
+                .expect("a successful join removal is representable");
+        }
+        removed
     }
+
+    pub(crate) fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
     pub(crate) fn loaded_records(&self) -> Vec<(C, Vec<Vec<C>>)> {
         self.resting
