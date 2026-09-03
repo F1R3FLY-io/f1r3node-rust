@@ -14,12 +14,13 @@ use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use super::history_reader::HistoryReader;
 use super::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use super::instances::rspace_history_reader_impl::RSpaceHistoryReaderImpl;
-use crate::rspace::errors::HistoryError;
+use crate::rspace::errors::{HistoryError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_vec};
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
+use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::hot_store_action::DeleteAction::{
     DeleteCanonicalCollection, DeleteCanonicalData, DeleteContinuations, DeleteData, DeleteJoins,
 };
@@ -544,6 +545,29 @@ where
         };
 
         self.do_checkpoint(trie_actions)
+    }
+
+    fn checkpoint_at(
+        &self,
+        expected: &CurrentRoot,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError> {
+        let actual = self.authority.current_verified_root()?.ok_or_else(|| {
+            HistoryError::ActionError("RSpace authority has no current root".into())
+        })?;
+        if &actual != expected {
+            return Err(HistoryError::RootError(RootError::RootCatalogConflict {
+                expected_generation: Some(expected.generation()),
+                actual_generation: Some(actual.generation()),
+            }));
+        }
+        self.checkpoint(actions)
+    }
+
+    fn current_authority_root(&self) -> Result<CurrentRoot, HistoryError> {
+        self.authority
+            .current_verified_root()?
+            .ok_or_else(|| HistoryError::ActionError("RSpace authority has no current root".into()))
     }
 
     fn do_checkpoint(

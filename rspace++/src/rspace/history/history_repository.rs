@@ -10,6 +10,7 @@ use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::history::history::HistoryInstances;
 use crate::rspace::history::history_reader::HistoryReader;
 use crate::rspace::history::history_repository_impl::HistoryRepositoryImpl;
+use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::hot_store_action::HotStoreAction;
 use crate::rspace::hot_store_trie_action::HotStoreTrieAction;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -27,6 +28,19 @@ pub trait HistoryRepository<C: Clone, P: Clone, A: Clone, K: Clone>: Send + Sync
         &self,
         actions: Vec<HotStoreAction<C, P, A, K>>,
     ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError>;
+
+    /// Checkpoint only if the legacy authority still names `expected`.
+    /// Implementations must perform this check before transforming actions;
+    /// callers use it to close the stale-root window at the legacy boundary.
+    fn checkpoint_at(
+        &self,
+        expected: &CurrentRoot,
+        actions: Vec<HotStoreAction<C, P, A, K>>,
+    ) -> Result<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>, HistoryError>;
+
+    /// Return the authenticated legacy root and generation used by the next
+    /// checkpoint. Callers pass this exact value to `checkpoint_at`.
+    fn current_authority_root(&self) -> Result<CurrentRoot, HistoryError>;
 
     fn do_checkpoint(
         &self,
