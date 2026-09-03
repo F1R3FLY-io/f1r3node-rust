@@ -158,6 +158,8 @@ continuation branch and requires a committed datum-only successor.
 `replaying_a_committed_one_shot_match_is_stale_and_nonmutating` verifies that replaying the exact
 proposal after its first commit is rejected by freshness/version checks without changing the
 published state or checkpoint projection.
+`a_continuation_source_mismatch_is_stale_before_a_nonempty_delta` adds the independent source-
+metadata witness check and proves it also precedes mutation.
 
 Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 

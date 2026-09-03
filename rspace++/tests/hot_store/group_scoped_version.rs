@@ -482,3 +482,49 @@ fn replaying_a_committed_one_shot_match_is_stale_and_nonmutating() {
         store.checkpoint_changes().expect("checkpoint projection")
     );
 }
+
+#[test]
+fn a_continuation_source_mismatch_is_stale_before_a_nonempty_delta() {
+    let channels = vec!["source-check".to_owned()];
+    let datum = Datum::create(&channels[0], "payload".to_owned(), false);
+    let selected = continuation(10, "source-check");
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channels[0].clone(), vec![datum.clone()])]),
+        joins: HashMap::new(),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, _) = store.get_continuations_versioned(&channels);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture removal fits u64");
+    let before = store.snapshot();
+    let before_checkpoint = store.checkpoint_changes().expect("checkpoint projection");
+    let mut wrong_source = selected.source.clone();
+    wrong_source.hash = Blake2b256Hash::from_bytes(vec![11; 32]);
+
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: ContinuationAddress::new(version, 0),
+                source: wrong_source,
+                persist: selected.persist,
+                peeks: selected.peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths: Vec::new(),
+            join_channels: Vec::new(),
+        })
+        .expect("source mismatch is an ordinary stale outcome");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Stale));
+    assert_same_state(&before, &store.snapshot());
+    assert_eq!(before_checkpoint, store.checkpoint_changes().expect("checkpoint projection"));
+}
