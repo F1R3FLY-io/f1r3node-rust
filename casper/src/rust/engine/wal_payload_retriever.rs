@@ -690,9 +690,13 @@ mod tests {
                 .mark_resolved(h, b"different bytes".to_vec())
                 .await
         );
-        // The entry was created (side-effect of the write) but has
-        // no bytes → still pending.
-        assert!(!retriever.is_complete().await);
+        // Mismatch path in `mark_resolved` returns early at the
+        // hash check — BEFORE grabbing the write lock — so no entry
+        // is created.  Per the docstring, callers that see `false`
+        // are expected to call `enqueue` explicitly if they want
+        // pending state; `mark_resolved` itself performs a pure
+        // rejection with no side effects on the retriever map.
+        assert!(retriever.is_complete().await);
         assert_eq!(retriever.get_bytes(&h).await, None);
     }
 
