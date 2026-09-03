@@ -691,7 +691,7 @@ pub fn sequential_export(
     );
 
     /*
-     * Export one element (Node or Leaf) and recursively move to the next step.
+     * Export one element (Node or Leaf) and return the next explicit step.
      */
     let export_step: Box<
         dyn Fn(
