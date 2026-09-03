@@ -237,16 +237,16 @@ rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthority.v 11 \
   "the exact two-level RSpace continuation and join authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 14 \
+  theories/TwoLevelRSpaceContinuationAuthorityMutants.v 16 \
   "the continuation and join authority causal controls"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchPreparation.v 19 \
+  theories/TwoLevelRSpaceMatchPreparation.v 24 \
   "the constructive two-level RSpace match PREPARE authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchTransaction.v 8 \
+  theories/TwoLevelRSpaceMatchTransaction.v 15 \
   "the exact two-level RSpace accepted-match authority"
 rocq_compile_with_closed_count \
-  theories/TwoLevelRSpaceMatchTransactionMutants.v 5 \
+  theories/TwoLevelRSpaceMatchTransactionMutants.v 11 \
   "the two-level RSpace accepted-match causal controls"
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceCheckpointRecovery.v 14 \
@@ -343,8 +343,13 @@ tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorAuthorityV2.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV3.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV4.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1CursorPositiveV4Mutants.v
-tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5.v
-tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5Mutants.v
+# The concrete ACT admission development has a substantially larger checked
+# term environment than the stack-safe PDA units above.  Keep it bounded, but
+# give only these two compilation units the measured 4 GiB ceiling they need.
+TLC_MEMORY_HIGH=3G TLC_RSS=4G \
+  tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5.v
+TLC_MEMORY_HIGH=3G TLC_RSS=4G \
+  tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1ActConcreteV5Mutants.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1PositionalAssociationV6.v
 tlc_bounded "$coqc_bin" -Q theories '' theories/Epm1PositionalAssociationV6Mutants.v
 popd >/dev/null
