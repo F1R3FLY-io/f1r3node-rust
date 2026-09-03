@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use pathmap::PathMap;
+
 use super::canonical_rebuild_oracle::{Entries, rebuild};
 use super::support::{
     TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, TracingStore, admit, empty_roots, encode,
@@ -12,8 +14,8 @@ use crate::rspace::persistence::{
     CanonicalObjectView, ClosureError, DagTransactionError, DagTransactionLimits, EndpointValue,
     ImmutableObjectStore, IncrementalClosureLimits, IncrementalSemanticLimits, LegacyHistoryRoot,
     MutableObjectStore, MutationBatchViewV1, ObjectAdmission, ObjectDigest, ObjectRefV1,
-    OpenDagTransaction, RSpaceMutationBatchV1, RewriteError, SemanticRoots,
-    RSpaceSemanticProfile, SemanticProfile, SemanticStateManifestV1, SemanticValidationLimits,
+    OpenDagTransaction, RSpaceMutationBatchV1, RSpaceSemanticProfile, RewriteError,
+    SemanticProfile, SemanticRoots, SemanticStateManifestV1, SemanticValidationLimits,
     StagingStoreError, StagingStoreLimits, StateVersionV1, StructuralValidationLimits,
     VerifiedDagState,
 };
@@ -272,6 +274,51 @@ fn referenced_continuation_source_is_sealed_and_semantically_verified() {
     assert_eq!(report.changed_continuations, 1);
     assert_eq!(report.changed_joins, 1);
     assert_eq!(report.join_lookups, 1);
+}
+
+#[test]
+fn continuation_source_journal_stages_exact_pathmap_bytes() {
+    let store = CanonicalObjectStore::new();
+    let base = base_state(&store, 9, None);
+    let (bytes, source, expected_source) = continuation_fixture(base, true);
+    let view = MutationBatchViewV1::parse(&bytes).unwrap();
+    let verified = VerifiedDagState::<_, TestSemanticProfile>::admit(
+        &store,
+        base,
+        SemanticValidationLimits::unbounded(),
+    )
+    .unwrap();
+
+    let channels = vec!["channel".to_owned()];
+    let patterns = vec!["pattern".to_owned()];
+    let waiting = WaitingContinuation::create(
+        &channels,
+        &patterns,
+        &"continuation".to_owned(),
+        false,
+        BTreeSet::from([0]),
+    );
+    let identity = encode_continuation_identity(&waiting);
+    let continuation_path =
+        RhoPathV1::collection_record_path(&RhoPathV1::continuation_prefix(&channels), &identity);
+    let transition =
+        crate::rspace::persistence::ContentTransition::new(None, Some(expected_source)).unwrap();
+    let mut transitions = PathMap::new();
+    transitions.insert(continuation_path.clone(), transition);
+    let mut source_bytes = PathMap::new();
+    let encoded_source: Arc<[u8]> = encode(&source).into();
+    source_bytes.insert(continuation_path, encoded_source.clone());
+
+    let mut open =
+        OpenDagTransaction::new(verified, view, DagTransactionLimits::UNBOUNDED).unwrap();
+    open.stage_continuation_source_journal(&transitions, &source_bytes)
+        .unwrap();
+    let sealed = open
+        .seal()
+        .expect("the journal's exact source bytes form a coherent target");
+    assert!(sealed.objects().iter().any(|object| {
+        object.reference() == expected_source && object.canonical_bytes() == encoded_source.as_ref()
+    }));
 }
 
 #[test]
