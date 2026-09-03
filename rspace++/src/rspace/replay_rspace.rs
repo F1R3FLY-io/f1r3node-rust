@@ -66,6 +66,10 @@ pub struct ReplayRSpace<C, P, A, K> {
     replay_waiting_continuations_estimate: Arc<AtomicI64>,
     phase_a_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     phase_b_locks: Arc<DashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    /// Coordinates checkpoint/reset publication with replay mutations. The
+    /// hot store remains copy-on-write, but its root, replay log, and history
+    /// authority must be observed as one transaction boundary.
+    operation_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
@@ -244,6 +248,7 @@ where
     K: Clone + Debug + Default + Serialize + StableHashSerialize + 'static + Sync + Send,
 {
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         self.check_replay_data().await?;
 
         let changes = self.get_store().checkpoint_changes()?;
@@ -264,6 +269,7 @@ where
     }
 
     async fn reset(&self, root: &Blake2b256Hash) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         let next_history = self.get_history_repository().reset(root)?;
         *self.history_repository.write().expect("history write lock") = Arc::new(next_history);
 
@@ -306,6 +312,7 @@ where
     async fn get_joins(&self, channel: C) -> Vec<Vec<C>> { self.get_store().get_joins(&channel) }
 
     async fn remove_all_data(&self, channel: &C) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         let len = self.get_store().get_data(channel).len();
         for index in (0..len).rev() {
             self.get_store().remove_datum(channel, index as i32)?;
@@ -314,6 +321,7 @@ where
     }
 
     async fn remove_all_continuations(&self, channels: Vec<C>) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         let len = self.get_store().get_continuations(&channels).len();
         for index in (0..len).rev() {
             let _ = self
@@ -333,6 +341,7 @@ where
     async fn to_map(&self) -> HashMap<Vec<C>, Row<P, A, K>> { self.get_store().to_map() }
 
     async fn create_soft_checkpoint(&self) -> SoftCheckpoint<C, P, A, K> {
+        let _operation_guard = self.operation_gate.write().await;
         let cache_snapshot = self.get_store().snapshot();
         let curr_event_log = std::mem::take(&mut *self.event_log.lock().expect("event log lock"));
         let curr_produce_counter =
@@ -355,6 +364,7 @@ where
         &self,
         checkpoint: SoftCheckpoint<C, P, A, K>,
     ) -> Result<(), RSpaceError> {
+        let _operation_guard = self.operation_gate.write().await;
         let history = self.get_history_repository();
         let history_reader = history.get_history_reader(&history.root())?;
         let hot_store = HotStoreInstances::create_from_hs_and_hr(
@@ -398,6 +408,7 @@ where
                 "RUST ERROR: channels.length must equal patterns.length".to_string(),
             ))
         } else {
+            let _operation_guard = self.operation_gate.read().await;
             let consume_ref = Consume::create(&channels, &patterns, &continuation, persist);
             let channel_hashes: Vec<u64> =
                 channels.iter().map(|ch| Self::channel_hash(ch)).collect();
@@ -419,6 +430,7 @@ where
         data: A,
         persist: bool,
     ) -> Result<MaybeProduceResult<C, P, A, K>, RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         let produce_ref = Produce::create(&channel, &data, persist);
         let _lock_guard = self.produce_lock(&channel).await;
         metrics::counter!("replay_rspace.produce.calls", "source" => "rspace").increment(1);
@@ -435,6 +447,7 @@ where
         patterns: Vec<P>,
         continuation: K,
     ) -> Result<Option<(K, Vec<A>)>, RSpaceError> {
+        let _operation_guard = self.operation_gate.read().await;
         self.locked_install_internal(channels, patterns, continuation, true)
     }
 
@@ -608,6 +621,7 @@ where
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            operation_gate: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -635,6 +649,7 @@ where
             replay_waiting_continuations_estimate: Arc::new(AtomicI64::new(0)),
             phase_a_locks: Arc::new(DashMap::new()),
             phase_b_locks: Arc::new(DashMap::new()),
+            operation_gate: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
