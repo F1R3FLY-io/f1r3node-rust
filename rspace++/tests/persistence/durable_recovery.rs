@@ -403,11 +403,10 @@ fn checkpoint_then_incremental_image_with_identity(
     )
     .unwrap();
     let current_state_bytes = sealed.diagnostics().closure.canonical_bytes;
-    let new_canonical_bytes = sealed
-        .objects()
-        .iter()
-        .try_fold(0u64, |total, object| total.checked_add(object.reference().encoded_len()))
-        .unwrap();
+    // Differential publication accounts only for bytes physically emitted by
+    // this PREPARE. Reused objects remain in the authenticated prior index
+    // and must not inflate the successor's retained-byte inventory.
+    let new_canonical_bytes = prepared.inline_object_bytes();
     let retained_bytes = source
         .descriptor
         .inventory()
