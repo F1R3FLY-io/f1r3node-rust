@@ -31,6 +31,15 @@ pub const FSERR_CANCELLED: &str = "FSERR_CANCELLED";
 /// See auto-memory `fileio_wal_replay_verification_gap.md` for the
 /// design authority.
 pub const FSERR_CONSENSUS_DIVERGENCE: &str = "FSERR_CONSENSUS_DIVERGENCE";
+/// NB-7 cross-deploy mutual-wait deadlock detection (2026-09-02):
+/// a `wait: true` acquire that would close a cycle in the
+/// cross-deploy wait-for graph is refused eagerly at enqueue time.
+/// Distinct from `FSERR_BUSY` (conflict at request time, no cycle)
+/// and `FSERR_CANCELLED` (parked, then swept) — this fires BEFORE
+/// the waiter is enqueued and preserves the two deploys' prior
+/// work.  See `LockRegistry::would_close_cycle` and
+/// `docs/consensus-invariants.md § 8`.
+pub const FSERR_DEADLOCK: &str = "FSERR_DEADLOCK";
 
 use std::io;
 
@@ -77,6 +86,10 @@ pub const FSERR_CODE_CANCELLED: u32 = 12;
 /// (code 13) per the "new codes append at the end" convention.
 /// DO NOT reorder or renumber existing codes.
 pub const FSERR_CODE_CONSENSUS_DIVERGENCE: u32 = 13;
+/// NB-7 deadlock detection (2026-09-02) — appended (code 14) per
+/// the "new codes append at the end" convention.  DO NOT reorder
+/// or renumber existing codes.
+pub const FSERR_CODE_DEADLOCK: u32 = 14;
 
 /// Map a spec-canonical FSERR string to its stable u32 code for
 /// on-wire encoding in the WAL.  Unknown / non-canonical inputs
@@ -97,6 +110,7 @@ pub fn fserr_to_code(s: &str) -> u32 {
         FSERR_CROSS_DEVICE => FSERR_CODE_CROSS_DEVICE,
         FSERR_CANCELLED => FSERR_CODE_CANCELLED,
         FSERR_CONSENSUS_DIVERGENCE => FSERR_CODE_CONSENSUS_DIVERGENCE,
+        FSERR_DEADLOCK => FSERR_CODE_DEADLOCK,
         _ => FSERR_CODE_UNKNOWN,
     }
 }

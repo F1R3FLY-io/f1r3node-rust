@@ -97,9 +97,9 @@ Related structural invariants:
 ### 4. FSERR_CODE_* numeric values
 
 The numeric codes in `errors.rs` (e.g., `FSERR_CODE_NOT_FOUND`,
-`FSERR_CODE_CONSENSUS_DIVERGENCE = 13`) surface in
-`WalOutcome::Failure { code }` and in `err` reply strings.
-Renumbering ANY code is a hard fork.
+`FSERR_CODE_CONSENSUS_DIVERGENCE = 13`, `FSERR_CODE_DEADLOCK = 14`)
+surface in `WalOutcome::Failure { code }` and in `err` reply
+strings.  Renumbering ANY code is a hard fork.
 
 ### 5. Byte gates
 
@@ -154,6 +154,34 @@ Whether a given cap + cmode combination:
 
 Changing any dispatch rule (adding a ban, removing a gate,
 switching a per-cmode journal decision) is a hard fork.
+
+### 8. NB-7 cross-deploy mutual-wait cycle detection
+
+`LockRegistry::would_close_cycle` refuses any `wait: true`
+acquire that would close a cycle in the cross-deploy wait-for
+graph, returning `FSERR_DEADLOCK` (code 14) at the native
+boundary.  Consensus-observable in three respects:
+
+1. **The predicate itself** — the graph is derived byte-for-
+   byte from the current `LockRegistry` state (holders +
+   parked waiters), and reachability is a pure set predicate
+   independent of HashMap iteration order.  A validator without
+   cycle detection would admit an acquire that a detecting
+   validator refuses → immediate WAL / reply divergence.
+2. **The FSERR code** — `FSERR_DEADLOCK` / `FSERR_CODE_DEADLOCK = 14`
+   in the § 4 code table.
+3. **Ordering vs. quota check** — quota (`MAX_WAITERS_PER_FILE`)
+   is checked FIRST; cycle detection runs only if quota admits
+   the park.  Swapping the order (deadlock-first vs. quota-first)
+   would change which FSERR code fires when both conditions hold,
+   producing divergent replies at boundary cases.
+
+Applied symmetrically to `try_acquire_range_wait` and
+`try_acquire_sequential_wait` (they share the same `state.waiters`
+deque and the same wait-for graph).  Seeds exclude the requesting
+deploy's own holds — same-deploy holds cannot form a cross-deploy
+cycle by definition; they are covered by the pre-existing
+same-holder skip in `range_conflicts`.
 
 ## When editing any of the surfaces above
 

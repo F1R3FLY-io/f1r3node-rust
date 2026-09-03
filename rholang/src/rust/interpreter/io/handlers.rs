@@ -5701,6 +5701,14 @@ fn lock_err_reply(le: LockError) -> Par {
         // deterministic replay per plan §X-2; the string reply body
         // still maps through this helper.
         LockError::Cancelled => err(FSERR_CANCELLED, "wait:true lock acquisition cancelled"),
+        // NB-7 (2026-09-02): cross-deploy mutual-wait deadlock
+        // detected at enqueue time — the requested wait:true acquire
+        // would close a cycle in the cross-deploy wait-for graph, so
+        // it is refused eagerly without allocating a Waiter struct.
+        LockError::Deadlock => err(
+            FSERR_DEADLOCK,
+            "wait:true lock acquisition would close cross-deploy wait-for cycle",
+        ),
     }
 }
 

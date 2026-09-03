@@ -279,6 +279,20 @@ pub enum LockError {
     /// so the follower's replay path sees the outcome deterministically
     /// (plan §X-2).
     Cancelled,
+    /// NB-7 cross-deploy mutual-wait deadlock detection (2026-09-02):
+    /// the requested `wait: true` acquire would close a cycle in the
+    /// cross-deploy wait-for graph — some current holder H of the
+    /// target `(dev, inode)` is transitively parked waiting for a lock
+    /// held by the requesting deploy.  Refused eagerly at enqueue
+    /// time; no Waiter struct is allocated.  Maps to `FSERR_DEADLOCK`.
+    ///
+    /// Consensus-observable — every validator computes the same
+    /// wait-for graph from a byte-identical `LockRegistry`, so the
+    /// cycle predicate is byte-identical.  Firing order relative to
+    /// `QuotaExceeded` is fixed: quota is checked first (matches the
+    /// existing idiom + O(1) cost).  See `would_close_cycle` docstring
+    /// and `docs/consensus-invariants.md § 8`.
+    Deadlock,
 }
 
 /// Whether a conflicting acquire fails fast or parks in the FIFO
@@ -491,6 +505,18 @@ impl LockRegistry {
                     if state.waiters.len() >= MAX_WAITERS_PER_FILE {
                         return Err(LockError::QuotaExceeded);
                     }
+                    // NB-7 (2026-09-02): cross-deploy mutual-wait
+                    // deadlock detection.  If admitting this waiter
+                    // would close a cycle in the cross-deploy wait-
+                    // for graph, refuse eagerly BEFORE allocating a
+                    // Waiter struct.  Ordering (quota-first, cycle-
+                    // second) is consensus-observable — see
+                    // `LockError::Deadlock` docstring and
+                    // `docs/consensus-invariants.md § 8`.
+                    if would_close_cycle(&guard, deploy, dev_inode) {
+                        return Err(LockError::Deadlock);
+                    }
+                    let state = guard.entry(dev_inode).or_default();
                     let id = self.mint_id()?;
                     let (tx, rx) = oneshot::channel();
                     state.waiters.push_back(Waiter {
@@ -569,6 +595,13 @@ impl LockRegistry {
                     if state.waiters.len() >= MAX_WAITERS_PER_FILE {
                         return Err(LockError::QuotaExceeded);
                     }
+                    // NB-7 (2026-09-02): cross-deploy mutual-wait
+                    // deadlock detection — symmetric with the range-
+                    // wait branch above.  Same quota-first ordering.
+                    if would_close_cycle(&guard, deploy, dev_inode) {
+                        return Err(LockError::Deadlock);
+                    }
+                    let state = guard.entry(dev_inode).or_default();
                     let id = self.mint_id()?;
                     let (tx, rx) = oneshot::channel();
                     state.waiters.push_back(Waiter {
@@ -1052,6 +1085,106 @@ fn ranges_overlap(a: (u64, u64), b: (u64, u64)) -> bool {
     let a_end = a.0.saturating_add(a.1);
     let b_end = b.0.saturating_add(b.1);
     a.0 < b_end && b.0 < a_end
+}
+
+/// NB-7 cross-deploy mutual-wait deadlock detection (2026-09-02).
+///
+/// Returns `true` iff admitting a new `wait: true` acquire by
+/// `waiter_deploy` on `target_dev_inode` would close a cycle in the
+/// cross-deploy wait-for graph.
+///
+/// # Graph
+///
+/// - Node: `DeployScope`.
+/// - Edge D → H: deploy D is currently parked on some `(dev, inode)`
+///   whose current holder is deploy H (D.deploy ≠ H.deploy).
+///
+/// A cycle closes iff some current holder H of `target_dev_inode`
+/// (H.deploy ≠ waiter_deploy) is transitively reachable from
+/// `waiter_deploy` via existing edges, i.e., admitting the new edge
+/// `waiter_deploy → H` would create a back-edge in the DAG.
+///
+/// # Determinism
+///
+/// Reachability is a pure set predicate on the graph, so the
+/// answer is order-independent w.r.t. HashMap iteration of the
+/// registry map or Vec iteration of `state.ranges`.  Two validators
+/// with byte-identical `LockRegistry` state compute the same
+/// answer regardless of internal iteration order.
+///
+/// # Complexity
+///
+/// O(V + E) where V ≤ number of live deploys with any lock or
+/// waiter, E ≤ V × F (F = files a deploy is parked on).  In the
+/// expected workload (small F, single-digit V) this is a handful
+/// of comparisons per park.  Worst case is bounded by the runtime-
+/// wide `MAX_OPEN_FDS × MAX_WAITERS_PER_FILE` product.
+///
+/// # Self-deploy edges
+///
+/// The DFS never follows an edge into `waiter_deploy` from
+/// `waiter_deploy` (same-deploy self-yield is handled by the
+/// existing same-holder skip in range_conflicts, and the seeds
+/// exclude waiter_deploy's own holds).  Same-deploy holds on the
+/// target file cannot form a cross-deploy cycle by definition.
+fn would_close_cycle(
+    guard: &HashMap<DevInode, FileLockState>,
+    waiter_deploy: DeployScope,
+    target_dev_inode: DevInode,
+) -> bool {
+    use std::collections::BTreeSet;
+    // Seeds: every deploy that currently holds a lock on the
+    // target file, excluding waiter_deploy (same-deploy holds
+    // cannot form a cross-deploy cycle).
+    let mut stack: Vec<DeployScope> = Vec::new();
+    if let Some(state) = guard.get(&target_dev_inode) {
+        for r in &state.ranges {
+            if r.deploy != waiter_deploy {
+                stack.push(r.deploy);
+            }
+        }
+        if let Some(s) = &state.sequential_holder {
+            if s.deploy != waiter_deploy {
+                stack.push(s.deploy);
+            }
+        }
+    }
+    if stack.is_empty() {
+        return false;
+    }
+    // DFS: does any seed reach waiter_deploy via existing wait-for
+    // edges?  `visited` is a BTreeSet for stable iteration if we
+    // ever debug-print it (the reachability answer itself is
+    // iteration-order-independent).
+    let mut visited: BTreeSet<DeployScope> = BTreeSet::new();
+    while let Some(node) = stack.pop() {
+        if node == waiter_deploy {
+            return true;
+        }
+        if !visited.insert(node) {
+            continue;
+        }
+        // For every file where `node` has a parked waiter, add
+        // every deploy that holds a lock on that file (excluding
+        // node itself — same-deploy holds are not real edges).
+        for state in guard.values() {
+            let node_parked = state.waiters.iter().any(|w| w.deploy == node);
+            if !node_parked {
+                continue;
+            }
+            for r in &state.ranges {
+                if r.deploy != node && !visited.contains(&r.deploy) {
+                    stack.push(r.deploy);
+                }
+            }
+            if let Some(s) = &state.sequential_holder {
+                if s.deploy != node && !visited.contains(&s.deploy) {
+                    stack.push(s.deploy);
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1900,6 +2033,350 @@ mod tests {
             )
             .expect("wait must park cleanly after sweep"),
         );
+    }
+
+    // -- NB-7 cross-deploy mutual-wait deadlock detection ---------------
+    //
+    // The would_close_cycle predicate refuses `wait: true` acquires
+    // that would close a cycle in the cross-deploy wait-for graph.
+    // Fires eagerly BEFORE the Waiter is enqueued.  Distinct from
+    // FSERR_BUSY (immediate conflict) and FSERR_CANCELLED (parked
+    // then swept).  Hard-fork surface — see docs/consensus-invariants.md § 8.
+
+    /// AB/BA range-lock cycle: deploy(1) holds file A, deploy(2) holds
+    /// file B; each parks wait:true on the other's file.  The second
+    /// park closes a cycle and must be refused with Deadlock.  The
+    /// first park is not cyclic (only one edge exists at that moment)
+    /// and correctly parks.
+    #[test]
+    fn deadlock_detection_refuses_ab_ba_range_cycle() {
+        let reg = LockRegistry::new();
+        // Two files: A = (1, 42), B = (1, 43).
+        // deploy(1) holds A; deploy(2) holds B.
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("deploy(1) acquires A");
+        reg.try_acquire_range((1, 43), 0, u64::MAX, LockMode::Write, holder(2), deploy(2))
+            .expect("deploy(2) acquires B");
+        // deploy(1) parks wait:true on B (held by deploy(2)) — legal:
+        // no cycle yet (deploy(2) is not waiting on anything).
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 43),
+                0,
+                100,
+                LockMode::Read,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .expect("first park must succeed — no cycle yet"),
+        );
+        // deploy(2) tries wait:true on A (held by deploy(1)) — would
+        // close the AB/BA cycle: deploy(2) → deploy(1) → deploy(2).
+        // Must be refused with Deadlock BEFORE allocating a Waiter.
+        let err = reg
+            .try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect_err("cycle-closing wait must be refused");
+        assert_eq!(err, LockError::Deadlock);
+        // No new Waiter was allocated for the refused acquire —
+        // deque length is still 1 (the earlier legal park).
+        assert_eq!(reg.parked_waiters(), 1);
+    }
+
+    /// Symmetric case at the sequential-lock path: the two paths share
+    /// the `state.waiters` deque and the cycle check fires on either.
+    #[test]
+    fn deadlock_detection_refuses_ab_ba_sequential_cycle() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_sequential((1, 42), holder(1), deploy(1))
+            .expect("deploy(1) acquires seq A");
+        reg.try_acquire_sequential((1, 43), holder(2), deploy(2))
+            .expect("deploy(2) acquires seq B");
+        // deploy(1) parks on B — legal (no cycle yet).
+        expect_parked(
+            reg.try_acquire_sequential_wait((1, 43), holder(1), deploy(1), WaitPolicy::Wait)
+                .expect("first seq park must succeed"),
+        );
+        // deploy(2) parks on A — would close the AB/BA cycle.
+        let err = reg
+            .try_acquire_sequential_wait((1, 42), holder(2), deploy(2), WaitPolicy::Wait)
+            .expect_err("cycle-closing seq wait must be refused");
+        assert_eq!(err, LockError::Deadlock);
+        assert_eq!(reg.parked_waiters(), 1);
+    }
+
+    /// Three-deploy cycle: deploy(1) holds A, deploy(2) holds B,
+    /// deploy(3) holds C.  Parks form the chain 1→2, 2→3; then 3→1
+    /// closes the cycle 3 → 1 → 2 → 3.  The would_close_cycle DFS
+    /// must trace through multiple hops.
+    #[test]
+    fn deadlock_detection_refuses_3_deploy_cycle() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("A");
+        reg.try_acquire_range((1, 43), 0, u64::MAX, LockMode::Write, holder(2), deploy(2))
+            .expect("B");
+        reg.try_acquire_range((1, 44), 0, u64::MAX, LockMode::Write, holder(3), deploy(3))
+            .expect("C");
+        // Edge 1→2: deploy(1) parks on B.
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 43),
+                0,
+                100,
+                LockMode::Read,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .expect("park 1→2"),
+        );
+        // Edge 2→3: deploy(2) parks on C.
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 44),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect("park 2→3"),
+        );
+        // Edge 3→1 would close 3 → 1 → 2 → 3.  Refuse.
+        let err = reg
+            .try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(3),
+                deploy(3),
+                WaitPolicy::Wait,
+            )
+            .expect_err("3-cycle must be refused");
+        assert_eq!(err, LockError::Deadlock);
+        assert_eq!(reg.parked_waiters(), 2);
+    }
+
+    /// A non-cyclic chain (deploy(1) holds A; deploy(2) holds nothing
+    /// and parks on A) is legal — deploy(2) has no outgoing edges the
+    /// DFS could follow back to itself.
+    #[test]
+    fn deadlock_detection_allows_non_cyclic_wait() {
+        let reg = LockRegistry::new();
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("A");
+        // deploy(2) holds nothing; parking on A cannot close a cycle
+        // (no path deploy(1) → deploy(2) exists).
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect("non-cyclic park must succeed"),
+        );
+        assert_eq!(reg.parked_waiters(), 1);
+    }
+
+    /// Same-deploy wait is not a cross-deploy cycle — the seed set
+    /// excludes waiter_deploy's own holds, and the same-holder skip
+    /// (range_conflicts) already handles the "self-yield" case where
+    /// a deploy retries with the same holder.  Cycle detection must
+    /// not interfere.
+    #[test]
+    fn deadlock_detection_ignores_same_deploy_holds() {
+        let reg = LockRegistry::new();
+        // deploy(1) holds A via holder(1) (own hold).  deploy(1) via
+        // a DIFFERENT holder tries wait:true on A — parks legitimately
+        // because holder-based coordination lets the same deploy
+        // acquire through a second cap.  Cycle detection sees only
+        // same-deploy holds → seeds is empty → false (no cycle).
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("A via holder(1)");
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(9),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .expect("same-deploy wait must not be flagged as cycle"),
+        );
+        assert_eq!(reg.parked_waiters(), 1);
+    }
+
+    /// Quota check fires BEFORE deadlock check: if a file's waiter
+    /// deque is at MAX_WAITERS_PER_FILE, any further wait:true is
+    /// refused with QuotaExceeded regardless of whether it would
+    /// also form a cycle.  Consensus-observable ordering pin —
+    /// changing this ordering is a hard fork.
+    #[test]
+    fn deadlock_detection_ordered_after_quota_check() {
+        let reg = LockRegistry::new();
+        // File A held by deploy(1); file B held by deploy(2).
+        reg.try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("A");
+        reg.try_acquire_range((1, 43), 0, u64::MAX, LockMode::Write, holder(2), deploy(2))
+            .expect("B");
+        // Fill file A's waiter deque with deploy(3) parks (no cycle
+        // potential — deploy(3) holds nothing).
+        for _ in 0..MAX_WAITERS_PER_FILE {
+            expect_parked(
+                reg.try_acquire_range_wait(
+                    (1, 42),
+                    0,
+                    100,
+                    LockMode::Read,
+                    holder(9),
+                    deploy(3),
+                    WaitPolicy::Wait,
+                )
+                .expect("fill A's deque"),
+            );
+        }
+        // deploy(1) parks on B — no cycle yet; legal.  This edge
+        // primes the cycle for the follow-up.
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 43),
+                0,
+                100,
+                LockMode::Read,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .expect("prime cycle"),
+        );
+        // deploy(2) tries wait:true on A: would-close-cycle is TRUE
+        // (2 → 1 → 2), AND A's deque is at cap.  Quota-first
+        // ordering must return QuotaExceeded, not Deadlock.
+        let err = reg
+            .try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect_err("must be QuotaExceeded (quota-first)");
+        assert_eq!(err, LockError::QuotaExceeded);
+    }
+
+    /// Mixed range/sequential cycle: deploy(1) holds a RANGE on A,
+    /// deploy(2) holds SEQUENTIAL on B; cycle forms across the two
+    /// acquire paths.  Verifies `would_close_cycle` seeds from both
+    /// `state.ranges` AND `state.sequential_holder`, and walks
+    /// `state.waiters` regardless of `WaitKind`.
+    #[test]
+    fn deadlock_detection_refuses_mixed_range_sequential_cycle() {
+        let reg = LockRegistry::new();
+        // deploy(1) holds range on A, deploy(2) holds sequential on B.
+        reg.try_acquire_range((1, 42), 0, 100, LockMode::Write, holder(1), deploy(1))
+            .expect("range on A");
+        reg.try_acquire_sequential((1, 43), holder(2), deploy(2))
+            .expect("seq on B");
+        // deploy(1) parks sequential on B — legal (no cycle yet).
+        expect_parked(
+            reg.try_acquire_sequential_wait((1, 43), holder(1), deploy(1), WaitPolicy::Wait)
+                .expect("park 1→2 (seq)"),
+        );
+        // deploy(2) parks range on A — closes the cycle 2 → 1 → 2.
+        let err = reg
+            .try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect_err("mixed-shape cycle must be refused");
+        assert_eq!(err, LockError::Deadlock);
+        assert_eq!(reg.parked_waiters(), 1);
+    }
+
+    /// The wait-for graph is bidirectionally sensitive to holder
+    /// releases: after the cycle-forming holder releases, the same
+    /// acquire that was refused as Deadlock now parks cleanly.
+    #[test]
+    fn deadlock_refusal_reverses_after_holder_release() {
+        let reg = LockRegistry::new();
+        let a1 = reg
+            .try_acquire_range((1, 42), 0, u64::MAX, LockMode::Write, holder(1), deploy(1))
+            .expect("A");
+        reg.try_acquire_range((1, 43), 0, u64::MAX, LockMode::Write, holder(2), deploy(2))
+            .expect("B");
+        expect_parked(
+            reg.try_acquire_range_wait(
+                (1, 43),
+                0,
+                100,
+                LockMode::Read,
+                holder(1),
+                deploy(1),
+                WaitPolicy::Wait,
+            )
+            .expect("park 1→2"),
+        );
+        // deploy(2) → deploy(1) would close the cycle.
+        assert_eq!(
+            reg.try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect_err("cycle refused"),
+            LockError::Deadlock
+        );
+        // deploy(1) releases A.  Now deploy(2) can wait on A without
+        // forming a cycle (no holder to walk from).
+        reg.release(a1).expect("release A");
+        // With A held by nobody the wait would grant immediately, not
+        // park — so we don't get an expect_parked here.  Just confirm
+        // the acquire succeeds.
+        let outcome = reg
+            .try_acquire_range_wait(
+                (1, 42),
+                0,
+                100,
+                LockMode::Read,
+                holder(2),
+                deploy(2),
+                WaitPolicy::Wait,
+            )
+            .expect("post-release acquire must succeed");
+        match outcome {
+            AcquireOutcome::Immediate(_) => {}
+            AcquireOutcome::Parked { .. } => {
+                panic!("post-release acquire should grant immediately, not park")
+            }
+        }
     }
 
     // -- no-op sweeps ---------------------------------------------------
