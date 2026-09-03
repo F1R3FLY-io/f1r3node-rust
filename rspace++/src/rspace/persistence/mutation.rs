@@ -22,6 +22,7 @@ use super::canonical::{
     checked_len, checked_sum, parse_envelope, write_envelope_header, write_u64,
 };
 use super::manifest::SemanticNamespace;
+use super::object::{CanonicalBlob, CanonicalBlobKind};
 use crate::rspace::bag::{Bag, BagDelta};
 use crate::rspace::rho_path::{RhoPathError, RhoPathStreamValidatorV1, RhoPathV1};
 
@@ -970,6 +971,7 @@ pub enum MutationError {
     },
     DeltaCountOverflow,
     DeltaCountUnderflow,
+    InvalidContinuationSourceKind,
 }
 
 impl Display for MutationError {
@@ -1024,6 +1026,9 @@ impl Display for MutationError {
             Self::DeltaCountUnderflow => {
                 formatter.write_str("BagDelta removal exceeds the authoritative multiplicity")
             }
+            Self::InvalidContinuationSourceKind => formatter.write_str(
+                "continuation transition requires a ContinuationSourceV1 canonical blob",
+            ),
         }
     }
 }
@@ -1175,6 +1180,25 @@ impl RSpaceMutationBatchV1 {
             .and_then(|()| record_content(&mut self.continuations, path, before, after));
         self.poisoned |= result.is_err();
         result
+    }
+
+    /// Record a continuation transition from an already-canonical source blob.
+    /// The blob remains owned by the caller for staging; this batch stores only
+    /// its authenticated object reference and never decodes or re-encodes its
+    /// payload.
+    pub fn record_continuation_blob(
+        &mut self,
+        path: &[u8],
+        before: Option<ObjectRefV1>,
+        after: Option<&CanonicalBlob>,
+    ) -> Result<(), MutationError> {
+        let after_ref = after
+            .filter(|blob| blob.kind() == CanonicalBlobKind::ContinuationSourceV1)
+            .map(CanonicalBlob::object_ref);
+        if after.is_some() && after_ref.is_none() {
+            return Err(MutationError::InvalidContinuationSourceKind);
+        }
+        self.record_continuation(path, before, after_ref)
     }
 
     /// Produce an immutable, preflighted streaming plan.  No semantic-state
@@ -1844,6 +1868,22 @@ mod bag_delta_tests {
             batch.record_data_delta(&Bag::new(), &delta),
             Err(MutationError::DeltaCountUnderflow)
         );
+    }
+
+    #[test]
+    fn continuation_blob_conversion_records_only_the_canonical_reference() {
+        let path = RhoPathV1::collection_record_path(
+            &RhoPathV1::continuation_prefix(&[7_u64, 8_u64]),
+            b"identity",
+        );
+        let blob = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, b"source".to_vec())
+            .unwrap();
+        let expected = blob.object_ref();
+        let mut batch = RSpaceMutationBatchV1::new(state()).unwrap();
+        batch
+            .record_continuation_blob(&path, None, Some(&blob))
+            .unwrap();
+        assert_eq!(batch.continuation_transition(&path).unwrap().after(), Some(expected));
     }
 
     #[test]
