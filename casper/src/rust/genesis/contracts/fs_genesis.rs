@@ -777,6 +777,12 @@ new
   Stdout, stdoutFdP, stdoutStateP,
   Fs, fsBundleP,
   fsStdinFdP, fsStdoutFdP, fsStderrFdP,
+  // Ambient-authority off-switch (2026-09-03).  Module-level cell
+  // shared across every Fs instance; flipped by Fs.revoke().
+  // Initialized to `false` at composition time by the module body.
+  // See Fs.rho's top-of-file docstring + DD-Revoke in
+  // FIPS/fileio/.../design-decisions.md.
+  fsRevokedP,
   openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
   parseRwxToBits, parseRwxLoop,
   writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
@@ -1709,7 +1715,14 @@ mod tests {
         // Prior anchor: 5f41dafe (cost-accounted-rho merge, 2026-08-21).
         // Prior anchor: c243b4db (pre-merge).
         // Prior anchor: 1e6c53b8 (pre-H-29-3-lift, 2026-08-26).
-        const EXPECTED: &str = "f120b3930a2cb262bce00641ff2a78e8373dc3b8f42d81c98c3d204ee2b281fd";
+        // Prior anchor: f120b393 (pre-Fs.revoke, 2026-09-02: 9c-iii Buffer
+        //   pairwise-merge + PB-B-5 Buffer versioned URN + prior).
+        // 2026-09-03: Fs.revoke() ambient-authority off-switch adds
+        //   `fsRevokedP` module-level cell, initializer, revoke() method,
+        //   and gates on openFile/openDir/stdin/stdout/stderr.  New
+        //   FSERR_REVOKED (code 15) at the Rust layer.  Rholang source
+        //   change rolls the composed FsGenesis hash.
+        const EXPECTED: &str = "c7884a9ff11c220fed65fadfcbc5a9dc826ae7a57dc1b728d5f37227c0e0881a";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

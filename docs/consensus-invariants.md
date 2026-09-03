@@ -97,9 +97,9 @@ Related structural invariants:
 ### 4. FSERR_CODE_* numeric values
 
 The numeric codes in `errors.rs` (e.g., `FSERR_CODE_NOT_FOUND`,
-`FSERR_CODE_CONSENSUS_DIVERGENCE = 13`, `FSERR_CODE_DEADLOCK = 14`)
-surface in `WalOutcome::Failure { code }` and in `err` reply
-strings.  Renumbering ANY code is a hard fork.
+`FSERR_CODE_CONSENSUS_DIVERGENCE = 13`, `FSERR_CODE_DEADLOCK = 14`,
+`FSERR_CODE_REVOKED = 15`) surface in `WalOutcome::Failure { code }`
+and in `err` reply strings.  Renumbering ANY code is a hard fork.
 
 ### 5. Byte gates
 
@@ -182,6 +182,29 @@ deque and the same wait-for graph).  Seeds exclude the requesting
 deploy's own holds — same-deploy holds cannot form a cross-deploy
 cycle by definition; they are covered by the pre-existing
 same-holder skip in `range_conflicts`.
+
+### 9. Fs.revoke() ambient-authority off-switch
+
+The Rholang `Fs` agent's `revoke()` method (spec §Revocation, added
+2026-09-03) flips a module-level `fsRevokedP` cell from `false` to
+`true`.  Post-revoke, every method on every `Fs` instance in the
+shard (`openFile`, `openDir`, `stdin`, `stdout`, `stderr`) returns
+`[false, "FSERR_REVOKED", ...]` (`FSERR_CODE_REVOKED = 15`).
+Previously-minted `File` and `Dir` caps are unaffected — they are
+independent agents.
+
+Consensus-observable but NOT a new hard-fork surface beyond the new
+FSERR code: the revoke flag is Rholang tuplespace state, replicated
+identically across validators the same way every other Rholang
+state cell is.  A Consensus-mode deploy attempting `Fs.openFile`
+after `revoke` sees `FSERR_REVOKED` on every validator identically.
+The revoke-blocked call never journals a WAL entry (the handler
+layer is never reached).
+
+Adding methods to `Fs.rho` that touch the filesystem MUST include
+a `fsRevokedP` gate at method entry, else the revoke-invariant
+leaks.  Composed FsGenesis source hash rolls whenever the revoke
+mechanism's implementation changes.
 
 ## When editing any of the surfaces above
 

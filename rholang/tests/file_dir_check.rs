@@ -42,6 +42,12 @@ fn with_libs(test_snippet: &str) -> String {
             Stdout, stdoutFdP, stdoutStateP,
             Fs, fsBundleP,
             fsStdinFdP, fsStdoutFdP, fsStderrFdP,
+            // Ambient-authority off-switch cell (Fs.revoke()).
+            // Fs.rho's body reads `@[*fsRevokedP]` from module scope;
+            // lib_body strips Fs.rho's own top-level `new`, so the
+            // binding must be provided here.  Initialized to `false`
+            // by Fs.rho's module body (`@[*fsRevokedP]!(false)`).
+            fsRevokedP,
             openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
             parseRwxToBits, parseRwxLoop,
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
@@ -13469,6 +13475,195 @@ async fn fs_open_file_non_string_mode_rejects() {
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     assert_failure_shape_three_elems(&reply, "FSERR_BAD_ARG");
+}
+
+// ---------------------------------------------------------------------
+// Fs.revoke() ambient-authority off-switch (2026-09-03) — spec
+// §Revocation + design-decisions.md DD-Revoke.
+//
+// - revoke() flips the module-level `fsRevokedP` cell true.
+// - Post-revoke, openFile / openDir / stdin / stdout / stderr on any
+//   Fs instance return [false, FSERR_REVOKED, ...].
+// - Previously-minted File caps continue to work (independent agents).
+// - revoke() is idempotent.
+// ---------------------------------------------------------------------
+
+/// Pre-revoke, openFile works normally.  Post-revoke, the same
+/// openFile call returns FSERR_REVOKED.  Baseline round-trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_openfile_returns_fserr_revoked_after_revoke() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
+        })) {
+          for (@_ <- @fs!?("revoke")) {
+            for (@r <- @fs!?("openFile", "config.json", {"mode": "r"})) {
+              @"out"!(r)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "post-revoke openFile must fail");
+    assert_eq!(code, "FSERR_REVOKED");
+}
+
+/// Post-revoke, openDir also returns FSERR_REVOKED.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_opendir_returns_fserr_revoked_after_revoke() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "logs": ("/root", "subdir", "rw", "dir", "oracular")
+        })) {
+          for (@_ <- @fs!?("revoke")) {
+            for (@r <- @fs!?("openDir", "logs", {})) {
+              @"out"!(r)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_REVOKED");
+}
+
+/// Post-revoke, stdin/stdout/stderr all return FSERR_REVOKED.
+/// Consolidated because the three methods share the same gate shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_stdio_methods_return_fserr_revoked_after_revoke() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    // Chain the three checks; each independently should return
+    // FSERR_REVOKED post-revoke.  Fold the results into a tuple.
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {})) {
+          for (@_ <- @fs!?("revoke")) {
+            for (@rIn <- @fs!?("stdin")) {
+              for (@rOut <- @fs!?("stdout")) {
+                for (@rErr <- @fs!?("stderr")) {
+                  @"out"!([rIn, rOut, rErr])
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    // Extract each row from the tuple; each should be [false, FSERR_REVOKED, msg].
+    let joined = format!("{:?}", reply);
+    assert!(
+        joined.matches("FSERR_REVOKED").count() >= 3,
+        "expected all three stdio methods to return FSERR_REVOKED, got: {joined}"
+    );
+}
+
+/// revoke() is idempotent: calling twice still returns [true].
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_is_idempotent() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {})) {
+          for (@r1 <- @fs!?("revoke")) {
+            for (@r2 <- @fs!?("revoke")) {
+              @"out"!([r1, r2])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let joined = format!("{:?}", reply);
+    // Both should be [true] — count the occurrences.
+    assert!(
+        joined.matches("true").count() >= 2,
+        "both revoke() calls should succeed, got: {joined}"
+    );
+}
+
+/// A File cap minted PRE-revoke continues to work AFTER revoke.
+/// Proves that revoke() only affects Fs-instance methods, not
+/// previously-issued File/Dir caps (independent agents).  This is
+/// the compositional guarantee the powerbox relies on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_does_not_affect_previously_minted_file_caps() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "config.json": ("/root", "config.json", "r", "file", "oracular")
+        })) {
+          for (@openReply <- @fs!?("openFile", "config.json", {"mode": "r"})) {
+            match openReply {
+              [true, file] => {
+                for (@_ <- @fs!?("revoke")) {
+                  // File.tell should still work — file is an
+                  // independent agent; revoke() only gated the
+                  // Fs-level methods.
+                  for (@r <- @file!?("tell")) { @"out"!(r) }
+                }
+              }
+              _ => @"out"!(openReply)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, pos, _) = extract_reply(&reply);
+    assert!(ok, "pre-revoke File cap must continue to work post-revoke");
+    assert_eq!(pos, Some(0), "cursor unchanged by Fs.revoke()");
+}
+
+/// Cross-instance visibility: two Fs instances mint from the same
+/// composed source share the module-level fsRevokedP cell, so
+/// revoke()ing one revokes the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_is_visible_across_fs_instances() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs1 <- Fs!?(0, 1, 2, {
+          "a.json": ("/root", "a.json", "r", "file", "oracular")
+        })) {
+          for (@fs2 <- Fs!?(0, 1, 2, {
+            "b.json": ("/root", "b.json", "r", "file", "oracular")
+          })) {
+            for (@_ <- @fs1!?("revoke")) {
+              // fs2's openFile must also see the revoke flag.
+              for (@r <- @fs2!?("openFile", "b.json", {"mode": "r"})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "revoke on fs1 must propagate to fs2");
+    assert_eq!(code, "FSERR_REVOKED");
 }
 
 /// Unknown method on Fs (stdin/stdout/stderr not yet wired — slice

@@ -40,6 +40,20 @@ pub const FSERR_CONSENSUS_DIVERGENCE: &str = "FSERR_CONSENSUS_DIVERGENCE";
 /// work.  See `LockRegistry::would_close_cycle` and
 /// `docs/consensus-invariants.md § 8`.
 pub const FSERR_DEADLOCK: &str = "FSERR_DEADLOCK";
+/// `Fs.revoke()` ambient-authority off-switch (2026-09-03).
+/// After `Fs.revoke()` has been called on any Fs instance, every
+/// subsequent `openFile` / `openDir` / `stdin` / `stdout` / `stderr`
+/// method call on any Fs instance returns `[false, FSERR_REVOKED,
+/// "Fs has been revoked"]`.  Previously-minted File/Dir caps are
+/// unaffected — they are independent agents.  See spec §Revocation
+/// + design-decisions.md DD-Revoke + `docs/consensus-invariants.md
+/// § 4` (code = 15).
+///
+/// Semantic overlap with membrane-based revocation (spec §1416):
+/// both signal "a cap that used to work no longer does."  A
+/// subordinate seeing FSERR_REVOKED handles it identically whether
+/// the source is a membrane forwarder or a post-revoke Fs.
+pub const FSERR_REVOKED: &str = "FSERR_REVOKED";
 
 use std::io;
 
@@ -90,6 +104,10 @@ pub const FSERR_CODE_CONSENSUS_DIVERGENCE: u32 = 13;
 /// the "new codes append at the end" convention.  DO NOT reorder
 /// or renumber existing codes.
 pub const FSERR_CODE_DEADLOCK: u32 = 14;
+/// `Fs.revoke()` ambient-authority off-switch (2026-09-03) —
+/// appended (code 15) per the "new codes append at the end"
+/// convention.  DO NOT reorder or renumber existing codes.
+pub const FSERR_CODE_REVOKED: u32 = 15;
 
 /// Map a spec-canonical FSERR string to its stable u32 code for
 /// on-wire encoding in the WAL.  Unknown / non-canonical inputs
@@ -111,6 +129,7 @@ pub fn fserr_to_code(s: &str) -> u32 {
         FSERR_CANCELLED => FSERR_CODE_CANCELLED,
         FSERR_CONSENSUS_DIVERGENCE => FSERR_CODE_CONSENSUS_DIVERGENCE,
         FSERR_DEADLOCK => FSERR_CODE_DEADLOCK,
+        FSERR_REVOKED => FSERR_CODE_REVOKED,
         _ => FSERR_CODE_UNKNOWN,
     }
 }

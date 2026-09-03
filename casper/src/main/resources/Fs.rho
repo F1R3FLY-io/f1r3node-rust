@@ -187,8 +187,27 @@
 // `[false, "FSERR_UNSUPPORTED", "logical name not in static bundle"]`
 // per spec §846.
 
+// ## Ambient-authority off switch (2026-09-03)
+//
+// Module-level cell `fsRevokedP` holds the one-way revoke flag,
+// shared across every Fs instance minted from this composed source.
+// Initialized to `false` at composition-time.  `Fs.revoke()` flips
+// it to `true` atomically (linear consume + rewrite in the same
+// reduction step).  Every public method reads it non-linearly
+// (`<<-`) at entry and returns `[false, "FSERR_REVOKED", ...]` if
+// set.
+//
+// Post-revoke, any Fs instance (including instances minted AFTER
+// revoke) has all methods returning FSERR_REVOKED — the mint
+// itself doesn't fail (Rholang agent constructors have no
+// mint-error return channel), but the resulting cap is inert.
+// Previously-minted File/Dir caps are unaffected — they are
+// independent agents.  See spec §Revocation + design-decisions.md
+// DD-Revoke.
 new Fs, fsBundleP,
-    fsStdinFdP, fsStdoutFdP, fsStderrFdP in {
+    fsStdinFdP, fsStdoutFdP, fsStderrFdP, fsRevokedP in {
+
+  @[*fsRevokedP]!(false) |
 
   agent Fs {
     // -- constructor(stdinFd, stdoutFd, stderrFd, bMap) -----------
@@ -224,25 +243,46 @@ new Fs, fsBundleP,
     // deploy-author invariant, consistent with the treatment of
     // oracular file reads.
     method stdin() {
-      for (@fd <<- @[*private, *fsStdinFdP]) {
-        for (@cap <- Stdin!?(fd)) {
-          return!([true, cap])
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+            for (@fd <<- @[*private, *fsStdinFdP]) {
+              for (@cap <- Stdin!?(fd)) {
+                return!([true, cap])
+              }
+            }
+          }
         }
       }
     } |
 
     method stdout() {
-      for (@fd <<- @[*private, *fsStdoutFdP]) {
-        for (@cap <- Stdout!?(fd)) {
-          return!([true, cap])
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+            for (@fd <<- @[*private, *fsStdoutFdP]) {
+              for (@cap <- Stdout!?(fd)) {
+                return!([true, cap])
+              }
+            }
+          }
         }
       }
     } |
 
     method stderr() {
-      for (@fd <<- @[*private, *fsStderrFdP]) {
-        for (@cap <- Stdout!?(fd)) {
-          return!([true, cap])
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
+            for (@fd <<- @[*private, *fsStderrFdP]) {
+              for (@cap <- Stdout!?(fd)) {
+                return!([true, cap])
+              }
+            }
+          }
         }
       }
     } |
@@ -254,6 +294,14 @@ new Fs, fsBundleP,
     // same `(name, options)` yield DISTINCT File agents with
     // independent cursors; closing one has no effect on the other.
     method openFile(@name, @options) {
+      // Revoke gate — see module-level docstring.  Non-linear read
+      // so unbounded parallel calls are safe; module-cell has one
+      // Bool value written at composition-time and only advanced
+      // to `true` by revoke().
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
       match name {
         n /\ String => {
           new modeCh in {
@@ -330,12 +378,20 @@ new Fs, fsBundleP,
         _ => return!(
           [false, "FSERR_BAD_ARG", "name must be a String"])
       }
+          }
+        }
+      }
     } |
 
     // -- openDir(name, options) ------------------------------------
     //
     // Slice 27: fresh-mint per call — same rationale as openFile.
     method openDir(@name, @options) {
+      // Revoke gate — see module-level docstring.
+      for (@revoked <<- @[*fsRevokedP]) {
+        match revoked {
+          true  => return!([false, "FSERR_REVOKED", "Fs has been revoked"])
+          false => {
       match name {
         n /\ String => {
           new modeCh in {
@@ -394,6 +450,33 @@ new Fs, fsBundleP,
         }
         _ => return!(
           [false, "FSERR_BAD_ARG", "name must be a String"])
+      }
+          }
+        }
+      }
+    } |
+
+    // -- revoke() -------------------------------------------------
+    //
+    // Ambient-authority off switch.  Flips the module-level
+    // `fsRevokedP` cell to `true` atomically via linear consume +
+    // rewrite in the same reduction step.  Idempotent: a second
+    // revoke() call also returns [true] (the linear receive
+    // consumes whatever value is in the cell, and the rewrite
+    // always sets `true`).
+    //
+    // Post-revoke, every openFile/openDir/stdin/stdout/stderr call
+    // on any Fs instance (including instances minted AFTER revoke)
+    // returns [false, "FSERR_REVOKED", ...].  Previously-minted
+    // File/Dir caps are unaffected.  See spec §Revocation.
+    //
+    // Any Fs cap holder can call revoke().  The ocap design
+    // assumes the powerbox is the intended caller during the
+    // genesis handoff window.
+    method revoke() {
+      for (@_current <- @[*fsRevokedP]) {
+        @[*fsRevokedP]!(true) |
+        return!([true])
       }
     } |
 
