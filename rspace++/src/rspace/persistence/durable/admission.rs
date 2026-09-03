@@ -37,7 +37,9 @@ use crate::rspace::persistence::semantic::{
     SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
 };
 use crate::rspace::persistence::store::ImmutableObjectStore;
-use crate::rspace::persistence::wal::TerminalCommitViewV1;
+use crate::rspace::persistence::wal::{
+    CommittedObjectComparison, CommittedObjectLookup, TerminalCommitViewV1,
+};
 use crate::rspace::persistence::{
     CatalogAuthorityTokenV1, DurableLimits, LogPackDecodeLimits, ObjectIndexRecordV1, PackId,
     SemanticProfileId, StateVersionV1, VerifiedDagState,
@@ -876,6 +878,29 @@ impl ImmutableObjectStore for DurableIndexedObjectStoreV1 {
         self.lookup_bounded(digest, max_encoded_len)?
             .map(|record| self.read_record(record))
             .transpose()
+    }
+}
+
+/// Compare a sealed object's complete canonical bytes with the committed
+/// digest index.  Classification deliberately reads the indexed body and
+/// compares its full extent; a digest hit alone is never treated as equality.
+impl CommittedObjectLookup for DurableIndexedObjectStoreV1 {
+    type Error = DurableObjectReadErrorV1;
+
+    fn compare_committed_object(
+        &self,
+        reference: ObjectRefV1,
+        sealed_canonical_bytes: &[u8],
+    ) -> Result<CommittedObjectComparison, Self::Error> {
+        let Some(record) = self.lookup_exact(reference)? else {
+            return Ok(CommittedObjectComparison::Missing);
+        };
+        let committed = self.read_record(record)?;
+        Ok(if committed.as_ref() == sealed_canonical_bytes {
+            CommittedObjectComparison::Equal
+        } else {
+            CommittedObjectComparison::Collision
+        })
     }
 }
 
