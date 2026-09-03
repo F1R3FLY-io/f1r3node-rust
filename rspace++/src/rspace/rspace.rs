@@ -388,12 +388,12 @@ where
             .get_store()
             .pending_data_delta()
             .expect("live hot store journal read")
-            .unwrap_or_default();
+            .expect("live hot store must expose a data journal for soft checkpoints");
         let pending_join_delta = self
             .get_store()
             .pending_join_delta()
             .expect("live hot store join journal read")
-            .unwrap_or_default();
+            .expect("live hot store must expose a join journal for soft checkpoints");
 
         SoftCheckpoint {
             cache_snapshot,
