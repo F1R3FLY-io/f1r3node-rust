@@ -11,12 +11,14 @@ use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use pathmap::PathMap;
+
 use super::canonical::{CanonicalEncode, CanonicalFormatError, ObjectDigest, ObjectRefV1};
 use super::closure::{
     ClosureError, IncrementalClosureLimits, StructuralClosureReport, verify_incremental_closure,
 };
 use super::manifest::{SemanticProfileId, SemanticStateManifestV1};
-use super::mutation::{MutationBatchViewV1, StateVersionV1};
+use super::mutation::{ContentTransition, MutationBatchViewV1, StateVersionV1};
 use super::object::{CanonicalBlobKind, CanonicalObjectKind, CanonicalObjectView};
 use super::rewrite::{
     DagRewriteLimits, DagRewriteProduct, DagRewriteReport, RewriteError,
@@ -239,6 +241,36 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
             self.staged_sources.insert(source_ref);
         }
         Ok(admitted)
+    }
+
+    /// Stage every newly introduced continuation source from the authoritative
+    /// transition journal. The resolver is expected to return the existing
+    /// canonical suffix allocation held by the live PathMap record; this method
+    /// never decodes a continuation or reconstructs a typed record.
+    pub fn stage_continuation_sources<F>(
+        &mut self,
+        transitions: &PathMap<ContentTransition>,
+        mut resolve: F,
+    ) -> Result<(), DagTransactionError<S::Error>>
+    where
+        F: FnMut(&[u8]) -> Option<Arc<[u8]>>,
+    {
+        for (path, transition) in transitions.iter() {
+            let Some(expected) = transition.after() else {
+                continue;
+            };
+            let canonical = resolve(&path)
+                .ok_or_else(|| CanonicalFormatError::MissingObject(expected.digest()))?;
+            let (actual, _) = self.stage_continuation_source(canonical)?;
+            if actual != expected {
+                return Err(CanonicalFormatError::DigestMismatch {
+                    expected: expected.digest(),
+                    actual: actual.digest(),
+                }
+                .into());
+            }
+        }
+        Ok(())
     }
 
     pub fn seal(self) -> Result<SealedDagTransaction<'mutation, P>, DagTransactionError<S::Error>> {
