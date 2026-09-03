@@ -101,7 +101,7 @@ FROM debian:bookworm-slim AS runtime-base
 ARG PROFILING_BUILD=0
 
 # Install runtime dependencies
-# Note: grpcurl and jq for healthcheck (matching build.sbt healthcheck)
+# Note: curl backs the container HEALTHCHECK (GET /api/ready).
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
@@ -110,29 +110,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     && if [ "${PROFILING_BUILD}" = "1" ]; then apt-get install -y linux-perf procps binutils; fi \
     && rm -rf /var/lib/apt/lists/*
-
-# Install grpcurl and jq for healthcheck (matching build.sbt)
-# Note: These are installed in the runtime stage, architecture will be detected at runtime
-RUN GRPCURL_VERSION="1.8.9" && \
-    ARCH=$(dpkg --print-architecture) && \
-    case "$ARCH" in \
-        amd64) GRPCURL_ARCH="x86_64" ;; \
-        arm64) GRPCURL_ARCH="arm64" ;; \
-        *) GRPCURL_ARCH="x86_64" ;; \
-    esac && \
-    curl -L "https://github.com/fullstorydev/grpcurl/releases/download/v${GRPCURL_VERSION}/grpcurl_${GRPCURL_VERSION}_linux_${GRPCURL_ARCH}.tar.gz" -o /tmp/grpcurl.tar.gz && \
-    tar -xzf /tmp/grpcurl.tar.gz -C /tmp && \
-    find /tmp -name grpcurl -type f -executable -exec mv {} /usr/local/bin/ \; && \
-    chmod +x /usr/local/bin/grpcurl && \
-    rm -rf /tmp/grpcurl* || true && \
-    ARCH=$(dpkg --print-architecture) && \
-    case "$ARCH" in \
-        amd64) JQ_ARCH="linux64" ;; \
-        arm64) JQ_ARCH="linuxarm64" ;; \
-        *) JQ_ARCH="linux64" ;; \
-    esac && \
-    curl -L "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-${JQ_ARCH}" -o /usr/local/bin/jq && \
-    chmod +x /usr/local/bin/jq || true
 
 # ============================================================================
 # Stage 3: Runtime - Final image, starts at WORKDIR with artifacts from builder

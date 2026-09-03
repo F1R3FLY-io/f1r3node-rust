@@ -456,7 +456,7 @@ impl WebApi for WebApiImpl {
         })
     }
 
-    fn is_ready(&self) -> bool { self.is_ready.load(Ordering::Relaxed) }
+    fn is_ready(&self) -> bool { self.is_ready.load(Ordering::Acquire) }
 
     async fn prepare_deploy(&self, request: Option<PrepareRequest>) -> Result<PrepareResponse> {
         let seq_number = BlockAPI::get_latest_message(&self.engine_cell)
