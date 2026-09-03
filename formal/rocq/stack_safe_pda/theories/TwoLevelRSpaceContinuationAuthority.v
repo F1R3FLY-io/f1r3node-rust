@@ -91,7 +91,77 @@ Record ContinuationRecord : Type := ContinuationRecordState {
 }.
 
 Definition continuation_record_valid (record : ContinuationRecord) : Prop :=
+  path_valid (continuation_identity record) = true /\
+  path_valid (continuation_source record) = true /\
   canonical_peeks (continuation_peeks record).
+
+Definition peek_in_i32_rangeb (peek : Z) : bool :=
+  Z.leb i32_min peek && Z.leb peek i32_max.
+
+Fixpoint canonical_peeksb (peeks : list Z) : bool :=
+  match peeks with
+  | [] => true
+  | [peek] => peek_in_i32_rangeb peek
+  | previous :: ((next :: tail) as remaining) =>
+      peek_in_i32_rangeb previous && Z.ltb previous next &&
+      canonical_peeksb remaining
+  end.
+
+Definition continuation_record_boundary_validb
+    (record : ContinuationRecord) : bool :=
+  path_valid (continuation_identity record) &&
+  path_valid (continuation_source record) &&
+  canonical_peeksb (continuation_peeks record).
+
+(** The public commit ticket mirrors production [StoredContinuationCommit]:
+    record identity is deliberately absent.  Installed-slot identity or the
+    epoch-bound exact ordinary path is the identity authority; the caller may
+    additionally attest only the fields that production carries. *)
+Record ContinuationExpectation : Type := ContinuationExpectationState {
+  expected_source : Path;
+  expected_persistent : bool;
+  expected_peeks : list Z
+}.
+
+Definition expectation_of_record (record : ContinuationRecord)
+    : ContinuationExpectation :=
+  ContinuationExpectationState
+    (continuation_source record)
+    (continuation_persistent record)
+    (continuation_peeks record).
+
+Definition expectation_matches_record
+    (expected : ContinuationExpectation) (record : ContinuationRecord) : Prop :=
+  continuation_source record = expected_source expected /\
+  continuation_persistent record = expected_persistent expected /\
+  continuation_peeks record = expected_peeks expected.
+
+Definition expectation_matches_record_dec
+    (expected : ContinuationExpectation) (record : ContinuationRecord)
+    : {expectation_matches_record expected record} +
+      {~ expectation_matches_record expected record}.
+Proof.
+  unfold expectation_matches_record.
+  destruct (path_eq_dec (continuation_source record) (expected_source expected))
+    as [Hsource|Hsource].
+  - destruct (Bool.bool_dec
+      (continuation_persistent record) (expected_persistent expected))
+      as [Hpersistent|Hpersistent].
+    + destruct (list_eq_dec Z.eq_dec
+        (continuation_peeks record) (expected_peeks expected))
+        as [Hpeeks|Hpeeks].
+      * left. repeat split; assumption.
+      * right. intros [_ [_ H]]. contradiction.
+    + right. intros [_ [H _]]. contradiction.
+  - right. intros [H _]. contradiction.
+Defined.
+
+Theorem expectation_match_is_exact : forall expected record,
+  expectation_matches_record expected record ->
+  continuation_source record = expected_source expected /\
+  continuation_persistent record = expected_persistent expected /\
+  continuation_peeks record = expected_peeks expected.
+Proof. intros. exact H. Qed.
 
 Definition continuation_record_eq_dec
     (left right : ContinuationRecord) : {left = right} + {left <> right}.
@@ -123,6 +193,36 @@ Record OrdinaryContinuation : Type := OrdinaryContinuationState {
 
 Definition ordinary_paths (ordinary : list OrdinaryContinuation) : list Path :=
   map ordinary_path ordinary.
+
+(** Exact production record-address refinement.  [GroupKey] members denote
+    already-canonical channel identity bytes, [continuation_identity] denotes
+    the exact frozen source-free identity bytes (which commit persist/peeks),
+    and [continuation_source] denotes the exact bincode source bytes. *)
+Fixpoint escape_address_bytes (input : Path) : Path :=
+  match input with
+  | [] => []
+  | byte :: tail =>
+      if Nat.eqb byte 0 then
+        0%nat :: 255%nat :: escape_address_bytes tail
+      else byte :: escape_address_bytes tail
+  end.
+
+Definition frame_address_bytes (input : Path) : Path :=
+  escape_address_bytes input ++ [0%nat; 0%nat].
+
+Definition continuation_group_prefix (group : GroupKey) : Path :=
+  [82%nat; 72%nat; 80%nat; 1%nat; 2%nat; 1%nat] ++
+  concat (map frame_address_bytes group) ++ [0%nat; 1%nat].
+
+Definition canonical_continuation_path
+    (group : GroupKey) (record : ContinuationRecord) : Path :=
+  continuation_group_prefix group ++
+  continuation_identity record ++ continuation_source record.
+
+Definition ordinary_path_is_canonical
+    (group : GroupKey) (ordinary : OrdinaryContinuation) : Prop :=
+  ordinary_path ordinary =
+    canonical_continuation_path group (ordinary_record ordinary).
 
 Fixpoint lookup_ordinary
     (selected : Path) (ordinary : list OrdinaryContinuation)
@@ -159,11 +259,23 @@ Record ContinuationAuthority : Type := ContinuationAuthorityState {
   installed_joins : JoinMap
 }.
 
+(** Reachable production mutations bump the exact group's epoch.  Therefore
+    equality of the Arc-backed epoch witnesses preserves that group's
+    installed slot and ordinary catalog.  Snapshot reconstruction issues no
+    outstanding capabilities, so it begins a new observation universe. *)
+Definition reachable_same_epoch_group
+    (observed commit : ContinuationAuthority) (group : GroupKey) : Prop :=
+  continuation_epochs commit group = continuation_epochs observed group ->
+  installed_continuations commit group = installed_continuations observed group /\
+  ordinary_continuations commit group = ordinary_continuations observed group.
+
 Definition continuation_authority_valid (state : ContinuationAuthority) : Prop :=
   (forall group, NoDup (ordinary_paths (ordinary_continuations state group))) /\
   (forall group ordinary,
       In ordinary (ordinary_continuations state group) ->
-      continuation_record_valid (ordinary_record ordinary)) /\
+      path_valid (ordinary_path ordinary) = true /\
+      continuation_record_valid (ordinary_record ordinary) /\
+      ordinary_path_is_canonical group ordinary) /\
   (forall group record,
       installed_continuations state group = Some record ->
       continuation_persistent record = true /\ continuation_record_valid record) /\
@@ -192,8 +304,6 @@ Qed.
 
 Record ContinuationCapability : Type := ContinuationCapabilityState {
   capability_group : GroupKey;
-  capability_epoch : EqualityEpoch.t;
-  capability_bound_ordinary_paths : list Path;
   capability_index : Z
 }.
 
@@ -201,10 +311,7 @@ Definition issue_capability
     (state : ContinuationAuthority) (group : GroupKey) (index : Z)
     : ContinuationCapability :=
   ContinuationCapabilityState
-    group
-    (continuation_epochs state group)
-    (ordinary_paths (ordinary_continuations state group))
-    index.
+    group index.
 
 Definition installed_offset (state : ContinuationAuthority) (group : GroupKey) : Z :=
   match installed_continuations state group with
@@ -231,6 +338,13 @@ Definition target_record (target : ResolvedTarget) : ContinuationRecord :=
   | InstalledTarget record | OrdinaryTarget _ record => record
   end.
 
+Definition target_boundary_validb (target : ResolvedTarget) : bool :=
+  match target with
+  | InstalledTarget record => continuation_record_boundary_validb record
+  | OrdinaryTarget path record =>
+      path_valid path && continuation_record_boundary_validb record
+  end.
+
 Definition resolve_bound_ordinary
     (state : ContinuationAuthority) (group : GroupKey)
     (bound_paths : list Path) (index : Z) : option ResolvedTarget :=
@@ -246,40 +360,60 @@ Definition resolve_bound_ordinary
     end.
 
 Definition resolve_capability
-    (state : ContinuationAuthority) (requested_group : GroupKey)
+    (observed commit : ContinuationAuthority) (requested_group : GroupKey)
     (capability : ContinuationCapability) : option ResolvedTarget :=
   if group_eq_dec requested_group (capability_group capability) then
     if EqualityEpoch.eq_dec
-        (continuation_epochs state requested_group)
-        (capability_epoch capability) then
-      match installed_continuations state requested_group with
-      | Some record =>
+        (continuation_epochs commit requested_group)
+        (continuation_epochs observed requested_group) then
+      match installed_continuations observed requested_group with
+      | Some observed_record =>
           if Z.eq_dec (capability_index capability) 0
-          then Some (InstalledTarget record)
-          else resolve_bound_ordinary state requested_group
-            (capability_bound_ordinary_paths capability)
+          then
+            match installed_continuations commit requested_group with
+            | Some current_record => Some (InstalledTarget current_record)
+            | None => None
+            end
+          else resolve_bound_ordinary commit requested_group
+            (ordinary_paths (ordinary_continuations observed requested_group))
             (capability_index capability - 1)
-      | None => resolve_bound_ordinary state requested_group
-          (capability_bound_ordinary_paths capability)
+      | None => resolve_bound_ordinary commit requested_group
+          (ordinary_paths (ordinary_continuations observed requested_group))
           (capability_index capability)
       end
     else None
   else None.
 
 Definition resolve_exact_continuation
-    (state : ContinuationAuthority) (requested_group : GroupKey)
-    (capability : ContinuationCapability) (expected : ContinuationRecord)
+    (observed commit : ContinuationAuthority) (requested_group : GroupKey)
+    (capability : ContinuationCapability) (expected : ContinuationExpectation)
     : option ResolvedTarget :=
-  match resolve_capability state requested_group capability with
+  match resolve_capability observed commit requested_group capability with
   | Some target =>
-      if continuation_record_eq_dec (target_record target) expected
-      then Some target else None
+      if target_boundary_validb target then
+        if expectation_matches_record_dec expected (target_record target)
+        then Some target else None
+      else None
+  | None => None
+  end.
+
+(** Production constructs the expectation from the observed stored target;
+    arbitrary caller-created expectations are useful rejection inputs but are
+    not authorization witnesses. *)
+Definition issue_continuation_expectation
+    (observed : ContinuationAuthority) (group : GroupKey)
+    (capability : ContinuationCapability) : option ContinuationExpectation :=
+  match resolve_capability observed observed group capability with
+  | Some target =>
+      if target_boundary_validb target
+      then Some (expectation_of_record (target_record target))
+      else None
   | None => None
   end.
 
 Theorem issued_installed_capability_resolves : forall state group record,
   installed_continuations state group = Some record ->
-  resolve_capability state group (issue_installed_capability state group) =
+  resolve_capability state state group (issue_installed_capability state group) =
     Some (InstalledTarget record).
 Proof.
   intros state group record Hinstalled.
@@ -288,7 +422,8 @@ Proof.
   destruct (EqualityEpoch.eq_dec
     (continuation_epochs state group) (continuation_epochs state group));
     [|contradiction].
-  rewrite Hinstalled. destruct (Z.eq_dec 0 0); [reflexivity|contradiction].
+  rewrite Hinstalled. destruct (Z.eq_dec 0 0); [|contradiction].
+  reflexivity.
 Qed.
 
 Lemma lookup_ordinary_nth_error_unique : forall ordinary ordinal record,
@@ -316,7 +451,7 @@ Qed.
 Theorem issued_ordinary_capability_resolves : forall state group ordinal record,
   continuation_authority_valid state ->
   nth_error (ordinary_continuations state group) ordinal = Some record ->
-  resolve_capability state group
+  resolve_capability state state group
     (issue_ordinary_capability state group ordinal) =
   Some (OrdinaryTarget (ordinary_path record) (ordinary_record record)).
 Proof.
@@ -357,58 +492,104 @@ Proof.
     reflexivity.
 Qed.
 
-Theorem group_mismatch_cannot_resolve : forall state requested capability,
+Theorem group_mismatch_cannot_resolve : forall observed commit requested capability,
   requested <> capability_group capability ->
-  resolve_capability state requested capability = None.
+  resolve_capability observed commit requested capability = None.
 Proof.
   intros. unfold resolve_capability.
   destruct (group_eq_dec requested (capability_group capability));
     [contradiction|reflexivity].
 Qed.
 
-Theorem stale_epoch_cannot_resolve : forall state group capability,
+Theorem stale_epoch_cannot_resolve : forall observed commit group capability,
   capability_group capability = group ->
-  continuation_epochs state group <> capability_epoch capability ->
-  resolve_capability state group capability = None.
+  continuation_epochs commit group <> continuation_epochs observed group ->
+  resolve_capability observed commit group capability = None.
 Proof.
-  intros state group capability Hgroup Hstale. subst.
+  intros observed commit group capability Hgroup Hstale. subst.
   unfold resolve_capability.
   destruct (group_eq_dec
     (capability_group capability) (capability_group capability));
     [|contradiction].
   destruct (EqualityEpoch.eq_dec
-    (continuation_epochs state (capability_group capability))
-    (capability_epoch capability)); [contradiction|reflexivity].
+    (continuation_epochs commit (capability_group capability))
+    (continuation_epochs observed (capability_group capability)));
+    [contradiction|reflexivity].
 Qed.
 
-Theorem exact_resolution_preserves_full_record : forall
-    state group capability expected target,
-  resolve_exact_continuation state group capability expected = Some target ->
-  target_record target = expected.
+Theorem exact_resolution_refines_capability_and_expectation : forall
+    observed commit group capability expected target,
+  resolve_exact_continuation observed commit group capability expected = Some target ->
+  resolve_capability observed commit group capability = Some target /\
+  target_boundary_validb target = true /\
+  expectation_matches_record expected (target_record target).
 Proof.
-  intros state group capability expected target Hresolve.
+  intros observed commit group capability expected target Hresolve.
   unfold resolve_exact_continuation in Hresolve.
-  destruct (resolve_capability state group capability) as [actual|];
-    [|discriminate].
-  destruct (continuation_record_eq_dec (target_record actual) expected)
-    as [Heq|Hneq]; [|discriminate].
-  now inversion Hresolve; subst.
+  destruct (resolve_capability observed commit group capability) as [actual|]
+    eqn:Hcap; [|discriminate].
+  destruct (target_boundary_validb actual) eqn:Hvalid; [|discriminate].
+  destruct (expectation_matches_record_dec expected (target_record actual))
+    as [Hmatches|Hreject]; [|discriminate].
+  injection Hresolve as Heq. subst actual.
+  split; [reflexivity|]. split; [exact Hvalid|exact Hmatches].
 Qed.
 
-Theorem exact_resolution_preserves_identity_source_persistence_and_peeks : forall
-    state group capability expected target,
-  resolve_exact_continuation state group capability expected = Some target ->
-  continuation_identity (target_record target) =
-      continuation_identity expected /\
-  continuation_source (target_record target) = continuation_source expected /\
-  continuation_persistent (target_record target) =
-      continuation_persistent expected /\
-  continuation_peeks (target_record target) = continuation_peeks expected.
+Lemma reachable_same_epoch_resolves_observed_layout : forall
+    observed commit group capability target,
+  reachable_same_epoch_group observed commit group ->
+  resolve_capability observed commit group capability = Some target ->
+  resolve_capability observed observed group capability = Some target.
 Proof.
-  intros state group capability expected target H.
-  pose proof (@exact_resolution_preserves_full_record
-    state group capability expected target H) as Heq.
-  subst. repeat split; reflexivity.
+  intros observed commit group capability target Hreachable Hresolve.
+  assert (Hepoch : continuation_epochs commit group =
+      continuation_epochs observed group).
+  { pose proof Hresolve as Hcheck. unfold resolve_capability in Hcheck.
+    destruct (group_eq_dec group (capability_group capability)); [|discriminate].
+    destruct (EqualityEpoch.eq_dec
+      (continuation_epochs commit group) (continuation_epochs observed group));
+      [assumption|discriminate]. }
+  destruct (Hreachable Hepoch) as [Hinstalled Hordinary].
+  unfold resolve_capability, resolve_bound_ordinary in Hresolve |- *.
+  rewrite Hepoch, Hinstalled, Hordinary in Hresolve.
+  exact Hresolve.
+Qed.
+
+(** Public success capstone: the expectation was issued from the observed
+    target, and the reachable same-epoch witness prevents arbitrary formal
+    states from treating epoch equality as layout equality. *)
+Theorem issued_expectation_exact_resolution_is_observed_target : forall
+    observed commit group capability expected target,
+  reachable_same_epoch_group observed commit group ->
+  issue_continuation_expectation observed group capability = Some expected ->
+  resolve_exact_continuation observed commit group capability expected =
+    Some target ->
+  resolve_capability observed observed group capability = Some target /\
+  expected = expectation_of_record (target_record target).
+Proof.
+  intros observed commit group capability expected target Hreachable Hissued Hresolve.
+  destruct (@exact_resolution_refines_capability_and_expectation
+    observed commit group capability expected target Hresolve)
+    as [Hcap [Hboundary Hmatches]].
+  pose proof (@reachable_same_epoch_resolves_observed_layout
+    observed commit group capability target Hreachable Hcap) as Hobserved.
+  unfold issue_continuation_expectation in Hissued. rewrite Hobserved in Hissued.
+  rewrite Hboundary in Hissued. injection Hissued as Heq. subst expected.
+  split; [exact Hobserved|reflexivity].
+Qed.
+
+Theorem exact_resolution_preserves_expected_source_persistence_and_peeks : forall
+    observed commit group capability expected target,
+  resolve_exact_continuation observed commit group capability expected = Some target ->
+  continuation_source (target_record target) = expected_source expected /\
+  continuation_persistent (target_record target) =
+      expected_persistent expected /\
+  continuation_peeks (target_record target) = expected_peeks expected.
+Proof.
+  intros observed commit group capability expected target H.
+  destruct (@exact_resolution_refines_capability_and_expectation
+    observed commit group capability expected target H) as [_ [_ Hmatches]].
+  exact Hmatches.
 Qed.
 
 Lemma resolve_bound_ordinary_is_live : forall state group bound index path record,
@@ -425,34 +606,61 @@ Proof.
   inversion H; subst. exact Hlookup.
 Qed.
 
-Lemma resolved_ordinary_capability_is_live : forall
-    state group capability path record,
-  resolve_capability state group capability = Some (OrdinaryTarget path record) ->
-  lookup_ordinary path (ordinary_continuations state group) = Some record.
+Lemma resolve_bound_ordinary_uses_observed_path : forall
+    state group bound index path record,
+  resolve_bound_ordinary state group bound index =
+      Some (OrdinaryTarget path record) ->
+  In path bound.
 Proof.
-  intros state group capability path record Hresolve.
+  intros state group bound index path record Hresolve.
+  unfold resolve_bound_ordinary in Hresolve.
+  destruct (Z_lt_ge_dec index 0); [discriminate|].
+  destruct (nth_error bound (Z.to_nat index)) as [selected|] eqn:Hnth;
+    [|discriminate].
+  destruct (lookup_ordinary selected (ordinary_continuations state group));
+    [|discriminate].
+  inversion Hresolve; subst. now apply nth_error_In in Hnth.
+Qed.
+
+Lemma resolved_ordinary_capability_is_live : forall
+    observed commit group capability path record,
+  resolve_capability observed commit group capability =
+      Some (OrdinaryTarget path record) ->
+  lookup_ordinary path (ordinary_continuations commit group) = Some record /\
+  In path (ordinary_paths (ordinary_continuations observed group)).
+Proof.
+  intros observed commit group capability path record Hresolve.
   unfold resolve_capability in Hresolve.
   destruct (group_eq_dec group (capability_group capability)); [|discriminate].
   destruct (EqualityEpoch.eq_dec
-    (continuation_epochs state group) (capability_epoch capability));
+    (continuation_epochs commit group) (continuation_epochs observed group));
     [|discriminate].
-  destruct (installed_continuations state group) as [installed|].
-  - destruct (Z.eq_dec (capability_index capability) 0); [discriminate|].
-    eapply resolve_bound_ordinary_is_live. exact Hresolve.
-  - eapply resolve_bound_ordinary_is_live. exact Hresolve.
+  destruct (installed_continuations observed group) as [installed|].
+  - destruct (Z.eq_dec (capability_index capability) 0).
+    + destruct (installed_continuations commit group) as [current|];
+        [|discriminate].
+      discriminate.
+    + split.
+      * eapply resolve_bound_ordinary_is_live. exact Hresolve.
+      * eapply resolve_bound_ordinary_uses_observed_path. exact Hresolve.
+  - split.
+    + eapply resolve_bound_ordinary_is_live. exact Hresolve.
+    + eapply resolve_bound_ordinary_uses_observed_path. exact Hresolve.
 Qed.
 
 Lemma exact_resolved_ordinary_is_live : forall
-    state group capability expected path record,
-  resolve_exact_continuation state group capability expected =
+    observed commit group capability expected path record,
+  resolve_exact_continuation observed commit group capability expected =
       Some (OrdinaryTarget path record) ->
-  lookup_ordinary path (ordinary_continuations state group) = Some record.
+  lookup_ordinary path (ordinary_continuations commit group) = Some record /\
+  In path (ordinary_paths (ordinary_continuations observed group)).
 Proof.
-  intros state group capability expected path record Hresolve.
+  intros observed commit group capability expected path record Hresolve.
   unfold resolve_exact_continuation in Hresolve.
-  destruct (resolve_capability state group capability) as [target|]
+  destruct (resolve_capability observed commit group capability) as [target|]
     eqn:Hcap; [|discriminate].
-  destruct (continuation_record_eq_dec (target_record target) expected);
+  destruct (target_boundary_validb target) eqn:Hvalid; [|discriminate].
+  destruct (expectation_matches_record_dec expected (target_record target));
     [|discriminate].
   inversion Hresolve; subst target.
   now apply resolved_ordinary_capability_is_live with (capability := capability).
@@ -470,67 +678,151 @@ Proof.
   destruct (lookup_ordinary path (ordinary_continuations state group)); discriminate.
 Qed.
 
-Lemma resolved_installed_capability_is_live : forall state group capability record,
-  resolve_capability state group capability = Some (InstalledTarget record) ->
-  installed_continuations state group = Some record.
+Lemma resolved_installed_capability_is_live : forall
+    observed commit group capability record,
+  resolve_capability observed commit group capability = Some (InstalledTarget record) ->
+  (exists observed_record,
+      installed_continuations observed group = Some observed_record) /\
+  installed_continuations commit group = Some record.
 Proof.
-  intros state group capability record Hresolve.
+  intros observed commit group capability record Hresolve.
   unfold resolve_capability in Hresolve.
   destruct (group_eq_dec group (capability_group capability)); [|discriminate].
   destruct (EqualityEpoch.eq_dec
-    (continuation_epochs state group) (capability_epoch capability));
+    (continuation_epochs commit group) (continuation_epochs observed group));
     [|discriminate].
-  destruct (installed_continuations state group) as [installed|] eqn:Hinstalled.
+  destruct (installed_continuations observed group) as [installed|]
+    eqn:Hobserved; [|].
   - destruct (Z.eq_dec (capability_index capability) 0).
-    + inversion Hresolve; subst. reflexivity.
+    + destruct (installed_continuations commit group) as [current|]
+        eqn:Hcommit; [|discriminate].
+      inversion Hresolve; subst current. split.
+      * exists installed. reflexivity.
+      * reflexivity.
     + exfalso. eapply resolve_bound_ordinary_never_installed. exact Hresolve.
   - exfalso. eapply resolve_bound_ordinary_never_installed. exact Hresolve.
 Qed.
 
+Definition target_identity_is_authoritative
+    (observed commit : ContinuationAuthority) (group : GroupKey)
+    (target : ResolvedTarget) : Prop :=
+  match target with
+  | InstalledTarget record =>
+      continuation_epochs commit group = continuation_epochs observed group /\
+      (exists observed_record,
+          installed_continuations observed group = Some observed_record) /\
+      installed_continuations commit group = Some record
+  | OrdinaryTarget path record =>
+      continuation_epochs commit group = continuation_epochs observed group /\
+      In path (ordinary_paths (ordinary_continuations observed group)) /\
+      lookup_ordinary path (ordinary_continuations commit group) = Some record /\
+      path_valid path = true /\
+      path = canonical_continuation_path group record
+  end.
+
+Lemma resolved_capability_uses_observed_epoch : forall
+    observed commit group capability target,
+  resolve_capability observed commit group capability = Some target ->
+  continuation_epochs commit group = continuation_epochs observed group.
+Proof.
+  intros observed commit group capability target Hresolve.
+  unfold resolve_capability in Hresolve.
+  destruct (group_eq_dec group (capability_group capability)); [|discriminate].
+  destruct (EqualityEpoch.eq_dec
+    (continuation_epochs commit group) (continuation_epochs observed group));
+    [assumption|discriminate].
+Qed.
+
 Lemma lookup_ordinary_has_member : forall ordinary path record,
   lookup_ordinary path ordinary = Some record ->
-  exists entry, In entry ordinary /\ ordinary_record entry = record.
+  exists entry,
+    In entry ordinary /\
+    ordinary_path entry = path /\
+    ordinary_record entry = record.
 Proof.
   induction ordinary as [|head tail IH]; intros path record Hlookup;
     [discriminate|].
-  simpl in Hlookup. destruct (path_eq_dec path (ordinary_path head)).
-  - inversion Hlookup; subst. exists head. split; [now left|reflexivity].
-  - destruct (IH path record Hlookup) as [entry [Hin Heq]].
-    exists entry. split; [now right|exact Heq].
+  simpl in Hlookup.
+  destruct (path_eq_dec path (ordinary_path head)) as [Hpath|Hdifferent].
+  - inversion Hlookup; subst record. exists head. split; [now left|].
+    split; [symmetry; exact Hpath|reflexivity].
+  - destruct (IH path record Hlookup) as [entry [Hin [Hpath Heq]]].
+    exists entry. split; [now right|]. split; assumption.
+Qed.
+
+Theorem exact_resolution_identity_comes_from_bound_path_or_installed_slot : forall
+    observed commit group capability expected target,
+  continuation_authority_valid commit ->
+  resolve_exact_continuation observed commit group capability expected = Some target ->
+  target_identity_is_authoritative observed commit group target.
+Proof.
+  intros observed commit group capability expected target
+    [Hpaths [Hordinary [Hinstalled [Hresting Hinstalled_joins]]]] Hresolve.
+  destruct (@exact_resolution_refines_capability_and_expectation
+    observed commit group capability expected target Hresolve) as [Hcap [_ _]].
+  destruct target as [record|path record]; simpl.
+  - split.
+    + now apply resolved_capability_uses_observed_epoch with
+        (capability := capability) (target := InstalledTarget record).
+    + now apply resolved_installed_capability_is_live with
+        (capability := capability).
+  - destruct (@resolved_ordinary_capability_is_live
+      observed commit group capability path record Hcap) as [Hlive Hobserved].
+    split.
+    + now apply resolved_capability_uses_observed_epoch with
+        (capability := capability) (target := OrdinaryTarget path record).
+    + split; [exact Hobserved|]. split; [exact Hlive|].
+    destruct (@lookup_ordinary_has_member
+      (ordinary_continuations commit group) path record Hlive)
+      as [entry [Hin [Hentry_path Heq]]].
+    destruct (Hordinary group entry Hin) as [Hpath [Hvalid Hcanonical]].
+    split.
+    * rewrite Hentry_path in Hpath. exact Hpath.
+    * unfold ordinary_path_is_canonical in Hcanonical.
+      now rewrite Hentry_path, Heq in Hcanonical.
 Qed.
 
 Theorem exact_resolution_preserves_canonical_signed_peeks : forall
-    state group capability expected target,
-  continuation_authority_valid state ->
-  resolve_exact_continuation state group capability expected = Some target ->
-  canonical_peeks (continuation_peeks expected) /\
-  NoDup (continuation_peeks expected).
+    observed commit group capability expected target,
+  continuation_authority_valid commit ->
+  resolve_exact_continuation observed commit group capability expected = Some target ->
+  path_valid (expected_source expected) = true /\
+  canonical_peeks (expected_peeks expected) /\
+  NoDup (expected_peeks expected).
 Proof.
-  intros state group capability expected target
+  intros observed commit group capability expected target
     [Hpaths_unique [Hordinary_valid
       [Hinstalled_valid [Hresting_unique Hinstalled_join_unique]]]] Hresolve.
-  pose proof (@exact_resolution_preserves_full_record
-    state group capability expected target Hresolve) as Hrecord.
+  destruct (@exact_resolution_refines_capability_and_expectation
+    observed commit group capability expected target Hresolve)
+    as [Hcap_authority [Hboundary_valid Hmatches]].
   assert (Hvalid : continuation_record_valid (target_record target)).
   { destruct target as [record|path record].
     - unfold resolve_exact_continuation in Hresolve.
-      destruct (resolve_capability state group capability) as [actual|]
+      destruct (resolve_capability observed commit group capability) as [actual|]
         eqn:Hcap; [|discriminate].
-      destruct (continuation_record_eq_dec (target_record actual) expected);
+      destruct (target_boundary_validb actual) eqn:Hboundary; [|discriminate].
+      destruct (expectation_matches_record_dec expected (target_record actual));
         [|discriminate].
       inversion Hresolve; subst actual.
+      destruct (@resolved_installed_capability_is_live
+        observed commit group capability record Hcap) as [_ Hcommit_live].
       destruct (Hinstalled_valid group record
-        (@resolved_installed_capability_is_live
-          state group capability record Hcap)) as [_ Hcanonical].
-      exact Hcanonical.
+        Hcommit_live) as [_ Hvalid].
+      exact Hvalid.
     - pose proof (@exact_resolved_ordinary_is_live
-        state group capability expected path record Hresolve) as Hlive.
+        observed commit group capability expected path record Hresolve) as Hlive.
+      destruct Hlive as [Hcurrent_live Hobserved_live].
       destruct (@lookup_ordinary_has_member
-        (ordinary_continuations state group) path record Hlive)
-        as [entry [Hin Heq]].
-      unfold continuation_record_valid. simpl. rewrite <- Heq.
-      exact (Hordinary_valid group entry Hin). }
-  rewrite Hrecord in Hvalid. split; [exact Hvalid|].
+        (ordinary_continuations commit group) path record Hcurrent_live)
+        as [entry [Hin [Hentry_path Heq]]].
+      rewrite <- Heq.
+      destruct (Hordinary_valid group entry Hin) as [_ [Hrecord_valid _]].
+      exact Hrecord_valid. }
+  destruct Hvalid as [Hidentity [Hsource Hcanonical]].
+  destruct Hmatches as [Hsource_exact [_ Hpeeks]].
+  rewrite <- Hsource_exact. rewrite <- Hpeeks.
+  split; [exact Hsource|]. split; [exact Hcanonical|].
   now apply canonical_peeks_are_unique.
 Qed.
 
@@ -733,11 +1025,11 @@ Definition remove_nonpersistent_ordinary
     (installed_joins state).
 
 Definition commit_exact_continuation
-    (state : ContinuationAuthority) (group : GroupKey)
-    (capability : ContinuationCapability) (expected : ContinuationRecord)
+    (observed state : ContinuationAuthority) (group : GroupKey)
+    (capability : ContinuationCapability) (expected : ContinuationExpectation)
     (join_channels : list Path)
     : option ContinuationAuthority :=
-  match resolve_exact_continuation state group capability expected with
+  match resolve_exact_continuation observed state group capability expected with
   | None => None
   | Some (InstalledTarget record) =>
       if continuation_persistent record then Some state else None
@@ -749,20 +1041,22 @@ Definition commit_exact_continuation
 
 Theorem accepted_installed_continuation_is_preserved : forall
     state group capability expected join_channels record,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (InstalledTarget record) ->
   continuation_persistent record = true ->
-  commit_exact_continuation state group capability expected join_channels = Some state.
+  commit_exact_continuation state state group capability expected join_channels =
+    Some state.
 Proof.
   intros. unfold commit_exact_continuation. rewrite H. now rewrite H0.
 Qed.
 
 Theorem accepted_persistent_ordinary_continuation_is_preserved : forall
     state group capability expected join_channels path record,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = true ->
-  commit_exact_continuation state group capability expected join_channels = Some state.
+  commit_exact_continuation state state group capability expected join_channels =
+    Some state.
 Proof.
   intros. unfold commit_exact_continuation. rewrite H. now rewrite H0.
 Qed.
@@ -887,8 +1181,8 @@ Proof.
           (remove_ordinary_exact path (ordinary_continuations state group))
           selected)) in Hin.
       unfold set_group in Hin.
-      destruct (group_eq_dec selected group).
-      * apply Hordinary with (group := group).
+      destruct (group_eq_dec selected group) as [Heq|Hneq].
+      * subst selected. apply Hordinary with (group := group).
         now apply in_remove_ordinary_exact in Hin.
       * now apply Hordinary with (group := selected).
     + split.
@@ -907,10 +1201,10 @@ Qed.
 Theorem accepted_nonpersistent_removes_exactly_one_ordinary : forall
     state group capability expected join_channels path record after,
   continuation_authority_valid state ->
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels = Some after ->
+  commit_exact_continuation state state group capability expected join_channels = Some after ->
   lookup_ordinary path (ordinary_continuations after group) = None /\
   S (length (ordinary_continuations after group)) =
       length (ordinary_continuations state group).
@@ -926,16 +1220,17 @@ Proof.
   - apply lookup_removed_path_is_none. apply Hunique.
   - apply remove_present_unique_path_decrements_length with (record := record).
     + apply Hunique.
-    + now apply exact_resolved_ordinary_is_live with
-        (capability := capability) (expected := expected).
+    + destruct (@exact_resolved_ordinary_is_live
+        state state group capability expected path record Hresolve)
+        as [Hlive _]. exact Hlive.
 Qed.
 
 Theorem accepted_nonpersistent_preserves_every_other_ordinary_path : forall
     state group capability expected join_channels path record after other,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels = Some after ->
+  commit_exact_continuation state state group capability expected join_channels = Some after ->
   other <> path ->
   lookup_ordinary other (ordinary_continuations after group) =
   lookup_ordinary other (ordinary_continuations state group).
@@ -948,10 +1243,10 @@ Qed.
 
 Theorem accepted_nonpersistent_bumps_exact_group_epoch : forall
     state group capability expected join_channels path record after,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels = Some after ->
+  commit_exact_continuation state state group capability expected join_channels = Some after ->
   continuation_epochs after group =
     EqualityEpoch.fresh (continuation_epochs state group) /\
   continuation_epochs after group <> continuation_epochs state group.
@@ -964,10 +1259,10 @@ Qed.
 
 Theorem accepted_nonpersistent_preserves_other_group_epoch : forall
     state group capability expected join_channels path record after other,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels = Some after ->
+  commit_exact_continuation state state group capability expected join_channels = Some after ->
   other <> group ->
   continuation_epochs after other = continuation_epochs state other.
 Proof.
@@ -978,10 +1273,10 @@ Qed.
 
 Theorem accepted_nonpersistent_preserves_all_installed_continuations : forall
     state group capability expected join_channels path record after,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels = Some after ->
+  commit_exact_continuation state state group capability expected join_channels = Some after ->
   installed_continuations after = installed_continuations state.
 Proof.
   intros. unfold commit_exact_continuation in H1. rewrite H in H1.
@@ -990,10 +1285,10 @@ Qed.
 
 Theorem accepted_nonpersistent_preserves_all_installed_joins : forall
     state group capability expected join_channels path record after,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels = Some after ->
+  commit_exact_continuation state state group capability expected join_channels = Some after ->
   installed_joins after = installed_joins state.
 Proof.
   intros. unfold commit_exact_continuation in H1. rewrite H in H1.
@@ -1003,12 +1298,12 @@ Qed.
 Theorem final_nonpersistent_removal_cleans_exact_resting_join_group : forall
     state group capability expected join_channels path record after channel,
   continuation_authority_valid state ->
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
   installed_continuations state group = None ->
   remove_ordinary_exact path (ordinary_continuations state group) = [] ->
-  commit_exact_continuation state group capability expected join_channels =
+  commit_exact_continuation state state group capability expected join_channels =
       Some after ->
   In channel join_channels ->
   resting_joins after channel =
@@ -1030,12 +1325,12 @@ Qed.
 
 Theorem final_nonpersistent_removal_preserves_unlisted_join_channels : forall
     state group capability expected join_channels path record after channel,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
   installed_continuations state group = None ->
   remove_ordinary_exact path (ordinary_continuations state group) = [] ->
-  commit_exact_continuation state group capability expected join_channels =
+  commit_exact_continuation state state group capability expected join_channels =
       Some after ->
   ~ In channel join_channels ->
   resting_joins after channel = resting_joins state channel.
@@ -1048,12 +1343,12 @@ Qed.
 
 Theorem nonfinal_nonpersistent_removal_preserves_resting_joins : forall
     state group capability expected join_channels path record after,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
   (installed_continuations state group <> None \/
    remove_ordinary_exact path (ordinary_continuations state group) <> []) ->
-  commit_exact_continuation state group capability expected join_channels =
+  commit_exact_continuation state state group capability expected join_channels =
       Some after ->
   resting_joins after = resting_joins state.
 Proof.
@@ -1073,10 +1368,10 @@ Qed.
 
 Theorem accepted_nonpersistent_preserves_every_unrelated_group : forall
     state group capability expected join_channels path record after other,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels =
+  commit_exact_continuation state state group capability expected join_channels =
       Some after ->
   other <> group ->
   ordinary_continuations after other = ordinary_continuations state other /\
@@ -1103,10 +1398,10 @@ Qed.
 
 Theorem prefix_related_groups_do_not_alias_authority : forall
     state group capability expected join_channels path record after other,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels =
+  commit_exact_continuation state state group capability expected join_channels =
       Some after ->
   (proper_group_prefix other group \/ proper_group_prefix group other) ->
   ordinary_continuations after other = ordinary_continuations state other /\
@@ -1129,10 +1424,10 @@ Qed.
 
 Theorem prefix_related_join_group_membership_is_preserved : forall
     state group capability expected join_channels path record after other channel,
-  resolve_exact_continuation state group capability expected =
+  resolve_exact_continuation state state group capability expected =
       Some (OrdinaryTarget path record) ->
   continuation_persistent record = false ->
-  commit_exact_continuation state group capability expected join_channels =
+  commit_exact_continuation state state group capability expected join_channels =
       Some after ->
   (proper_group_prefix other group \/ proper_group_prefix group other) ->
   (In other (resting_joins after channel) <->
@@ -1157,7 +1452,8 @@ Qed.
 Print Assumptions EqualityEpoch.fresh_from_rejects_every_prior.
 Print Assumptions issued_ordinary_capability_resolves.
 Print Assumptions stale_epoch_cannot_resolve.
-Print Assumptions exact_resolution_preserves_identity_source_persistence_and_peeks.
+Print Assumptions exact_resolution_preserves_expected_source_persistence_and_peeks.
+Print Assumptions exact_resolution_identity_comes_from_bound_path_or_installed_slot.
 Print Assumptions exact_resolution_preserves_canonical_signed_peeks.
 Print Assumptions nonpersistent_removal_preserves_authority_validity.
 Print Assumptions accepted_nonpersistent_removes_exactly_one_ordinary.
