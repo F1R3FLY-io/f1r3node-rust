@@ -7,7 +7,9 @@ use super::canonical_rebuild_oracle::{Entries, rebuild};
 use super::support::{
     TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, TracingStore, admit, empty_roots, encode,
 };
+use crate::rspace::bag::BagDelta;
 use crate::rspace::data_index::RSpaceDataIndex;
+use crate::rspace::hot_store::{PendingDeltas, mutation_batch_from_pending};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore,
@@ -319,6 +321,58 @@ fn continuation_source_journal_stages_exact_pathmap_bytes() {
     assert!(sealed.objects().iter().any(|object| {
         object.reference() == expected_source && object.canonical_bytes() == encoded_source.as_ref()
     }));
+}
+
+#[test]
+fn pending_journals_form_one_exact_mutation_batch() {
+    let store = CanonicalObjectStore::new();
+    let base = base_state(&store, 12, None);
+    let (continuation_bytes, source, source_ref) = continuation_fixture(base, true);
+    let continuation_view = MutationBatchViewV1::parse(&continuation_bytes).unwrap();
+    let continuation_entry = continuation_view
+        .continuations()
+        .next()
+        .expect("fixture has one continuation transition");
+    let continuation_path = continuation_entry.key.to_vec();
+    let continuation_transition = continuation_entry.transition;
+
+    let channel = "channel".to_owned();
+    let datum = Datum::create(&channel, "identity".to_owned(), false);
+    let datum_path = RSpaceDataIndex::datum_path(&channel, &datum);
+    let mut data = BagDelta::new();
+    data.record_addition(&datum_path, crate::rspace::bag::Multiplicity::ONE)
+        .unwrap();
+
+    let mut join_path = RhoPathV1::join_prefix(&channel);
+    join_path.extend_from_slice(&encode_join_record(std::slice::from_ref(&channel)));
+    let mut joins = BagDelta::new();
+    joins
+        .record_addition(&join_path, crate::rspace::bag::Multiplicity::ONE)
+        .unwrap();
+
+    let mut continuation_content = PathMap::new();
+    continuation_content.insert(continuation_path.clone(), continuation_transition);
+    let pending = PendingDeltas {
+        data: Some(data),
+        continuations: Some(BagDelta::new()),
+        continuation_content: Some(continuation_content),
+        continuation_source_bytes: Some(PathMap::new()),
+        joins: Some(joins),
+    };
+    let batch = mutation_batch_from_pending(
+        base,
+        &crate::rspace::bag::Bag::new(),
+        &crate::rspace::bag::Bag::new(),
+        &pending,
+    )
+    .expect("coherent journals must produce one mutation batch");
+    let encoded = encode(&batch.plan().unwrap());
+    let view = MutationBatchViewV1::parse(&encoded).unwrap();
+    assert_eq!(view.data().count(), 1);
+    assert_eq!(view.continuations().count(), 1);
+    assert_eq!(view.joins().count(), 1);
+    assert_eq!(view.base(), base);
+    assert_eq!(source.object_ref(), source_ref);
 }
 
 #[test]
