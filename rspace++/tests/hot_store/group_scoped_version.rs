@@ -346,3 +346,53 @@ fn an_accepted_match_preserves_a_persistent_continuation() {
     assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 1);
     assert_eq!(after.joins.values().map(Vec::len).sum::<usize>(), 1);
 }
+
+#[test]
+fn an_accepted_match_can_remove_the_selected_datum_and_publish_a_new_arrival() {
+    let channels = vec!["arrival".to_owned()];
+    let selected_datum = Datum::create(&channels[0], "selected".to_owned(), false);
+    let arrival = Datum::create(&channels[0], "arrival".to_owned(), false);
+    let selected = continuation(8, "arrival");
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([(channels[0].clone(), vec![selected_datum.clone()])]),
+        joins: HashMap::new(),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, _) = store.get_continuations_versioned(&channels);
+    let mut datum_delta = BagDelta::new();
+    datum_delta
+        .record_removal(
+            &RSpaceDataIndex::datum_path(&channels[0], &selected_datum),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture removal fits u64");
+    datum_delta
+        .record_addition(
+            &RSpaceDataIndex::datum_path(&channels[0], &arrival),
+            super::super::bag::Multiplicity::ONE,
+        )
+        .expect("fixture addition fits u64");
+
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: ContinuationAddress::new(version, 0),
+                source: selected.source.clone(),
+                persist: selected.persist,
+                peeks: selected.peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths: Vec::new(),
+            join_channels: Vec::new(),
+        })
+        .expect("the arrival transition is valid");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    let after = store.snapshot();
+    assert_eq!(after.data.get(&channels[0]), Some(&vec![arrival]));
+    assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 0);
+}
