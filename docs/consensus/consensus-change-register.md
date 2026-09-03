@@ -6150,3 +6150,16 @@ is the point: the derivation's surplus is real, and it is small and classifiable
 to B.1; subsequent classified findings through CBR-074 and CBR-L24 bring the living appendix to 75. The re-scope also removed
 the mechanised drift gate with its machine index; the pre-refactor revision, with every then-retired
 body and the gate's specification, remains in git history.*
+
+### CBR-075 — checkpoint authority exclusion gate (2026-09-03)
+
+RSpace now places a shared asynchronous read permit around ordinary `produce`, `consume`, `install`,
+and remove operations, and an exclusive permit around checkpoint, reset, soft-checkpoint, and revert
+transitions. This is a coordination invariant, not a new serialized value or consensus hash: it prevents
+legacy-root capture from racing a live mutation while preserving concurrent ordinary operations. The gate
+does not make the legacy `CurrentRoot` a semantic PathMap root; those authority domains remain distinct.
+
+Evidence: commit `c8aeb790e`; bounded `cargo check -p rspace_plus_plus` passed with warnings only, and
+`concurrent_rspace_architecture_repro_tests` passed 4/4 under a 3 GiB memory cap, zero swap, and 128 tasks.
+The lossless semantic before/after write-set and durable publication protocol remain open obligations and
+must not be inferred from this coordination change.

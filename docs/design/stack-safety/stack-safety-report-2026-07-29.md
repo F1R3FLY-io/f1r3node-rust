@@ -12863,3 +12863,16 @@ and must survive future edits (or the citing comment must be updated in the same
 *This is a final-results report against the anchor named in the header. The living obligations are
 Appendix G's four lines; the historical evidence this revision compressed remains in git history
 and in the three cited audit ledgers.*
+
+## Appendix I — checkpoint coordination boundary (2026-09-03)
+
+The RSpace checkpoint path now uses an asynchronous read/write operation gate. Ordinary mutation
+operations acquire shared permits, so disjoint produces and consumes remain concurrent. Checkpoint,
+reset, soft-checkpoint, and revert acquire an exclusive permit before authority capture and retain it
+through the transition. This removes the previously open race in which a mutation could enter between
+root capture and checkpoint publication; it introduces no recursion, depth cap, stack workaround, or
+PathMap projection.
+
+Evidence is commit `c8aeb790e`. A bounded `cargo check -p rspace_plus_plus` succeeded, and the four
+architecture regression tests passed under a 3 GiB memory cap, zero swap, and 128-task limit. The full
+lossless semantic write-set and durable publication work is deliberately not claimed by this addendum.
