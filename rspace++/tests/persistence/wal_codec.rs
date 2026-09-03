@@ -83,6 +83,12 @@ fn encoded_prepare() -> (Vec<u8>, crate::rspace::persistence::SealedTransitionV1
     let identity = prepared.write_to(&mut bytes).unwrap();
     assert_eq!(bytes.len() as u64, prepared.record_len());
     assert_eq!(identity.record_len(), prepared.record_len());
+    let expected_inline_bytes: u64 = sealed
+        .objects()
+        .iter()
+        .map(|object| object.reference().encoded_len())
+        .sum();
+    assert_eq!(prepared.inline_object_bytes(), expected_inline_bytes);
     (bytes, receipt, store_id)
 }
 
