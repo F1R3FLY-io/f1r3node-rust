@@ -1729,6 +1729,14 @@ mod tests {
             .source_record(&channels, &path)
             .expect("inserted continuation source record");
         assert_eq!(source_record.canonical_bytes(), expected_canonical.as_slice());
+        let source_bytes = store
+            .pending_source_bytes()
+            .get(&path)
+            .cloned()
+            .expect("revision-local canonical source bytes");
+        let mut restored = RSpaceContinuationStore::<String, String, String>::new();
+        restored.restore_pending_source_bytes(store.pending_source_bytes().clone());
+        assert_eq!(restored.pending_source_bytes().get(&path), Some(&source_bytes));
 
         assert!(store.remove_path(&channels, &primary_path).is_some());
         assert!(store.pending_delta().is_empty());
