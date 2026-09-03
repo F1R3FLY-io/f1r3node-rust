@@ -1887,6 +1887,10 @@ impl Eq for RSpaceDataIndex {}
 pub struct RSpaceDataStore<C, A: Clone> {
     index: RSpaceDataIndex,
     candidate_catalogs: RwLock<HashMap<Vec<u8>, Arc<CandidateCatalog<A>>>>,
+    /// Net path-level changes since the last checkpoint boundary. Repeated
+    /// mutations cancel through the same PathMap-backed Bag algebra as the
+    /// authoritative data index.
+    pending_delta: BagDelta,
     marker: PhantomData<fn() -> (C, A)>,
 }
 
@@ -1900,6 +1904,7 @@ impl<C, A: Clone> Clone for RSpaceDataStore<C, A> {
                     .expect("candidate catalog read lock")
                     .clone(),
             ),
+            pending_delta: self.pending_delta.clone(),
             marker: PhantomData,
         }
     }
@@ -1910,6 +1915,7 @@ impl<C, A: Clone> Default for RSpaceDataStore<C, A> {
         Self {
             index: RSpaceDataIndex::new(),
             candidate_catalogs: RwLock::new(HashMap::new()),
+            pending_delta: BagDelta::new(),
             marker: PhantomData,
         }
     }
@@ -1936,7 +1942,14 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         let empty = RSpaceDataIndex::new();
         self.index = empty;
         catalogs.clear();
+        self.pending_delta = BagDelta::new();
     }
+
+    /// Consume normalized path-level changes since the last checkpoint.
+    /// Callers must hold the enclosing hot-store transition boundary.
+    pub fn take_pending_delta(&mut self) -> BagDelta { std::mem::take(&mut self.pending_delta) }
+
+    pub fn pending_delta(&self) -> &BagDelta { &self.pending_delta }
 
     pub fn is_loaded(&self, channel: &C) -> bool
     where C: RhoPathEncode {
@@ -1977,6 +1990,8 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
             .get_mut()
             .expect("candidate catalog write lock");
         let (path, multiplicity) = self.index.insert(channel, datum)?;
+        self.pending_delta
+            .record_addition(&path, Multiplicity::new(1).expect("one is nonzero"))?;
         let relative_path = path
             .strip_prefix(marker.as_slice())
             .expect("an inserted datum path must begin with its channel prefix");
@@ -2094,6 +2109,16 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
         }
 
         self.index = candidate_index;
+        for (is_addition, changes) in [(true, delta.additions()), (false, delta.removals())] {
+            changes.visit_prefix(b"", |path, amount| {
+                let result = if is_addition {
+                    self.pending_delta.record_addition(path, amount)
+                } else {
+                    self.pending_delta.record_removal(path, amount)
+                };
+                result.expect("validated BagDelta must remain representable");
+            });
+        }
         for (marker, catalog) in candidate_catalogs {
             match catalog {
                 Some(catalog) => {
@@ -2193,6 +2218,9 @@ impl<C, A: Clone> RSpaceDataStore<C, A> {
             .get_mut()
             .expect("candidate catalog write lock");
         self.index.remove_path(path);
+        self.pending_delta
+            .record_removal(path, previous)
+            .expect("a removed positive multiplicity is representable");
         if let Some(catalog) = catalogs.get_mut(marker) {
             let catalog = Arc::make_mut(catalog);
             catalog.record_remove_metadata(relative_path, previous);
@@ -2483,6 +2511,29 @@ mod candidate_identity_order_tests {
             !tail[..end].contains("self.clone()"),
             "set_channel must prepare a channel-local Bag, not clone the whole store"
         );
+    }
+
+    #[test]
+    fn pending_delta_tracks_and_cancels_path_mutations_without_projection() {
+        let mut store = RSpaceDataStore::<String, String>::new();
+        let channel = "journal-channel".to_owned();
+        store.set_channel(channel.clone(), []).expect("load empty channel");
+        let datum = Datum {
+            a: Arc::new("journal-payload".to_owned()),
+            persist: false,
+            source: crate::rspace::trace::event::Produce::new(
+                Blake2b256Hash::new(b"journal-produce"),
+                Blake2b256Hash::new(b"journal-sequence"),
+                false,
+            ),
+        };
+
+        store.insert(&channel, &datum).expect("insert datum");
+        assert_eq!(store.pending_delta().additions().distinct_len(), 1);
+        assert!(store.pending_delta().removals().is_empty());
+
+        store.remove_index(&channel, 0).expect("remove datum");
+        assert!(store.pending_delta().is_empty());
     }
 }
 
