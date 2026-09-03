@@ -1,5 +1,7 @@
 From Stdlib Require Import Bool List Arith Lia.
 From StackSafePDA Require Import
+  PathMapCanonicalStreamPublicationBase
+  PathMapCanonicalStreamPublication
   EPM1
   GenerationCheckpointPublication
   TwoLevelRSpaceCheckpointCodec
@@ -7,16 +9,23 @@ From StackSafePDA Require Import
   TwoLevelRSpaceCheckpointCompatibility
   TwoLevelRSpaceAuthority
   TwoLevelRSpaceOperations
+  TwoLevelRSpaceDelta
   CandidateCatalogAuthorityIsolation
+  TwoLevelRSpaceMatchPreparation
+  TwoLevelRSpaceContinuationAuthority
   TwoLevelRSpaceMatchTransaction.
 
 Import ListNotations.
+Import PathMapCanonicalStreamPublication.
 Import TwoLevelRSpaceCheckpointCodec.
 Import TwoLevelRSpaceCheckpointStreaming.
 Import TwoLevelRSpaceCheckpointCompatibility.
 Import TwoLevelRSpaceAuthority.
 Import TwoLevelRSpaceOperations.
+Import TwoLevelRSpaceDelta.
 Import CandidateCatalogAuthorityIsolation.
+Import TwoLevelRSpaceMatchPreparation.
+Import TwoLevelRSpaceContinuationAuthority.
 Import TwoLevelRSpaceMatchTransaction.
 Set Implicit Arguments.
 
@@ -406,10 +415,10 @@ Qed.
     RSpace generation are independent authorities: maintenance may advance
     the former while retaining the latter. *)
 Record rba1_generation_artifact
-    (Object Catalog ExternalSnapshots : Type) : Type := Rba1GenerationArtifact {
+    (Object SemanticState : Type) : Type := Rba1GenerationArtifact {
   artifact_image : rba1_image;
   artifact_bytes : bytes;
-  artifact_store : @transactional_store_state Catalog ExternalSnapshots;
+  artifact_store : SemanticState;
   artifact_state_generation : nat;
   artifact_index_generation : nat;
   artifact_descriptor_state_generation : nat;
@@ -419,28 +428,28 @@ Record rba1_generation_artifact
   artifact_observed_binding : checkpoint_binding_state
 }.
 
-Arguments artifact_image {Object Catalog ExternalSnapshots} _.
-Arguments artifact_bytes {Object Catalog ExternalSnapshots} _.
-Arguments artifact_store {Object Catalog ExternalSnapshots} _.
-Arguments artifact_state_generation {Object Catalog ExternalSnapshots} _.
-Arguments artifact_index_generation {Object Catalog ExternalSnapshots} _.
+Arguments artifact_image {Object SemanticState} _.
+Arguments artifact_bytes {Object SemanticState} _.
+Arguments artifact_store {Object SemanticState} _.
+Arguments artifact_state_generation {Object SemanticState} _.
+Arguments artifact_index_generation {Object SemanticState} _.
 Arguments artifact_descriptor_state_generation
-  {Object Catalog ExternalSnapshots} _.
-Arguments artifact_object {Object Catalog ExternalSnapshots} _.
-Arguments artifact_expected_members {Object Catalog ExternalSnapshots} _.
-Arguments artifact_expected_binding {Object Catalog ExternalSnapshots} _.
-Arguments artifact_observed_binding {Object Catalog ExternalSnapshots} _.
+  {Object SemanticState} _.
+Arguments artifact_object {Object SemanticState} _.
+Arguments artifact_expected_members {Object SemanticState} _.
+Arguments artifact_expected_binding {Object SemanticState} _.
+Arguments artifact_observed_binding {Object SemanticState} _.
 
-Definition compatibility_admitted {Object Catalog ExternalSnapshots}
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots)
+Definition compatibility_admitted {Object SemanticState}
+    (artifact : rba1_generation_artifact Object SemanticState)
     (validate : rba1_image -> checkpoint_validation) : Prop :=
   exact_validation_evidence
     (artifact_bytes artifact) validate (artifact_image artifact).
 
-Definition rba1_object_bound {Object Catalog ExternalSnapshots}
+Definition rba1_object_bound {Object SemanticState}
     (object_key canonical_bytes : Object -> nat)
     (hash_bytes : bytes -> nat)
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots)
+    (artifact : rba1_generation_artifact Object SemanticState)
     : Prop :=
   In (artifact_object artifact) (artifact_expected_members artifact) /\
   object_key (artifact_object artifact) =
@@ -450,12 +459,12 @@ Definition rba1_object_bound {Object Catalog ExternalSnapshots}
   artifact_bytes artifact = encode_rba1 (artifact_image artifact).
 
 Definition rba1_object_constructed_and_inserted
-    {Object Catalog ExternalSnapshots}
+    {Object SemanticState}
     (object_key canonical_bytes : Object -> nat)
     (make_object : nat -> nat -> Object)
     (hash_bytes : bytes -> nat)
     (retained : list Object)
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots)
+    (artifact : rba1_generation_artifact Object SemanticState)
     : Prop :=
   artifact_bytes artifact = encode_rba1 (artifact_image artifact) /\
   artifact_object artifact = make_object
@@ -468,8 +477,9 @@ Definition rba1_object_constructed_and_inserted
   insert_unique_by_key object_key (artifact_object artifact) retained =
     Some (artifact_expected_members artifact).
 
-Definition wal_checkpoint_bound {Object Catalog ExternalSnapshots}
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots)
+Definition wal_checkpoint_bound {Object SemanticState}
+    (semantic_generation : SemanticState -> nat)
+    (artifact : rba1_generation_artifact Object SemanticState)
     : Prop :=
   receipt_binding_is_exact
     (artifact_expected_binding artifact)
@@ -479,30 +489,31 @@ Definition wal_checkpoint_bound {Object Catalog ExternalSnapshots}
   artifact_descriptor_state_generation artifact =
     artifact_state_generation artifact /\
   artifact_state_generation artifact =
-    store_publication_generation (artifact_store artifact).
+    semantic_generation (artifact_store artifact).
 
-Definition rba1_refines_store {Object Catalog ExternalSnapshots}
+Definition rba1_refines_store {Object SemanticState}
+    (semantic_authority : SemanticState -> TwoLevelAuthority)
     (encode_outer_act : TwoLevelAuthority -> bytes)
     (encode_bag_act : ChannelBag -> bytes)
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots)
+    (artifact : rba1_generation_artifact Object SemanticState)
     : Prop :=
   artifact_image artifact = Rba1Image
-    (encode_outer_act (store_authority (artifact_store artifact)))
+    (encode_outer_act (semantic_authority (artifact_store artifact)))
     (encode_inner_bags_in_outer_order encode_bag_act
-      (store_authority (artifact_store artifact))).
+      (semantic_authority (artifact_store artifact))).
 
 Theorem constructed_rba1_object_is_exactly_inventory_bound : forall
-    (Object Catalog ExternalSnapshots : Type)
+    (Object SemanticState : Type)
     (object_key canonical_bytes : Object -> nat)
     (make_object : nat -> nat -> Object)
     (hash_bytes : bytes -> nat)
     retained
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots),
+    (artifact : rba1_generation_artifact Object SemanticState),
   rba1_object_constructed_and_inserted object_key canonical_bytes make_object
     hash_bytes retained artifact ->
   rba1_object_bound object_key canonical_bytes hash_bytes artifact.
 Proof.
-  intros Object Catalog ExternalSnapshots object_key canonical_bytes
+  intros Object SemanticState object_key canonical_bytes
     make_object hash_bytes retained artifact
     [Hbytes [Hobject [Hkey [Hlength Hinsert]]]].
   unfold rba1_object_bound. repeat split.
@@ -516,64 +527,166 @@ Proof.
 Qed.
 
 Theorem rba1_store_refinement_uses_exact_outer_and_inner_cursor_order : forall
-    (Object Catalog ExternalSnapshots : Type)
-    encode_outer_act encode_bag_act
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots),
-  rba1_refines_store encode_outer_act encode_bag_act artifact ->
+    (Object SemanticState : Type)
+    semantic_authority encode_outer_act encode_bag_act
+    (artifact : rba1_generation_artifact Object SemanticState),
+  rba1_refines_store semantic_authority encode_outer_act encode_bag_act artifact ->
   rba1_outer_act (artifact_image artifact) =
-    encode_outer_act (store_authority (artifact_store artifact)) /\
+    encode_outer_act (semantic_authority (artifact_store artifact)) /\
   rba1_inner_bag_acts (artifact_image artifact) =
     map (fun entry => encode_bag_act (snd entry))
-      (store_authority (artifact_store artifact)).
+      (semantic_authority (artifact_store artifact)).
 Proof.
-  intros Object Catalog ExternalSnapshots encode_outer_act encode_bag_act
+  intros Object SemanticState semantic_authority encode_outer_act encode_bag_act
     artifact Hrefines.
   unfold rba1_refines_store, encode_inner_bags_in_outer_order in Hrefines.
   rewrite Hrefines. split; reflexivity.
 Qed.
 
-Definition immediate_match_state_commit {Object}
-    (outcome : MatchOutcome)
-    (artifact : rba1_generation_artifact Object MatchCatalog
-      (list isolated_candidate_pool)) : Prop :=
-  artifact_store artifact = match_outcome_state outcome.
+(** Checkpoint artifacts carry the full live semantic state.  The RBA1 image
+    refines its datum authority, while the WAL binds the durable semantic
+    generation.  Continuations, catalog invalidation, and the independent
+    logical/datum generations remain inside the same exact state value. *)
+Definition CheckpointCatalogCache : Type := Path -> option CandidateCatalog.
+
+Record CurrentMatchStoreState : Type := CurrentMatchStoreStateData {
+  current_match_data : TwoLevelAuthority;
+  current_match_continuations : ContinuationAuthority;
+  current_match_catalog_cache : CheckpointCatalogCache;
+  current_match_logical_generation : nat;
+  current_match_datum_root_generation : nat;
+  current_match_durable_semantic_generation : nat
+}.
+
+Definition prepared_match_channels (changes : PreparedMatchChanges) : list Path :=
+  pool_requested_channels
+    (checked_pool_value (prepared_checked_pool changes)).
+
+Definition bag_delta_exactly_refines_flat
+    (flat : FlatBagDelta) (delta : BagDelta) : Prop :=
+  bag_delta_removal_mode delta = StrictSubtract /\
+  bag_delta_subtractions delta = flat_delta_removals flat /\
+  bag_delta_deletions delta = [] /\
+  bag_delta_additions delta = flat_delta_additions flat.
+
+Definition exact_partitioned_delta_member {before}
+    (flat : PartitionedChannelDelta) (channel : PreparedChannelDelta before)
+    : Prop :=
+  partitioned_channel_marker flat = prepared_delta_channel channel /\
+  bag_delta_exactly_refines_flat
+    (partitioned_channel_delta flat) (prepared_delta_change channel).
+
+Inductive ExactCurrentContinuationCommit
+    (before : ContinuationAuthority) (channels : list Path)
+    : ContinuationAuthority -> Prop :=
+| ExactImmediateContinuationCommit :
+    ExactCurrentContinuationCommit before channels before
+| ExactStoredContinuationCommit : forall observed capability expected after,
+    commit_exact_continuation observed before channels capability expected
+      channels = Some after ->
+    ExactCurrentContinuationCommit before channels after.
+
+Definition checkpoint_delta_changed {before}
+    (delta : PreparedRSpaceDelta before) : bool :=
+  match prepared_channel_deltas delta with [] => false | _ :: _ => true end.
+
+Definition invalidate_checkpoint_catalogs
+    (before : CheckpointCatalogCache) (touched : list Path)
+    : CheckpointCatalogCache :=
+  fun channel =>
+    if in_dec path_eq_dec channel touched then None else before channel.
+
+Record ExactCurrentMatchCommit
+    (before : CurrentMatchStoreState) (changes : PreparedMatchChanges) : Type := {
+  exact_current_delta : PreparedRSpaceDelta (current_match_data before);
+  exact_current_delta_refines_prepared_partition :
+    Forall2 exact_partitioned_delta_member
+      (prepared_partitioned_delta changes)
+      (prepared_channel_deltas exact_current_delta);
+  exact_current_continuation_after : ContinuationAuthority;
+  exact_current_continuation_commit :
+    ExactCurrentContinuationCommit
+      (current_match_continuations before)
+      (prepared_match_channels changes)
+      exact_current_continuation_after;
+  exact_current_continuation_changed : bool;
+  exact_current_continuation_changed_iff :
+    exact_current_continuation_changed = true <->
+    exact_current_continuation_after <>
+      current_match_continuations before;
+  exact_current_after : CurrentMatchStoreState;
+  exact_current_after_data :
+    current_match_data exact_current_after =
+      apply_prepared_rspace_delta exact_current_delta;
+  exact_current_after_continuations :
+    current_match_continuations exact_current_after =
+      exact_current_continuation_after;
+  exact_current_after_catalogs :
+    current_match_catalog_cache exact_current_after =
+      invalidate_checkpoint_catalogs
+        (current_match_catalog_cache before)
+        (prepared_delta_channels
+          (prepared_channel_deltas exact_current_delta));
+  exact_current_after_logical_generation :
+    current_match_logical_generation exact_current_after =
+      S (current_match_logical_generation before);
+  exact_current_after_datum_root_generation :
+    current_match_datum_root_generation exact_current_after =
+      current_match_datum_root_generation before +
+        (if checkpoint_delta_changed exact_current_delta then 1 else 0);
+  exact_current_after_durable_semantic_generation :
+    current_match_durable_semantic_generation exact_current_after =
+      current_match_durable_semantic_generation before +
+        (if checkpoint_delta_changed exact_current_delta ||
+              exact_current_continuation_changed
+         then 1 else 0)
+}.
+
+Definition immediate_match_state_commit {Object before changes}
+    (commit : ExactCurrentMatchCommit before changes)
+    (artifact : rba1_generation_artifact Object CurrentMatchStoreState) : Prop :=
+  artifact_store artifact = exact_current_after commit.
 
 Theorem accepted_match_binds_artifact_to_exact_successor_state_generation : forall
-    before request prepared outcome Object
-    (artifact : rba1_generation_artifact Object MatchCatalog
-      (list isolated_candidate_pool)) validate,
-  @match_transaction_transition before request (Some prepared) outcome ->
-  immediate_match_state_commit outcome artifact ->
-  wal_checkpoint_bound artifact ->
+    before changes (commit : ExactCurrentMatchCommit before changes) Object
+    (artifact : rba1_generation_artifact Object CurrentMatchStoreState) validate,
+  current_phase_has_authority (CurrentPrepared changes) = true ->
+  immediate_match_state_commit commit artifact ->
+  wal_checkpoint_bound current_match_durable_semantic_generation artifact ->
   compatibility_admitted artifact validate ->
   artifact_state_generation artifact =
-    S (store_publication_generation before) /\
+    current_match_durable_semantic_generation before +
+      (if checkpoint_delta_changed (exact_current_delta commit) ||
+            exact_current_continuation_changed commit
+       then 1 else 0) /\
   exact_validation_evidence
     (artifact_bytes artifact) validate (artifact_image artifact).
 Proof.
-  intros before request prepared outcome Object artifact validate
-    Htransition Hstore Hwal Hadmitted.
-  destruct Hwal as [_ [_ [_ Hcommit]]].
-  split; [|exact Hadmitted].
-  rewrite Hstore in Hcommit.
-  inversion Htransition; subst outcome; cbn in Hcommit. exact Hcommit.
+  intros before changes commit Object artifact validate _ Hstore Hwal Hadmitted.
+  destruct Hwal as [_ [_ [_ Hbound]]]. split; [|exact Hadmitted].
+  rewrite Hstore in Hbound.
+  rewrite (exact_current_after_durable_semantic_generation commit) in Hbound.
+  exact Hbound.
 Qed.
 
+Definition immediate_refused_state_commit {Object}
+    (before : CurrentMatchStoreState)
+    (artifact : rba1_generation_artifact Object CurrentMatchStoreState) : Prop :=
+  artifact_store artifact = before.
+
 Theorem refused_match_cannot_publish_successor_semantic_state : forall
-    before request outcome Object
-    (artifact : rba1_generation_artifact Object MatchCatalog
-      (list isolated_candidate_pool)),
-  @match_transaction_transition before request None outcome ->
-  immediate_match_state_commit outcome artifact ->
-  wal_checkpoint_bound artifact ->
-  artifact_state_generation artifact = S (store_publication_generation before) ->
+    before Object
+    (artifact : rba1_generation_artifact Object CurrentMatchStoreState),
+  current_phase_has_authority CurrentRefused = false ->
+  immediate_refused_state_commit before artifact ->
+  wal_checkpoint_bound current_match_durable_semantic_generation artifact ->
+  artifact_state_generation artifact =
+    S (current_match_durable_semantic_generation before) ->
   False.
 Proof.
-  intros before request outcome Object artifact Htransition Hstore Hwal Hsuccessor.
-  destruct Hwal as [_ [_ [_ Hcommit]]].
-  pose proof (@refused_match_transaction_is_strongly_atomic
-    before request outcome Htransition) as [Hunchanged _].
-  rewrite Hstore, Hunchanged in Hcommit. lia.
+  intros before Object artifact _ Hstore Hwal Hsuccessor.
+  destruct Hwal as [_ [_ [_ Hbound]]].
+  rewrite Hstore in Hbound. lia.
 Qed.
 
 Definition runtime_new_authority_visible {Object SemanticState}
@@ -581,14 +694,13 @@ Definition runtime_new_authority_visible {Object SemanticState}
   result_is_acknowledged state.
 
 Definition rba1_readmission_is_coupled
-    {Object Catalog ExternalSnapshots}
+    {Object}
     (encode_outer_act : TwoLevelAuthority -> bytes)
     (encode_bag_act : ChannelBag -> bytes)
     (candidate : rba1_generation_candidate)
     (validate : rba1_image -> checkpoint_validation)
-    (artifact : rba1_generation_artifact Object Catalog ExternalSnapshots)
-    (state : @publication_state Object
-      (@transactional_store_state Catalog ExternalSnapshots)) : Prop :=
+    (artifact : rba1_generation_artifact Object CurrentMatchStoreState)
+    (state : @publication_state Object CurrentMatchStoreState) : Prop :=
   candidate_new_authority_bytes candidate = artifact_bytes artifact /\
   candidate_expected_receipt candidate = artifact_expected_binding artifact /\
   candidate_observed_receipt candidate = artifact_observed_binding artifact /\
@@ -596,25 +708,25 @@ Definition rba1_readmission_is_coupled
     artifact_index_generation artifact /\
   recover_rba1_generation candidate validate =
     RecoveredNewAuthority (artifact_image artifact) /\
-  rba1_refines_store encode_outer_act encode_bag_act artifact /\
-  semantic_after state = Some (artifact_store artifact).
+  rba1_refines_store current_match_data encode_outer_act encode_bag_act artifact /\
+  artifact_store artifact = semantic_before state /\
+  semantic_after state = Some (semantic_before state).
 
 Theorem runtime_new_authority_requires_acknowledged_exact_readmission : forall
     (Object : Type)
     initial_accounting initial_physical_diagnostics expected semantic
     encode_outer_act encode_bag_act candidate validate
-    (artifact : rba1_generation_artifact Object MatchCatalog
-      (list isolated_candidate_pool))
-    (state : @publication_state Object MatchStoreState),
-  @reachable Object MatchStoreState initial_accounting
+    (artifact : rba1_generation_artifact Object CurrentMatchStoreState)
+    (state : @publication_state Object CurrentMatchStoreState),
+  @reachable Object CurrentMatchStoreState initial_accounting
     initial_physical_diagnostics expected semantic state ->
   rba1_readmission_is_coupled encode_outer_act encode_bag_act
     candidate validate artifact state ->
-  wal_checkpoint_bound artifact ->
+  wal_checkpoint_bound current_match_durable_semantic_generation artifact ->
   runtime_new_authority_visible state = true ->
   exact_validation_evidence
       (artifact_bytes artifact) validate (artifact_image artifact) /\
-  rba1_refines_store encode_outer_act encode_bag_act artifact /\
+  rba1_refines_store current_match_data encode_outer_act encode_bag_act artifact /\
   candidate_expected_receipt candidate = artifact_expected_binding artifact /\
   candidate_observed_receipt candidate = artifact_observed_binding artifact /\
   candidate_checkpoint_index_generation candidate =
@@ -627,8 +739,8 @@ Theorem runtime_new_authority_requires_acknowledged_exact_readmission : forall
   artifact_descriptor_state_generation artifact =
     artifact_state_generation artifact /\
   artifact_state_generation artifact =
-    store_publication_generation (artifact_store artifact) /\
-  semantic_after state = Some (artifact_store artifact) /\
+    current_match_durable_semantic_generation (artifact_store artifact) /\
+  artifact_store artifact = semantic_before state /\
   mutable_owners state = [NewWriter] /\
   selected_authority state = NewAuthority /\
   physical_authority state = Some NewAuthority /\
@@ -640,7 +752,7 @@ Proof.
     semantic encode_outer_act encode_bag_act candidate validate artifact state
     Hreachable
     [Hbytes [Hexpected [Hobserved
-      [Hindex [Hrecovered [Hrefines Hsemantic]]]]]]
+      [Hindex [Hrecovered [Hrefines [Hprojection Hsemantic]]]]]]]
     Hwal Hvisible.
   pose proof (@selected_new_implies_complete_valid_exactly_bound_successor
     candidate validate (artifact_image artifact) Hrecovered)
@@ -649,7 +761,7 @@ Proof.
     [Hdescriptor_state Hartifact_state]]].
   rewrite Hbytes in Hexact.
   pose proof (@acknowledgement_requires_recovery_readmission_and_same_semantics
-    Object MatchStoreState initial_accounting initial_physical_diagnostics
+    Object CurrentMatchStoreState initial_accounting initial_physical_diagnostics
     expected semantic state Hreachable Hvisible) as Hpublication.
   destruct Hpublication as
     [Howners [Hselected [Hphysical [Hadmitted [Hsame Hdirectory]]]]].
@@ -662,6 +774,7 @@ Proof.
   split; [exact Hartifact_index|].
   split; [exact Hdescriptor_state|].
   split; [exact Hartifact_state|].
+  split; [exact Hprojection|].
   repeat split; assumption.
 Qed.
 
@@ -677,17 +790,15 @@ Definition recovery_witness_object_key (object : nat * nat) : nat := fst object.
 Definition recovery_witness_object_length (object : nat * nat) : nat := snd object.
 Definition recovery_witness_binding : checkpoint_binding_state :=
   CheckpointBindingState 1 2 3 4 5 6 7 8 9 11 12 13 14 15 16 17.
-Definition recovery_witness_store : @transactional_store_state unit unit :=
-  TransactionalStoreState recovery_witness_authority 0 (fun _ => None) tt 5.
 Definition recovery_witness_content_object : nat * nat :=
   recovery_witness_object
     (recovery_witness_hash
       (rba1_checkpoint_hash_preimage recovery_witness_image))
     (length (encode_rba1 recovery_witness_image)).
 Definition recovery_witness_artifact :
-    rba1_generation_artifact (nat * nat) unit unit :=
+    rba1_generation_artifact (nat * nat) unit :=
   Rba1GenerationArtifact recovery_witness_image
-    (encode_rba1 recovery_witness_image) recovery_witness_store 5 11 5
+    (encode_rba1 recovery_witness_image) tt 5 11 5
     recovery_witness_content_object [recovery_witness_content_object]
     recovery_witness_binding recovery_witness_binding.
 
@@ -710,16 +821,23 @@ Proof.
     repeat split; intros; reflexivity. }
   split; [exact Hconstructed|].
   exact (@constructed_rba1_object_is_exactly_inventory_bound
-    (nat * nat) unit unit recovery_witness_object_key
+    (nat * nat) unit recovery_witness_object_key
     recovery_witness_object_length recovery_witness_object
     recovery_witness_hash [] recovery_witness_artifact Hconstructed).
 Qed.
 
-Definition recovery_match_store : MatchStoreState :=
-  TransactionalStoreState recovery_witness_authority 0 (fun _ => None) [] 5.
+Definition recovery_witness_continuations : ContinuationAuthority :=
+  ContinuationAuthorityState
+    (fun _ => None)
+    (fun _ => [])
+    (fun _ => EqualityEpoch.initial)
+    (fun _ => [])
+    (fun _ => []).
+Definition recovery_match_store : CurrentMatchStoreState :=
+  CurrentMatchStoreStateData recovery_witness_authority
+    recovery_witness_continuations (fun _ => None) 5 5 5.
 Definition recovery_match_artifact :
-    rba1_generation_artifact (nat * nat) MatchCatalog
-      (list isolated_candidate_pool) :=
+    rba1_generation_artifact (nat * nat) CurrentMatchStoreState :=
   Rba1GenerationArtifact recovery_witness_image
     (encode_rba1 recovery_witness_image) recovery_match_store 5 11 5
     recovery_witness_content_object [recovery_witness_content_object]
@@ -735,7 +853,7 @@ Definition recovery_physical_diagnostics : physical_diagnostic_snapshot :=
 Definition recovery_expected_objects : list (nat * nat) :=
   [recovery_witness_content_object].
 Definition recovery_publication_s0 :=
-  @initial_publication_state (nat * nat) MatchStoreState
+  @initial_publication_state (nat * nat) CurrentMatchStoreState
     recovery_runtime_budget recovery_physical_diagnostics recovery_match_store.
 Definition recovery_publication_s1 :=
   transfer_and_advance Preflighted Publisher PreflightCertificate
@@ -774,86 +892,87 @@ Definition recovery_publication_s16 := readmit recovery_publication_s15.
 Definition recovery_publication_s17 := acknowledge recovery_publication_s16.
 
 Example acknowledged_exact_rba1_readmission_is_reachable_and_inhabited :
-  @reachable (nat * nat) MatchStoreState recovery_runtime_budget
+  @reachable (nat * nat) CurrentMatchStoreState recovery_runtime_budget
       recovery_physical_diagnostics recovery_expected_objects
       recovery_match_store recovery_publication_s17 /\
   rba1_readmission_is_coupled recovery_witness_encode_outer_act
       recovery_witness_encode_bag_act recovery_generation_candidate
       canonical_checkpoint_validation recovery_match_artifact
       recovery_publication_s17 /\
-  wal_checkpoint_bound recovery_match_artifact /\
+  wal_checkpoint_bound current_match_durable_semantic_generation
+      recovery_match_artifact /\
   runtime_new_authority_visible recovery_publication_s17 = true.
 Proof.
   split.
-  - assert (H0 : @reachable (nat * nat) MatchStoreState
+  - assert (H0 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s0).
     { apply ReachInitial. }
-    assert (H1 : @reachable (nat * nat) MatchStoreState
+    assert (H1 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s1).
     { eapply ReachStep; [exact H0|apply StepPreflight; reflexivity]. }
-    assert (H2 : @reachable (nat * nat) MatchStoreState
+    assert (H2 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s2).
     { eapply ReachStep; [exact H1|apply StepCleanup; reflexivity]. }
-    assert (H3 : @reachable (nat * nat) MatchStoreState
+    assert (H3 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s3).
     { eapply ReachStep; [exact H2|apply StepWritePrepare; reflexivity]. }
-    assert (H4 : @reachable (nat * nat) MatchStoreState
+    assert (H4 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s4).
     { eapply ReachStep; [exact H3|apply StepSyncPrepare; reflexivity]. }
-    assert (H5 : @reachable (nat * nat) MatchStoreState
+    assert (H5 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s5).
     { eapply ReachStep; [exact H4|apply StepWriteIndex; reflexivity]. }
-    assert (H6 : @reachable (nat * nat) MatchStoreState
+    assert (H6 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s6).
     { eapply ReachStep; [exact H5|apply StepSyncIndex; reflexivity]. }
-    assert (H7 : @reachable (nat * nat) MatchStoreState
+    assert (H7 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s7).
     { eapply ReachStep; [exact H6|apply StepWriteCommit; reflexivity]. }
-    assert (H8 : @reachable (nat * nat) MatchStoreState
+    assert (H8 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s8).
     { eapply ReachStep; [exact H7|apply StepSyncCommit; reflexivity]. }
-    assert (H9 : @reachable (nat * nat) MatchStoreState
+    assert (H9 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s9).
     { eapply ReachStep; [exact H8|apply StepSyncArtifactDirectory; reflexivity]. }
-    assert (H10 : @reachable (nat * nat) MatchStoreState
+    assert (H10 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s10).
     { eapply ReachStep; [exact H9|apply StepVerifyCas; reflexivity]. }
-    assert (H11 : @reachable (nat * nat) MatchStoreState
+    assert (H11 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s11).
     { eapply ReachStep; [exact H10|apply StepStartCatalogWrite; reflexivity]. }
-    assert (H12 : @reachable (nat * nat) MatchStoreState
+    assert (H12 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s12).
     { eapply ReachStep; [exact H11|apply StepCompleteCatalogWrite; reflexivity]. }
-    assert (H13 : @reachable (nat * nat) MatchStoreState
+    assert (H13 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s13).
     { eapply ReachStep; [exact H12|apply StepSyncCatalogFile; reflexivity]. }
-    assert (H14 : @reachable (nat * nat) MatchStoreState
+    assert (H14 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s14).
     { eapply ReachStep; [exact H13|apply StepSyncCatalogDirectory; reflexivity]. }
-    assert (H15 : @reachable (nat * nat) MatchStoreState
+    assert (H15 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s15).
     { eapply ReachStep; [exact H14|apply StepRecover; reflexivity]. }
-    assert (H16 : @reachable (nat * nat) MatchStoreState
+    assert (H16 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s16).
     { eapply ReachStep; [exact H15|apply StepReadmit; reflexivity]. }
-    assert (H17 : @reachable (nat * nat) MatchStoreState
+    assert (H17 : @reachable (nat * nat) CurrentMatchStoreState
         recovery_runtime_budget recovery_physical_diagnostics
         recovery_expected_objects recovery_match_store recovery_publication_s17).
     { eapply ReachStep; [exact H16|apply StepAcknowledge; reflexivity]. }
