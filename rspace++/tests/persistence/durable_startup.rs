@@ -257,6 +257,11 @@ fn read_authority_view_reopens_the_authenticated_catalog_state() {
     assert_eq!(view.state(), image.catalog.state());
     assert_eq!(view.manifest(), image.catalog.state().manifest());
     assert!(view.report().current_structural.distinct_objects > 0);
+    let manifest = view
+        .get_object_bounded(&view.manifest().digest(), view.manifest().encoded_len())
+        .expect("manifest lookup must be admitted")
+        .expect("catalog manifest must be indexed");
+    assert_eq!(manifest.len() as u64, view.manifest().encoded_len());
 }
 
 #[test]

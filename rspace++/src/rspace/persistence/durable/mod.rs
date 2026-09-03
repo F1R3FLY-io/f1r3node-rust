@@ -99,6 +99,14 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
         self.state().manifest()
     }
 
+    pub(crate) fn get_object_bounded(
+        &self,
+        digest: &crate::rspace::persistence::ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Box<[u8]>>, DurableObjectReadErrorV1> {
+        self.writer.get_object_bounded(digest, max_encoded_len)
+    }
+
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.writer.report() }
 }
 

@@ -1112,6 +1112,14 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         self.source.retained_closure()
     }
 
+    pub(crate) fn get_object_bounded(
+        &self,
+        digest: &ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Box<[u8]>>, DurableObjectReadErrorV1> {
+        self.source.store.get_bounded(digest, max_encoded_len)
+    }
+
     pub(crate) fn into_checkpoint_publication(self) -> CheckpointPublicationAuthorityV1<P> {
         CheckpointPublicationAuthorityV1 {
             lease: self.lease,
