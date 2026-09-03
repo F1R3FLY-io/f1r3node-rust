@@ -15,7 +15,7 @@ use crate::rspace::persistence::durable::{
     DurableIoFailpointV1, DurableStartupErrorV1, DurableStartupHookPointV1,
     IndexBindingDispositionV1, arm_durable_io_failpoint, arm_durable_startup_hook,
     committed_index_constructions, index_file_name, pack_file_name, recover_physical_with_lease_v1,
-    reset_committed_index_constructions,
+    recover_read_authority, reset_committed_index_constructions,
 };
 use crate::rspace::persistence::{
     CATALOG_IMAGE_LEN, CatalogAuthorityTokenV1, DurableLimitConfig, DurableLimitKind,
@@ -239,6 +239,24 @@ fn checkpoint_physical_authenticity_never_bypasses_semantic_admission() {
             DurableAdmissionLimitsV1::UNBOUNDED,
         );
     assert!(matches!(result, Err(DurableAdmissionErrorV1::Closure(_))));
+}
+
+#[test]
+fn read_authority_view_reopens_the_authenticated_catalog_state() {
+    let scratch = test_scratch::acquire("rspace-durable-read-authority-");
+    let image = install_checkpoint_store(scratch.path());
+
+    let view = recover_read_authority::<TestSemanticProfile>(
+        scratch.path(),
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+        DurableAdmissionLimitsV1::UNBOUNDED,
+    )
+    .expect("the valid checkpoint must pass restart-grade admission");
+
+    assert_eq!(view.state(), image.catalog.state());
+    assert_eq!(view.manifest(), image.catalog.state().manifest());
+    assert!(view.report().current_structural.distinct_objects > 0);
 }
 
 #[test]
