@@ -60,3 +60,26 @@ fn concurrent_rspace_architecture_repro_join_matching_must_have_channel_group_lo
          maximize independent-channel parallelism"
     );
 }
+
+#[test]
+fn concurrent_rspace_architecture_repro_checkpoint_gate_must_exclude_transitions() {
+    let rspace = source("src/rspace/rspace.rs");
+
+    for method in ["create_checkpoint", "reset", "create_soft_checkpoint", "revert_to_soft_checkpoint"] {
+        let marker = format!("async fn {method}");
+        let start = rspace
+            .find(&marker)
+            .unwrap_or_else(|| panic!("RSpace::{method} is missing"));
+        let body = &rspace[start..rspace.len().min(start + 320)];
+        assert!(
+            body.contains("operation_gate.write().await"),
+            "RSpace::{method} must hold the exclusive checkpoint operation gate"
+        );
+    }
+
+    assert_eq!(
+        rspace.matches("let _operation_guard = self.operation_gate.read().await;").count(),
+        5,
+        "consume, produce, install, and both remove-all mutation paths must hold shared permits"
+    );
+}
