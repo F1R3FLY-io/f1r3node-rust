@@ -1536,6 +1536,25 @@ mod tests {
     }
 
     #[test]
+    fn continuation_journal_uses_full_canonical_record_path_and_cancels() {
+        let channels = vec!["channel".to_owned()];
+        let value = continuation(7, "continuation");
+        let identity = encode_continuation_identity(&value);
+        let mut canonical = identity.clone();
+        encode_continuation_source_into(&value, &mut canonical);
+        let prefix = RhoPathV1::continuation_prefix(&channels);
+        let path = RhoPathV1::collection_record_path(&prefix, &canonical);
+        let mut store = RSpaceContinuationStore::new();
+
+        assert!(store.put_prepared(&channels, value, identity, canonical));
+        assert_eq!(store.pending_delta().additions().count(&path), 1);
+        assert!(store.pending_delta().removals().is_empty());
+
+        assert!(store.remove_path(&channels, &path).is_some());
+        assert!(store.pending_delta().is_empty());
+    }
+
+    #[test]
     fn frozen_continuation_identity_repairs_legacy_debug_aliasing() {
         let channels = vec!["channel".to_owned()];
         let first = colliding_debug_continuation(1);
