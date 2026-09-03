@@ -147,3 +147,58 @@ fn an_accepted_match_atomically_removes_the_selected_datum_continuation_and_join
     assert!(after.installed_continuations.is_empty());
     assert!(after.installed_joins.is_empty());
 }
+
+#[test]
+fn an_accepted_multichannel_match_preserves_unconsumed_datum_multiplicity() {
+    let channels = vec!["left".to_owned(), "right".to_owned()];
+    let left = Datum::create(&channels[0], "repeated".to_owned(), false);
+    let right = Datum::create(&channels[1], "single".to_owned(), false);
+    let selected = continuation(4, "multichannel");
+    let initial = HotStoreState {
+        continuations: HashMap::from([(channels.clone(), vec![selected.clone()])]),
+        installed_continuations: HashMap::new(),
+        data: HashMap::from([
+            (channels[0].clone(), vec![left.clone(), left.clone()]),
+            (channels[1].clone(), vec![right.clone()]),
+        ]),
+        joins: HashMap::from([
+            (channels[0].clone(), vec![channels.clone()]),
+            (channels[1].clone(), vec![channels.clone()]),
+        ]),
+        installed_joins: HashMap::new(),
+    };
+    let store = HotStoreInstances::create_from_hs_and_hr(initial, Box::new(EmptyHistory));
+    let (version, loaded) = store.get_continuations_versioned(&channels);
+    assert_eq!(loaded, vec![selected.clone()]);
+
+    let mut datum_delta = BagDelta::new();
+    for (channel, datum) in [(&channels[0], &left), (&channels[1], &right)] {
+        datum_delta
+            .record_removal(
+                &RSpaceDataIndex::datum_path(channel, datum),
+                super::super::bag::Multiplicity::ONE,
+            )
+            .expect("fixture multiplicities fit u64");
+    }
+    let outcome = store
+        .apply_accepted_match(AcceptedMatch {
+            channels: channels.clone(),
+            continuation: Some(StoredContinuationCommit {
+                address: ContinuationAddress::new(version, 0),
+                source: selected.source.clone(),
+                persist: selected.persist,
+                peeks: selected.peeks.clone(),
+            }),
+            datum_delta,
+            required_persistent_paths: Vec::new(),
+            join_channels: channels.clone(),
+        })
+        .expect("the multichannel transition is valid");
+
+    assert!(matches!(outcome, AcceptedMatchOutcome::Committed { continuation: Some(_) }));
+    let after = store.snapshot();
+    assert_eq!(after.data.get(&channels[0]).map(Vec::len), Some(1));
+    assert_eq!(after.data.get(&channels[1]).map(Vec::len), Some(0));
+    assert_eq!(after.continuations.values().map(Vec::len).sum::<usize>(), 0);
+    assert_eq!(after.joins.values().map(Vec::len).sum::<usize>(), 0);
+}

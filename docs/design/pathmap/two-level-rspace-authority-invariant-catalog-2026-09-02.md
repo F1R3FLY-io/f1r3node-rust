@@ -141,9 +141,12 @@ Current executable evidence: candidate continuation, reservation, catalog, and d
 `an_accepted_match_atomically_removes_the_selected_datum_continuation_and_join` now drives
 `HotStore::apply_accepted_match` through a successful one-channel transaction and checks the
 committed outcome, selected datum consumption, one-shot continuation consumption, and empty-join
-cleanup. The companion cross-group stale-capability property checks refusal atomicity. This is
-concrete production-entry-point evidence, but it is not yet the exhaustive generated differential
-required by the formal transaction capstone.
+cleanup. `an_accepted_multichannel_match_preserves_unconsumed_datum_multiplicity` adds a
+two-channel transaction with repeated identity and verifies that one multiplicity remains on the
+repeated channel while the single occurrence is consumed on the other. The companion cross-group
+stale-capability property checks refusal atomicity. This is concrete production-entry-point
+evidence, but it is not yet the exhaustive generated differential required by the formal
+transaction capstone.
 
 Open implementation and executable obligation: bind the actual hot-store accepted-match path to a generated property with an independent shallow recursive oracle. Assert selected identity, multiplicity-aware delta, untouched authority/catalog snapshots, loaded-empty outcome, strict PDA progress, and exactly one or zero publication. Reuse TLRS-PROP-05's exact-live-selection positive and exhausted-selection causal controls; do not reintroduce whole-catalog generation equality.
 
