@@ -2623,6 +2623,98 @@ async fn dir_remove_dir_non_bool_recursive_rejects() {
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
     assert_eq!(code, "FSERR_BAD_ARG");
+    // DD-RemoveDirReplyShape (2026-09-03): Dir.rho's failure paths
+    // for removeDir emit the 4-element uniform failure shape with
+    // trailing count=0 (walk didn't start).
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list, got {reply:?}"),
+    };
+    assert_eq!(
+        outer.ps.len(),
+        4,
+        "DD-RemoveDirReplyShape: expected 4-element failure shape"
+    );
+    let n = match single_expr(&outer.ps[3]).unwrap().expr_instance {
+        Some(ExprInstance::GInt(n)) => n,
+        other => panic!("element 3 must be Int, got {other:?}"),
+    };
+    assert_eq!(n, 0, "removeDir bad-arg failure emits nBefore=0");
+}
+
+/// H7 (coverage-review 2026-09-03): Dir.rho's read-only-mode
+/// removeDir rejection now emits the 4-element count-carrying
+/// failure shape.  Guards against a regression that drops the
+/// trailing `0` back to a 3-element reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_on_readonly_rejects_with_count_shape() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
+          for (@r <- @d!?("removeDir", "olddir", false)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "removeDir on read-only Dir must fail");
+    assert_eq!(code, "FSERR_UNSUPPORTED");
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list, got {reply:?}"),
+    };
+    assert_eq!(
+        outer.ps.len(),
+        4,
+        "DD-RemoveDirReplyShape: Dir.rho's FSERR_UNSUPPORTED failure must \
+         be 4-element with trailing count=0 (uniform failure shape)"
+    );
+    let n = match single_expr(&outer.ps[3]).unwrap().expr_instance {
+        Some(ExprInstance::GInt(n)) => n,
+        other => panic!("element 3 must be Int, got {other:?}"),
+    };
+    assert_eq!(n, 0);
+}
+
+/// M6 (coverage-review 2026-09-03): assert the success-path reply
+/// shape is `[true, 1]` (mock returns nDeleted=1).  Previously
+/// only asserted `ok == true` — the reply-shape drift wasn't
+/// covered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_success_returns_count_carrying_shape() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
+          for (@r <- @d!?("removeDir", "olddir", true)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list, got {reply:?}"),
+    };
+    assert_eq!(
+        outer.ps.len(),
+        2,
+        "DD-RemoveDirReplyShape: success is 2-element"
+    );
+    let ok = match single_expr(&outer.ps[0]).unwrap().expr_instance {
+        Some(ExprInstance::GBool(b)) => b,
+        other => panic!("element 0 must be Bool, got {other:?}"),
+    };
+    assert!(ok);
+    let n = match single_expr(&outer.ps[1]).unwrap().expr_instance {
+        Some(ExprInstance::GInt(n)) => n,
+        other => panic!("element 1 must be Int, got {other:?}"),
+    };
+    assert_eq!(n, 1, "mock returns nDeleted=1");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -13546,13 +13638,15 @@ async fn fs_revoke_opendir_returns_fserr_revoked_after_revoke() {
 
 /// Post-revoke, stdin/stdout/stderr all return FSERR_REVOKED.
 /// Consolidated because the three methods share the same gate shape.
+/// Structural extraction per row (over-constrained fuzzy-string
+/// check replaced 2026-09-03 after coverage review flagged the risk
+/// of a single row satisfying the assertion via triple-count in one
+/// Debug output).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_revoke_stdio_methods_return_fserr_revoked_after_revoke() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
-    // Chain the three checks; each independently should return
-    // FSERR_REVOKED post-revoke.  Fold the results into a tuple.
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {})) {
@@ -13569,11 +13663,151 @@ async fn fs_revoke_stdio_methods_return_fserr_revoked_after_revoke() {
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
-    // Extract each row from the tuple; each should be [false, FSERR_REVOKED, msg].
-    let joined = format!("{:?}", reply);
-    assert!(
-        joined.matches("FSERR_REVOKED").count() >= 3,
-        "expected all three stdio methods to return FSERR_REVOKED, got: {joined}"
+    // Extract the outer 3-element tuple: [stdinReply, stdoutReply, stderrReply].
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected outer 3-element list, got {reply:?}"),
+    };
+    assert_eq!(outer.ps.len(), 3, "expected 3 rows, got {}", outer.ps.len());
+    for (i, name) in ["stdin", "stdout", "stderr"].iter().enumerate() {
+        let (ok, code, _, _) = extract_reply(&outer.ps[i]);
+        assert!(!ok, "{name} post-revoke should fail, got ok=true");
+        assert_eq!(code, "FSERR_REVOKED", "{name} post-revoke code mismatch");
+    }
+}
+
+/// H1 (coverage-review 2026-09-03): post-revoke Fs mints are
+/// dead-on-arrival.  Mints an Fs AFTER `revoke()` on a prior Fs
+/// instance and verifies the fresh instance's methods all return
+/// FSERR_REVOKED.  Guards against a refactor that moves the
+/// revoked flag out of module-cell scope into per-mint constructor
+/// closure state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_post_revoke_mint_is_dead_on_arrival() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs1 <- Fs!?(0, 1, 2, {
+          "a.json": ("/root", "a.json", "r", "file", "oracular")
+        })) {
+          for (@_ <- @fs1!?("revoke")) {
+            // Mint fresh Fs AFTER revoke.  Module-level fsRevokedP
+            // is already `true`, so this new instance is dead.
+            for (@fs2 <- Fs!?(0, 1, 2, {
+              "b.json": ("/root", "b.json", "r", "file", "oracular")
+            })) {
+              for (@r <- @fs2!?("openFile", "b.json", {"mode": "r"})) {
+                @"out"!(r)
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "post-revoke fresh mint must be dead-on-arrival");
+    assert_eq!(code, "FSERR_REVOKED");
+}
+
+/// H2 (coverage-review 2026-09-03): pre-revoke Stdin/Stdout/Stderr
+/// caps continue to work post-revoke.  Stdin/Stdout are independent
+/// agents from Fs (their per-instance state lives in `stdinStateP` /
+/// `stdoutStateP`, not `fsRevokedP`), so revoking Fs must not
+/// cascade into stdio-cap deadness.  The powerbox handoff explicitly
+/// relies on this compositional property.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_does_not_affect_previously_minted_stdio_caps() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {})) {
+          for (@[true, sIn]  <- @fs!?("stdin");
+               @[true, sOut] <- @fs!?("stdout");
+               @[true, sErr] <- @fs!?("stderr")) {
+            for (@_ <- @fs!?("revoke")) {
+              // All three stdio caps must remain usable — close()
+              // returns [true] on a live Stdin/Stdout cap.
+              for (@rIn  <- @sIn!?("close");
+                   @rOut <- @sOut!?("close");
+                   @rErr <- @sErr!?("close")) {
+                @"out"!([rIn, rOut, rErr])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected 3-element list, got {reply:?}"),
+    };
+    assert_eq!(outer.ps.len(), 3);
+    for (i, name) in ["stdin", "stdout", "stderr"].iter().enumerate() {
+        let (ok, code, _, _) = extract_reply(&outer.ps[i]);
+        assert!(
+            ok,
+            "{name} cap minted pre-revoke must still work post-revoke; got code={code}"
+        );
+    }
+}
+
+/// H3 (coverage-review 2026-09-03): FSERR_REVOKED reply is pinned
+/// to the exact 3-element shape `[false, "FSERR_REVOKED",
+/// "Fs has been revoked"]`.  Reply-hash verify (Phase 5 Consensus
+/// re-execute) hashes the whole Par, so drift in the msg string or
+/// element count is consensus-observable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_revoke_reply_shape_is_pinned() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {})) {
+          for (@_ <- @fs!?("revoke")) {
+            for (@r <- @fs!?("openFile", "any", {})) {
+              @"out"!(r)
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected 3-element list, got {reply:?}"),
+    };
+    assert_eq!(
+        outer.ps.len(),
+        3,
+        "FSERR_REVOKED reply must be exactly 3 elements"
+    );
+    // Element 0: `false`.
+    match single_expr(&outer.ps[0]).unwrap().expr_instance {
+        Some(ExprInstance::GBool(false)) => {}
+        other => panic!("element 0 must be `false`, got {other:?}"),
+    }
+    // Element 1: "FSERR_REVOKED".
+    let code = match single_expr(&outer.ps[1]).unwrap().expr_instance {
+        Some(ExprInstance::GString(s)) => s,
+        other => panic!("element 1 must be a String, got {other:?}"),
+    };
+    assert_eq!(code, "FSERR_REVOKED");
+    // Element 2: exact message "Fs has been revoked".
+    let msg = match single_expr(&outer.ps[2]).unwrap().expr_instance {
+        Some(ExprInstance::GString(s)) => s,
+        other => panic!("element 2 must be a String, got {other:?}"),
+    };
+    assert_eq!(
+        msg, "Fs has been revoked",
+        "FSERR_REVOKED msg is a consensus-hashed byte string; drift here \
+         fires FSERR_CONSENSUS_DIVERGENCE on staggered upgrades"
     );
 }
 

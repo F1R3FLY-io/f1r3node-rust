@@ -335,21 +335,27 @@ pub fn fs_entries_stream_per_entry_supplement_cost(n_entries: u64) -> Cost {
 
 /// Per-entry supplement for `fs_remove_dir` — same shape.  Wired
 /// post-H-29-3-lift (2026-08-27) via the manifest carried by the
-/// recursive Consensus reply.  Per-branch charge derivation:
+/// recursive Consensus reply.  Post DD-RemoveDirReplyShape
+/// (2026-09-03): all three code paths carry `nDeleted` directly
+/// in the reply Par, so cost derivation is uniform.
 ///
-/// * Non-recursive (any cmode): 1 attempted entry — supplement =
-///   `fs_remove_dir_per_entry_supplement_cost(1)` on both branches.
-/// * Recursive Consensus: leader derives count from its walk;
-///   follower derives the same count from `extract_removedir_manifest
-///   (previous)`.  Both sides charge identically.
-/// * Recursive Oracular: 0 (both sides).  The Oracular reply is
-///   `[true]` and doesn't carry a count; rather than change the
-///   Oracular reply shape or introduce cost-asymmetry across the
-///   leader/follower split, we accept the under-charge as an
-///   Oracular-scope pricing choice.  Oracular operations are per-
-///   validator-local by design (plan §Storage cases: "operators do
-///   what they want"), so exact cost fidelity here isn't a
-///   consensus concern.
+/// Per-branch charge derivation:
+///
+/// * Non-recursive (any cmode): reply is `[true, 1]` /
+///   `[false, code, msg, 0]`; supplement = 1 (success) or 0
+///   (failure — target didn't get removed).
+/// * Recursive Consensus: reply is
+///   `[true, nDeleted, [manifest]]` /
+///   `[false, code, msg, nBefore, [manifest]]`; supplement =
+///   `nDeleted` / `nBefore`.  Both leader and follower derive
+///   the same count from the reply via
+///   `extract_removedir_n_deleted`.
+/// * Recursive Oracular: reply is `[true, nDeleted]` /
+///   `[false, code, msg, nBefore]` post DD-RemoveDirReplyShape;
+///   supplement bills per-entry symmetrically with Consensus
+///   recursive.  Closes the pre-DD-RemoveDirReplyShape DoS opening
+///   where recursive Oracular billed a flat 200 regardless of
+///   subtree size.
 pub fn fs_remove_dir_per_entry_supplement_cost(subtree_entry_count: u64) -> Cost {
     Cost::create(
         saturate_linear(0, FS_ENTRIES_PER_ENTRY as u64, subtree_entry_count),

@@ -4126,14 +4126,12 @@ impl FsProcesses {
                     }
                 }
             }
-            // H-29-3 lift follow-up (2026-08-27): per-entry cost
-            // supplement (follower path).  Both sides derive the
-            // count from the reply's manifest (via
-            // extract_removedir_manifest) for Consensus recursive,
-            // or from `recursive`/`cmode`/reply-shape for the
-            // non-recursive and Oracular cases.  Same helper as
-            // the leader path below; keeps the D3 event log
-            // byte-identical.
+            // Post DD-RemoveDirReplyShape (2026-09-03): per-entry
+            // cost supplement (follower fall-through path).  Both
+            // sides derive the count via `extract_removedir_n_deleted`
+            // reading position 1 (success) or 3 (failure) of the
+            // reply Par.  Uniform across all code paths — no more
+            // branch-on-(recursive, cmode) logic needed.
             //
             // R5(b) note (2026-09-02): the recursive Consensus branch
             // returns from its own arm above (with cost supplement
@@ -4416,14 +4414,14 @@ impl FsProcesses {
                 err_with_count(FSERR_BAD_ARG, "expected (String, String, Bool, String)", 0)
             }
         };
-        // H-29-3 lift follow-up (2026-08-27): per-entry cost
-        // supplement.  Non-recursive → 1 attempted entry.  Consensus
-        // recursive → manifest length (leader from fresh reply /
-        // follower from `previous` — both derive the same count via
-        // extract_removedir_manifest).  Oracular recursive → 0 (no
-        // manifest available; both sides skip based on args-visible
-        // cmode + recursive).  reserve_incremental_primitive tolerates
-        // n=0 without a BugFoundError.
+        // Post DD-RemoveDirReplyShape (2026-09-03): per-entry cost
+        // supplement is derived directly from the reply Par on every
+        // code path (non-recursive, recursive Oracular, recursive
+        // Consensus).  `extract_removedir_n_deleted` reads position 1
+        // (success) or position 3 (failure) — uniform across all paths.
+        // `reserve_incremental_primitive` tolerates n=0 without a
+        // BugFoundError, so early quarantine / lock-held failures that
+        // emit `nBefore=0` don't trip cost accounting.
         let supp_n = fs_remove_dir_supplement_count(&parsed, cmode, &reply);
         self.metering.reserve_incremental_primitive(
             costs::fs_remove_dir_per_entry_supplement_cost(supp_n),
@@ -6978,6 +6976,157 @@ mod cmode_tests {
              reproduced via the ProcessedDeploy chain; recording under an \
              empty sig would create dead index entries `lookup_by_deploy_id` \
              never resolves."
+        );
+    }
+}
+
+/// H5 (coverage-review 2026-09-03): unit tests for
+/// `extract_removedir_n_deleted`.  The helper is the sole cost-
+/// supplement source post-DD-RemoveDirReplyShape; a silent
+/// regression to always-return-0 would recreate the Oracular DoS
+/// this landing exists to fix, and no integration test would
+/// catch it under normal (happy-path) inputs.  These edge-case
+/// pins exhaust every failure branch of the extractor + verify
+/// the count-extraction is correct at every valid shape.
+#[cfg(test)]
+mod remove_dir_n_deleted_extractor_tests {
+    use models::rhoapi::expr::ExprInstance;
+    use models::rhoapi::{EList, Expr};
+    use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
+    use shared::rust::BitSet;
+
+    use super::*;
+
+    fn s(v: &str) -> Par { new_gstring_par(v.to_string(), Vec::new(), false) }
+    fn i(n: i64) -> Par { new_gint_par(n, Vec::new(), false) }
+    fn b(x: bool) -> Par { new_gbool_par(x, Vec::new(), false) }
+    fn list(items: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: items,
+                locally_free: BitSet::default(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    /// Empty Par → 0 (fail-safe on any malformed input).
+    #[test]
+    fn empty_par_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&Par::default()), 0);
+    }
+
+    /// Non-list Par (bare bool) → 0.
+    #[test]
+    fn non_list_par_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&b(true)), 0);
+    }
+
+    /// Empty list `[]` → 0 (no elements at position 1).
+    #[test]
+    fn empty_list_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&list(vec![])), 0);
+    }
+
+    /// `[true]` — success shape but missing count at position 1 → 0.
+    #[test]
+    fn success_missing_count_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&list(vec![b(true)])), 0);
+    }
+
+    /// `[true, "not an int"]` — non-Int at position 1 → 0.
+    #[test]
+    fn success_non_int_count_returns_zero() {
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(true), s("not an int")])),
+            0
+        );
+    }
+
+    /// `[true, -5]` — negative count → 0 (fail-safe).
+    #[test]
+    fn success_negative_count_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&list(vec![b(true), i(-5)])), 0);
+    }
+
+    /// `[true, 5]` — non-recursive / Oracular success shape → 5.
+    #[test]
+    fn success_2_element_returns_count() {
+        assert_eq!(extract_removedir_n_deleted(&list(vec![b(true), i(5)])), 5);
+    }
+
+    /// `[true, 5, manifest]` — Consensus recursive success shape → 5.
+    /// Manifest at position 2 is ignored by this extractor.
+    #[test]
+    fn success_3_element_with_manifest_returns_count_only() {
+        let manifest = list(vec![]);
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(true), i(5), manifest])),
+            5
+        );
+    }
+
+    /// `[true, 0]` — success with zero deletions (theoretical; the
+    /// leader emits 1 for non-recursive) → 0.
+    #[test]
+    fn success_zero_count_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&list(vec![b(true), i(0)])), 0);
+    }
+
+    /// `[false, "c", "m"]` — failure shape missing count at position
+    /// 3 → 0.
+    #[test]
+    fn failure_missing_count_returns_zero() {
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(false), s("c"), s("m")])),
+            0
+        );
+    }
+
+    /// `[false, "c", "m", 7]` — non-recursive / Oracular failure
+    /// shape → 7.
+    #[test]
+    fn failure_4_element_returns_count() {
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(false), s("c"), s("m"), i(7)])),
+            7
+        );
+    }
+
+    /// `[false, "c", "m", 7, manifest]` — Consensus recursive
+    /// failure shape → 7.  Manifest at position 4 ignored.
+    #[test]
+    fn failure_5_element_with_manifest_returns_count_only() {
+        let manifest = list(vec![]);
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(false), s("c"), s("m"), i(7), manifest])),
+            7
+        );
+    }
+
+    /// `[false, "c", "m", -1]` — negative failure count → 0.
+    #[test]
+    fn failure_negative_count_returns_zero() {
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(false), s("c"), s("m"), i(-1)])),
+            0
+        );
+    }
+
+    /// Head is neither `true` nor `false` (e.g. an Int) → 0.
+    #[test]
+    fn head_non_bool_returns_zero() {
+        assert_eq!(extract_removedir_n_deleted(&list(vec![i(1), i(5)])), 0);
+    }
+
+    /// `[true, i64::MAX]` — upper-bound acceptance (well beyond any
+    /// physical FS but exercises the u64 cast path).
+    #[test]
+    fn success_i64_max_returns_i64_max_as_u64() {
+        assert_eq!(
+            extract_removedir_n_deleted(&list(vec![b(true), i(i64::MAX)])),
+            i64::MAX as u64
         );
     }
 }

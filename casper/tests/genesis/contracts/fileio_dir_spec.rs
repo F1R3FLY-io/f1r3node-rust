@@ -376,6 +376,91 @@ in {{
     drop(dir);
 }
 
+/// H6 (coverage-review 2026-09-03): Consensus recursive removeDir
+/// returns a truncated `[true, nDeleted]` at the Rholang boundary
+/// (Dir.rho strips the manifest that lives at position 2 of the
+/// native reply).  Callers must see the same 2-element shape they
+/// see under Oracular recursive — Consensus vs Oracular is not
+/// observable from the reply Par.  Same 3-entry subtree as the
+/// Oracular version above; only `BundleConsensusMode` differs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_remove_dir_recursive_consensus_truncates_manifest_upward() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonicalize");
+    let sub = root.join("subdir");
+    std::fs::create_dir(&sub).expect("mkdir subdir");
+    std::fs::write(sub.join("a.txt"), b"a").expect("seed a.txt");
+    std::fs::write(sub.join("b.txt"), b"b").expect("seed b.txt");
+    assert!(sub.exists(), "subdir must exist pre-run");
+
+    let entry = BundleEntry::try_new(
+        "shareddir".to_string(),
+        root,
+        BundleEntryKind::Dir,
+        "rw".to_string(),
+        BundleConsensusMode::Consensus,
+    )
+    .expect("bundle entry");
+    let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    params.2.fs_bundle = vec![entry];
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+
+    let test_source = format!(
+        r#"
+new
+  rl(`rho:registry:lookup`),
+  RhoSpecCh,
+  fsCh,
+  test_remove_dir_consensus_truncated
+in {{
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  for(@(_, RhoSpec) <- RhoSpecCh) {{
+    @RhoSpec!("testSuite",
+      [("Consensus recursive removeDir reply is truncated to [true, n]",
+        *test_remove_dir_consensus_truncated)])
+  }} |
+
+  rl!(`{fs_uri}`, *fsCh) |
+  for(@(_, fs) <- fsCh) {{
+    contract test_remove_dir_consensus_truncated(rhoSpec, _, ackCh) = {{
+      for(@[true, d] <- @fs!?("openDir", "shareddir", {{"mode": "rw"}})) {{
+        for(@r <- @d!?("removeDir", "subdir", true)) {{
+          // Native returns [true, 3, [[path, kind], ...]] for
+          // Consensus recursive; Dir.rho unwraps to [true, 3].
+          // Callers observe the same 2-element shape as Oracular
+          // recursive — cmode is not distinguishable from the reply.
+          rhoSpec!("assert", (r, "==", [true, 3]),
+            "Consensus recursive removeDir reply truncated to [true, 3]",
+            *ackCh)
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    );
+
+    let compiled = CompiledRholangSource::new(
+        test_source,
+        HashMap::new(),
+        "DirRemoveDirConsensusTruncatedSpec".to_string(),
+    )
+    .expect("compile dir_remove_dir_consensus_truncated spec");
+    let spec = RhoSpec::new_with_genesis_parameters(compiled, vec![], GENESIS_TEST_TIMEOUT, params);
+    spec.run_tests()
+        .await
+        .expect("dir_remove_dir_consensus_truncated spec failed");
+
+    // NOTE: under Shape A, Consensus caps operate against a per-
+    // validator on-disk subdir (via the RootIdentityRegistry
+    // resolver), not the raw tempdir root.  So `sub.exists()` on
+    // the tempdir stays true — the removed subdir lives at
+    // FS_ROOT/<validator_key>/shareddir/subdir.  The rhoSpec
+    // `[true, 3]` assertion is the load-bearing check that proves
+    // shape truncation + correct count.
+    drop(dir);
+}
+
 /// `Dir.rename("old.txt", "new.txt")` returns `[true]` AND the old
 /// filename is gone from disk while the new filename holds the same
 /// content.  Verifies the underlying `renameat` actually swapped the
