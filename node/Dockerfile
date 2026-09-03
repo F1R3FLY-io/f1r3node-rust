@@ -173,11 +173,12 @@ RUN if [ ! -f /opt/docker/bin/node ]; then \
 # Expose ports (matching build.sbt: dockerExposedPorts)
 EXPOSE 40400 40401 40402 40403 40404
 
-# Healthcheck (matching build.sbt healthcheck, adapted for Rust)
-# Note: The original uses grpcurl and curl with jq
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD grpcurl -plaintext 127.0.0.1:40401 casper.v1.DeployService.status | jq -e && \
-        curl -s 127.0.0.1:40403/api/status | jq -e || exit 1
+# Healthcheck: report healthy only once Casper has entered the Running state
+# and can serve deploys. /api/ready returns 503 while Casper is still
+# initializing (genesis ceremony, LFS sync), so `docker compose up --wait`
+# and `depends_on: condition: service_healthy` line up with deploy readiness.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -fsS 127.0.0.1:40403/api/ready || exit 1
 
 # Image version label. Populate via `--build-arg VERSION=...` from
 # docker-commands.sh / CI so the label tracks the actual build instead of

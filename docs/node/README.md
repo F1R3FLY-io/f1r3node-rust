@@ -146,6 +146,10 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
 - `epochLength` — blocks per epoch, from genesis configuration
 
+### `GET /api/ready`
+
+Readiness probe for orchestration. Returns HTTP 200 `{"ready": true}` once Casper is Running and the node can serve deploys, HTTP 503 `{"ready": false}` while Casper is still initializing. The container `HEALTHCHECK` and `docker/standalone.yml` use this endpoint, so `docker compose up --wait` and `depends_on: condition: service_healthy` block until the node is deploy-ready.
+
 ## View Parameters
 
 All block and deploy endpoints support a `?view=full|summary` query parameter:

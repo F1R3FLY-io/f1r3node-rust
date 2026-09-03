@@ -121,6 +121,14 @@ curl http://localhost:40403/api/status
 
 ---
 
+### `GET /api/ready`
+
+Readiness probe. Returns HTTP 200 with `{"ready": true}` once the Casper engine has entered the Running state and the node can serve deploys and exploratory deploys. Returns HTTP 503 with `{"ready": false}` while Casper is still initializing (genesis ceremony, or last-finalized-state sync on an observer).
+
+Unlike `GET /api/status`, which answers 200 throughout startup, this endpoint fails until the node is deploy-ready, so it works directly as a container health check (`docker compose up --wait`, `depends_on: condition: service_healthy`) and as a Kubernetes `httpGet` readiness probe without needing `jq`.
+
+---
+
 ### Block Endpoints
 
 All block endpoints support `?view=full|summary`. Single-item endpoints default to **full** (includes deploys). List endpoints default to **summary** (block headers only, deploys omitted).

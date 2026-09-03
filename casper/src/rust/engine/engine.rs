@@ -237,17 +237,8 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     )
     .increment(1);
 
-    // Publish EnteredRunningState event
     let block_hash_string =
         PrettyPrinter::build_string_no_limit(&approved_block.candidate.block.block_hash);
-    event_log
-        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
-        .map_err(|e| {
-            CasperError::Other(format!(
-                "Failed to publish EnteredRunningState event: {}",
-                e
-            ))
-        })?;
 
     let running = Running::new(
         block_processing_queue_tx,
@@ -264,6 +255,15 @@ pub async fn transition_to_running<U: TransportLayer + Send + Sync + Clone + 'st
     );
 
     engine_cell.set(Arc::new(running)).await;
+
+    event_log
+        .publish(F1r3flyEvent::entered_running_state(block_hash_string))
+        .map_err(|e| {
+            CasperError::Other(format!(
+                "Failed to publish EnteredRunningState event: {}",
+                e
+            ))
+        })?;
 
     Ok(())
 }
