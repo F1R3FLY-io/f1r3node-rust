@@ -1130,6 +1130,31 @@ impl RSpaceMutationBatchV1 {
         Ok(())
     }
 
+    /// Record a JoinBag transition directly from an authoritative BagDelta.
+    /// Join paths are validated against the join namespace, while endpoint
+    /// arithmetic remains identical to the data-root conversion.
+    pub fn record_join_delta(
+        &mut self,
+        base: &Bag,
+        delta: &BagDelta,
+    ) -> Result<(), MutationError> {
+        for (path, amount) in delta.additions().iter() {
+            let before = base.count(&path);
+            let after = before
+                .checked_add(amount.get())
+                .ok_or(MutationError::DeltaCountOverflow)?;
+            self.record_join(&path, before, after)?;
+        }
+        for (path, amount) in delta.removals().iter() {
+            let before = base.count(&path);
+            let after = before
+                .checked_sub(amount.get())
+                .ok_or(MutationError::DeltaCountUnderflow)?;
+            self.record_join(&path, before, after)?;
+        }
+        Ok(())
+    }
+
     pub fn record_join(
         &mut self,
         path: &[u8],
@@ -1827,5 +1852,23 @@ mod bag_delta_tests {
             batch.record_data_delta(&Bag::new(), &delta),
             Err(MutationError::DeltaCountUnderflow)
         );
+    }
+
+    #[test]
+    fn join_conversion_uses_the_join_namespace() {
+        let mut path = RhoPathV1::join_prefix(&7_u64);
+        path.extend_from_slice(&RhoPathV1::collection_record_path(&[], b"join"));
+        let mut base = Bag::new();
+        base.insert_many(&path, Multiplicity::new(1).unwrap()).unwrap();
+        let mut delta = BagDelta::new();
+        delta
+            .record_addition(&path, Multiplicity::new(2).unwrap())
+            .unwrap();
+
+        let mut batch = RSpaceMutationBatchV1::new(state()).unwrap();
+        batch.record_join_delta(&base, &delta).unwrap();
+        assert_eq!(batch.join_transition(&path).unwrap().before(), 1);
+        assert_eq!(batch.join_transition(&path).unwrap().after(), 3);
+        assert!(batch.data_transition(&path).is_none());
     }
 }
