@@ -1048,7 +1048,121 @@ fn length_parameterized_cost_helpers_use_reserve_incremental_primitive() {
 // stub, its URN binding at `fs_genesis.rs`, its dispatch registration
 // at `rho_runtime.rs`, and its FixedChannels byte-54 slot were all
 // removed — there's no more stub to guard.  Byte 54 is documented as
-// reserved (do NOT reassign) in `system_processes.rs`.
+// reserved (do NOT reassign) in `system_processes.rs`; the source-
+// scan pins below enforce the reservation.
+
+/// A8-M-1 review-follow-up pin (2026-09-03).  `system_processes.rs`
+/// reserved `byte_name(54)` for the retired bulk `fs_entries_stream`
+/// FixedChannel.  A future PR that added a new FixedChannels function
+/// returning `byte_name(54)` alongside the reservation comment would
+/// compile cleanly AND pass every downstream test (there's no channel-
+/// identity collision detector at the byte level).  The comment
+/// enforces intent; this pin enforces it mechanically — source-scan
+/// for any `byte_name(54)` occurrence in `system_processes.rs`.
+///
+/// Why not just leave the retired `fs_entries_stream() -> byte_name(54)`
+/// function as an inert placeholder: it would reintroduce a function
+/// that has zero callers and no semantic meaning, making the surface
+/// deceptively larger.  This pin is the smallest defense-in-depth
+/// that still catches the reservation being violated.
+#[test]
+fn fixed_channels_byte_54_stays_reserved_after_a8_m1_retirement() {
+    let src = include_str!("../src/rust/interpreter/system_processes.rs");
+    // `byte_name(54)` at any use site inside the FixedChannels
+    // module trips this pin.  A comment mentioning "byte 54" is
+    // ignored by this pattern (we scan for the exact call form).
+    assert!(
+        !src.contains("byte_name(54)"),
+        "A8-M-1 reserved slot violated: `byte_name(54)` reappeared in \
+         system_processes.rs.  Byte 54 held the retired bulk \
+         `fs_entries_stream` FixedChannel and MUST NOT be reassigned — \
+         any historical channel-derived identity referencing byte 54 \
+         would silently alias the new native.  Pick an unused byte \
+         (as of A8-M-1, the next free slot is 69) and add it there \
+         instead.  If reviving `fs_entries_stream` is genuinely the \
+         intent, restore the full retirement (handler + URN binding + \
+         dispatch registration + cost helper) and retire this pin."
+    );
+}
+
+/// A8-M-1 review-follow-up pin (2026-09-03).  Companion to the byte
+/// 54 pin above: `BodyRefs::FS_ENTRIES_STREAM = 54` was also retired
+/// and the const slot marked reserved.  Source-scan enforces no new
+/// `pub const * = 54` inside `BodyRefs`.
+#[test]
+fn body_refs_54_stays_reserved_after_a8_m1_retirement() {
+    let src = include_str!("../src/rust/interpreter/system_processes.rs");
+    let violation = find_body_refs_54_violation(src);
+    assert!(
+        violation.is_none(),
+        "A8-M-1 reserved slot violated: a BodyRefs const was assigned = 54 \
+         (line: `{}`).  BodyRef 54 held the retired `FS_ENTRIES_STREAM` and \
+         MUST NOT be reassigned.  Pick an unused body-ref id (as of A8-M-1, \
+         next free is 69).",
+        violation.unwrap_or_default()
+    );
+}
+
+/// Scanner for `body_refs_54_stays_reserved_after_a8_m1_retirement`.
+/// Extracted so the helper's logic is unit-testable against synthetic
+/// source strings (see below) — proving the scanner fires on a real
+/// violation is otherwise sandbox-blocked because writing a
+/// `= 54;` line would itself violate the reservation.
+fn find_body_refs_54_violation(src: &str) -> Option<String> {
+    let body_refs_section = src
+        .split("mod BodyRefs")
+        .nth(1)
+        .or_else(|| src.split("impl BodyRefs").nth(1))
+        .or_else(|| src.split("pub struct BodyRefs").nth(1))
+        .unwrap_or(src);
+    for line in body_refs_section.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.starts_with("pub const ") && trimmed.contains(": i64 = 54;") {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+/// Scanner sanity pin (2026-09-03): the `find_body_refs_54_violation`
+/// helper MUST return `Some(...)` for a synthetic source containing a
+/// `pub const X: i64 = 54;` line inside a `mod BodyRefs` block, and
+/// `None` for a source without that pattern.  Without this, the
+/// scanner could silently regress to "always returns None" (e.g. if
+/// the split-on-marker logic misfires) and the `body_refs_54_stays_
+/// reserved` pin would false-green.
+#[test]
+fn find_body_refs_54_violation_catches_synthetic_violation() {
+    let violating = "\
+mod BodyRefs {
+    pub const FIRST: i64 = 1;
+    pub const REVIVED_ENTRIES_STREAM: i64 = 54;
+    pub const OTHER: i64 = 100;
+}
+";
+    let got = find_body_refs_54_violation(violating);
+    assert!(
+        got.is_some() && got.as_deref().unwrap().contains("REVIVED_ENTRIES_STREAM"),
+        "scanner must catch the `= 54;` line; got {got:?}"
+    );
+
+    let clean = "\
+mod BodyRefs {
+    pub const FIRST: i64 = 1;
+    pub const OTHER: i64 = 100;
+    // Byte 54 is reserved — a comment mentioning 54 must NOT trip the pin.
+    pub const NEXT_FREE: i64 = 69;
+}
+";
+    assert_eq!(
+        find_body_refs_54_violation(clean),
+        None,
+        "scanner must not false-fire on a clean source (comment mentions of 54 don't count)"
+    );
+}
 
 /// **Phase 8 arity-tightening retirement pin (2026-08-26).**  The
 /// `fs_lock_range` and `fs_lock_sequential` handlers dropped their

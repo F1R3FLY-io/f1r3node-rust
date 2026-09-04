@@ -300,7 +300,9 @@ impl FixedChannels {
     // retired — replaced by per-fd streaming (`fs_entries_stream_open`
     // / `_next` / `_close`).  Byte 54 is reserved (do NOT reassign) so
     // any historical channel-derived identity referencing byte 54
-    // stays inert rather than aliasing a new native.
+    // stays inert rather than aliasing a new native.  Enforced by
+    // `fixed_channels_byte_54_stays_reserved_after_a8_m1_retirement`
+    // in `rholang/tests/fileio_cost_spec.rs`.
     pub fn fs_rename() -> Par { byte_name(55) }
     pub fn fs_copy_file() -> Par { byte_name(56) }
     pub fn fs_remove_file() -> Par { byte_name(57) }
