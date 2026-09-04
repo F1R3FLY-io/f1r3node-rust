@@ -33,6 +33,18 @@ pub fn rho_path_v2_continuation_key(
         .map_err(ChannelImageError::OuterPath)
 }
 
+/// Build only the V2 continuation group prefix for PathMap subtree lookup.
+pub fn rho_path_v2_continuation_prefix(
+    channels: &[Par],
+) -> Result<Vec<u8>, ChannelImageError> {
+    let images = channels
+        .iter()
+        .map(ChannelImageV2::from_par)
+        .collect::<Result<Vec<_>, _>>()?;
+    let refs = images.iter().map(ChannelImageV2::as_bytes).collect::<Vec<_>>();
+    RhoPathV2::continuation_prefix(&refs).map_err(ChannelImageError::OuterPath)
+}
+
 /// V2 join adapter with a framed RCI2 indexed-channel image and framed join
 /// identity.  The identity bytes remain opaque to this layer.
 pub fn rho_path_v2_join_key(
@@ -41,6 +53,12 @@ pub fn rho_path_v2_join_key(
 ) -> Result<Vec<u8>, ChannelImageError> {
     let image = ChannelImageV2::from_par(channel)?;
     Ok(RhoPathV2::join_key(image.as_bytes(), join_identity))
+}
+
+/// Build only the V2 join group prefix for indexed-channel subtree lookup.
+pub fn rho_path_v2_join_prefix(channel: &Par) -> Result<Vec<u8>, ChannelImageError> {
+    let image = ChannelImageV2::from_par(channel)?;
+    Ok(RhoPathV2::join_prefix(image.as_bytes()))
 }
 
 impl RhoPathEncode for Par {
