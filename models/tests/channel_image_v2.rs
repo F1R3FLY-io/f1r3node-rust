@@ -9,6 +9,9 @@ use models::rust::channel_image::{
     CHANNEL_IMAGE_V2_DOMAIN,
 };
 use models::rust::par_bag::PAR_BAG_KEY_DOMAIN;
+use models::rust::rspace_path::{
+    rho_path_v2_continuation_key, rho_path_v2_datum_key, rho_path_v2_join_key,
+};
 use proptest::prelude::*;
 use rspace_plus_plus::rspace::bag::Multiplicity;
 
@@ -22,6 +25,20 @@ fn gint(value: i64) -> Expr {
 
 fn image(par: &Par) -> ChannelImageV2 {
     ChannelImageV2::from_par(par).expect("a resident Par has a canonical RCI2 image")
+}
+
+#[test]
+fn rspace_v2_adapters_use_rci2_bytes_without_projection() {
+    let channel = Par::default();
+    let datum = rho_path_v2_datum_key(&channel, b"rmp2", b"datum").unwrap();
+    let datum_view = rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_datum(&datum).unwrap();
+    assert_eq!(datum_view.channel_image(), image(&channel).as_bytes());
+    let continuation = rho_path_v2_continuation_key(&[channel.clone()], b"continuation").unwrap();
+    let continuation_view =
+        rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_continuation(&continuation).unwrap();
+    assert_eq!(continuation_view.channel_frames.len(), 1);
+    let join = rho_path_v2_join_key(&channel, b"join").unwrap();
+    assert!(rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_join(&join).is_ok());
 }
 
 fn hash<T: Hash>(value: &T) -> u64 {
