@@ -2,7 +2,7 @@
 
 Date: 2026-08-28
 
-Status: formal phase model and executable phase-level refinement verified; byte-progress crash-I/O refinement open
+Status: formal phase model and executable phase-level refinement verified; checkpoint-pack truncation boundaries covered; per-write crash-I/O refinement remains open
 
 Scope: fresh PathMap-DAG generation checkpoints for durable RSpace
 
@@ -300,6 +300,8 @@ Two implementation controls were deliberately observed red before their fixes:
 2. A duplicated writer-lock file description initially kept the OS lock after the affine Rust lease was dropped. `DurableWriterLeaseV1::drop` now explicitly unlocks the shared open file description before descriptor destruction. This makes model invariant PUB-01 true even across the transient descriptor inheritance of a concurrent process spawn; the deterministic duplicate-descriptor control changed from red to green, and the formerly intermittent parallel publication tests became stable.
 
 The focused executable gate passes exact 74-ID traceability, the complete 34-axis resource-boundary matrix, and selected-successor damage/repair without old-authority fallback. The parallel `rspace_plus_plus` library gate passes **392/392** in **52.20 s** under a 10 GiB hard memory cap, zero swap, and a 12-core quota. The complete package gate passes **817/817** across every registered library and integration target in **4 min 36.055 s**, peaking at **5.4 GiB** inside a 10 GiB hard cap with zero swap and a ten-core quota. The integrated formal gate passes Rocq, Verus, Z3, TLC, and mCRL2 under explicit per-tool memory ceilings. Ignored `scratch/` transcripts retain the local measurement detail; the tracked scripts, models, configurations, properties, and this catalog are the reproducible authority. These results do not discharge the open crash-I/O task's per-write positive-short, zero-progress, interrupted, partial-durability, or synchronization-error matrix; that refinement requires its own formal model, mutants, witnesses, and executable volatile-versus-durable backend.
+
+On 2026-09-03, commit `94513d0f0` added `every_checkpoint_pack_truncation_fails_before_authority`. It exercises every shorter prefix of a valid checkpoint pack, including all byte boundaries in the header, checkpoint `PREPARE`, checkpoint `COMMIT`, and indexed object bodies. The fully qualified test passed under a `MemoryMax=4G`, zero-swap, `CPUQuota=600%` systemd scope. This closes the checkpoint-pack truncation slice only; it does not claim the still-open per-write short-write, zero-progress, interruption, synchronization, or filesystem-durability matrix.
 
 ## Refinement completion rule
 
