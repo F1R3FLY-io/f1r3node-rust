@@ -407,6 +407,14 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/streaming_codec_pda.rs"
 
+# The generated-table differential is the executable production binding for
+# the RPB3 Rocq/Verus boundary.  Keep it under the same cgroup envelope so a
+# green formal run cannot silently omit the Rust oracle comparison.
+pushd "$repo_root" >/dev/null
+tlc_bounded cargo test -p models --lib \
+  generated_rpb3_table_differential_is_bound_to_admission_runner -- --nocapture
+popd >/dev/null
+
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
   echo "stack-safe-pda: expected Z3 to prove no mode-law counterexample; got: $z3_output" >&2

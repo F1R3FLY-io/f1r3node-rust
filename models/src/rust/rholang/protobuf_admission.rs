@@ -3254,7 +3254,7 @@ mod tests {
         BUNDLE_RHO_MATCH_PROGRAM, CONNECTIVE_RHO_MATCH_PROGRAM, EXPR_RHO_MATCH_PROGRAM,
         GUNFORGEABLE_RHO_MATCH_PROGRAM, IF_RHO_MATCH_PROGRAM, MATCH_RHO_MATCH_PROGRAM,
         NEW_RHO_MATCH_PROGRAM, PAR_RHO_MATCH_PROGRAM, RECEIVE_RHO_MATCH_PROGRAM,
-        SEND_RHO_MATCH_PROGRAM,
+        SEND_RHO_MATCH_PROGRAM, RHO_MATCH_REGISTRY,
     };
     use crate::rust::rholang::protobuf_schema::ProtobufField;
     use crate::rust::rholang::schema_test_adapters::{
@@ -3478,6 +3478,53 @@ mod tests {
             assert_eq!(stats.typed_decodes, 0, "{label}");
             assert_eq!(stats.byte_native_validations, 1, "{label}");
         }
+    }
+
+    #[test]
+    fn generated_rpb3_table_differential_is_bound_to_admission_runner() {
+        let mut checked = 0usize;
+        let mut covered_messages = std::collections::BTreeSet::new();
+        for fixture in schema_fixtures() {
+            covered_messages.insert(fixture.message_name);
+            let (_, registered) = RHO_MATCH_REGISTRY
+                .iter()
+                .find(|(name, _)| *name == fixture.message_name)
+                .unwrap_or_else(|| panic!("{} has no generated registry row", fixture.message_name));
+            assert!(
+                std::ptr::eq(*registered, fixture.program),
+                "{}.{} is not bound to its generated registry program",
+                fixture.message_name,
+                fixture.fixture_name
+            );
+
+            let machine = (fixture.machine_round_trip)(&fixture.bytes).unwrap_or_else(|error| {
+                panic!("{}.{} generated PDA rejected fixture: {error}", fixture.message_name, fixture.fixture_name)
+            });
+            let oracle = (fixture.oracle_round_trip)(&fixture.bytes).unwrap_or_else(|error| {
+                panic!("{}.{} recursive Prost rejected fixture: {error}", fixture.message_name, fixture.fixture_name)
+            });
+            assert_eq!(machine, oracle, "generated PDA/oracle disagreement");
+            assert_eq!(machine, fixture.bytes, "fixture is not a protobuf fixed point");
+
+            let admission = validate_canonical_protobuf(
+                ProtobufRegion::copy_from_slice(&fixture.bytes),
+                fixture.program,
+            )
+            .unwrap_or_else(|error| {
+                panic!("{}.{} canonical admission failed: {error}", fixture.message_name, fixture.fixture_name)
+            });
+            assert_eq!(admission.stats().typed_decodes, 0);
+            assert_eq!(admission.stats().legacy_endpoint_replays, 0);
+            assert_eq!(admission.stats().byte_native_validations, 1);
+            checked += 1;
+        }
+        assert!(checked > 0, "generated RPB3 fixture matrix became vacuous");
+        assert_eq!(covered_messages.len(), GENERATED_SCHEMA_TEST_MESSAGE_COUNT);
+        assert_eq!(
+            GENERATED_SCHEMA_TEST_EXTERN_NAMES,
+            &["EPathMap", "Par"],
+            "external RPB3 roots must remain explicit exceptions"
+        );
     }
 
     #[test]

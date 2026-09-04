@@ -1733,6 +1733,7 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         "theories/RPB3AdmissionMutants.v",
         "rpb3_admission_closed_capstones",
         "rpb3_admission_mutants_closed_capstones",
+        "generated_rpb3_table_differential_is_bound_to_admission_runner",
     ] {
         assert!(runner.contains(marker), "RPB3 formal runner is missing `{marker}`");
     }
