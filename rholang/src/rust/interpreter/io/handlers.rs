@@ -4077,95 +4077,17 @@ impl FsProcesses {
                         // S-2 (2026-09-03): symlink-safe walker via
                         // parent-dirfd + O_NOFOLLOW; canon_target is no
                         // longer used to enumerate children.
-                        let manifest =
-                            match collect_recursive_manifest(parent.as_raw_fd(), parent.leaf_ptr())
-                            {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    return err_with_manifest(
-                                        io_err_code(&e),
-                                        io_msg_scrub(&e),
-                                        &[],
-                                    );
-                                }
-                            };
-                        let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
-                        for (rel_path, kind) in manifest {
-                            // Empty rel_path marks the target root itself
-                            // (final post-order entry).  `Path::join("")`
-                            // appends a trailing separator; the resulting
-                            // PathBuf compares equal to the un-joined one
-                            // via `PathBuf::eq` (component-wise) but its
-                            // serialized bytes differ.  Follower must
-                            // special-case to match the leader's WAL
-                            // byte-for-byte (latent bug caught by
-                            // security review 2026-09-02: `assert_eq!(l,
-                            // f)` in tests uses PathBuf::eq and hid the
-                            // discrepancy, but `encode_wal_slice` byte
-                            // compare would surface it).
-                            let wal_path = if rel_path.as_os_str().is_empty() {
-                                canon_wal_target.clone()
-                            } else {
-                                canon_wal_target.join(&rel_path)
-                            };
-                            let op = match kind {
-                                RemoveKind::File => WalOp::RemoveFile,
-                                RemoveKind::Dir => WalOp::RemoveDir,
-                            };
-                            let per_entry_ack = per_entry_ack_seed(&ack_clone, &wal_path);
-                            if wal_handle
-                                .append_with_ack(
-                                    WalEntry {
-                                        op,
-                                        path: wal_path,
-                                        extra_path: None,
-                                        offset: None,
-                                        length: None,
-                                        payload_ref: None,
-                                        mode_bits: None,
-                                        owner: None,
-                                        group: None,
-                                        outcome: WalOutcome::Success,
-                                    },
-                                    per_entry_ack,
-                                )
-                                .is_err()
-                            {
-                                return err_with_manifest(
-                                    FSERR_QUOTA_EXCEEDED,
-                                    "WAL cap exceeded during recursive removeDir",
-                                    &deleted,
-                                );
-                            }
-                            // TOCTOU-immune unlink via pinned dirfd chain
-                            // from `parent` (post-security-review S-1,
-                            // 2026-09-02).  Prior to this fix, the
-                            // recursive Consensus branches used
-                            // libc_unlink(AT_FDCWD, absolute_path) which
-                            // resolved intermediate components from cwd
-                            // by name and lost the dirfd guarantee the
-                            // Oracular remove_dir_recursive already had.
-                            let unlink_rc =
-                                unsafe { unlink_manifest_entry(&parent, &rel_path, kind) };
-                            match unlink_rc {
-                                Ok(()) => {
-                                    deleted.push((rel_path, kind));
-                                }
-                                Err(e) => {
-                                    let code_u32 = io_err_code_u32(&e);
-                                    let _ = wal_handle.update_outcome_by_ack_hash(
-                                        per_entry_ack,
-                                        WalOutcome::Failure { code: code_u32 },
-                                    );
-                                    return err_with_manifest(
-                                        io_err_code(&e),
-                                        io_msg_scrub(&e),
-                                        &deleted,
-                                    );
-                                }
-                            }
-                        }
-                        ok_recursive_manifest(&deleted)
+                        // RQ-1 (2026-09-03): walk + per-entry journal +
+                        // per-entry unlink loop extracted to
+                        // `walk_and_unlink_recursive_with_journal`
+                        // — identical code to the leader-branch call
+                        // below (line ~4300).
+                        walk_and_unlink_recursive_with_journal(
+                            &parent,
+                            &canon_wal_target,
+                            &ack_clone,
+                            &wal_handle,
+                        )
                     })
                     .await
                     .unwrap_or_else(|_je| {
@@ -4390,96 +4312,17 @@ impl FsProcesses {
                         // S-2 (2026-09-03): symlink-safe walker via
                         // parent-dirfd + O_NOFOLLOW; canon_target is no
                         // longer used to enumerate children.
-                        let manifest =
-                            match collect_recursive_manifest(parent.as_raw_fd(), parent.leaf_ptr())
-                            {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    // DD-RemoveDirReplyShape: manifest-walk
-                                    // failure on recursive Consensus (walk
-                                    // didn't start → empty deleted list).
-                                    return err_with_manifest(
-                                        io_err_code(&e),
-                                        io_msg_scrub(&e),
-                                        &[],
-                                    );
-                                }
-                            };
-                        let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
-                        for (rel_path, kind) in manifest {
-                            // wal_path is bundle-relative (Shape A
-                            // invariant) for cross-validator WAL byte-
-                            // identity.  Empty rel_path marks the target
-                            // root itself (final post-order entry);
-                            // Path::join with an empty component
-                            // appends a trailing separator, so special-
-                            // case that to preserve the target's path
-                            // spelling in the WAL.
-                            let wal_path = if rel_path.as_os_str().is_empty() {
-                                canon_wal_target.clone()
-                            } else {
-                                canon_wal_target.join(&rel_path)
-                            };
-                            let op = match kind {
-                                RemoveKind::File => WalOp::RemoveFile,
-                                RemoveKind::Dir => WalOp::RemoveDir,
-                            };
-                            // per_entry_ack seeded on WAL path
-                            // (bundle-relative) so leader + follower
-                            // produce identical per-entry ack hashes.
-                            let per_entry_ack = per_entry_ack_seed(&ack_clone, &wal_path);
-                            if wal
-                                .append_with_ack(
-                                    WalEntry {
-                                        op,
-                                        path: wal_path,
-                                        extra_path: None,
-                                        offset: None,
-                                        length: None,
-                                        payload_ref: None,
-                                        mode_bits: None,
-                                        owner: None,
-                                        group: None,
-                                        outcome: WalOutcome::Success,
-                                    },
-                                    per_entry_ack,
-                                )
-                                .is_err()
-                            {
-                                return err_with_manifest(
-                                    FSERR_QUOTA_EXCEEDED,
-                                    "WAL cap exceeded during recursive removeDir",
-                                    &deleted,
-                                );
-                            }
-                            // TOCTOU-immune unlink via pinned dirfd chain
-                            // from `parent` (post-security-review S-1,
-                            // 2026-09-02).  Under the trust model
-                            // (Consensus mode assumes the node is the
-                            // only process on the machine) this is
-                            // defense-in-depth; also matches the
-                            // Oracular remove_dir_recursive's shape.
-                            let unlink_rc =
-                                unsafe { unlink_manifest_entry(&parent, &rel_path, kind) };
-                            match unlink_rc {
-                                Ok(()) => {
-                                    deleted.push((rel_path, kind));
-                                }
-                                Err(e) => {
-                                    let code_u32 = io_err_code_u32(&e);
-                                    let _ = wal.update_outcome_by_ack_hash(
-                                        per_entry_ack,
-                                        WalOutcome::Failure { code: code_u32 },
-                                    );
-                                    return err_with_manifest(
-                                        io_err_code(&e),
-                                        io_msg_scrub(&e),
-                                        &deleted,
-                                    );
-                                }
-                            }
-                        }
-                        ok_recursive_manifest(&deleted)
+                        // RQ-1 (2026-09-03): walk + per-entry journal +
+                        // per-entry unlink loop extracted to
+                        // `walk_and_unlink_recursive_with_journal` —
+                        // identical code to the follower-branch call
+                        // above (line ~4080).
+                        walk_and_unlink_recursive_with_journal(
+                            &parent,
+                            &canon_wal_target,
+                            &ack_clone,
+                            &wal,
+                        )
                     }
                 })
                 .await
@@ -6129,6 +5972,127 @@ fn collect_recursive_manifest(
     // returns canon_wal_target unchanged for an empty rel.
     out.push((std::path::PathBuf::new(), RemoveKind::Dir));
     Ok(out)
+}
+
+/// RQ-1 (2026-09-03) extracted helper — the recursive-Consensus
+/// removeDir walk + per-entry journal + per-entry unlink loop
+/// that was duplicated between the leader and the follower
+/// branches of `fs_remove_dir`.  Both call sites walk the same
+/// manifest, journal the same WAL rows keyed on the same
+/// per-entry ack hash, unlink via the same TOCTOU-immune dirfd
+/// chain, and return the same reply Par shape.  The extraction
+/// preserves byte-for-byte semantics on both sides (pinned by
+/// `recursive_remove_dir_wal_is_byte_identical_on_leader_and_
+/// follower` in `fs_wal_spec.rs`).
+///
+/// # Ordering guarantees preserved
+///
+/// - `collect_recursive_manifest` returns sorted post-order
+///   (children before parent, alphabetical within a directory),
+///   so the WAL journal emission order + reply manifest order
+///   are deterministic and identical across validators walking
+///   equivalent subdirs under Shape A.
+/// - Each entry's WAL row is appended BEFORE its unlink fires
+///   (append-first discipline).  A WAL-cap failure aborts the
+///   walk BEFORE any further filesystem mutation.
+/// - Per-entry ack seed is derived from the WAL path (bundle-
+///   relative), so leader and follower produce identical hash
+///   keys → identical Wal sidecar routing.
+///
+/// # Failure semantics
+///
+/// - Empty manifest impossible: `collect_recursive_manifest`
+///   always emits at least the target-root sentinel entry.
+/// - WAL-cap exhaustion returns
+///   `err_with_manifest(FSERR_QUOTA_EXCEEDED, ..., &deleted)` —
+///   `deleted` reflects the entries successfully removed BEFORE
+///   the cap hit, matching the DD-RemoveDirReplyShape contract.
+/// - Per-entry unlink failure updates the WAL row's outcome to
+///   `Failure { code }` via `update_outcome_by_ack_hash` before
+///   returning the truncated deleted list.
+///
+/// # Non-goals
+///
+/// - Does NOT do the outer safe_descend / lock-check /
+///   spawn_blocking wrapping.  Callers pre-descend and pass the
+///   pinned `SafeParent`.
+/// - Does NOT compute the cost supplement.  Callers charge it
+///   AFTER inspecting the returned reply.
+fn walk_and_unlink_recursive_with_journal(
+    parent: &SafeParent,
+    canon_wal_target: &std::path::Path,
+    ack_clone: &Par,
+    wal_handle: &crate::rust::interpreter::io::wal::Wal,
+) -> Par {
+    let manifest = match collect_recursive_manifest(parent.as_raw_fd(), parent.leaf_ptr()) {
+        Ok(m) => m,
+        Err(e) => {
+            return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &[]);
+        }
+    };
+    let mut deleted: Vec<(std::path::PathBuf, RemoveKind)> = Vec::new();
+    for (rel_path, kind) in manifest {
+        // Empty rel_path marks the target root itself (final
+        // post-order entry).  `Path::join("")` appends a trailing
+        // separator whose serialized bytes would differ from the
+        // un-joined target — special-case to preserve WAL byte-
+        // for-byte identity (latent bug caught by 2026-09-02
+        // security review: `PathBuf::eq` is component-wise and
+        // hid the discrepancy, but `encode_wal_slice` byte
+        // compare surfaces it).
+        let wal_path = if rel_path.as_os_str().is_empty() {
+            canon_wal_target.to_path_buf()
+        } else {
+            canon_wal_target.join(&rel_path)
+        };
+        let op = match kind {
+            RemoveKind::File => WalOp::RemoveFile,
+            RemoveKind::Dir => WalOp::RemoveDir,
+        };
+        // per_entry_ack seeded on WAL path (bundle-relative) so
+        // leader + follower produce identical per-entry ack hashes.
+        let per_entry_ack = per_entry_ack_seed(ack_clone, &wal_path);
+        if wal_handle
+            .append_with_ack(
+                WalEntry {
+                    op,
+                    path: wal_path,
+                    extra_path: None,
+                    offset: None,
+                    length: None,
+                    payload_ref: None,
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Success,
+                },
+                per_entry_ack,
+            )
+            .is_err()
+        {
+            return err_with_manifest(
+                FSERR_QUOTA_EXCEEDED,
+                "WAL cap exceeded during recursive removeDir",
+                &deleted,
+            );
+        }
+        // TOCTOU-immune unlink via pinned dirfd chain from
+        // `parent` (post-security-review S-1, 2026-09-02).
+        let unlink_rc = unsafe { unlink_manifest_entry(parent, &rel_path, kind) };
+        match unlink_rc {
+            Ok(()) => {
+                deleted.push((rel_path, kind));
+            }
+            Err(e) => {
+                let code_u32 = io_err_code_u32(&e);
+                let _ = wal_handle.update_outcome_by_ack_hash(per_entry_ack, WalOutcome::Failure {
+                    code: code_u32,
+                });
+                return err_with_manifest(io_err_code(&e), io_msg_scrub(&e), &deleted);
+            }
+        }
+    }
+    ok_recursive_manifest(&deleted)
 }
 
 /// Recurse into `dir_fd`, collecting `(rel_base/child_name, kind)`
