@@ -7265,3 +7265,82 @@ mod remove_dir_n_deleted_extractor_tests {
         );
     }
 }
+
+// -------------------------------------------------------------------
+// RQ-2 review-follow-up wire-identity pins (2026-09-04).
+//
+// Each of the 3 wrappers introduced by RQ-2 (spawn_blocking_par +
+// consensus_divergence_reply + current_deploy_scope) is a single
+// source of truth for a wire-visible reply shape or a load-bearing
+// invariant.  A future refactor that silently changed one wrapper's
+// output (e.g., a different FSERR string, a different reply arity)
+// would produce a consensus-observable byte-drift.  These pins
+// exercise the wrapper via a synthetic input and compare against
+// the exact byte shape the pre-RQ-2 inlined pattern would emit.
+// -------------------------------------------------------------------
+
+#[cfg(test)]
+mod rq2_wrapper_pins {
+    use super::*;
+
+    /// `spawn_blocking_par`'s panic-fallback must produce a Par
+    /// byte-identical to `err(FSERR_IO, "spawn_blocking task failed")`.
+    /// This was the string 10 handler sites used to hardcode inline;
+    /// a future refactor that changed the message (e.g., adding a
+    /// task-id suffix, translating the wording) would silently drift
+    /// the consensus surface for any deploy that trips a blocking-
+    /// task panic.
+    #[tokio::test]
+    async fn spawn_blocking_par_panic_fallback_matches_pre_wrapper_err() {
+        let via_wrapper = spawn_blocking_par(|| -> Par { panic!("simulated task panic") }).await;
+        let via_pre_wrapper = err(FSERR_IO, "spawn_blocking task failed");
+        assert_eq!(
+            via_wrapper, via_pre_wrapper,
+            "RQ-2 wire drift: spawn_blocking_par's JoinError fallback MUST produce \
+             `err(FSERR_IO, \"spawn_blocking task failed\")` byte-identical to the \
+             10 pre-wrapper inline sites.  Any deploy that trips a blocking-task \
+             panic would see a divergent reply Par → consensus divergence."
+        );
+    }
+
+    /// `spawn_blocking_par`'s happy path passes the closure's Par
+    /// through unchanged.  Guards against a future "sanitize the
+    /// reply" refactor that would silently reshape valid returns.
+    #[tokio::test]
+    async fn spawn_blocking_par_happy_path_forwards_closure_par() {
+        let payload = err("FSERR_TEST", "sentinel payload");
+        let expected = payload.clone();
+        let via_wrapper = spawn_blocking_par(move || payload).await;
+        assert_eq!(
+            via_wrapper, expected,
+            "RQ-2 wire drift: spawn_blocking_par MUST forward the closure's Par \
+             unchanged.  A regression that reshaped the reply would break every \
+             non-panicking migrated call site."
+        );
+    }
+
+    /// `consensus_divergence_reply` must produce the exact
+    /// `err(FSERR_CONSENSUS_DIVERGENCE, format!("<name> follower \
+    /// re-execute diverges from leader: <reason>"))` shape that the
+    /// 12 pre-wrapper inline sites used.  A monitoring layer greps
+    /// the message string; drift would silently break both
+    /// consensus wire format AND grep-based alerting.
+    #[test]
+    fn consensus_divergence_reply_matches_pre_wrapper_format() {
+        for handler in &["fs_read", "fs_write", "fs_chmod", "fs_remove_dir"] {
+            let reason = "hash mismatch (fresh=abc123, cached=def456)";
+            let via_wrapper = consensus_divergence_reply(handler, reason);
+            let via_pre_wrapper = err(
+                FSERR_CONSENSUS_DIVERGENCE,
+                format!("{handler} follower re-execute diverges from leader: {reason}"),
+            );
+            assert_eq!(
+                via_wrapper, via_pre_wrapper,
+                "RQ-2 wire drift: consensus_divergence_reply must produce a Par \
+                 byte-identical to the pre-wrapper `err(FSERR_CONSENSUS_DIVERGENCE, \
+                 format!(...))` shape at every one of the 12 migrated sites.  \
+                 handler={handler}, reason={reason}",
+            );
+        }
+    }
+}
