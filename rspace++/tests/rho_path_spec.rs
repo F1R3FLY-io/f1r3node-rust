@@ -42,6 +42,17 @@ fn v2_datum_round_trips_all_byte_values_in_each_field() {
 }
 
 #[test]
+fn v1_and_v2_datum_namespaces_are_disjoint() {
+    let channel = 7_u64;
+    let v1 = RhoPathV1::datum_key(&channel, b"shape", b"identity");
+    let v2 = RhoPathV2::datum_key(b"channel-image", b"shape", b"identity");
+    assert!(RhoPathV1::parse_datum(&v1).is_ok());
+    assert!(RhoPathV2::parse_datum(&v2).is_ok());
+    assert_eq!(RhoPathV1::parse_datum(&v2), Err(RhoPathError::InvalidMagic));
+    assert_eq!(RhoPathV2::parse_datum(&v1), Err(RhoPathError::InvalidMagic));
+}
+
+#[test]
 fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     assert_eq!(RhoPathV2::continuation_key(&[], b"id"), Err(RhoPathError::EmptyChannelGroup));
     let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
