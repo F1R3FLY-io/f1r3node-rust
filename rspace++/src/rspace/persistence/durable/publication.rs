@@ -563,6 +563,23 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
             .sync_catalog_directory()
             .map_err(GenerationCheckpointPublicationErrorV1::PublishedCatalogDirectory)?;
 
+        // The catalog is now durable and authoritative. Reclaim only the
+        // exact superseded generation named by the synchronized candidate;
+        // active readers defer cleanup while retaining the sidecar for retry.
+        if let Some(candidate) = lease.read_reclamation_candidate().map_err(|error| {
+            GenerationCheckpointPublicationErrorV1::PublishedRecovery(Box::new(
+                DurableStartupErrorV1::Io(error),
+            ))
+        })? {
+            lease
+                .reclaim_reclamation_candidate(candidate, durable.successor)
+                .map_err(|error| {
+                    GenerationCheckpointPublicationErrorV1::PublishedRecovery(Box::new(
+                        DurableStartupErrorV1::Io(error),
+                    ))
+                })?;
+        }
+
         #[cfg(test)]
         run_generation_checkpoint_publication_hook(
             GenerationCheckpointPublicationHookPointV1::AfterCatalogDirectorySync,
