@@ -2190,6 +2190,18 @@ mod tests {
         //   makes readN return FSERR_BUSY (wait:false) instead of
         //   racing the cursor.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
+        // Prior anchor: 055277c6 (M-12, 2026-09-04).
+        // 2026-09-04: M-13 fix (A1-F-10) — Buffer's four previously-
+        //   deferred methods (`writeByte`, `slice`, `validUtf8PrefixLen`,
+        //   `view`) implemented in Buffer.rho.  `writeByte` uses two
+        //   internal helpers (`hexDigit`, `intToOneByte`) added at the
+        //   composed outer `new` scope to convert an Int in [0, 255]
+        //   to a 1-byte ByteArray via `.hexToBytes()`.  `view` composes
+        //   existing `.validUtf8PrefixLen()` + `.decodeUtf8()` for
+        //   strict UTF-8 semantics.  `slice` and `validUtf8PrefixLen`
+        //   follow the existing `read` / `toByteArray` gatherChunks
+        //   pattern.  Hard-fork-free per the f1r3node_no_running_network
+        //   invariant.
         // Prior anchor: 4e5ba950 (M-10 partial, 2026-09-04).
         // 2026-09-04: M-12 fix (A1-F-09) — `"rw"` removed as a file
         //   mode alias in Fs.openFile / Dir.openFile disjunctions and
@@ -2216,7 +2228,7 @@ mod tests {
         //   Dir.openFile create + exclusive) is scoped to a separate
         //   slice.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        const EXPECTED: &str = "055277c66848f2f97aa21b456f2a8e2b299354fbaa24c379a6f4c9a68d2d42e6";
+        const EXPECTED: &str = "f068fdbdad04b5f2d8191193df62245480e8b31ab99348146572058ff9c071a7";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

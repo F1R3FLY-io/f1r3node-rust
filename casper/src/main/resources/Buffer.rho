@@ -2,15 +2,21 @@
 //
 // This is the first-pass implementation, covering:
 //   - `Buffer` agent with: constructor, capacity, length, remaining,
-//     isEmpty, isFull, unit, writeBytes, read, toByteArray, close,
-//     beginFill, endFill, default.
+//     isEmpty, isFull, unit, writeBytes, writeByte, read, slice,
+//     toByteArray, validUtf8PrefixLen, view, close, beginFill,
+//     endFill, default.
 //   - `Allocator` agent with `alloc(n, unit)`, `allocBytes`,
 //     `allocUtf8`, `default`.
 //
-// Deferred to follow-up commits:
-//   - `writeByte`, `slice`, `validUtf8PrefixLen`, `view`
-//     (§Buffer > Reads / Writes).  `clear` LANDED (see `method clear`
-//     on Buffer + Rows agents below).
+// M-13 (2026-09-04): `writeByte`, `slice`, `validUtf8PrefixLen`, and
+// `view` — previously deferred — are now implemented.  `writeByte`
+// uses two internal helpers `hexDigit` / `intToOneByte` to convert
+// an Int in [0, 255] to a 1-byte ByteArray (Rholang has no native
+// Int→byte conversion, so we compose two hex digits and pass through
+// the existing `.hexToBytes()` builtin).  `view` composes the
+// existing `.validUtf8PrefixLen()` and `.decodeUtf8()` primitives to
+// give strict UTF-8 semantics.  `clear` LANDED separately (see
+// `method clear` on Buffer + Rows agents below).
 //   - Publication LANDED 2026-09-01 (PB-B-5): Allocator is published
 //     at `rho:serve:1.0.0:<pk>:buffer:1.0.0`, so `Buffer` caps are
 //     obtainable by any deploy via the resolver.  Previously the
@@ -44,7 +50,49 @@
 new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
     gatherChunks, drainChunks,
     allocInnersLoop, parkInnersLoop,
-    clearInnersLoop, closeInnersLoop in {
+    clearInnersLoop, closeInnersLoop,
+    // M-13 (2026-09-04) helpers for `writeByte`: convert an Int in
+    // [0, 15] to its uppercase hex digit and an Int in [0, 255] to
+    // a 1-byte ByteArray via hexToBytes.  Rholang has no native
+    // Int→byte conversion, so we compose two hex digits and pass
+    // through the existing `hexToBytes` builtin.
+    hexDigit, intToOneByte in {
+
+  // Hex-digit lookup.  `n` is in [0, 15]; out-of-range returns Nil
+  // via the fall-through — writeByte guards on [0, 255] before
+  // invoking so unreachable in current code.
+  contract hexDigit(@n, ret) = {
+    match n {
+       0 => ret!("0")
+       1 => ret!("1")
+       2 => ret!("2")
+       3 => ret!("3")
+       4 => ret!("4")
+       5 => ret!("5")
+       6 => ret!("6")
+       7 => ret!("7")
+       8 => ret!("8")
+       9 => ret!("9")
+      10 => ret!("A")
+      11 => ret!("B")
+      12 => ret!("C")
+      13 => ret!("D")
+      14 => ret!("E")
+      15 => ret!("F")
+       _ => ret!(Nil)
+    }
+  } |
+
+  // Int → 1-byte ByteArray via 2-digit uppercase hex.
+  contract intToOneByte(@n, ret) = {
+    new hCh, lCh in {
+      hexDigit!(n / 16, *hCh) |
+      hexDigit!(n % 16, *lCh) |
+      for (@h <- hCh; @l <- lCh) {
+        ret!((h ++ l).hexToBytes())
+      }
+    }
+  } |
 
   // ==================================================================
   // Buffer agent
@@ -248,6 +296,59 @@ new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
       }
     } |
 
+    // writeByte(x) — append one byte if room; error when full (spec
+    // §Buffer > Writes).  Type-guarded per spec §Buffers: `x` must
+    // be an Int in [0, 255].  M-13 (2026-09-04) — implements the
+    // previously-deferred method.
+    method writeByte(@x) {
+      match x {
+        n /\ Int => {
+          match n < 0 or n > 255 {
+            true => return!(
+              [false, "BUFERR_INVALID_ARGUMENT", "x must be a byte in [0, 255]"])
+            false => {
+              for (@meta <- @[*private, *metaP]) {
+                match meta {
+                  "REVOKED" => {
+                    @[*private, *metaP]!("REVOKED") |
+                    return!([false, "BUFERR_REVOKED", "buffer is closed"])
+                  }
+                  (ell, rho, cap, u, lease, lo, hi) => {
+                    match cap - ell {
+                      room => {
+                        match room > 0 {
+                          false => {
+                            @[*private, *metaP]!(meta) |
+                            return!([false, "BUFERR_CAPACITY_EXCEEDED", "buffer full"])
+                          }
+                          true => {
+                            new byteCh in {
+                              intToOneByte!(n, *byteCh) |
+                              for (@bytes <- byteCh) {
+                                @[*private, *chunkP, hi]!(bytes) |
+                                @[*private, *metaP]!(
+                                  (ell + 1, rho, cap, u, lease, lo, hi + 1)) |
+                                return!([true, 1])
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  _ => {
+                    @[*private, *metaP]!(meta) |
+                    return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+                  }
+                }
+              }
+            }
+          }
+        }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "x must be an integer"])
+      }
+    } |
+
     // -- Reads -------------------------------------------------------
 
     // read(n) — consume up to n bytes from position rho, advancing rho.
@@ -413,6 +514,196 @@ new Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
           }
         }
         _ => return!([false, "BUFERR_INVALID_ARGUMENT", "cap must be an integer"])
+      }
+    } |
+
+    // slice(offset, n) — positional copy of [offset, offset+n); no
+    // cursor move.  Refused under lease.  M-13 (2026-09-04) —
+    // implements the previously-deferred method.
+    //
+    // Guards (spec §Buffer > Reads):
+    //   - non-Int offset or n → BUFERR_INVALID_ARGUMENT
+    //   - offset < 0 or n < 0 → BUFERR_OUT_OF_RANGE
+    //   - offset + n > ell    → BUFERR_OUT_OF_RANGE
+    method slice(@offset, @n) {
+      match offset {
+        o /\ Int => {
+          match n {
+            i /\ Int => {
+              match o < 0 or i < 0 {
+                true => return!(
+                  [false, "BUFERR_OUT_OF_RANGE", "offset and n must be non-negative"])
+                false => {
+                  for (@meta <- @[*private, *metaP]) {
+                    match meta {
+                      "REVOKED" => {
+                        @[*private, *metaP]!("REVOKED") |
+                        return!([false, "BUFERR_REVOKED", "buffer is closed"])
+                      }
+                      (ell, rho, cap, u, lease, lo, hi) => {
+                        match lease {
+                          "none" => {
+                            match o + i > ell {
+                              true => {
+                                @[*private, *metaP]!(meta) |
+                                return!([false, "BUFERR_OUT_OF_RANGE",
+                                  "offset + n exceeds buffer length"])
+                              }
+                              false => {
+                                match i == 0 {
+                                  true => {
+                                    // Empty slice: no gather needed.
+                                    @[*private, *metaP]!(meta) |
+                                    return!([true, "".hexToBytes()])
+                                  }
+                                  false => {
+                                    new gCh in {
+                                      gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                                      for (@allBytes <- gCh) {
+                                        @[*private, *metaP]!(meta) |
+                                        return!([true, allBytes.slice(o, o + i)])
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                          _ => {
+                            @[*private, *metaP]!(meta) |
+                            return!([false, "BUFERR_FILLING", "fill in progress"])
+                          }
+                        }
+                      }
+                      _ => {
+                        @[*private, *metaP]!(meta) |
+                        return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            _ => return!([false, "BUFERR_INVALID_ARGUMENT", "n must be an integer"])
+          }
+        }
+        _ => return!([false, "BUFERR_INVALID_ARGUMENT", "offset must be an integer"])
+      }
+    } |
+
+    // validUtf8PrefixLen() — largest j ≤ ℓ with bytes [0, j) valid
+    // UTF-8 (spec §Buffer > Reads > validUtf8PrefixLen).  Refused
+    // under lease.  M-13 (2026-09-04) — implements the previously-
+    // deferred method.
+    //
+    // Uses the native `.validUtf8PrefixLen()` ByteArray method (spec
+    // §Three stateless native helpers) after materializing the live
+    // portion [0, ell).  Total on ByteArray; ill-formed sequences
+    // don't error but simply reduce `j`.
+    method validUtf8PrefixLen() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, _cap, _u, lease, lo, hi) => {
+            match lease {
+              "none" => {
+                match ell == 0 {
+                  true => {
+                    // Empty buffer: prefix length is 0.
+                    @[*private, *metaP]!(meta) |
+                    return!([true, 0])
+                  }
+                  false => {
+                    new gCh in {
+                      gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                      for (@allBytes <- gCh) {
+                        @[*private, *metaP]!(meta) |
+                        return!([true, allBytes.slice(0, ell).validUtf8PrefixLen()])
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_FILLING", "fill in progress"])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
+      }
+    } |
+
+    // view() — decode [0, ell) as UTF-8; strict.  Refused under
+    // lease.  M-13 (2026-09-04) — implements the previously-deferred
+    // method.
+    //
+    // Composes `.validUtf8PrefixLen()` with `.decodeUtf8()`: if the
+    // valid prefix length equals ell, the whole live region is
+    // well-formed and `.decodeUtf8()`'s U+FFFD-substitution is a
+    // no-op.  If the prefix is shorter, the region is ill-formed and
+    // we return BUFERR_BAD_ENCODING (spec §Buffer > Reads > view).
+    //
+    // A dedicated `decodeUtf8Strict` primitive would collapse the
+    // two-scan composition to a single scan; deferred pending a
+    // caller with a bottleneck at view().
+    method view() {
+      for (@meta <- @[*private, *metaP]) {
+        match meta {
+          "REVOKED" => {
+            @[*private, *metaP]!("REVOKED") |
+            return!([false, "BUFERR_REVOKED", "buffer is closed"])
+          }
+          (ell, _rho, _cap, _u, lease, lo, hi) => {
+            match lease {
+              "none" => {
+                match ell == 0 {
+                  true => {
+                    @[*private, *metaP]!(meta) |
+                    return!([true, ""])
+                  }
+                  false => {
+                    new gCh in {
+                      gatherChunks!(*private, *chunkP, lo, hi, *gCh) |
+                      for (@allBytes <- gCh) {
+                        match allBytes.slice(0, ell) {
+                          prefix => {
+                            match prefix.validUtf8PrefixLen() == ell {
+                              true => {
+                                @[*private, *metaP]!(meta) |
+                                return!([true, prefix.decodeUtf8()])
+                              }
+                              false => {
+                                @[*private, *metaP]!(meta) |
+                                return!([false, "BUFERR_BAD_ENCODING",
+                                  "buffer contains ill-formed UTF-8"])
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {
+                @[*private, *metaP]!(meta) |
+                return!([false, "BUFERR_FILLING", "fill in progress"])
+              }
+            }
+          }
+          _ => {
+            @[*private, *metaP]!(meta) |
+            return!([false, "BUFERR_REVOKED", "buffer state unrecognized"])
+          }
+        }
       }
     } |
 

@@ -38,6 +38,8 @@ fn with_libs(test_snippet: &str) -> String {
             Buffer, Allocator, Rows, metaP, chunkP, innerP, rowsMetaP,
             gatherChunks, drainChunks, allocInnersLoop, parkInnersLoop,
             clearInnersLoop, closeInnersLoop,
+            // M-13 (2026-09-04): Buffer.rho's Int→byte hex helpers.
+            hexDigit, intToOneByte,
             Stdin, stdinFdP, stdinStateP,
             Stdout, stdoutFdP, stdoutStateP,
             Fs, fsBundleP,
@@ -11719,6 +11721,260 @@ async fn buffer_read_non_int_arg_rejected() {
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     assert_failure_shape_three_elems(&reply, "BUFERR_INVALID_ARGUMENT");
+}
+
+// -- M-13 (2026-09-04): Buffer.writeByte / slice / validUtf8PrefixLen
+//    / view.
+
+/// Buffer.writeByte(65) on an empty buffer → `[true, 1]`, and
+/// toByteArray reflects the one byte just written.  Round-trip
+/// verification proves the Int→byte conversion in `intToOneByte`
+/// produces the correct raw byte (not ASCII decimal encoding).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_write_byte_appends_one_byte() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(8, "bytes")) {
+          for (@r <- @buf!?("writeByte", 65)) {
+            for (@toBa <- @buf!?("toByteArray", 8)) {
+              @"out"!([r, toBa])
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let (write_ok, _, k, _) = extract_reply(&outer.ps[0]);
+    assert!(write_ok);
+    assert_eq!(k, Some(1), "writeByte returns [true, 1] on success");
+    let (ba_ok, _, _, bytes) = extract_reply(&outer.ps[1]);
+    assert!(ba_ok);
+    assert_eq!(
+        bytes,
+        Some(b"A".to_vec()),
+        "M-13: writeByte(65) must materialize as 0x41 ('A'), not the \
+         ASCII digits '65' — proves intToOneByte's hex conversion"
+    );
+}
+
+/// Buffer.writeByte on a full buffer → BUFERR_CAPACITY_EXCEEDED.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_write_byte_when_full_returns_capacity_exceeded() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(2, "bytes")) {
+          for (@_ <- @buf!?("writeBytes", "AB".toUtf8Bytes())) {
+            for (@r <- @buf!?("writeByte", 67)) { @"out"!(r) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(
+        code, "BUFERR_CAPACITY_EXCEEDED",
+        "M-13: writeByte on full buffer must return BUFERR_CAPACITY_EXCEEDED"
+    );
+}
+
+/// Buffer.writeByte type / range guards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_write_byte_out_of_range_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(8, "bytes")) {
+          for (@r1 <- @buf!?("writeByte", 256)) {
+            for (@r2 <- @buf!?("writeByte", -1)) {
+              for (@r3 <- @buf!?("writeByte", "not-int")) {
+                @"out"!([r1, r2, r3])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    for (i, name) in ["writeByte(256)", "writeByte(-1)", "writeByte(non-int)"]
+        .iter()
+        .enumerate()
+    {
+        let (ok, code, _, _) = extract_reply(&outer.ps[i]);
+        assert!(!ok, "{name} must reject");
+        assert_eq!(
+            code, "BUFERR_INVALID_ARGUMENT",
+            "{name}: expected BUFERR_INVALID_ARGUMENT, got {code:?}"
+        );
+    }
+}
+
+/// Buffer.slice positional copy — writes "Hello", slice(1, 3) → "ell".
+/// Verifies gatherChunks + offset semantics, no cursor movement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_slice_positional_copy() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(16, "bytes")) {
+          for (@_ <- @buf!?("writeBytes", "Hello".toUtf8Bytes())) {
+            for (@sliceR <- @buf!?("slice", 1, 3)) {
+              // Verify no cursor movement: read(5) should still see all of "Hello".
+              for (@readR <- @buf!?("read", 5)) {
+                @"out"!([sliceR, readR])
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let (slice_ok, _, _, slice_bytes) = extract_reply(&outer.ps[0]);
+    assert!(slice_ok);
+    assert_eq!(
+        slice_bytes,
+        Some(b"ell".to_vec()),
+        "M-13: slice(1, 3) on \"Hello\" must return b\"ell\""
+    );
+    let (read_ok, _, _, read_bytes) = extract_reply(&outer.ps[1]);
+    assert!(read_ok);
+    assert_eq!(
+        read_bytes,
+        Some(b"Hello".to_vec()),
+        "M-13: slice must not advance cursor; subsequent read(5) sees full \"Hello\""
+    );
+}
+
+/// Buffer.slice out-of-range guards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_slice_out_of_range_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(8, "bytes")) {
+          for (@_ <- @buf!?("writeBytes", "abcd".toUtf8Bytes())) {
+            for (@r1 <- @buf!?("slice", 2, 3)) {       // offset+n > ell
+              for (@r2 <- @buf!?("slice", -1, 2)) {    // negative offset
+                for (@r3 <- @buf!?("slice", 1, "x")) { // non-Int n
+                  @"out"!([r1, r2, r3])
+                }
+              }
+            }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list"),
+    };
+    let expected_codes = [
+        "BUFERR_OUT_OF_RANGE",
+        "BUFERR_OUT_OF_RANGE",
+        "BUFERR_INVALID_ARGUMENT",
+    ];
+    let names = ["offset+n > ell", "negative offset", "non-Int n"];
+    for (i, (code_exp, name)) in expected_codes.iter().zip(names.iter()).enumerate() {
+        let (ok, code, _, _) = extract_reply(&outer.ps[i]);
+        assert!(!ok, "{name} must reject");
+        assert_eq!(&code, code_exp, "{name}: expected {code_exp}, got {code:?}");
+    }
+}
+
+/// Buffer.validUtf8PrefixLen on an all-ASCII buffer returns ell.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_valid_utf8_prefix_len_all_valid_returns_full_length() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(16, "bytes")) {
+          for (@_ <- @buf!?("writeBytes", "Hello".toUtf8Bytes())) {
+            for (@r <- @buf!?("validUtf8PrefixLen")) { @"out"!(r) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, k, _) = extract_reply(&reply);
+    assert!(ok);
+    assert_eq!(k, Some(5), "M-13: valid \"Hello\" (5 bytes) → prefix len 5");
+}
+
+/// Buffer.view on valid UTF-8 → `[true, str]`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_view_valid_utf8_decodes() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(16, "bytes")) {
+          for (@_ <- @buf!?("writeBytes", "Hello".toUtf8Bytes())) {
+            for (@r <- @buf!?("view")) { @"out"!(r) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, s, _, _) = extract_reply(&reply);
+    assert!(ok);
+    assert_eq!(
+        s,
+        "Hello".to_string(),
+        "M-13: view on valid UTF-8 decodes; got string={s:?}"
+    );
+}
+
+/// Buffer.view on ill-formed UTF-8 → BUFERR_BAD_ENCODING.
+/// 0xFF is not a valid UTF-8 start byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn buffer_view_invalid_utf8_rejects() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@buf <- Buffer!?(4, "bytes")) {
+          for (@_ <- @buf!?("writeBytes", "FF".hexToBytes())) {
+            for (@r <- @buf!?("view")) { @"out"!(r) }
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "invalid UTF-8 must reject");
+    assert_eq!(
+        code, "BUFERR_BAD_ENCODING",
+        "M-13: view on ill-formed UTF-8 → BUFERR_BAD_ENCODING; got {code:?}"
+    );
 }
 
 // -- m-P5-4: cursor discipline after truncate.
