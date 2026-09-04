@@ -415,6 +415,16 @@ tlc_bounded cargo test -p models --lib \
   generated_rpb3_table_differential_is_bound_to_admission_runner -- --nocapture
 popd >/dev/null
 
+# Bind the RhoPath V2 lifecycle refinement to the end-to-end Rust differential
+# oracle.  This must run under the same finite envelope as the formal stages;
+# the model manifest alone is not sufficient evidence of implementation
+# correspondence.
+pushd "$repo_root" >/dev/null
+tlc_bounded cargo test -p rspace_plus_plus --test mod \
+  continuation_join_lifecycle_equivalence::legacy_and_pathmap_continuation_join_lifecycles_are_identical \
+  -- --nocapture
+popd >/dev/null
+
 z3_output="$(tlc_bounded z3 "$repo_root/formal/smt/stack_safe_pda_modes.smt2")"
 if [[ "$z3_output" != "unsat" ]]; then
   echo "stack-safe-pda: expected Z3 to prove no mode-law counterexample; got: $z3_output" >&2

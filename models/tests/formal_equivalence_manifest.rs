@@ -1754,6 +1754,7 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
         "rho_path_v2_lifecycle_impl.mcrl2",
         "rho_path_v2_lifecycle_spec.mcrl2",
         "RhoPath V2 branching bisimulation",
+        "continuation_join_lifecycle_equivalence::legacy_and_pathmap_continuation_join_lifecycles_are_identical",
     ] {
         assert!(
             mcrl2_runner.contains(marker),
