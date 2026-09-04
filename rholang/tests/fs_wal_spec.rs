@@ -1791,6 +1791,230 @@ mod tests {
         );
     }
 
+    /// Coverage-review addendum (2026-09-04): **fs_exists symmetric
+    /// absent**.  Parity with fs_stat's symmetric-error pin below
+    /// (line 1794 area).  Both leader and follower see the file
+    /// absent → `safe_descend_verified` returns `IoError` on both
+    /// sides → fresh reply is `[true, false]` on both → verify OK →
+    /// WAL entries byte-identical, both Success.  A regression that
+    /// spuriously fired CONSENSUS_DIVERGENCE on symmetric absence
+    /// (e.g., a verify path that erroneously compared the descent
+    /// error metadata instead of just the reply Par hash) would fail
+    /// here.
+    ///
+    /// Note the outcome asymmetry from fs_stat's version: fs_stat's
+    /// symmetric-error reply is `[false, "FSERR_NOT_FOUND", ...]` →
+    /// WAL outcome is Failure { NOT_FOUND }.  fs_exists's symmetric
+    /// reply is `[true, false]` → head-bool is true → WAL outcome is
+    /// Success, even though the file was absent.  This is by design:
+    /// fs_exists reports "the file is not there" as a successful
+    /// observation, not as an error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_exists_symmetric_absent_finalizes_to_success() {
+        let dir = tempfile::tempdir().unwrap();
+        // No file at "missing.bin".
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsExists(`rho:io:fs:native:1.0.0/exists`), ackCh in {{
+              fsExists!("{root}", "missing.bin", "consensus", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[132; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_exists symmetric-absent");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(leader_wal.len(), 1);
+        assert_eq!(leader_wal[0].op, WalOp::Exists);
+        assert_eq!(
+            leader_wal[0].outcome,
+            WalOutcome::Success,
+            "fs_exists on an absent file must journal Success — the \
+             head-bool of [true, false] is true, so journal_state_read's \
+             outcome derivation is Success even though the file is absent"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_exists symmetric-absent");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "fs_exists symmetric-absent: WALs must be byte-identical.  \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on \
+             a symmetrically-absent file (both sides agreed on [true, \
+             false]) would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric absence");
+    }
+
+    /// Coverage-review addendum (2026-09-04): **fs_exists bad cmode
+    /// rejects**.  Parity with fs_stat / fs_entries's bad-cmode pins.
+    /// The `resolve_cmode` fail-closed path fires BEFORE any FS
+    /// syscall — a caller that passes a non-`"oracular"` /
+    /// non-`"consensus"` cmode gets `FSERR_BAD_ARG` immediately.
+    /// Leader-only (no rig setup needed): the bad-cmode arg-parse
+    /// error path doesn't journal.
+    ///
+    /// Regression this closes: a refactor that moved cmode
+    /// resolution after the `is_replay` short-circuit, or that
+    /// changed `resolve_cmode` to fall back to a default on
+    /// unrecognized values (silently masking a caller-side typo
+    /// like `"consnsus"`), would fail here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_exists_bad_cmode_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"present").unwrap();
+        let (leader, _follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsExists(`rho:io:fs:native:1.0.0/exists`), ackCh in {{
+              fsExists!("{root}", "data.bin", "bogus", *ackCh) |
+              for (@reply <- ackCh) {{ @"out"!(reply) }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[133; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("leader evaluate fs_exists bad cmode");
+
+        // Bad-cmode path does NOT journal — it's a pre-syscall arg
+        // parse error.  A regression that moved journaling before
+        // cmode validation would surface here as a spurious WAL entry.
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal.is_empty(),
+            "bad-cmode fs_exists must NOT journal — the arg-parse \
+             fail-closed path fires before any FS syscall.  Got \
+             {leader_wal:?}",
+        );
+    }
+
+    /// Coverage-review addendum (2026-09-04): **fs_exists Oracular
+    /// follower replay**.  The Phase-0 tautological arm — under
+    /// Oracular cmode the follower consumes the leader's cached
+    /// reply verbatim (per-node Oracle-mode FS state isn't
+    /// reproducible on the follower).  Journal_state_read is called
+    /// but self-guards on Consensus so it's a WAL no-op today.
+    ///
+    /// This test verifies:
+    ///   - Leader's fs_exists Oracular reply IS produced.
+    ///   - Leader's WAL stays EMPTY (Oracular doesn't journal — the
+    ///     journal_state_read self-guard fires).
+    ///   - Follower's is_replay Oracular arm consumes cached reply
+    ///     without re-executing (Oracular state isn't reproducible).
+    ///   - Follower's WAL also stays empty.
+    ///   - check_replay_data passes (leader's produce matches
+    ///     follower's produce byte-for-byte).
+    ///
+    /// Coverage this closes: a regression that broke the self-guard
+    /// in journal_state_read (i.e., started journaling under
+    /// Oracular) would surface here as a non-empty WAL.  A regression
+    /// that started re-executing under Oracular (a mis-copy of the
+    /// Consensus arm) would still pass check_replay_data because
+    /// nothing mutates between leader and follower here — the WAL-
+    /// emptiness check is the actual anchor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn oracular_fs_exists_reexecute_taut_matches_leader() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("data.bin"), b"present").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsExists(`rho:io:fs:native:1.0.0/exists`), ackCh in {{
+              fsExists!("{root}", "data.bin", "oracular", *ackCh) |
+              for (@_ <- ackCh) {{ Nil }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[134; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate Oracular fs_exists");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal.is_empty(),
+            "Oracular fs_exists must NOT journal — journal_state_read \
+             self-guards on Consensus.  Got {leader_wal:?}",
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate Oracular fs_exists");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert!(
+            follower_wal.is_empty(),
+            "Oracular follower fs_exists must NOT journal — same \
+             self-guard as leader.  Got {follower_wal:?}",
+        );
+
+        follower.check_replay_data().await.expect(
+            "Oracular replay must match — the is_replay Oracular \
+                     arm consumes cached reply verbatim",
+        );
+    }
+
     /// Phase 5 coverage-review addendum (2026-09-02): **fs_stat
     /// symmetric syscall error**.  Attempt fs_stat on a non-existent
     /// path on both sides → both see ENOENT → FSERR_NOT_FOUND →

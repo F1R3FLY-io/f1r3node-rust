@@ -1956,6 +1956,46 @@ async fn dir_exists_returns_bool() {
     assert!(ok);
 }
 
+/// Consensus ban-lift coverage (2026-09-04): Dir.exists dispatches
+/// under Consensus mode and reaches the fsExists native.  The B1
+/// slice (2026-09-03) had banned this path at the Rholang layer,
+/// returning FSERR_UNSUPPORTED before ever calling fsExists; the
+/// ban-lift slice deleted that gate.  Test proves:
+///   - Dir under Consensus mode returns Success (not FSERR_UNSUPPORTED).
+///   - The reply propagates through the Rholang wrapper cleanly.
+///   - Dir.rho's cmode threading (the `fsExists!(canonRoot, joined,
+///     cmode, *retCh)` call site) is exercised end-to-end from the
+///     Rholang-layer caller through the mock stub.
+///
+/// The mock stub `fsExists(@_root, @_rel, @_cmode, ret)` returns
+/// `[true, true]` regardless of cmode — this test's job is to
+/// verify the Rholang wrapper's dispatch, not the native handler
+/// (which is separately pinned in fs_wal_spec.rs::consensus_fs_
+/// exists_reexecute_matches_leader_on_identical_state).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn dir_exists_under_consensus_dispatches_to_native() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@d <- Dir!?("/root", "", "r", "consensus", *File)) {
+          for (@r <- @d!?("exists", "some/file.txt")) {
+            @"out"!(r)
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(
+        ok,
+        "Post-ban-lift Dir.exists under Consensus must return the mock's \
+         [true, true] reply (proving cmode threading works) — pre-ban-lift \
+         would have returned [false, FSERR_UNSUPPORTED, ...] instead"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_open_file_mints_a_file_agent() {
     let (space, reducer) =
