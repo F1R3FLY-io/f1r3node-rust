@@ -25,10 +25,19 @@ Definition datum_key (channel structure identity : bytes) : bytes :=
   v2_magic ++ [datum_kind] ++ encode_frame channel ++
   encode_frame structure ++ encode_frame identity.
 
-Definition continuation_key (channels : list bytes) (identity : bytes) : bytes :=
+Definition continuation_key_unchecked (channels : list bytes) (identity : bytes) : bytes :=
   v2_magic ++ [continuation_kind; collection_version] ++
   count_byte (length channels) ++ flat_map encode_frame channels ++
   [0; 1] ++ encode_frame identity.
+
+(** The production constructor rejects an empty ordered channel group.  Keep
+    that precondition explicit in the formal model rather than admitting a
+    byte string that the Rust parser will refuse. *)
+Definition continuation_key (channels : list bytes) (identity : bytes) : option bytes :=
+  match channels with
+  | [] => None
+  | _ => Some (continuation_key_unchecked channels identity)
+  end.
 
 Definition join_key (channel identity : bytes) : bytes :=
   v2_magic ++ [join_kind] ++ encode_frame channel ++ [0; 1] ++
@@ -97,9 +106,13 @@ Theorem continuation_count_is_eight_bytes : forall n,
   length (count_byte n) = 8.
 Proof. intros; unfold count_byte; reflexivity. Qed.
 
-Theorem empty_continuation_has_explicit_zero_count :
-  continuation_key [] [] = v2_magic ++ [continuation_kind; collection_version;
-    0; 0; 0; 0; 0; 0; 0; 0; 0; 1] ++ encode_frame [].
+Theorem empty_continuation_is_rejected :
+  continuation_key [] [] = None.
+Proof. reflexivity. Qed.
+
+Theorem nonempty_continuation_has_explicit_count : forall channel identity,
+  continuation_key [channel] identity =
+    Some (continuation_key_unchecked [channel] identity).
 Proof. reflexivity. Qed.
 
 Theorem join_identity_is_framed : forall channel identity,
