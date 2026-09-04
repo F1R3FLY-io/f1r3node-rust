@@ -4276,6 +4276,152 @@ mod tests {
             .expect("replay data must match — fs_seek's real-lseek fires");
     }
 
+    /// B1 pin (Phase 5 branch-review addendum, 2026-09-04 —
+    /// **A2-F-1**): **fs_seek Consensus re-execute divergence
+    /// detection**.  Companion to
+    /// `consensus_fs_seek_reexecute_moves_follower_os_fd_position`
+    /// (the matches case).  Every other Phase-5 handler pairs a
+    /// matches test with an explicit `_reexecute_detects_divergence`
+    /// regression pin (14 handlers, 14 divergence tests at fs_wal_
+    /// spec.rs lines 1468, 1778, 2176, 2685, 2951, 3454, 3943, 4428,
+    /// 4737, 5010, 5274, 5544, 5801, 6061).  fs_seek was the sole
+    /// exception before this slice — a refactor that turned the B1
+    /// verify call (handlers.rs:2407 `verify_reply_hash_matches_
+    /// cached`) into a no-op, or that swapped back to the pre-B1
+    /// tautological `produce(&previous, ack)` shape (position-follow-
+    /// up 2026-08-26), would pass CI silently.
+    ///
+    /// Test shape: 16-byte file, leader fsOpen(cons) + fsSeek(0,
+    /// SEEK_END) → leader records `[true, 16]` as the cached reply
+    /// (no WAL entry — fs_seek is not journaled).  Grow the file to
+    /// 32 bytes between leader.evaluate and follower.evaluate.
+    /// Follower's fs_seek is_replay Consensus branch calls the real
+    /// libc::lseek → returns 32 → builds `ok_u64(32)` → verify_reply_
+    /// hash_matches_cached fires mismatch → follower produces
+    /// `err(FSERR_CONSENSUS_DIVERGENCE, ...)`.  Enforcement side:
+    /// the divergent reply Par does NOT match the leader's cached
+    /// `[true, 16]` produce, so RSpace's rig comparator reports
+    /// divergence — `check_replay_data()` returns Err.  Under
+    /// Casper, this manifests as block rejection.
+    ///
+    /// Because fs_seek is NOT journaled (no `WalOp::Seek`), the
+    /// primary assertion is on `check_replay_data()` rather than a
+    /// WAL Failure entry — differs from the fs_stat / fs_size /
+    /// fs_read / fs_write / fs_chmod / ... divergence tests which
+    /// double-check the WAL Failure code.  Both leader and follower
+    /// WALs stay empty for this term (fsOpen and fsClose don't
+    /// journal either), so a WAL-emptiness cross-check is bundled
+    /// in to catch a hypothetical future WalOp::Seek addition that
+    /// forgot to update the test's expectations.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_seek_reexecute_detects_divergence() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("data.bin");
+        // Leader sees a 16-byte file → SEEK_END returns 16.
+        std::fs::write(&target, b"0123456789abcdef").unwrap();
+
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        let term = format!(
+            r#"
+            new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                fsSeek(`rho:io:fs:native:1.0.0/seek`),
+                fsClose(`rho:io:fs:native:1.0.0/close`),
+                oc, sc, cc
+            in {{
+              fsOpen!("{root}", "data.bin", "r", "consensus", *oc) |
+              for (@[true, fd] <- oc) {{
+                fsSeek!(fd, 0, "end", *sc) |
+                for (@_ <- sc) {{
+                  fsClose!(fd, *cc) |
+                  for (@_ <- cc) {{ Nil }}
+                }}
+              }}
+            }}
+            "#,
+            root = dir.path().display(),
+        );
+        let r = Blake2b512Random::create_from_bytes(&[95; 32]);
+
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate B1 fs_seek divergence setup");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+        assert!(
+            leader_wal.is_empty(),
+            "fs_open + fs_seek + fs_close are not journaled — leader WAL \
+             must stay empty for this term.  If this fails, a WalOp::Seek \
+             (or Open / Close) variant was added and this test's shape \
+             needs to be updated to check for the specific Failure code \
+             on the divergence branch; got {leader_wal:?}",
+        );
+
+        // Grow the file between leader and follower — follower's
+        // SEEK_END will now return 32 instead of 16 → verify_reply_
+        // hash_matches_cached fails → FSERR_CONSENSUS_DIVERGENCE reply.
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&target)
+                .expect("open target for append");
+            f.write_all(b"-follower-sees-more-bytes-here-")
+                .expect("append to target");
+        }
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        // The evaluate itself may return Ok even though the produce
+        // diverges — the divergent produce is caught by
+        // `check_replay_data` below.  Same discipline as
+        // consensus_fs_stat_reexecute_detects_divergence at line 1468.
+        let _ = follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await;
+        let follower_wal = follower.fs_handles.wal.snapshot();
+        assert!(
+            follower_wal.is_empty(),
+            "follower WAL must also stay empty — divergence surfaces via \
+             the reply Par, not the WAL, for the non-journaled fs_seek op; \
+             got {follower_wal:?}",
+        );
+
+        // Primary enforcement: the follower's fs_seek produces
+        // `err(FSERR_CONSENSUS_DIVERGENCE, ...)` at the seek ack
+        // channel; leader cached `[true, 16]` at the same channel.
+        // RSpace's rig comparator flags the mismatched produce →
+        // check_replay_data returns Err.  Under Casper, this
+        // manifests as block rejection at the follower.
+        let rig_result = follower.check_replay_data().await;
+        assert!(
+            rig_result.is_err(),
+            "B1 enforcement: divergent fs_seek reply Par should trip \
+             RSpace rig verification — got Ok, which means the \
+             follower's produce matched the leader's cached [true, 16] \
+             despite SEEK_END returning 32 on the grown file.  Either \
+             the Consensus fresh-syscall path is not engaged (regressed \
+             to the pre-B1 tautological cached-reply consumption from \
+             the 2026-08-26 position-follow-up) or verify_reply_hash_ \
+             matches_cached is broken.  This would silently accept a \
+             leader lie."
+        );
+    }
+
     /// Phase 3 pin (Consensus re-execute + verify, 2026-09-01):
     /// **fs_write_at positive path with load-bearing on-disk offset
     /// check**.  Positional write via `libc::pwrite` — analog of
