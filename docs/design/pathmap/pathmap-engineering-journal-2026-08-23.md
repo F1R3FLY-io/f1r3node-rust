@@ -3791,6 +3791,27 @@ contract rather than merely describing local inconvenience.
 | H-015 | A frame-local exact owner census plus certified range replay removes repeated ParBag zipper walks without imposing more than 5% singleton latency. | Exact generated/prost bytes; empty/singleton/skewed/dense owner shapes; 101-pair balanced timing; traversal/allocation counters; profile-only headless Heaptrack and hardware counters; malformed/fault rollback; typed transcript and owner-memo mutants. | **Accepted by J-028**; singleton 99% upper bound 1.024510, reuse-16 median ratio 0.174705, 16-to-1 PathMap traversals, and complete focused/formal gates pass |
 | H-016 | A derived non-authoritative vocabulary for repeated canonical string/byte atoms reduces persisted RSpace bytes enough to amortize two-stage lookup beyond native PathMap prefix/CoW/Merkle and ACT line sharing. | pgmcp experiment 317: exact state/match/multiplicity/hash/charge equivalence; high/low reuse and selectivity corpus; ≥51 samples/arm after 3 warmups; persisted/logical byte ratio, p95 matching, candidates, allocations/RSS/cache, WAL churn, compaction and state-sync evidence; 5% p95 latency ceiling. | Open; no authoritative codec or production index change |
 
+## 2026-09-04 — RPB3 admission proof-boundary audit (MEASURED)
+
+The pgmcp audit of task `rpb3-formal-admission-equivalence` (6020) compared the requested
+formal boundary with the current tree. `ChannelImage.v` and
+`formal/verus/channel_image_cursor.rs` cover RCI2 framing, checked cursor arithmetic, endpoint
+ordering, multiplicity, and malformed-frame refusal. `RSpaceCommit.v` is present in `_CoqProject`
+and is included by `scripts/check-stack-safe-pda-proofs.sh`.
+
+The requested RPB3 capstone is not present: there is no `RPB3Admission.v`, no admission-mutant
+development, no `rpb3_admission_cursor.rs`, and no formal reducer/reference equivalence bound to
+the generated Rust schema tables. The existing Rust tests therefore provide executable evidence,
+but cannot be promoted to a Rocq/Verus proof of the byte-native admission reducer. This is a
+boundary finding, not a failure of the RCI2 proofs.
+
+The principled next slice is to parameterize a Rocq model over the generated RPB3 descriptor
+tables, define an explicit-frame reducer and an independent typed reference, then prove cursor
+progress, checked region arithmetic, canonical determinism, score/body agreement, and admission
+equivalence. Mutants, Verus refinement, and generated-table differential binding follow only after
+those capstones exist. No production codec or consensus-visible byte format was changed by this
+audit; the reachable tracker item remains pending at 10%.
+
 ## Threats to validity
 
 - The J-004 ladder uses one observation per size to attribute phases, not to make a throughput
