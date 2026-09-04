@@ -2282,6 +2282,73 @@ mod tests {
         );
     }
 
+    /// T-1 coverage-review addendum (2026-09-03): Phase 2 symmetric-
+    /// syscall-error pin for **fs_read_at**.  Bogus fd → both leader
+    /// and follower's fd-lookup miss → symmetric `FSERR_CLOSED`.  The
+    /// fd-lookup-miss path does NOT journal (jmode is None), so both
+    /// sides observe the same empty-WAL state.  A regression that
+    /// spuriously fired `CONSENSUS_DIVERGENCE` on the symmetric
+    /// FSERR_CLOSED (or that started journaling on fd-lookup-miss)
+    /// would fail here.  Mirrors the fs_size / fs_stat / fs_entries /
+    /// fs_truncate symmetric pins already in place.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_at_symmetric_syscall_error_finalizes_to_failure() {
+        let _dir = tempfile::tempdir().unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Bogus fd — no fs_open → fd table lookup miss → both sides
+        // return FSERR_CLOSED symmetrically.  ReadAt asks for 10
+        // bytes at offset 0 from a nonexistent fd; the handler
+        // rejects at the fd-lookup step before any syscall.
+        let term = r#"
+            new fsReadAt(`rho:io:fs:native:1.0.0/readAt`), ackCh in {
+              fsReadAt!(999, 0, 10, *ackCh) |
+              for (@_ <- ackCh) { Nil }
+            }
+        "#;
+        let r = Blake2b512Random::create_from_bytes(&[141; 32]);
+
+        leader
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read_at symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_read_at symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 2 fs_read_at symmetric-error: WALs must be byte-identical. \
+             A regression that spuriously fired CONSENSUS_DIVERGENCE on the \
+             symmetric FSERR_CLOSED (or that started journaling on fd-lookup- \
+             miss) would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
+    }
+
     /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):
     /// **fs_read positive path** (sequential read).  Unlike
     /// fs_read_at (positional), sequential fs_read advances both
@@ -2708,6 +2775,72 @@ mod tests {
             "Phase 2 D1 enforcement: divergent fs_read reply Par should trip \
              RSpace rig verification"
         );
+    }
+
+    /// T-1 coverage-review addendum (2026-09-03): Phase 2 symmetric-
+    /// syscall-error pin for **fs_read** (sequential).  Same fd-lookup-
+    /// miss shape as fs_read_at's variant: bogus fd → both sides return
+    /// FSERR_CLOSED symmetrically without journaling.  fs_read differs
+    /// from fs_read_at only in that its shadow-position increment
+    /// happens *after* the syscall (see `handlers.rs::fs_read`'s
+    /// with_mut), so a fd-lookup-miss short-circuits before the
+    /// position touchpoint — this pin ensures the short-circuit is
+    /// symmetric across leader/follower and doesn't spuriously fire
+    /// CONSENSUS_DIVERGENCE.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn consensus_fs_read_symmetric_syscall_error_finalizes_to_failure() {
+        let _dir = tempfile::tempdir().unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+
+        // Bogus fd — sequential read from a nonexistent fd.  Both
+        // sides fd-lookup-miss → FSERR_CLOSED, no WAL entry.
+        let term = r#"
+            new fsRead(`rho:io:fs:native:1.0.0/read`), ackCh in {
+              fsRead!(999, 10, *ackCh) |
+              for (@_ <- ackCh) { Nil }
+            }
+        "#;
+        let r = Blake2b512Random::create_from_bytes(&[142; 32]);
+
+        leader
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .expect("leader evaluate fs_read symmetric error");
+        let leader_wal = leader.fs_handles.wal.snapshot();
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower
+            .reset(&checkpoint.root)
+            .await
+            .expect("follower reset");
+        follower.rig(checkpoint.log).await.expect("follower rig");
+        follower
+            .evaluate(
+                term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .expect("follower evaluate fs_read symmetric error");
+        let follower_wal = follower.fs_handles.wal.snapshot();
+
+        assert_eq!(
+            leader_wal, follower_wal,
+            "Phase 2 fs_read symmetric-error: WALs must be byte-identical. \
+             A regression that fired CONSENSUS_DIVERGENCE on the symmetric \
+             FSERR_CLOSED (or that journaled on fd-lookup-miss, or that \
+             advanced shadow position before the syscall gate) would fail here."
+        );
+        follower
+            .check_replay_data()
+            .await
+            .expect("replay data must match on symmetric syscall error");
     }
 
     /// Phase 2 pin (Consensus re-execute + verify, 2026-09-01):

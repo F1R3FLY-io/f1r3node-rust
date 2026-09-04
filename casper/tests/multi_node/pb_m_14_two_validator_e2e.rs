@@ -1565,3 +1565,180 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
          'B'-content — writeByteArray only affected positions 0..11"
     );
 }
+
+/// T-3 coverage-review addendum (2026-09-03): **path-mutation
+/// divergence canary via fs_remove_file**.  The two existing PB-M-14
+/// canaries above cover read-family divergence (fs_read reply bytes)
+/// and write-then-read divergence (multi-op WAL flow).  This one
+/// exercises a pure path-mutation handler — `fs_remove_file` — via
+/// the reply-shape divergence that appears when the target of a
+/// removal already vanished on the follower.
+///
+/// Coverage this adds beyond the existing canaries:
+///   - Pure path-based mutation handler (no fd bookkeeping):
+///     fs_remove_file dispatches directly on the (root, rel) pair via
+///     `safe_descend_verified` + `unlinkat`.  A regression that broke
+///     the Phase-5 verify wiring on the path-based lift (H-29-3,
+///     2026-08-26) specifically for mutation ops would slip past
+///     the fd-based read/write canaries.
+///   - `[true]` vs `[false, FSERR_NOT_FOUND, ...]` reply-shape
+///     divergence: leader's cached reply is a positive-shape hash;
+///     follower's fresh reply carries the fserr triple.  Hash
+///     mismatch fires FSERR_CONSENSUS_DIVERGENCE and rejects the
+///     block.
+///   - The bundle uses a Dir cap so the `openDir` step succeeds on
+///     both sides identically — the divergence surface is isolated
+///     to the removeFile step, not the openDir preamble.
+///
+/// Tamper mechanism: after leader executes Dir.removeFile("victim")
+/// (openDir succeeds; removeFile unlinks the victim, reply `[true]`),
+/// unlink `victim` from follower_subdir's Dir before B processes the
+/// block.  Follower re-execute sequence: openDir succeeds (the
+/// projected Dir root itself is untouched), then removeFile fires
+/// unlinkat → ENOENT → reply `[false, FSERR_NOT_FOUND, ...]` →
+/// hash mismatch → block rejected.
+///
+/// Pin against every path-mutation handler (chmod/rename/remove_dir/
+/// copy_file) collapses to the same shape — removeFile is the
+/// simplest representative because its reply carries only `[true]`
+/// vs the fserr triple, without secondary state (e.g., rename's
+/// swap of source→dest, or copy_file's byte-count field) muddying
+/// the divergence surface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn pb_m_14_divergent_follower_removefile_causes_block_rejection() {
+    // Bundle a Dir (not a File) so openDir succeeds on both sides
+    // even after victim tampering — divergence must fire on the
+    // removeFile step alone.
+    let stage_dir = tempfile::tempdir().expect("operator stage tempdir");
+    let stage_root = stage_dir.path().to_path_buf();
+    // Seed a "victim" file inside the staged Dir.  Both projected
+    // subdirs will carry this file post-projection.
+    std::fs::write(stage_root.join("victim"), b"delete me").expect("seed victim");
+    let canon_root = std::fs::canonicalize(&stage_root).expect("canonicalize stage dir");
+
+    let entry = BundleEntry::try_new(
+        "target-dir".to_string(),
+        canon_root,
+        BundleEntryKind::Dir,
+        "rw".to_string(),
+        BundleConsensusMode::Consensus,
+    )
+    .expect("bundle entry construction");
+    let bundle = vec![entry];
+
+    let genesis = GenesisBuilder::new()
+        .with_fs_bundle(bundle.clone())
+        .with_consensus_fs_snapshot_cadence(Some(1))
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("build genesis with fs bundle");
+
+    let per_node_root = tempfile::tempdir().expect("per_node_root tempdir");
+    let projections =
+        project_bundle_per_validator(&bundle, 2, per_node_root.path(), "wal_payload_store")
+            .expect("per-validator bundle projection");
+    let leader_subdir = projections[0].subdir.clone();
+    let follower_subdir = projections[1].subdir.clone();
+    let fs_provisionings: Vec<Option<TestFsProvisioning>> = projections
+        .into_iter()
+        .map(|p| Some(p.provisioning))
+        .collect();
+
+    let mut nodes =
+        TestNode::create_network_with_fs_provisioning(genesis.clone(), 2, fs_provisionings)
+            .await
+            .expect("two-validator network with fs provisioning");
+
+    // Sanity: both subdirs seeded with victim post-projection.
+    // BundleEntryKind::Dir projection lands at `<subdir>/<logical_name>`,
+    // and the staged victim landed inside the projected Dir tree.
+    let leader_victim = leader_subdir.join("target-dir").join("victim");
+    let follower_victim = follower_subdir.join("target-dir").join("victim");
+    assert!(
+        leader_victim.exists(),
+        "leader's victim must exist pre-play"
+    );
+    assert!(
+        follower_victim.exists(),
+        "follower's victim must exist pre-tamper"
+    );
+
+    // Consensus removeFile deploy via Fs.openDir → Dir.removeFile.
+    // openDir on target-dir (mode "rw") succeeds on both sides
+    // because the Dir root itself is untouched — only the inner
+    // victim file gets tampered.  The divergence surface is
+    // exclusively the removeFile step.
+    let fs_uri = fs_genesis::fs_genesis_uri(&standard_deploys::FS_GENERATOR_PUB_KEY);
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let deploy_src = format!(
+        r#"
+new rl(`rho:registry:lookup`), fsCh, ackCh in {{
+  rl!(`{fs_uri}`, *fsCh) |
+  for (@(_, fs) <- fsCh) {{
+    for (@[true, dir] <- @fs!?("openDir", "target-dir", {{"mode": "rw"}})) {{
+      for (@reply <- @dir!?("removeFile", "victim")) {{
+        ackCh!(reply)
+      }}
+    }}
+  }}
+}}
+"#,
+        fs_uri = fs_uri,
+    );
+
+    let deploy = construct_deploy::source_deploy_now(deploy_src, None, None, Some(shard_id))
+        .expect("sign fs-removefile deploy");
+
+    // Leader creates + validates.  Reply `[true]`; WAL captures a
+    // RemoveFile entry with Success outcome.
+    let block = nodes[0]
+        .add_block_from_deploys(&[deploy])
+        .await
+        .expect("node 0 (validator A) creates + adds Consensus-removeFile block");
+
+    // Sanity: leader's victim is gone post-removeFile.
+    assert!(
+        !leader_victim.exists(),
+        "leader's victim must be unlinked post-removeFile"
+    );
+
+    // Tamper: DELETE follower's victim before it processes the block.
+    // Follower re-executes openDir (OK — dir still present) then
+    // fs_remove_file will fail with ENOENT → FSERR_NOT_FOUND →
+    // different reply hash → CONSENSUS_DIVERGENCE.
+    std::fs::remove_file(&follower_victim)
+        .expect("tamper follower's victim — delete to force removeFile divergence");
+
+    let (_left, right) = nodes.split_at_mut(1);
+    let result = right[0].process_block(block.clone()).await;
+
+    match result {
+        Ok(rspace_plus_plus::rspace::history::Either::Left(err)) => {
+            eprintln!(
+                "T-3 path-mutation divergence canary: block rejected as expected \
+                 with BlockError: {err:?}"
+            );
+        }
+        Ok(rspace_plus_plus::rspace::history::Either::Right(valid)) => panic!(
+            "T-3 REGRESSION: follower's fs_remove_file re-execute must diverge on \
+             missing victim (leader saw success `[true]`; follower must see \
+             `[false, FSERR_NOT_FOUND, ...]`).  Block was ACCEPTED as {valid:?}. \
+             Either verify_reply_hash_matches_cached did NOT fire on the reply-\
+             shape mismatch, or the Phase-5 path-mutation Consensus re-execute \
+             wiring in fs_remove_file regressed."
+        ),
+        Err(casper_err) => panic!(
+            "T-3 canary got infrastructure error instead of BlockError.Invalid: \
+             {casper_err:?}"
+        ),
+    }
+
+    // Sanity: follower's victim still absent post-replay (removeFile
+    // on a missing file cannot recreate it; and Phase-5 verify fires
+    // BEFORE any state-modifying re-execute happens on the follower).
+    assert!(
+        !follower_victim.exists(),
+        "T-3 SANITY: follower's victim must remain absent post-replay"
+    );
+}

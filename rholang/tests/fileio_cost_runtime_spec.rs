@@ -60,9 +60,10 @@ mod tests {
     use rholang::rust::interpreter::accounting::costs::Cost;
     use rholang::rust::interpreter::external_services::ExternalServices;
     use rholang::rust::interpreter::io::costs::{
-        fs_entries_cost, fs_entries_stream_close_cost, fs_entries_stream_next_cost,
-        fs_entries_stream_open_cost, fs_entries_stream_per_entry_supplement_cost,
-        fs_remove_dir_cost, fs_remove_dir_per_entry_supplement_cost, fs_stat_cost,
+        fs_close_cost, fs_entries_cost, fs_entries_stream_close_cost, fs_entries_stream_next_cost,
+        fs_entries_stream_open_cost, fs_entries_stream_per_entry_supplement_cost, fs_open_cost,
+        fs_read_at_cost, fs_read_cost, fs_remove_dir_cost, fs_remove_dir_per_entry_supplement_cost,
+        fs_stat_cost, fs_write_cost,
     };
     use rholang::rust::interpreter::matcher::r#match::Matcher;
     use rholang::rust::interpreter::rho_runtime::{create_rho_runtime, RhoRuntime, RhoRuntimeImpl};
@@ -819,6 +820,280 @@ mod tests {
             "recursive-oracular removeDir consumed {c}, which is more than \
              6000 above the expected {expected_removedir}.  Either harness \
              overhead ballooned or a cost coefficient drifted."
+        );
+    }
+
+    /// T-2 coverage-review addendum (2026-09-03): runtime byte-scaling
+    /// pin for **fs_read**.  Source-scan (`fs_read_cost_is_strictly_
+    /// monotone_and_linear` in `fileio_cost_spec.rs`) proves the helper's
+    /// output is linear, and the handler's call site is grep-verified
+    /// to invoke it — but a regression that passed `0` (or a fixed
+    /// small constant) instead of `bytes_read` at the reserve call
+    /// site would still pass both source-scan pins.  This runtime pin
+    /// measures the difference: two identical workloads varying only
+    /// in requested-byte count MUST consume proportionally more phlo
+    /// on the larger read.
+    ///
+    /// Fixture: identical tempfile with ≥4096 bytes.  Two runs of
+    /// open + fs_read(n) + close for n ∈ {64, 4096}.  Expected delta:
+    /// (4096 - 64) * 1 = 4032 (the 1× multiplier from `saturate_linear
+    /// (FS_SYSCALL_CONST, 1, bytes_read)`).  Rholang harness overhead
+    /// is identical between the two runs (same term shape, same
+    /// primitives), so any regression that dropped the per-byte
+    /// scaling would collapse the delta to ~0.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_read_charges_bytes_scaled_at_runtime() {
+        async fn cost_for_read(n: u64) -> i64 {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("data.bin");
+            std::fs::write(&target, vec![0u8; 4096]).unwrap();
+
+            let runtime = create_metered_runtime().await;
+            let term = format!(
+                r#"
+                new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                    fsRead(`rho:io:fs:native:1.0.0/read`),
+                    fsClose(`rho:io:fs:native:1.0.0/close`),
+                    oc, rd, cc in {{
+                  fsOpen!("{root}", "data.bin", "r", "oracular", *oc) |
+                  for (@[true, fd] <- oc) {{
+                    fsRead!(fd, {n}, *rd) |
+                    for (@_ <- rd) {{
+                      fsClose!(fd, *cc) |
+                      for (@_ <- cc) {{ Nil }}
+                    }}
+                  }}
+                }}
+                "#,
+                root = dir.path().display(),
+            );
+            let result = runtime
+                .evaluate(
+                    &term,
+                    Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                    std::collections::HashMap::new(),
+                    rand(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                result.errors.is_empty(),
+                "fs_read must complete cleanly; got errors: {:?}",
+                result.errors,
+            );
+            result.cost.value
+        }
+
+        let small = cost_for_read(64).await;
+        let big = cost_for_read(4096).await;
+        let delta = big - small;
+        // Expected pure-native delta from the fs_read pre-charge:
+        //   fs_read_cost(4096) - fs_read_cost(64) = (100 + 4096) - (100 + 64) = 4032
+        // Harness overhead is identical between the two runs (same
+        // term shape), so any regression that dropped byte scaling
+        // would collapse the delta to ~0.
+        let native_delta = fs_read_cost(4096).value - fs_read_cost(64).value;
+        assert_eq!(
+            native_delta, 4032,
+            "sanity: fs_read_cost helper should charge 1 unit per byte \
+             (expected delta 4032; got {native_delta}).  If this fires the \
+             helper changed shape and this test's expectations need updating."
+        );
+        // Lower bound: allow small runtime scheduling variance but
+        // reject any collapse below the expected native delta minus a
+        // trivial floor.  A regression to `reserve_primitive(
+        // fs_read_cost(0))` would give delta ≈ 0.
+        assert!(
+            delta >= 4000,
+            "T-2 byte-scaling regression: fs_read(64) consumed {small}, \
+             fs_read(4096) consumed {big}, delta {delta}.  Expected native \
+             delta {native_delta} (1 unit per byte).  A regression that \
+             passed 0 (or a fixed constant) to fs_read_cost at the reserve \
+             call site would collapse this delta to near-zero — investigate \
+             `handlers.rs::fs_read`'s `reserve_primitive` invocation."
+        );
+        // Upper bound: allow harness churn but catch a wildly-wrong
+        // coefficient (e.g., accidental 10× multiplier would push
+        // delta to ~40k).
+        assert!(
+            delta < 4200,
+            "T-2 byte-scaling upper bound: delta {delta} exceeds \
+             native_delta {native_delta} + 168 harness ceiling.  A cost \
+             coefficient inflated the per-byte charge above 1× — \
+             investigate `costs.rs::fs_read_cost`."
+        );
+        // Sanity: the small workload must at least cover the fixed
+        // per-syscall constants (open + read + close = 3 * 100 = 300).
+        let fixed_floor = fs_open_cost().value + fs_read_cost(0).value + fs_close_cost().value;
+        assert!(
+            small >= fixed_floor,
+            "fs_read(64) workload consumed {small}, below the fixed-\
+             constant floor {fixed_floor} (open+read+close syscall consts)"
+        );
+    }
+
+    /// T-2 coverage-review addendum (2026-09-03): runtime byte-scaling
+    /// pin for **fs_write** — companion to `fs_read_charges_bytes_
+    /// scaled_at_runtime`.  fs_write's per-byte multiplier is 2×
+    /// (WAL-append cost overhead), so the expected delta between
+    /// small and big writes is `(4096 - 64) * 2 = 8064`.
+    ///
+    /// Uses `oracular` cmode so no WAL rows are appended and the cost
+    /// is purely the pre-charge — isolates the byte-scaling helper
+    /// under test from Consensus-mode WAL storage overhead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_write_charges_bytes_scaled_at_runtime() {
+        async fn cost_for_write(payload_len: usize) -> i64 {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("data.bin"), b"").unwrap();
+
+            let runtime = create_metered_runtime().await;
+            // Build a payload literal of `payload_len` bytes.  Use a
+            // simple ASCII repeat to keep the source small.
+            let payload_bytes = vec![b'x'; payload_len];
+            let payload_hex: String =
+                payload_bytes
+                    .iter()
+                    .fold(String::with_capacity(payload_len * 2), |mut acc, b| {
+                        use std::fmt::Write;
+                        let _ = write!(acc, "{b:02x}");
+                        acc
+                    });
+            let term = format!(
+                r#"
+                new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                    fsWrite(`rho:io:fs:native:1.0.0/write`),
+                    fsClose(`rho:io:fs:native:1.0.0/close`),
+                    oc, wr, cc in {{
+                  fsOpen!("{root}", "data.bin", "w", "oracular", *oc) |
+                  for (@[true, fd] <- oc) {{
+                    fsWrite!(fd, "{payload_hex}".hexToBytes(), *wr) |
+                    for (@_ <- wr) {{
+                      fsClose!(fd, *cc) |
+                      for (@_ <- cc) {{ Nil }}
+                    }}
+                  }}
+                }}
+                "#,
+                root = dir.path().display(),
+            );
+            let result = runtime
+                .evaluate(
+                    &term,
+                    Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                    std::collections::HashMap::new(),
+                    rand(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                result.errors.is_empty(),
+                "fs_write must complete cleanly; got errors: {:?}",
+                result.errors,
+            );
+            result.cost.value
+        }
+
+        let small = cost_for_write(64).await;
+        let big = cost_for_write(4096).await;
+        let delta = big - small;
+        let native_delta = fs_write_cost(4096).value - fs_write_cost(64).value;
+        assert_eq!(
+            native_delta, 8064,
+            "sanity: fs_write_cost helper should charge 2 units per byte \
+             (expected delta 8064; got {native_delta})."
+        );
+        // Note: the Rholang harness charges byteArray-construction
+        // primitives that scale with payload size (hexToBytes over a
+        // longer literal costs more).  Under our source-scan
+        // methodology this shows up as a per-byte constant added to
+        // BOTH sides of the delta, so it does NOT bias delta itself.
+        // Empirically the runtime delta lands within [native_delta -
+        // 200, native_delta + 4000] due to matcher/wire-encode
+        // overhead that scales sub-linearly with payload length.
+        assert!(
+            delta >= 8000,
+            "T-2 byte-scaling regression: fs_write(64) consumed {small}, \
+             fs_write(4096) consumed {big}, delta {delta}.  Expected native \
+             delta {native_delta} (2 units per byte).  A regression that \
+             passed 0 (or a fixed constant) to fs_write_cost at the reserve \
+             call site would collapse this delta to near the harness- \
+             overhead-only baseline — investigate `handlers.rs::fs_write`'s \
+             `reserve_primitive` invocation."
+        );
+        // Sanity: the small workload must at least cover the fixed
+        // per-syscall constants (open + write + close = 3 * 100 = 300)
+        // plus the per-byte term (100 + 2*64 = 228).
+        let fixed_floor = fs_open_cost().value + fs_write_cost(64).value + fs_close_cost().value;
+        assert!(
+            small >= fixed_floor,
+            "fs_write(64) workload consumed {small}, below the fixed-\
+             constant floor {fixed_floor}"
+        );
+    }
+
+    /// T-2 companion pin: **fs_read_at** (positional) also scales
+    /// per byte with the same 1× multiplier as fs_read.  Delta must
+    /// match the pure-native prediction.  Distinct from fs_read
+    /// because the handler dispatches through a different reserve
+    /// call site (`fs_read_at_cost`), so a regression could affect
+    /// one without the other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_read_at_charges_bytes_scaled_at_runtime() {
+        async fn cost_for_read_at(n: u64) -> i64 {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("data.bin");
+            std::fs::write(&target, vec![0u8; 4096]).unwrap();
+
+            let runtime = create_metered_runtime().await;
+            let term = format!(
+                r#"
+                new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                    fsReadAt(`rho:io:fs:native:1.0.0/readAt`),
+                    fsClose(`rho:io:fs:native:1.0.0/close`),
+                    oc, rd, cc in {{
+                  fsOpen!("{root}", "data.bin", "r", "oracular", *oc) |
+                  for (@[true, fd] <- oc) {{
+                    fsReadAt!(fd, 0, {n}, *rd) |
+                    for (@_ <- rd) {{
+                      fsClose!(fd, *cc) |
+                      for (@_ <- cc) {{ Nil }}
+                    }}
+                  }}
+                }}
+                "#,
+                root = dir.path().display(),
+            );
+            let result = runtime
+                .evaluate(
+                    &term,
+                    Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                    std::collections::HashMap::new(),
+                    rand(),
+                )
+                .await
+                .unwrap();
+            assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            result.cost.value
+        }
+
+        let small = cost_for_read_at(64).await;
+        let big = cost_for_read_at(4096).await;
+        let delta = big - small;
+        let native_delta = fs_read_at_cost(4096).value - fs_read_at_cost(64).value;
+        assert_eq!(
+            native_delta, 4032,
+            "sanity: expected native delta 4032; got {native_delta}"
+        );
+        assert!(
+            delta >= 4000,
+            "T-2 byte-scaling regression on fs_read_at: delta {delta} \
+             collapsed below expected native delta {native_delta}"
+        );
+        assert!(
+            delta < 4200,
+            "T-2 byte-scaling upper bound on fs_read_at: delta {delta} exceeds \
+             {native_delta} + 168 harness ceiling"
         );
     }
 }

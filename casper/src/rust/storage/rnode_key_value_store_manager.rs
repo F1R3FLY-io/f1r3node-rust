@@ -112,6 +112,18 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            // DD-7b-2 (a) Option 2: payload-hash → deploy-sig index built
+            // during block processing.  Opened in
+            // `BlockDagKeyValueStorage::new` alongside the other indices;
+            // the mapping must be registered here so the LMDB store
+            // manager can honor `kvm.store("payload-source-index")`.
+            // Post-cost-accounted-merge (2026-09-03): the fileio side's
+            // registration got dropped during the merge; this entry
+            // reinstates it.
+            Db::new("payload-source-index".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             Db::new("floor-index".to_string(), None),
             dag_storage_env_config(),
         ),
