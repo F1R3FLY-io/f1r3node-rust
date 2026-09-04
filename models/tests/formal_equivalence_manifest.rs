@@ -1738,8 +1738,16 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
     assert!(runner.contains("RhoPathV2Lifecycle.tla"));
     assert!(runner.contains("RhoPathV2LifecycleDigestOnlyMutant.cfg"));
     assert!(runner.contains("RhoPathV2LifecycleDigestOnlyMutant.tla"));
+    assert!(runner.contains("RhoPathV2LifecycleOverwriteMutant.cfg"));
+    assert!(runner.contains("RhoPathV2LifecycleDecodeLegacyMutant.cfg"));
     assert!(repository_root()
         .join("formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.cfg")
+        .is_file());
+    assert!(repository_root()
+        .join("formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleOverwriteMutant.cfg")
+        .is_file());
+    assert!(repository_root()
+        .join("formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDecodeLegacyMutant.cfg")
         .is_file());
 }
 

@@ -596,6 +596,26 @@ if ! grep -q 'Invariant DistinctCollisionRepresentativesPreserved is violated' \
   echo "stack-safe-pda: RhoPath V2 digest-only mutant failed without the collision invariant" >&2
   exit 1
 fi
+for rho_path_v2_mutant in \
+  "RhoPathV2LifecycleOverwriteMutant.cfg:RhoPathV2LifecycleOverwriteMutant.tla:DistinctCollisionRepresentativesPreserved" \
+  "RhoPathV2LifecycleDecodeLegacyMutant.cfg:RhoPathV2LifecycleDecodeLegacyMutant.tla:FullImageIdentityPreserved"; do
+  rho_path_v2_mutant_cfg="${rho_path_v2_mutant%%:*}"
+  rho_path_v2_mutant_rest="${rho_path_v2_mutant#*:}"
+  rho_path_v2_mutant_tla="${rho_path_v2_mutant_rest%%:*}"
+  rho_path_v2_mutant_invariant="${rho_path_v2_mutant_rest#*:}"
+  if rho_path_v2_mutant_output="$({
+    tlc_run "$tla_metadir" "$rho_path_v2_mutant_cfg" "$rho_path_v2_mutant_tla" -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$rho_path_v2_mutant_output"
+    echo "stack-safe-pda: RhoPath V2 mutant unexpectedly passed: $rho_path_v2_mutant_cfg" >&2
+    exit 1
+  fi
+  printf '%s\n' "$rho_path_v2_mutant_output"
+  if ! grep -q "Invariant ${rho_path_v2_mutant_invariant} is violated" <<<"$rho_path_v2_mutant_output"; then
+    echo "stack-safe-pda: RhoPath V2 mutant failed without ${rho_path_v2_mutant_invariant}: $rho_path_v2_mutant_cfg" >&2
+    exit 1
+  fi
+done
 if record_replay_skip_reset_mutant="$({
   tlc_run "$tla_metadir" \
     RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg \
