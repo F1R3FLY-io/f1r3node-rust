@@ -37,6 +37,7 @@ use std::sync::Arc;
 use rspace_plus_plus::rspace::bag::{Bag, Multiplicity, SortedUniqueBagError};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as legacy_channel_hash;
+use rspace_plus_plus::rspace::rho_path::RhoPathError;
 
 use super::par_bag::{
     validate_canonical_key, CanonicalKeyMetadata, CanonicalParBagAccumulator, ParBagCodecError,
@@ -71,6 +72,7 @@ pub enum ChannelImageError {
     TrailingBytes { consumed: usize, available: usize },
     Component(ParBagCodecError),
     BagBuild(SortedUniqueBagError),
+    OuterPath(RhoPathError),
 }
 
 impl fmt::Display for ChannelImageError {
@@ -126,6 +128,7 @@ impl fmt::Display for ChannelImageError {
             Self::BagBuild(error) => {
                 write!(formatter, "invalid ChannelImageV2 Bag stream: {error}")
             }
+            Self::OuterPath(error) => write!(formatter, "invalid RhoPathV2 envelope: {error}"),
         }
     }
 }
@@ -135,6 +138,7 @@ impl std::error::Error for ChannelImageError {
         match self {
             Self::Component(error) => Some(error),
             Self::BagBuild(error) => Some(error),
+            Self::OuterPath(error) => Some(error),
             _ => None,
         }
     }
