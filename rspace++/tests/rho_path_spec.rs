@@ -32,6 +32,16 @@ fn v2_datum_uses_three_framed_canonical_fields() {
 }
 
 #[test]
+fn v2_datum_round_trips_all_byte_values_in_each_field() {
+    let fields = (0u8..=u8::MAX).collect::<Vec<_>>();
+    let path = RhoPathV2::datum_key(&fields, &fields, &fields);
+    let view = RhoPathV2::parse_datum(&path).unwrap();
+    assert_eq!(view.channel_image(), fields);
+    assert_eq!(view.datum_structure(), fields);
+    assert_eq!(view.datum_identity(), fields);
+}
+
+#[test]
 fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     assert_eq!(RhoPathV2::continuation_key(&[], b"id"), Err(RhoPathError::EmptyChannelGroup));
     let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
@@ -39,6 +49,20 @@ fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     let view = RhoPathV2::parse_continuation(&path).unwrap();
     assert_eq!(view.channel_frames.len(), 2);
     assert!(view.identity_frame.ends_with(&[0, 0]));
+}
+
+#[test]
+fn v2_continuation_preserves_order_and_zero_escaping() {
+    let channels = [vec![0, 1, 0, 255], vec![255, 0], vec![]];
+    let refs = channels.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let path = RhoPathV2::continuation_key(&refs, &[0, 255, 0]).unwrap();
+    let view = RhoPathV2::parse_continuation(&path).unwrap();
+    assert_eq!(view.channel_frames.len(), channels.len());
+    for (frame, expected) in view.channel_frames.iter().zip(channels) {
+        assert!(frame.ends_with(&[0, 0]));
+        assert!(frame.len() >= expected.len() + 2);
+    }
+    assert!(view.identity_frame.windows(2).any(|pair| pair == [0, 255]));
 }
 
 #[test]
