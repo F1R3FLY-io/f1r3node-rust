@@ -46,9 +46,12 @@
 //!    `stderr`) work.
 //!
 //! 3. **Hardwired stdio fds.**  The instance is minted with fds
-//!    (0, 1, 2).  A future powerbox slice will let each principal
+//!    (0, 1, 2).  A future powerbox slice COULD let each principal
 //!    override these (e.g. `/dev/null`-equivalent for cases 4-6 per
-//!    spec §Storage).
+//!    spec §Storage), but post-PB-M-1 narrowing the override
+//!    mechanism is not scheduled — shards needing per-principal
+//!    stdio redirection today must provision alternative fds out
+//!    of band.
 //!
 //! 4. **Versioned Registry URI published (PB-B-3, 2026-08-24).**
 //!    The Fs cap is published under TWO URIs to the same
