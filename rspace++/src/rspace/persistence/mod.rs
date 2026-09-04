@@ -59,7 +59,9 @@ pub use object::{
 };
 pub use physical::{PhysicalDigest, StoreId};
 pub use retention::{
+    RetainedRootKind, RetainedRootRegistryV1, RetainedRootSnapshotV1, RetainedRootV1,
     RetainedStateIter, RetainedStateV1, RetentionManifestV1, RetentionManifestView,
+    RetentionRegistryError, RootLeaseV1,
 };
 pub use rewrite::{
     CompareAndSwapFailure, DagRewriteLimits, DagRewriteReport, PreparedDagRewrite, RewriteError,
@@ -75,9 +77,8 @@ pub(crate) use semantic::semantic_profile_seal;
 #[cfg(test)]
 pub(crate) use semantic::verify_rspace_semantics_after_structural;
 pub use semantic::{
-    IncrementalSemanticLimits, IncrementalSemanticReport, SemanticProfile,
-    RSpaceSemanticProfile, SemanticValidationLimits, SemanticValidationReport,
-    verify_rspace_semantics,
+    IncrementalSemanticLimits, IncrementalSemanticReport, RSpaceSemanticProfile, SemanticProfile,
+    SemanticValidationLimits, SemanticValidationReport, verify_rspace_semantics,
 };
 pub use store::{
     CanonicalObjectStore, ImmutableObjectStore, LayeredObject, MutableObjectStore, ObjectAdmission,

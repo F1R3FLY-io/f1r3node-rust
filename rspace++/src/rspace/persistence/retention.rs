@@ -5,6 +5,9 @@
 //! without changing logical state identities. Decoding is borrowed and
 //! streaming; no root projection is required.
 
+use std::fmt::{Display, Formatter};
+use std::sync::{Arc, Mutex};
+
 use super::canonical::{
     CanonicalEncode, CanonicalFormatError, CanonicalSink, OBJECT_DOMAIN_LEN,
     OBJECT_ENVELOPE_HEADER_LEN, ObjectDigest, ObjectRefV1, ReadCursor, checked_len, checked_sum,
@@ -223,3 +226,192 @@ fn state_precedes(left: StateVersionV1, right: StateVersionV1) -> bool {
 }
 
 const _: () = assert!(STATE_ENTRY_LEN == 56);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RetainedRootKind {
+    Current,
+    Historical,
+    Known,
+    Import,
+    Export,
+    Reader,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RetainedRootV1 {
+    root: ObjectRefV1,
+    kind: RetainedRootKind,
+    lease_id: u64,
+}
+
+impl RetainedRootV1 {
+    pub const fn root(self) -> ObjectRefV1 { self.root }
+    pub const fn kind(self) -> RetainedRootKind { self.kind }
+    pub const fn lease_id(self) -> u64 { self.lease_id }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedRootSnapshotV1 {
+    revision: u64,
+    roots: Box<[RetainedRootV1]>,
+}
+
+impl RetainedRootSnapshotV1 {
+    pub const fn revision(&self) -> u64 { self.revision }
+    pub fn roots(&self) -> &[RetainedRootV1] { &self.roots }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetentionRegistryError {
+    Poisoned,
+    CounterOverflow,
+    UnknownLease(u64),
+}
+
+impl Display for RetentionRegistryError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Poisoned => f.write_str("retained-root registry lock is poisoned"),
+            Self::CounterOverflow => f.write_str("retained-root registry counter overflow"),
+            Self::UnknownLease(id) => write!(f, "unknown retained-root lease {id}"),
+        }
+    }
+}
+
+impl std::error::Error for RetentionRegistryError {}
+
+#[derive(Default)]
+struct RegistryState {
+    revision: u64,
+    next_lease_id: u64,
+    roots: std::collections::BTreeMap<u64, RetainedRootV1>,
+}
+
+#[derive(Clone, Default)]
+pub struct RetainedRootRegistryV1 {
+    state: Arc<Mutex<RegistryState>>,
+}
+
+impl RetainedRootRegistryV1 {
+    pub fn register(
+        &self,
+        root: ObjectRefV1,
+        kind: RetainedRootKind,
+    ) -> Result<RootLeaseV1, RetentionRegistryError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| RetentionRegistryError::Poisoned)?;
+        let id = state
+            .next_lease_id
+            .checked_add(1)
+            .ok_or(RetentionRegistryError::CounterOverflow)?;
+        let revision = state
+            .revision
+            .checked_add(1)
+            .ok_or(RetentionRegistryError::CounterOverflow)?;
+        state.next_lease_id = id;
+        state.revision = revision;
+        state.roots.insert(id, RetainedRootV1 {
+            root,
+            kind,
+            lease_id: id,
+        });
+        Ok(RootLeaseV1 {
+            lease_id: id,
+            registry: Arc::clone(&self.state),
+        })
+    }
+
+    pub fn snapshot(&self) -> Result<RetainedRootSnapshotV1, RetentionRegistryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| RetentionRegistryError::Poisoned)?;
+        let mut roots: Vec<_> = state.roots.values().copied().collect();
+        roots.sort_unstable();
+        Ok(RetainedRootSnapshotV1 {
+            revision: state.revision,
+            roots: roots.into_boxed_slice(),
+        })
+    }
+}
+
+pub struct RootLeaseV1 {
+    lease_id: u64,
+    registry: Arc<Mutex<RegistryState>>,
+}
+
+impl RootLeaseV1 {
+    pub const fn lease_id(&self) -> u64 { self.lease_id }
+    pub fn release(self) -> Result<(), RetentionRegistryError> {
+        let mut state = self
+            .registry
+            .lock()
+            .map_err(|_| RetentionRegistryError::Poisoned)?;
+        if !state.roots.contains_key(&self.lease_id) {
+            return Err(RetentionRegistryError::UnknownLease(self.lease_id));
+        }
+        let revision = state
+            .revision
+            .checked_add(1)
+            .ok_or(RetentionRegistryError::CounterOverflow)?;
+        state.roots.remove(&self.lease_id);
+        state.revision = revision;
+        Ok(())
+    }
+}
+
+impl Drop for RootLeaseV1 {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.registry.lock() {
+            if state.roots.remove(&self.lease_id).is_some() {
+                state.revision = state.revision.saturating_add(1);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    fn reference(byte: u8) -> ObjectRefV1 {
+        ObjectRefV1::new(ObjectDigest::from_array([byte; 32]), OBJECT_ENVELOPE_HEADER_LEN).unwrap()
+    }
+
+    #[test]
+    fn snapshot_is_sorted_and_drop_releases_lease() {
+        let registry = RetainedRootRegistryV1::default();
+        let first = registry
+            .register(reference(2), RetainedRootKind::Reader)
+            .unwrap();
+        let second = registry
+            .register(reference(1), RetainedRootKind::Import)
+            .unwrap();
+        let snapshot = registry.snapshot().unwrap();
+        assert_eq!(snapshot.revision(), 2);
+        assert_eq!(snapshot.roots()[0].root().digest(), reference(1).digest());
+        assert_eq!(snapshot.roots()[1].root().digest(), reference(2).digest());
+        drop(first);
+        second.release().unwrap();
+        assert!(registry.snapshot().unwrap().roots().is_empty());
+    }
+
+    #[test]
+    fn explicit_release_is_transactional_on_unknown_lease() {
+        let registry = RetainedRootRegistryV1::default();
+        let lease = registry
+            .register(reference(3), RetainedRootKind::Known)
+            .unwrap();
+        let id = lease.lease_id();
+        lease.release().unwrap();
+        assert_eq!(registry.snapshot().unwrap().revision(), 2);
+        let fake = RootLeaseV1 {
+            lease_id: id,
+            registry: Arc::clone(&registry.state),
+        };
+        assert_eq!(fake.release(), Err(RetentionRegistryError::UnknownLease(id)));
+        assert_eq!(registry.snapshot().unwrap().revision(), 2);
+    }
+}
