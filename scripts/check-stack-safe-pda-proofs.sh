@@ -581,6 +581,21 @@ tlc_run "$tla_metadir" \
 tlc_run "$tla_metadir" \
   RhoPathV2Lifecycle.cfg \
   RhoPathV2Lifecycle.tla -cleanup
+if rho_path_v2_digest_only_mutant="$({
+  tlc_run "$tla_metadir" \
+    RhoPathV2LifecycleDigestOnlyMutant.cfg \
+    RhoPathV2LifecycleDigestOnlyMutant.tla -cleanup
+} 2>&1)"; then
+  printf '%s\n' "$rho_path_v2_digest_only_mutant"
+  echo "stack-safe-pda: RhoPath V2 digest-only mutant unexpectedly passed" >&2
+  exit 1
+fi
+printf '%s\n' "$rho_path_v2_digest_only_mutant"
+if ! grep -q 'Invariant DistinctCollisionRepresentativesPreserved is violated' \
+    <<<"$rho_path_v2_digest_only_mutant"; then
+  echo "stack-safe-pda: RhoPath V2 digest-only mutant failed without the collision invariant" >&2
+  exit 1
+fi
 if record_replay_skip_reset_mutant="$({
   tlc_run "$tla_metadir" \
     RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg \

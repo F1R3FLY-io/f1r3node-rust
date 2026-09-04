@@ -1736,6 +1736,11 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
     let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
     assert!(runner.contains("RhoPathV2Lifecycle.cfg"));
     assert!(runner.contains("RhoPathV2Lifecycle.tla"));
+    assert!(runner.contains("RhoPathV2LifecycleDigestOnlyMutant.cfg"));
+    assert!(runner.contains("RhoPathV2LifecycleDigestOnlyMutant.tla"));
+    assert!(repository_root()
+        .join("formal/tlaplus/stack_safe_pda/RhoPathV2LifecycleDigestOnlyMutant.cfg")
+        .is_file());
 }
 
 #[test]
