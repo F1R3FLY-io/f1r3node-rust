@@ -4,8 +4,10 @@
 //! identify which verified root is current and where its immutable objects are
 //! stored; they never redefine RSpace semantics.
 
-use crate::rspace::persistence::LogPackDecodeLimits;
 use crate::rspace::persistence::semantic::SemanticProfile;
+use crate::rspace::persistence::{
+    GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseV1, LogPackDecodeLimits,
+};
 
 mod admission;
 mod catalog;
@@ -99,6 +101,17 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// that identity when deciding whether an obsolete generation is eligible
     /// for reclamation; a freshly re-read pathname is not a sufficient lease.
     pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.writer.catalog() }
+
+    /// Acquire a lease for this exact recovered physical generation. The
+    /// caller must retain the returned token for as long as any pack/index
+    /// handle or decoded view may still be used.
+    pub(crate) fn acquire_generation_lease(
+        &self,
+    ) -> Result<GenerationLeaseV1, GenerationLeaseError> {
+        self.writer
+            .generation_leases()
+            .acquire(GenerationLeaseKeyV1::from_catalog(self.catalog()))
+    }
 
     pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
         self.catalog().state()

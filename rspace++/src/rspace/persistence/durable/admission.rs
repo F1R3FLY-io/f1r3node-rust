@@ -50,8 +50,9 @@ use crate::rspace::persistence::wal::{
     LogPackSequence, PreparedLogPackTransactionV1, TerminalCommitViewV1,
 };
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, LogPackDecodeLimits,
-    ObjectIndexRecordV1, PackId, SemanticProfileId, StateVersionV1, VerifiedDagState,
+    CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, GenerationLeaseRegistryV1,
+    LogPackDecodeLimits, ObjectIndexRecordV1, PackId, SemanticProfileId, StateVersionV1,
+    VerifiedDagState,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1162,6 +1163,10 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     /// rather than re-open the catalog by pathname, before treating a
     /// generation as still authoritative.
     pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.source.authority().slot() }
+
+    pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
+        self.lease.generation_leases()
+    }
 
     pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         self.source.verified_state()

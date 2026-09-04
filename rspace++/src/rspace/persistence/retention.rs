@@ -504,7 +504,7 @@ impl Display for GenerationLeaseError {
 
 impl std::error::Error for GenerationLeaseError {}
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct GenerationLeaseState {
     next_lease_id: u64,
     leases: std::collections::BTreeMap<u64, GenerationLeaseKeyV1>,
@@ -513,7 +513,7 @@ struct GenerationLeaseState {
 /// Process-local generation lease authority.  The registry is deliberately
 /// separate from retained semantic roots: a reader may retain a physical
 /// generation even when it does not introduce a new semantic root.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GenerationLeaseRegistryV1 {
     state: Arc<Mutex<GenerationLeaseState>>,
 }

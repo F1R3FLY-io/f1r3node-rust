@@ -8,7 +8,7 @@ use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, INDEX_HEADER_LEN_V1,
     IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
-use crate::rspace::persistence::{CanonicalSink, PackId};
+use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackId};
 
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
 pub(crate) const WRITER_LOCK_FILE_NAME_V1: &str = "writer.lock.v1";
@@ -777,16 +777,25 @@ impl CatalogSlotIndexV1 {
 pub(crate) struct DurableDirectoryV1 {
     path: PathBuf,
     directory: File,
+    generation_leases: GenerationLeaseRegistryV1,
 }
 
 impl DurableDirectoryV1 {
     pub(crate) fn open(path: impl Into<PathBuf>) -> Result<Self, DurableIoError> {
         let path = absolute_diagnostic_path(path.into())?;
         let directory = open_directory_handle(&path)?;
-        Ok(Self { path, directory })
+        Ok(Self {
+            path,
+            directory,
+            generation_leases: GenerationLeaseRegistryV1::default(),
+        })
     }
 
     pub(crate) fn path(&self) -> &Path { &self.path }
+
+    pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
+        self.generation_leases.clone()
+    }
 
     /// Duplicate the already-open directory capability without resolving its
     /// diagnostic path again.  Recovery uses this reader while a writable
@@ -805,6 +814,7 @@ impl DurableDirectoryV1 {
         Ok(Self {
             path: self.path.clone(),
             directory,
+            generation_leases: self.generation_leases.clone(),
         })
     }
 
@@ -1055,6 +1065,10 @@ impl DurableSyncedRebuildCandidateV1<'_> {
 
 impl DurableWriterLeaseV1 {
     pub(crate) fn directory(&self) -> &DurableDirectoryV1 { &self.directory }
+
+    pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
+        self.directory.generation_leases()
+    }
 
     /// Remove one validated child while retaining compiler-visible exclusive
     /// writer authority at the physical mutation boundary.
