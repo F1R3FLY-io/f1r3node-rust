@@ -71,6 +71,28 @@ Definition parse_datum (input : bytes) : option (bytes * bytes * bytes) :=
   | _ => None
   end.
 
+Definition parse_join (input : bytes) : option (bytes * bytes) :=
+  match input with
+  | 82 :: 72 :: 80 :: 2 :: 3 :: rest =>
+      match parse_frame rest with
+      | Some (channel, suffix) =>
+          match suffix with
+          | 0 :: 1 :: identity_input =>
+              match parse_frame identity_input with
+              | Some (identity, suffix') =>
+                  match suffix' with
+                  | [] => Some (channel, identity)
+                  | _ => None
+                  end
+              | None => None
+              end
+          | _ => None
+          end
+      | None => None
+      end
+  | _ => None
+  end.
+
 Lemma parse_three_round_trip : forall a b c suffix,
   bytes_valid a = true -> bytes_valid b = true -> bytes_valid c = true ->
   parse_three (encode_frame a ++ encode_frame b ++ encode_frame c ++ suffix) =
