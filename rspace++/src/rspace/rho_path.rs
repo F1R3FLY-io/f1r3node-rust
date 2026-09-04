@@ -1425,9 +1425,9 @@ impl RhoPathV2 {
     }
 
     pub fn join_prefix(channel: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + channel.len());
+        let mut out = Vec::with_capacity(7 + channel.len());
         out.extend_from_slice(&Self::MAGIC);
-        out.extend_from_slice(&[Self::JOIN_KIND, Self::COLLECTION_VERSION]);
+        out.push(Self::JOIN_KIND);
         append_frame(&mut out, channel);
         out.extend_from_slice(&GROUP_END);
         out
@@ -1468,16 +1468,13 @@ impl RhoPathV2 {
     }
 
     pub fn parse_join(path: &[u8]) -> Result<(&[u8], &[u8]), RhoPathError> {
-        if path.len() < 8 || path[..4] != Self::MAGIC {
+        if path.len() < 7 || path[..4] != Self::MAGIC {
             return Err(RhoPathError::InvalidMagic);
         }
         if path[4] != Self::JOIN_KIND {
             return Err(RhoPathError::InvalidKind(path[4]));
         }
-        if path[5] != Self::COLLECTION_VERSION {
-            return Err(RhoPathError::InvalidCollectionVersion(path[5]));
-        }
-        let mut cursor = 6;
+        let mut cursor = 5;
         let channel = take_frame(path, &mut cursor)?;
         if path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
             return Err(RhoPathError::TruncatedFrame);

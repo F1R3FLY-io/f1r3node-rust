@@ -142,6 +142,7 @@ fn v2_megabyte_fields_parse_on_a_tiny_native_stack() {
 #[test]
 fn v2_join_frames_identity() {
     let path = RhoPathV2::join_key(b"channel", b"join\0identity");
+    assert_eq!(path[5], b'c', "V2 join has no collection-version byte");
     assert!(path.starts_with(&RhoPathV2::join_prefix(b"channel")));
     assert!(path.windows(2).any(|pair| pair == [0, 1]));
     assert!(path.windows(2).any(|pair| pair == [0, 255]));
