@@ -54,6 +54,7 @@ image; the final frame is the complete canonical datum identity required by repl
 
 ```text
 continuation_v2 := RHP 02 02
+                   01 channel_count:u64-be
                    frame(RCI2 channel_image_1) ...
                    frame(RCI2 channel_image_n)
                    group_end
@@ -61,10 +62,11 @@ continuation_v2 := RHP 02 02
 group_end        := 00 01
 ```
 
-`n` is positive. The ordered image sequence is authoritative: duplicates and their
-positions are retained. `group_end` is distinct from both an escaped zero (`00 FF`)
-and a frame terminator (`00 00`). Continuation identity is source-free, as in V1;
-source content remains the authoritative retained value.
+`01` is the continuation-image collection version. `n` is positive and must equal
+the number of following image frames. The ordered image sequence is authoritative:
+duplicates and their positions are retained. `group_end` is distinct from both an
+escaped zero (`00 FF`) and a frame terminator (`00 00`). Continuation identity is
+source-free, as in V1; source content remains the authoritative retained value.
 
 ## Join keys
 
@@ -72,11 +74,12 @@ source content remains the authoritative retained value.
 join_v2 := RHP 02 03
            frame(RCI2 indexed_channel_image)
            group_end
-           canonical ordered join_identity bytes
+           frame(canonical ordered join_identity bytes)
 ```
 
 The indexed channel is one complete RCI2 image. Join identity is not reordered or
-hashed into a digest-only suffix.
+hashed into a digest-only suffix. Framing the identity makes the join key
+prefix-free and lets the checked cursor reject trailing bytes unambiguously.
 
 ## Legacy bridge and namespace policy
 
@@ -108,4 +111,3 @@ The formal and executable gates must establish:
 The proposal is intentionally not an activation decision. Production use requires
 the accepted formal model, generated parser/encoder, negative controls, complete
 RSpace lifecycle differential, and an explicit consensus epoch.
-
