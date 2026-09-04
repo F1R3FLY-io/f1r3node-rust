@@ -1689,3 +1689,51 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
         );
     }
 }
+
+#[test]
+fn rpb3_admission_formal_artifacts_are_manifested() {
+    let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3Admission.v");
+    for marker in [
+        "rpb3_pda_equivalent_to_recursive_validation",
+        "rpb3_pda_terminates_without_call_stack_recursion",
+        "Print Assumptions rpb3_pda_equivalent_to_recursive_validation",
+    ] {
+        assert!(rocq.contains(marker), "RPB3 Rocq theory is missing `{marker}`");
+    }
+
+    let mutants =
+        read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3AdmissionMutants.v");
+    for marker in [
+        "mutant_omit_locality_is_refuted",
+        "mutant_trailing_acceptance_is_refuted",
+        "Print Assumptions mutant_omit_locality_is_refuted",
+    ] {
+        assert!(mutants.contains(marker), "RPB3 mutant theory is missing `{marker}`");
+    }
+
+    let verus = read_repository_file("formal/verus/rpb3_admission_cursor.rs");
+    for marker in [
+        "checked_region",
+        "worklist_step",
+        "child_frame_step",
+        "root_consumption_authorized",
+        "rejects_unbalanced_root",
+        "rejects_duplicate_slot",
+    ] {
+        assert!(verus.contains(marker), "RPB3 Verus refinement is missing `{marker}`");
+    }
+
+    let coq_project = read_repository_file("formal/rocq/stack_safe_pda/_CoqProject");
+    assert!(coq_project.contains("theories/RPB3Admission.v"));
+    assert!(coq_project.contains("theories/RPB3AdmissionMutants.v"));
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    for marker in [
+        "theories/RPB3Admission.v",
+        "theories/RPB3AdmissionMutants.v",
+        "rpb3_admission_closed_capstones",
+        "rpb3_admission_mutants_closed_capstones",
+    ] {
+        assert!(runner.contains(marker), "RPB3 formal runner is missing `{marker}`");
+    }
+}
