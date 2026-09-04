@@ -341,6 +341,32 @@ impl RetainedRootRegistryV1 {
         })
     }
 
+    /// Snapshot dynamic leases together with the roots authenticated by the
+    /// supplied retention manifest. Manifest roots use lease id zero and are
+    /// never releasable through this registry; callers may therefore retain
+    /// the returned immutable root set for the complete mark/copy operation.
+    pub fn snapshot_with_manifest(
+        &self,
+        manifest: &RetentionManifestV1,
+    ) -> Result<RetainedRootSnapshotV1, RetentionRegistryError> {
+        let mut snapshot = self.snapshot()?;
+        let mut roots = snapshot.roots.into_vec();
+        roots.push(RetainedRootV1 {
+            root: manifest.current().state().manifest(),
+            kind: RetainedRootKind::Current,
+            lease_id: 0,
+        });
+        roots.extend(manifest.historical().iter().map(|retained| RetainedRootV1 {
+            root: retained.state().manifest(),
+            kind: RetainedRootKind::Historical,
+            lease_id: 0,
+        }));
+        roots.sort_unstable();
+        roots.dedup();
+        snapshot.roots = roots.into_boxed_slice();
+        Ok(snapshot)
+    }
+
     pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
         lease.release()
     }
@@ -452,5 +478,35 @@ mod registry_tests {
             kind: RetainedRootKind::Reader,
             lease_id: lease.lease_id(),
         }]);
+    }
+
+    #[test]
+    fn manifest_roots_are_added_to_dynamic_snapshot_deterministically() {
+        let registry = RetainedRootRegistryV1::default();
+        let current_manifest = reference(8);
+        let historical_manifest = reference(7);
+        let current = RetainedStateV1::new(
+            StateVersionV1::new(2, current_manifest),
+            current_manifest.encoded_len(),
+        )
+        .unwrap();
+        let historical = RetainedStateV1::new(
+            StateVersionV1::new(1, historical_manifest),
+            historical_manifest.encoded_len(),
+        )
+        .unwrap();
+        let manifest = RetentionManifestV1::new(current, [historical]).unwrap();
+        let lease = registry
+            .register(reference(9), RetainedRootKind::Export)
+            .unwrap();
+        let snapshot = registry.snapshot_with_manifest(&manifest).unwrap();
+
+        assert_eq!(snapshot.roots().len(), 3);
+        assert_eq!(snapshot.roots()[0].root(), historical_manifest);
+        assert_eq!(snapshot.roots()[1].root(), current_manifest);
+        assert_eq!(snapshot.roots()[2].root(), reference(9));
+        assert_eq!(snapshot.roots()[0].lease_id(), 0);
+        assert_eq!(snapshot.roots()[1].lease_id(), 0);
+        drop(lease);
     }
 }
