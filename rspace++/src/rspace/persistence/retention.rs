@@ -324,6 +324,7 @@ impl RetainedRootRegistryV1 {
         Ok(RootLeaseV1 {
             lease_id: id,
             registry: Arc::clone(&self.state),
+            active: true,
         })
     }
 
@@ -340,7 +341,7 @@ impl RetainedRootRegistryV1 {
         })
     }
 
-    pub fn release(&self, lease: RootLeaseV1) -> Result<(), RetentionRegistryError> {
+    pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
         lease.release()
     }
 }
@@ -348,11 +349,15 @@ impl RetainedRootRegistryV1 {
 pub struct RootLeaseV1 {
     lease_id: u64,
     registry: Arc<Mutex<RegistryState>>,
+    active: bool,
 }
 
 impl RootLeaseV1 {
     pub const fn lease_id(&self) -> u64 { self.lease_id }
-    pub fn release(self) -> Result<(), RetentionRegistryError> {
+    pub fn release(&mut self) -> Result<(), RetentionRegistryError> {
+        if !self.active {
+            return Err(RetentionRegistryError::UnknownLease(self.lease_id));
+        }
         let mut state = self
             .registry
             .lock()
@@ -366,12 +371,16 @@ impl RootLeaseV1 {
             .ok_or(RetentionRegistryError::CounterOverflow)?;
         state.roots.remove(&self.lease_id);
         state.revision = revision;
+        self.active = false;
         Ok(())
     }
 }
 
 impl Drop for RootLeaseV1 {
     fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
         if let Ok(mut state) = self.registry.lock() {
             if state.roots.remove(&self.lease_id).is_some() {
                 state.revision = state.revision.saturating_add(1);
@@ -394,7 +403,7 @@ mod registry_tests {
         let first = registry
             .register(reference(2), RetainedRootKind::Reader)
             .unwrap();
-        let second = registry
+        let mut second = registry
             .register(reference(1), RetainedRootKind::Import)
             .unwrap();
         let snapshot = registry.snapshot().unwrap();
@@ -409,15 +418,16 @@ mod registry_tests {
     #[test]
     fn explicit_release_is_transactional_on_unknown_lease() {
         let registry = RetainedRootRegistryV1::default();
-        let lease = registry
+        let mut lease = registry
             .register(reference(3), RetainedRootKind::Known)
             .unwrap();
         let id = lease.lease_id();
         lease.release().unwrap();
         assert_eq!(registry.snapshot().unwrap().revision(), 2);
-        let fake = RootLeaseV1 {
+        let mut fake = RootLeaseV1 {
             lease_id: id,
             registry: Arc::clone(&registry.state),
+            active: true,
         };
         assert_eq!(fake.release(), Err(RetentionRegistryError::UnknownLease(id)));
         assert_eq!(registry.snapshot().unwrap().revision(), 2);
