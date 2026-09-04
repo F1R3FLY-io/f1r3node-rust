@@ -502,20 +502,18 @@ flags.bits1..7     := 0
 
 An RPB3-relative key omits only the common `"RPB" 0x03` prefix. Its first byte is a nonzero
 component-family tag, so `0x00 0x00` is an unambiguous endpoint-sequence terminator. The decoder
-prepends the common prefix into one reusable key buffer, invokes the existing exact RPB3 validator,
+prepends the common prefix into one reusable key buffer, invokes the generated indexed RPB3
+validator,
 requires strictly ascending endpoints and positive multiplicities, and inserts the validated key
 directly into the authoritative `ParBag` through one monotone write zipper. It never creates
 `Vec<Par>`, expands occurrences, sorts projected entries, or serializes ACT topology. The encoder
-does not decode component bodies. The active exact external-admission bridge still does: for
-general RPB3 families it decodes the typed protobuf value, applies the authoritative canonical
-sorter/normalizer, and re-encodes it to prove that the supplied score and body agree. The
-replacement generated-schema admission PDA now exists in shadow form and shares canonical score,
-default, and semantic-shape rules with construction and sorting. Its focused corpus covers every
-component family and generated `Expr` arm without constructing an abstract syntax tree (AST).
-Production cutover is still prohibited because nested EPathMap keys currently retain and replay a
-complete endpoint for canonical-path validation. The remaining boundary must drive canonical-path,
-EPM1, ACT, and nested raw-`Par` obligations through persistent byte handles, then replace the typed
-fallback only after exact differential and resource gates pass.
+does not decode component bodies. The generated admission PDA validates general RPB3 families,
+nested EPathMap topology, score/body agreement, and canonical semantic shape directly over borrowed
+bytes. Its focused corpus covers every component family and generated `Expr` arm without
+constructing an abstract syntax tree (AST). Production RhoPathV2 cutover remains a separate gated
+task: it must add the channel-specific V2 path adapter, collision-checked legacy bridge, and
+complete play/replay/checkpoint/reset/export/import differential without changing the frozen V1
+boundaries.
 
 Let $`B(p)`$ be the RPB3 `PathMap<Multiplicity>` component Bag of a `Par` value $`p`$, let $`c(p)`$
 be its root `connective_used` flag, and let $`\ell(p)`$ be its root `locally_free` summary. Current
