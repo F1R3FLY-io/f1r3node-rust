@@ -1188,6 +1188,24 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         OpenDagTransaction::new(self.source.verified_state(), mutation, limits)
     }
 
+    /// Seal a durable transaction together with its successor retention
+    /// manifest.  This is the production boundary: callers cannot publish a
+    /// target state whose retention policy was omitted from the sealed object
+    /// set.  The low-level `OpenDagTransaction::seal` remains available for
+    /// generic in-memory users that do not own durable retention authority.
+    pub(crate) fn seal_transaction<'mutation>(
+        &self,
+        mutation: MutationBatchViewV1<'mutation>,
+        limits: DagTransactionLimits,
+    ) -> Result<
+        crate::rspace::persistence::SealedDagTransaction<'mutation, P>,
+        DagTransactionError<DurableObjectReadErrorV1>,
+    > {
+        let sealed = self.open_transaction(mutation, limits)?.seal()?;
+        self.attach_target_retention_manifest(sealed)
+            .map_err(Into::into)
+    }
+
     /// Attach the target retention manifest to a sealed transaction. The
     /// previous current state becomes historical; no durable bytes are
     /// published until this manifest is included in the prepared object set.

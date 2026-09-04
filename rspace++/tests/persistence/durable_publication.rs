@@ -344,9 +344,7 @@ fn incremental_publication_round_trips_with_target_retention_manifest() {
     let mutation = data_batch(base, "incremental-publication");
     let view = crate::rspace::persistence::MutationBatchViewV1::parse(&mutation).unwrap();
     let sealed = writer
-        .open_transaction(view, crate::rspace::persistence::DagTransactionLimits::UNBOUNDED)
-        .unwrap()
-        .seal()
+        .seal_transaction(view, crate::rspace::persistence::DagTransactionLimits::UNBOUNDED)
         .unwrap();
     let sequence = writer
         .authority()
@@ -354,7 +352,6 @@ fn incremental_publication_round_trips_with_target_retention_manifest() {
         .commit_sequence()
         .successor()
         .unwrap();
-    let sealed = writer.attach_target_retention_manifest(sealed).unwrap();
     let prepared = writer
         .prepare_transaction(&sealed, sequence, LogPackDecodeLimits::UNBOUNDED)
         .unwrap();
