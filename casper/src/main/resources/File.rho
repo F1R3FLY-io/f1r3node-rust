@@ -621,67 +621,70 @@ in {
     // Uses the stored `rel` from the fd tuple (B-3 fix) — the prior
     // slice passed `""` and every real call broke on Phase 1's
     // safe_descend, which returns QuarantineError::Empty on empty rel.
+    // Mode-consistency fix (2026-09-04): input is now POSIX mode bits
+    // as `Int`, matching `stat.mode`'s emission shape.  Round-trips
+    // trivially: `stat(rel).get("mode") → chmod(mode)`.  Callers who
+    // want the human-readable rwx string decode the integer themselves
+    // (this is `stat`'s asymmetry too — machine-parseable on the wire,
+    // format for humans at the caller layer).  Range [0, 0o7777] per
+    // POSIX; higher bits (setuid / setgid / sticky) are accepted at
+    // this layer but the native handler masks against 0o777 anyway
+    // (setuid semantics are unsafe under the sandbox and intentionally
+    // not exposed — see spec §Metadata > mode field).
     method chmod(@mode) {
       match mode {
-        m /\ String => {
-          for (@state <- @[*private, *stateP]) {
-            match state {
-              "closed" => {
-                @[*private, *stateP]!("closed") |
-                return!([false, "FSERR_CLOSED", "file is closed"])
-              }
-              "open" => {
-                // H-29-3 lift (2026-08-26): Consensus caps now
-                // supported — fs_chmod journals a Chmod WAL entry
-                // pre-syscall, symmetric on leader and follower.
-                for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
-                  match params {
-                    (_fd, canonRoot, rel, fmode) => {
-                      match fmode {
-                        "r" => {
-                          @[*private, *stateP]!("open") |
-                          return!([false, "FSERR_UNSUPPORTED",
-                            "chmod requires a write-capable mode"])
-                        }
-                        _ => {
-                          new parsedCh in {
-                            parseRwxToBits!(m, *parsedCh) |
-                            for (@parsed <- parsedCh) {
-                              match parsed {
-                                [true, bits] => {
-                                  new retCh in {
-                                    fsChmod!(canonRoot, rel, bits, cmode, *retCh) |
-                                    for (@reply <- retCh) {
-                                      @[*private, *stateP]!("open") |
-                                      return!(reply)
-                                    }
-                                  }
-                                }
-                                _ => {
+        m /\ Int => {
+          match m < 0 or m > 4095 {
+            true => return!([false, "FSERR_BAD_ARG",
+              "mode must be an Int in [0, 0o7777]"])
+            false => {
+              for (@state <- @[*private, *stateP]) {
+                match state {
+                  "closed" => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file is closed"])
+                  }
+                  "open" => {
+                    // H-29-3 lift (2026-08-26): Consensus caps now
+                    // supported — fs_chmod journals a Chmod WAL entry
+                    // pre-syscall, symmetric on leader and follower.
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
+                      match params {
+                        (_fd, canonRoot, rel, fmode) => {
+                          match fmode {
+                            "r" => {
+                              @[*private, *stateP]!("open") |
+                              return!([false, "FSERR_UNSUPPORTED",
+                                "chmod requires a write-capable mode"])
+                            }
+                            _ => {
+                              new retCh in {
+                                fsChmod!(canonRoot, rel, m, cmode, *retCh) |
+                                for (@reply <- retCh) {
                                   @[*private, *stateP]!("open") |
-                                  return!(parsed)
+                                  return!(reply)
                                 }
                               }
                             }
                           }
                         }
+                        _ => {
+                          @[*private, *stateP]!("open") |
+                          return!([false, "FSERR_IO", "fd params malformed"])
+                        }
                       }
                     }
-                    _ => {
-                      @[*private, *stateP]!("open") |
-                      return!([false, "FSERR_IO", "fd params malformed"])
-                    }
+                  }
+                  _ => {
+                    @[*private, *stateP]!("closed") |
+                    return!([false, "FSERR_CLOSED", "file state unrecognized"])
                   }
                 }
-              }
-              _ => {
-                @[*private, *stateP]!("closed") |
-                return!([false, "FSERR_CLOSED", "file state unrecognized"])
               }
             }
           }
         }
-        _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+        _ => return!([false, "FSERR_BAD_ARG", "mode must be an Int"])
       }
     } |
 

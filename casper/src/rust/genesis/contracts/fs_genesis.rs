@@ -792,7 +792,8 @@ new
   // FIPS/fileio/.../design-decisions.md.
   fsRevokedP,
   openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
-  parseRwxToBits, parseRwxLoop,
+  // parseRwxToBits + parseRwxLoop retired 2026-09-04 (mode-consistency
+  // migration — chmod now takes Int mode-bits matching stat.mode).
   writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
   readLinesIntoLoop, drainToNextLF,
   codepointLen, concatStringsLoop, scanLineForLF,
@@ -2147,7 +2148,19 @@ mod tests {
         //   Rholang semantics changed — the helper preserves the
         //   pre-RH-2 idempotent-release invariant + tail sequencing
         //   (via `for (_ <- doneCh)` await in the caller).
-        const EXPECTED: &str = "65b4649940e533f5a640fe5b3eaa8f05c49ec810b26d94e8c0b00817589841b6";
+        // Prior anchor: 65b46499 (RH-2, 2026-09-04).
+        // 2026-09-04: chmod input shape migrated from rwx-string to
+        //   Int mode-bits for consistency with stat.mode (which
+        //   emits Int).  File.rho::chmod + Dir.rho::chmod switched
+        //   from `@modeStr` (validated via `parseRwxToBits`) to
+        //   `@mode` (Int in `[0, 0o7777]`).  The `parseRwxToBits` /
+        //   `parseRwxLoop` helpers (~60 lines) retired from Dir.rho
+        //   + their binding removed from the composed outer `new`.
+        //   FIP updated to match (rwx-string entries in File.chmod /
+        //   Dir.chmod tables replaced with Int).  Consensus-observable
+        //   surface change — free per the f1r3node_no_running_network
+        //   invariant.
+        const EXPECTED: &str = "4d8f4c0ea28ff6e4b205e4ae467478b8fa5fd9b3305f5a244bb3eb21cf4d654e";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

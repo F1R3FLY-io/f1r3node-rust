@@ -49,7 +49,7 @@ fn with_libs(test_snippet: &str) -> String {
             // by Fs.rho's module body (`@[*fsRevokedP]!(false)`).
             fsRevokedP,
             openFileImpl, openFileImplInner, openDirImpl, openDirImplInner, joinRel,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -2063,7 +2063,7 @@ async fn file_close_propagates_fs_close_error() {
             .await;
     let src = format!(
         r#"
-        new File, fdP, stateP, cmodeP, parseRwxToBits, parseRwxLoop,
+        new File, fdP, stateP, cmodeP, // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -2103,10 +2103,8 @@ async fn file_close_propagates_fs_close_error() {
           contract fsLockSequential(@_fd, @_h, @_cm, @_wait, ret) = {{ ret!([true, 2]) }} |
           contract fsReleaseLock(@_id, ret) = {{ ret!([true]) }} |
           contract fsReleaseAllForHolder(@_h, ret) = {{ ret!([true, 0]) }} |
-          // parseRwxToBits stub — this test doesn't exercise it, but
-          // File.rho's chmod method captures it as a free var so it
-          // needs to be in scope.  A minimal identity stub suffices.
-          contract parseRwxToBits(@_s, ret) = {{ ret!([true, 0]) }} |
+          // parseRwxToBits + parseRwxLoop retired 2026-09-04 (chmod migrated
+          // to Int mode-bits input; no rwx-string parser needed).
           // Stream stub — File.rho's bytes()/bytesAt() capture it as a
           // free var to mint stream handles.  This bespoke test doesn't
           // exercise bytes(), so a minimal identity constructor suffices.
@@ -2240,7 +2238,7 @@ async fn dir_open_file_accepts_all_whitelisted_modes() {
 }
 
 // ---------------------------------------------------------------------
-// Second-slice tests: File.truncate/chmod/chown + parseRwxToBits +
+// Second-slice tests: File.truncate/chmod/chown +
 // Dir.openDir + 6 Dir mutation methods.
 // ---------------------------------------------------------------------
 
@@ -2320,14 +2318,15 @@ async fn file_truncate_non_int_rejects() {
 // -- File.chmod -------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_valid_rwx_succeeds() {
+async fn file_chmod_valid_mode_bits_succeeds() {
+    // 0o755 = 493 decimal — owner rwx, group rx, other rx.
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
-          for (@r <- @f!?("chmod", "rwxr-xr-x")) { @"out"!(r) }
+          for (@r <- @f!?("chmod", 493)) { @"out"!(r) }
         }
         "#,
     );
@@ -2337,7 +2336,14 @@ async fn file_chmod_valid_rwx_succeeds() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_octal_string_rejects() {
+async fn file_chmod_string_rejects() {
+    // Post-migration (2026-09-04): chmod takes Int mode-bits, not a
+    // rwx string.  A String argument (rwx, octal-string, symbolic-
+    // delta, malformed, or multibyte) is rejected at the Rholang type
+    // check with FSERR_BAD_ARG "mode must be an Int".  This test
+    // supersedes the pre-migration matrix (octal_string / symbolic_
+    // delta / wrong_char / multibyte-utf8) — the parser those tests
+    // exercised no longer exists.
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -2355,59 +2361,62 @@ async fn file_chmod_octal_string_rejects() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_symbolic_delta_rejects() {
+async fn file_chmod_zero_mode_bits_succeeds() {
+    // 0 → no bits set (all triples "---").  Verifies the low bound
+    // of the accepted range is accepted.
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
     let src = with_libs(
         r#"
         for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
-          for (@r <- @f!?("chmod", "u+x")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_BAD_ARG");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_wrong_char_at_position_rejects() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    // Position 0 must be 'r' or '-'; 'w' is invalid.
-    let src = with_libs(
-        r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
-          for (@r <- @f!?("chmod", "wwxr-xr-x")) { @"out"!(r) }
-        }
-        "#,
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok);
-    assert_eq!(code, "FSERR_BAD_ARG");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_all_dashes_yields_zero_bits() {
-    // ---------  → 0 bits.  Verifies parseRwxToBits handles the
-    // all-'-' case cleanly.
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
-          for (@r <- @f!?("chmod", "---------")) { @"out"!(r) }
+          for (@r <- @f!?("chmod", 0)) { @"out"!(r) }
         }
         "#,
     );
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let (ok, _, _, _) = extract_reply(&reply);
     assert!(ok);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_out_of_range_int_rejects() {
+    // 0o10000 = 4096 — one above the accepted range [0, 0o7777].
+    // Verifies the range guard (>4095) fires with the new message.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("chmod", 4096)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn file_chmod_negative_int_rejects() {
+    // -1 — below the accepted range [0, 0o7777].  Verifies the lower
+    // guard (<0) fires with the new message.
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@r <- @f!?("chmod", -1)) { @"out"!(r) }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok);
+    assert_eq!(code, "FSERR_BAD_ARG");
 }
 
 // -- File.chown -------------------------------------------------------
@@ -2781,7 +2790,7 @@ async fn dir_chmod_valid_mode_succeeds() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
+          for (@r <- @d!?("chmod", "config.json", 420)) { @"out"!(r) }
         }
         "#,
     );
@@ -2798,7 +2807,7 @@ async fn dir_chmod_on_readonly_rejects() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
-          for (@r <- @d!?("chmod", "config.json", "rw-r--r--")) { @"out"!(r) }
+          for (@r <- @d!?("chmod", "config.json", 420)) { @"out"!(r) }
         }
         "#,
     );
@@ -2871,7 +2880,7 @@ async fn dir_nested_dispatches_with_composed_subpath() {
           for (@openReply <- @d!?("openDir", "subdir", {"mode": "rw"})) {
             match openReply {
               [true, nested] => {
-                for (@chmodReply <- @nested!?("chmod", "f.txt", "rw-r--r--")) {
+                for (@chmodReply <- @nested!?("chmod", "f.txt", 420)) {
                   for (@log <<- chmodLog) {
                     @"out"!([chmodReply, log])
                   }
@@ -2917,27 +2926,9 @@ async fn dir_nested_dispatches_with_composed_subpath() {
     );
 }
 
-/// B-2 regression: parseRwx does not panic on a 9-byte string that
-/// contains a multi-byte UTF-8 codepoint.  U+1F600 is 4 bytes, plus
-/// 5 ASCII bytes = 9 total; passes the length guard.  The byte-level
-/// loop sees 0xF0 at position 0 which matches neither '-' (45) nor
-/// 'r' (114), so it falls to FSERR_BAD_ARG cleanly — never slicing
-/// mid-codepoint (which would panic and fork consensus).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn file_chmod_multibyte_utf8_rejects_without_panic() {
-    let (space, reducer) =
-        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-            .await;
-    let src = with_libs(
-        "for (@f <- File!?(1, \"/root\", \"test.txt\", \"rw\", \"oracular\")) {\
-           for (@r <- @f!?(\"chmod\", \"\u{1F600}rwxr-\")) { @\"out\"!(r) }\
-         }",
-    );
-    let reply = eval_and_read_out(&space, &reducer, &src).await;
-    let (ok, code, _, _) = extract_reply(&reply);
-    assert!(!ok, "multi-byte UTF-8 input must be rejected, not accepted");
-    assert_eq!(code, "FSERR_BAD_ARG");
-}
+// file_chmod_multibyte_utf8_rejects_without_panic — retired 2026-09-04
+// (no rwx-string parser to panic; Rholang Int type-check rejects String
+// input cleanly at method entry; concern is moot).
 
 /// B-3 regression: File.chmod dispatches with the stored rel, not "".
 /// Prior slice passed "" so every real chmod broke on Phase 1's
@@ -2950,7 +2941,7 @@ async fn file_chmod_dispatches_with_stored_rel_not_empty() {
     let src = with_libs(
         r#"
         for (@f <- File!?(1, "/root", "config.json", "rw", "oracular")) {
-          for (@_ <- @f!?("chmod", "rw-r--r--")) {
+          for (@_ <- @f!?("chmod", 420)) {
             for (@log <<- chmodLog) { @"out"!(log) }
           }
         }
@@ -3023,7 +3014,7 @@ async fn file_chmod_on_readonly_returns_unsupported() {
     let src = with_libs(
         r#"
         for (@f <- File!?(1, "/root", "test.txt", "r", "oracular")) {
-          for (@r <- @f!?("chmod", "rw-r--r--")) { @"out"!(r) }
+          for (@r <- @f!?("chmod", 420)) { @"out"!(r) }
         }
         "#,
     );
@@ -3088,7 +3079,7 @@ async fn join_rel_empty_sub_path_produces_bare_rel() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "rw", "oracular", *File)) {
-          for (@_ <- @d!?("chmod", "foo.txt", "rw-r--r--")) {
+          for (@_ <- @d!?("chmod", "foo.txt", 420)) {
             for (@log <<- chmodLog) { @"out"!(log) }
           }
         }
@@ -3129,7 +3120,7 @@ async fn join_rel_empty_sub_path_produces_bare_rel() {
 //   - Bad-arg on seek offset/whence
 //   - flush() happy path
 //   - Dir.copyFile rw-gate (previously untested)
-//   - Dir.chmod malformed-rwx path (via parseRwxToBits from Dir side)
+//   - Dir.chmod invalid-Int path (rewritten 2026-09-04 for Int-mode-bits surface)
 //   - Non-string rel bad-arg on Dir.exists/removeFile/rename
 //
 // ---------------------------------------------------------------------
@@ -3211,7 +3202,7 @@ async fn file_truncate_on_closed_returns_fserr_closed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn file_chmod_on_closed_returns_fserr_closed() {
-    let reply = close_then_call(r#"!?("chmod", "rw-r--r--")"#).await;
+    let reply = close_then_call(r#"!?("chmod", 420)"#).await;
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
     assert_eq!(code, "FSERR_CLOSED");
@@ -3432,11 +3423,12 @@ async fn dir_copy_file_on_readonly_rejects() {
     assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
-/// Dir.chmod exercises parseRwxToBits from the Dir side (previously
-/// only the File side was exercised for malformed input).  Verifies
-/// the parser is reachable and rejects the same inputs consistently.
+/// Dir.chmod exercises the mode-type / range guard from the Dir side.
+/// Post-migration (2026-09-04) chmod takes Int mode-bits; passing a
+/// String yields FSERR_BAD_ARG at method entry.  This mirrors the
+/// File-side test and confirms the guard is reachable from Dir.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dir_chmod_malformed_rwx_rejects() {
+async fn dir_chmod_invalid_mode_rejects() {
     let (space, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
@@ -6555,7 +6547,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
             .await;
     let src = format!(
         r#"
-        new File, fdP, stateP, cmodeP, parseRwxToBits, parseRwxLoop,
+        new File, fdP, stateP, cmodeP, // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -6597,7 +6589,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           // Slice 26: fsChown takes cmode as 5th arg.
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret) = {{ ret!([true, 0]) }} |
+          // parseRwxToBits + parseRwxLoop retired 2026-09-04.
           // Phase 8 slice 8a — always-succeed lock-native stubs; this
           // bespoke test drives writeLine's LF-write-failure path, not
           // lock semantics.
@@ -16903,7 +16895,7 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
     let src = format!(
         r#"
         new File, fdP, stateP, cmodeP, LockToken, lockStateP,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -16954,7 +16946,6 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
           contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
 {}
@@ -17021,7 +17012,7 @@ async fn two_caps_overlapping_write_locks_conflict() {
     let src = format!(
         r#"
         new File, fdP, stateP, cmodeP, LockToken, lockStateP,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -17049,7 +17040,6 @@ async fn two_caps_overlapping_write_locks_conflict() {
           contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
 {file_body}
@@ -17110,7 +17100,7 @@ async fn same_cap_two_overlapping_locks_coexist() {
     let src = format!(
         r#"
         new File, fdP, stateP, cmodeP, LockToken, lockStateP,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -17138,7 +17128,6 @@ async fn same_cap_two_overlapping_locks_coexist() {
           contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
 {file_body}
@@ -17211,7 +17200,7 @@ async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
     let src = format!(
         r#"
         new File, fdP, stateP, cmodeP, LockToken, lockStateP,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -17239,7 +17228,6 @@ async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
           contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
 {file_body}
@@ -17307,7 +17295,7 @@ async fn write_byte_array_releases_lock_on_error_path() {
     let src = format!(
         r#"
         new File, fdP, stateP, cmodeP, LockToken, lockStateP,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -17346,7 +17334,6 @@ async fn write_byte_array_releases_lock_on_error_path() {
           contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
 {file_body}
@@ -17411,7 +17398,7 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
     let src = format!(
         r#"
         new File, fdP, stateP, cmodeP, LockToken, lockStateP,
-            parseRwxToBits, parseRwxLoop,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
             writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
             readLinesIntoLoop, drainToNextLF,
             codepointLen, concatStringsLoop, scanLineForLF,
@@ -17439,7 +17426,6 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
           contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
           contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
           contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
-          contract parseRwxToBits(@_s, ret)    = {{ ret!([true, 0]) }} |
           contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
 
 {file_body}

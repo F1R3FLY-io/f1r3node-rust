@@ -335,7 +335,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_chmod_read_only(rhoSpec, _, ackCh) = {{
       for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r"}})) {{
-        for(@r <- @file!?("chmod", "rw-r--r--")) {{
+        for(@r <- @file!?("chmod", 420)) {{
           rhoSpec!("assert",
             (r, "==",
              [false, "FSERR_UNSUPPORTED", "chmod requires a write-capable mode"]),

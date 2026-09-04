@@ -935,7 +935,7 @@ in {{
           new tellCh, sizeCh, chmodCh in {{
             readOnlyForwarder!(*tellCh, "tell") |
             readOnlyForwarder!(*sizeCh, "size") |
-            readOnlyForwarder!(*chmodCh, "chmod", "rw-r--r--") |
+            readOnlyForwarder!(*chmodCh, "chmod", 420) |
             for(@rTell <- tellCh; @rSize <- sizeCh; @rChmod <- chmodCh) {{
               match [rTell, rSize, rChmod] {{
                 [[true, _], [true, _],

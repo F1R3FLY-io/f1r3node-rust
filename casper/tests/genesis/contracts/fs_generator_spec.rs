@@ -404,7 +404,7 @@ in {{
     // consensus cmode plumbed end-to-end.
     contract test_chmod_on_consensus_cap_short_circuits(rhoSpec, _, ackCh) = {{
       for(@[true, fileCap] <- @fs!?("openFile", "consensus-cap", {{}})) {{
-        for(@r <- @fileCap!?("chmod", "rw-r--r--")) {{
+        for(@r <- @fileCap!?("chmod", 420)) {{
           match r {{
             [false, "FSERR_UNSUPPORTED", msg] => {{
               // Match on the specific consensus-branch message;

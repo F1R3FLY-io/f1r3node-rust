@@ -583,46 +583,44 @@ new Dir, rootP, cmodeP in {
     } |
 
     // -- chmod(rel, mode) -------------------------------------------
+    // Mode-consistency fix (2026-09-04): input is Int mode bits (see
+    // File.chmod for rationale); range [0, 0o7777].
     method chmod(@rel, @mode) {
       match rel {
         r /\ String => {
           match mode {
-            m /\ String => {
-              // H-29-3 lift (2026-08-26): Consensus caps now supported.
-              for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                match params {
-                  (canonRoot, subPath, dirMode, _fileCtor) => {
-                    match dirMode {
-                      "rw" => {
-                        new parsedCh in {
-                          parseRwxToBits!(m, *parsedCh) |
-                          for (@parsed <- parsedCh) {
-                            match parsed {
-                              [true, bits] => {
-                                new joinedCh in {
-                                  joinRel!(subPath, r, *joinedCh) |
-                                  for (@joined <- joinedCh) {
-                                    new retCh in {
-                                      fsChmod!(canonRoot, joined, bits, cmode, *retCh) |
-                                      for (@reply <- retCh) { return!(reply) }
-                                    }
-                                  }
+            m /\ Int => {
+              match m < 0 or m > 4095 {
+                true => return!([false, "FSERR_BAD_ARG",
+                  "mode must be an Int in [0, 0o7777]"])
+                false => {
+                  // H-29-3 lift (2026-08-26): Consensus caps now supported.
+                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                    match params {
+                      (canonRoot, subPath, dirMode, _fileCtor) => {
+                        match dirMode {
+                          "rw" => {
+                            new joinedCh in {
+                              joinRel!(subPath, r, *joinedCh) |
+                              for (@joined <- joinedCh) {
+                                new retCh in {
+                                  fsChmod!(canonRoot, joined, m, cmode, *retCh) |
+                                  for (@reply <- retCh) { return!(reply) }
                                 }
                               }
-                              _ => return!(parsed)
                             }
                           }
+                          _ => return!([false, "FSERR_UNSUPPORTED",
+                            "chmod requires \"rw\" Dir mode"])
                         }
                       }
-                      _ => return!([false, "FSERR_UNSUPPORTED",
-                        "chmod requires \"rw\" Dir mode"])
+                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
-                  _ => return!([false, "FSERR_IO", "root params malformed"])
                 }
               }
             }
-            _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+            _ => return!([false, "FSERR_BAD_ARG", "mode must be an Int"])
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])
@@ -914,94 +912,14 @@ new Dir, rootP, cmodeP in {
         }
       }
     }
-  } |
-
-  // parseRwxToBits — parse a 9-character rwx mode string (e.g.
-  // "rwxr-xr-x") to a u64 permission-bits value (in 0..=0o777).
-  //
-  // Reply: [true, bits] or [false, "FSERR_BAD_ARG", msg].
-  //
-  // Symbolic-delta forms ("u+x") and octal ("0755") are rejected by
-  // the length check.
-  //
-  // ## UTF-8 safety (B-2 fix)
-  //
-  // The prior implementation used `modeStr.slice(i, i+1)` — a byte-
-  // indexed slice on a Rust `String` that PANICS when `i+1` cuts a
-  // multi-byte UTF-8 codepoint mid-way.  In consensus code, a panic
-  // during reduction diverges deterministic replay across nodes → fork.
-  //
-  // The 9-byte length guard did NOT prevent this: a 9-byte string can
-  // hold a 4-byte codepoint (e.g. an emoji) plus 5 ASCII bytes, and
-  // slicing at byte index 1 would panic.
-  //
-  // Fix: work on the ByteArray form (via toUtf8Bytes) and compare each
-  // byte to the ASCII code of the expected character:
-  //   'r' = 114, 'w' = 119, 'x' = 120, '-' = 45
-  // All bytes of any multi-byte UTF-8 codepoint are >= 128, which does
-  // not match any of these ASCII codes.  Such an input falls to the
-  // "invalid" arm cleanly (returning FSERR_BAD_ARG) with no panic.
-  //
-  // `ByteArray.nth(i)` and byte-integer equality are total operations
-  // on ByteArray — no boundary panic exists at that level.
-  contract parseRwxToBits(@modeStr, ret) = {
-    match modeStr {
-      s /\ String => {
-        match s.length() {
-          9 => parseRwxLoop!(s.toUtf8Bytes(), 0, 0, *ret)
-          _ => ret!([false, "FSERR_BAD_ARG",
-            "mode must be a 9-character rwx string"])
-        }
-      }
-      _ => ret!([false, "FSERR_BAD_ARG", "mode must be a String"])
-    }
-  } |
-
-  contract parseRwxLoop(@modeBytes, @i, @accBits, ret) = {
-    match i {
-      9 => ret!([true, accBits])
-      _ => {
-        // Look up expected ASCII byte and bit value for this position.
-        new spec in {
-          match i {
-            0 => spec!((114, 256))  // 'r' owner-r
-            1 => spec!((119, 128))  // 'w' owner-w
-            2 => spec!((120, 64))   // 'x' owner-x
-            3 => spec!((114, 32))   // 'r' group-r
-            4 => spec!((119, 16))   // 'w' group-w
-            5 => spec!((120, 8))    // 'x' group-x
-            6 => spec!((114, 4))    // 'r' other-r
-            7 => spec!((119, 2))    // 'w' other-w
-            8 => spec!((120, 1))    // 'x' other-x
-            // Defense-in-depth: parseRwxToBits only ever calls with
-            // i in [0, 9) so this arm is unreachable in current code.
-            // Without it, a hypothetical future refactor that changed
-            // the recursion bounds would silently hang (no reply on
-            // `spec`, no reply on `ret`, no reachable termination).
-            // A sentinel through `spec` lets the outer `for` still
-            // fire and route to the FSERR_IO arm.
-            _ => spec!(Nil)
-          } |
-          for (@sp <- spec) {
-            match sp {
-              (expected, bitValue) => {
-                match modeBytes.nth(i) {
-                  45 => parseRwxLoop!(modeBytes, i + 1, accBits, *ret)  // '-'
-                  b => {
-                    match b == expected {
-                      true  => parseRwxLoop!(modeBytes, i + 1, accBits + bitValue, *ret)
-                      false => ret!([false, "FSERR_BAD_ARG",
-                        "malformed rwx mode string"])
-                    }
-                  }
-                }
-              }
-              _ => ret!([false, "FSERR_IO",
-                "parseRwxLoop: index out of bounds"])
-            }
-          }
-        }
-      }
-    }
   }
+
+  // parseRwxToBits + parseRwxLoop RETIRED 2026-09-04: the mode-
+  // consistency migration switched File.chmod and Dir.chmod to take
+  // Int mode-bits directly (matching stat.mode's Int emission).  No
+  // in-tree callers of the rwx-string parser remain.  A shard that
+  // needs human-friendly rwx-string authoring can define a caller-
+  // side helper — the deliberate split between machine-parseable
+  // wire (Int) and human-friendly authoring (String) lives at the
+  // caller boundary, not inside the shipped Rholang libs.
 }

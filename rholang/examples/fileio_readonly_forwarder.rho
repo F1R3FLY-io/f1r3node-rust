@@ -68,7 +68,7 @@ in {
       } |
       // Blocked method: chmod().
       new chmodCh in {
-        readOnlyForwarder!(*chmodCh, "chmod", "rw-r--r--") |
+        readOnlyForwarder!(*chmodCh, "chmod", 420) | // 0o644 = 420
         for(@r3 <- chmodCh) {
           stdout!(("chmod (blocked)", r3))
           // Expected: [false, "FSERR_UNSUPPORTED", "method not on read-only wrapper"]
