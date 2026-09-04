@@ -31,7 +31,7 @@ use super::super::rho_type::{RhoBoolean, RhoByteArray, RhoNumber, RhoString};
 /// that transmutes between `Fd` and `u64` stays sound.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Fd(pub u64);
+pub struct Fd(u64);
 
 impl Fd {
     /// Unwrap into the raw `u64` for handoff to the fd-table layer
@@ -41,6 +41,19 @@ impl Fd {
     /// reaches the table boundary it becomes just a u64 again.
     #[inline]
     pub fn as_u64(self) -> u64 { self.0 }
+}
+
+/// A-3 (2026-09-03 review): the fd → `Fd` conversion is the only
+/// blessed way to lift a raw `u64` fd into the newtype now that the
+/// field is private.  A handler that received a `u64` fd from the
+/// fd-table layer (`FileHandleTable::insert_at` return value) wraps
+/// via `Fd::from(fd)` before handing to `ok_fd(...)` — call sites
+/// mixing fd with a quantity value (byte count / position / lock id)
+/// are now a compile error at the emission site, not just at
+/// extraction.
+impl From<u64> for Fd {
+    #[inline]
+    fn from(raw: u64) -> Self { Fd(raw) }
 }
 
 fn list_par(items: Vec<Par>) -> Par {
@@ -64,6 +77,26 @@ pub fn ok_u64(n: u64) -> Par {
     // Rholang integers are 64-bit signed.  Cap at i64::MAX; callers who
     // supply oversized values were rejected upstream by the per-call caps.
     ok_int(n as i64)
+}
+
+/// A-3 (2026-09-03 review): emission-side companion to
+/// [`extract_ok_fd`].  Wire format is byte-identical to
+/// `ok_u64(fd.as_u64())` — the reply is `[true, i64_cast(fd)]`, and
+/// fd values above `i64::MAX` bit-preserve-reinterpret through the
+/// same `as i64` cast that `extract_ok_fd` reverses via bit-
+/// preserve.  Callers that historically wrote `ok_u64(fd)` should
+/// migrate to `ok_fd(Fd::from(fd))` so the fd-vs-quantity newtype
+/// invariant is enforced at BOTH emission and extraction ends
+/// symmetrically.  A quantity-slot handler that accidentally hands
+/// a `Fd` here would fail typecheck at the `ok_u64` boundary; a fd-
+/// slot handler that hands a raw quantity here would fail typecheck
+/// at `ok_fd`.
+pub fn ok_fd(fd: Fd) -> Par {
+    // Same wire shape as ok_u64: `[true, i64_cast(u64)]`.
+    // Extraction via `extract_ok_fd` bit-preserve-reinterprets the
+    // i64 back to u64, so the round-trip is lossless across the
+    // full u64 range.
+    ok_int(fd.as_u64() as i64)
 }
 
 pub fn ok_bool(b: bool) -> Par { list_par(vec![bool_par(true), bool_par(b)]) }
@@ -487,6 +520,62 @@ mod tests {
                 extract_ok_fd(std::slice::from_ref(&reply)),
                 Some(Fd(fd)),
                 "positive fd {fd} must round-trip through extract_ok_fd"
+            );
+        }
+    }
+
+    /// A-3 (2026-09-03 review): the emission-side `ok_fd(Fd)` +
+    /// extraction-side `extract_ok_fd(...)` MUST round-trip
+    /// identically across the full u64 range, including the
+    /// upper-half where `as i64` reinterprets to negative i64.
+    /// Regression risk: someone adds a "signed-only" guard to
+    /// `ok_fd` that silently rejects `fd > i64::MAX as u64`, and
+    /// the wire format ceases to be byte-identical to the pre-A-3
+    /// `ok_u64(fd)` shape — every follower re-executing a fs_open
+    /// that returned a state-hash-seeded upper-half fd would see a
+    /// divergent reply and fire FSERR_CONSENSUS_DIVERGENCE.
+    #[test]
+    fn ok_fd_and_extract_ok_fd_round_trip_across_u64_range() {
+        // Cover: near-zero, mid-range, exactly i64::MAX, i64::MAX+1
+        // (first upper-half value), and u64::MAX (extreme upper half).
+        for raw in [
+            1u64,
+            1_000_000,
+            i64::MAX as u64,
+            (i64::MAX as u64).wrapping_add(1),
+            u64::MAX,
+        ] {
+            let fd = Fd::from(raw);
+            let reply = ok_fd(fd);
+            let round_tripped = extract_ok_fd(std::slice::from_ref(&reply));
+            assert_eq!(
+                round_tripped,
+                Some(fd),
+                "A-3 round-trip failed for fd raw={raw}: ok_fd → extract_ok_fd \
+                 must be lossless across the full u64 range.  A regression \
+                 here would silently break state-hash-seeded upper-half fd \
+                 handling and fire FSERR_CONSENSUS_DIVERGENCE at replay."
+            );
+        }
+    }
+
+    /// A-3 wire-identity pin: `ok_fd(Fd::from(n))` produces
+    /// byte-identical Par to the pre-A-3 `ok_u64(n)` emission.
+    /// Enforces that the newtype tightening is purely a compile-
+    /// time discipline; the on-wire format is unchanged and
+    /// existing WAL entries + block hashes remain valid.
+    #[test]
+    fn ok_fd_wire_identical_to_legacy_ok_u64() {
+        for raw in [0u64, 1, 100, i64::MAX as u64, u64::MAX] {
+            let via_fd = ok_fd(Fd::from(raw));
+            let via_u64 = ok_u64(raw);
+            assert_eq!(
+                via_fd, via_u64,
+                "A-3 wire-format drift: ok_fd(Fd::from({raw})) MUST produce \
+                 a byte-identical Par to ok_u64({raw}).  Consensus depends \
+                 on this equivalence — any pre-A-3 WAL entry / block hash \
+                 that captured `ok_u64(fd)` output must remain valid under \
+                 the new emission path."
             );
         }
     }

@@ -1480,7 +1480,11 @@ impl FsProcesses {
             deploy,
         };
         match self.handles.insert(handle).await {
-            Ok(fd) => ok_u64(fd),
+            // A-3 (2026-09-03): emit via `ok_fd(Fd::from(...))` to
+            // enforce the fd-vs-quantity newtype invariant at the
+            // emission boundary; wire format is byte-identical to
+            // the pre-A-3 `ok_u64(fd)` shape.
+            Ok(fd) => ok_fd(Fd::from(fd)),
             Err(()) => err(FSERR_QUOTA_EXCEEDED, "per-runtime fd cap reached"),
         }
     }
@@ -5101,7 +5105,12 @@ impl FsProcesses {
                     .expect("current_deploy_scope RwLock poisoned");
                 let handle = DirHandle::new(iter, canonicalize_lexical(&root, &rel), cmode, deploy);
                 match self.handles.dir_handles.insert(handle).await {
-                    Ok(fd) => ok_u64(fd),
+                    // A-3 (2026-09-03): emit via `ok_fd(Fd::from(...))`
+                    // to enforce the fd-vs-quantity newtype invariant
+                    // at the emission boundary (streamFd is a fd, not
+                    // a quantity).  Wire-identical to the pre-A-3
+                    // `ok_u64(fd)` shape.
+                    Ok(fd) => ok_fd(Fd::from(fd)),
                     Err(()) => err(
                         FSERR_QUOTA_EXCEEDED,
                         "per-runtime dir-stream fd cap reached",
