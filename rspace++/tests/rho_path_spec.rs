@@ -119,6 +119,25 @@ fn v2_headers_and_escapes_fail_closed() {
 }
 
 #[test]
+fn v2_megabyte_fields_parse_on_a_tiny_native_stack() {
+    std::thread::Builder::new()
+        .stack_size(128 * 1024)
+        .spawn(|| {
+            let channel = vec![0; 1_000_000];
+            let structure = vec![0xA5; 1_000_000];
+            let identity = vec![0x5A; 1_000_000];
+            let path = RhoPathV2::datum_key(&channel, &structure, &identity);
+            let view = RhoPathV2::parse_datum(&path).unwrap();
+            assert_eq!(view.channel_image(), channel);
+            assert_eq!(view.datum_structure(), structure);
+            assert_eq!(view.datum_identity(), identity);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn v2_join_frames_identity() {
     let path = RhoPathV2::join_key(b"channel", b"join\0identity");
     assert!(path.windows(2).any(|pair| pair == [0, 1]));
