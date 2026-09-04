@@ -1,6 +1,8 @@
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, ListParWithRandom, Par};
 use models::rust::canonical_path::decode_trie_path;
+use models::rust::channel_image::ChannelImageV2;
+use models::rust::rspace_path::{rho_path_v2_datum_key, rho_path_v2_join_key};
 use rspace_plus_plus::rspace::data_index::RSpaceDataIndex;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -20,6 +22,17 @@ fn par_channel_structure_is_the_canonical_reversible_trie_path() {
         decode_trie_path(&view.channel_structure()).unwrap(),
         channel
     );
+}
+
+#[test]
+fn v2_channel_field_is_the_authoritative_rci2_image() {
+    let channel = integer(42);
+    let path = rho_path_v2_datum_key(&channel, b"rmp2", b"identity").unwrap();
+    let view = rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_datum(&path).unwrap();
+    let image = ChannelImageV2::from_par(&channel).unwrap();
+    assert_eq!(view.channel_image(), image.as_bytes());
+    let join = rho_path_v2_join_key(&channel, b"join").unwrap();
+    assert!(rspace_plus_plus::rspace::rho_path::RhoPathV2::parse_join(&join).is_ok());
 }
 
 #[test]
