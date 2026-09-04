@@ -62,6 +62,21 @@ Definition parse_datum (input : bytes) : option (bytes * bytes * bytes) :=
   | _ => None
   end.
 
+Lemma parse_three_round_trip : forall a b c suffix,
+  bytes_valid a = true -> bytes_valid b = true -> bytes_valid c = true ->
+  parse_three (encode_frame a ++ encode_frame b ++ encode_frame c ++ suffix) =
+    Some (a, b, c, suffix).
+Proof.
+  intros a b c suffix Ha Hb Hc.
+  unfold parse_three.
+  rewrite (frame_encode_parse_round_trip a
+    (encode_frame b ++ encode_frame c ++ suffix) Ha).
+  rewrite (frame_encode_parse_round_trip b
+    (encode_frame c ++ suffix) Hb).
+  rewrite (frame_encode_parse_round_trip c suffix Hc).
+  reflexivity.
+Qed.
+
 Theorem datum_empty_round_trip :
   parse_datum (datum_key [] [] []) = Some ([], [], []).
 Proof. reflexivity. Qed.
