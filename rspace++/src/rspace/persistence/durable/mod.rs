@@ -4,8 +4,8 @@
 //! identify which verified root is current and where its immutable objects are
 //! stored; they never redefine RSpace semantics.
 
-use crate::rspace::persistence::semantic::SemanticProfile;
 use crate::rspace::persistence::LogPackDecodeLimits;
+use crate::rspace::persistence::semantic::SemanticProfile;
 
 mod admission;
 mod catalog;
@@ -25,8 +25,8 @@ pub(crate) use admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
     DurableAdmissionLimitKindV1, DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1,
     DurableAdmissionReportV1, DurableIndexedObjectStoreV1, DurableObjectCopyErrorV1,
-    DurableObjectReadErrorV1, InventoryMismatchKindV1, SemanticallyAdmittedDurableWriterV1,
-    DurableTransactionPreparationError, copy_verified_canonical_with,
+    DurableObjectReadErrorV1, DurableTransactionPreparationError, InventoryMismatchKindV1,
+    SemanticallyAdmittedDurableWriterV1, copy_verified_canonical_with,
 };
 pub use catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1,
@@ -92,8 +92,16 @@ pub(crate) struct DurableAuthorityViewV1<P: SemanticProfile> {
 }
 
 impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
+    /// Return the exact catalog image selected during restart recovery.
+    ///
+    /// A caller that keeps this read view alive can use the immutable image to
+    /// identify the pack/index generation it is reading.  Compaction must use
+    /// that identity when deciding whether an obsolete generation is eligible
+    /// for reclamation; a freshly re-read pathname is not a sufficient lease.
+    pub(crate) fn catalog(&self) -> CatalogSlotV1 { self.writer.authority().slot() }
+
     pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
-        self.writer.authority().slot().state()
+        self.catalog().state()
     }
 
     pub(crate) fn manifest(&self) -> crate::rspace::persistence::ObjectRefV1 {
@@ -117,14 +125,10 @@ pub(crate) fn recover_read_authority<P: SemanticProfile>(
     wal_limits: LogPackDecodeLimits,
     admission_limits: DurableAdmissionLimitsV1,
 ) -> Result<DurableAuthorityViewV1<P>, DurableAdmissionErrorV1> {
-    let directory = io::DurableDirectoryV1::open(path)
-        .map_err(|error| {
-            DurableAdmissionErrorV1::Startup(startup::DurableStartupErrorV1::Io(error))
-        })?;
-    let writer = directory.recover_and_admit_v1::<P>(
-        recovery_limits,
-        wal_limits,
-        admission_limits,
-    )?;
+    let directory = io::DurableDirectoryV1::open(path).map_err(|error| {
+        DurableAdmissionErrorV1::Startup(startup::DurableStartupErrorV1::Io(error))
+    })?;
+    let writer =
+        directory.recover_and_admit_v1::<P>(recovery_limits, wal_limits, admission_limits)?;
     Ok(DurableAuthorityViewV1 { writer })
 }
