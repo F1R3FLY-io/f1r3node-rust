@@ -122,6 +122,47 @@ fn per_entry_ack_seed(ack: &Par, path: &std::path::Path) -> [u8; 32] {
     out
 }
 
+/// RQ-2 (2026-09-04) centralized wrapper for the
+/// `spawn_blocking(|| -> Par { ... }).await.unwrap_or_else(|_je|
+/// err(FSERR_IO, "spawn_blocking task failed"))` pattern that
+/// appears at 10+ handler sites.  The uniform mapping from a
+/// panicked / cancelled blocking task to `FSERR_IO` is now in one
+/// place; a future refactor of the fallback shape (e.g., adding
+/// telemetry, distinguishing panic from cancellation) touches
+/// exactly one function.
+///
+/// Only wraps the "closure returns Par directly" pattern.  Sites
+/// where the closure returns `Result<T, E>` and the outer match
+/// dispatches on both variants stay inline — the extraction would
+/// force awkward generic-over-Result-arm parameterization for
+/// negligible LOC savings.
+async fn spawn_blocking_par<F>(f: F) -> Par
+where F: FnOnce() -> Par + Send + 'static {
+    spawn_blocking(f)
+        .await
+        .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
+}
+
+/// RQ-2 (2026-09-04) centralized builder for the Consensus-mode
+/// follower-side "reply-hash mismatch" divergence reply.  Handlers
+/// that verify their fresh syscall reply against the leader's
+/// cached reply via `verify_reply_hash_matches_cached` produce this
+/// reply on the `Err(reason)` arm; it carries FSERR_CONSENSUS_DIVERGENCE
+/// (code 13, § docs/consensus-invariants.md § FSERR_CODE_*) and a
+/// stable message shape that a monitoring layer can grep against.
+///
+/// Only wraps the `err(FSERR_CONSENSUS_DIVERGENCE, ...)` shape (12
+/// call sites).  Sites that need `err_with_count` /
+/// `err_with_manifest` for DD-RemoveDirReplyShape stay inline —
+/// their reply shape carries the pre-divergence deletion count /
+/// manifest that a caller downstream might inspect.
+fn consensus_divergence_reply(handler_name: &str, reason: impl std::fmt::Display) -> Par {
+    err(
+        FSERR_CONSENSUS_DIVERGENCE,
+        format!("{handler_name} follower re-execute diverges from leader: {reason}"),
+    )
+}
+
 /// TOCTOU-immune unlink of a manifest entry via openat chain from
 /// a pinned `SafeParent` (2026-09-02, post-security-review S-1).
 ///
@@ -571,6 +612,31 @@ impl FsProcesses {
             space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
+    }
+
+    /// RQ-2 (2026-09-04) centralized reader for the per-runtime
+    /// current-deploy-scope cell.  Used at every handler that tags
+    /// fd-table entries / DirHandle shadows / lock holders with the
+    /// deploy scope for cross-cap coordination + deploy-end sweep.
+    ///
+    /// The scope is a `[u8; 32]` — set at deploy entry by
+    /// `WalDeployScope::new_with_lock_sweep` (in the casper crate)
+    /// and cleared back to `[0; 32]` at deploy end.  Reads are
+    /// consistent within a single handler invocation because the
+    /// scope cell is only written twice per deploy (entry + exit).
+    ///
+    /// Wraps the `RwLock::read().expect(...)` pattern in one place
+    /// so a future refactor of the deploy-scope storage (e.g., an
+    /// atomic swap, a per-thread cell) doesn't need to touch every
+    /// handler.  Pre-RQ-2 this pattern was inlined at 6 sites, each
+    /// with an identical `expect("current_deploy_scope RwLock
+    /// poisoned")` message.
+    fn current_deploy_scope(&self) -> [u8; 32] {
+        *self
+            .handles
+            .current_deploy_scope
+            .read()
+            .expect("current_deploy_scope RwLock poisoned")
     }
 
     /// Redesign helper: journal a Write / WriteAt to the WAL from
@@ -1306,11 +1372,7 @@ impl FsProcesses {
                     // Same canon_path derivation as `open_impl`
                     // (C-29-1 fix) — must be byte-identical so WAL
                     // paths match across leader/follower.
-                    let deploy = *self
-                        .handles
-                        .current_deploy_scope
-                        .read()
-                        .expect("current_deploy_scope RwLock poisoned");
+                    let deploy = self.current_deploy_scope();
                     let shadow = FileHandle {
                         file,
                         // M-R2: same lexical normalization as the leader's
@@ -1450,11 +1512,7 @@ impl FsProcesses {
         // `rel` entirely, causing every WAL entry to record only the
         // canonRoot — replay had no way to tell which file to apply
         // the payload to.
-        let deploy = *self
-            .handles
-            .current_deploy_scope
-            .read()
-            .expect("current_deploy_scope RwLock poisoned");
+        let deploy = self.current_deploy_scope();
         let handle = FileHandle {
             file: Some(file),
             // M-R2 round-2 fix: lexically normalize so `a/b.txt` and
@@ -1679,10 +1737,7 @@ impl FsProcesses {
                     // will be rejected at check_replay_data — but
                     // matching OS position is cleaner than skipping
                     // the advance.
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_read follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_read", reason);
                     if let Some(fd) = RhoNumber::unapply(fd_par) {
                         let fd_u = fd as u64;
                         let _ = self.journal_read_divergence(fd_u, None, ack).await;
@@ -1817,10 +1872,7 @@ impl FsProcesses {
                     // for the field-shape rationale (payload_ref +
                     // length are None because the divergence-err
                     // reply carries no bytes).
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_read_at follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_read_at", reason);
                     if let (Some(fd), Some(off)) =
                         (RhoNumber::unapply(fd_par), RhoNumber::unapply(off_par))
                     {
@@ -2066,13 +2118,7 @@ impl FsProcesses {
                             .with_mut(fd_copy, |h| h.position = h.position.saturating_add(m))
                             .await;
                     }
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_write follower re-execute diverges from leader: \
-                             {reason}",
-                        ),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_write", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -2217,13 +2263,7 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_write_at follower re-execute diverges from leader: \
-                             {reason}",
-                        ),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_write_at", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -2626,10 +2666,7 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_size follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_size", reason);
                     if let (Some(mode), Some(p)) = (jmode, jpath) {
                         self.journal_state_read(mode, WalOp::Size, p, &divergence_reply, ack, None);
                     }
@@ -2765,10 +2802,7 @@ impl FsProcesses {
                     // to Failure { CONSENSUS_DIVERGENCE } and emit a
                     // divergence-err reply.  RSpace rig catches the
                     // divergent produce and rejects the block.
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_truncate follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_truncate", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -2926,7 +2960,7 @@ impl FsProcesses {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
                     self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
@@ -2940,7 +2974,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
@@ -2972,10 +3005,7 @@ impl FsProcesses {
                     // `journal_state_read` auto-derives the WAL entry's
                     // outcome to `Failure { code: FSERR_CODE_CONSENSUS_
                     // DIVERGENCE }` from the reply's error slot.
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_stat follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_stat", reason);
                     if let Some(p) = journal_path {
                         self.journal_state_read(mode, WalOp::Stat, p, &divergence_reply, ack, None);
                     }
@@ -3022,7 +3052,7 @@ impl FsProcesses {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
                     self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
@@ -3047,7 +3077,6 @@ impl FsProcesses {
                     ok_bool(ok)
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
@@ -3152,7 +3181,7 @@ impl FsProcesses {
                 let root_pb = PathBuf::from(root);
                 let (root_pb, expected_root_id) =
                     self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
@@ -3214,7 +3243,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
@@ -3244,10 +3272,7 @@ impl FsProcesses {
                     return Ok(out);
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_entries follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_entries", reason);
                     if let Some(p) = journal_path {
                         self.journal_state_read(
                             mode,
@@ -3368,7 +3393,7 @@ impl FsProcesses {
                     .resolve_or_identity(&from_root_pb);
                 let (to_root_pb, to_expected_id) =
                     self.handles.root_registry.resolve_or_identity(&to_root_pb);
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let from_parent =
                         match safe_descend_verified(&from_root_pb, &from_rel, from_expected_id) {
                             Ok(p) => p,
@@ -3406,7 +3431,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             None => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
@@ -3422,10 +3446,7 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_rename follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_rename", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -3549,7 +3570,7 @@ impl FsProcesses {
                     .resolve_or_identity(&from_root_pb);
                 let (to_root_pb, to_expected_id) =
                     self.handles.root_registry.resolve_or_identity(&to_root_pb);
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let mut src = match safe_open_verified(
                         &from_root_pb,
                         &from_rel,
@@ -3582,7 +3603,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             None => err(FSERR_BAD_ARG, "expected 4 String args + cmode"),
         };
@@ -3598,10 +3618,7 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_copy_file follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_copy_file", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -3715,7 +3732,7 @@ impl FsProcesses {
                 let (root_pb, expected_root_id) =
                     self.handles.root_registry.resolve_or_identity(&root_pb);
                 let lock_registry = self.handles.lock_registry.clone();
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
@@ -3771,7 +3788,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             None => err(FSERR_BAD_ARG, "expected (String, String, String)"),
         };
@@ -3787,13 +3803,7 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!(
-                            "fs_remove_file follower re-execute diverges from leader: \
-                             {reason}",
-                        ),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_remove_file", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -4462,7 +4472,7 @@ impl FsProcesses {
                 let (root_pb, expected_root_id) =
                     self.handles.root_registry.resolve_or_identity(&root_pb);
                 let bits = bits as libc::mode_t;
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(p) => p,
                         Err(qe) => {
@@ -4499,7 +4509,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             None => err(
                 FSERR_BAD_ARG,
@@ -4522,10 +4531,7 @@ impl FsProcesses {
                     Ok(out)
                 }
                 Err(reason) => {
-                    let divergence_reply = err(
-                        FSERR_CONSENSUS_DIVERGENCE,
-                        format!("fs_chmod follower re-execute diverges from leader: {reason}",),
-                    );
+                    let divergence_reply = consensus_divergence_reply("fs_chmod", reason);
                     self.finalize_failure_journal(FSERR_CODE_CONSENSUS_DIVERGENCE, ack);
                     let out = vec![divergence_reply];
                     produce(&out, ack).await?;
@@ -4717,7 +4723,7 @@ impl FsProcesses {
                 let root_pb = PathBuf::from(&root);
                 let (root_pb, expected_root_id) =
                     self.handles.root_registry.resolve_or_identity(&root_pb);
-                spawn_blocking(move || -> Par {
+                spawn_blocking_par(move || -> Par {
                     match safe_descend_verified(&root_pb, &rel, expected_root_id) {
                         Ok(_) => {
                             // Return the caller-supplied joined path;
@@ -4733,7 +4739,6 @@ impl FsProcesses {
                     }
                 })
                 .await
-                .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
             }
             _ => err(FSERR_BAD_ARG, "expected (String, String)"),
         };
@@ -4827,11 +4832,7 @@ impl FsProcesses {
                     // with a [true, fd] cached reply is definitionally
                     // a bug; fail-closed to the more restrictive mode).
                     let cmode = resolve_cmode(cmode_par).unwrap_or(ConsensusMode::Consensus);
-                    let deploy = *self
-                        .handles
-                        .current_deploy_scope
-                        .read()
-                        .expect("current_deploy_scope RwLock poisoned");
+                    let deploy = self.current_deploy_scope();
                     let shadow =
                         DirHandle::shadow(canonicalize_lexical(&root, &rel), cmode, deploy);
                     // Ignore the return: on a fresh follower the slot
@@ -4941,11 +4942,7 @@ impl FsProcesses {
         .unwrap_or_else(|_je| Err(Box::new(err(FSERR_IO, "spawn_blocking task failed"))));
         let reply = match opened {
             Ok(iter) => {
-                let deploy = *self
-                    .handles
-                    .current_deploy_scope
-                    .read()
-                    .expect("current_deploy_scope RwLock poisoned");
+                let deploy = self.current_deploy_scope();
                 let handle = DirHandle::new(iter, canonicalize_lexical(&root, &rel), cmode, deploy);
                 match self.handles.dir_handles.insert(handle).await {
                     // A-3 (2026-09-03): emit via `ok_fd(Fd::from(...))`
@@ -5079,12 +5076,11 @@ impl FsProcesses {
                     // .await below, keeping the address live for
                     // the closure's whole lifetime.
                     let dirp_addr = iter.as_ptr() as usize;
-                    spawn_blocking(move || -> Par {
+                    spawn_blocking_par(move || -> Par {
                         let dirp = dirp_addr as *mut libc::DIR;
                         readdir_one_entry(dirp, cmode)
                     })
                     .await
-                    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
                 }
             }
         } else {
@@ -5333,11 +5329,7 @@ impl FsProcesses {
                         // deploy in flight" (test or genesis path);
                         // that's safe here — acquire doesn't validate
                         // the scope, only release_all_for_deploy does.
-                        let deploy = *self
-                            .handles
-                            .current_deploy_scope
-                            .read()
-                            .expect("current_deploy_scope RwLock poisoned");
+                        let deploy = self.current_deploy_scope();
                         match self.handles.lock_registry.try_acquire_range_wait(
                             dev_inode, off as u64, len as u64, lm, holder, deploy, policy,
                         ) {
@@ -5459,11 +5451,7 @@ impl FsProcesses {
                 Ok(dev_inode) => {
                     let holder = holder_id_of(holder_par);
                     // Step 5: read per-runtime "current deploy scope" cell.
-                    let deploy = *self
-                        .handles
-                        .current_deploy_scope
-                        .read()
-                        .expect("current_deploy_scope RwLock poisoned");
+                    let deploy = self.current_deploy_scope();
                     match self
                         .handles
                         .lock_registry
@@ -6346,7 +6334,7 @@ async fn chown_impl(
         },
     };
     let root_pb = root.to_path_buf();
-    spawn_blocking(move || -> Par {
+    spawn_blocking_par(move || -> Par {
         let parent = match safe_descend_verified(&root_pb, &rel, expected_root_id) {
             Ok(p) => p,
             Err(qe) => {
@@ -6371,7 +6359,6 @@ async fn chown_impl(
         }
     })
     .await
-    .unwrap_or_else(|_je| err(FSERR_IO, "spawn_blocking task failed"))
 }
 
 /// Silence unused-import warning on AccessMode (used in Phase 5 by the
