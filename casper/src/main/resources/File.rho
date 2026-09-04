@@ -300,14 +300,42 @@ in {
                     return!([false, "FSERR_CLOSED", "file is closed"])
                   }
                   "open" => {
-                    for (@params <<- @[*private, *fdP]) {
+                    // RH-A5-2 fix (2026-09-04): wrap fsRead in
+                    // fsLockSequential to serialize the cursor
+                    // mutation.  Prior slice let concurrent
+                    // readN + writeByteArray on the same cap race
+                    // the shared kernel cursor — under Consensus a
+                    // divergent cursor would flip reply payloads
+                    // across validators.  Now mirrors every other
+                    // cursor-mutating peer method (writeByteArray,
+                    // bytes, chars, lines, readLine, readInto,
+                    // writeChars, writeLine, writeLines).
+                    for (@params <<- @[*private, *fdP]; @cmode <<- @[*private, *cmodeP]) {
                       match params {
                         (fd, _root, _rel, _mode) => {
-                          new retCh in {
-                            fsRead!(fd, i, *retCh) |
-                            for (@reply <- retCh) {
-                              @[*private, *stateP]!("open") |
-                              return!(reply)
+                          new lockCh in {
+                            fsLockSequential!(fd, *this, cmode, false, *lockCh) |
+                            for (@lockReply <- lockCh) {
+                              match lockReply {
+                                [true, lid] => {
+                                  new retCh in {
+                                    fsRead!(fd, i, *retCh) |
+                                    for (@reply <- retCh) {
+                                      new relCh in {
+                                        fsReleaseLock!(lid, *relCh) |  // reply discarded — see §Release-reply discards in LockToken docstring
+                                        for (@_relReply <- relCh) {
+                                          @[*private, *stateP]!("open") |
+                                          return!(reply)
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                                _ => {
+                                  @[*private, *stateP]!("open") |
+                                  return!(lockReply)
+                                }
+                              }
                             }
                           }
                         }

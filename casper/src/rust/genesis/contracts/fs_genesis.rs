@@ -2173,7 +2173,24 @@ mod tests {
         //   FSERR_NOT_FOUND workaround.  Consensus-observable URN
         //   signature change — free per the f1r3node_no_running_
         //   network invariant.
-        const EXPECTED: &str = "28487bd24cb0d20ccf78140f82378359c1f07bcb21010fa0f3af1e028ac0e50b";
+        // Prior anchor: 28487bd2 (exists-ban-lift, 2026-09-04).
+        // 2026-09-04: RH-A5-2 fix — File.rho::readN now wraps its
+        //   fsRead! call in fsLockSequential!(fd, *this, cmode, false,
+        //   ...), mirroring every other cursor-mutating peer method
+        //   (writeByteArray / bytes / chars / lines / readLine /
+        //   readInto / writeChars / writeLine / writeLines).  Prior
+        //   slice let concurrent readN + writeByteArray on the same
+        //   cap race the shared kernel cursor — under Consensus a
+        //   divergent cursor would flip reply payloads across
+        //   validators.  Lock and Release don't have WalOp variants
+        //   so the WAL byte-shape for a solo readN is unchanged
+        //   (single Read entry); the consensus-observable change is
+        //   in the LockRegistry-mediated conflict semantics — a
+        //   concurrent same-cap or cross-cap sequential holder now
+        //   makes readN return FSERR_BUSY (wait:false) instead of
+        //   racing the cursor.  Hard-fork-free per the
+        //   f1r3node_no_running_network invariant.
+        const EXPECTED: &str = "1bca8631a08cafa9ad2e4f9d19608ab91c1b7537d39897e268f8de3cb5f7efd4";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \
