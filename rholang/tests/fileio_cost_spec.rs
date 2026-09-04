@@ -474,9 +474,8 @@ fn entries_family_supplements_match_combined_costs() {
         // combined weight must equal `FS_ENTRIES_SETUP + n *
         // FS_ENTRIES_PER_ENTRY` under saturation (matches the retired
         // bulk helper's shape).
-        let expected_next = (FS_ENTRIES_SETUP as i64).saturating_add(
-            (FS_ENTRIES_PER_ENTRY as i64).saturating_mul(n.min(i64::MAX as u64) as i64),
-        );
+        let expected_next = FS_ENTRIES_SETUP
+            .saturating_add(FS_ENTRIES_PER_ENTRY.saturating_mul(n.min(i64::MAX as u64) as i64));
         assert_eq!(
             fs_entries_stream_next_cost()
                 .value
