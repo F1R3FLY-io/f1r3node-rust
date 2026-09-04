@@ -796,6 +796,54 @@ fn every_fs_handler_charges_its_cost_helper() {
     );
 }
 
+/// Docstring-count enforcement pin (2026-09-03 review follow-up).
+/// The top-of-file comment in `handlers.rs` claims "28 native
+/// filesystem handlers"; this pin catches drift when a future handler
+/// is added or removed without a corresponding docstring bump.
+///
+/// A handler count check is the cheapest guarantee that the
+/// informational categorization stays accurate.  The
+/// per-category breakdown (`20 fs syscalls + 4 lock natives + 3
+/// per-fd stream natives + 1 quarantine helper`) is not enforced
+/// separately — a new lock native or fs syscall trips this pin,
+/// forcing the author to update both the count AND the category
+/// prose.
+///
+/// Why exact-count rather than lower-bound: an unchanged docstring
+/// after adding a handler is a silent lie about the shipped
+/// surface, and the doc-writer is the person best positioned to
+/// re-check their own categorization.  Exact-count enforcement
+/// gives them the signal.
+#[test]
+fn handlers_top_comment_count_matches_actual_handlers() {
+    let src = include_str!("../src/rust/interpreter/io/handlers.rs");
+    let actual = src
+        .lines()
+        .filter(|line| line.starts_with("    pub async fn fs_"))
+        .count();
+    // Extract the count claimed in the top comment (first
+    // "The N native filesystem handlers" line).
+    let claimed = src
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim_start_matches("// ").trim_start_matches("//");
+            let after_the = trimmed.strip_prefix("The ")?;
+            let (num_str, _rest) = after_the.split_once(' ')?;
+            num_str.parse::<usize>().ok()
+        })
+        .expect(
+            "handlers.rs top comment must open with `// The N native filesystem handlers.` — \
+             docstring shape changed",
+        );
+    assert_eq!(
+        claimed, actual,
+        "handlers.rs top-comment count drift: comment claims `{claimed}` handlers, actual \
+         `pub async fn fs_` count is `{actual}`.  Update the comment's count AND re-verify \
+         the category breakdown (`20 fs syscalls + 4 lock natives + 3 per-fd stream natives \
+         + 1 quarantine helper`) to match the new total.",
+    );
+}
+
 /// **Slice 9b regression pin — shared MeteredMachine.**
 ///
 /// Verify `setup_reducer` in `rho_runtime.rs` creates ONE
