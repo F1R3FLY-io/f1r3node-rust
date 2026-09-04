@@ -50,8 +50,8 @@ use crate::rspace::persistence::wal::{
     LogPackSequence, PreparedLogPackTransactionV1, TerminalCommitViewV1,
 };
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, DurableLimits, LogPackDecodeLimits, ObjectIndexRecordV1, PackId,
-    SemanticProfileId, StateVersionV1, VerifiedDagState,
+    CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, LogPackDecodeLimits,
+    ObjectIndexRecordV1, PackId, SemanticProfileId, StateVersionV1, VerifiedDagState,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1156,6 +1156,12 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     pub(crate) fn into_parts(self) -> (DurableWriterLeaseV1, AdmittedCheckpointSourceV1<P>) {
         (self.lease, self.source)
     }
+
+    /// Return the immutable catalog image governing this admitted writer.
+    /// Compaction and reader-retention layers must compare this exact image,
+    /// rather than re-open the catalog by pathname, before treating a
+    /// generation as still authoritative.
+    pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.source.authority().slot() }
 
     pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
         self.source.verified_state()

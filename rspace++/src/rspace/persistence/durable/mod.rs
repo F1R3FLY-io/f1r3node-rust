@@ -98,7 +98,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// identify the pack/index generation it is reading.  Compaction must use
     /// that identity when deciding whether an obsolete generation is eligible
     /// for reclamation; a freshly re-read pathname is not a sufficient lease.
-    pub(crate) fn catalog(&self) -> CatalogSlotV1 { self.writer.authority().slot() }
+    pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.writer.catalog() }
 
     pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
         self.catalog().state()
