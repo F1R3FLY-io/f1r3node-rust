@@ -1212,6 +1212,67 @@ mod BodyRefs {
     );
 }
 
+/// RH-2 review-follow-up pin (2026-09-04).  Every stream producer's
+/// release ceremony MUST invoke the `releaseSeqLockOnce` helper
+/// (introduced by RH-2) instead of hand-inlining `for (@lockState
+/// <- lockCell) { match ... }` — otherwise the load-bearing hazard
+/// the review flagged (release-once bookkeeping divergence between
+/// stream methods) returns.  Source-scan asserts File.rho contains
+/// EXACTLY one `for (@lockState <- lockCell)` call site (the
+/// helper's own implementation at `contract releaseSeqLockOnce`).
+///
+/// Why exact-count-1: the helper contract itself uses the pattern
+/// at its definition site.  Any other site is a regression — a
+/// stream method that skipped the helper and re-inlined the
+/// ceremony.  Comment mentions of the pattern (docstring examples
+/// referencing the old shape) are ignored by the scanner because
+/// they're inside `//` comments.
+///
+/// A source-scan pin here is the right defense: adding a new
+/// stream method (chars/bytes/lines/etc.) that inlines the
+/// release would compile cleanly, pass all existing E2E tests
+/// (the new method's own tests would validate its individual
+/// behavior), and silently reopen the divergence hazard.  This
+/// pin fires at test time with an actionable message pointing at
+/// the helper.
+#[test]
+fn file_rho_stream_release_ceremony_delegates_to_release_seq_lock_once() {
+    let src = include_str!("../../casper/src/main/resources/File.rho");
+    // Naive `contains` would catch comments too; strip `//` lines
+    // before scanning to isolate genuine call sites.
+    let non_comment_source: String = src
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let hits: Vec<usize> = non_comment_source
+        .lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            if line.contains("for (@lockState <- lockCell)") {
+                Some(i + 1)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "RH-2 delegation regression: File.rho has {} non-comment site(s) matching \
+         `for (@lockState <- lockCell)`, expected exactly 1 (the helper's own \
+         implementation inside `contract releaseSeqLockOnce`).  Extra sites at \
+         lines {hits:?} suggest a new stream method (or a regression to an old \
+         one) re-inlined the release ceremony instead of delegating to \
+         `releaseSeqLockOnce!(*lockCell, *doneCh)`.  See RH-2 commit \
+         `3c74be56f` for the pattern.  If a genuinely new use case requires \
+         the raw pattern (e.g., a non-stream method with different tail \
+         sequencing), extend the helper OR add a sister helper AND update \
+         this pin.",
+        hits.len()
+    );
+}
+
 /// **Phase 8 arity-tightening retirement pin (2026-08-26).**  The
 /// `fs_lock_range` and `fs_lock_sequential` handlers dropped their
 /// legacy arity-7 / arity-4 shim branches in commit `5e8f3e2a0`;
