@@ -432,4 +432,25 @@ mod registry_tests {
         assert_eq!(fake.release(), Err(RetentionRegistryError::UnknownLease(id)));
         assert_eq!(registry.snapshot().unwrap().revision(), 2);
     }
+
+    #[test]
+    fn release_overflow_preserves_root_and_lease_for_retry() {
+        let registry = RetainedRootRegistryV1::default();
+        let mut lease = registry
+            .register(reference(4), RetainedRootKind::Reader)
+            .unwrap();
+        {
+            let mut state = registry.state.lock().unwrap();
+            state.revision = u64::MAX;
+        }
+
+        assert_eq!(lease.release(), Err(RetentionRegistryError::CounterOverflow));
+        let snapshot = registry.snapshot().unwrap();
+        assert_eq!(snapshot.revision(), u64::MAX);
+        assert_eq!(snapshot.roots(), &[RetainedRootV1 {
+            root: reference(4),
+            kind: RetainedRootKind::Reader,
+            lease_id: lease.lease_id(),
+        }]);
+    }
 }
