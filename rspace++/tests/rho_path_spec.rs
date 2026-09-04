@@ -98,6 +98,27 @@ fn v2_continuation_rejects_count_mismatch_without_fallback() {
 }
 
 #[test]
+fn v2_headers_and_escapes_fail_closed() {
+    let valid = RhoPathV2::continuation_key(&[b"channel"], b"id").unwrap();
+    let mut wrong_version = valid.clone();
+    wrong_version[5] = 9;
+    assert_eq!(
+        RhoPathV2::parse_continuation(&wrong_version),
+        Err(RhoPathError::InvalidCollectionVersion(9))
+    );
+    let mut wrong_kind = valid.clone();
+    wrong_kind[4] = RhoPathV2::JOIN_KIND;
+    assert_eq!(
+        RhoPathV2::parse_continuation(&wrong_kind),
+        Err(RhoPathError::InvalidKind(RhoPathV2::JOIN_KIND))
+    );
+    let mut malformed = valid;
+    malformed[14] = 0;
+    malformed[15] = 2;
+    assert_eq!(RhoPathV2::parse_continuation(&malformed), Err(RhoPathError::InvalidEscape(2)));
+}
+
+#[test]
 fn v2_join_frames_identity() {
     let path = RhoPathV2::join_key(b"channel", b"join\0identity");
     assert!(path.windows(2).any(|pair| pair == [0, 1]));
