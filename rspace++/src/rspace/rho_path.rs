@@ -1311,10 +1311,50 @@ impl RhoPathV2DatumView<'_> {
     pub fn datum_identity(&self) -> Vec<u8> { decode_frame(self.datum_identity) }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RhoPathV2ContinuationView<'a> {
-    pub channel_frames: Vec<&'a [u8]>,
-    pub identity_frame: &'a [u8],
+    encoded_channels: &'a [u8],
+    channel_count: usize,
+    identity_frame: &'a [u8],
+}
+
+impl RhoPathV2ContinuationView<'_> {
+    pub const fn channel_count(&self) -> usize { self.channel_count }
+    pub const fn encoded_identity_frame(&self) -> &[u8] { self.identity_frame }
+    pub fn channel_frames(&self) -> RhoPathV2ChannelFrames<'_> {
+        RhoPathV2ChannelFrames {
+            encoded: self.encoded_channels,
+            cursor: 0,
+            remaining: self.channel_count,
+        }
+    }
+}
+
+pub struct RhoPathV2ChannelFrames<'a> {
+    encoded: &'a [u8],
+    cursor: usize,
+    remaining: usize,
+}
+
+impl<'a> Iterator for RhoPathV2ChannelFrames<'a> {
+    type Item = &'a [u8];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 { return None; }
+        let frame = take_frame(self.encoded, &mut self.cursor).ok()?;
+        self.remaining -= 1;
+        Some(frame)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }
+}
+
+impl ExactSizeIterator for RhoPathV2ChannelFrames<'_> {}
+
+impl std::fmt::Debug for RhoPathV2ChannelFrames<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("RhoPathV2ChannelFrames")
+            .field("remaining", &self.remaining)
+            .finish()
+    }
 }
 
 impl RhoPathV2 {
@@ -1403,10 +1443,11 @@ impl RhoPathV2 {
             return Err(RhoPathError::EmptyChannelGroup);
         }
         let mut cursor = 14;
-        let mut channel_frames = Vec::with_capacity(count);
+        let channels_start = cursor;
         for _ in 0..count {
-            channel_frames.push(take_frame(path, &mut cursor)?);
+            let _ = take_frame(path, &mut cursor)?;
         }
+        let encoded_channels = &path[channels_start..cursor];
         if path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
             return Err(RhoPathError::TruncatedFrame);
         }
@@ -1415,7 +1456,7 @@ impl RhoPathV2 {
         if cursor != path.len() {
             return Err(RhoPathError::TrailingBytes);
         }
-        Ok(RhoPathV2ContinuationView { channel_frames, identity_frame })
+        Ok(RhoPathV2ContinuationView { encoded_channels, channel_count: count, identity_frame })
     }
 
     pub fn parse_join(path: &[u8]) -> Result<(&[u8], &[u8]), RhoPathError> {

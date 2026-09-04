@@ -61,8 +61,9 @@ fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
     assert_eq!(&path[6..14], &2_u64.to_be_bytes());
     let view = RhoPathV2::parse_continuation(&path).unwrap();
-    assert_eq!(view.channel_frames.len(), 2);
-    assert!(view.identity_frame.ends_with(&[0, 0]));
+    assert_eq!(view.channel_count(), 2);
+    assert!(view.encoded_identity_frame().ends_with(&[0, 0]));
+    assert_eq!(view.channel_frames().count(), 2);
 }
 
 #[test]
@@ -71,12 +72,12 @@ fn v2_continuation_preserves_order_and_zero_escaping() {
     let refs = channels.iter().map(Vec::as_slice).collect::<Vec<_>>();
     let path = RhoPathV2::continuation_key(&refs, &[0, 255, 0]).unwrap();
     let view = RhoPathV2::parse_continuation(&path).unwrap();
-    assert_eq!(view.channel_frames.len(), channels.len());
-    for (frame, expected) in view.channel_frames.iter().zip(channels) {
+    assert_eq!(view.channel_count(), channels.len());
+    for (frame, expected) in view.channel_frames().zip(channels) {
         assert!(frame.ends_with(&[0, 0]));
         assert!(frame.len() >= expected.len() + 2);
     }
-    assert!(view.identity_frame.windows(2).any(|pair| pair == [0, 255]));
+    assert!(view.encoded_identity_frame().windows(2).any(|pair| pair == [0, 255]));
 }
 
 #[test]
