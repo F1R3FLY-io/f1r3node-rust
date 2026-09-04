@@ -1707,6 +1707,7 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
         "Replay ==",
         "COMM ==",
         "FullImageCollisionSafety ==",
+        "DistinctCollisionRepresentativesPreserved ==",
         "NoPartialPublication ==",
     ] {
         assert!(

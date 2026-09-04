@@ -164,6 +164,9 @@ FullImageCollisionSafety ==
     \A d \in Digests: \A left, right \in digestBucket[d]:
         left = right \/ ImageDigest(left) = ImageDigest(right)
 
+DistinctCollisionRepresentativesPreserved ==
+    {"img-B-V1", "img-B-V2"} \subseteq digestBucket["d-B"]
+
 AuthoritativeImageIsAdmitted == image \in digestBucket[ImageDigest(image)]
 
 SemanticRootMatchesImage == root = SemanticRoot(image)
@@ -182,6 +185,7 @@ ReplayedImageWasExported == phase \in {"replayed", "done"} =>
 
 THEOREM Spec => []TypeInvariant
 THEOREM Spec => []FullImageCollisionSafety
+THEOREM Spec => []DistinctCollisionRepresentativesPreserved
 THEOREM Spec => []AuthoritativeImageIsAdmitted
 THEOREM Spec => []SemanticRootMatchesImage
 THEOREM Spec => []LaneMatchesImageAfterCommit
