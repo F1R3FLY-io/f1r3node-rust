@@ -2181,6 +2181,28 @@ mod tests {
         .unwrap();
         assert_eq!(write_calls, 2);
 
+        let mut partial_write_calls = 0;
+        write_all_at_with(
+            &mut authority,
+            &path,
+            31,
+            &[10, 11, 12, 13],
+            |_, buffer, position| {
+                partial_write_calls += 1;
+                if partial_write_calls == 1 {
+                    assert_eq!(position, 31);
+                    assert_eq!(buffer, &[10, 11, 12, 13]);
+                    Ok(1)
+                } else {
+                    assert_eq!(position, 32);
+                    assert_eq!(buffer, &[11, 12, 13]);
+                    Ok(buffer.len())
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(partial_write_calls, 2);
+
         let mut target = [0u8; 2];
         let error = read_exact_at_with(&path, 17, &mut target, |buffer, _| Ok(buffer.len() + 1))
             .unwrap_err();
