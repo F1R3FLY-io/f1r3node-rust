@@ -20,6 +20,8 @@ const INDEX_FILE_SUFFIX_V1: &str = ".rsi";
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DurableIoFailpointV1 {
+    PhysicalWrite,
+    PhysicalSync,
     CandidateWrite,
     CandidateSetLength,
     CandidateSync,
@@ -530,6 +532,12 @@ impl DurableWritableFileV1<'_> {
 
     pub(crate) fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DurableIoError> {
         let path = self.file.path().to_path_buf();
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::PhysicalWrite,
+            DurableIoOperation::PositionalWrite,
+            &path,
+        )?;
         write_all_at_with(self, &path, offset, bytes, |authority, buffer, position| {
             positioned_write(&authority.file.file, buffer, position, authority.file.path())
         })
@@ -545,6 +553,12 @@ impl DurableWritableFileV1<'_> {
 
     pub(crate) fn sync_all(&mut self) -> Result<(), DurableIoError> {
         validate_authority_file(&self.file.file, DurableIoOperation::SyncFile, self.file.path())?;
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::PhysicalSync,
+            DurableIoOperation::SyncFile,
+            self.file.path(),
+        )?;
         self.file
             .file
             .sync_all()
@@ -2169,6 +2183,43 @@ mod tests {
                 expected: 4,
                 actual: 2,
             } if path == &pack_path && offset == PACK_HEADER_LEN_V1
+        ));
+    }
+
+    #[test]
+    fn physical_write_and_sync_failpoints_intercept_real_file_boundaries() {
+        let scratch = test_scratch::acquire("rspace-durable-io-physical-failpoints-");
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let mut pack = lease.create_pack(PackId::GENESIS).unwrap();
+        let path = pack.path().to_path_buf();
+
+        arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalWrite);
+        let error = pack
+            .write_all_at(PACK_HEADER_LEN_V1, &[1, 2, 3])
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DurableIoError::Io {
+                operation: DurableIoOperation::PositionalWrite,
+                path: ref actual,
+                ..
+            } if actual == &path
+        ));
+        assert_eq!(pack.len().unwrap(), 0);
+
+        pack.write_all_at(PACK_HEADER_LEN_V1, &[1, 2, 3]).unwrap();
+        arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalSync);
+        let error = pack.sync_all().unwrap_err();
+        assert!(matches!(
+            error,
+            DurableIoError::Io {
+                operation: DurableIoOperation::SyncFile,
+                path: ref actual,
+                ..
+            } if actual == &path
         ));
     }
 
