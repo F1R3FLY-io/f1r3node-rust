@@ -1737,3 +1737,35 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
         assert!(runner.contains(marker), "RPB3 formal runner is missing `{marker}`");
     }
 }
+
+#[test]
+fn generated_rpb3_registry_is_contiguous_and_descriptor_aligned() {
+    use models::rust::rholang::match_schema_tables::{PAR_PROTOBUF_REGION_PROGRAM, RHO_MATCH_REGISTRY};
+
+    assert!(!RHO_MATCH_REGISTRY.is_empty(), "generated RPB3 registry is empty");
+    for (index, (name, program)) in RHO_MATCH_REGISTRY.iter().enumerate() {
+        let expected_type_id = u16::try_from(index + 1)
+            .expect("generated RPB3 registry exceeds the u16 type-id domain");
+        assert_eq!(program.type_id, expected_type_id, "{name}: registry type id drifted");
+        assert_eq!(program.type_name, *name, "{name}: registry name drifted");
+        if *name == "Par" {
+            assert_eq!(
+                program.protobuf_fields.len(),
+                0,
+                "Par's resident row must not be used as its raw protobuf program"
+            );
+        } else {
+            assert_eq!(
+                program.fields.len(),
+                program.protobuf_fields.len(),
+                "{name}: generated semantic and protobuf descriptors disagree"
+            );
+        }
+        assert!(program.type_id != 0, "{name}: zero is reserved for invalid type ids");
+    }
+    assert_eq!(
+        PAR_PROTOBUF_REGION_PROGRAM.type_name,
+        "Par",
+        "the separate raw protobuf Par program must retain the Par descriptor identity"
+    );
+}
