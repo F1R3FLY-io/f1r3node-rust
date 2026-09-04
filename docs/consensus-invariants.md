@@ -127,6 +127,7 @@ at handler entry:
 | `MAX_OPEN_FDS` | 1,024 | per-runtime; one side allocates, the other returns QUOTA_EXCEEDED |
 | `MAX_RANGES_PER_FILE` | 1,024 | per-`(dev, inode)`; one side admits an Nth range lock, the other rejects |
 | `MAX_WAITERS_PER_FILE` | 1,024 | per-`(dev, inode)`; one side parks an Nth `wait:true` acquire, the other rejects (Phase 8 NB-3, added 2026-09-02) |
+| `MAX_CHUNK_ITEMS` | 65,536 | per-`chunk(n)` call on any stream; one side admits a larger `n` value, the other returns FSERR_QUOTA_EXCEEDED.  Spec §chunk method guarantees a minimum of 1024, so this cap is a shard-uniform choice above the spec floor (M-19, added 2026-09-04) |
 
 All caps are checked in the handler entry against argument
 values.  If a validator upgraded to a higher cap accepts an

@@ -2190,6 +2190,19 @@ mod tests {
         //   makes readN return FSERR_BUSY (wait:false) instead of
         //   racing the cursor.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
+        // Prior anchor: f068fdbd (M-13, 2026-09-04).
+        // 2026-09-04: M-18 fix (A1-F-15) — Fs.openFile / openDir now
+        //   return `[false, "FSERR_UNSUPPORTED", "logical name
+        //   malformed"]` (was `[false, "FSERR_IO", "malformed bundle
+        //   entry"]`) when the bundle Map has an entry that doesn't
+        //   match the 5-tuple `(canonRoot, rel, mode, "file"|"dir",
+        //   cmode)` shape.  Reasoning: FSERR_IO is not documented in
+        //   §Standard error codes as an outcome of openFile /
+        //   openDir; FSERR_UNSUPPORTED aligns with spec §849's "if
+        //   the name isn't in the static bundle" — the entry IS in
+        //   the bundle but shaped wrong, equivalent user-facing
+        //   outcome.  Hard-fork-free per the f1r3node_no_running_
+        //   network invariant.
         // Prior anchor: 055277c6 (M-12, 2026-09-04).
         // 2026-09-04: M-13 fix (A1-F-10) — Buffer's four previously-
         //   deferred methods (`writeByte`, `slice`, `validUtf8PrefixLen`,
@@ -2228,7 +2241,7 @@ mod tests {
         //   Dir.openFile create + exclusive) is scoped to a separate
         //   slice.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        const EXPECTED: &str = "f068fdbdad04b5f2d8191193df62245480e8b31ab99348146572058ff9c071a7";
+        const EXPECTED: &str = "1676f23523a8c06aa8d05347e35d38e4bee0fe239c5f4c7a1e0a82ef42f3dd9e";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

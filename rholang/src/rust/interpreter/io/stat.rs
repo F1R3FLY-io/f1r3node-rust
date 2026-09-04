@@ -80,11 +80,21 @@ fn kv(k: &str, v: Par) -> KeyValuePair {
 pub fn stat_record(name: &str, meta: &Metadata, mode_kind: ConsensusMode) -> Par {
     let mut pairs: Vec<KeyValuePair> = Vec::with_capacity(9);
     pairs.push(kv("name", RhoString::create_par(name.to_string())));
-    pairs.push(kv(
-        "kind",
-        RhoString::create_par(Kind::from_meta(meta).as_str().to_string()),
-    ));
-    pairs.push(kv("size", RhoNumber::create_par(meta.len() as i64)));
+    let kind = Kind::from_meta(meta);
+    pairs.push(kv("kind", RhoString::create_par(kind.as_str().to_string())));
+    // M-15 (2026-09-04): spec §Dir > Listing declares `size: u64,
+    // bytes for regular files; omitted otherwise`.  Only push the
+    // `size` field when the kind is `File`.  For directories,
+    // `Metadata::len()` returns platform-specific values (~4096 on
+    // ext4/apfs); pushing it would let a Rholang caller doing
+    // `if entry.get("size") != Nil { ... regular-file logic ... }`
+    // incorrectly branch into regular-file logic on a Dir record.
+    // Consensus-observable — the WAL entry's payload_ref hash rolls
+    // for every fs_stat / fs_entries call on a non-regular entry.
+    // Hard-fork-free per the f1r3node_no_running_network invariant.
+    if matches!(kind, Kind::File) {
+        pairs.push(kv("size", RhoNumber::create_par(meta.len() as i64)));
+    }
     // H-26-F1 review fix: under Consensus, mask to permission bits only
     // (`& 0o0777`) — drop setuid/setgid/sticky (`& 0o7000`).  Those
     // high bits can vary across validator hosts (umask, install(1),
@@ -316,6 +326,29 @@ mod stat_record_tests {
             assert!(
                 keys.contains(k),
                 "consensus record missing `{k}`; got {keys:?}"
+            );
+        }
+    }
+
+    /// M-15 (2026-09-04): spec §Dir > Listing declares
+    /// `size: u64, bytes for regular files; omitted otherwise`.
+    /// Directory records must NOT carry the `size` field —
+    /// `Metadata::len()` returns platform-specific values (~4096
+    /// on ext4/apfs) that would leak host state and let a Rholang
+    /// caller writing `if entry.get("size") != Nil { … regular
+    /// file logic … }` incorrectly branch on a Dir record.
+    #[test]
+    fn directory_record_omits_size_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_meta = std::fs::metadata(dir.path()).unwrap();
+        for mode in [ConsensusMode::Consensus, ConsensusMode::Oracular] {
+            let rec = stat_record("d", &dir_meta, mode);
+            let keys = expect_map_keys(&rec);
+            assert!(
+                !keys.contains("size"),
+                "M-15: directory record must omit `size` (spec §Dir > \
+                 Listing: `bytes for regular files; omitted otherwise`); \
+                 got {keys:?} under {mode:?}"
             );
         }
     }

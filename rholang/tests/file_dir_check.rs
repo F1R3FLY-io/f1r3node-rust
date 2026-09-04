@@ -14650,7 +14650,12 @@ async fn fs_open_file_malformed_bundle_wrong_arity_returns_fserr_io() {
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
-    assert_eq!(code, "FSERR_IO");
+    // M-18 (2026-09-04): malformed bundle entries now return
+    // FSERR_UNSUPPORTED (was FSERR_IO); the entry IS in the bundle
+    // but shaped wrong — equivalent user-facing outcome to "logical
+    // name not in static bundle".  Spec §Standard error codes
+    // doesn't list FSERR_IO as a valid outcome of openFile / openDir.
+    assert_eq!(code, "FSERR_UNSUPPORTED");
     let msg = extract_failure_msg(&reply);
     assert!(msg.contains("malformed"), "msg: {msg}");
 }
@@ -14673,10 +14678,12 @@ async fn fs_open_file_malformed_bundle_wrong_kind_returns_fserr_io() {
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
-    assert_eq!(code, "FSERR_IO");
+    // M-18 (2026-09-04): FSERR_IO → FSERR_UNSUPPORTED (see wrong-arity
+    // test above for rationale).
+    assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
-/// Bundle entry with wrong tuple arity — openDir also surfaces FSERR_IO.
+/// Bundle entry with wrong tuple arity — openDir surfaces FSERR_UNSUPPORTED.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fs_open_dir_malformed_bundle_wrong_arity_returns_fserr_io() {
     let (space, reducer) =
@@ -14694,7 +14701,8 @@ async fn fs_open_dir_malformed_bundle_wrong_arity_returns_fserr_io() {
     let reply = eval_and_read_out(&space, &reducer, &src).await;
     let (ok, code, _, _) = extract_reply(&reply);
     assert!(!ok);
-    assert_eq!(code, "FSERR_IO");
+    // M-18 (2026-09-04): FSERR_IO → FSERR_UNSUPPORTED.
+    assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
 // -- m-16-1: reply-shape helper applied to mode-cap tests.

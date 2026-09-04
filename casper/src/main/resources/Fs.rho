@@ -355,8 +355,8 @@ new Fs, fsBundleP,
                             [false, "FSERR_BAD_ARG",
                              "logical name is a directory; use openDir"])
                           _ => return!(
-                            [false, "FSERR_IO",
-                             "malformed bundle entry"])
+                            [false, "FSERR_UNSUPPORTED",
+                             "logical name malformed"])
                         }
                       }
                     }
@@ -434,8 +434,8 @@ new Fs, fsBundleP,
                             [false, "FSERR_BAD_ARG",
                              "logical name is a file; use openFile"])
                           _ => return!(
-                            [false, "FSERR_IO",
-                             "malformed bundle entry"])
+                            [false, "FSERR_UNSUPPORTED",
+                             "logical name malformed"])
                         }
                       }
                     }

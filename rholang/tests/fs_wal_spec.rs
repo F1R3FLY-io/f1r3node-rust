@@ -85,7 +85,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 openCh, writeCh, closeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "68656c6c6f20776f726c64".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{
@@ -183,7 +183,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 openCh, writeCh, closeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "68656c6c6f20776f726c64".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{
@@ -245,7 +245,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 openCh, writeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "68656c6c6f".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{ Nil }}
@@ -313,7 +313,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 openCh, writeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "ff00".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{ Nil }}
@@ -384,7 +384,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 openCh, writeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "oracular", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "oracular", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "abcd".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{ Nil }}
@@ -425,7 +425,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 openCh, writeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "oracular", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "oracular", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "abcd".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{ Nil }}
@@ -465,7 +465,7 @@ mod tests {
                 fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
                 openCh, writeCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWriteAt!(fd, 42, "cafe".hexToBytes(), *writeCh) |
                 for (@_ <- writeCh) {{ Nil }}
@@ -505,7 +505,7 @@ mod tests {
                 fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                 openCh, truncCh
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsTruncate!(fd, 10, *truncCh) |
                 for (@_ <- truncCh) {{ Nil }}
@@ -547,7 +547,7 @@ mod tests {
                 fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                 openCh, w1, w2, w3
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *openCh) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *openCh) |
               for (@[true, fd] <- openCh) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w1) |
                 for (@_ <- w1) {{
@@ -600,11 +600,11 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 orcCh, conCh, w1, w2
             in {{
-              fsOpen!("{root}", "orc.bin", "rw", "oracular", *orcCh) |
+              fsOpen!("{root}", "orc.bin", "r+", "oracular", *orcCh) |
               for (@[true, fd_orc] <- orcCh) {{
                 fsWrite!(fd_orc, "aa".hexToBytes(), *w1) |
                 for (@_ <- w1) {{
-                  fsOpen!("{root}", "con.bin", "rw", "consensus", *conCh) |
+                  fsOpen!("{root}", "con.bin", "r+", "consensus", *conCh) |
                   for (@[true, fd_con] <- conCh) {{
                     fsWrite!(fd_con, "bb".hexToBytes(), *w2) |
                     for (@_ <- w2) {{ Nil }}
@@ -757,7 +757,7 @@ mod tests {
         let term = format!(
             r#"
             new fsOpen(`rho:io:fs:native:1.0.0/open`), openCh in {{
-              fsOpen!("{root}", "f.bin", "rw", "BOGUS", *openCh) |
+              fsOpen!("{root}", "f.bin", "r+", "BOGUS", *openCh) |
               for (@r <- openCh) {{ Nil }}
             }}
             "#,
@@ -1015,11 +1015,11 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 oa, ob, wa, wb
             in {{
-              fsOpen!("{root}", "a.bin", "rw", "consensus", *oa) |
+              fsOpen!("{root}", "a.bin", "r+", "consensus", *oa) |
               for (@[true, fdA] <- oa) {{
                 fsWrite!(fdA, "aa".hexToBytes(), *wa) |
                 for (@_ <- wa) {{
-                  fsOpen!("{root}", "b.bin", "rw", "consensus", *ob) |
+                  fsOpen!("{root}", "b.bin", "r+", "consensus", *ob) |
                   for (@[true, fdB] <- ob) {{
                     fsWrite!(fdB, "bb".hexToBytes(), *wb) |
                     for (@_ <- wb) {{ Nil }}
@@ -1065,7 +1065,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 oc, wc
             in {{
-              fsOpen!("{root}", "f.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "f.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aa".hexToBytes(), *wc) |
                 for (@_ <- wc) {{ Nil }}
@@ -1155,7 +1155,7 @@ mod tests {
                 fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                 oc, w1, w2, w3
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w1) |
                 for (@_ <- w1) {{
@@ -3755,7 +3755,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, tc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsTruncate!(fd, 8, *tc) |
                 for (@_ <- tc) {{
@@ -3891,7 +3891,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, tc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsTruncate!(fd, 8, *tc) |
                 for (@_ <- tc) {{
@@ -4046,7 +4046,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, tc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsTruncate!(fd, {n}, *tc) |
                 for (@_ <- tc) {{
@@ -4266,7 +4266,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, wc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "{payload_hex}".hexToBytes(), *wc) |
                 for (@_ <- wc) {{
@@ -4380,7 +4380,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, wc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "68656c6c6f".hexToBytes(), *wc) |
                 for (@_ <- wc) {{
@@ -4882,7 +4882,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, wc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWriteAt!(fd, {offset}, "{payload_hex}".hexToBytes(), *wc) |
                 for (@_ <- wc) {{
@@ -5011,7 +5011,7 @@ mod tests {
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, wc, cc
             in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWriteAt!(fd, 8, "68656c6c6f".hexToBytes(), *wc) |
                 for (@_ <- wc) {{
@@ -6871,7 +6871,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 oc, wc
             in {{
-              fsOpen!("{root}", "f.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "f.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aa".hexToBytes(), *wc) |
                 for (@reply <- wc) {{ @"out"!(reply) }}
@@ -6915,7 +6915,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 o, w
             in {{
-              fsOpen!("{root}", "a.bin", "rw", "consensus", *o) |
+              fsOpen!("{root}", "a.bin", "r+", "consensus", *o) |
               for (@[true, fd] <- o) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w) |
                 for (@_ <- w) {{ Nil }}
@@ -7002,7 +7002,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 o, w
             in {{
-              fsOpen!("{root}", "pre.bin", "rw", "consensus", *o) |
+              fsOpen!("{root}", "pre.bin", "r+", "consensus", *o) |
               for (@[true, fd] <- o) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w) |
                 for (@_ <- w) {{ Nil }}
@@ -7031,7 +7031,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 o, w
             in {{
-              fsOpen!("{root}", "post.bin", "rw", "consensus", *o) |
+              fsOpen!("{root}", "post.bin", "r+", "consensus", *o) |
               for (@[true, fd] <- o) {{
                 fsWrite!(fd, "bb".hexToBytes(), *w) |
                 for (@_ <- w) {{ Nil }}
@@ -7444,7 +7444,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 o, w
             in {{
-              fsOpen!("{root}", "f.bin", "rw", "consensus", *o) |
+              fsOpen!("{root}", "f.bin", "r+", "consensus", *o) |
               for (@[true, fd] <- o) {{
                 fsWrite!(fd, "cafebabe".hexToBytes(), *w) |
                 for (@_ <- w) {{ Nil }}
@@ -7512,7 +7512,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 o, w
             in {{
-              fsOpen!("{root}", "f.bin", "rw", "consensus", *o) |
+              fsOpen!("{root}", "f.bin", "r+", "consensus", *o) |
               for (@[true, fd] <- o) {{
                 fsWrite!(fd, "aa".hexToBytes(), *w) |
                 for (@_ <- w) {{ Nil }}
@@ -7648,7 +7648,7 @@ mod tests {
                         fsWrite(`rho:io:fs:native:1.0.0/write`),
                         fsClose(`rho:io:fs:native:1.0.0/close`),
                         oc, wc, cc in {{
-                      fsOpen!("{root_display}", "data.bin", "rw", "consensus", *oc) |
+                      fsOpen!("{root_display}", "data.bin", "r+", "consensus", *oc) |
                       for (@[true, fd] <- oc) {{
                         fsWrite!(fd, "aabb".hexToBytes(), *wc) |
                         for (@_ <- wc) {{
@@ -7669,7 +7669,7 @@ mod tests {
                         fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                         fsClose(`rho:io:fs:native:1.0.0/close`),
                         oc, wc, tc, cc in {{
-                      fsOpen!("{root_display}", "data.bin", "rw", "consensus", *oc) |
+                      fsOpen!("{root_display}", "data.bin", "r+", "consensus", *oc) |
                       for (@[true, fd] <- oc) {{
                         fsWriteAt!(fd, 10, "ccdd".hexToBytes(), *wc) |
                         for (@_ <- wc) {{
@@ -7694,7 +7694,7 @@ mod tests {
                         fsWrite(`rho:io:fs:native:1.0.0/write`),
                         fsClose(`rho:io:fs:native:1.0.0/close`),
                         oc, wc, cc in {{
-                      fsOpen!("{root_display}", "aux.bin", "rw", "oracular", *oc) |
+                      fsOpen!("{root_display}", "aux.bin", "r+", "oracular", *oc) |
                       for (@[true, fd] <- oc) {{
                         fsWrite!(fd, "ee".hexToBytes(), *wc) |
                         for (@_ <- wc) {{
@@ -7819,7 +7819,7 @@ mod tests {
                 fsWrite(`rho:io:fs:native:1.0.0/write`),
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, wc, cc in {{
-              fsOpen!("{root_display}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root_display}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aabb".hexToBytes(), *wc) |
                 for (@_ <- wc) {{
@@ -8848,7 +8848,7 @@ mod tests {
                         fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
                         fsClose(`rho:io:fs:native:1.0.0/close`),
                         oc, wc, cc in {{
-                      fsOpen!("{leader_root_str}", "data.bin", "rw", "consensus", *oc) |
+                      fsOpen!("{leader_root_str}", "data.bin", "r+", "consensus", *oc) |
                       for (@[true, fd] <- oc) {{
                         fsWriteAt!(fd, 0, "aabb".hexToBytes(), *wc) |
                         for (@_ <- wc) {{
@@ -8869,7 +8869,7 @@ mod tests {
                         fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                         fsClose(`rho:io:fs:native:1.0.0/close`),
                         oc, wc, tc, cc in {{
-                      fsOpen!("{leader_root_str}", "data.bin", "rw", "consensus", *oc) |
+                      fsOpen!("{leader_root_str}", "data.bin", "r+", "consensus", *oc) |
                       for (@[true, fd] <- oc) {{
                         fsWriteAt!(fd, 10, "ccdd".hexToBytes(), *wc) |
                         for (@_ <- wc) {{
@@ -8892,7 +8892,7 @@ mod tests {
                         fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
                         fsClose(`rho:io:fs:native:1.0.0/close`),
                         oc, wc, cc in {{
-                      fsOpen!("{leader_root_str}", "log.txt", "rw", "consensus", *oc) |
+                      fsOpen!("{leader_root_str}", "log.txt", "r+", "consensus", *oc) |
                       for (@[true, fd] <- oc) {{
                         fsWriteAt!(fd, 3, "ff".hexToBytes(), *wc) |
                         for (@_ <- wc) {{
@@ -9092,7 +9092,7 @@ mod tests {
                 fsTruncate(`rho:io:fs:native:1.0.0/truncate`),
                 fsClose(`rho:io:fs:native:1.0.0/close`),
                 oc, w1, w2, sk, w3, tc, cc in {{
-              fsOpen!("{leader_root_str}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{leader_root_str}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "11223344".hexToBytes(), *w1) |
                 for (@_ <- w1) {{
@@ -9201,7 +9201,7 @@ mod tests {
                 fsRead(`rho:io:fs:native:1.0.0/read`),
                 fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
                 oc, w1, s1, r1, w2 in {{
-              fsOpen!("{root}", "data.bin", "rw", "consensus", *oc) |
+              fsOpen!("{root}", "data.bin", "r+", "consensus", *oc) |
               for (@[true, fd] <- oc) {{
                 fsWrite!(fd, "aabb".hexToBytes(), *w1) |
                 for (@_ <- w1) {{
