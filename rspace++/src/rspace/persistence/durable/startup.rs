@@ -21,8 +21,8 @@ use super::{
 };
 use crate::rspace::persistence::wal::TerminalCommitViewV1;
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, LogPackAddress, LogPackDecodeLimits, PackId, PackTerminalIdentityV1,
-    SemanticProfileId, StateVersionV1, StoreId,
+    CatalogAuthorityTokenV1, GenerationLeaseKeyV1, LogPackAddress, LogPackDecodeLimits, PackId,
+    PackTerminalIdentityV1, SemanticProfileId, StateVersionV1, StoreId,
 };
 
 #[cfg(test)]
@@ -274,6 +274,15 @@ pub(crate) fn recover_physical_with_lease_v1(
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
 ) -> Result<PhysicallyRecoveredDurableWriterV1, DurableStartupErrorV1> {
+    if let Some(candidate) = lease.read_reclamation_candidate()? {
+        let authority = read_catalog_token(lease.directory())?;
+        if candidate.successor() != GenerationLeaseKeyV1::from_catalog(authority.slot()) {
+            // A pre-CAS crash leaves the old catalog authoritative. Remove
+            // only this validated stale intent; never infer data deletion
+            // from a filename or a partially written record.
+            lease.remove_reclamation_candidate()?;
+        }
+    }
     let reader = lease.directory().try_clone_reader()?;
     let recovered = recover_index_bound_v1(&reader, &mut lease, limits, wal_limits)?;
     Ok(PhysicallyRecoveredDurableWriterV1 { lease, recovered })

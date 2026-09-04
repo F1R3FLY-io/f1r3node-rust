@@ -1120,6 +1120,20 @@ impl DurableWriterLeaseV1 {
             })
     }
 
+    pub(crate) fn remove_reclamation_candidate(&mut self) -> Result<(), DurableIoError> {
+        let name = RECLAMATION_CANDIDATE_FILE_NAME_V1;
+        let opened = self.directory.open_child(name, ChildOpenMode::ReadOnly)?;
+        ensure_child_matches_handle(
+            &self.directory.directory,
+            name,
+            &opened.file,
+            &self.directory.path,
+            DurableIoOperation::RemoveFile,
+        )?;
+        self.remove_child(name)?;
+        self.sync_directory()
+    }
+
     /// Remove one validated child while retaining compiler-visible exclusive
     /// writer authority at the physical mutation boundary.
     fn remove_child(&mut self, name: &str) -> Result<(), DurableIoError> {
