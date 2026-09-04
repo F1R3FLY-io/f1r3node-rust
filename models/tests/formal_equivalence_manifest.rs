@@ -1691,6 +1691,53 @@ fn rspace_atomic_checkpoint_authority_and_negative_controls_are_manifested() {
 }
 
 #[test]
+fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
+    let model =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.tla");
+    for marker in [
+        "Produce(nextLane) ==",
+        "Install ==",
+        "Consume ==",
+        "Commit ==",
+        "Checkpoint ==",
+        "Reset ==",
+        "Rebuild ==",
+        "Export ==",
+        "Import ==",
+        "Replay ==",
+        "COMM ==",
+        "FullImageCollisionSafety ==",
+        "NoPartialPublication ==",
+    ] {
+        assert!(
+            model.contains(marker),
+            "RhoPath V2 lifecycle TLA+ model is missing `{marker}`"
+        );
+    }
+
+    let config =
+        read_repository_file("formal/tlaplus/stack_safe_pda/RhoPathV2Lifecycle.cfg");
+    for invariant in [
+        "INVARIANT TypeInvariant",
+        "INVARIANT FullImageCollisionSafety",
+        "INVARIANT AuthoritativeImageIsAdmitted",
+        "INVARIANT SemanticRootMatchesImage",
+        "INVARIANT LaneMatchesImageAfterCommit",
+        "INVARIANT NoPartialPublication",
+        "INVARIANT ReplayedImageWasExported",
+    ] {
+        assert!(
+            config.contains(invariant),
+            "RhoPath V2 lifecycle TLC configuration is missing `{invariant}`"
+        );
+    }
+
+    let runner = read_repository_file("scripts/check-stack-safe-pda-proofs.sh");
+    assert!(runner.contains("RhoPathV2Lifecycle.cfg"));
+    assert!(runner.contains("RhoPathV2Lifecycle.tla"));
+}
+
+#[test]
 fn rpb3_admission_formal_artifacts_are_manifested() {
     let rocq = read_repository_file("formal/rocq/stack_safe_pda/theories/RPB3Admission.v");
     for marker in [

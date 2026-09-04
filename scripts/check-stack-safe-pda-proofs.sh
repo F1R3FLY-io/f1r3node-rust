@@ -578,6 +578,9 @@ done
 tlc_run "$tla_metadir" \
   RSpaceRecordReplayAuthorityLifecycle.cfg \
   RSpaceRecordReplayAuthorityLifecycle.tla -cleanup
+tlc_run "$tla_metadir" \
+  RhoPathV2Lifecycle.cfg \
+  RhoPathV2Lifecycle.tla -cleanup
 if record_replay_skip_reset_mutant="$({
   tlc_run "$tla_metadir" \
     RSpaceRecordReplayAuthorityLifecycleSkipResetMutant.cfg \
