@@ -1760,6 +1760,25 @@ fn rho_path_v2_lifecycle_formal_artifacts_are_manifested() {
             "RhoPath V2 mCRL2 runner is missing `{marker}`"
         );
     }
+
+    // The formal lifecycle model is only useful as an implementation
+    // refinement when the normal Rust differential lifecycle suite is part of
+    // the same evidence surface.  Keep this binding explicit so a model can
+    // never silently drift away from the production continuation/join path.
+    let lifecycle = read_repository_file(
+        "rspace++/tests/record_index/continuation_join_lifecycle_equivalence.rs",
+    );
+    for marker in [
+        "legacy_and_pathmap_continuation_join_lifecycles_are_identical",
+        "RhoPathV2",
+        "checkpoint",
+        "replay",
+    ] {
+        assert!(
+            lifecycle.contains(marker),
+            "RhoPath V2 lifecycle differential binding is missing `{marker}`"
+        );
+    }
 }
 
 #[test]

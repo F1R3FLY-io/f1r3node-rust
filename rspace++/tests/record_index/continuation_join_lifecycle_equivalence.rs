@@ -5,6 +5,11 @@
 //! One fixture crosses first-wins identity, candidate order, duplicate joins,
 //! canonical checkpoint bytes/root, reset, authenticated export/import,
 //! play/replay, and the final post-state.
+//!
+//! The lifecycle is the Rust refinement exercised by the formal
+//! `RhoPathV2Lifecycle` models: the production PathMap checkpoint, reset,
+//! export/import, and replay transitions are compared against the frozen
+//! legacy oracle in one end-to-end test.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
