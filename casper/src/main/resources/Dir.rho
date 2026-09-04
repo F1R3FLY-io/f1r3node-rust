@@ -342,40 +342,57 @@ new Dir, rootP, cmodeP in {
     method openDir(@rel, @options) {
       match rel {
         r /\ String => {
-          new modeCh in {
-            match options {
-              {} => modeCh!("r")
-              {"mode": modeVal ..._} => modeCh!(modeVal)
-              {_ : _ ..._} => modeCh!("r")
-              _ => modeCh!(Nil)
-            } |
-            for (@requestedMode <- modeCh) {
-              match requestedMode {
-                Nil => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
-                m /\ String => {
-                  for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
-                    match params {
-                      (canonRoot, subPath, dirMode, fileCtor) => {
-                        match m {
-                          "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                          "rw" => {
-                            match dirMode {
-                              "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
-                              _ => return!([false, "FSERR_UNSUPPORTED",
-                                "requested mode exceeds Dir attenuation"])
+          match options {
+            m /\ Map => {
+              // A5-RH-A5-1 fix (2026-09-04): extract options.get("path")
+              // and reject `path: true` with FSERR_UNSUPPORTED.
+              // Pre-fix, `path: true` was silently dropped by the
+              // `{"mode": modeVal ..._}` remainder pattern; a caller
+              // writing `dir!("openDir", "subdir", {"path": true})`
+              // got an ordinary openDir on an existing subdir and a
+              // misleading FSERR_BAD_ARG on a missing one.  Full
+              // implementation (mkdir -p) is deferred; explicit
+              // rejection lets callers know the feature isn't ready.
+              match options.get("path") {
+                true => return!([false, "FSERR_UNSUPPORTED", "path=true not yet implemented"])
+                _ => {
+                  new modeCh in {
+                    match options.get("mode") {
+                      Nil          => modeCh!("r")   // default
+                      s /\ String  => modeCh!(s)
+                      _            => modeCh!(Nil)   // signal bad type
+                    } |
+                    for (@requestedMode <- modeCh) {
+                      match requestedMode {
+                        Nil => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
+                        m /\ String => {
+                          for (@params <<- @[*private, *rootP]; @cmode <<- @[*private, *cmodeP]) {
+                            match params {
+                              (canonRoot, subPath, dirMode, fileCtor) => {
+                                match m {
+                                  "r" => openDirImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
+                                  "rw" => {
+                                    match dirMode {
+                                      "rw" => openDirImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
+                                      _ => return!([false, "FSERR_UNSUPPORTED",
+                                        "requested mode exceeds Dir attenuation"])
+                                    }
+                                  }
+                                  _ => return!([false, "FSERR_BAD_ARG",
+                                    "dir mode must be \"r\" or \"rw\""])
+                                }
+                              }
+                              _ => return!([false, "FSERR_IO", "root params malformed"])
                             }
                           }
-                          _ => return!([false, "FSERR_BAD_ARG",
-                            "dir mode must be \"r\" or \"rw\""])
                         }
                       }
-                      _ => return!([false, "FSERR_IO", "root params malformed"])
                     }
                   }
                 }
-                _ => return!([false, "FSERR_BAD_ARG", "mode must be a String"])
               }
             }
+            _ => return!([false, "FSERR_BAD_ARG", "options must be a Map"])
           }
         }
         _ => return!([false, "FSERR_BAD_ARG", "rel must be a String"])

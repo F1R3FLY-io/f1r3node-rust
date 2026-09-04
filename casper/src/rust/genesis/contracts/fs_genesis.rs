@@ -2190,7 +2190,21 @@ mod tests {
         //   makes readN return FSERR_BUSY (wait:false) instead of
         //   racing the cursor.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
-        const EXPECTED: &str = "1bca8631a08cafa9ad2e4f9d19608ab91c1b7537d39897e268f8de3cb5f7efd4";
+        // Prior anchor: 1bca8631 (RH-A5-2, 2026-09-04).
+        // 2026-09-04: M-10 partial (A5-RH-A5-1 fix) — Dir.openDir
+        //   now extracts `options.get("path")` explicitly and rejects
+        //   `path: true` with FSERR_UNSUPPORTED "path=true not yet
+        //   implemented".  Pre-fix, the `path` key was silently
+        //   dropped by the `{"mode": modeVal ..._}` remainder pattern;
+        //   a caller writing `dir!("openDir", "subdir", {"path": true})`
+        //   got an ordinary openDir with a misleading FSERR_BAD_ARG on
+        //   a missing subdir.  Full mkdir-p implementation (the spec's
+        //   §Options intent for `path: true`) is deferred to a follow-
+        //   up slice.  The M-10 companion for A1-F-06 (Fs.openFile /
+        //   Dir.openFile create + exclusive) is scoped to a separate
+        //   slice.  Hard-fork-free per the f1r3node_no_running_network
+        //   invariant.
+        const EXPECTED: &str = "4e5ba950ae0407d197f8702901f07ce12585d93083e89de75a330d20bc05668b";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

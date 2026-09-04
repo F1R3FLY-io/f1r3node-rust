@@ -395,7 +395,13 @@ new Fs, fsBundleP,
       match name {
         n /\ String => {
           new modeCh in {
+            // M-10 A5-RH-A5-1 (2026-09-04): reject `path: true`
+            // explicitly.  Full mkdir-p implementation deferred to
+            // a follow-up.  Same guard lives at Dir.rho::openDir
+            // for the nested path.
             match options {
+              {"path": true ..._} => return!(
+                [false, "FSERR_UNSUPPORTED", "path=true not yet implemented"])
               {} => modeCh!("r")
               {"mode": modeVal ..._} => modeCh!(modeVal)
               {_ : _ ..._} => modeCh!("r")

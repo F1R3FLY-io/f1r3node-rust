@@ -13525,6 +13525,62 @@ async fn fs_open_dir_upgrade_rw_on_r_provisioned_rejects() {
     assert_eq!(code, "FSERR_UNSUPPORTED");
 }
 
+/// M-10 A5-RH-A5-1 fix (2026-09-04): Dir.openDir rejects
+/// `path: true` with FSERR_UNSUPPORTED.  Pre-fix the key was
+/// silently dropped by the `{"mode": modeVal ..._}` remainder
+/// pattern.  Full `mkdir -p` implementation is a deferred follow-
+/// up; explicit rejection lets callers know the feature isn't
+/// ready and gives them a clean error surface to branch on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_dir_path_true_rejects_as_unsupported() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "rw-dir": ("/root", "subdir", "rw", "dir", "oracular")
+        })) {
+          for (@r <- @fs!?("openDir", "rw-dir", {"path": true})) {
+            @"out"!(r)
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, code, _, _) = extract_reply(&reply);
+    assert!(!ok, "path: true must reject");
+    assert_eq!(
+        code, "FSERR_UNSUPPORTED",
+        "M-10 A5-RH-A5-1: path=true not yet implemented → FSERR_UNSUPPORTED; \
+         got: {code:?}"
+    );
+}
+
+/// M-10 companion: path: false silently accepted (equivalent to
+/// omitting the key).  Verifies the extraction logic doesn't
+/// reject legal absence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fs_open_dir_path_false_treated_as_default() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = with_libs(
+        r#"
+        for (@fs <- Fs!?(0, 1, 2, {
+          "rw-dir": ("/root", "subdir", "rw", "dir", "oracular")
+        })) {
+          for (@r <- @fs!?("openDir", "rw-dir", {"path": false, "mode": "rw"})) {
+            @"out"!(r)
+          }
+        }
+        "#,
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let (ok, _, _, _) = extract_reply(&reply);
+    assert!(ok, "path: false is a no-op; open must succeed");
+}
+
 /// openDir with an unknown mode (not "r" / "rw") rejects with
 /// FSERR_BAD_ARG.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
