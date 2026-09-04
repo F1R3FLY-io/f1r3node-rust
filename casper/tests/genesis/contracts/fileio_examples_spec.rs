@@ -178,8 +178,8 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_cross_cap_busy_then_release(rhoSpec, _, ackCh) = {{
-      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "rw"}});
-          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "r+"}});
+          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
         for(@lock1 <- @cap1!?("lockRange", 0, 100, "w")) {{
           match lock1 {{
             [true, token1] => {{
@@ -348,9 +348,9 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_three_way(rhoSpec, _, ackCh) = {{
-      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "rw"}});
-          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "rw"}});
-          @[true, cap3] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "r+"}});
+          @[true, cap2] <- @fs!?("openFile", "target", {{"mode": "r+"}});
+          @[true, cap3] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
         for(@[true, token1] <- @cap1!?("lockRange", 0, 100, "w")) {{
           // cap2 + cap3 both conflict with cap1's hold.
           for(@r2busy <- @cap2!?("lockRange", 0, 100, "w");
@@ -514,7 +514,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_write_lines_from_source_to_dest(rhoSpec, _, ackCh) = {{
       for(@[true, src] <- @fs!?("openFile", "source", {{"mode": "r"}});
-          @[true, dst] <- @fs!?("openFile", "dest", {{"mode": "rw"}})) {{
+          @[true, dst] <- @fs!?("openFile", "dest", {{"mode": "r+"}})) {{
         for(@linesReply <- @src!?("lines")) {{
           match linesReply {{
             [true, sourceLines] => {{

@@ -443,8 +443,8 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_lockrange_busy(rhoSpec, _, ackCh) = {{
-      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
-        for(@[true, cap2] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for(@[true, cap1] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
+        for(@[true, cap2] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
           for(@[true, _tok1] <- @cap1!?("lockRange", 0, 100, "w")) {{
             for(@r <- @cap2!?("lockRange", 0, 100, "w")) {{
               rhoSpec!("assert",
@@ -680,7 +680,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_writen_after_close(rhoSpec, _, ackCh) = {{
-      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
         for(@[true] <- @file!?("close")) {{
           for(@r <- @file!?("writeByteArray", "AA".hexToBytes())) {{
             rhoSpec!("assert",

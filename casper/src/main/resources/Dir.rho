@@ -298,7 +298,10 @@ new Dir, rootP, cmodeP in {
                         // match if m equals any of the alternatives.
                         match m {
                           "r" => openFileImpl!(canonRoot, subPath, r, "r", cmode, fileCtor, *return)
-                          "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                          // M-12 (2026-09-04): `"rw"` removed from
+                          // file-mode disjunction; callers migrate to
+                          // `"r+"`.  Spec §File modes lists 8 forms.
+                          "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
                             match dirMode {
                               "rw" => openFileImpl!(canonRoot, subPath, r, m, cmode, fileCtor, *return)
                               _ => return!([false, "FSERR_UNSUPPORTED",

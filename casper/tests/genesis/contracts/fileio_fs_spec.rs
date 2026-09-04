@@ -229,7 +229,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_all_modes(rhoSpec, _, ackCh) = {{
       for(@rR   <- @fs!?("openFile", "target", {{"mode": "r"}});
-          @rRW  <- @fs!?("openFile", "target", {{"mode": "rw"}});
+          @rRW  <- @fs!?("openFile", "target", {{"mode": "r+"}});
           @rW   <- @fs!?("openFile", "target", {{"mode": "w"}});
           @rWP  <- @fs!?("openFile", "target", {{"mode": "w+"}});
           @rA   <- @fs!?("openFile", "target", {{"mode": "a"}});

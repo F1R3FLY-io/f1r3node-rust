@@ -2,8 +2,8 @@
 //
 // Two orthogonal concepts share this module:
 //
-//   1. Fopen mode strings (`"r"`, `"rw"`, `"w+"`, ...) → `AccessMode` +
-//      `OpenIntent`.  Spec §File.openFile lists the eight valid forms.
+//   1. Fopen mode strings (`"r"`, `"r+"`, `"w+"`, ...) → `AccessMode` +
+//      `OpenIntent`.  Spec §File modes lists the eight valid forms.
 //
 //   2. Chmod permission strings (`"rwxr-xr-x"`) → u16 permission bits.
 //      Symbolic-delta forms (`"u+x"`) and octal (`"0755"`) are rejected —
@@ -21,7 +21,7 @@ pub enum AccessMode {
 /// What to do with a file that already exists at `open` time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExistPolicy {
-    /// `"r"`, `"rw"` — must exist.  `"wx"`, `"w+x"` — must NOT exist.
+    /// `"r"`, `"r+"` — must exist.  `"wx"`, `"w+x"` — must NOT exist.
     Require,
     RequireAbsent,
     /// `"w"`, `"w+"` — create-or-truncate.
@@ -39,10 +39,16 @@ pub struct OpenIntent {
 }
 
 /// Parse the eight canonical fopen-mode strings from §File.openFile.
+/// M-12 (2026-09-04): `"rw"` alias was previously accepted as a
+/// synonym for `"r+"`.  Spec §File modes enumerates exactly 8 forms
+/// (r/w/a/r+/w+/wx/w+x/a+); accepting `"rw"` was a spec-shrinking
+/// alias.  Removed since no shipping network encodes it and the
+/// alias forced every reader of the FIP to also read the code to
+/// know which mode strings actually parsed.
 pub fn parse_open_mode(s: &str) -> Option<OpenIntent> {
     let (mode, policy, append, truncate) = match s {
         "r" => (AccessMode::Read, ExistPolicy::Require, false, false),
-        "rw" => (AccessMode::ReadWrite, ExistPolicy::Require, false, false),
+        "r+" => (AccessMode::ReadWrite, ExistPolicy::Require, false, false),
         "w" => (
             AccessMode::Write,
             ExistPolicy::CreateOrTruncate,
@@ -169,9 +175,19 @@ mod tests {
 
     #[test]
     fn parses_all_eight_fopen_modes() {
-        for s in ["r", "rw", "w", "w+", "wx", "w+x", "a", "a+"] {
+        for s in ["r", "w", "w+", "wx", "w+x", "a", "a+", "r+"] {
             assert!(parse_open_mode(s).is_some(), "failed for {s}");
         }
+    }
+
+    /// M-12 (2026-09-04): `"rw"` must not parse as a file mode.
+    #[test]
+    fn rw_is_not_a_valid_file_mode() {
+        assert!(
+            parse_open_mode("rw").is_none(),
+            "M-12: `rw` was removed as a file mode alias for `r+`; \
+             a regression that reintroduces it would fail here"
+        );
     }
 
     #[test]

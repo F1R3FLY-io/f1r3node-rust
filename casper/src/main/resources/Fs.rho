@@ -327,25 +327,18 @@ new Fs, fsBundleP,
                             match m {
                               "r" => openFileImpl!(
                                 canonRoot, "", rel, "r", cmode, *File, *return)
-                              // "rw" retained as a request alias — the
-                              // native mode parser (mode.rs::parse_open_mode)
-                              // treats it as ReadWrite + require-exist,
-                              // semantically equivalent to POSIX "r+".
-                              // Spec/impl drift on "rw" vs "r+" tracked
-                              // as a follow-up; leaving "rw" acceptable
-                              // preserves existing caller code.
-                              "rw" \/ "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
+                              // M-12 (2026-09-04): the `"rw"` alias
+                              // was removed from the file-mode
+                              // disjunction; callers who previously
+                              // wrote `"rw"` migrate to `"r+"`.  Spec
+                              // §File modes enumerates exactly 8
+                              // forms (r/w/a/r+/w+/wx/w+x/a+).
+                              "w" \/ "w+" \/ "wx" \/ "w+x" \/ "a" \/ "a+" \/ "r+" => {
                                 // m-16-6 fix (2026-08-06, M-6 rev-2):
-                                // write-capable cap check.  Pre-fix
-                                // compared provisioned=="rw" which
-                                // never matches for File entries
-                                // (CONFIG_FILE_MODES has no "rw"), so
-                                // every non-"r" file open was silently
-                                // FSERR_UNSUPPORTED.  Post-fix mirrors
-                                // File.rho's write-capable-mode gate:
-                                // only "r" provisioned rejects; every
-                                // other file mode (r+, w, w+, a, a+, rw)
-                                // grants write.
+                                // write-capable cap check.  Only "r"
+                                // provisioned rejects; every other
+                                // file mode (r+, w, w+, a, a+, wx,
+                                // w+x) grants write.
                                 match provisioned {
                                   "r" => return!(
                                     [false, "FSERR_UNSUPPORTED",

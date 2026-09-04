@@ -2190,6 +2190,18 @@ mod tests {
         //   makes readN return FSERR_BUSY (wait:false) instead of
         //   racing the cursor.  Hard-fork-free per the
         //   f1r3node_no_running_network invariant.
+        // Prior anchor: 4e5ba950 (M-10 partial, 2026-09-04).
+        // 2026-09-04: M-12 fix (A1-F-09) — `"rw"` removed as a file
+        //   mode alias in Fs.openFile / Dir.openFile disjunctions and
+        //   in mode.rs::parse_open_mode.  `"r+"` newly added as its
+        //   own arm in parse_open_mode (pre-fix "rw" carried the
+        //   ReadWrite + require-exist semantics that spec §File modes
+        //   assigns to "r+").  Spec-shrinking alignment: spec §File
+        //   modes enumerates exactly 8 forms; accepting `"rw"` was
+        //   drift.  Callers who previously wrote `"rw"` as a FILE
+        //   mode migrate to `"r+"`; dir modes `"r"` / `"rw"` are
+        //   unchanged.  Hard-fork-free per the f1r3node_no_running_
+        //   network invariant.
         // Prior anchor: 1bca8631 (RH-A5-2, 2026-09-04).
         // 2026-09-04: M-10 partial (A5-RH-A5-1 fix) — Dir.openDir
         //   now extracts `options.get("path")` explicitly and rejects
@@ -2204,7 +2216,7 @@ mod tests {
         //   Dir.openFile create + exclusive) is scoped to a separate
         //   slice.  Hard-fork-free per the f1r3node_no_running_network
         //   invariant.
-        const EXPECTED: &str = "4e5ba950ae0407d197f8702901f07ce12585d93083e89de75a330d20bc05668b";
+        const EXPECTED: &str = "055277c66848f2f97aa21b456f2a8e2b299354fbaa24c379a6f4c9a68d2d42e6";
         assert_eq!(
             hex, EXPECTED,
             "M-12: compose_fs_genesis_source() hash changed.  If intentional \

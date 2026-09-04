@@ -147,7 +147,7 @@ in {{
   for(@(_, fs) <- fsCh) {{
     contract test_openfile_mode_attenuation(rhoSpec, _, ackCh) = {{
       for(@[true, dir] <- @fs!?("openDir", "shareddir", {{}})) {{
-        for(@r <- @dir!?("openFile", "child.txt", {{"mode": "rw"}})) {{
+        for(@r <- @dir!?("openFile", "child.txt", {{"mode": "r+"}})) {{
           match r {{
             [false, "FSERR_UNSUPPORTED", _] => {{
               rhoSpec!("assert", (true, "==", true),

@@ -796,7 +796,7 @@ async fn file_write_then_read_roundtrips() {
     // Rust via extract_reply (m-2 fix).
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@writeReply <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
             for (@seekReply <- @f!?("seek", 0, "set")) {
               for (@readReply <- @f!?("readN", 100)) {
@@ -837,7 +837,7 @@ async fn file_write_byte_array_options_empty_map_defaults_wait_false() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("writeByteArray", "hi".toUtf8Bytes(), {})) {
             match r {
               [true, _n] => @"out"!([true])
@@ -864,7 +864,7 @@ async fn file_write_byte_array_options_wait_true_dispatches_helper() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("writeByteArray", "hi".toUtf8Bytes(), {"wait": true})) {
             match r {
               [true, _n] => @"out"!([true])
@@ -889,7 +889,7 @@ async fn file_write_byte_array_options_wait_non_bool_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("writeByteArray", "hi".toUtf8Bytes(), {"wait": "yes"})) {
             @"out"!(r)
           }
@@ -912,7 +912,7 @@ async fn file_write_byte_array_arity_1_and_arity_2_coexist() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r1 <- @f!?("writeByteArray", "a".toUtf8Bytes())) {
             for (@r2 <- @f!?("writeByteArray", "b".toUtf8Bytes(), {"wait": true})) {
               @"out"!([r1, r2])
@@ -950,7 +950,7 @@ async fn file_write_bytes_options_wait_true_dispatches_helper() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
           for (@stream <- Stream!?(*emptyProducer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytes", stream, {"wait": true})) {
                 @"out"!(r)
               }
@@ -980,7 +980,7 @@ async fn file_write_bytes_options_wait_non_bool_rejects() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
           for (@stream <- Stream!?(*emptyProducer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytes", stream, {"wait": 42})) {
                 @"out"!(r)
               }
@@ -1011,7 +1011,7 @@ async fn file_write_bytes_arity_1_and_arity_2_coexist() {
           contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
           for (@s1 <- Stream!?(*emptyProducer, *byteBuilder);
                @s2 <- Stream!?(*emptyProducer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r1 <- @f!?("writeBytes", s1)) {
                 for (@r2 <- @f!?("writeBytes", s2, {"wait": true})) {
                   @"out"!([r1, r2])
@@ -1046,7 +1046,7 @@ async fn file_write_bytes_at_options_wait_true_dispatches_helper() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
           for (@stream <- Stream!?(*emptyProducer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, 100, stream, {"wait": true})) {
                 @"out"!(r)
               }
@@ -1074,7 +1074,7 @@ async fn file_write_bytes_at_options_wait_false_dispatches_correctly() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
           for (@stream <- Stream!?(*emptyProducer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, 100, stream, {})) {
                 @"out"!(r)
               }
@@ -1100,7 +1100,7 @@ async fn file_write_bytes_at_arity_3_and_arity_4_coexist() {
           contract byteBuilder(@vs, retCh) = { retCh!([true, vs.concatBytes()]) } |
           for (@s1 <- Stream!?(*emptyProducer, *byteBuilder);
                @s2 <- Stream!?(*emptyProducer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r3 <- @f!?("writeBytesAt", 0, 10, s1)) {
                 for (@r4 <- @f!?("writeBytesAt", 10, 10, s2, {"wait": true})) {
                   @"out"!([r3, r4])
@@ -1229,7 +1229,7 @@ async fn file_write_string_arity_2_wait_true_delegates_via_write_byte_array() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("writeString", "hi", {"wait": true})) {
             @"out"!(r)
           }
@@ -1251,7 +1251,7 @@ async fn file_write_string_arity_1_and_arity_2_coexist() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r1 <- @f!?("writeString", "a")) {
             for (@r2 <- @f!?("writeString", "b", {"wait": true})) {
               @"out"!([r1, r2])
@@ -1282,7 +1282,7 @@ async fn file_write_chars_arity_2_wait_true_dispatches_helper() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
           for (@stream <- Stream!?(*emptyProducer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeChars", stream, {"wait": true})) {
                 @"out"!(r)
               }
@@ -1310,7 +1310,7 @@ async fn file_write_chars_arity_2_wait_non_bool_rejects() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
           for (@stream <- Stream!?(*emptyProducer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeChars", stream, {"wait": "yes"})) {
                 @"out"!(r)
               }
@@ -1337,7 +1337,7 @@ async fn file_write_chars_arity_1_and_arity_2_coexist() {
           contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
           for (@s1 <- Stream!?(*emptyProducer, *charBuilder);
                @s2 <- Stream!?(*emptyProducer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r1 <- @f!?("writeChars", s1)) {
                 for (@r2 <- @f!?("writeChars", s2, {"wait": true})) {
                   @"out"!([r1, r2])
@@ -1370,7 +1370,7 @@ async fn file_write_line_arity_2_wait_true_dispatches_helper() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract charBuilder(@vs, retCh) = { retCh!([true, ""]) } |
           for (@stream <- Stream!?(*emptyProducer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeLine", stream, {"wait": true})) {
                 @"out"!(r)
               }
@@ -1401,7 +1401,7 @@ async fn file_write_lines_arity_2_wait_true_threads_options_per_line() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract listBuilder(@vs, retCh) = { retCh!([true, vs]) } |
           for (@lineStream <- Stream!?(*emptyProducer, *listBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeLines", lineStream, {"wait": true})) {
                 @"out"!(r)
               }
@@ -1429,7 +1429,7 @@ async fn file_write_lines_arity_2_wait_non_bool_rejects_at_outer_dispatch() {
           contract emptyProducer(retCh) = { retCh!([false, "EOS", ""]) } |
           contract listBuilder(@vs, retCh) = { retCh!([true, vs]) } |
           for (@lineStream <- Stream!?(*emptyProducer, *listBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeLines", lineStream, {"wait": "yes"})) {
                 @"out"!(r)
               }
@@ -1461,7 +1461,7 @@ async fn file_read_into_arity_2_wait_true_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -1488,7 +1488,7 @@ async fn file_read_at_into_arity_3_wait_true_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -1514,7 +1514,7 @@ async fn file_write_from_arity_2_wait_true_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@[true, token] <- @buf!?("beginFill")) {
@@ -1557,7 +1557,7 @@ async fn file_bytes_arity_1_wait_true_returns_stream_via_hand_off() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@streamReply <- @f!?("bytes", {"wait": true})) {
@@ -1601,7 +1601,7 @@ async fn file_bytes_at_arity_3_wait_true_returns_stream_via_hand_off() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@streamReply <- @f!?("bytesAt", 0, 2, {"wait": true})) {
               match streamReply {
@@ -1639,7 +1639,7 @@ async fn file_chars_arity_1_wait_true_returns_stream_via_hand_off() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@streamReply <- @f!?("chars", {"wait": true})) {
@@ -1679,7 +1679,7 @@ async fn file_read_line_arity_1_wait_true_returns_stream_via_hand_off() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab\n".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@streamReply <- @f!?("readLine", {"wait": true})) {
@@ -1720,7 +1720,7 @@ async fn file_lines_arity_1_wait_true_returns_stream_via_hand_off() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab\ncd\n".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@streamReply <- @f!?("lines", {"wait": true})) {
@@ -1758,7 +1758,7 @@ async fn file_write_from_at_arity_3_wait_true_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@[true, token] <- @buf!?("beginFill")) {
@@ -1790,7 +1790,7 @@ async fn file_close_then_read_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("readN", 10)) {
               @"out"!(r)
@@ -1833,7 +1833,7 @@ async fn file_write_non_bytearray_rejects_cleanly() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@bad <- @f!?("writeByteArray", 42)) {
             // Follow-up query verifies the file is still responsive.
             for (@sz <- @f!?("size")) {
@@ -1862,7 +1862,7 @@ async fn file_size_and_tell_after_write() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@writeReply <- @f!?("writeByteArray", "abcde".toUtf8Bytes())) {
             for (@sizeReply <- @f!?("size")) {
               for (@tellReply <- @f!?("tell")) {
@@ -1895,7 +1895,7 @@ async fn file_unknown_method_returns_fserr_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("wibble")) { @"out"!(r) }
         }
         "#,
@@ -2038,7 +2038,7 @@ async fn dir_open_file_rejects_mode_upgrade() {
     let src = with_libs(
         r#"
         for (@d <- Dir!?("/root", "", "r", "oracular", *File)) {
-          for (@r <- @d!?("openFile", "some/file.txt", {"mode": "rw"})) {
+          for (@r <- @d!?("openFile", "some/file.txt", {"mode": "r+"})) {
             @"out"!(r)
           }
         }
@@ -2153,7 +2153,7 @@ async fn file_close_propagates_fs_close_error() {
 {}
 
           |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
             for (@closeReply <- @f!?("close")) {{
               for (@subReply <- @f!?("readN", 8)) {{
                 @"out"!([closeReply, subReply])
@@ -2187,7 +2187,7 @@ async fn file_read_n_zero_returns_empty_bytes() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@writeReply <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@readReply <- @f!?("readN", 0)) {
               for (@tellReply <- @f!?("tell")) {
@@ -2221,7 +2221,7 @@ async fn file_read_n_negative_returns_bad_arg() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("readN", -1)) { @"out"!(r) }
         }
         "#,
@@ -2257,7 +2257,9 @@ async fn dir_open_file_rejects_unknown_mode() {
 /// m-3 sanity: all whitelisted modes are accepted on a "rw" Dir.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dir_open_file_accepts_all_whitelisted_modes() {
-    for mode in &["r", "rw", "w", "w+", "wx", "w+x", "a", "a+"] {
+    // M-12 (2026-09-04): `"rw"` removed as a file-mode alias; use
+    // `"r+"` — the spec-canonical form.
+    for mode in &["r", "r+", "w", "w+", "wx", "w+x", "a", "a+"] {
         let (space, reducer) =
             create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
                 .await;
@@ -2291,7 +2293,7 @@ async fn file_truncate_rw_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("truncate", 100)) { @"out"!(r) }
         }
         "#,
@@ -2326,7 +2328,7 @@ async fn file_truncate_negative_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("truncate", -1)) { @"out"!(r) }
         }
         "#,
@@ -2344,7 +2346,7 @@ async fn file_truncate_non_int_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("truncate", "not int")) { @"out"!(r) }
         }
         "#,
@@ -2365,7 +2367,7 @@ async fn file_chmod_valid_mode_bits_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chmod", 493)) { @"out"!(r) }
         }
         "#,
@@ -2389,7 +2391,7 @@ async fn file_chmod_string_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chmod", "0755")) { @"out"!(r) }
         }
         "#,
@@ -2409,7 +2411,7 @@ async fn file_chmod_zero_mode_bits_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chmod", 0)) { @"out"!(r) }
         }
         "#,
@@ -2428,7 +2430,7 @@ async fn file_chmod_out_of_range_int_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chmod", 4096)) { @"out"!(r) }
         }
         "#,
@@ -2448,7 +2450,7 @@ async fn file_chmod_negative_int_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chmod", -1)) { @"out"!(r) }
         }
         "#,
@@ -2468,7 +2470,7 @@ async fn file_chown_both_strings_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
         }
         "#,
@@ -2485,7 +2487,7 @@ async fn file_chown_nil_group_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chown", "alice", Nil)) { @"out"!(r) }
         }
         "#,
@@ -2502,7 +2504,7 @@ async fn file_chown_empty_owner_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chown", "", Nil)) { @"out"!(r) }
         }
         "#,
@@ -2520,7 +2522,7 @@ async fn file_chown_non_string_non_nil_owner_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("chown", 42, Nil)) { @"out"!(r) }
         }
         "#,
@@ -2980,7 +2982,7 @@ async fn file_chmod_dispatches_with_stored_rel_not_empty() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "config.json", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "config.json", "r+", "oracular")) {
           for (@_ <- @f!?("chmod", 420)) {
             for (@log <<- chmodLog) { @"out"!(log) }
           }
@@ -3019,7 +3021,7 @@ async fn file_chown_dispatches_with_stored_rel_not_empty() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "data.bin", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "data.bin", "r+", "oracular")) {
           for (@_ <- @f!?("chown", "alice", "wheel")) {
             for (@log <<- chownLog) { @"out"!(log) }
           }
@@ -3173,7 +3175,7 @@ async fn close_then_call(method_call: &str) -> Par {
             .await;
     let src = with_libs(&format!(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
           for (@_ <- @f!?("close")) {{
             for (@r <- @f{}) {{ @"out"!(r) }}
           }}
@@ -3269,7 +3271,7 @@ async fn file_write_string_round_trips_utf8() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@writeReply <- @f!?("writeString", "hello")) {
             for (@seekReply <- @f!?("seek", 0, "set")) {
               for (@readReply <- @f!?("readN", 100)) {
@@ -3300,7 +3302,7 @@ async fn file_write_string_non_string_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("writeString", 42)) { @"out"!(r) }
         }
         "#,
@@ -3320,7 +3322,7 @@ async fn file_seek_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("seek", "notint", "set")) { @"out"!(r) }
         }
         "#,
@@ -3338,7 +3340,7 @@ async fn file_seek_non_string_whence_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("seek", 0, 42)) { @"out"!(r) }
         }
         "#,
@@ -3358,7 +3360,7 @@ async fn file_flush_on_open_returns_true() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("flush")) { @"out"!(r) }
         }
         "#,
@@ -3506,7 +3508,7 @@ async fn file_bytes_streams_content_byte_by_byte() {
     // calls: [true, 0x61-BA], [true, 0x62-BA], [false, "EOS", ...].
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@bytesReply <- @f!?("bytes")) {
@@ -3552,7 +3554,7 @@ async fn file_bytes_empty_file_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@bytesReply <- @f!?("bytes")) {
             match bytesReply {
               [true, stream] => {
@@ -3578,7 +3580,7 @@ async fn file_bytes_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("bytes")) { @"out"!(r) }
           }
@@ -3600,7 +3602,7 @@ async fn file_bytes_chunk_concatenates_via_builder() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@bytesReply <- @f!?("bytes")) {
@@ -3636,7 +3638,7 @@ async fn file_bytes_at_positional_read() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 1, 2)) {
               match bytesReply {
@@ -3664,7 +3666,7 @@ async fn file_bytes_at_nil_length_reads_to_eof() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 2, Nil)) {
               match bytesReply {
@@ -3695,7 +3697,7 @@ async fn file_bytes_at_does_not_move_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 0, 4)) {
               match bytesReply {
@@ -3730,7 +3732,7 @@ async fn file_bytes_at_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("bytesAt", -1, 4)) { @"out"!(r) }
         }
         "#,
@@ -3748,7 +3750,7 @@ async fn file_bytes_at_negative_length_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("bytesAt", 0, -1)) { @"out"!(r) }
         }
         "#,
@@ -3766,7 +3768,7 @@ async fn file_bytes_at_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("bytesAt", "zero", 4)) { @"out"!(r) }
         }
         "#,
@@ -3785,7 +3787,7 @@ async fn file_bytes_at_bad_length_type_rejects() {
     // length must be Int OR Nil; a String is neither.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("bytesAt", 0, "all")) { @"out"!(r) }
         }
         "#,
@@ -3803,7 +3805,7 @@ async fn file_bytes_at_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("bytesAt", 0, 4)) { @"out"!(r) }
           }
@@ -3910,7 +3912,7 @@ async fn file_bytes_streams_across_refill_boundary() {
                       big => {
                         for (@_ <- mockFdCell) {
                           mockFdCell!((big, 0)) |
-                          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+                          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
                             for (@bytesReply <- @f!?("bytes")) {
                               match bytesReply {
                                 [true, stream] => {
@@ -3979,7 +3981,7 @@ async fn file_bytes_at_zero_length_yields_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 0, 0)) {
               match bytesReply {
@@ -4009,7 +4011,7 @@ async fn file_bytes_at_offset_beyond_eof_yields_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "ab".toUtf8Bytes())) {
             for (@bytesReply <- @f!?("bytesAt", 100, 10)) {
               match bytesReply {
@@ -4066,7 +4068,7 @@ async fn file_bytes_chunk_after_exhaustion_returns_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@bytesReply <- @f!?("bytes")) {
             match bytesReply {
               [true, stream] => {
@@ -4098,7 +4100,7 @@ async fn file_bytes_chunk_single_element() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "X".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@bytesReply <- @f!?("bytes")) {
@@ -4172,7 +4174,7 @@ async fn file_write_bytes_drains_stream_into_file() {
     let bootstrap = byte_stream_from_list(r#"["a".toUtf8Bytes(), "b".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -4210,7 +4212,7 @@ async fn file_write_bytes_empty_stream_is_no_op() {
     let bootstrap = byte_stream_from_list(r#"[]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 for (@sizeReply <- @f!?("size")) {
                   @"out"!([wbReply, sizeReply])
@@ -4266,7 +4268,7 @@ async fn file_write_bytes_on_closed_returns_fserr_closed() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@wbReply <- @f!?("writeBytes", stream)) {
                   @"out"!(wbReply)
@@ -4307,7 +4309,7 @@ async fn file_write_bytes_producer_error_reports_bytes_written() {
           } |
           contract byteBuilder(@vals, retCh) = { retCh!([true, vals.concatBytes()]) } |
           for (@stream <- Stream!?(*producer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 @"out"!(wbReply)
               }
@@ -4364,7 +4366,7 @@ async fn file_write_bytes_at_does_not_move_cursor() {
     let bootstrap = byte_stream_from_list(r#"["X".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
                 for (@wbaReply <- @f!?("writeBytesAt", 0, 1, stream)) {
                   for (@tellReply <- @f!?("tell")) {
@@ -4409,7 +4411,7 @@ async fn file_write_bytes_at_maxlength_caps_stream() {
     .replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wbaReply <- @f!?("writeBytesAt", 10, 2, stream)) {
                 for (@log <<- writeAtLog) {
                   @"out"!([wbaReply, log])
@@ -4465,7 +4467,7 @@ async fn file_write_bytes_at_zero_maxlength_no_op() {
     let bootstrap = byte_stream_from_list(r#"["a".toUtf8Bytes(), "b".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wbaReply <- @f!?("writeBytesAt", 0, 0, stream)) {
                 for (@log <<- writeAtLog) {
                   @"out"!([wbaReply, log])
@@ -4500,7 +4502,7 @@ async fn file_write_bytes_at_negative_offset_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytesAt", -1, 1, stream)) { @"out"!(r) }
             }
             "#,
@@ -4520,7 +4522,7 @@ async fn file_write_bytes_at_negative_maxlength_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, -1, stream)) { @"out"!(r) }
             }
             "#,
@@ -4540,7 +4542,7 @@ async fn file_write_bytes_at_non_int_offset_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytesAt", "zero", 1, stream)) { @"out"!(r) }
             }
             "#,
@@ -4560,7 +4562,7 @@ async fn file_write_bytes_at_non_int_maxlength_rejects() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@r <- @f!?("writeBytesAt", 0, "one", stream)) { @"out"!(r) }
             }
             "#,
@@ -4600,7 +4602,7 @@ async fn file_write_bytes_at_on_closed_returns_fserr_closed() {
     let bootstrap = byte_stream_from_list(r#"["x".toUtf8Bytes()]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@r <- @f!?("writeBytesAt", 0, 1, stream)) { @"out"!(r) }
               }
@@ -4925,7 +4927,7 @@ async fn file_chars_streams_ascii_content() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@charsReply <- @f!?("chars")) {
@@ -5023,7 +5025,7 @@ async fn file_chars_empty_file_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@charsReply <- @f!?("chars")) {
             match charsReply {
               [true, stream] => {
@@ -5049,7 +5051,7 @@ async fn file_chars_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("chars")) { @"out"!(r) }
           }
@@ -5072,7 +5074,7 @@ async fn file_chars_chunk_returns_folded_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@charsReply <- @f!?("chars")) {
@@ -5111,7 +5113,7 @@ async fn file_chars_invalid_start_byte_returns_fserr_io() {
         // FSERR_IO on the first next().
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -5146,7 +5148,7 @@ async fn file_chars_truncated_utf8_at_eof_returns_fserr_io() {
         // yields FSERR_IO.
         for (@_ <- mockFdCell) {
           mockFdCell!(("61c3".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -5216,7 +5218,7 @@ async fn file_write_bytes_non_string_msg_does_not_hang() {
           } |
           contract byteBuilder(@vals, retCh) = { retCh!([true, vals.concatBytes()]) } |
           for (@stream <- Stream!?(*producer, *byteBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wbReply <- @f!?("writeBytes", stream)) {
                 @"out"!(wbReply)
               }
@@ -5270,7 +5272,7 @@ async fn file_chars_rejects_overlong_2byte_lead() {
         // first next() must return FSERR_IO — not two U+FFFD chars.
         for (@_ <- mockFdCell) {
           mockFdCell!(("c080".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -5303,7 +5305,7 @@ async fn file_chars_rejects_out_of_range_4byte_lead() {
         // File starts with 0xF5 (would encode > U+10FFFF).
         for (@_ <- mockFdCell) {
           mockFdCell!(("f5808080".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -5338,7 +5340,7 @@ async fn file_chars_accepts_smallest_valid_2byte_lead() {
         // File is exactly 0xC2 0x80 — U+0080 (control character).
         for (@_ <- mockFdCell) {
           mockFdCell!(("c280".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -5371,7 +5373,7 @@ async fn file_chars_accepts_largest_valid_4byte_lead() {
         // File is exactly 0xF4 0x8F 0xBF 0xBD — U+10FFFD (private-use).
         for (@_ <- mockFdCell) {
           mockFdCell!(("f48fbfbd".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@charsReply <- @f!?("chars")) {
               match charsReply {
                 [true, stream] => {
@@ -5411,7 +5413,7 @@ async fn file_lines_as_strings_two_terminated_lines() {
     // File bytes: "abc" + 0x0A + "def" + 0x0A
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes(),
              "def".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -5460,7 +5462,7 @@ async fn file_lines_as_strings_emits_unterminated_final_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes(),
              "def".toUtf8Bytes()].concatBytes())) {
@@ -5508,7 +5510,7 @@ async fn file_lines_as_strings_empty_file_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@lasReply <- @f!?("linesAsStrings", 100)) {
             match lasReply {
               [true, stream] => {
@@ -5536,7 +5538,7 @@ async fn file_lines_as_strings_single_lf_yields_empty_then_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@lasReply <- @f!?("linesAsStrings", 100)) {
@@ -5584,7 +5586,7 @@ async fn file_lines_as_strings_over_cap_returns_quota_exceeded() {
     // before reaching EOF or LF.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdefghij".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@lasReply <- @f!?("linesAsStrings", 5)) {
@@ -5616,7 +5618,7 @@ async fn file_lines_as_strings_at_cap_boundary_succeeds() {
     // Line is "abcde\n" (5 code points then LF).  cap = 5 → succeeds.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcde".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -5677,7 +5679,7 @@ async fn file_lines_as_strings_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("linesAsStrings", 100)) { @"out"!(r) }
           }
@@ -5697,7 +5699,7 @@ async fn file_lines_as_strings_negative_cap_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("linesAsStrings", -1)) { @"out"!(r) }
         }
         "#,
@@ -5715,7 +5717,7 @@ async fn file_lines_as_strings_non_int_cap_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("linesAsStrings", "many")) { @"out"!(r) }
         }
         "#,
@@ -5747,7 +5749,7 @@ async fn file_for_each_line_visits_every_line() {
               returnCh!([true])
             }
           } |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@_ <- @f!?("writeByteArray",
               ["one".toUtf8Bytes(), "0a".hexToBytes(),
                "two".toUtf8Bytes(), "0a".hexToBytes(),
@@ -5804,7 +5806,7 @@ async fn file_for_each_line_forwards_quota_error() {
               returnCh!([true])
             }
           } |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@_ <- @f!?("writeByteArray", "abcdefghij".toUtf8Bytes())) {
               for (@_ <- @f!?("seek", 0, "set")) {
                 for (@feReply <- @f!?("forEachLine", *myHandler, 5)) {
@@ -5851,7 +5853,7 @@ async fn file_lines_as_strings_cap_zero_on_non_empty_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -5884,7 +5886,7 @@ async fn file_lines_as_strings_cap_zero_on_empty_file_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@lasReply <- @f!?("linesAsStrings", 0)) {
             match lasReply {
               [true, stream] => {
@@ -5915,7 +5917,7 @@ async fn file_lines_as_strings_crlf_retains_cr_in_string() {
     // "line1\r\nline2\r\n" — hex 0d0a between lines and at end.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["line1".toUtf8Bytes(), "0d0a".hexToBytes(),
              "line2".toUtf8Bytes(), "0d0a".hexToBytes()].concatBytes())) {
@@ -6005,7 +6007,7 @@ async fn file_lines_as_strings_malformed_utf8_substitutes_replacement_char() {
     // File: "a" + 0xFF + "b" + LF
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "ff".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -6077,7 +6079,7 @@ async fn file_lines_as_strings_refill_across_lf_boundary() {
                           bigLine => {
                             for (@_ <- mockFdCell) {
                               mockFdCell!((bigLine, 0)) |
-                              for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+                              for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
                                 for (@lasReply <- @f!?("linesAsStrings", 10000)) {
                                   match lasReply {
                                     [true, stream] => {
@@ -6180,7 +6182,7 @@ async fn file_write_chars_drains_stream_into_file() {
     let bootstrap = char_stream_from_list(r#"["a", "b", "c"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -6215,7 +6217,7 @@ async fn file_write_chars_utf8_encodes_multibyte() {
     let bootstrap = char_stream_from_list("[\"a\", \"\u{00E9}\", \"b\"]").replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -6248,7 +6250,7 @@ async fn file_write_chars_empty_stream_is_no_op() {
     let bootstrap = char_stream_from_list(r#"[]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 for (@sizeReply <- @f!?("size")) {
                   @"out"!([wcReply, sizeReply])
@@ -6301,7 +6303,7 @@ async fn file_write_chars_on_closed_returns_fserr_closed() {
     let bootstrap = char_stream_from_list(r#"["x"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@r <- @f!?("writeChars", stream)) { @"out"!(r) }
               }
@@ -6345,7 +6347,7 @@ async fn file_write_chars_non_string_element_rejects() {
             }
           } |
           for (@stream <- Stream!?(*producer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wcReply <- @f!?("writeChars", stream)) {
                 @"out"!(wcReply)
               }
@@ -6398,7 +6400,7 @@ async fn file_write_line_appends_lf_after_chars() {
     let bootstrap = char_stream_from_list(r#"["a", "b"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wlReply <- @f!?("writeLine", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -6436,7 +6438,7 @@ async fn file_write_line_empty_stream_writes_just_lf() {
     let bootstrap = char_stream_from_list(r#"[]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wlReply <- @f!?("writeLine", stream)) {
                 for (@_ <- @f!?("seek", 0, "set")) {
                   for (@readReply <- @f!?("readN", 100)) {
@@ -6495,7 +6497,7 @@ async fn file_write_line_on_closed_returns_fserr_closed() {
     let bootstrap = char_stream_from_list(r#"["x"]"#).replace(
         "%TEST_SNIPPET%",
         r#"
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@_ <- @f!?("close")) {
                 for (@r <- @f!?("writeLine", stream)) { @"out"!(r) }
               }
@@ -6540,7 +6542,7 @@ async fn file_write_line_producer_error_omits_lf() {
             }
           } |
           for (@stream <- Stream!?(*producer, *charBuilder)) {
-            for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+            for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
               for (@wlReply <- @f!?("writeLine", stream)) {
                 for (@sizeReply <- @f!?("size")) {
                   @"out"!([wlReply, sizeReply])
@@ -6659,7 +6661,7 @@ async fn file_write_line_lf_write_failure_is_forwarded() {
               }}
             }} |
             for (@stream <- Stream!?(*producer, *charBuilder)) {{
-              for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+              for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
                 for (@wlReply <- @f!?("writeLine", stream)) {{
                   @"out"!(wlReply)
                 }}
@@ -6695,7 +6697,7 @@ async fn file_read_into_fills_buffer_from_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdef".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               // Allocate a 4-byte buffer.
@@ -6769,7 +6771,7 @@ async fn file_read_into_at_eof_returns_zero_bytes_and_eof_true() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           // Empty file; cursor already at position 0 == EOF.
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -6817,7 +6819,7 @@ async fn file_read_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -6850,7 +6852,7 @@ async fn file_read_into_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               // Take the lease first.
@@ -6900,7 +6902,7 @@ async fn buffer_to_byte_array_non_int_cap_returns_bufferr_invalid_argument() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -6941,7 +6943,7 @@ async fn buffer_to_byte_array_negative_cap_returns_bufferr_invalid_capacity() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -6980,7 +6982,7 @@ async fn buffer_to_byte_array_cap_below_ell_returns_fserr_quota_exceeded() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -7016,7 +7018,7 @@ async fn buffer_to_byte_array_cap_exactly_at_ell_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcd".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -7057,7 +7059,7 @@ async fn file_write_from_drains_buffer_into_file() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 8)) {
               // Fill the buffer via its own lease.
@@ -7110,7 +7112,7 @@ async fn file_write_from_empty_buffer_is_no_op() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@wfReply <- @f!?("writeFrom", buf)) {
@@ -7167,7 +7169,7 @@ async fn file_write_from_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -7195,7 +7197,7 @@ async fn file_write_from_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               // Acquire the fill lease so toByteArray will refuse.
@@ -7226,7 +7228,7 @@ async fn file_read_into_then_write_from_round_trip() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           // Prime with "hello".
           for (@_ <- @f!?("writeByteArray", "hello".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -7295,7 +7297,7 @@ async fn file_read_into_utf8_buffer_truncates_at_codepoint_boundary() {
     // force the boundary case).
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           // Prime file with "aé" (0x61 0xC3 0xA9).
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes()].concatBytes())) {
@@ -7382,7 +7384,7 @@ async fn file_read_into_byte_buffer_ignores_codepoint_boundary() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -7488,7 +7490,7 @@ async fn file_read_at_into_positional_fill_does_not_move_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdef".toUtf8Bytes())) {
             // Cursor now at 6.  readAtInto at offset 2 shouldn't move it.
             for (@alloc <- Allocator!?()) {
@@ -7558,7 +7560,7 @@ async fn file_read_at_into_utf8_truncates_no_seek_back() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -7658,7 +7660,7 @@ async fn file_read_at_into_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("readAtInto", -1, buf)) { @"out"!(r) }
@@ -7680,7 +7682,7 @@ async fn file_read_at_into_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("readAtInto", "zero", buf)) { @"out"!(r) }
@@ -7702,7 +7704,7 @@ async fn file_read_at_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -7726,7 +7728,7 @@ async fn file_read_at_into_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@[true, _tok] <- @buf!?("beginFill")) {
@@ -7756,7 +7758,7 @@ async fn file_write_from_at_positional_write_does_not_move_cursor() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "aaaaaa".toUtf8Bytes())) {
             // Cursor at 6.
             for (@alloc <- Allocator!?()) {
@@ -7838,7 +7840,7 @@ async fn file_write_from_at_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
@@ -7862,7 +7864,7 @@ async fn file_write_from_at_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("writeFromAt", -1, buf)) { @"out"!(r) }
@@ -7884,7 +7886,7 @@ async fn file_write_from_at_non_int_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               for (@r <- @f!?("writeFromAt", "zero", buf)) { @"out"!(r) }
@@ -7906,7 +7908,7 @@ async fn file_write_from_at_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 4)) {
               // Take the lease so toByteArray refuses.
@@ -7937,7 +7939,7 @@ async fn file_read_line_yields_chars_then_eos_at_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes(),
              "def".toUtf8Bytes()].concatBytes())) {
@@ -7991,7 +7993,7 @@ async fn file_read_line_advances_cursor_past_lf_for_next_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes()].concatBytes())) {
@@ -8042,7 +8044,7 @@ async fn file_read_line_at_eof_pre_exhausted_stream() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@[true, stream] <- @f!?("readLine")) {
             for (@r <- @stream!?("next")) { @"out"!(r) }
           }
@@ -8064,7 +8066,7 @@ async fn file_read_line_blank_line_yields_eos_immediately() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@[true, stream] <- @f!?("readLine")) {
@@ -8130,7 +8132,7 @@ async fn file_read_line_chunk_returns_line_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hello".toUtf8Bytes(), "0a".hexToBytes(),
              "world".toUtf8Bytes()].concatBytes())) {
@@ -8157,7 +8159,7 @@ async fn file_read_line_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("readLine")) { @"out"!(r) }
           }
@@ -8238,7 +8240,7 @@ async fn file_read_line_into_happy_path() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8281,7 +8283,7 @@ async fn file_read_line_into_eof_returns_zero_and_eof_flag() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
               for (@r <- @f!?("readLineInto", buf)) { @"out"!(r) }
@@ -8306,7 +8308,7 @@ async fn file_read_line_into_blank_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -8335,7 +8337,7 @@ async fn file_read_line_into_truncated_when_line_exceeds_buffer() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcdef".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8379,7 +8381,7 @@ async fn file_read_line_into_unterminated_final_line_marks_eof() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -8419,7 +8421,7 @@ async fn file_read_line_into_utf8_boundary_marks_truncated_preserves_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -8465,7 +8467,7 @@ async fn file_read_line_into_sequential_reads_advance_correctly() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["one".toUtf8Bytes(), "0a".hexToBytes(),
              "two".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -8512,7 +8514,7 @@ async fn file_read_line_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
@@ -8536,7 +8538,7 @@ async fn file_read_line_into_forwards_lease_conflict() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
               for (@[true, _tok] <- @buf!?("beginFill")) {
@@ -8596,7 +8598,7 @@ async fn file_read_line_into_full_buffer_returns_truncated_not_eof() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8654,7 +8656,7 @@ async fn file_read_line_into_malformed_utf8_at_cursor_returns_fserr_io() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@buf <- Buffer!?(10, "utf8")) {
               for (@rReply <- @f!?("readLineInto", buf)) {
                 for (@baReply <- @buf!?("toByteArray", 1073741824)) {
@@ -8693,7 +8695,7 @@ async fn file_read_line_into_content_matches_capacity_defers_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8756,7 +8758,7 @@ async fn file_read_line_into_buffer_strictly_larger_than_content_plus_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8802,7 +8804,7 @@ async fn file_read_line_into_utf8_chained_after_truncation() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -8872,7 +8874,7 @@ async fn file_read_line_into_arity_2_wait_true_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8904,7 +8906,7 @@ async fn file_read_line_into_arity_2_wait_false_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abc".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -8936,7 +8938,7 @@ async fn file_read_line_into_arity_2_bad_wait_arg_returns_bad_arg() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, buf] <- @alloc!?("allocBytes", 10)) {
               for (@r <- @f!?("readLineInto", buf, {"wait": 42})) {
@@ -8968,7 +8970,7 @@ async fn file_read_lines_into_arity_2_wait_true_dispatches() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9004,7 +9006,7 @@ async fn file_read_line_partial_drain_leaves_cursor_at_fsread_chunk_end() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9054,7 +9056,7 @@ async fn file_read_line_malformed_utf8_start_byte_returns_fserr_io() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@[true, stream] <- @f!?("readLine")) {
               for (@r <- @stream!?("next")) { @"out"!(r) }
             }
@@ -9093,7 +9095,7 @@ async fn file_read_line_across_refill_boundary() {
           new lineCh in {
             mkLine!(*lineCh) |
             for (@line <- lineCh) {
-              for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+              for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
                 for (@_ <- @f!?("writeByteArray",
                   [line, "0a".hexToBytes(), "b".toUtf8Bytes()].concatBytes())) {
                   for (@_ <- @f!?("seek", 0, "set")) {
@@ -9130,7 +9132,7 @@ async fn file_lines_on_empty_file_yields_immediate_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@[true, outer] <- @f!?("lines")) {
             for (@r <- @outer!?("next")) { @"out"!(r) }
           }
@@ -9152,7 +9154,7 @@ async fn file_lines_two_lines_produces_two_inners_then_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9220,7 +9222,7 @@ async fn file_lines_unterminated_final_line_still_produced() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes()].concatBytes())) {
@@ -9280,7 +9282,7 @@ async fn file_lines_blank_line_yields_empty_inner_then_eos() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@[true, outer] <- @f!?("lines")) {
@@ -9321,7 +9323,7 @@ async fn file_lines_single_active_inner_rule_force_drains_active() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9377,7 +9379,7 @@ async fn file_lines_drained_inner_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9416,7 +9418,7 @@ async fn file_lines_chunk_returns_fserr_unsupported() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9443,7 +9445,7 @@ async fn file_lines_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("lines")) { @"out"!(r) }
           }
@@ -9470,7 +9472,7 @@ async fn file_write_lines_appends_terminated_copy_of_each_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes(),
              "by".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9548,7 +9550,7 @@ async fn file_write_lines_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("writeLines", "not-a-stream")) { @"out"!(r) }
           }
@@ -9570,7 +9572,7 @@ async fn file_write_lines_empty_stream_returns_true_no_bytes() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@[true, outer] <- @f!?("lines")) {
             for (@wReply <- @f!?("writeLines", outer)) {
               for (@sizeReply <- @f!?("size")) {
@@ -9608,7 +9610,7 @@ async fn file_lines_force_drain_hits_eof_during_drain() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes()].concatBytes())) {
@@ -9671,7 +9673,7 @@ async fn file_lines_drained_inner_chunk_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["ab".toUtf8Bytes(), "0a".hexToBytes(),
              "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9707,7 +9709,7 @@ async fn file_lines_drained_inner_fold_returns_fserr_closed() {
         r#"
         new noopCombine in {
           contract noopCombine(@_acc, @_v, retCh) = { retCh!([true, Nil]) } |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@_ <- @f!?("writeByteArray",
               ["ab".toUtf8Bytes(), "0a".hexToBytes(),
                "cd".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -9744,7 +9746,7 @@ async fn file_lines_three_blank_lines_yield_three_empty_inners() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a0a0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@[true, outer] <- @f!?("lines")) {
@@ -9798,7 +9800,7 @@ async fn file_write_lines_non_stream_arg_yields_no_reply() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("writeLines", "not-a-stream")) { @"out"!(r) }
         }
         "#,
@@ -9832,7 +9834,7 @@ async fn file_lines_inner_yields_multibyte_utf8_chars() {
     // File: "aé\n" — 'a' (1 byte) + 'é' (2 bytes, c3 a9) + LF.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -9916,7 +9918,7 @@ async fn file_write_lines_producer_error_reports_lines_written() {
                 retCh!([false, "FSERR_UNSUPPORTED", "chunk unsupported"])
               } |
               for (@outerHandle <- Stream!?(*outerProd, *outerBuild)) {
-                for (@f <- File!?(1, "/root", "out.txt", "rw", "oracular")) {
+                for (@f <- File!?(1, "/root", "out.txt", "r+", "oracular")) {
                   for (@r <- @f!?("writeLines", outerHandle)) { @"out"!(r) }
                 }
               }
@@ -9958,7 +9960,7 @@ async fn file_lines_outer_eos_is_cached() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@[true, outer] <- @f!?("lines")) {
             for (@r1 <- @outer!?("next")) {
               for (@r2 <- @outer!?("next")) {
@@ -9997,7 +9999,7 @@ async fn file_lines_inner_fserr_io_is_cached() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@[true, outer] <- @f!?("lines")) {
               for (@[true, inner1] <- @outer!?("next")) {
                 for (@r1 <- @inner1!?("next")) {
@@ -10034,7 +10036,7 @@ async fn file_lines_live_inner_chunk_returns_line_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes(),
              "by".toUtf8Bytes()].concatBytes())) {
@@ -10308,7 +10310,7 @@ async fn file_read_lines_into_happy_path() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["one".toUtf8Bytes(), "0a".hexToBytes(),
              "two".toUtf8Bytes(), "0a".hexToBytes(),
@@ -10363,7 +10365,7 @@ async fn file_read_lines_into_stops_at_m() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes(),
@@ -10395,7 +10397,7 @@ async fn file_read_lines_into_eof_before_rows_full() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -10430,7 +10432,7 @@ async fn file_read_lines_into_truncates_overflow_line() {
     // No more content → row 1 not filled; nLines=1, eof=true, trunc=true.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcdefghij".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -10471,7 +10473,7 @@ async fn file_read_lines_into_empty_file() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@alloc <- Allocator!?()) {
             for (@[true, rows] <- @alloc!?("allocRows", 3, 10, "bytes")) {
               for (@r <- @f!?("readLinesInto", rows)) { @"out"!(r) }
@@ -10496,7 +10498,7 @@ async fn file_read_lines_into_blank_lines() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "0a0a0a".hexToBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -10536,7 +10538,7 @@ async fn file_read_lines_into_unterminated_final_line() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abc".toUtf8Bytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
               for (@alloc <- Allocator!?()) {
@@ -10576,7 +10578,7 @@ async fn file_read_lines_into_on_closed_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, rows] <- @alloc!?("allocRows", 2, 10, "bytes")) {
@@ -10621,7 +10623,7 @@ async fn file_for_each_line_on_closed_returns_fserr_closed() {
     let src = with_libs(
         r#"
         new noopHandler in {
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@_ <- @f!?("close")) {
               for (@r <- @f!?("forEachLine", *noopHandler, 16)) {
                 @"out"!(r)
@@ -10675,7 +10677,7 @@ async fn file_read_lines_into_leaves_cursor_at_next_line() {
     // should return "three\n" (6 bytes).
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["one".toUtf8Bytes(), "0a".hexToBytes(),
              "two".toUtf8Bytes(), "0a".hexToBytes(),
@@ -10810,7 +10812,7 @@ async fn file_read_lines_into_overflow_then_normal_next_line() {
     // drain consumes "defghij" + LF; row 1 reads "XY".
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["abcdefghij".toUtf8Bytes(), "0a".hexToBytes(),
              "XY".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -10885,7 +10887,7 @@ async fn file_read_lines_into_revoked_rows_forwards_error() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -10963,7 +10965,7 @@ async fn file_read_lines_into_utf8_rows_multibyte_content() {
     // utf8 Rows with innerN=10 (cap 40 bytes) — plenty of room.
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["caf".toUtf8Bytes(), "c3a9".hexToBytes(),
              "0a".hexToBytes()].concatBytes())) {
@@ -11006,7 +11008,7 @@ async fn file_read_lines_into_mixed_blank_and_content_lines() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "0a".hexToBytes(),
@@ -11061,7 +11063,7 @@ async fn file_read_lines_into_pre_filled_inner_is_cleared() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -11105,7 +11107,7 @@ async fn file_read_lines_into_utf8_malformed_forwards_fserr_io() {
         r#"
         for (@_ <- mockFdCell) {
           mockFdCell!(("ff".hexToBytes(), 0)) |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
             for (@alloc <- Allocator!?()) {
               for (@[true, rows] <- @alloc!?("allocRows", 2, 10, "utf8")) {
                 for (@r <- @f!?("readLinesInto", rows)) { @"out"!(r) }
@@ -11129,7 +11131,7 @@ async fn file_read_lines_into_eof_cursor_at_file_size() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["a".toUtf8Bytes(), "0a".hexToBytes(),
              "b".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -11174,7 +11176,7 @@ async fn file_read_lines_into_line_exactly_at_cap_plus_lf() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["1234".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
             for (@_ <- @f!?("seek", 0, "set")) {
@@ -11732,7 +11734,7 @@ async fn file_truncate_preserves_cursor_position() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray", "abcdefgh".toUtf8Bytes())) {
             // Cursor at 8.  Truncate to 4.  Cursor should remain 8.
             for (@_ <- @f!?("truncate", 4)) {
@@ -12568,7 +12570,7 @@ async fn stdout_write_lines_roundtrip_from_file() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("writeByteArray",
             ["hi".toUtf8Bytes(), "0a".hexToBytes(),
              "by".toUtf8Bytes(), "0a".hexToBytes()].concatBytes())) {
@@ -13309,7 +13311,7 @@ async fn fs_open_file_happy_path() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "config.json": ("/root", "config.json", "rw", "file", "oracular")
+          "config.json": ("/root", "config.json", "r+", "file", "oracular")
         })) {
           for (@openReply <- @fs!?("openFile", "config.json", {"mode": "r"})) {
             match openReply {
@@ -13359,7 +13361,7 @@ async fn fs_open_file_downgrade_r_on_rw_provisioned_succeeds() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "data.bin", {"mode": "r"})) {
             @"out"!(r)
@@ -14023,9 +14025,9 @@ async fn fs_open_file_returns_working_file() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, file] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, file] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
             for (@_ <- @file!?("writeByteArray", "hello".toUtf8Bytes())) {
               for (@_ <- @file!?("seek", 0, "set")) {
                 for (@r <- @file!?("readN", 100)) { @"out"!(r) }
@@ -14125,7 +14127,7 @@ async fn fs_open_file_unknown_mode_rejects() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "cfg.json": ("/root", "cfg.json", "rw", "file", "oracular")
+          "cfg.json": ("/root", "cfg.json", "r+", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "cfg.json", {"mode": "z"})) { @"out"!(r) }
         }
@@ -14245,7 +14247,7 @@ async fn fs_open_file_write_mode_succeeds_helper(mode: &str) {
     let src = with_libs(&format!(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {{
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         }})) {{
           for (@r <- @fs!?("openFile", "data.bin", {{"mode": "{mode}"}})) {{
             @"out"!(r)
@@ -14508,7 +14510,7 @@ async fn fs_open_file_extra_options_keys_ignored() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
           for (@r <- @fs!?("openFile", "data.bin",
                           {"mode": "r", "create": true, "exclusive": false})) {
@@ -14574,9 +14576,9 @@ async fn fs_open_file_different_modes_yield_distinct_handles() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
             for (@_ <- @f1!?("close")) {
               for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "r"})) {
                 for (@r <- @f2!?("tell")) { @"out"!(r) }
@@ -14604,12 +14606,12 @@ async fn fs_open_file_different_names_yield_distinct_handles() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "a.bin": ("/root", "a.bin", "rw", "file", "oracular"),
-          "b.bin": ("/root", "b.bin", "rw", "file", "oracular")
+          "a.bin": ("/root", "a.bin", "r+", "file", "oracular"),
+          "b.bin": ("/root", "b.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, f1] <- @fs!?("openFile", "a.bin", {"mode": "rw"})) {
+          for (@[true, f1] <- @fs!?("openFile", "a.bin", {"mode": "r+"})) {
             for (@_ <- @f1!?("close")) {
-              for (@[true, f2] <- @fs!?("openFile", "b.bin", {"mode": "rw"})) {
+              for (@[true, f2] <- @fs!?("openFile", "b.bin", {"mode": "r+"})) {
                 for (@r <- @f2!?("tell")) { @"out"!(r) }
               }
             }
@@ -14699,14 +14701,14 @@ async fn fs_open_file_across_fs_instances_yields_distinct_handles() {
     let src = with_libs(
         r#"
         for (@fs1 <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, h1] <- @fs1!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, h1] <- @fs1!?("openFile", "data.bin", {"mode": "r+"})) {
             for (@_ <- @h1!?("close")) {
               for (@fs2 <- Fs!?(0, 1, 2, {
-                "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+                "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
               })) {
-                for (@[true, h2] <- @fs2!?("openFile", "data.bin", {"mode": "rw"})) {
+                for (@[true, h2] <- @fs2!?("openFile", "data.bin", {"mode": "r+"})) {
                   for (@r <- @h2!?("tell")) { @"out"!(r) }
                 }
               }
@@ -14734,11 +14736,11 @@ async fn fs_open_file_repeated_same_key_all_succeed() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@r1 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-            for (@r2 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-              for (@r3 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@r1 <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+            for (@r2 <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+              for (@r3 <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
                 @"out"!([r1, r2, r3])
               }
             }
@@ -14780,10 +14782,10 @@ async fn fs_open_file_twice_yields_distinct_handles_with_independent_state() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
               for (@_ <- @f1!?("close")) {
                 // f1 is now closed; f2 must still be open — proves
                 // independent per-agent state (no shared cache slot).
@@ -14922,10 +14924,10 @@ async fn fs_open_file_reply_shape_is_two_elems() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@r1 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-            for (@r2 <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@r1 <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+            for (@r2 <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
               @"out"!([r1, r2])
             }
           }
@@ -14967,12 +14969,12 @@ async fn fs_open_file_three_concurrent_opens_all_functional() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "a.bin": ("/root", "a.bin", "rw", "file", "oracular"),
-          "b.bin": ("/root", "b.bin", "rw", "file", "oracular")
+          "a.bin": ("/root", "a.bin", "r+", "file", "oracular"),
+          "b.bin": ("/root", "b.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, fA_rw] <- @fs!?("openFile", "a.bin", {"mode": "rw"})) {
+          for (@[true, fA_rw] <- @fs!?("openFile", "a.bin", {"mode": "r+"})) {
             for (@[true, fA_r] <- @fs!?("openFile", "a.bin", {"mode": "r"})) {
-              for (@[true, fB_rw] <- @fs!?("openFile", "b.bin", {"mode": "rw"})) {
+              for (@[true, fB_rw] <- @fs!?("openFile", "b.bin", {"mode": "r+"})) {
                 for (@t1 <- @fA_rw!?("tell")) {
                   for (@t2 <- @fA_r!?("tell")) {
                     for (@t3 <- @fB_rw!?("tell")) {
@@ -15010,13 +15012,13 @@ async fn fs_open_file_after_close_yields_fresh_handle() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
             for (@_ <- @f1!?("close")) {
-              for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+              for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
                 for (@_ <- @f2!?("close")) {
-                  for (@[true, f3] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+                  for (@[true, f3] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
                     for (@tellReply <- @f3!?("tell")) {
                       @"out"!(tellReply)
                     }
@@ -15799,13 +15801,13 @@ async fn cross_fs_alice_manipulation_invisible_to_bob() {
         r#"
         // Alice's Fs, Bob's Fs — same logical bundle, distinct instances.
         for (@fsAlice <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
           for (@fsBob <- Fs!?(0, 1, 2, {
-            "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+            "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
           })) {
-            for (@[true, fAlice] <- @fsAlice!?("openFile", "data.bin", {"mode": "rw"})) {
-              for (@[true, fBob] <- @fsBob!?("openFile", "data.bin", {"mode": "rw"})) {
+            for (@[true, fAlice] <- @fsAlice!?("openFile", "data.bin", {"mode": "r+"})) {
+              for (@[true, fBob] <- @fsBob!?("openFile", "data.bin", {"mode": "r+"})) {
                 // Alice manipulates her cap (close = revocation).
                 for (@_ <- @fAlice!?("close")) {
                   // Bob writes to his cap.  If Alice's close had ANY
@@ -15877,11 +15879,11 @@ async fn fs_open_file_consensus_mode_per_cap_chown_routing() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "orc.txt": ("/root", "orc.txt", "rw", "file", "oracular"),
-          "con.txt": ("/root", "con.txt", "rw", "file", "consensus")
+          "orc.txt": ("/root", "orc.txt", "r+", "file", "oracular"),
+          "con.txt": ("/root", "con.txt", "r+", "file", "consensus")
         })) {
-          for (@orcOpen <- @fs!?("openFile", "orc.txt", {"mode": "rw"})) {
-            for (@conOpen <- @fs!?("openFile", "con.txt", {"mode": "rw"})) {
+          for (@orcOpen <- @fs!?("openFile", "orc.txt", {"mode": "r+"})) {
+            for (@conOpen <- @fs!?("openFile", "con.txt", {"mode": "r+"})) {
               match [orcOpen, conOpen] {
                 [[true, orcFile], [true, conFile]] => {
                   for (@_orcChown <- @orcFile!?("chown", "alice", "wheel")) {
@@ -15937,11 +15939,11 @@ async fn fs_open_file_oracle_and_consensus_caps_over_shared_path_are_independent
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "same-orc": ("/root", "shared.txt", "rw", "file", "oracular"),
-          "same-con": ("/root", "shared.txt", "rw", "file", "consensus")
+          "same-orc": ("/root", "shared.txt", "r+", "file", "oracular"),
+          "same-con": ("/root", "shared.txt", "r+", "file", "consensus")
         })) {
-          for (@orc <- @fs!?("openFile", "same-orc", {"mode": "rw"})) {
-            for (@con <- @fs!?("openFile", "same-con", {"mode": "rw"})) {
+          for (@orc <- @fs!?("openFile", "same-orc", {"mode": "r+"})) {
+            for (@con <- @fs!?("openFile", "same-con", {"mode": "r+"})) {
               match [orc, con] {
                 [[true, oF], [true, cF]] => {
                   for (@oR <- @oF!?("chown", "a", "b")) {
@@ -16053,7 +16055,7 @@ async fn file_chown_consensus_rw_mode_now_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "consensus")) {
           for (@r <- @f!?("chown", "alice", "wheel")) { @"out"!(r) }
         }
         "#,
@@ -16172,7 +16174,7 @@ async fn file_chown_consensus_with_bad_owner_reports_bad_arg() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "consensus")) {
           for (@r <- @f!?("chown", 42, "wheel")) { @"out"!(r) }
         }
         "#,
@@ -16196,7 +16198,7 @@ async fn file_chown_consensus_with_nil_nil_now_succeeds() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "consensus")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "consensus")) {
           for (@r <- @f!?("chown", Nil, Nil)) { @"out"!(r) }
         }
         "#,
@@ -16216,7 +16218,7 @@ async fn file_constructor_rejects_unknown_cmode_string() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "Consensus")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "Consensus")) {
           for (@r <- @f!?("tell")) { @"out"!(r) }
         }
         "#,
@@ -16261,10 +16263,10 @@ async fn fs_open_file_consensus_twice_yields_distinct_handles() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "cap": ("/root", "shared.txt", "rw", "file", "consensus")
+          "cap": ("/root", "shared.txt", "r+", "file", "consensus")
         })) {
-          for (@a <- @fs!?("openFile", "cap", {"mode": "rw"})) {
-            for (@b <- @fs!?("openFile", "cap", {"mode": "rw"})) {
+          for (@a <- @fs!?("openFile", "cap", {"mode": "r+"})) {
+            for (@b <- @fs!?("openFile", "cap", {"mode": "r+"})) {
               match [a, b] {
                 [[true, x], [true, y]] => {
                   match x == y {
@@ -16347,11 +16349,11 @@ async fn fs_open_file_repeated_same_key_yields_pairwise_distinct_handles() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
-              for (@[true, f3] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, f1] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+            for (@[true, f2] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
+              for (@[true, f3] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
                 @"out"!([f1 == f2, f2 == f3, f1 == f3])
               }
             }
@@ -16389,12 +16391,12 @@ async fn fs_open_file_three_distinct_opens_are_pairwise_distinct() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "a.bin": ("/root", "a.bin", "rw", "file", "oracular"),
-          "b.bin": ("/root", "b.bin", "rw", "file", "oracular")
+          "a.bin": ("/root", "a.bin", "r+", "file", "oracular"),
+          "b.bin": ("/root", "b.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, fA_rw] <- @fs!?("openFile", "a.bin", {"mode": "rw"})) {
+          for (@[true, fA_rw] <- @fs!?("openFile", "a.bin", {"mode": "r+"})) {
             for (@[true, fA_r] <- @fs!?("openFile", "a.bin", {"mode": "r"})) {
-              for (@[true, fB_rw] <- @fs!?("openFile", "b.bin", {"mode": "rw"})) {
+              for (@[true, fB_rw] <- @fs!?("openFile", "b.bin", {"mode": "r+"})) {
                 @"out"!([fA_rw == fA_r, fA_r == fB_rw, fA_rw == fB_rw])
               }
             }
@@ -16434,9 +16436,9 @@ async fn fs_open_file_close_twice_on_same_cap_stable() {
     let src = with_libs(
         r#"
         for (@fs <- Fs!?(0, 1, 2, {
-          "data.bin": ("/root", "data.bin", "rw", "file", "oracular")
+          "data.bin": ("/root", "data.bin", "r+", "file", "oracular")
         })) {
-          for (@[true, f] <- @fs!?("openFile", "data.bin", {"mode": "rw"})) {
+          for (@[true, f] <- @fs!?("openFile", "data.bin", {"mode": "r+"})) {
             for (@close1 <- @f!?("close")) {
               for (@close2 <- @f!?("close")) {
                 @"out"!([close1, close2])
@@ -16520,7 +16522,7 @@ async fn file_lock_range_release_roundtrip() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@lockReply <- @f!?("lockRange", 0, 100, "w")) {
             match lockReply {
               [true, token] => {
@@ -16562,7 +16564,7 @@ async fn lock_token_second_release_returns_fserr_closed() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@lockReply <- @f!?("lockRange", 0, 100, "w")) {
             match lockReply {
               [true, token] => {
@@ -16600,7 +16602,7 @@ async fn file_lock_range_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", -1, 100, "w")) { @"out"!(r) }
         }
         "#,
@@ -16621,7 +16623,7 @@ async fn file_lock_range_zero_length_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", 0, 0, "w")) { @"out"!(r) }
         }
         "#,
@@ -16639,7 +16641,7 @@ async fn file_lock_range_invalid_mode_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", 0, 100, "x")) { @"out"!(r) }
         }
         "#,
@@ -16703,7 +16705,7 @@ async fn file_lock_range_on_closed_file_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@_ <- @f!?("close")) {
             for (@r <- @f!?("lockRange", 0, 100, "w")) { @"out"!(r) }
           }
@@ -16754,7 +16756,7 @@ async fn file_lock_range_options_empty_map_defaults_wait_false() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", 0, 100, "w", {})) {
             match r {
               [true, _token] => @"out"!([true])
@@ -16782,7 +16784,7 @@ async fn file_lock_range_options_wait_false_explicit() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": false})) {
             match r {
               [true, _token] => @"out"!([true])
@@ -16809,7 +16811,7 @@ async fn file_lock_range_options_wait_true_dispatches_arity_8_native() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": true})) {
             match r {
               [true, _token] => @"out"!([true])
@@ -16836,7 +16838,7 @@ async fn file_lock_range_options_wait_non_bool_rejects_bad_arg() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", 0, 100, "w", {"wait": "yes"})) { @"out"!(r) }
         }
         "#,
@@ -16862,7 +16864,7 @@ async fn file_lock_range_arity_3_and_arity_4_coexist() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r3 <- @f!?("lockRange", 0, 100, "w")) {
             match r3 {
               [true, t3] => {
@@ -16911,7 +16913,7 @@ async fn file_lock_range_arity_4_negative_offset_rejects() {
             .await;
     let src = with_libs(
         r#"
-        for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {
+        for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {
           for (@r <- @f!?("lockRange", -1, 100, "w", {"wait": true})) { @"out"!(r) }
         }
         "#,
@@ -17046,7 +17048,7 @@ async fn file_close_sweep_causes_subsequent_release_to_return_fserr_closed() {
 
 {}
           |
-          for (@f <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@f <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
             for (@lockReply <- @f!?("lockRange", 0, 100, "w")) {{
               match lockReply {{
                 [true, token] => {{
@@ -17140,8 +17142,8 @@ async fn two_caps_overlapping_write_locks_conflict() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
-            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
               for (@aliceLock <- @alice!?("lockRange", 0, 100, "w")) {{
                 for (@bobLock <- @bob!?("lockRange", 50, 100, "w")) {{
                   @"out"!([aliceLock, bobLock])
@@ -17228,7 +17230,7 @@ async fn same_cap_two_overlapping_locks_coexist() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
             for (@lock1 <- @alice!?("lockRange", 0, 1024, "w")) {{
               for (@lock2 <- @alice!?("lockRange", 50, 20, "w")) {{
                 @"out"!([lock1, lock2])
@@ -17328,8 +17330,8 @@ async fn bytes_stream_lock_blocks_cross_cap_sequential_write() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
-            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
               // Alice opens bytes() — acquires sequential lock via wrap.
               for (@aliceBytesReply <- @alice!?("bytes")) {{
                 match aliceBytesReply {{
@@ -17434,8 +17436,8 @@ async fn write_byte_array_releases_lock_on_error_path() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
-            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
               // Alice's write hits fsWrite → mock returns FSERR_IO on
               // first call.  writeByteArray's wrap must release the
               // sequential lock before returning the error.
@@ -17526,7 +17528,7 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
             for (@bytesReply <- @alice!?("bytes")) {{
               match bytesReply {{
                 [true, _stream] => {{
@@ -17631,7 +17633,7 @@ async fn same_cap_read_n_blocked_by_own_active_sequential_stream() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
             for (@bytesReply <- @alice!?("bytes")) {{
               match bytesReply {{
                 [true, _stream] => {{
@@ -17728,8 +17730,8 @@ async fn cross_cap_read_n_blocked_by_other_cap_active_sequential() {
 
 {file_body}
           |
-          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
-            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+          for (@alice <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "r+", "oracular")) {{
               for (@bytesReply <- @alice!?("bytes")) {{
                 match bytesReply {{
                   [true, _stream] => {{

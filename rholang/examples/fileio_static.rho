@@ -31,7 +31,7 @@ in {
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
   for(@(_, fs) <- fsCh) {
     for(@[true, src] <- @fs!?("openFile", "source", {"mode": "r"});
-        @[true, dst] <- @fs!?("openFile", "dest", {"mode": "rw"})) {
+        @[true, dst] <- @fs!?("openFile", "dest", {"mode": "r+"})) {
       for(@linesReply <- @src!?("lines")) {
         match linesReply {
           [true, sourceLines] => {

@@ -28,8 +28,8 @@ in {
   rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
   for(@(_, fs) <- fsCh) {
     // Two fresh caps over the same logical name.
-    for(@[true, cap1] <- @fs!?("openFile", "target", {"mode": "rw"});
-        @[true, cap2] <- @fs!?("openFile", "target", {"mode": "rw"})) {
+    for(@[true, cap1] <- @fs!?("openFile", "target", {"mode": "r+"});
+        @[true, cap2] <- @fs!?("openFile", "target", {"mode": "r+"})) {
 
       // cap1 takes the lock.
       for(@[true, token1] <- @cap1!?("lockRange", 0, 100, "w")) {

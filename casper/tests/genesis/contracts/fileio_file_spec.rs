@@ -191,7 +191,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_truncate_roundtrip(rhoSpec, _, ackCh) = {{
-      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
         for(@rSize0 <- @file!?("size")) {{
           for(@rTrunc8 <- @file!?("truncate", 8)) {{
             for(@rSize1 <- @file!?("size")) {{
@@ -331,7 +331,7 @@ in {{
   rl!(`{fs_uri}`, *fsCh) |
   for(@(_, fs) <- fsCh) {{
     contract test_close_gates(rhoSpec, _, ackCh) = {{
-      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "rw"}})) {{
+      for(@[true, file] <- @fs!?("openFile", "target", {{"mode": "r+"}})) {{
         for(@rClose <- @file!?("close")) {{
           for(@rSeek <- @file!?("seek", 0, "set")) {{
             for(@rTell <- @file!?("tell")) {{
