@@ -17509,3 +17509,207 @@ async fn same_cap_sequential_blocks_own_sequential_attempt() {
         "expected FSERR_BUSY from same-cap sequential-vs-sequential; got: {write_code:?}"
     );
 }
+
+/// M-04 (RH-A5-2 fix, 2026-09-04): readN acquires the sequential
+/// cursor lock like every peer method.  This test proves the fix
+/// via the same-cap sequential exclusion channel:
+///
+///   - Alice holds a live `bytes()` stream (sequential lock held
+///     for the stream's lifetime).
+///   - Alice's OWN `readN(10)` attempt on the same cap tries to
+///     acquire another sequential lock.
+///   - Sequential is strict same-holder (spec §1143), so the
+///     LockRegistry-mock returns `FSERR_BUSY`.
+///   - readN's `_ => return!(lockReply)` arm forwards that reply
+///     verbatim to the caller.
+///
+/// Pre-fix (readN without lock wrap): Alice's readN would dispatch
+/// `fsRead(fd)` directly, racing Alice's `bytes()` stream's
+/// `fsRead(fd)` calls on the same kernel cursor.  The mock has no
+/// way to detect the race — the test would spuriously pass with
+/// `readN` returning `[true, ...]`.  Post-fix, the test flips to
+/// FSERR_BUSY, proving BOTH:
+///   - readN acquires the sequential lock (else the mock wouldn't
+///     see a conflict);
+///   - readN forwards the lock native's FSERR_BUSY reply verbatim.
+///
+/// Uses the shared `STATEFUL_LOCK_MOCKS` (see helper docstring
+/// around line 660).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_cap_read_n_blocked_by_own_active_sequential_stream() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = format!(
+        r#"
+        new File, fdP, stateP, cmodeP, LockToken, lockStateP,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
+            writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
+            readLinesIntoLoop, drainToNextLF,
+            codepointLen, concatStringsLoop, scanLineForLF,
+            fsRead, fsReadAt, fsWrite, fsWriteAt,
+            fsSeek, fsTell, fsSize, fsFlush, fsClose,
+            fsTruncate, fsChmod, fsChown,
+            fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
+            withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
+            writeLinesLoopWithOptions,
+            Stream,
+            activeHolder, activeKind, activeLockId
+        in {{
+          {stateful_mocks}
+          |
+          contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsWrite(@_fd, @_xs, ret)    = {{ ret!([true, 0]) }} |
+          contract fsWriteAt(@_fd, @_o, @_xs, ret) = {{ ret!([true, 0]) }} |
+          contract fsSeek(@_fd, @_o, @_w, ret) = {{ ret!([true, 0]) }} |
+          contract fsTell(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsSize(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsFlush(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsClose(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
+          contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
+
+{file_body}
+          |
+          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+            for (@bytesReply <- @alice!?("bytes")) {{
+              match bytesReply {{
+                [true, _stream] => {{
+                  // Alice's sequential lock is held (bytes stream is
+                  // live, Stream stub returned Nil so it's never
+                  // consumed).  Alice's OWN readN tries to acquire
+                  // another sequential lock → must fail per strict
+                  // same-holder.
+                  for (@readReply <- @alice!?("readN", 10)) {{
+                    @"out"!([bytesReply, readReply])
+                  }}
+                }}
+                _ => @"out"!([bytesReply, [false, "SKIPPED", "bytes failed"]])
+              }}
+            }}
+          }}
+        }}
+        "#,
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (bytes_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(bytes_ok, "Alice's bytes() stream must mint successfully");
+    let (read_ok, read_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        !read_ok,
+        "M-04 regression pin: Alice's readN under her own live bytes stream \
+         must fail with FSERR_BUSY — proves readN participates in the \
+         sequential-lock protocol (strict same-holder per §1143).  A \
+         regression that removes the fsLockSequential wrap on readN \
+         would let this readN through with [true, bytes]."
+    );
+    assert_eq!(
+        read_code, "FSERR_BUSY",
+        "expected FSERR_BUSY from same-cap sequential-vs-readN; got: {read_code:?}"
+    );
+}
+
+/// M-04 cross-cap variant: two File caps on the same physical file
+/// (via fresh-mint per open).  Alice holds a live sequential lock
+/// via `bytes()`; Bob's `readN` on a different cap tries to
+/// acquire — must fail with FSERR_BUSY per the LockRegistry's
+/// cross-cap coordination (distinct HolderIds).
+///
+/// Complements `same_cap_read_n_blocked_by_own_active_sequential_
+/// stream` above: same-cap covers the strict same-holder rule;
+/// cross-cap covers the LockRegistry-mediated cross-cap
+/// coordination that's the actual attack surface for RH-A5-2 (two
+/// unrelated deploys on a shared File cap could see divergent
+/// Consensus reply payloads if one's readN raced the other's
+/// sequential stream).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cross_cap_read_n_blocked_by_other_cap_active_sequential() {
+    let (space, reducer) =
+        create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+            .await;
+    let src = format!(
+        r#"
+        new File, fdP, stateP, cmodeP, LockToken, lockStateP,
+            // parseRwxToBits + parseRwxLoop retired 2026-09-04
+            writeBytesLoop, writeBytesAtLoop, writeCharsLoop, writeLinesLoop,
+            readLinesIntoLoop, drainToNextLF,
+            codepointLen, concatStringsLoop, scanLineForLF,
+            fsRead, fsReadAt, fsWrite, fsWriteAt,
+            fsSeek, fsTell, fsSize, fsFlush, fsClose,
+            fsTruncate, fsChmod, fsChown,
+            fsLockRange, fsLockSequential, fsReleaseLock, fsReleaseAllForHolder,
+            withSequentialLock, withRangeLock,
+            acquireRangeForStream, acquireSequentialForStream, releaseSeqLockOnce,
+            writeLinesLoopWithOptions,
+            Stream,
+            activeHolder, activeKind, activeLockId
+        in {{
+          {stateful_mocks}
+          |
+          contract fsRead(@_fd, @_n, ret)      = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsReadAt(@_fd, @_o, @_n, ret) = {{ ret!([true, "".hexToBytes()]) }} |
+          contract fsWrite(@_fd, @_xs, ret)    = {{ ret!([true, 0]) }} |
+          contract fsWriteAt(@_fd, @_o, @_xs, ret) = {{ ret!([true, 0]) }} |
+          contract fsSeek(@_fd, @_o, @_w, ret) = {{ ret!([true, 0]) }} |
+          contract fsTell(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsSize(@_fd, ret)           = {{ ret!([true, 0]) }} |
+          contract fsFlush(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsClose(@_fd, ret)          = {{ ret!([true]) }} |
+          contract fsTruncate(@_fd, @_n, ret)  = {{ ret!([true]) }} |
+          contract fsChmod(@_r, @_p, @_b, @_cm, ret) = {{ ret!([true]) }} |
+          contract fsChown(@_r, @_p, @_o, @_g, @_cm, ret) = {{ ret!([true]) }} |
+          contract Stream(retCh, @_producer, @_builder) = {{ retCh!(Nil) }} |
+
+{file_body}
+          |
+          for (@alice <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+            for (@bob   <- File!?(1, "/root", "test.txt", "rw", "oracular")) {{
+              for (@bytesReply <- @alice!?("bytes")) {{
+                match bytesReply {{
+                  [true, _stream] => {{
+                    for (@readReply <- @bob!?("readN", 10)) {{
+                      @"out"!([bytesReply, readReply])
+                    }}
+                  }}
+                  _ => @"out"!([bytesReply, [false, "SKIPPED", "alice bytes failed"]])
+                }}
+              }}
+            }}
+          }}
+        }}
+        "#,
+        stateful_mocks = STATEFUL_LOCK_MOCKS,
+        file_body = lib_body(FILE_RHO),
+    );
+    let reply = eval_and_read_out(&space, &reducer, &src).await;
+    let outer = match single_expr(&reply).unwrap().expr_instance {
+        Some(ExprInstance::EListBody(l)) => l,
+        _ => panic!("expected list reply"),
+    };
+    let (bytes_ok, _, _, _) = extract_reply(&outer.ps[0]);
+    assert!(bytes_ok, "Alice's bytes() stream must mint successfully");
+    let (read_ok, read_code, _, _) = extract_reply(&outer.ps[1]);
+    assert!(
+        !read_ok,
+        "M-04 cross-cap regression pin: Bob's readN under Alice's live \
+         sequential stream must fail with FSERR_BUSY — proves cross-cap \
+         LockRegistry coordination extends to readN.  A regression that \
+         removes the fsLockSequential wrap on readN would let Bob's \
+         readN through, exposing the Consensus divergence surface \
+         RH-A5-2 flagged."
+    );
+    assert_eq!(
+        read_code, "FSERR_BUSY",
+        "expected FSERR_BUSY from cross-cap sequential-vs-readN; got: {read_code:?}"
+    );
+}
