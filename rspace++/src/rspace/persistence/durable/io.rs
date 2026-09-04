@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use super::reclaim::{RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1};
 use super::{
-    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, INDEX_HEADER_LEN_V1,
-    IndexGenerationV1, PACK_HEADER_LEN_V1,
+    CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1,
+    INDEX_HEADER_LEN_V1, IndexGenerationV1, PACK_HEADER_LEN_V1,
 };
 use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackId};
 
@@ -928,6 +928,13 @@ pub(crate) struct DurableWriterLeaseV1 {
     _lock: DurableFileV1,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReclamationOutcomeV1 {
+    pub(crate) deleted_packs: u64,
+    pub(crate) deleted_index: bool,
+    pub(crate) deferred_for_reader: bool,
+}
+
 impl Drop for DurableWriterLeaseV1 {
     fn drop(&mut self) {
         // `File` closes on drop, but a concurrently spawned process or an
@@ -1132,6 +1139,84 @@ impl DurableWriterLeaseV1 {
         )?;
         self.remove_child(name)?;
         self.sync_directory()
+    }
+
+    /// Reclaim exactly the superseded generation named by an authenticated
+    /// candidate. The catalog image must already have selected the candidate's
+    /// successor; active leases on the old generation defer deletion without
+    /// consuming the sidecar.
+    pub(crate) fn reclaim_reclamation_candidate(
+        &mut self,
+        candidate: ReclamationCandidateV1,
+        selected_successor: CatalogSlotV1,
+    ) -> Result<ReclamationOutcomeV1, DurableIoError> {
+        if candidate.successor() !=
+            crate::rspace::persistence::GenerationLeaseKeyV1::from_catalog(selected_successor)
+        {
+            return Err(DurableIoError::CatalogAuthorityChanged {
+                path: self.directory.path.clone(),
+            });
+        }
+        if self
+            .generation_leases()
+            .has_active(candidate.old())
+            .map_err(|error| DurableIoError::Io {
+                operation: DurableIoOperation::Metadata,
+                path: self.directory.path.clone(),
+                source: io::Error::new(io::ErrorKind::Other, error.to_string()),
+            })?
+        {
+            return Ok(ReclamationOutcomeV1 {
+                deleted_packs: 0,
+                deleted_index: false,
+                deferred_for_reader: true,
+            });
+        }
+
+        let old = candidate.old();
+        let mut deleted_packs = 0u64;
+        let mut pack = old.first_live_pack();
+        while pack <= old.active_pack() {
+            let name = pack_file_name(PackId::new(pack).expect("validated nonzero pack id"));
+            match self.remove_child(&name) {
+                Ok(()) => {
+                    deleted_packs = deleted_packs.checked_add(1).ok_or_else(|| {
+                        DurableIoError::SuccessorOverflow {
+                            path: self.directory.path.clone(),
+                            artifact: "reclamation pack count",
+                            current: deleted_packs,
+                        }
+                    })?
+                }
+                Err(DurableIoError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            pack = pack
+                .checked_add(1)
+                .ok_or_else(|| DurableIoError::SuccessorOverflow {
+                    path: self.directory.path.clone(),
+                    artifact: "reclamation pack range",
+                    current: pack,
+                })?;
+        }
+
+        let index_name = index_file_name(
+            IndexGenerationV1::new(old.index_generation()).expect("validated index generation"),
+        );
+        let deleted_index = match self.remove_child(&index_name) {
+            Ok(()) => true,
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        self.remove_reclamation_candidate()?;
+        Ok(ReclamationOutcomeV1 {
+            deleted_packs,
+            deleted_index,
+            deferred_for_reader: false,
+        })
     }
 
     /// Remove one validated child while retaining compiler-visible exclusive
