@@ -124,7 +124,9 @@ rocq_reject_placeholders \
   theories/PathMapReversePruneTeardown.v \
   theories/PathMapReversePruneTeardownMutants.v \
   theories/ChannelPrefixReplacement.v \
-  theories/ChannelPrefixReplacementMutants.v
+  theories/ChannelPrefixReplacementMutants.v \
+  theories/RPB3Admission.v \
+  theories/RPB3AdmissionMutants.v
 rspace_commit_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RSpaceCommit.v 2>&1
 )"
@@ -134,6 +136,28 @@ rspace_commit_closed_capstones="$({
 } || true)"
 if [[ "$rspace_commit_closed_capstones" != "6" ]]; then
   echo "stack-safe-pda: expected all six RSpace commit Rocq capstones to be closed; got $rspace_commit_closed_capstones" >&2
+  exit 1
+fi
+rpb3_admission_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3Admission.v 2>&1
+)"
+printf '%s\n' "$rpb3_admission_rocq_output"
+rpb3_admission_closed_capstones="$({
+  printf '%s\n' "$rpb3_admission_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$rpb3_admission_closed_capstones" != "1" ]]; then
+  echo "stack-safe-pda: expected the RPB3 admission Rocq capstone to be closed; got $rpb3_admission_closed_capstones" >&2
+  exit 1
+fi
+rpb3_admission_mutants_rocq_output="$(
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/RPB3AdmissionMutants.v 2>&1
+)"
+printf '%s\n' "$rpb3_admission_mutants_rocq_output"
+rpb3_admission_mutants_closed_capstones="$({
+  printf '%s\n' "$rpb3_admission_mutants_rocq_output" | grep -c '^Closed under the global context$'
+} || true)"
+if [[ "$rpb3_admission_mutants_closed_capstones" != "2" ]]; then
+  echo "stack-safe-pda: expected both RPB3 admission mutant capstones to be closed; got $rpb3_admission_mutants_closed_capstones" >&2
   exit 1
 fi
 generation_checkpoint_rocq_output="$(
