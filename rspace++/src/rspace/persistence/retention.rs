@@ -469,6 +469,20 @@ pub struct GenerationLeaseKeyV1 {
 }
 
 impl GenerationLeaseKeyV1 {
+    pub(crate) const fn new(
+        epoch: u64,
+        first_live_pack: u64,
+        active_pack: u64,
+        index_generation: u64,
+    ) -> Self {
+        Self {
+            epoch,
+            first_live_pack,
+            active_pack,
+            index_generation,
+        }
+    }
+
     pub const fn from_catalog(catalog: CatalogSlotV1) -> Self {
         let pack = catalog.pack();
         Self {

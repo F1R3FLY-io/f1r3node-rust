@@ -18,6 +18,7 @@ mod layout;
 mod limits;
 mod pack;
 mod publication;
+mod reclaim;
 mod recovery;
 mod startup;
 
@@ -68,6 +69,7 @@ pub(crate) use publication::{
     arm_generation_checkpoint_publication_hook, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
 };
+pub(crate) use reclaim::{RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1};
 pub(crate) use recovery::{
     CatalogPackProviderV1, DurableReadAt, IncrementalLayoutTranscriptV1, RecoveryError,
     replay_catalog_authorized_pack_chain, scan_catalog_authorized_pack_chain,
