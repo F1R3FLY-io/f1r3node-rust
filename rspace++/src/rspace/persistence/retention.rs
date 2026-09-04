@@ -374,6 +374,31 @@ impl RetainedRootRegistryV1 {
         Ok(snapshot)
     }
 
+    /// Check whether the dynamic lease portion of a snapshot is still the
+    /// registry state. A compactor must perform this check immediately before
+    /// reclaiming superseded storage; a changed result requires a fresh mark
+    /// pass rather than deletion based on stale lease observations.
+    pub fn is_snapshot_current(
+        &self,
+        snapshot: &RetainedRootSnapshotV1,
+    ) -> Result<bool, RetentionRegistryError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| RetentionRegistryError::Poisoned)?;
+        if state.revision != snapshot.revision {
+            return Ok(false);
+        }
+        let mut dynamic = state.roots.values().copied().collect::<Vec<_>>();
+        dynamic.sort_unstable();
+        Ok(snapshot
+            .roots
+            .iter()
+            .filter(|root| root.lease_id != 0)
+            .copied()
+            .eq(dynamic))
+    }
+
     pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
         lease.release()
     }
@@ -520,5 +545,17 @@ mod registry_tests {
             reference(9),
         ]);
         drop(lease);
+    }
+
+    #[test]
+    fn snapshot_current_rejects_lease_changes() {
+        let registry = RetainedRootRegistryV1::default();
+        let mut lease = registry
+            .register(reference(10), RetainedRootKind::Reader)
+            .unwrap();
+        let snapshot = registry.snapshot().unwrap();
+        assert!(registry.is_snapshot_current(&snapshot).unwrap());
+        lease.release().unwrap();
+        assert!(!registry.is_snapshot_current(&snapshot).unwrap());
     }
 }
