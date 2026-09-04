@@ -1401,9 +1401,13 @@ impl RhoPathV2 {
     }
 
     pub fn continuation_key(channels: &[&[u8]], identity: &[u8]) -> Result<Vec<u8>, RhoPathError> {
-        if channels.is_empty() {
-            return Err(RhoPathError::EmptyChannelGroup);
-        }
+        let mut out = Self::continuation_prefix(channels)?;
+        append_frame(&mut out, identity);
+        Ok(out)
+    }
+
+    pub fn continuation_prefix(channels: &[&[u8]]) -> Result<Vec<u8>, RhoPathError> {
+        if channels.is_empty() { return Err(RhoPathError::EmptyChannelGroup); }
         let count = u64::try_from(channels.len()).map_err(|_| RhoPathError::TrailingBytes)?;
         let mut out = Vec::new();
         out.extend_from_slice(&Self::MAGIC);
@@ -1411,17 +1415,21 @@ impl RhoPathV2 {
         out.extend_from_slice(&count.to_be_bytes());
         for channel in channels { append_frame(&mut out, channel); }
         out.extend_from_slice(&GROUP_END);
-        append_frame(&mut out, identity);
         Ok(out)
     }
 
     pub fn join_key(channel: &[u8], identity: &[u8]) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + channel.len() + identity.len());
+        let mut out = Self::join_prefix(channel);
+        append_frame(&mut out, identity);
+        out
+    }
+
+    pub fn join_prefix(channel: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + channel.len());
         out.extend_from_slice(&Self::MAGIC);
         out.extend_from_slice(&[Self::JOIN_KIND, Self::COLLECTION_VERSION]);
         append_frame(&mut out, channel);
         out.extend_from_slice(&GROUP_END);
-        append_frame(&mut out, identity);
         out
     }
 

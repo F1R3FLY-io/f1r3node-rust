@@ -65,6 +65,8 @@ fn rho_path_errors_are_not_mislabeled_by_wire_version() {
 fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     assert_eq!(RhoPathV2::continuation_key(&[], b"id"), Err(RhoPathError::EmptyChannelGroup));
     let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
+    let prefix = RhoPathV2::continuation_prefix(&[b"a", b"b"]).unwrap();
+    assert!(path.starts_with(&prefix));
     assert_eq!(&path[6..14], &2_u64.to_be_bytes());
     let view = RhoPathV2::parse_continuation(&path).unwrap();
     assert_eq!(view.channel_count(), 2);
@@ -140,6 +142,7 @@ fn v2_megabyte_fields_parse_on_a_tiny_native_stack() {
 #[test]
 fn v2_join_frames_identity() {
     let path = RhoPathV2::join_key(b"channel", b"join\0identity");
+    assert!(path.starts_with(&RhoPathV2::join_prefix(b"channel")));
     assert!(path.windows(2).any(|pair| pair == [0, 1]));
     assert!(path.windows(2).any(|pair| pair == [0, 255]));
     assert!(path.ends_with(&[0, 0]));
