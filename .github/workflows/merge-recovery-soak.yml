@@ -1545,6 +1545,10 @@ jobs:
           path: system-integration
           persist-credentials: false
 
+      - name: Extend issue 24 soak metrics
+        shell: bash -euo pipefail {0}
+        run: bash node-under-test/scripts/bench/extend-issue24-metrics.sh system-integration/integration-tests/test/infra/metrics.py
+
       - name: Build node image
         if: needs.schedule_gate.outputs.candidate_tag == ''
         working-directory: node-under-test
