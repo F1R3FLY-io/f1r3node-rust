@@ -81,6 +81,17 @@ fn v2_continuation_preserves_order_and_zero_escaping() {
 }
 
 #[test]
+fn v2_continuation_rejects_count_mismatch_without_fallback() {
+    let valid = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
+    let mut overdeclared = valid.clone();
+    overdeclared[13] = 3;
+    assert!(RhoPathV2::parse_continuation(&overdeclared).is_err());
+    let mut underdeclared = valid;
+    underdeclared[13] = 1;
+    assert!(RhoPathV2::parse_continuation(&underdeclared).is_err());
+}
+
+#[test]
 fn v2_join_frames_identity() {
     let path = RhoPathV2::join_key(b"channel", b"join\0identity");
     assert!(path.windows(2).any(|pair| pair == [0, 1]));
