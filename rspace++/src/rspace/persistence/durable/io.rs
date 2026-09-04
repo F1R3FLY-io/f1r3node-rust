@@ -2203,6 +2203,37 @@ mod tests {
         .unwrap();
         assert_eq!(partial_write_calls, 2);
 
+        let mut mixed_fault_calls = 0;
+        write_all_at_with(
+            &mut authority,
+            &path,
+            41,
+            &[14, 15, 16, 17],
+            |_, buffer, position| {
+                mixed_fault_calls += 1;
+                match mixed_fault_calls {
+                    1 | 3 => Err(DurableIoError::Io {
+                        operation: DurableIoOperation::PositionalWrite,
+                        path: path.clone(),
+                        source: io::Error::new(io::ErrorKind::Interrupted, "signal"),
+                    }),
+                    2 => {
+                        assert_eq!(position, 41);
+                        assert_eq!(buffer, &[14, 15, 16, 17]);
+                        Ok(2)
+                    }
+                    4 => {
+                        assert_eq!(position, 43);
+                        assert_eq!(buffer, &[16, 17]);
+                        Ok(buffer.len())
+                    }
+                    _ => panic!("write loop made an unexpected extra call"),
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(mixed_fault_calls, 4);
+
         let mut target = [0u8; 2];
         let error = read_exact_at_with(&path, 17, &mut target, |buffer, _| Ok(buffer.len() + 1))
             .unwrap_err();
