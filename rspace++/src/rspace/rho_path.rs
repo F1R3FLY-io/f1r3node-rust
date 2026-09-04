@@ -1302,6 +1302,10 @@ pub struct RhoPathV2DatumView<'a> {
 }
 
 impl RhoPathV2DatumView<'_> {
+    /// Borrow the complete escaped frame, including its terminator.
+    pub const fn encoded_channel_image(&self) -> &[u8] { self.channel_image }
+    pub const fn encoded_datum_structure(&self) -> &[u8] { self.datum_structure }
+    pub const fn encoded_datum_identity(&self) -> &[u8] { self.datum_identity }
     pub fn channel_image(&self) -> Vec<u8> { decode_frame(self.channel_image) }
     pub fn datum_structure(&self) -> Vec<u8> { decode_frame(self.datum_structure) }
     pub fn datum_identity(&self) -> Vec<u8> { decode_frame(self.datum_identity) }
