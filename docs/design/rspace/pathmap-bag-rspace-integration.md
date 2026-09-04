@@ -477,6 +477,10 @@ Identical records share one trie value whose `Multiplicity` counts occurrences. 
 
 ### ChannelImageV2 logical channel identity
 
+The proposed outer RhoPathV2 envelope that will carry this image is specified separately in
+[`rhopath-v2-wire-grammar.md`](rhopath-v2-wire-grammar.md). That document is non-activated until
+its formal and lifecycle gates pass.
+
 `ChannelImageV2`, abbreviated RCI2, is the versioned logical image proposed for channel-key
 integration. Its version number is a format-domain discriminator, not a claim that a public
 `ChannelImageV1` Rust type shipped: it prevents an earlier design sketch or the legacy bincode
