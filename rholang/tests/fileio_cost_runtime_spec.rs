@@ -1096,4 +1096,81 @@ mod tests {
              {native_delta} + 168 harness ceiling"
         );
     }
+
+    /// T-2 companion pin (2026-09-03 post-review): **fs_write_at**
+    /// (positional) also scales per byte with the same 2× multiplier
+    /// as fs_write.  Distinct from fs_write because the handler
+    /// dispatches through a different reserve call site
+    /// (`fs_write_at_cost` vs `fs_write_cost`), so a regression could
+    /// affect one without the other — same rationale as fs_read_at
+    /// being distinct from fs_read.  Filling this gap noticed during
+    /// the T-1..T-3 landing review.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fs_write_at_charges_bytes_scaled_at_runtime() {
+        use rholang::rust::interpreter::io::costs::fs_write_at_cost;
+
+        async fn cost_for_write_at(payload_len: usize) -> i64 {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("data.bin"), b"").unwrap();
+
+            let runtime = create_metered_runtime().await;
+            let payload_bytes = vec![b'x'; payload_len];
+            let payload_hex: String =
+                payload_bytes
+                    .iter()
+                    .fold(String::with_capacity(payload_len * 2), |mut acc, b| {
+                        use std::fmt::Write;
+                        let _ = write!(acc, "{b:02x}");
+                        acc
+                    });
+            let term = format!(
+                r#"
+                new fsOpen(`rho:io:fs:native:1.0.0/open`),
+                    fsWriteAt(`rho:io:fs:native:1.0.0/writeAt`),
+                    fsClose(`rho:io:fs:native:1.0.0/close`),
+                    oc, wr, cc in {{
+                  fsOpen!("{root}", "data.bin", "w", "oracular", *oc) |
+                  for (@[true, fd] <- oc) {{
+                    fsWriteAt!(fd, 0, "{payload_hex}".hexToBytes(), *wr) |
+                    for (@_ <- wr) {{
+                      fsClose!(fd, *cc) |
+                      for (@_ <- cc) {{ Nil }}
+                    }}
+                  }}
+                }}
+                "#,
+                root = dir.path().display(),
+            );
+            let result = runtime
+                .evaluate(
+                    &term,
+                    Cost::create(INITIAL_PHLO, "cost-harness initial".to_string()),
+                    std::collections::HashMap::new(),
+                    rand(),
+                )
+                .await
+                .unwrap();
+            assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+            result.cost.value
+        }
+
+        let small = cost_for_write_at(64).await;
+        let big = cost_for_write_at(4096).await;
+        let delta = big - small;
+        let native_delta = fs_write_at_cost(4096).value - fs_write_at_cost(64).value;
+        assert_eq!(
+            native_delta, 8064,
+            "sanity: fs_write_at_cost should charge 2 units per byte (delta 8064; got {native_delta})"
+        );
+        assert!(
+            delta >= 8000,
+            "T-2 byte-scaling regression on fs_write_at: fs_write_at(64) consumed \
+             {small}, fs_write_at(4096) consumed {big}, delta {delta} collapsed \
+             below expected native delta {native_delta}.  A regression that \
+             passed 0 (or a fixed constant) to fs_write_at_cost at the reserve \
+             call site would collapse this delta to near the harness-overhead \
+             baseline — investigate `handlers.rs::fs_write_at`'s `reserve_primitive` \
+             invocation."
+        );
+    }
 }

@@ -1225,10 +1225,16 @@ mod tests {
                 i += 1;
                 continue;
             }
-            // ` in {` — the end of the outer new clause.
-            if c == b' '
+            // `<ws>in<ws>{` — the end of the outer new clause.
+            // Whitespace on either side may be a space, newline, or
+            // tab.  Libs use single-line `in {` (space-separated);
+            // the composer wraps as `\nin {\n` (newline before);
+            // both must terminate the scan.
+            if c.is_ascii_whitespace()
                 && i + 4 < n
-                && &bytes[i..i + 4] == b" in "
+                && bytes[i + 1] == b'i'
+                && bytes[i + 2] == b'n'
+                && bytes[i + 3].is_ascii_whitespace()
                 && bytes.get(i + 4) == Some(&b'{')
             {
                 end_pos = Some(i);
@@ -1293,6 +1299,110 @@ mod tests {
             ident,
             is_urn_binding,
         })
+    }
+
+    // ---------------------------------------------------------------
+    // A-1 / RH-1 parser unit tests (post-review addendum, 2026-09-03).
+    //
+    // `extract_outer_new_names` is a 150-line comment/string/URI-aware
+    // state machine.  Without these pins, a regression that broke the
+    // scanner into returning an empty name list (e.g., failing to
+    // match `new`, or accepting `renew` as `new`) would silently pass
+    // the `every_lib_outer_new_module_cell_is_bound_in_composed_outer_new`
+    // drift check — no names to check → no misses to report → false-
+    // green.  These pins exercise every scanner branch so a regression
+    // fails HERE rather than silently disarming the drift check.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn extract_outer_new_names_parses_single_line_clause() {
+        let src = "new Foo, bar, baz in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["Foo", "bar", "baz"]);
+        assert!(names.iter().all(|n| !n.is_urn_binding));
+    }
+
+    #[test]
+    fn extract_outer_new_names_parses_multi_line_clause() {
+        // File.rho / composed FsGenesis shape: `new` on one line,
+        // names on subsequent lines, ` in {` terminator on its own
+        // line.  A regression to strict single-line parsing would
+        // return an empty list for these libs.
+        let src = "new File, fdP, stateP,\n  cmodeP, Dir\nin {\n  Nil\n}";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["File", "fdP", "stateP", "cmodeP", "Dir"]);
+    }
+
+    #[test]
+    fn extract_outer_new_names_flags_urn_bindings() {
+        // `rl(`rho:registry:lookup`)` binds `rl` as a URN-taking
+        // cap.  The scanner must recognize the parenthesis form and
+        // flag it so the drift check can skip lib-local registry
+        // caps.
+        let src = "new rl(`rho:registry:lookup`), foo in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        assert_eq!(names.len(), 2);
+        assert_eq!(names[0].ident, "rl");
+        assert!(
+            names[0].is_urn_binding,
+            "rl(...) must be flagged as URN binding"
+        );
+        assert_eq!(names[1].ident, "foo");
+        assert!(!names[1].is_urn_binding);
+    }
+
+    #[test]
+    fn extract_outer_new_names_ignores_comment_content() {
+        // A comment inside the `new` clause listing a fake name must
+        // not pollute the extracted list.  This is the primary
+        // vector for false-positives / negatives that could disarm
+        // the drift check (a lib author might write a `// TODO: add
+        // fakeName` inside the clause).
+        let src = "new Real,\n  // fakeName, otherFake,\n  Actual in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["Real", "Actual"]);
+    }
+
+    #[test]
+    fn extract_outer_new_names_ignores_block_comment_content() {
+        let src = "new Real,\n  /* block\n     comment, with, names */\n  Actual in { Nil }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(idents, vec!["Real", "Actual"]);
+    }
+
+    #[test]
+    fn extract_outer_new_names_does_not_match_renew_or_newxyz() {
+        // `new` at start of a word only — the identifier `renew` or
+        // `newValue` must not trip the scanner.  Precondition: `new`
+        // must be preceded by whitespace (or be at buffer start) AND
+        // followed by whitespace.
+        let src = "// renew and newer are not `new`\nlet x = newValue in { new Real in { Nil } }";
+        let names = extract_outer_new_names(src).expect("parse");
+        let idents: Vec<&str> = names.iter().map(|n| n.ident.as_str()).collect();
+        assert_eq!(
+            idents,
+            vec!["Real"],
+            "scanner must find the real `new` keyword only"
+        );
+    }
+
+    #[test]
+    fn extract_outer_new_names_rejects_source_with_no_new_keyword() {
+        let src = "// just a comment, no new clause here\ncontract foo(x) = { Nil }";
+        assert!(extract_outer_new_names(src).is_err());
+    }
+
+    #[test]
+    fn extract_outer_new_names_rejects_source_with_no_in_terminator() {
+        // `new Foo` without ` in {` should Err (malformed source).
+        // A silently-succeeding empty return here would mask the
+        // drift check.
+        let src = "new Foo, bar";
+        assert!(extract_outer_new_names(src).is_err());
     }
 
     /// PB-B-3 pin: the composed FsGenesis source must invoke

@@ -1583,9 +1583,7 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 ///     the fd-based read/write canaries.
 ///   - `[true]` vs `[false, FSERR_NOT_FOUND, ...]` reply-shape
 ///     divergence: leader's cached reply is a positive-shape hash;
-///     follower's fresh reply carries the fserr triple.  Hash
-///     mismatch fires FSERR_CONSENSUS_DIVERGENCE and rejects the
-///     block.
+///     follower's fresh reply carries the fserr triple.
 ///   - The bundle uses a Dir cap so the `openDir` step succeeds on
 ///     both sides identically — the divergence surface is isolated
 ///     to the removeFile step, not the openDir preamble.
@@ -1595,8 +1593,20 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 /// unlink `victim` from follower_subdir's Dir before B processes the
 /// block.  Follower re-execute sequence: openDir succeeds (the
 /// projected Dir root itself is untouched), then removeFile fires
-/// unlinkat → ENOENT → reply `[false, FSERR_NOT_FOUND, ...]` →
-/// hash mismatch → block rejected.
+/// unlinkat → ENOENT → reply `[false, FSERR_NOT_FOUND, ...]`.
+///
+/// Where the block rejection actually lands (same shape as the read
+/// canary above): the divergent reply causes B's replay-deploy cost
+/// to differ from A's play cost, which trips `interpreter_util`'s
+/// replay-cost-mismatch check (`Found replay cost mismatch: initial
+/// deploy cost = X, replay deploy cost = Y`), and the block is
+/// rejected as `InvalidBlock::InvalidTransaction`.  This is downstream
+/// of but SIGNAL-EQUIVALENT to a direct FSERR_CONSENSUS_DIVERGENCE
+/// reply-hash rejection — either would fire block rejection on
+/// divergence.  The canary asserts the block-rejection outcome
+/// without pinning a specific InvalidBlock variant so a future
+/// refactor that moves the detection between the reply-hash and
+/// cost-mismatch paths doesn't spuriously break this test.
 ///
 /// Pin against every path-mutation handler (chmod/rename/remove_dir/
 /// copy_file) collapses to the same shape — removeFile is the
@@ -1705,8 +1715,9 @@ new rl(`rho:registry:lookup`), fsCh, ackCh in {{
 
     // Tamper: DELETE follower's victim before it processes the block.
     // Follower re-executes openDir (OK — dir still present) then
-    // fs_remove_file will fail with ENOENT → FSERR_NOT_FOUND →
-    // different reply hash → CONSENSUS_DIVERGENCE.
+    // fs_remove_file fails with ENOENT → FSERR_NOT_FOUND → divergent
+    // reply → block rejected as InvalidBlock::InvalidTransaction
+    // downstream via replay-cost-mismatch (see function docstring).
     std::fs::remove_file(&follower_victim)
         .expect("tamper follower's victim — delete to force removeFile divergence");
 
