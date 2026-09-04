@@ -612,6 +612,20 @@ impl<P: SemanticProfile> CheckpointPublicationAuthorityV1<P> {
         )?;
         Ok(admitted)
     }
+
+    /// Compact the admitted retained closure into a fresh generation. This
+    /// named façade intentionally delegates to the same authenticated
+    /// checkpoint publication protocol; compaction never changes semantic
+    /// object bytes or Merkle identities.
+    pub(crate) fn compact_generation_v1(
+        self,
+        recovery_limits: DurableLimits,
+        wal_limits: LogPackDecodeLimits,
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<SemanticallyAdmittedDurableWriterV1<P>, GenerationCheckpointPublicationErrorV1>
+    {
+        self.publish_generation_checkpoint_v1(recovery_limits, wal_limits, admission_limits)
+    }
 }
 
 fn prepare_and_write_successor_generation<P: SemanticProfile>(
@@ -808,6 +822,15 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     {
         self.into_checkpoint_publication()
             .publish_generation_checkpoint_v1(recovery_limits, wal_limits, admission_limits)
+    }
+
+    pub(crate) fn compact_generation_v1(
+        self,
+        recovery_limits: DurableLimits,
+        wal_limits: LogPackDecodeLimits,
+        admission_limits: DurableAdmissionLimitsV1,
+    ) -> Result<Self, GenerationCheckpointPublicationErrorV1> {
+        self.publish_generation_checkpoint_v1(recovery_limits, wal_limits, admission_limits)
     }
 }
 
