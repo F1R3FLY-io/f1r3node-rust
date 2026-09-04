@@ -59,6 +59,7 @@ pub use object::{
 };
 pub use physical::{PhysicalDigest, StoreId};
 pub use retention::{
+    GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, GenerationLeaseV1,
     RetainedRootKind, RetainedRootRegistryV1, RetainedRootSnapshotV1, RetainedRootV1,
     RetainedStateIter, RetainedStateV1, RetentionManifestV1, RetentionManifestView,
     RetentionRegistryError, RootLeaseV1,

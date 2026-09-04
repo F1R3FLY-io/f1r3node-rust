@@ -13,6 +13,7 @@ use super::canonical::{
     OBJECT_ENVELOPE_HEADER_LEN, ObjectDigest, ObjectRefV1, ReadCursor, checked_len, checked_sum,
     parse_envelope, write_envelope_header, write_u64,
 };
+use super::durable::CatalogSlotV1;
 use super::mutation::StateVersionV1;
 
 pub(crate) const RETENTION_MANIFEST_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Retn\0\0";
@@ -453,6 +454,144 @@ impl Drop for RootLeaseV1 {
     }
 }
 
+/// Immutable identity of the physical generation observed by a reader.
+///
+/// The key intentionally excludes filesystem paths: a path can be replaced
+/// while an already-open reader remains valid.  Compaction uses this identity
+/// to defer reclamation until every reader of the old generation has released
+/// its lease.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GenerationLeaseKeyV1 {
+    epoch: u64,
+    first_live_pack: u64,
+    active_pack: u64,
+    index_generation: u64,
+}
+
+impl GenerationLeaseKeyV1 {
+    pub const fn from_catalog(catalog: CatalogSlotV1) -> Self {
+        let pack = catalog.pack();
+        Self {
+            epoch: catalog.epoch(),
+            first_live_pack: pack.first_live_pack(),
+            active_pack: pack.active_pack(),
+            index_generation: pack.index_generation(),
+        }
+    }
+
+    pub const fn epoch(self) -> u64 { self.epoch }
+    pub const fn first_live_pack(self) -> u64 { self.first_live_pack }
+    pub const fn active_pack(self) -> u64 { self.active_pack }
+    pub const fn index_generation(self) -> u64 { self.index_generation }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationLeaseError {
+    Poisoned,
+    CounterOverflow,
+    UnknownLease(u64),
+}
+
+impl Display for GenerationLeaseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Poisoned => f.write_str("generation lease registry lock is poisoned"),
+            Self::CounterOverflow => f.write_str("generation lease counter overflow"),
+            Self::UnknownLease(id) => write!(f, "unknown generation lease {id}"),
+        }
+    }
+}
+
+impl std::error::Error for GenerationLeaseError {}
+
+#[derive(Default)]
+struct GenerationLeaseState {
+    next_lease_id: u64,
+    leases: std::collections::BTreeMap<u64, GenerationLeaseKeyV1>,
+}
+
+/// Process-local generation lease authority.  The registry is deliberately
+/// separate from retained semantic roots: a reader may retain a physical
+/// generation even when it does not introduce a new semantic root.
+#[derive(Clone, Default)]
+pub struct GenerationLeaseRegistryV1 {
+    state: Arc<Mutex<GenerationLeaseState>>,
+}
+
+impl GenerationLeaseRegistryV1 {
+    pub fn acquire(
+        &self,
+        key: GenerationLeaseKeyV1,
+    ) -> Result<GenerationLeaseV1, GenerationLeaseError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| GenerationLeaseError::Poisoned)?;
+        let lease_id = state
+            .next_lease_id
+            .checked_add(1)
+            .ok_or(GenerationLeaseError::CounterOverflow)?;
+        state.next_lease_id = lease_id;
+        state.leases.insert(lease_id, key);
+        Ok(GenerationLeaseV1 {
+            lease_id,
+            key,
+            registry: Arc::clone(&self.state),
+            active: true,
+        })
+    }
+
+    pub fn has_active(&self, key: GenerationLeaseKeyV1) -> Result<bool, GenerationLeaseError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| GenerationLeaseError::Poisoned)?;
+        Ok(state.leases.values().any(|candidate| *candidate == key))
+    }
+
+    pub fn release(&self, lease: &mut GenerationLeaseV1) -> Result<(), GenerationLeaseError> {
+        lease.release()
+    }
+}
+
+pub struct GenerationLeaseV1 {
+    lease_id: u64,
+    key: GenerationLeaseKeyV1,
+    registry: Arc<Mutex<GenerationLeaseState>>,
+    active: bool,
+}
+
+impl GenerationLeaseV1 {
+    pub const fn lease_id(&self) -> u64 { self.lease_id }
+    pub const fn key(&self) -> GenerationLeaseKeyV1 { self.key }
+
+    pub fn release(&mut self) -> Result<(), GenerationLeaseError> {
+        if !self.active {
+            return Err(GenerationLeaseError::UnknownLease(self.lease_id));
+        }
+        let mut state = self
+            .registry
+            .lock()
+            .map_err(|_| GenerationLeaseError::Poisoned)?;
+        if state.leases.remove(&self.lease_id) != Some(self.key) {
+            return Err(GenerationLeaseError::UnknownLease(self.lease_id));
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for GenerationLeaseV1 {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Ok(mut state) = self.registry.lock() {
+            state.leases.remove(&self.lease_id);
+        }
+    }
+}
+
 #[cfg(test)]
 mod registry_tests {
     use super::*;
@@ -563,5 +702,23 @@ mod registry_tests {
         assert!(registry.is_snapshot_current(&snapshot).unwrap());
         lease.release().unwrap();
         assert!(!registry.is_snapshot_current(&snapshot).unwrap());
+    }
+
+    #[test]
+    fn generation_registry_blocks_reclamation_until_last_reader_releases() {
+        let registry = GenerationLeaseRegistryV1::default();
+        let key = GenerationLeaseKeyV1 {
+            epoch: 7,
+            first_live_pack: 3,
+            active_pack: 5,
+            index_generation: 9,
+        };
+        let mut first = registry.acquire(key).unwrap();
+        let second = registry.acquire(key).unwrap();
+        assert!(registry.has_active(key).unwrap());
+        first.release().unwrap();
+        assert!(registry.has_active(key).unwrap());
+        drop(second);
+        assert!(!registry.has_active(key).unwrap());
     }
 }
