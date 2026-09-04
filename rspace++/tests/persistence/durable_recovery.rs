@@ -1143,6 +1143,33 @@ fn generation_checkpoint_reuse_and_short_physical_pack_fail_closed() {
 }
 
 #[test]
+fn every_checkpoint_pack_truncation_fails_before_authority() {
+    let image = valid_checkpoint_image();
+    let token = token_with_slot(image.catalog, false);
+    let complete_len = image.pack.len();
+
+    // A catalog authority names the complete durable tail.  Every shorter
+    // prefix therefore represents a crash at a distinct byte boundary in the
+    // header, checkpoint PREPARE, checkpoint COMMIT, or indexed object body.
+    // Recovery must refuse all of them rather than exposing a partially
+    // reconstructed checkpoint authority.
+    for cut in 0..complete_len {
+        let truncated = image.pack[..cut].to_vec();
+        let mut provider = MemoryProvider::new(PackId::GENESIS, truncated);
+        let result = scan_catalog_authorized_pack_chain(
+            &mut provider,
+            &token,
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+        );
+        assert!(
+            result.is_err(),
+            "truncating checkpoint pack at byte {cut}/{complete_len} unexpectedly exposed authority"
+        );
+    }
+}
+
+#[test]
 fn exact_catalog_image_is_consumed_before_recovered_authority_is_exposed() {
     let (bytes, catalog, _) = image_with_lookup(&MissingLookup);
     let scan_token = token_with_slot(catalog, false);
