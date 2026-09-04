@@ -389,14 +389,21 @@ impl RetainedRootRegistryV1 {
         if state.revision != snapshot.revision {
             return Ok(false);
         }
-        let mut dynamic = state.roots.values().copied().collect::<Vec<_>>();
-        dynamic.sort_unstable();
-        Ok(snapshot
+        let dynamic_count = state.roots.len();
+        let snapshot_dynamic_count = snapshot
             .roots
             .iter()
             .filter(|root| root.lease_id != 0)
-            .copied()
-            .eq(dynamic))
+            .count();
+        if dynamic_count != snapshot_dynamic_count {
+            return Ok(false);
+        }
+        Ok(state.roots.values().all(|current| {
+            snapshot
+                .roots
+                .iter()
+                .any(|candidate| candidate.lease_id == current.lease_id && candidate == current)
+        }))
     }
 
     pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
