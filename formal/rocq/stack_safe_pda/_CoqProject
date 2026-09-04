@@ -48,3 +48,4 @@ theories/TwoLevelRSpaceMatchTransactionMutants.v
 theories/TwoLevelRSpaceCurrentPublication.v
 theories/TwoLevelRSpaceCheckpointRecovery.v
 theories/TwoLevelRSpaceCheckpointRecoveryMutants.v
+theories/RPB3Admission.v
