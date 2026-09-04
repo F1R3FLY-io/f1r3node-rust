@@ -876,15 +876,15 @@ impl RhoPathStreamValidatorV1 {
 impl fmt::Display for RhoPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidMagic => f.write_str("invalid RhoPathV1 magic"),
-            Self::InvalidKind(kind) => write!(f, "invalid RhoPathV1 kind {kind}"),
+            Self::InvalidMagic => f.write_str("invalid RhoPath magic"),
+            Self::InvalidKind(kind) => write!(f, "invalid RhoPath kind {kind}"),
             Self::InvalidCollectionVersion(version) => {
-                write!(f, "invalid RhoPathV1 collection version {version}")
+                write!(f, "invalid RhoPath collection version {version}")
             }
-            Self::EmptyChannelGroup => f.write_str("RhoPathV1 channel group is empty"),
-            Self::TruncatedFrame => f.write_str("truncated RhoPathV1 frame"),
-            Self::InvalidEscape(byte) => write!(f, "invalid RhoPathV1 escape {byte:#04x}"),
-            Self::TrailingBytes => f.write_str("unexpected bytes after RhoPathV1 prefix"),
+            Self::EmptyChannelGroup => f.write_str("RhoPath channel group is empty"),
+            Self::TruncatedFrame => f.write_str("truncated RhoPath frame"),
+            Self::InvalidEscape(byte) => write!(f, "invalid RhoPath escape {byte:#04x}"),
+            Self::TrailingBytes => f.write_str("unexpected bytes after RhoPath prefix"),
         }
     }
 }

@@ -56,6 +56,12 @@ fn v1_and_v2_datum_namespaces_are_disjoint() {
 }
 
 #[test]
+fn rho_path_errors_are_not_mislabeled_by_wire_version() {
+    assert_eq!(RhoPathError::InvalidMagic.to_string(), "invalid RhoPath magic");
+    assert_eq!(RhoPathError::TrailingBytes.to_string(), "unexpected bytes after RhoPath prefix");
+}
+
+#[test]
 fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     assert_eq!(RhoPathV2::continuation_key(&[], b"id"), Err(RhoPathError::EmptyChannelGroup));
     let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
