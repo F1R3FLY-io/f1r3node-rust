@@ -1296,9 +1296,15 @@ pub struct RhoPathV2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RhoPathV2DatumView<'a> {
-    pub channel_image: &'a [u8],
-    pub datum_structure: &'a [u8],
-    pub datum_identity: &'a [u8],
+    channel_image: &'a [u8],
+    datum_structure: &'a [u8],
+    datum_identity: &'a [u8],
+}
+
+impl RhoPathV2DatumView<'_> {
+    pub fn channel_image(&self) -> Vec<u8> { decode_frame(self.channel_image) }
+    pub fn datum_structure(&self) -> Vec<u8> { decode_frame(self.datum_structure) }
+    pub fn datum_identity(&self) -> Vec<u8> { decode_frame(self.datum_identity) }
 }
 
 impl RhoPathV2 {

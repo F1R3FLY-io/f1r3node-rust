@@ -2,7 +2,7 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize
 use rspace_plus_plus::rspace::rho_path::{
     RHO_MATCH_FIELD_END, RHO_MATCH_FIELD_START, RHO_MATCH_I64, RHO_MATCH_NODE_END,
     RHO_MATCH_NODE_START, RHO_MATCH_PATH_VERSION, RhoMatchQuery, RhoMatchQueryPart,
-    RhoPathCaptureId, RhoPathError, RhoPathQuery, RhoPathQueryAtom, RhoPathV1,
+    RhoPathCaptureId, RhoPathError, RhoPathQuery, RhoPathQueryAtom, RhoPathV1, RhoPathV2,
     encode_structural_sequence,
 };
 
@@ -17,6 +17,33 @@ fn datum_paths_round_trip_all_byte_values() {
     assert_eq!(view.channel_identity(), channel.stable_hash_bytes());
     assert_eq!(view.datum_structure(), structure);
     assert_eq!(view.datum_identity(), identity);
+}
+
+#[test]
+fn v2_datum_uses_three_framed_canonical_fields() {
+    let path = RhoPathV2::datum_key(b"channel\0image", b"shape", b"identity\0tail");
+    let view = RhoPathV2::parse_datum(&path).unwrap();
+    assert_eq!(view.channel_image(), b"channel\0image");
+    assert_eq!(view.datum_structure(), b"shape");
+    assert_eq!(view.datum_identity(), b"identity\0tail");
+    let mut trailing = path.clone();
+    trailing.push(9);
+    assert_eq!(RhoPathV2::parse_datum(&trailing), Err(RhoPathError::TrailingBytes));
+}
+
+#[test]
+fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
+    assert_eq!(RhoPathV2::continuation_key(&[], b"id"), Err(RhoPathError::EmptyChannelGroup));
+    let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
+    assert_eq!(&path[6..14], &2_u64.to_be_bytes());
+}
+
+#[test]
+fn v2_join_frames_identity() {
+    let path = RhoPathV2::join_key(b"channel", b"join\0identity");
+    assert!(path.windows(2).any(|pair| pair == [0, 1]));
+    assert!(path.windows(2).any(|pair| pair == [0, 255]));
+    assert!(path.ends_with(&[0, 0]));
 }
 
 #[test]
