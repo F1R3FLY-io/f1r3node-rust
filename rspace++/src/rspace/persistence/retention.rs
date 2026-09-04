@@ -398,12 +398,11 @@ impl RetainedRootRegistryV1 {
         if dynamic_count != snapshot_dynamic_count {
             return Ok(false);
         }
-        Ok(state.roots.values().all(|current| {
-            snapshot
-                .roots
-                .iter()
-                .any(|candidate| candidate.lease_id == current.lease_id && candidate == current)
-        }))
+        Ok(snapshot
+            .roots
+            .iter()
+            .filter(|candidate| candidate.lease_id != 0)
+            .all(|candidate| state.roots.get(&candidate.lease_id) == Some(candidate)))
     }
 
     pub fn release(&self, lease: &mut RootLeaseV1) -> Result<(), RetentionRegistryError> {
