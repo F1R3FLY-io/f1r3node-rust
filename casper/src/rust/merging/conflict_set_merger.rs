@@ -1197,7 +1197,29 @@ fn get_merged_result_rejection<R: Clone + Eq + std::hash::Hash + Ord>(
 mod tests {
     use std::collections::{BTreeMap, HashSet};
 
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
+
     use super::*;
+    use crate::rust::metrics_constants::{
+        DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC, DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+        DAG_MERGE_CONFLICT_EDGES_METRIC, DAG_MERGE_REJECTION_OPTIONS_METRIC,
+        DAG_MERGE_REJECTION_SELECTION_TIME_METRIC, DAG_MERGE_RELATION_BRANCHES_METRIC,
+        DAG_MERGE_RELATION_ITEMS_METRIC, DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC,
+    };
+
+    #[allow(clippy::mutable_key_type)]
+    fn histogram_values(snapshotter: &Snapshotter) -> HashMap<String, Vec<f64>> {
+        let mut result: HashMap<String, Vec<f64>> = HashMap::new();
+        for (key, (_, _, value)) in snapshotter.snapshot().into_hashmap() {
+            if let DebugValue::Histogram(values) = value {
+                result
+                    .entry(key.key().name().to_string())
+                    .or_default()
+                    .extend(values.into_iter().map(|value| value.into_inner()));
+            }
+        }
+        result
+    }
 
     fn branch(items: &[i32]) -> Branch<i32> {
         HashableSet(items.iter().copied().collect::<HashSet<i32>>())
@@ -1350,6 +1372,9 @@ mod tests {
         let late_seq = Vec::<i32>::new();
         let base_channel = Blake2b256Hash::from_bytes(vec![7u8; 32]);
 
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let guard = metrics::set_default_local_recorder(&recorder);
         let result = merge(
             actual_seq,
             late_seq,
@@ -1393,10 +1418,36 @@ mod tests {
                     .collect())
             },
         );
+        drop(guard);
 
         assert!(result.is_ok());
         let (_new_state, rejected) = result.unwrap();
         assert!(!rejected.0.is_empty());
+        let samples = histogram_values(&snapshotter);
+        assert_eq!(
+            samples.get(DAG_MERGE_RELATION_ITEMS_METRIC),
+            Some(&vec![2.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_RELATION_BRANCHES_METRIC),
+            Some(&vec![2.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_CONFLICT_EDGES_METRIC),
+            Some(&vec![0.0])
+        );
+        assert_eq!(
+            samples.get(DAG_MERGE_STATE_APPLICATION_ACTIONS_METRIC),
+            Some(&vec![0.0])
+        );
+        for metric_name in [
+            DAG_MERGE_REJECTION_OPTIONS_METRIC,
+            DAG_MERGE_REJECTION_SELECTION_TIME_METRIC,
+            DAG_MERGE_COMPUTE_TRIE_ACTIONS_TIME_METRIC,
+            DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC,
+        ] {
+            assert_eq!(samples.get(metric_name).map(Vec::len), Some(1));
+        }
     }
 
     // ---- IntegerAdd overflow-launder regression (Phase 6 W3/W4) --------------

@@ -736,8 +736,6 @@ impl Validate {
                             Err(e) => {
                                 metrics::counter!(REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC, "source" => CASPER_METRICS_SOURCE)
                                     .increment(1);
-                                metrics::counter!(REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC, "source" => CASPER_METRICS_SOURCE)
-                                    .increment(1);
                                 tracing::warn!(
                                     "repeat-deploy carrier-index probe failed for block {}; \
                                      falling back to the ancestor scan: {}",
@@ -755,14 +753,10 @@ impl Validate {
             Ok(_) => {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_NOT_READY_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
-                metrics::counter!(REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
                 deploy_key_set
             }
             Err(e) => {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC, "source" => CASPER_METRICS_SOURCE)
-                    .increment(1);
-                metrics::counter!(REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
                 tracing::warn!(
                     "repeat-deploy carrier-index watermark read failed for block {}; \
@@ -776,6 +770,8 @@ impl Validate {
         if deploy_key_set.is_empty() {
             return Either::Right(ValidBlock::Valid);
         }
+        metrics::counter!(REPEAT_DEPLOY_CARRIER_FALLBACK_SCAN_METRIC, "source" => CASPER_METRICS_SOURCE)
+            .increment(1);
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block");
         // A failed expansion is not an empty one: swallowing it ends the scan
