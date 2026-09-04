@@ -1,23 +1,31 @@
-// The 22 native filesystem handlers.
+// The 28 native filesystem handlers (verified count as of A8-M-1
+// retirement, 2026-09-03: 20 fs syscalls + 4 lock natives + 3 per-fd
+// stream natives + 1 quarantine helper).
 //
 // Each handler:
 //   1. Unapplies the incoming contract call to extract
 //      `(produce, is_replay, previous_output, args)`.
-//   2. On replay, immediately re-sends `previous_output` — filesystem
-//      calls are non-deterministic and must not be re-issued.  Consistent
-//      with `gpt4`/`dalle3`/`ollama_chat`: no cost charged on the replay
-//      branch (cost already accounted at capture time by the leader).
-//   3. Otherwise validates arguments, quarantines any path via
-//      `path::safe_descend`, dispatches to the syscall in a
-//      `spawn_blocking` task (so long-blocking `fsync`/`copy` never
-//      stalls the reactor), and builds the `[true, ...]` /
-//      `[false, code, msg]` reply.
-//
-// Path safety: every path-taking handler takes `(rootCanon, rel)` and
-// descends via `openat + O_NOFOLLOW` at each step.  The leaf operation
-// is issued as an `*at` syscall against the resolved parent dirfd, so
-// the resolution path used for the safety check is the exact same path
-// used for the operation — TOCTOU-immune.
+//   2. Cost pre-charge at handler entry via `metering.reserve_primitive`
+//      (or `reserve_incremental_primitive` for length-parameterized
+//      helpers).  Consensus mode: `is_replay = true` STILL charges +
+//      re-executes for the 14 Phase-5-verifying handlers (each
+//      compares its fresh reply hash to the leader's cached hash and
+//      fires FSERR_CONSENSUS_DIVERGENCE on mismatch — see
+//      `verify_reply_hash_matches_cached`).  Non-verifying handlers
+//      (locks, quarantine) tautologically echo `previous_output` on
+//      replay per the pre-Phase-5 pattern.  See
+//      `docs/consensus-invariants.md` §"Per-op re-execute behavior"
+//      for the current 14/28 verify matrix.
+//   3. Path-taking leaf ops descend via `safe_descend_verified`
+//      (H-5 rename-and-recreate check + H-P7-6 O_NOFOLLOW at every
+//      step) and issue the leaf syscall as an `*at` call against the
+//      returned dirfd — TOCTOU-immune.  See `path.rs::SafeParent`.
+//   4. Syscalls dispatch in a `spawn_blocking` task so long-blocking
+//      `fsync` / recursive walks never stall the reactor.
+//   5. Reply shape: `[true, ...]` on success, `[false, code, msg]` on
+//      failure.  DD-RemoveDirReplyShape (2026-09-03) unified
+//      removeDir's replies with `nDeleted` at position 1/3 —
+//      see the handler's header for the exception.
 //
 // Error messages are scrubbed via `io_msg_scrub` — we surface the
 // `std::io::ErrorKind` classification but not the free-form message
