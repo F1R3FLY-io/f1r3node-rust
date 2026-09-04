@@ -1289,6 +1289,87 @@ impl Default for StructuralSequenceEncoder {
     fn default() -> Self { Self::new() }
 }
 
+/// RhoPathV2's schema-level envelope.  The codec accepts already-canonical
+/// byte slices from the semantic layer; it never materializes Par collections
+/// or sorts trie entries.  All parsing is cursor-based and iterative.
+pub struct RhoPathV2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RhoPathV2DatumView<'a> {
+    pub channel_image: &'a [u8],
+    pub datum_structure: &'a [u8],
+    pub datum_identity: &'a [u8],
+}
+
+impl RhoPathV2 {
+    pub const MAGIC: [u8; 4] = *b"RHP\x02";
+    pub const DATUM_KIND: u8 = 1;
+    pub const CONTINUATION_KIND: u8 = 2;
+    pub const JOIN_KIND: u8 = 3;
+    pub const COLLECTION_VERSION: u8 = 1;
+
+    pub fn datum_key(
+        channel_image: &[u8],
+        datum_structure: &[u8],
+        datum_identity: &[u8],
+    ) -> Vec<u8> {
+        let mut out = Vec::with_capacity(5 + channel_image.len() + datum_structure.len()
+            + datum_identity.len() + 6);
+        out.extend_from_slice(&Self::MAGIC);
+        out.push(Self::DATUM_KIND);
+        append_frame(&mut out, channel_image);
+        append_frame(&mut out, datum_structure);
+        append_frame(&mut out, datum_identity);
+        out
+    }
+
+    pub fn parse_datum(path: &[u8]) -> Result<RhoPathV2DatumView<'_>, RhoPathError> {
+        if path.len() < 5 || path[..4] != Self::MAGIC {
+            return Err(RhoPathError::InvalidMagic);
+        }
+        if path[4] != Self::DATUM_KIND {
+            return Err(RhoPathError::InvalidKind(path[4]));
+        }
+        let mut cursor = 5;
+        let channel_image = take_frame(path, &mut cursor)?;
+        let datum_structure = take_frame(path, &mut cursor)?;
+        let datum_identity = take_frame(path, &mut cursor)?;
+        if cursor != path.len() {
+            return Err(RhoPathError::TrailingBytes);
+        }
+        Ok(RhoPathV2DatumView {
+            channel_image,
+            datum_structure,
+            datum_identity,
+        })
+    }
+
+    pub fn continuation_key(channels: &[&[u8]], identity: &[u8]) -> Result<Vec<u8>, RhoPathError> {
+        if channels.is_empty() {
+            return Err(RhoPathError::EmptyChannelGroup);
+        }
+        let count = u64::try_from(channels.len()).map_err(|_| RhoPathError::TrailingBytes)?;
+        let mut out = Vec::new();
+        out.extend_from_slice(&Self::MAGIC);
+        out.extend_from_slice(&[Self::CONTINUATION_KIND, Self::COLLECTION_VERSION]);
+        out.extend_from_slice(&count.to_be_bytes());
+        for channel in channels { append_frame(&mut out, channel); }
+        out.extend_from_slice(&GROUP_END);
+        append_frame(&mut out, identity);
+        Ok(out)
+    }
+
+    pub fn join_key(channel: &[u8], identity: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + channel.len() + identity.len());
+        out.extend_from_slice(&Self::MAGIC);
+        out.extend_from_slice(&[Self::JOIN_KIND, Self::COLLECTION_VERSION]);
+        append_frame(&mut out, channel);
+        out.extend_from_slice(&GROUP_END);
+        append_frame(&mut out, identity);
+        out
+    }
+}
+
 fn append_frame(output: &mut Vec<u8>, bytes: &[u8]) {
     append_frame_prefix(output, bytes);
     output.extend_from_slice(&[ESCAPE, FRAME_END]);
