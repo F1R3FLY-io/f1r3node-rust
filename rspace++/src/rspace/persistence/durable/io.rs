@@ -2143,6 +2143,36 @@ mod tests {
     }
 
     #[test]
+    fn physical_truncation_is_rejected_by_exact_file_reads() {
+        let scratch = test_scratch::acquire("rspace-durable-io-physical-short-read-");
+        let mut lease = DurableDirectoryV1::open(scratch.path())
+            .unwrap()
+            .try_acquire_writer()
+            .unwrap();
+        let mut pack = lease.create_pack(PackId::GENESIS).unwrap();
+        let payload = [0x61, 0x62, 0x63, 0x64];
+        pack.write_all_at(PACK_HEADER_LEN_V1, &payload).unwrap();
+        pack.sync_data().unwrap();
+        pack.set_len(PACK_HEADER_LEN_V1 + 2).unwrap();
+
+        let mut destination = [0u8; 4];
+        let pack_path = pack.path().to_path_buf();
+        let error = pack
+            .read_exact_at(PACK_HEADER_LEN_V1, &mut destination)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DurableIoError::ShortRead {
+                operation: DurableIoOperation::PositionalRead,
+                ref path,
+                offset,
+                expected: 4,
+                actual: 2,
+            } if path == &pack_path && offset == PACK_HEADER_LEN_V1
+        ));
+    }
+
+    #[test]
     fn exact_io_retries_interruptions_and_rejects_impossible_counts() {
         let path = PathBuf::from("/diagnostic/exact-io");
         let mut read_target = [0u8; 4];
@@ -2182,55 +2212,43 @@ mod tests {
         assert_eq!(write_calls, 2);
 
         let mut partial_write_calls = 0;
-        write_all_at_with(
-            &mut authority,
-            &path,
-            31,
-            &[10, 11, 12, 13],
-            |_, buffer, position| {
-                partial_write_calls += 1;
-                if partial_write_calls == 1 {
-                    assert_eq!(position, 31);
-                    assert_eq!(buffer, &[10, 11, 12, 13]);
-                    Ok(1)
-                } else {
-                    assert_eq!(position, 32);
-                    assert_eq!(buffer, &[11, 12, 13]);
-                    Ok(buffer.len())
-                }
-            },
-        )
+        write_all_at_with(&mut authority, &path, 31, &[10, 11, 12, 13], |_, buffer, position| {
+            partial_write_calls += 1;
+            if partial_write_calls == 1 {
+                assert_eq!(position, 31);
+                assert_eq!(buffer, &[10, 11, 12, 13]);
+                Ok(1)
+            } else {
+                assert_eq!(position, 32);
+                assert_eq!(buffer, &[11, 12, 13]);
+                Ok(buffer.len())
+            }
+        })
         .unwrap();
         assert_eq!(partial_write_calls, 2);
 
         let mut mixed_fault_calls = 0;
-        write_all_at_with(
-            &mut authority,
-            &path,
-            41,
-            &[14, 15, 16, 17],
-            |_, buffer, position| {
-                mixed_fault_calls += 1;
-                match mixed_fault_calls {
-                    1 | 3 => Err(DurableIoError::Io {
-                        operation: DurableIoOperation::PositionalWrite,
-                        path: path.clone(),
-                        source: io::Error::new(io::ErrorKind::Interrupted, "signal"),
-                    }),
-                    2 => {
-                        assert_eq!(position, 41);
-                        assert_eq!(buffer, &[14, 15, 16, 17]);
-                        Ok(2)
-                    }
-                    4 => {
-                        assert_eq!(position, 43);
-                        assert_eq!(buffer, &[16, 17]);
-                        Ok(buffer.len())
-                    }
-                    _ => panic!("write loop made an unexpected extra call"),
+        write_all_at_with(&mut authority, &path, 41, &[14, 15, 16, 17], |_, buffer, position| {
+            mixed_fault_calls += 1;
+            match mixed_fault_calls {
+                1 | 3 => Err(DurableIoError::Io {
+                    operation: DurableIoOperation::PositionalWrite,
+                    path: path.clone(),
+                    source: io::Error::new(io::ErrorKind::Interrupted, "signal"),
+                }),
+                2 => {
+                    assert_eq!(position, 41);
+                    assert_eq!(buffer, &[14, 15, 16, 17]);
+                    Ok(2)
                 }
-            },
-        )
+                4 => {
+                    assert_eq!(position, 43);
+                    assert_eq!(buffer, &[16, 17]);
+                    Ok(buffer.len())
+                }
+                _ => panic!("write loop made an unexpected extra call"),
+            }
+        })
         .unwrap();
         assert_eq!(mixed_fault_calls, 4);
 
