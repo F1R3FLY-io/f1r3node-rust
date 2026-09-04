@@ -1524,6 +1524,8 @@ fn catalog_uncertainty_classifies_both_old_and_new_observable_outcomes() {
 enum PublicationOutcomeCase {
     Success,
     Hook(GenerationCheckpointPublicationHookPointV1),
+    PhysicalWrite,
+    PhysicalSync,
     CatalogSlotWrite,
     CatalogFileSync,
     CatalogDirectorySync,
@@ -1573,6 +1575,18 @@ fn publication_outcomes_are_total_and_mutually_exclusive() {
         cases.push((PublicationOutcomeCase::Hook(point), Some(outcome), restart, phase_index + 1));
     }
     cases.extend([
+        (
+            PublicationOutcomeCase::PhysicalWrite,
+            Some(DefinitelyNotPublished),
+            RestartAuthority::Old,
+            2,
+        ),
+        (
+            PublicationOutcomeCase::PhysicalSync,
+            Some(DefinitelyNotPublished),
+            RestartAuthority::Old,
+            3,
+        ),
         (PublicationOutcomeCase::CatalogSlotWrite, Some(Indeterminate), RestartAuthority::Old, 11),
         (PublicationOutcomeCase::CatalogFileSync, Some(Indeterminate), RestartAuthority::New, 12),
         (PublicationOutcomeCase::CatalogDirectorySync, Some(Published), RestartAuthority::New, 13),
@@ -1605,6 +1619,12 @@ fn publication_outcomes_are_total_and_mutually_exclusive() {
                     ));
                 });
                 arm_generation_checkpoint_publication_failpoint(point);
+            }
+            PublicationOutcomeCase::PhysicalWrite => {
+                arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalWrite);
+            }
+            PublicationOutcomeCase::PhysicalSync => {
+                arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalSync);
             }
             PublicationOutcomeCase::CatalogSlotWrite => {
                 arm_durable_io_failpoint(DurableIoFailpointV1::CatalogSlotWrite);
