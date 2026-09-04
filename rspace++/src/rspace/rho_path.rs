@@ -1307,6 +1307,12 @@ impl RhoPathV2DatumView<'_> {
     pub fn datum_identity(&self) -> Vec<u8> { decode_frame(self.datum_identity) }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RhoPathV2ContinuationView<'a> {
+    pub channel_frames: Vec<&'a [u8]>,
+    pub identity_frame: &'a [u8],
+}
+
 impl RhoPathV2 {
     pub const MAGIC: [u8; 4] = *b"RHP\x02";
     pub const DATUM_KIND: u8 = 1;
@@ -1373,6 +1379,62 @@ impl RhoPathV2 {
         out.extend_from_slice(&GROUP_END);
         append_frame(&mut out, identity);
         out
+    }
+
+    pub fn parse_continuation(path: &[u8]) -> Result<RhoPathV2ContinuationView<'_>, RhoPathError> {
+        if path.len() < 14 || path[..4] != Self::MAGIC {
+            return Err(RhoPathError::InvalidMagic);
+        }
+        if path[4] != Self::CONTINUATION_KIND {
+            return Err(RhoPathError::InvalidKind(path[4]));
+        }
+        if path[5] != Self::COLLECTION_VERSION {
+            return Err(RhoPathError::InvalidCollectionVersion(path[5]));
+        }
+        let mut count_bytes = [0u8; 8];
+        count_bytes.copy_from_slice(&path[6..14]);
+        let count = usize::try_from(u64::from_be_bytes(count_bytes))
+            .map_err(|_| RhoPathError::TrailingBytes)?;
+        if count == 0 {
+            return Err(RhoPathError::EmptyChannelGroup);
+        }
+        let mut cursor = 14;
+        let mut channel_frames = Vec::with_capacity(count);
+        for _ in 0..count {
+            channel_frames.push(take_frame(path, &mut cursor)?);
+        }
+        if path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
+            return Err(RhoPathError::TruncatedFrame);
+        }
+        cursor += GROUP_END.len();
+        let identity_frame = take_frame(path, &mut cursor)?;
+        if cursor != path.len() {
+            return Err(RhoPathError::TrailingBytes);
+        }
+        Ok(RhoPathV2ContinuationView { channel_frames, identity_frame })
+    }
+
+    pub fn parse_join(path: &[u8]) -> Result<(&[u8], &[u8]), RhoPathError> {
+        if path.len() < 8 || path[..4] != Self::MAGIC {
+            return Err(RhoPathError::InvalidMagic);
+        }
+        if path[4] != Self::JOIN_KIND {
+            return Err(RhoPathError::InvalidKind(path[4]));
+        }
+        if path[5] != Self::COLLECTION_VERSION {
+            return Err(RhoPathError::InvalidCollectionVersion(path[5]));
+        }
+        let mut cursor = 6;
+        let channel = take_frame(path, &mut cursor)?;
+        if path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
+            return Err(RhoPathError::TruncatedFrame);
+        }
+        cursor += GROUP_END.len();
+        let identity = take_frame(path, &mut cursor)?;
+        if cursor != path.len() {
+            return Err(RhoPathError::TrailingBytes);
+        }
+        Ok((channel, identity))
     }
 }
 

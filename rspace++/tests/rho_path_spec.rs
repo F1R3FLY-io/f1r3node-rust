@@ -36,6 +36,9 @@ fn v2_continuation_has_u64_count_and_rejects_empty_groups() {
     assert_eq!(RhoPathV2::continuation_key(&[], b"id"), Err(RhoPathError::EmptyChannelGroup));
     let path = RhoPathV2::continuation_key(&[b"a", b"b"], b"id").unwrap();
     assert_eq!(&path[6..14], &2_u64.to_be_bytes());
+    let view = RhoPathV2::parse_continuation(&path).unwrap();
+    assert_eq!(view.channel_frames.len(), 2);
+    assert!(view.identity_frame.ends_with(&[0, 0]));
 }
 
 #[test]
@@ -44,6 +47,9 @@ fn v2_join_frames_identity() {
     assert!(path.windows(2).any(|pair| pair == [0, 1]));
     assert!(path.windows(2).any(|pair| pair == [0, 255]));
     assert!(path.ends_with(&[0, 0]));
+    let (channel, identity) = RhoPathV2::parse_join(&path).unwrap();
+    assert!(channel.ends_with(&[0, 0]));
+    assert!(identity.ends_with(&[0, 0]));
 }
 
 #[test]
