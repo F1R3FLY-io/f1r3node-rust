@@ -29,6 +29,7 @@ fn v2_datum_uses_three_framed_canonical_fields() {
     assert!(view.encoded_channel_image().ends_with(&[0, 0]));
     assert!(view.encoded_datum_structure().ends_with(&[0, 0]));
     assert!(view.encoded_datum_identity().ends_with(&[0, 0]));
+    assert_eq!(RhoPathV2::parse_datum_prefix(&path).unwrap(), view.encoded_channel_image());
     let mut trailing = path.clone();
     trailing.push(9);
     assert_eq!(RhoPathV2::parse_datum(&trailing), Err(RhoPathError::TrailingBytes));

@@ -1400,6 +1400,20 @@ impl RhoPathV2 {
         })
     }
 
+    /// Borrow the complete escaped channel-image frame from a V2 datum key.
+    /// This is the read-side primitive for PathMap channel-subtree lookup;
+    /// it performs no payload decoding or allocation.
+    pub fn parse_datum_prefix(path: &[u8]) -> Result<&[u8], RhoPathError> {
+        if path.len() < 5 || path[..4] != Self::MAGIC {
+            return Err(RhoPathError::InvalidMagic);
+        }
+        if path[4] != Self::DATUM_KIND {
+            return Err(RhoPathError::InvalidKind(path[4]));
+        }
+        let mut cursor = 5;
+        take_frame(path, &mut cursor)
+    }
+
     pub fn continuation_key(channels: &[&[u8]], identity: &[u8]) -> Result<Vec<u8>, RhoPathError> {
         let mut out = Self::continuation_prefix(channels)?;
         append_frame(&mut out, identity);
