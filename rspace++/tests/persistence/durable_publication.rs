@@ -1820,6 +1820,27 @@ fn catalog_sync_to_recovery_has_no_writer_lock_gap() {
     assert_eq!(published.authority().slot().pack().active_pack(), 2);
 }
 
+#[test]
+fn physical_write_and_sync_failures_leave_the_old_authority_selected() {
+    for failpoint in [DurableIoFailpointV1::PhysicalWrite, DurableIoFailpointV1::PhysicalSync] {
+        let scratch = test_scratch::acquire("rspace-durable-publication-physical-io-");
+        install_checkpoint_store(scratch.path());
+        let writer = admit(scratch.path());
+        let old_authority = writer.authority().slot();
+        arm_durable_io_failpoint(failpoint);
+
+        let error = publication_error(publish(writer));
+        assert_eq!(
+            error.publication_outcome(),
+            GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished,
+            "physical failpoint {failpoint:?} must fail before catalog publication",
+        );
+
+        let reopened = admit(scratch.path());
+        assert_eq!(reopened.authority().slot(), old_authority);
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn published_but_recovery_failure_is_typed_and_restartable() {
