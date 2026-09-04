@@ -4,6 +4,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+use super::reclaim::{RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1};
 use super::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, INDEX_HEADER_LEN_V1,
     IndexGenerationV1, PACK_HEADER_LEN_V1,
@@ -12,6 +13,7 @@ use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackI
 
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
 pub(crate) const WRITER_LOCK_FILE_NAME_V1: &str = "writer.lock.v1";
+pub(crate) const RECLAMATION_CANDIDATE_FILE_NAME_V1: &str = "reclaim.v1";
 const PACK_FILE_PREFIX_V1: &str = "pack-";
 const PACK_FILE_SUFFIX_V1: &str = ".rsp";
 const INDEX_FILE_PREFIX_V1: &str = "index-";
@@ -1068,6 +1070,54 @@ impl DurableWriterLeaseV1 {
 
     pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
         self.directory.generation_leases()
+    }
+
+    /// Write and synchronize the advisory reclamation record. A torn record
+    /// cannot authorize deletion because readers validate its exact length,
+    /// version, checksum, and catalog identity before use.
+    pub(crate) fn write_reclamation_candidate(
+        &mut self,
+        candidate: ReclamationCandidateV1,
+    ) -> Result<(), DurableIoError> {
+        let name = RECLAMATION_CANDIDATE_FILE_NAME_V1;
+        match self.remove_child(name) {
+            Ok(()) => {}
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let mut file = DurableWritableFileV1 {
+            file: self.directory.create_new(name)?,
+            _lease: PhantomData,
+        };
+        file.set_len(RECLAMATION_RECORD_LEN_V1 as u64)?;
+        file.write_all_at(0, &candidate.encode())?;
+        file.sync_all()?;
+        self.sync_directory()
+    }
+
+    pub(crate) fn read_reclamation_candidate(
+        &self,
+    ) -> Result<Option<ReclamationCandidateV1>, DurableIoError> {
+        let file = match self
+            .directory
+            .open_child(RECLAMATION_CANDIDATE_FILE_NAME_V1, ChildOpenMode::ReadOnly)
+        {
+            Ok(file) => file,
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        file.require_length(FileLengthExpectation::Exact(RECLAMATION_RECORD_LEN_V1 as u64))?;
+        let mut bytes = vec![0u8; RECLAMATION_RECORD_LEN_V1];
+        file.read_exact_at(0, &mut bytes)?;
+        ReclamationCandidateV1::decode(&bytes)
+            .map(Some)
+            .map_err(|message| DurableIoError::Io {
+                operation: DurableIoOperation::Metadata,
+                path: file.path().to_path_buf(),
+                source: io::Error::new(io::ErrorKind::InvalidData, message),
+            })
     }
 
     /// Remove one validated child while retaining compiler-visible exclusive
